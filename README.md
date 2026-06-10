@@ -38,6 +38,7 @@ dupe [OPTIONS] <directory>
 |------|-------------|---------|
 | `--output <path>` | JSONL output file (appended on each run) | `/tmp/hashes` |
 | `--similar` | Also find visually similar images via perceptual hash | off |
+| `--exif` | Extract EXIF metadata (DateTimeOriginal, GPS coordinates, image dimensions) | off |
 | `--silent` | Suppress all console output | off |
 
 ### Examples
@@ -94,6 +95,11 @@ One JSON object per line, appended on every run:
 | `modified_at` | string \| null | ISO 8601 modification time |
 | `ext` | string | Lowercase file extension |
 | `phash` | number | dHash value (only present with `--similar`) |
+| `exif_date` | string \| null | ISO 8601 shoot date from EXIF `DateTimeOriginal` (only with `--exif`) |
+| `gps_lat` | number \| null | GPS latitude in decimal degrees, negative = South (only with `--exif`) |
+| `gps_lon` | number \| null | GPS longitude in decimal degrees, negative = West (only with `--exif`) |
+| `width` | number \| null | Image width in pixels from EXIF (only with `--exif`) |
+| `height` | number \| null | Image height in pixels from EXIF (only with `--exif`) |
 
 ## Pipeline Usage
 
@@ -122,7 +128,12 @@ CREATE TABLE file_hashes (
     created_at  TIMESTAMPTZ,
     modified_at TIMESTAMPTZ,
     ext         TEXT,
-    phash       BIGINT
+    phash       BIGINT,
+    exif_date   TIMESTAMPTZ,
+    gps_lat     DOUBLE PRECISION,
+    gps_lon     DOUBLE PRECISION,
+    width       INTEGER,
+    height      INTEGER
 );
 ```
 

@@ -14,6 +14,7 @@ dupe [OPTIONS] <directory>
 Options:
   --output <path>   JSONL output file [default: /tmp/hashes]
   --similar         Also find visually similar images (perceptual hash)
+  --exif            Extract EXIF metadata (shoot date, GPS, dimensions)
   --silent          Suppress console output
 ```
 
