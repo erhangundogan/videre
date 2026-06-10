@@ -297,7 +297,7 @@ mod tests {
     fn hash_file_with_exif_true_populates_exif_fields_for_jpeg() {
         let path = std::path::Path::new("tests/fixtures/sample_with_exif.jpg");
         let record = hash_file(path, true).unwrap();
-        assert_eq!(record.exif_date.as_deref(), Some("2017-06-03T11:54:36"));
+        assert_eq!(record.exif_date.as_deref(), Some("2021-08-10T19:34:03"));
         assert!(record.gps_lat.is_some());
         assert!(record.gps_lon.is_some());
         assert_eq!(record.width, Some(4032));
@@ -317,15 +317,15 @@ mod tests {
 
     #[test]
     fn extract_exif_reads_fields_from_fixture() {
-        // Real iPhone 6s Plus photo at tests/fixtures/sample_with_exif.jpg
-        // DateTimeOriginal: 2017:06:03 11:54:36
-        // GPS: 44°16'3.93"N, 28°37'15.57"E → lat≈44.268, lon≈28.621
+        // tests/fixtures/sample_with_exif.jpg
+        // DateTimeOriginal: 2021:08:10 19:34:03
+        // GPS: 40°59'50.11"N, 29°0'44.47"E → lat≈40.997, lon≈29.012
         // PixelXDimension: 4032, PixelYDimension: 3024
         let path = std::path::Path::new("tests/fixtures/sample_with_exif.jpg");
         let data = extract_exif(path);
-        assert_eq!(data.exif_date.as_deref(), Some("2017-06-03T11:54:36"));
-        assert!((data.gps_lat.unwrap() - 44.268).abs() < 0.01);
-        assert!((data.gps_lon.unwrap() - 28.621).abs() < 0.01);
+        assert_eq!(data.exif_date.as_deref(), Some("2021-08-10T19:34:03"));
+        assert!((data.gps_lat.unwrap() - 40.997).abs() < 0.01);
+        assert!((data.gps_lon.unwrap() - 29.012).abs() < 0.01);
         assert_eq!(data.width, Some(4032));
         assert_eq!(data.height, Some(3024));
     }

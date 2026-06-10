@@ -84,7 +84,7 @@ fn exif_flag_populates_exif_fields_in_output() {
     let content = fs::read_to_string(&output).unwrap();
     let record: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
 
-    assert_eq!(record["exif_date"], "2017-06-03T11:54:36");
+    assert_eq!(record["exif_date"], "2021-08-10T19:34:03");
     assert!(record["gps_lat"].as_f64().is_some());
     assert!(record["gps_lon"].as_f64().is_some());
     assert_eq!(record["width"], 4032);

@@ -95,7 +95,7 @@ One JSON object per line, appended on every run:
 | `modified_at` | string \| null | ISO 8601 modification time |
 | `ext` | string | Lowercase file extension |
 | `phash` | number | dHash value (only present with `--similar`) |
-| `exif_date` | string \| null | ISO 8601 shoot date from EXIF `DateTimeOriginal` (only with `--exif`) |
+| `exif_date` | string \| null | Camera-local shoot date from EXIF `DateTimeOriginal`, no timezone (only with `--exif`) |
 | `gps_lat` | number \| null | GPS latitude in decimal degrees, negative = South (only with `--exif`) |
 | `gps_lon` | number \| null | GPS longitude in decimal degrees, negative = West (only with `--exif`) |
 | `width` | number \| null | Image width in pixels from EXIF (only with `--exif`) |
@@ -129,7 +129,7 @@ CREATE TABLE file_hashes (
     modified_at TIMESTAMPTZ,
     ext         TEXT,
     phash       BIGINT,
-    exif_date   TIMESTAMPTZ,
+    exif_date   TIMESTAMP,
     gps_lat     DOUBLE PRECISION,
     gps_lon     DOUBLE PRECISION,
     width       INTEGER,
