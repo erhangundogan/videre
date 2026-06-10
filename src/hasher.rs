@@ -286,11 +286,10 @@ mod tests {
 
     #[test]
     fn extract_exif_reads_fields_from_fixture() {
-        // Real photo fixture at tests/fixtures/sample_with_exif.jpg
-        // Confirmed EXIF values via kamadak-exif:
-        //   DateTimeOriginal: 2017:06:03 11:54:36
-        //   GPS: 44°16'3.93"N, 28°37'15.57"E
-        //   PixelXDimension: 4032, PixelYDimension: 3024
+        // Real iPhone 6s Plus photo at tests/fixtures/sample_with_exif.jpg
+        // DateTimeOriginal: 2017:06:03 11:54:36
+        // GPS: 44°16'3.93"N, 28°37'15.57"E → lat≈44.268, lon≈28.621
+        // PixelXDimension: 4032, PixelYDimension: 3024
         let path = std::path::Path::new("tests/fixtures/sample_with_exif.jpg");
         let data = extract_exif(path);
         assert_eq!(data.exif_date.as_deref(), Some("2017-06-03T11:54:36"));
@@ -298,28 +297,5 @@ mod tests {
         assert!((data.gps_lon.unwrap() - 28.621).abs() < 0.01);
         assert_eq!(data.width, Some(4032));
         assert_eq!(data.height, Some(3024));
-    }
-}
-
-#[cfg(test)]
-mod debug_exif {
-    use exif::{In, Reader, Tag};
-    use std::fs::File;
-    use std::io::BufReader;
-
-    #[test]
-    fn debug_print_exif_fields() {
-        let path = std::path::Path::new("tests/fixtures/sample_with_exif.jpg");
-        let file = File::open(path).unwrap();
-        let exif = Reader::new().read_from_container(&mut BufReader::new(file));
-        match exif {
-            Ok(e) => {
-                println!("EXIF read OK");
-                for field in e.fields() {
-                    println!("  tag={:?} ifd={:?} value={}", field.tag, field.ifd_num, field.display_value());
-                }
-            }
-            Err(err) => println!("Error: {:?}", err),
-        }
     }
 }
