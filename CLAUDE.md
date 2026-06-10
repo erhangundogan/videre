@@ -14,7 +14,7 @@ dupe [OPTIONS] <directory>
 Options:
   --output <path>   JSONL output file [default: /tmp/hashes]
   --similar         Also find visually similar images (perceptual hash)
-  --exif            Extract EXIF metadata (shoot date, GPS, dimensions)
+  --exif            Extract EXIF metadata (DateTimeOriginal, GPS, dimensions) for jpg/jpeg/tiff/heic
   --silent          Suppress console output
 ```
 
@@ -28,6 +28,7 @@ Options:
 cargo build --release
 ./target/release/dupe /path/to/photos
 ./target/release/dupe --similar --output ~/dupes.jsonl /path/to/photos
+./target/release/dupe --exif --output ~/dupes.jsonl /path/to/photos
 ```
 
 ## Project structure
@@ -36,7 +37,7 @@ cargo build --release
 src/
   main.rs     CLI entry, pipeline orchestration
   scanner.rs  Recursive file discovery, extension filter
-  hasher.rs   BLAKE3 + perceptual hash, metadata extraction
+  hasher.rs   BLAKE3 + perceptual hash + EXIF extraction, metadata
   output.rs   JSONL append, console duplicate report
   types.rs    FileRecord, DuplicateGroup structs
 ```
@@ -50,6 +51,7 @@ src/
 - `serde_json` — JSONL output
 - `chrono` — date formatting
 - `image` + `img_hash` — perceptual hashing for `--similar`
+- `kamadak-exif` — EXIF metadata extraction for `--exif`
 
 ## Design spec
 

@@ -8,6 +8,7 @@ Scans directories recursively, hashes every image with BLAKE3, and reports dupli
 
 - **Exact duplicates** — BLAKE3 hash, byte-for-byte identical files
 - **Visual duplicates** — dHash perceptual hashing via `--similar` flag (finds re-saves, resized copies)
+- **EXIF metadata** — `--exif` flag extracts shoot date, GPS coordinates, and dimensions from JPEG/HEIC/TIFF
 - **Parallel processing** — rayon saturates all CPU cores; handles tens of thousands of files
 - **JSONL output** — one JSON object per file, append-mode, ready for `jq` or database ingestion
 - **Date-aware reporting** — duplicate groups sorted oldest-first to surface likely originals
@@ -55,6 +56,12 @@ dupe --output ~/dupes.jsonl ~/Photos
 
 # Silent mode — JSONL output only, no console output
 dupe --silent --output ~/dupes.jsonl ~/Photos
+
+# Extract EXIF metadata (shoot date, GPS, dimensions) alongside hashes
+dupe --exif --output ~/dupes.jsonl ~/Photos
+
+# Combine flags
+dupe --exif --similar --output ~/dupes.jsonl ~/Photos
 ```
 
 ## Output
@@ -80,8 +87,14 @@ Files within each group are sorted by modification date ascending. The oldest fi
 
 One JSON object per line, appended on every run:
 
+Without `--exif`:
 ```json
 {"path":"/Photos/2019/vacation/IMG_001.jpg","hash":"a3f2c1d8...","size_bytes":3145728,"created_at":"2019-08-12T14:22:00+00:00","modified_at":"2019-08-12T14:22:00+00:00","ext":"jpg"}
+```
+
+With `--exif`:
+```json
+{"path":"/Photos/2019/vacation/IMG_001.jpg","hash":"a3f2c1d8...","size_bytes":3145728,"created_at":"2019-08-12T14:22:00+00:00","modified_at":"2019-08-12T14:22:00+00:00","ext":"jpg","exif_date":"2019-08-12T14:22:00","gps_lat":41.015,"gps_lon":28.979,"width":4032,"height":3024}
 ```
 
 #### Fields
@@ -139,7 +152,7 @@ CREATE TABLE file_hashes (
 
 ```bash
 cat /tmp/hashes | \
-  jq -r '[.path, .hash, .size_bytes, .created_at, .modified_at, .ext, .phash] | @tsv' | \
+  jq -r '[.path, .hash, .size_bytes, .created_at, .modified_at, .ext, .phash, .exif_date, .gps_lat, .gps_lon, .width, .height] | @tsv' | \
   psql -c "COPY file_hashes FROM STDIN"
 ```
 
@@ -165,7 +178,7 @@ Two images are considered similar when their Hamming distance is ≤ 10 (out of 
 src/
   main.rs      CLI entry point, argument parsing, pipeline orchestration
   scanner.rs   Recursive file discovery, extension filtering
-  hasher.rs    BLAKE3 hashing, dHash perceptual hashing, Hamming distance
+  hasher.rs    BLAKE3 hashing, dHash perceptual hashing, EXIF extraction
   output.rs    JSONL append writer, duplicate grouping, console report
   types.rs     FileRecord, DuplicateGroup structs
 tests/
