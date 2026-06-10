@@ -121,6 +121,11 @@ mod tests {
             modified_at: Some("2023-01-01T00:00:00+00:00".to_string()),
             ext: "jpg".to_string(),
             phash: None,
+            exif_date: None,
+            gps_lat: None,
+            gps_lon: None,
+            width: None,
+            height: None,
         }
     }
 

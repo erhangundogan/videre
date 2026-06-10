@@ -36,6 +36,11 @@ pub fn hash_file(path: &Path) -> io::Result<FileRecord> {
         modified_at,
         ext,
         phash: None,
+        exif_date: None,
+        gps_lat: None,
+        gps_lon: None,
+        width: None,
+        height: None,
     })
 }
 
