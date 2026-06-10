@@ -49,7 +49,7 @@ fn main() {
     let records: Vec<_> = paths
         .par_iter()
         .filter_map(|path| {
-            hasher::hash_file(path)
+            hasher::hash_file(path, false)
                 .map_err(|e| {
                     if !silent {
                         eprintln!("Warning: skipping {:?}: {}", path, e);

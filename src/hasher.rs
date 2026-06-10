@@ -104,7 +104,7 @@ fn extract_exif(path: &Path) -> ExifData {
     result
 }
 
-pub fn hash_file(path: &Path) -> io::Result<FileRecord> {
+pub fn hash_file(path: &Path, exif: bool) -> io::Result<FileRecord> {
     let metadata = fs::metadata(path)?;
     let size_bytes = metadata.len();
     let created_at = metadata.created().ok().map(system_time_to_iso);
@@ -127,6 +127,14 @@ pub fn hash_file(path: &Path) -> io::Result<FileRecord> {
         .unwrap_or("")
         .to_lowercase();
 
+    let (exif_date, gps_lat, gps_lon, width, height) =
+        if exif && EXIF_EXTENSIONS.contains(&ext.as_str()) {
+            let d = extract_exif(path);
+            (d.exif_date, d.gps_lat, d.gps_lon, d.width, d.height)
+        } else {
+            (None, None, None, None, None)
+        };
+
     Ok(FileRecord {
         path: path.to_string_lossy().to_string(),
         hash,
@@ -135,17 +143,18 @@ pub fn hash_file(path: &Path) -> io::Result<FileRecord> {
         modified_at,
         ext,
         phash: None,
-        exif_date: None,
-        gps_lat: None,
-        gps_lon: None,
-        width: None,
-        height: None,
+        exif_date,
+        gps_lat,
+        gps_lon,
+        width,
+        height,
     })
 }
 
 use image::imageops::{resize, FilterType};
 
 const PHASH_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff"];
+const EXIF_EXTENSIONS: &[&str] = &["jpg", "jpeg", "tiff", "heic"];
 
 pub fn compute_dhash(path: &Path) -> Option<u64> {
     let ext = path
@@ -192,7 +201,7 @@ mod tests {
         let path = dir.path().join("test.jpg");
         fs::write(&path, b"hello world").unwrap();
 
-        let record = hash_file(&path).unwrap();
+        let record = hash_file(&path, false).unwrap();
 
         assert_eq!(record.ext, "jpg");
         assert_eq!(record.size_bytes, 11);
@@ -208,8 +217,8 @@ mod tests {
         fs::write(&a, b"duplicate content").unwrap();
         fs::write(&b, b"duplicate content").unwrap();
 
-        let ra = hash_file(&a).unwrap();
-        let rb = hash_file(&b).unwrap();
+        let ra = hash_file(&a, false).unwrap();
+        let rb = hash_file(&b, false).unwrap();
         assert_eq!(ra.hash, rb.hash);
     }
 
@@ -221,8 +230,8 @@ mod tests {
         fs::write(&a, b"content A").unwrap();
         fs::write(&b, b"content B").unwrap();
 
-        let ra = hash_file(&a).unwrap();
-        let rb = hash_file(&b).unwrap();
+        let ra = hash_file(&a, false).unwrap();
+        let rb = hash_file(&b, false).unwrap();
         assert_ne!(ra.hash, rb.hash);
     }
 
@@ -282,6 +291,28 @@ mod tests {
         assert!(data.gps_lon.is_none());
         assert!(data.width.is_none());
         assert!(data.height.is_none());
+    }
+
+    #[test]
+    fn hash_file_with_exif_true_populates_exif_fields_for_jpeg() {
+        let path = std::path::Path::new("tests/fixtures/sample_with_exif.jpg");
+        let record = hash_file(path, true).unwrap();
+        assert_eq!(record.exif_date.as_deref(), Some("2017-06-03T11:54:36"));
+        assert!(record.gps_lat.is_some());
+        assert!(record.gps_lon.is_some());
+        assert_eq!(record.width, Some(4032));
+        assert_eq!(record.height, Some(3024));
+    }
+
+    #[test]
+    fn hash_file_with_exif_false_leaves_exif_fields_empty() {
+        let path = std::path::Path::new("tests/fixtures/sample_with_exif.jpg");
+        let record = hash_file(path, false).unwrap();
+        assert!(record.exif_date.is_none());
+        assert!(record.gps_lat.is_none());
+        assert!(record.gps_lon.is_none());
+        assert!(record.width.is_none());
+        assert!(record.height.is_none());
     }
 
     #[test]
