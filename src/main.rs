@@ -1,6 +1,7 @@
 mod hasher;
 mod output;
 mod scanner;
+mod sqlite_output;
 mod types;
 
 use clap::Parser;
@@ -14,9 +15,13 @@ struct Args {
     /// Directory to scan recursively
     directory: PathBuf,
 
-    /// JSONL output file (appended)
-    #[arg(long, default_value = "/tmp/hashes")]
+    /// JSONL output file (appended); cannot be used with --output-sqlite
+    #[arg(long, default_value = "/tmp/hashes", conflicts_with = "output_sqlite")]
     output: PathBuf,
+
+    /// SQLite output file (upserted by path); cannot be used with --output
+    #[arg(long)]
+    output_sqlite: Option<PathBuf>,
 
     /// Also find visually similar images via perceptual hash
     #[arg(long)]
@@ -77,14 +82,25 @@ fn main() {
         records
     };
 
-    if let Err(e) = output::append_records(&records, &args.output) {
-        eprintln!("Error writing to {:?}: {}", args.output, e);
-        process::exit(1);
+    if let Some(ref db_path) = args.output_sqlite {
+        if let Err(e) = sqlite_output::write_records(&records, db_path) {
+            eprintln!("Error writing to {:?}: {}", db_path, e);
+            process::exit(1);
+        }
+        if !args.silent {
+            eprintln!("Wrote {} record(s) to {:?}", records.len(), db_path);
+        }
+    } else {
+        if let Err(e) = output::append_records(&records, &args.output) {
+            eprintln!("Error writing to {:?}: {}", args.output, e);
+            process::exit(1);
+        }
+        if !args.silent {
+            eprintln!("Wrote {} record(s) to {:?}", records.len(), args.output);
+        }
     }
 
     if !args.silent {
-        eprintln!("Wrote {} record(s) to {:?}", records.len(), args.output);
-
         let groups = output::find_duplicate_groups(&records);
         if groups.is_empty() {
             eprintln!("No exact duplicates found.");

@@ -122,3 +122,87 @@ fn without_exif_flag_exif_fields_absent_from_output() {
     assert!(record.get("width").is_none());
     assert!(record.get("height").is_none());
 }
+
+#[test]
+fn sqlite_output_writes_records_to_db() {
+    let scan_dir = tempdir().unwrap();
+    let out_dir = tempdir().unwrap();
+    let db_path = out_dir.path().join("hashes.db");
+
+    fs::write(scan_dir.path().join("a.jpg"), b"content alpha").unwrap();
+    fs::write(scan_dir.path().join("b.jpg"), b"content beta").unwrap();
+
+    let status = Command::new(dupe_bin())
+        .arg("--silent")
+        .arg("--output-sqlite")
+        .arg(&db_path)
+        .arg(scan_dir.path())
+        .status()
+        .expect("failed to run dupe");
+
+    assert!(status.success());
+    assert!(db_path.exists());
+
+    // Verify rows via rusqlite
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 2);
+}
+
+#[test]
+fn sqlite_output_upserts_on_repeated_run() {
+    let scan_dir = tempdir().unwrap();
+    let out_dir = tempdir().unwrap();
+    let db_path = out_dir.path().join("hashes.db");
+
+    fs::write(scan_dir.path().join("photo.jpg"), b"original content").unwrap();
+
+    // First run
+    Command::new(dupe_bin())
+        .arg("--silent")
+        .arg("--output-sqlite")
+        .arg(&db_path)
+        .arg(scan_dir.path())
+        .status()
+        .expect("failed to run dupe")
+        .success()
+        .then_some(())
+        .expect("first run failed");
+
+    // Second run with same folder — should overwrite, not append
+    Command::new(dupe_bin())
+        .arg("--silent")
+        .arg("--output-sqlite")
+        .arg(&db_path)
+        .arg(scan_dir.path())
+        .status()
+        .expect("failed to run dupe")
+        .success()
+        .then_some(())
+        .expect("second run failed");
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 1, "upsert should not duplicate records");
+}
+
+#[test]
+fn sqlite_and_output_flags_conflict() {
+    let scan_dir = tempdir().unwrap();
+    let out_dir = tempdir().unwrap();
+
+    let status = Command::new(dupe_bin())
+        .arg("--output")
+        .arg(out_dir.path().join("hashes"))
+        .arg("--output-sqlite")
+        .arg(out_dir.path().join("hashes.db"))
+        .arg(scan_dir.path())
+        .status()
+        .expect("failed to run dupe");
+
+    assert!(!status.success(), "should fail when both --output and --output-sqlite are given");
+}
