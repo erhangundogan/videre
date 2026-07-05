@@ -145,6 +145,26 @@ fn query_groups(conn: &Connection) -> Vec<Vec<FileRow>> {
     groups
 }
 
+fn image_cell(path: &str, ext: &str) -> String {
+    match ext {
+        "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "heic" => {
+            // file:// + absolute path (path already starts with /)
+            let url = format!("file://{}", path);
+            let url_esc = esc(&url);
+            let js_url = url.replace('\'', "\\'");
+            format!(
+                "<a href=\"{url_esc}\" target=\"_blank\" onclick=\"openLb(event,'{js_url}')\">",
+            ) + &format!(
+                "<img src=\"{url_esc}\" class=\"thumb\" loading=\"lazy\" \
+                 onerror=\"this.parentElement.innerHTML='<span class=\\'no-prev\\'>no preview</span>'\"></a>"
+            )
+        }
+        "tiff" => "<span class=\"no-prev\">TIFF</span>".into(),
+        "mov" => "<span class=\"no-prev\">video</span>".into(),
+        _ => "<span class=\"no-prev\">&mdash;</span>".into(),
+    }
+}
+
 fn generate_html(db_path: &str, stats: &Stats, groups: &[Vec<FileRow>]) -> String {
     use chrono::Utc;
     let now = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
@@ -211,7 +231,19 @@ fn generate_html(db_path: &str, stats: &Stats, groups: &[Vec<FileRow>]) -> Strin
         ".gps a{color:#3b82f6;text-decoration:none;font-size:12px}\n",
         ".gps a:hover{text-decoration:underline}\n",
         ".no-dupes{padding:48px;text-align:center;color:#71717a}\n",
+        "td.preview{width:130px;text-align:center;vertical-align:middle;padding:6px 10px}\n",
+        "th.preview-th{width:130px}\n",
+        ".thumb{max-width:120px;max-height:120px;object-fit:contain;border-radius:6px;",
+        "display:block;margin:0 auto;cursor:zoom-in;transition:transform .15s}\n",
+        ".thumb:hover{transform:scale(1.05)}\n",
+        ".no-prev{color:#a1a1aa;font-size:11px;display:block;text-align:center}\n",
+        ".lightbox{display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);",
+        "z-index:1000;align-items:center;justify-content:center;cursor:zoom-out}\n",
+        ".lightbox.on{display:flex}\n",
+        ".lightbox img{max-width:90vw;max-height:90vh;object-fit:contain;border-radius:8px;",
+        "box-shadow:0 8px 40px rgba(0,0,0,.6)}\n",
         "</style>\n</head>\n<body>\n",
+        "<div class=\"lightbox\" id=\"lb\" onclick=\"closeLb()\"><img id=\"lb-img\" src=\"\" alt=\"\"></div>\n",
     ));
 
     // Header
@@ -266,6 +298,7 @@ fn generate_html(db_path: &str, stats: &Stats, groups: &[Vec<FileRow>]) -> Strin
               <div class=\"group-body\">\
                 <table>\
                   <thead><tr>\
+                    <th class=\"preview-th\">Preview</th>\
                     <th>Status</th><th>Filename</th><th>Path</th>\
                     <th>Size</th><th>Modified</th><th>EXIF date</th>\
                     <th>GPS</th><th>Dimensions</th>\
@@ -318,8 +351,15 @@ fn generate_html(db_path: &str, stats: &Stats, groups: &[Vec<FileRow>]) -> Strin
 
             let js_path = file.path.replace('\\', "\\\\").replace('\'', "\\'");
 
+            let ext = std::path::Path::new(&file.path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+
             out.push_str(&format!(
                 "<tr class=\"{row_class}\">\
+                  <td class=\"preview\">{preview}</td>\
                   <td class=\"badge\"><span class=\"{badge_class}\">{badge_text}</span></td>\
                   <td class=\"filename\" title=\"{fname_esc}\">{fname_esc}</td>\
                   <td class=\"path-cell\"><span class=\"path-text\">{path_esc}</span>\
@@ -331,6 +371,7 @@ fn generate_html(db_path: &str, stats: &Stats, groups: &[Vec<FileRow>]) -> Strin
                   <td class=\"dim\">{dims}</td>\
                 </tr>\n",
                 row_class = row_class,
+                preview = image_cell(&file.path, &ext),
                 badge_class = badge_class,
                 badge_text = badge_text,
                 fname_esc = esc(&filename),
@@ -362,6 +403,16 @@ fn generate_html(db_path: &str, stats: &Stats, groups: &[Vec<FileRow>]) -> Strin
         "    document.body.removeChild(t);\n",
         "  });\n",
         "}\n",
+        "function openLb(e,url){\n",
+        "  e.preventDefault();\n",
+        "  document.getElementById('lb-img').src=url;\n",
+        "  document.getElementById('lb').classList.add('on');\n",
+        "}\n",
+        "function closeLb(){\n",
+        "  document.getElementById('lb').classList.remove('on');\n",
+        "  document.getElementById('lb-img').src='';\n",
+        "}\n",
+        "document.addEventListener('keydown',function(e){if(e.key==='Escape')closeLb();});\n",
         "</script>\n</body>\n</html>",
     ));
 
