@@ -7,6 +7,10 @@ edition = "2021"
 name = "dupe"
 path = "src/main.rs"
 
+[[bin]]
+name = "dupe-report"
+path = "src/bin/dupe_report.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 blake3 = "1"
