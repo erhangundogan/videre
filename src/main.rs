@@ -27,7 +27,7 @@ struct Args {
     #[arg(long)]
     similar: bool,
 
-    /// Suppress console output
+    /// Suppress progress output on stderr (duplicate paths are always written to stdout)
     #[arg(long)]
     silent: bool,
 }
@@ -95,20 +95,28 @@ fn main() {
         }
     }
 
+    // Exact duplicates: print REMOVE candidates to stdout (one path per line)
+    let groups = output::find_duplicate_groups(&records);
     if !args.silent {
-        let groups = output::find_duplicate_groups(&records);
         if groups.is_empty() {
             eprintln!("No exact duplicates found.");
         } else {
-            output::print_duplicate_groups(&groups);
+            eprintln!("{} duplicate group(s), {} file(s) to remove.",
+                groups.len(),
+                groups.iter().map(|g| g.files.len() - 1).sum::<usize>()
+            );
         }
+    }
+    output::print_losers(&groups);
 
-        if args.similar {
-            let similar = output::find_similar_groups(&records, 10);
+    // Similar groups: informational only — review via dupe-report before acting
+    if args.similar {
+        let similar = output::find_similar_groups(&records, 10);
+        if !args.silent {
             if similar.is_empty() {
                 eprintln!("No visually similar images found.");
             } else {
-                output::print_similar_groups(&similar);
+                eprintln!("{} visually similar group(s) found — review with dupe-report before deleting.", similar.len());
             }
         }
     }
