@@ -15,7 +15,6 @@ Options:
   --output <path>          JSONL output file [default: /tmp/hashes]; mutually exclusive with --output-sqlite
   --output-sqlite <path>   SQLite output file; upserts by path; mutually exclusive with --output
   --similar                Also find visually similar images (perceptual hash)
-  --exif                   Extract EXIF metadata (DateTimeOriginal, GPS, dimensions) for jpg/jpeg/tiff/heic
   --silent                 Suppress console output
 ```
 
@@ -31,8 +30,7 @@ Options:
 cargo build --release
 ./target/release/dupe /path/to/photos
 ./target/release/dupe --similar --output ~/dupes.jsonl /path/to/photos
-./target/release/dupe --exif --output ~/dupes.jsonl /path/to/photos
-./target/release/dupe --exif --output-sqlite ~/photos.db /path/to/photos
+./target/release/dupe --output-sqlite ~/photos.db /path/to/photos
 ```
 
 ## Project structure
@@ -56,7 +54,7 @@ src/
 - `serde_json` — JSONL output
 - `chrono` — date formatting
 - `image` + `img_hash` — perceptual hashing for `--similar`
-- `kamadak-exif` — EXIF metadata extraction for `--exif`
+- `kamadak-exif` — EXIF metadata extraction (always on for jpg/jpeg/tiff/heic)
 - `rusqlite` (bundled) — SQLite output for `--output-sqlite`
 
 ## SQLite schema
@@ -82,6 +80,8 @@ Re-scanning the same folder with the same SQLite file upserts (overwrites) exist
 
 ## EXIF fields
 
+EXIF extraction runs automatically for `jpg`, `jpeg`, `tiff`, and `heic` files. Fields are `null`/absent when the file has no EXIF data.
+
 | Field | Type | Notes |
 |-------|------|-------|
 | `exif_date` | string | `DateTimeOriginal` formatted as `YYYY-MM-DDTHH:MM:SS`, camera-local time, no timezone |
@@ -89,8 +89,6 @@ Re-scanning the same folder with the same SQLite file upserts (overwrites) exist
 | `gps_lon` | float | Decimal degrees, negative = West |
 | `width` | integer | From `PixelXDimension` |
 | `height` | integer | From `PixelYDimension` |
-
-Only populated when `--exif` is passed and file extension is `jpg`, `jpeg`, `tiff`, or `heic`.
 
 ## Design spec
 

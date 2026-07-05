@@ -27,10 +27,6 @@ struct Args {
     #[arg(long)]
     similar: bool,
 
-    /// Extract EXIF metadata (DateTimeOriginal, GPS, dimensions)
-    #[arg(long)]
-    exif: bool,
-
     /// Suppress console output
     #[arg(long)]
     silent: bool,
@@ -55,11 +51,10 @@ fn main() {
     }
 
     let silent = args.silent;
-    let exif = args.exif;
     let records: Vec<_> = paths
         .par_iter()
         .filter_map(|path| {
-            hasher::hash_file(path, exif)
+            hasher::hash_file(path)
                 .map_err(|e| {
                     if !silent {
                         eprintln!("Warning: skipping {:?}: {}", path, e);

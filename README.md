@@ -8,7 +8,7 @@ Scans directories recursively, hashes every image with BLAKE3, and reports dupli
 
 - **Exact duplicates** — BLAKE3 hash, byte-for-byte identical files
 - **Visual duplicates** — dHash perceptual hashing via `--similar` flag (finds re-saves, resized copies)
-- **EXIF metadata** — `--exif` flag extracts shoot date, GPS coordinates, and dimensions from JPEG/HEIC/TIFF
+- **EXIF metadata** — automatically extracted for JPEG/HEIC/TIFF (shoot date, GPS coordinates, dimensions)
 - **Parallel processing** — rayon saturates all CPU cores; handles tens of thousands of files
 - **JSONL output** — one JSON object per file, append-mode, ready for `jq` or database ingestion
 - **SQLite output** — `--output-sqlite` writes all 12 fields to a local SQLite database; re-scanning upserts by path
@@ -41,7 +41,6 @@ dupe [OPTIONS] <directory>
 | `--output <path>` | JSONL output file (appended on each run) | `/tmp/hashes` |
 | `--output-sqlite <path>` | SQLite output file (upserts by path on each run) | — |
 | `--similar` | Also find visually similar images via perceptual hash | off |
-| `--exif` | Extract EXIF metadata (DateTimeOriginal, GPS coordinates, image dimensions) | off |
 | `--silent` | Suppress all console output | off |
 
 `--output` and `--output-sqlite` are mutually exclusive — passing both exits with an error.
@@ -58,17 +57,11 @@ dupe --output ~/dupes.jsonl ~/Photos
 # Write results to SQLite (creates or updates hashes.db)
 dupe --output-sqlite ~/hashes.db ~/Photos
 
-# Extract EXIF metadata into SQLite
-dupe --exif --output-sqlite ~/hashes.db ~/Photos
-
 # Also find visually similar images
 dupe --similar --output-sqlite ~/hashes.db ~/Photos
 
 # Silent mode — output only, no console output
 dupe --silent --output ~/dupes.jsonl ~/Photos
-
-# Combine all flags
-dupe --exif --similar --output ~/dupes.jsonl ~/Photos
 ```
 
 ## Output
@@ -92,14 +85,8 @@ Files within each group are sorted by modification date ascending. The oldest fi
 
 ### JSONL file
 
-One JSON object per line, appended on every run:
+One JSON object per line, appended on every run. EXIF fields (`exif_date`, `gps_lat`, `gps_lon`, `width`, `height`) are present for JPEG/TIFF/HEIC files that contain EXIF data, and absent for all others.
 
-Without `--exif`:
-```json
-{"path":"/Photos/2019/vacation/IMG_001.jpg","hash":"a3f2c1d8...","size_bytes":3145728,"created_at":"2019-08-12T14:22:00+00:00","modified_at":"2019-08-12T14:22:00+00:00","ext":"jpg"}
-```
-
-With `--exif`:
 ```json
 {"path":"/Photos/2019/vacation/IMG_001.jpg","hash":"a3f2c1d8...","size_bytes":3145728,"created_at":"2019-08-12T14:22:00+00:00","modified_at":"2019-08-12T14:22:00+00:00","ext":"jpg","exif_date":"2019-08-12T14:22:00","gps_lat":41.015,"gps_lon":28.979,"width":4032,"height":3024}
 ```
@@ -115,11 +102,11 @@ With `--exif`:
 | `modified_at` | string \| null | ISO 8601 modification time |
 | `ext` | string | Lowercase file extension |
 | `phash` | number | dHash value (only present with `--similar`) |
-| `exif_date` | string \| null | Camera-local shoot date from EXIF `DateTimeOriginal`, no timezone (only with `--exif`) |
-| `gps_lat` | number \| null | GPS latitude in decimal degrees, negative = South (only with `--exif`) |
-| `gps_lon` | number \| null | GPS longitude in decimal degrees, negative = West (only with `--exif`) |
-| `width` | number \| null | Image width in pixels from EXIF (only with `--exif`) |
-| `height` | number \| null | Image height in pixels from EXIF (only with `--exif`) |
+| `exif_date` | string \| null | Camera-local shoot date from EXIF `DateTimeOriginal`, no timezone (jpg/jpeg/tiff/heic only) |
+| `gps_lat` | number \| null | GPS latitude in decimal degrees, negative = South (jpg/jpeg/tiff/heic only) |
+| `gps_lon` | number \| null | GPS longitude in decimal degrees, negative = West (jpg/jpeg/tiff/heic only) |
+| `width` | number \| null | Image width in pixels from EXIF (jpg/jpeg/tiff/heic only) |
+| `height` | number \| null | Image height in pixels from EXIF (jpg/jpeg/tiff/heic only) |
 
 ### SQLite database
 
@@ -152,18 +139,6 @@ cat /tmp/hashes | jq -r 'select(.hash == "a3f2c1d8...") | .path'
 
 # List all duplicate hashes (appearing more than once)
 cat /tmp/hashes | jq -r '.hash' | sort | uniq -d
-
-# Find largest duplicate files
-cat /tmp/hashes | jq -s 'group_by(.hash) | map(select(length > 1)) | flatten | sort_by(-.size_bytes)'
-
-# Count total records
-jq -s 'length' ~/hashes.jsonl
-
-# Show all files that are duplicates (with their paths and dates)
-jq -r '.hash' ~/hashes.jsonl | sort | uniq -d | while read h; do
-  jq -r --arg h "$h" 'select(.hash == $h) | "\(.modified_at)  \(.path)"' ~/hashes.jsonl | sort
-  echo "---"
-done
 
 # Show just the "original" (oldest) from each duplicate group
 jq -s 'group_by(.hash) | map(select(length > 1)) | map(sort_by(.modified_at)[0].path) | .[]' ~/hashes.jsonl

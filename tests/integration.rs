@@ -58,12 +58,11 @@ fn missing_directory_exits_nonzero() {
 }
 
 #[test]
-fn exif_flag_populates_exif_fields_in_output() {
+fn exif_fields_populated_for_jpeg_with_exif() {
     let scan_dir = tempdir().unwrap();
     let out_dir = tempdir().unwrap();
     let output = out_dir.path().join("hashes");
 
-    // Copy the fixture JPEG into the scan directory
     fs::copy(
         "tests/fixtures/sample_with_exif.jpg",
         scan_dir.path().join("photo.jpg"),
@@ -72,7 +71,6 @@ fn exif_flag_populates_exif_fields_in_output() {
 
     let status = Command::new(dupe_bin())
         .arg("--silent")
-        .arg("--exif")
         .arg("--output")
         .arg(&output)
         .arg(scan_dir.path())
@@ -89,38 +87,6 @@ fn exif_flag_populates_exif_fields_in_output() {
     assert!(record["gps_lon"].as_f64().is_some());
     assert_eq!(record["width"], 4032);
     assert_eq!(record["height"], 3024);
-}
-
-#[test]
-fn without_exif_flag_exif_fields_absent_from_output() {
-    let scan_dir = tempdir().unwrap();
-    let out_dir = tempdir().unwrap();
-    let output = out_dir.path().join("hashes");
-
-    fs::copy(
-        "tests/fixtures/sample_with_exif.jpg",
-        scan_dir.path().join("photo.jpg"),
-    )
-    .unwrap();
-
-    let status = Command::new(dupe_bin())
-        .arg("--silent")
-        .arg("--output")
-        .arg(&output)
-        .arg(scan_dir.path())
-        .status()
-        .expect("failed to run dupe");
-
-    assert!(status.success());
-
-    let content = fs::read_to_string(&output).unwrap();
-    let record: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
-
-    assert!(record.get("exif_date").is_none());
-    assert!(record.get("gps_lat").is_none());
-    assert!(record.get("gps_lon").is_none());
-    assert!(record.get("width").is_none());
-    assert!(record.get("height").is_none());
 }
 
 #[test]
@@ -143,7 +109,6 @@ fn sqlite_output_writes_records_to_db() {
     assert!(status.success());
     assert!(db_path.exists());
 
-    // Verify rows via rusqlite
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
