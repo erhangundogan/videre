@@ -4,7 +4,7 @@ A fast Rust CLI tool for finding duplicate images across large file collections.
 
 ## What it does
 
-Scans a directory recursively, hashes every image file (BLAKE3), and outputs results to JSONL or SQLite with full metadata per file. Groups duplicates and prints them to console ranked by date (oldest = likely original). Designed as the ingestion phase of a pipeline — output can be loaded into PostgreSQL or Redis for visual analysis.
+Scans a directory recursively, hashes every image file (BLAKE3), and writes REMOVE candidates to stdout one per line — ready to pipe into `trash` or `rm`. Results are also saved to JSONL or SQLite for downstream analysis. A companion `dupe-report` binary reads the SQLite database and generates an HTML review page.
 
 ## Usage
 
@@ -15,23 +15,31 @@ Options:
   --output <path>          JSONL output file [default: /tmp/hashes]; mutually exclusive with --output-sqlite
   --output-sqlite <path>   SQLite output file; upserts by path; mutually exclusive with --output
   --similar                Also find visually similar images (perceptual hash)
-  --silent                 Suppress console output
+  --silent                 Suppress progress output on stderr (stdout paths are always written)
 ```
 
 `--output` and `--output-sqlite` cannot be used together — passing both is an error.
 
-## Supported file types
+## Output behavior
 
-`.jpg` `.jpeg` `.png` `.gif` `.webp` `.bmp` `.tiff` `.mov` `.heic`
+- **stdout** — REMOVE candidate paths, one per line (pipe-ready)
+- **stderr** — scan progress and summary (suppressed by `--silent`)
+
+KEEP candidate within each group = oldest `exif_date`; falls back to `modified_at` if absent.
 
 ## Build & run
 
 ```bash
 cargo build --release
-./target/release/dupe /path/to/photos
-./target/release/dupe --similar --output ~/dupes.jsonl /path/to/photos
-./target/release/dupe --output-sqlite ~/photos.db /path/to/photos
+./target/release/dupe ~/Photos                                  # preview removals
+./target/release/dupe ~/Photos | xargs trash                    # delete duplicates
+./target/release/dupe --output-sqlite ~/photos.db ~/Photos      # scan to SQLite
+./target/release/dupe-report ~/photos.db                        # generate HTML report
 ```
+
+## Supported file types
+
+`.jpg` `.jpeg` `.png` `.gif` `.webp` `.bmp` `.tiff` `.mov` `.heic`
 
 ## Project structure
 
@@ -39,10 +47,14 @@ cargo build --release
 src/
   main.rs          CLI entry, pipeline orchestration
   scanner.rs       Recursive file discovery, extension filter
-  hasher.rs        BLAKE3 + perceptual hash + EXIF extraction, metadata
-  output.rs        JSONL append, console duplicate report
+  hasher.rs        BLAKE3 + dHash perceptual hash + EXIF extraction
+  output.rs        JSONL append, duplicate grouping, loser path output
   sqlite_output.rs SQLite upsert writer
   types.rs         FileRecord, DuplicateGroup structs
+  bin/
+    dupe_report.rs HTML report generator (reads SQLite db)
+tests/
+  integration.rs   End-to-end tests against both binaries
 ```
 
 ## Key crates
@@ -55,7 +67,7 @@ src/
 - `chrono` — date formatting
 - `image` + `img_hash` — perceptual hashing for `--similar`
 - `kamadak-exif` — EXIF metadata extraction (always on for jpg/jpeg/tiff/heic)
-- `rusqlite` (bundled) — SQLite output for `--output-sqlite`
+- `rusqlite` (bundled) — SQLite output for `--output-sqlite` and `dupe-report`
 
 ## SQLite schema
 
@@ -89,6 +101,17 @@ EXIF extraction runs automatically for `jpg`, `jpeg`, `tiff`, and `heic` files. 
 | `gps_lon` | float | Decimal degrees, negative = West |
 | `width` | integer | From `PixelXDimension` |
 | `height` | integer | From `PixelYDimension` |
+
+## dupe-report
+
+Reads `file_hashes` from a SQLite database and writes a self-contained HTML file.
+
+```bash
+dupe-report <db>           # output: <db>_report.html
+dupe-report <db> -o <out>  # explicit output path
+```
+
+Report includes: stats header (files, groups, wasted space), duplicate groups sorted by wasted space, KEEP/REMOVE badges, EXIF date, clickable GPS links, copy-path buttons. Groups are collapsible.
 
 ## Design spec
 

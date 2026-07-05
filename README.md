@@ -2,7 +2,7 @@
 
 A fast CLI tool for finding duplicate images across large file collections.
 
-Scans directories recursively, hashes every image with BLAKE3, and reports duplicate groups ranked by file date — so you can identify which copy is the original. Designed as the ingestion phase of a data pipeline: results are written as JSONL or SQLite for downstream loading into PostgreSQL or Redis.
+Scans directories recursively, hashes every image with BLAKE3, and writes duplicate file paths to stdout — one per line, ready to pipe into `trash` or `rm`. Results are also saved as JSONL or SQLite for downstream analysis.
 
 ## Features
 
@@ -10,9 +10,10 @@ Scans directories recursively, hashes every image with BLAKE3, and reports dupli
 - **Visual duplicates** — dHash perceptual hashing via `--similar` flag (finds re-saves, resized copies)
 - **EXIF metadata** — automatically extracted for JPEG/HEIC/TIFF (shoot date, GPS coordinates, dimensions)
 - **Parallel processing** — rayon saturates all CPU cores; handles tens of thousands of files
+- **Pipe-friendly output** — REMOVE candidates printed to stdout one per line; progress on stderr
 - **JSONL output** — one JSON object per file, append-mode, ready for `jq` or database ingestion
 - **SQLite output** — `--output-sqlite` writes all 12 fields to a local SQLite database; re-scanning upserts by path
-- **Date-aware reporting** — duplicate groups sorted oldest-first to surface likely originals
+- **HTML report** — `dupe-report` reads the SQLite database and generates a self-contained HTML review page
 
 ## Supported File Types
 
@@ -26,7 +27,7 @@ cd dupe
 cargo build --release
 ```
 
-Binary is at `./target/release/dupe`.
+Binaries are at `./target/release/dupe` and `./target/release/dupe-report`.
 
 ## Usage
 
@@ -41,47 +42,61 @@ dupe [OPTIONS] <directory>
 | `--output <path>` | JSONL output file (appended on each run) | `/tmp/hashes` |
 | `--output-sqlite <path>` | SQLite output file (upserts by path on each run) | — |
 | `--similar` | Also find visually similar images via perceptual hash | off |
-| `--silent` | Suppress all console output | off |
+| `--silent` | Suppress progress output on stderr (stdout paths are always written) | off |
 
 `--output` and `--output-sqlite` are mutually exclusive — passing both exits with an error.
 
 ### Examples
 
 ```bash
-# Find exact duplicates in a photo library
+# Preview which files would be removed
 dupe ~/Photos
 
-# Write results to JSONL
-dupe --output ~/dupes.jsonl ~/Photos
+# Delete duplicates
+dupe ~/Photos | xargs trash
 
-# Write results to SQLite (creates or updates hashes.db)
-dupe --output-sqlite ~/hashes.db ~/Photos
+# Silent — no stderr noise, just the paths
+dupe --silent ~/Photos | xargs trash
 
-# Also find visually similar images
-dupe --similar --output-sqlite ~/hashes.db ~/Photos
+# Write results to SQLite, then open an HTML review report
+dupe --output-sqlite ~/photos.db ~/Photos
+dupe-report ~/photos.db
 
-# Silent mode — output only, no console output
-dupe --silent --output ~/dupes.jsonl ~/Photos
+# Also find visually similar images (review report before deleting)
+dupe --similar --output-sqlite ~/photos.db ~/Photos
+dupe-report ~/photos.db -o ~/Desktop/report.html
 ```
 
 ## Output
 
-### Console (default)
+### stdout — duplicate paths (pipe-ready)
+
+REMOVE candidates are written to stdout, one absolute path per line. The KEEP candidate (oldest by `exif_date`, falling back to `modified_at`) is not printed.
+
+```
+/Photos/backup/IMG_001.jpg
+/Photos/copy2/photo.jpg
+/Photos/2023/IMG_001_copy.jpg
+```
+
+Pipe directly into any deletion tool:
+
+```bash
+dupe ~/Photos | xargs trash
+dupe ~/Photos | xargs -I{} mv {} ~/Duplicates/
+dupe --silent ~/Photos > to_delete.txt
+```
+
+### stderr — progress summary
 
 ```
 Scanning "/Users/erhan/Photos"...
 Found 12483 file(s) to process
 Wrote 12483 record(s) to "/tmp/hashes"
-
-Found 3 duplicate group(s):
-
-Group 1 (hash: a3f2c1d8...):
-  [ORIGINAL?] /Photos/2019/vacation/IMG_001.jpg  modified: 2019-08-12T14:22:00+00:00
-              /Photos/backup/IMG_001.jpg          modified: 2022-03-01T09:15:00+00:00
-              /Photos/copy2/photo.jpg             modified: 2023-11-10T18:44:00+00:00
+3 duplicate group(s), 7 file(s) to remove.
 ```
 
-Files within each group are sorted by modification date ascending. The oldest file is flagged as `[ORIGINAL?]`.
+Suppressed with `--silent`.
 
 ### JSONL file
 
@@ -129,49 +144,44 @@ CREATE TABLE file_hashes (
 );
 ```
 
+### HTML report (`dupe-report`)
+
+Reads the SQLite database and generates a self-contained HTML file for visual review before deletion.
+
+```bash
+dupe-report ~/photos.db                  # writes photos_report.html next to the db
+dupe-report ~/photos.db -o report.html   # explicit output path
+```
+
+The report shows: stats summary, duplicate groups sorted by wasted space, KEEP/REMOVE badges per file, EXIF date, clickable GPS map links, copy-path buttons.
+
 ## Pipeline Usage
 
 ### Query with jq (JSONL)
 
 ```bash
-# Find all files with a given hash
-cat /tmp/hashes | jq -r 'select(.hash == "a3f2c1d8...") | .path'
-
-# List all duplicate hashes (appearing more than once)
-cat /tmp/hashes | jq -r '.hash' | sort | uniq -d
-
-# Show just the "original" (oldest) from each duplicate group
-jq -s 'group_by(.hash) | map(select(length > 1)) | map(sort_by(.modified_at)[0].path) | .[]' ~/hashes.jsonl
-
 # Show the redundant copies (all but the oldest in each group)
 jq -s 'group_by(.hash) | map(select(length > 1)) | map(sort_by(.modified_at)[1:]) | flatten | .[] | .path' ~/hashes.jsonl
 
 # Total wasted space in MB
 jq -s 'group_by(.hash) | map(select(length > 1)) | map(.[0].size_bytes * (length - 1)) | add / 1048576' ~/hashes.jsonl
+
+# Filter by file type
+jq 'select(.ext == "heic")' ~/hashes.jsonl
 ```
 
 ### Query with SQLite
 
 ```bash
-# Open the database
-sqlite3 ~/hashes.db
+sqlite3 ~/photos.db
 
-# Count all records
-SELECT COUNT(*) FROM file_hashes;
-
-# Find duplicate hashes
 SELECT hash, COUNT(*) AS n FROM file_hashes GROUP BY hash HAVING n > 1;
 
-# Show all files in each duplicate group, oldest first
-SELECT hash, path, modified_at
+SELECT hash, path, exif_date, modified_at
 FROM file_hashes
 WHERE hash IN (SELECT hash FROM file_hashes GROUP BY hash HAVING COUNT(*) > 1)
-ORDER BY hash, modified_at;
+ORDER BY hash, COALESCE(exif_date, modified_at);
 
-# Find files with EXIF dates
-SELECT path, exif_date, gps_lat, gps_lon FROM file_hashes WHERE exif_date IS NOT NULL;
-
-# Total wasted space from duplicates (bytes)
 SELECT SUM(size_bytes * (cnt - 1)) AS wasted_bytes
 FROM (SELECT hash, size_bytes, COUNT(*) AS cnt FROM file_hashes GROUP BY hash HAVING cnt > 1);
 ```
@@ -205,7 +215,7 @@ cat /tmp/hashes | \
 
 ### Exact duplicates (default)
 
-Files are hashed with [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) using a 64 KB streaming buffer. Files with identical hashes are exact byte-for-byte copies regardless of filename or location.
+Files are hashed with [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) using a 64 KB streaming buffer. Files with identical hashes are exact byte-for-byte copies regardless of filename or location. The KEEP candidate within each group is the file with the oldest `exif_date` (camera-captured time); if absent, oldest `modified_at` is used.
 
 ### Visual duplicates (`--similar`)
 
@@ -215,7 +225,7 @@ Uses [dHash](http://www.hackerfactor.com/blog/index.php?/archives/529-Kind-of-Li
 2. For each row, compare 8 adjacent pixel pairs → 1 bit per pair
 3. Result: 64-bit fingerprint
 
-Two images are considered similar when their Hamming distance is ≤ 10 (out of 64 bits). This finds resized copies, re-compressed JPEGs, and minor edits. `.mov` and `.heic` files are excluded from perceptual hashing (exact hash still runs).
+Two images are considered similar when their Hamming distance is ≤ 10 (out of 64 bits). This finds resized copies, re-compressed JPEGs, and minor edits. `.mov` and `.heic` files are excluded from perceptual hashing (exact hash still runs). Similar groups are reported on stderr only — review with `dupe-report` before deleting.
 
 ## Project Structure
 
@@ -224,9 +234,11 @@ src/
   main.rs          CLI entry point, argument parsing, pipeline orchestration
   scanner.rs       Recursive file discovery, extension filtering
   hasher.rs        BLAKE3 hashing, dHash perceptual hashing, EXIF extraction
-  output.rs        JSONL append writer, duplicate grouping, console report
+  output.rs        JSONL append writer, duplicate grouping, loser path output
   sqlite_output.rs SQLite upsert writer
   types.rs         FileRecord, DuplicateGroup structs
+  bin/
+    dupe_report.rs HTML report generator (reads SQLite, writes self-contained HTML)
 tests/
   integration.rs   End-to-end tests against the real binary
 ```
