@@ -109,14 +109,14 @@ fn main() {
     }
     output::print_losers(&groups);
 
-    // Similar groups: informational only — review via dupe-report before acting
+    // Similar groups: informational only: review via dupe-report before acting
     if args.similar {
         let similar = output::find_similar_groups(&records, 10);
         if !args.silent {
             if similar.is_empty() {
                 eprintln!("No visually similar images found.");
             } else {
-                eprintln!("{} visually similar group(s) found — review with dupe-report before deleting.", similar.len());
+                eprintln!("{} visually similar group(s) found: review with dupe-report before deleting.", similar.len());
             }
         }
     }

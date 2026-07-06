@@ -183,12 +183,12 @@ fn query_groups(conn: &Connection) -> Vec<Vec<FileRow>> {
 
     let mut groups: Vec<Vec<FileRow>> = map.into_values().collect();
 
-    // Within each group: oldest date first — exif_date wins; falls back to min(created_at, modified_at)
+    // Within each group: oldest date first: exif_date wins; falls back to min(created_at, modified_at)
     for group in &mut groups {
         group.sort_by(|a, b| best_date(a).cmp(best_date(b)));
     }
 
-    // Sort groups by wasted space descending — biggest waste first
+    // Sort groups by wasted space descending: biggest waste first
     groups.sort_by(|a, b| {
         let wa = a[0].size_bytes * (a.len() as i64 - 1);
         let wb = b[0].size_bytes * (b.len() as i64 - 1);

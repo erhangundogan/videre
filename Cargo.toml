@@ -11,6 +11,10 @@ path = "src/main.rs"
 name = "dupe-report"
 path = "src/bin/dupe_report.rs"
 
+[[bin]]
+name = "dupe-fix-dates"
+path = "src/bin/dupe_fix_dates.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 blake3 = "1"
@@ -21,6 +25,7 @@ serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
 kamadak-exif = "0.5"
+filetime = "0.2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 [dev-dependencies]

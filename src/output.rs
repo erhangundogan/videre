@@ -26,7 +26,7 @@ pub fn find_duplicate_groups(records: &[FileRecord]) -> Vec<DuplicateGroup> {
         .into_iter()
         .filter(|(_, files)| files.len() > 1)
         .map(|(hash, mut files)| {
-            // Oldest date first — exif_date wins; falls back to min(created_at, modified_at)
+            // Oldest date first: exif_date wins; falls back to min(created_at, modified_at)
             files.sort_by(|a, b| best_date(a).cmp(best_date(b)));
             DuplicateGroup { hash, files }
         })
@@ -35,7 +35,7 @@ pub fn find_duplicate_groups(records: &[FileRecord]) -> Vec<DuplicateGroup> {
     groups
 }
 
-/// Prints REMOVE candidates to stdout, one path per line — ready for piping.
+/// Prints REMOVE candidates to stdout, one path per line: ready for piping.
 /// The first file in each group (oldest date = likely original) is kept; the rest are printed.
 pub fn print_losers(groups: &[DuplicateGroup]) {
     for group in groups {
@@ -173,7 +173,7 @@ mod tests {
     fn find_duplicate_groups_prefers_exif_date_for_sort() {
         let mut a = make_record("/a.jpg", "h");
         let mut b = make_record("/b.jpg", "h");
-        // a has newer modified_at but older exif_date — exif wins, a should be KEEP
+        // a has newer modified_at but older exif_date: exif wins, a should be KEEP
         a.modified_at = Some("2024-01-01T00:00:00+00:00".to_string());
         a.exif_date = Some("2019-06-01T10:00:00".to_string());
         b.modified_at = Some("2020-01-01T00:00:00+00:00".to_string());
