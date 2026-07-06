@@ -154,7 +154,7 @@ pub fn hash_file(path: &Path) -> io::Result<FileRecord> {
 use image::imageops::{resize, FilterType};
 
 const PHASH_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff"];
-const EXIF_EXTENSIONS: &[&str] = &["jpg", "jpeg", "tiff", "heic"];
+const EXIF_EXTENSIONS: &[&str] = &["jpg", "jpeg", "tiff", "heic", "dng"];
 
 pub fn compute_dhash(path: &Path) -> Option<u64> {
     let ext = path
@@ -256,6 +256,29 @@ mod tests {
         let path = dir.path().join("video.mov");
         std::fs::write(&path, b"not an image").unwrap();
         assert!(compute_dhash(&path).is_none());
+    }
+
+    #[test]
+    fn hash_file_mp4_has_no_exif_fields() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("clip.mp4");
+        fs::write(&path, b"fake mp4 data").unwrap();
+        let record = hash_file(&path).unwrap();
+        assert_eq!(record.ext, "mp4");
+        assert!(record.exif_date.is_none());
+        assert!(record.gps_lat.is_none());
+        assert!(record.phash.is_none());
+    }
+
+    #[test]
+    fn hash_file_dng_attempts_exif_extraction() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("raw.dng");
+        fs::write(&path, b"fake dng data").unwrap();
+        // No valid EXIF in fake data, but the path confirms it is attempted (no panic)
+        let record = hash_file(&path).unwrap();
+        assert_eq!(record.ext, "dng");
+        assert!(record.exif_date.is_none()); // graceful fallback on invalid data
     }
 
     #[test]

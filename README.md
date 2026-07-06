@@ -8,7 +8,7 @@ Scans directories recursively, hashes every image with BLAKE3, and writes duplic
 
 - **Exact duplicates**: BLAKE3 hash, byte-for-byte identical files
 - **Visual duplicates**: dHash perceptual hashing via `--similar` flag (finds re-saves, resized copies)
-- **EXIF metadata**: automatically extracted for JPEG/HEIC/TIFF (shoot date, GPS coordinates, dimensions)
+- **EXIF metadata**: automatically extracted for JPEG/HEIC/TIFF/DNG (shoot date, GPS coordinates, dimensions)
 - **Parallel processing**: rayon saturates all CPU cores; handles tens of thousands of files
 - **Pipe-friendly output**: REMOVE candidates printed to stdout one per line; progress on stderr
 - **JSONL output**: one JSON object per file, append-mode, ready for `jq` or database ingestion
@@ -17,7 +17,7 @@ Scans directories recursively, hashes every image with BLAKE3, and writes duplic
 
 ## Supported File Types
 
-`.jpg` `.jpeg` `.png` `.gif` `.webp` `.bmp` `.tiff` `.mov` `.heic`
+`.jpg` `.jpeg` `.png` `.gif` `.webp` `.bmp` `.tiff` `.mov` `.heic` `.mp4` `.dng`
 
 ## Installation
 
@@ -117,11 +117,11 @@ One JSON object per line, appended on every run. EXIF fields (`exif_date`, `gps_
 | `modified_at` | string \| null | ISO 8601 modification time |
 | `ext` | string | Lowercase file extension |
 | `phash` | number | dHash value (only present with `--similar`) |
-| `exif_date` | string \| null | Camera-local shoot date from EXIF `DateTimeOriginal`, no timezone (jpg/jpeg/tiff/heic only) |
-| `gps_lat` | number \| null | GPS latitude in decimal degrees, negative = South (jpg/jpeg/tiff/heic only) |
-| `gps_lon` | number \| null | GPS longitude in decimal degrees, negative = West (jpg/jpeg/tiff/heic only) |
-| `width` | number \| null | Image width in pixels from EXIF (jpg/jpeg/tiff/heic only) |
-| `height` | number \| null | Image height in pixels from EXIF (jpg/jpeg/tiff/heic only) |
+| `exif_date` | string \| null | Camera-local shoot date from EXIF `DateTimeOriginal`, no timezone (jpg/jpeg/tiff/heic/dng only) |
+| `gps_lat` | number \| null | GPS latitude in decimal degrees, negative = South (jpg/jpeg/tiff/heic/dng only) |
+| `gps_lon` | number \| null | GPS longitude in decimal degrees, negative = West (jpg/jpeg/tiff/heic/dng only) |
+| `width` | number \| null | Image width in pixels from EXIF (jpg/jpeg/tiff/heic/dng only) |
+| `height` | number \| null | Image height in pixels from EXIF (jpg/jpeg/tiff/heic/dng only) |
 
 ### SQLite database
 
@@ -161,7 +161,7 @@ The report shows:
 - Stats summary (files scanned, duplicate groups, duplicate files, wasted space)
 - Toolbar with Expand all / Collapse all and a sort dropdown: wasted space (default), date kept oldest-first, date kept newest-first
 - Duplicate groups with KEEP/REMOVE badges, image thumbnails, EXIF date, GPS map links, copy-path buttons
-- `.mov` files displayed as video thumbnails; click to play in a lightbox overlay
+- `.mov` and `.mp4` files displayed as video thumbnails; click to play in a lightbox overlay
 - `.heic` files require `--heic` for thumbnails (embedded as base64 JPEG via `sips`; macOS only)
 
 ## Fixing file dates (`dupe-fix-dates`)
