@@ -4,7 +4,7 @@ A fast Rust CLI tool for finding duplicate images across large file collections.
 
 ## What it does
 
-Scans a directory recursively, hashes every image file (BLAKE3), and writes REMOVE candidates to stdout one per line — ready to pipe into `trash` or `rm`. Results are also saved to JSONL or SQLite for downstream analysis. A companion `dupe-report` binary reads the SQLite database and generates an HTML review page.
+Scans a directory recursively, hashes every image file (BLAKE3), and writes REMOVE candidates to stdout one per line: ready to pipe into `trash` or `rm`. Results are also saved to JSONL or SQLite for downstream analysis. A companion `dupe-report` binary reads the SQLite database and generates an HTML review page.
 
 ## Usage
 
@@ -18,12 +18,12 @@ Options:
   --silent                 Suppress progress output on stderr (stdout paths are always written)
 ```
 
-`--output` and `--output-sqlite` cannot be used together — passing both is an error.
+`--output` and `--output-sqlite` cannot be used together: passing both is an error.
 
 ## Output behavior
 
-- **stdout** — REMOVE candidate paths, one per line (pipe-ready)
-- **stderr** — scan progress and summary (suppressed by `--silent`)
+- **stdout**: REMOVE candidate paths, one per line (pipe-ready)
+- **stderr**: scan progress and summary (suppressed by `--silent`)
 
 KEEP candidate within each group = oldest `exif_date`; falls back to `min(created_at, modified_at)` if absent.
 
@@ -35,6 +35,8 @@ cargo build --release
 ./target/release/dupe ~/Photos | xargs trash                    # delete duplicates
 ./target/release/dupe --output-sqlite ~/photos.db ~/Photos      # scan to SQLite
 ./target/release/dupe-report ~/photos.db                        # generate HTML report
+./target/release/dupe-fix-dates ~/photos.db --dry-run           # preview date fixes
+./target/release/dupe-fix-dates ~/photos.db                     # apply date fixes
 ```
 
 ## Supported file types
@@ -52,22 +54,24 @@ src/
   sqlite_output.rs SQLite upsert writer
   types.rs         FileRecord, DuplicateGroup structs
   bin/
-    dupe_report.rs HTML report generator (reads SQLite db)
+    dupe_report.rs   HTML report generator (reads SQLite db)
+    dupe_fix_dates.rs Set mtime = exif_date for files in SQLite db
 tests/
   integration.rs   End-to-end tests against both binaries
 ```
 
 ## Key crates
 
-- `clap` — CLI parsing
-- `blake3` — fast exact hashing
-- `rayon` — parallel hashing across CPU cores
-- `walkdir` — recursive traversal
-- `serde_json` — JSONL output
-- `chrono` — date formatting
-- `image` + `img_hash` — perceptual hashing for `--similar`
-- `kamadak-exif` — EXIF metadata extraction (always on for jpg/jpeg/tiff/heic)
-- `rusqlite` (bundled) — SQLite output for `--output-sqlite` and `dupe-report`
+- `clap`: CLI parsing
+- `blake3`: fast exact hashing
+- `rayon`: parallel hashing across CPU cores
+- `walkdir`: recursive traversal
+- `serde_json`: JSONL output
+- `chrono`: date formatting
+- `image` + `img_hash`: perceptual hashing for `--similar`
+- `kamadak-exif`: EXIF metadata extraction (always on for jpg/jpeg/tiff/heic)
+- `rusqlite` (bundled): SQLite output for `--output-sqlite` and `dupe-report`
+- `filetime`: set file `mtime` portably for `dupe-fix-dates`
 
 ## SQLite schema
 
@@ -122,6 +126,20 @@ Report includes:
 - `.mov` files shown as `<video>` thumbnail; click opens lightbox with playback controls
 - `.heic` files: "HEIC" text by default; `--heic` embeds 240px JPEG thumbnail; `--heic-original` also embeds 1200px lightbox version (macOS only, requires `sips`)
 - Lightbox overlay for full-size image/video viewing; Escape or backdrop click closes
+
+## dupe-fix-dates
+
+Reads `file_hashes` from a SQLite database and sets `modified_at` on each file to its `exif_date`. Only files with `exif_date` present are touched. Operates on all such files (KEEP and REMOVE alike: REMOVE files will be deleted afterward anyway).
+
+```bash
+dupe-fix-dates <db>            # apply: set mtime = exif_date for all files with EXIF
+dupe-fix-dates <db> --dry-run  # preview without modifying anything
+dupe-fix-dates <db> --silent   # suppress per-file output (errors always shown)
+```
+
+- `exif_date` is camera-local time with no timezone; treated as local system time when computing the UNIX timestamp
+- Only `modified_at` is set (`created_at` / birth time requires a macOS-only syscall and is not supported)
+- Exits with code 1 if any file could not be updated
 
 ## Design spec
 
