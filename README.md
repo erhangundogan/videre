@@ -71,7 +71,7 @@ dupe-report ~/photos.db -o ~/Desktop/report.html
 
 ### stdout — duplicate paths (pipe-ready)
 
-REMOVE candidates are written to stdout, one absolute path per line. The KEEP candidate (oldest by `exif_date`, falling back to `modified_at`) is not printed.
+REMOVE candidates are written to stdout, one absolute path per line. The KEEP candidate (oldest by `exif_date`, falling back to `min(created_at, modified_at)`) is not printed.
 
 ```
 /Photos/backup/IMG_001.jpg
@@ -146,14 +146,23 @@ CREATE TABLE file_hashes (
 
 ### HTML report (`dupe-report`)
 
+![dupe report screenshot](docs/assets/dupe-report-screenshot.jpeg)
+
 Reads the SQLite database and generates a self-contained HTML file for visual review before deletion.
 
 ```bash
-dupe-report ~/photos.db                  # writes photos_report.html next to the db
-dupe-report ~/photos.db -o report.html   # explicit output path
+dupe-report ~/photos.db                         # writes photos_report.html next to the db
+dupe-report ~/photos.db -o report.html          # explicit output path
+dupe-report ~/photos.db --heic                  # embed HEIC thumbnails (macOS only, requires sips)
+dupe-report ~/photos.db --heic-original         # embed HEIC thumbnails + 1200px lightbox version
 ```
 
-The report shows: stats summary, duplicate groups sorted by wasted space, KEEP/REMOVE badges per file, EXIF date, clickable GPS map links, copy-path buttons.
+The report shows:
+- Stats summary (files scanned, duplicate groups, duplicate files, wasted space)
+- Toolbar with Expand all / Collapse all and a sort dropdown: wasted space (default), date kept oldest-first, date kept newest-first
+- Duplicate groups with KEEP/REMOVE badges, image thumbnails, EXIF date, GPS map links, copy-path buttons
+- `.mov` files displayed as video thumbnails; click to play in a lightbox overlay
+- `.heic` files require `--heic` for thumbnails (embedded as base64 JPEG via `sips`; macOS only)
 
 ## Pipeline Usage
 
@@ -215,7 +224,7 @@ cat /tmp/hashes | \
 
 ### Exact duplicates (default)
 
-Files are hashed with [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) using a 64 KB streaming buffer. Files with identical hashes are exact byte-for-byte copies regardless of filename or location. The KEEP candidate within each group is the file with the oldest `exif_date` (camera-captured time); if absent, oldest `modified_at` is used.
+Files are hashed with [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) using a 64 KB streaming buffer. Files with identical hashes are exact byte-for-byte copies regardless of filename or location. The KEEP candidate within each group is the file with the oldest `exif_date` (camera-captured time); if absent, the older of `created_at` and `modified_at` is used.
 
 ### Visual duplicates (`--similar`)
 

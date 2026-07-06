@@ -4,6 +4,19 @@ use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
+// KEEP candidate sort key: exif_date wins; otherwise oldest of created_at / modified_at.
+fn best_date(r: &FileRecord) -> &str {
+    if let Some(d) = r.exif_date.as_deref() {
+        return d;
+    }
+    match (r.created_at.as_deref(), r.modified_at.as_deref()) {
+        (Some(c), Some(m)) => if c < m { c } else { m },
+        (Some(c), None) => c,
+        (None, Some(m)) => m,
+        (None, None) => "",
+    }
+}
+
 pub fn find_duplicate_groups(records: &[FileRecord]) -> Vec<DuplicateGroup> {
     let mut map: HashMap<String, Vec<FileRecord>> = HashMap::new();
     for record in records {
@@ -13,12 +26,8 @@ pub fn find_duplicate_groups(records: &[FileRecord]) -> Vec<DuplicateGroup> {
         .into_iter()
         .filter(|(_, files)| files.len() > 1)
         .map(|(hash, mut files)| {
-            // Oldest date first — exif_date preferred over modified_at (more reliable)
-            files.sort_by(|a, b| {
-                let da = a.exif_date.as_deref().or(a.modified_at.as_deref()).unwrap_or("");
-                let db = b.exif_date.as_deref().or(b.modified_at.as_deref()).unwrap_or("");
-                da.cmp(db)
-            });
+            // Oldest date first — exif_date wins; falls back to min(created_at, modified_at)
+            files.sort_by(|a, b| best_date(a).cmp(best_date(b)));
             DuplicateGroup { hash, files }
         })
         .collect();
@@ -56,11 +65,7 @@ pub fn find_similar_groups(records: &[FileRecord], threshold: u32) -> Vec<Duplic
             }
         }
         if group.len() > 1 {
-            group.sort_by(|a, b| {
-                let da = a.exif_date.as_deref().or(a.modified_at.as_deref()).unwrap_or("");
-                let db = b.exif_date.as_deref().or(b.modified_at.as_deref()).unwrap_or("");
-                da.cmp(db)
-            });
+            group.sort_by(|a, b| best_date(a).cmp(best_date(b)));
             groups.push(DuplicateGroup {
                 hash: format!("phash:{:016x}", with_phash[i].phash.unwrap()),
                 files: group,
