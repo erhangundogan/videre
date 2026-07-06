@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 const SUPPORTED_EXTENSIONS: &[&str] = &[
-    "jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "mov", "heic",
+    "jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "mov", "heic", "mp4", "dng",
 ];
 
 pub fn scan(dir: &Path) -> Vec<PathBuf> {
@@ -47,6 +47,23 @@ mod tests {
         assert!(names.contains(&"c.png".to_string()));
         assert!(names.contains(&"d.heic".to_string()));
         assert!(!names.iter().any(|n| n.ends_with(".txt")));
+    }
+
+    #[test]
+    fn scan_includes_mp4_and_dng() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("clip.mp4"), b"").unwrap();
+        fs::write(dir.path().join("raw.dng"), b"").unwrap();
+        fs::write(dir.path().join("ignore.aae"), b"").unwrap();
+
+        let results = scan(dir.path());
+        let names: Vec<_> = results
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_lowercase())
+            .collect();
+        assert!(names.contains(&"clip.mp4".to_string()));
+        assert!(names.contains(&"raw.dng".to_string()));
+        assert!(!names.iter().any(|n| n.ends_with(".aae")));
     }
 
     #[test]

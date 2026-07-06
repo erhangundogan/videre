@@ -236,7 +236,8 @@ fn image_cell(path: &str, ext: &str, heic: bool, heic_original: bool) -> String 
         }
         "heic" => "<span class=\"no-prev\">HEIC</span>".into(),
         "tiff" => "<span class=\"no-prev\">TIFF</span>".into(),
-        "mov" => {
+        "dng" => "<span class=\"no-prev\">DNG</span>".into(),
+        "mov" | "mp4" => {
             let url = format!("file://{}", path);
             let url_esc = esc(&url);
             let js_url = url.replace('\'', "\\'");

@@ -41,7 +41,7 @@ cargo build --release
 
 ## Supported file types
 
-`.jpg` `.jpeg` `.png` `.gif` `.webp` `.bmp` `.tiff` `.mov` `.heic`
+`.jpg` `.jpeg` `.png` `.gif` `.webp` `.bmp` `.tiff` `.mov` `.heic` `.mp4` `.dng`
 
 ## Project structure
 
@@ -96,7 +96,7 @@ Re-scanning the same folder with the same SQLite file upserts (overwrites) exist
 
 ## EXIF fields
 
-EXIF extraction runs automatically for `jpg`, `jpeg`, `tiff`, and `heic` files. Fields are `null`/absent when the file has no EXIF data.
+EXIF extraction runs automatically for `jpg`, `jpeg`, `tiff`, `heic`, and `dng` files. Fields are `null`/absent when the file has no EXIF data.
 
 | Field | Type | Notes |
 |-------|------|-------|
