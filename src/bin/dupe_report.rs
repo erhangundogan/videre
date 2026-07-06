@@ -401,7 +401,7 @@ fn generate_html(db_path: &str, stats: &Stats, groups: &[Vec<FileRow>], heic: bo
                   <thead><tr>\
                     <th class=\"preview-th\">Preview</th>\
                     <th>Status</th><th>Filename</th><th>Path</th>\
-                    <th>Size</th><th>Modified</th><th>EXIF date</th>\
+                    <th>Size</th><th>Created</th><th>Modified</th><th>EXIF date</th>\
                     <th>GPS</th><th>Dimensions</th>\
                   </tr></thead><tbody>\n",
             i = i,
@@ -423,6 +423,12 @@ fn generate_html(db_path: &str, stats: &Stats, groups: &[Vec<FileRow>], heic: bo
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
+
+            let created = file
+                .created_at
+                .as_deref()
+                .map(|d| esc(&d[..d.len().min(19)]))
+                .unwrap_or_else(|| "<span class=\"dim\">\u{2014}</span>".into());
 
             let modified = file
                 .modified_at
@@ -468,6 +474,7 @@ fn generate_html(db_path: &str, stats: &Stats, groups: &[Vec<FileRow>], heic: bo
                   <td class=\"path-cell\"><span class=\"path-text\">{path_esc}</span>\
                     <button class=\"copy-btn\" onclick=\"copyPath('{js_path}')\" title=\"Copy path\">&#x2398;</button></td>\
                   <td>{size}</td>\
+                  <td class=\"dim\">{created}</td>\
                   <td class=\"dim\">{modified}</td>\
                   <td class=\"dim\">{exif}</td>\
                   <td>{gps}</td>\
@@ -481,6 +488,7 @@ fn generate_html(db_path: &str, stats: &Stats, groups: &[Vec<FileRow>], heic: bo
                 path_esc = esc(&file.path),
                 js_path = js_path,
                 size = format_bytes(file.size_bytes),
+                created = created,
                 modified = modified,
                 exif = exif,
                 gps = gps,
