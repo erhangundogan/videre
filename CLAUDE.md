@@ -25,7 +25,7 @@ Options:
 - **stdout** — REMOVE candidate paths, one per line (pipe-ready)
 - **stderr** — scan progress and summary (suppressed by `--silent`)
 
-KEEP candidate within each group = oldest `exif_date`; falls back to `modified_at` if absent.
+KEEP candidate within each group = oldest `exif_date`; falls back to `min(created_at, modified_at)` if absent.
 
 ## Build & run
 
@@ -107,11 +107,21 @@ EXIF extraction runs automatically for `jpg`, `jpeg`, `tiff`, and `heic` files. 
 Reads `file_hashes` from a SQLite database and writes a self-contained HTML file.
 
 ```bash
-dupe-report <db>           # output: <db>_report.html
-dupe-report <db> -o <out>  # explicit output path
+dupe-report <db>                    # output: <db>_report.html
+dupe-report <db> -o <out>           # explicit output path
+dupe-report <db> --heic             # embed HEIC thumbnails as base64 JPEG (macOS/sips)
+dupe-report <db> --heic-original    # embed HEIC thumbnails + 1200px lightbox version
 ```
 
-Report includes: stats header (files, groups, wasted space), duplicate groups sorted by wasted space, KEEP/REMOVE badges, EXIF date, clickable GPS links, copy-path buttons. Groups are collapsible.
+Report includes:
+- Stats header (files, groups, wasted space)
+- Toolbar: Expand all / Collapse all / Sort dropdown (wasted space, date kept oldest-first, date kept newest-first)
+- Duplicate groups sorted by wasted space by default; sorting is instant DOM reorder
+- Per-file: thumbnail preview, KEEP/REMOVE badge, filename, path + copy button, size, modified, EXIF date, GPS link, dimensions
+- Image thumbnails via `file://` URL (lazy-loaded, force-loaded on group expand)
+- `.mov` files shown as `<video>` thumbnail; click opens lightbox with playback controls
+- `.heic` files: "HEIC" text by default; `--heic` embeds 240px JPEG thumbnail; `--heic-original` also embeds 1200px lightbox version (macOS only, requires `sips`)
+- Lightbox overlay for full-size image/video viewing; Escape or backdrop click closes
 
 ## Design spec
 
