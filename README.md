@@ -71,7 +71,7 @@ dupe-report ~/photos.db -o ~/Desktop/report.html
 
 ### stdout: duplicate paths (pipe-ready)
 
-REMOVE candidates are written to stdout, one absolute path per line. The KEEP candidate (oldest by `exif_date`, falling back to `min(created_at, modified_at)`) is not printed.
+REMOVE candidates are written to stdout, one absolute path per line. The KEEP candidate (oldest by `exif_date`, falling back to `min(created_at, modified_at)`; `0000-*` EXIF dates are treated as absent) is not printed.
 
 ```
 /Photos/backup/IMG_001.jpg
@@ -100,7 +100,7 @@ Suppressed with `--silent`.
 
 ### JSONL file
 
-One JSON object per line, appended on every run. EXIF fields (`exif_date`, `gps_lat`, `gps_lon`, `width`, `height`) are present for JPEG/TIFF/HEIC files that contain EXIF data, and absent for all others.
+One JSON object per line, appended on every run. EXIF fields (`exif_date`, `gps_lat`, `gps_lon`, `width`, `height`) are present for JPEG/TIFF/HEIC/DNG files that contain EXIF data, and absent for all others.
 
 ```json
 {"path":"/Photos/2019/vacation/IMG_001.jpg","hash":"a3f2c1d8...","size_bytes":3145728,"created_at":"2019-08-12T14:22:00+00:00","modified_at":"2019-08-12T14:22:00+00:00","ext":"jpg","exif_date":"2019-08-12T14:22:00","gps_lat":41.015,"gps_lon":28.979,"width":4032,"height":3024}
@@ -117,7 +117,7 @@ One JSON object per line, appended on every run. EXIF fields (`exif_date`, `gps_
 | `modified_at` | string \| null | ISO 8601 modification time |
 | `ext` | string | Lowercase file extension |
 | `phash` | number | dHash value (only present with `--similar`) |
-| `exif_date` | string \| null | Camera-local shoot date from EXIF `DateTimeOriginal`, no timezone (jpg/jpeg/tiff/heic/dng only) |
+| `exif_date` | string \| null | Camera-local shoot date from EXIF `DateTimeOriginal`, no timezone (jpg/jpeg/tiff/heic/dng only); `0000-*` values from cameras with unset clocks are discarded (stored as null) |
 | `gps_lat` | number \| null | GPS latitude in decimal degrees, negative = South (jpg/jpeg/tiff/heic/dng only) |
 | `gps_lon` | number \| null | GPS longitude in decimal degrees, negative = West (jpg/jpeg/tiff/heic/dng only) |
 | `width` | number \| null | Image width in pixels from EXIF (jpg/jpeg/tiff/heic/dng only) |
@@ -160,7 +160,7 @@ dupe-report ~/photos.db --heic-original         # embed HEIC thumbnails + 1200px
 The report shows:
 - Stats summary (files scanned, duplicate groups, duplicate files, wasted space)
 - Toolbar with Expand all / Collapse all and a sort dropdown: wasted space (default), date kept oldest-first, date kept newest-first
-- Duplicate groups with KEEP/REMOVE badges, image thumbnails, EXIF date, GPS map links, copy-path buttons
+- Duplicate groups with KEEP/REMOVE badges, image thumbnails, created date, EXIF date, GPS map links, copy-path buttons
 - `.mov` and `.mp4` files displayed as video thumbnails; click to play in a lightbox overlay
 - `.heic` files require `--heic` for thumbnails (embedded as base64 JPEG via `sips`; macOS only)
 

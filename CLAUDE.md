@@ -25,7 +25,7 @@ Options:
 - **stdout**: REMOVE candidate paths, one per line (pipe-ready)
 - **stderr**: scan progress and summary (suppressed by `--silent`)
 
-KEEP candidate within each group = oldest `exif_date`; falls back to `min(created_at, modified_at)` if absent.
+KEEP candidate within each group = oldest `exif_date`; falls back to `min(created_at, modified_at)` if absent. `exif_date` values of `0000-00-00T00:00:00` (cameras with unset clocks) are treated as absent.
 
 ## Build & run
 
@@ -69,7 +69,7 @@ tests/
 - `serde_json`: JSONL output
 - `chrono`: date formatting
 - `image` + `img_hash`: perceptual hashing for `--similar`
-- `kamadak-exif`: EXIF metadata extraction (always on for jpg/jpeg/tiff/heic)
+- `kamadak-exif`: EXIF metadata extraction (always on for jpg/jpeg/tiff/heic/dng)
 - `rusqlite` (bundled): SQLite output for `--output-sqlite` and `dupe-report`
 - `filetime`: set file `mtime` portably for `dupe-fix-dates`
 
@@ -100,7 +100,7 @@ EXIF extraction runs automatically for `jpg`, `jpeg`, `tiff`, `heic`, and `dng` 
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `exif_date` | string | `DateTimeOriginal` formatted as `YYYY-MM-DDTHH:MM:SS`, camera-local time, no timezone |
+| `exif_date` | string | `DateTimeOriginal` formatted as `YYYY-MM-DDTHH:MM:SS`, camera-local time, no timezone; `0000-*` values from cameras with unset clocks are discarded (stored as null) |
 | `gps_lat` | float | Decimal degrees, negative = South |
 | `gps_lon` | float | Decimal degrees, negative = West |
 | `width` | integer | From `PixelXDimension` |
@@ -121,9 +121,9 @@ Report includes:
 - Stats header (files, groups, wasted space)
 - Toolbar: Expand all / Collapse all / Sort dropdown (wasted space, date kept oldest-first, date kept newest-first)
 - Duplicate groups sorted by wasted space by default; sorting is instant DOM reorder
-- Per-file: thumbnail preview, KEEP/REMOVE badge, filename, path + copy button, size, modified, EXIF date, GPS link, dimensions
+- Per-file: thumbnail preview, KEEP/REMOVE badge, filename, path + copy button, size, created, modified, EXIF date, GPS link, dimensions
 - Image thumbnails via `file://` URL (lazy-loaded, force-loaded on group expand)
-- `.mov` files shown as `<video>` thumbnail; click opens lightbox with playback controls
+- `.mov` and `.mp4` files shown as `<video>` thumbnail; click opens lightbox with playback controls
 - `.heic` files: "HEIC" text by default; `--heic` embeds 240px JPEG thumbnail; `--heic-original` also embeds 1200px lightbox version (macOS only, requires `sips`)
 - Lightbox overlay for full-size image/video viewing; Escape or backdrop click closes
 
