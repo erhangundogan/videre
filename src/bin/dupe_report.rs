@@ -564,7 +564,7 @@ fn generate_html(db_path: &str, stats: &Stats, groups: &[Vec<FileRow>], heic: bo
         "    if(by==='waste'){\n",
         "      return Number(b.dataset.waste)-Number(a.dataset.waste);\n",
         "    } else {\n",
-        "      var da=a.dataset.date||'';var db=b.dataset.date||'';\n",
+        "      var da=a.dataset.date||'\\uffff';var db=b.dataset.date||'\\uffff';\n",
         "      return by==='date-asc'?da.localeCompare(db):db.localeCompare(da);\n",
         "    }\n",
         "  });\n",
