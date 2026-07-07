@@ -27,6 +27,7 @@ struct FileRow {
     path: String,
     hash: String,
     size_bytes: i64,
+    ext: String,
     created_at: Option<String>,
     modified_at: Option<String>,
     exif_date: Option<String>,
@@ -71,7 +72,6 @@ fn base64_encode(data: &[u8]) -> String {
     out
 }
 
-// Convert a HEIC file to a JPEG via sips (macOS built-in) at max_px longest edge, return base64.
 fn heic_to_b64(path: &str, max_px: u32) -> Option<String> {
     use std::hash::{Hash, Hasher};
     use std::collections::hash_map::DefaultHasher;
@@ -109,46 +109,119 @@ fn esc(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"'  => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c    => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn file_to_json(f: &FileRow, heic: bool, heic_original: bool) -> String {
+    let (tb, fb) = if f.ext == "heic" && heic {
+        let thumb = heic_to_b64(&f.path, 240)
+            .map(|b| json_str(&b))
+            .unwrap_or_else(|| "null".to_string());
+        let full = if heic_original {
+            heic_to_b64(&f.path, 1200)
+                .map(|b| json_str(&b))
+                .unwrap_or_else(|| "null".to_string())
+        } else {
+            "null".to_string()
+        };
+        (thumb, full)
+    } else {
+        ("null".to_string(), "null".to_string())
+    };
+
+    let cr = f.created_at.as_deref()
+        .map(|d| json_str(&d[..d.len().min(19)]))
+        .unwrap_or_else(|| "null".to_string());
+    let mo = f.modified_at.as_deref()
+        .map(|d| json_str(&d[..d.len().min(19)]))
+        .unwrap_or_else(|| "null".to_string());
+    let ex = f.exif_date.as_deref()
+        .map(json_str)
+        .unwrap_or_else(|| "null".to_string());
+    let lat = f.gps_lat.map(|v| format!("{:.6}", v)).unwrap_or_else(|| "null".to_string());
+    let lon = f.gps_lon.map(|v| format!("{:.6}", v)).unwrap_or_else(|| "null".to_string());
+    let w = f.width.map(|v| v.to_string()).unwrap_or_else(|| "null".to_string());
+    let h = f.height.map(|v| v.to_string()).unwrap_or_else(|| "null".to_string());
+
+    format!(
+        "{{\"path\":{path},\"ext\":{ext},\"size\":{size},\
+         \"cr\":{cr},\"mo\":{mo},\"ex\":{ex},\
+         \"lat\":{lat},\"lon\":{lon},\"w\":{w},\"h\":{h},\
+         \"tb\":{tb},\"fb\":{fb}}}",
+        path = json_str(&f.path),
+        ext  = json_str(&f.ext),
+        size = f.size_bytes,
+        cr = cr, mo = mo, ex = ex,
+        lat = lat, lon = lon, w = w, h = h,
+        tb = tb, fb = fb,
+    )
+}
+
+fn group_to_json(group: &[FileRow], heic: bool, heic_original: bool) -> String {
+    let hash_prefix = &group[0].hash[..group[0].hash.len().min(8)];
+    let waste = group[0].size_bytes * (group.len() as i64 - 1);
+    let keep_date = best_date(&group[0]);
+    let date_json = if keep_date.is_empty() { "null".to_string() } else { json_str(keep_date) };
+    let files_json: Vec<String> = group.iter()
+        .map(|f| file_to_json(f, heic, heic_original))
+        .collect();
+    format!(
+        "{{\"hash\":{hash},\"waste\":{waste},\"date\":{date},\"files\":[{files}]}}",
+        hash  = json_str(hash_prefix),
+        waste = waste,
+        date  = date_json,
+        files = files_json.join(","),
+    )
+}
+
 fn query_stats(conn: &Connection) -> Stats {
     let total_files: i64 = conn
         .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
         .unwrap_or(0);
-
     let duplicate_groups: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM \
              (SELECT hash FROM file_hashes GROUP BY hash HAVING COUNT(*) > 1)",
-            [],
-            |r| r.get(0),
+            [], |r| r.get(0),
         )
         .unwrap_or(0);
-
     let duplicate_files: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM file_hashes \
              WHERE hash IN (SELECT hash FROM file_hashes GROUP BY hash HAVING COUNT(*) > 1)",
-            [],
-            |r| r.get(0),
+            [], |r| r.get(0),
         )
         .unwrap_or(0);
-
     let wasted_bytes: i64 = conn
         .query_row(
             "SELECT COALESCE(SUM(size_bytes * (cnt - 1)), 0) FROM \
              (SELECT hash, size_bytes, COUNT(*) as cnt \
               FROM file_hashes GROUP BY hash HAVING cnt > 1)",
-            [],
-            |r| r.get(0),
+            [], |r| r.get(0),
         )
         .unwrap_or(0);
-
     Stats { total_files, duplicate_groups, duplicate_files, wasted_bytes }
 }
 
 fn query_groups(conn: &Connection) -> Vec<Vec<FileRow>> {
     let mut stmt = conn
         .prepare(
-            "SELECT path, hash, size_bytes, created_at, modified_at, exif_date, \
+            "SELECT path, hash, size_bytes, COALESCE(ext,''), created_at, modified_at, exif_date, \
                     gps_lat, gps_lon, width, height \
              FROM file_hashes \
              WHERE hash IN \
@@ -160,16 +233,17 @@ fn query_groups(conn: &Connection) -> Vec<Vec<FileRow>> {
     let rows: Vec<FileRow> = stmt
         .query_map([], |r| {
             Ok(FileRow {
-                path: r.get(0)?,
-                hash: r.get(1)?,
+                path:       r.get(0)?,
+                hash:       r.get(1)?,
                 size_bytes: r.get(2)?,
-                created_at: r.get(3)?,
-                modified_at: r.get(4)?,
-                exif_date: r.get(5)?,
-                gps_lat: r.get(6)?,
-                gps_lon: r.get(7)?,
-                width: r.get(8)?,
-                height: r.get(9)?,
+                ext:        r.get(3)?,
+                created_at: r.get(4)?,
+                modified_at:r.get(5)?,
+                exif_date:  r.get(6)?,
+                gps_lat:    r.get(7)?,
+                gps_lon:    r.get(8)?,
+                width:      r.get(9)?,
+                height:     r.get(10)?,
             })
         })
         .expect("failed to execute query")
@@ -183,80 +257,22 @@ fn query_groups(conn: &Connection) -> Vec<Vec<FileRow>> {
 
     let mut groups: Vec<Vec<FileRow>> = map.into_values().collect();
 
-    // Within each group: oldest date first: exif_date wins; falls back to min(created_at, modified_at)
     for group in &mut groups {
         group.sort_by(|a, b| best_date(a).cmp(best_date(b)));
     }
-
-    // Sort groups by wasted space descending: biggest waste first
     groups.sort_by(|a, b| {
         let wa = a[0].size_bytes * (a.len() as i64 - 1);
         let wb = b[0].size_bytes * (b.len() as i64 - 1);
         wb.cmp(&wa)
     });
-
     groups
-}
-
-fn image_cell(path: &str, ext: &str, heic: bool, heic_original: bool) -> String {
-    match ext {
-        "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" => {
-            let url = format!("file://{}", path);
-            let url_esc = esc(&url);
-            let js_url = url.replace('\'', "\\'");
-            format!(
-                "<a href=\"{url_esc}\" target=\"_blank\" onclick=\"openLb(event,'{js_url}')\">",
-            ) + &format!(
-                "<img src=\"{url_esc}\" class=\"thumb\" loading=\"lazy\" \
-                 onerror=\"this.parentElement.innerHTML='<span class=\\'no-prev\\'>no preview</span>'\"></a>"
-            )
-        }
-        "heic" if heic && heic_original => {
-            match (heic_to_b64(path, 240), heic_to_b64(path, 1200)) {
-                (Some(thumb), Some(full)) => format!(
-                    "<img src=\"data:image/jpeg;base64,{thumb}\" \
-                     data-lb=\"data:image/jpeg;base64,{full}\" \
-                     class=\"thumb\" onclick=\"openLb(event,this.dataset.lb)\">"
-                ),
-                (Some(thumb), None) => format!(
-                    "<img src=\"data:image/jpeg;base64,{thumb}\" class=\"thumb\" \
-                     onclick=\"openLb(event,this.src)\">"
-                ),
-                _ => "<span class=\"no-prev\">HEIC</span>".into(),
-            }
-        }
-        "heic" if heic => {
-            match heic_to_b64(path, 240) {
-                Some(b64) => format!(
-                    "<img src=\"data:image/jpeg;base64,{b64}\" class=\"thumb\" \
-                     onclick=\"openLb(event,this.src)\">"
-                ),
-                None => "<span class=\"no-prev\">HEIC</span>".into(),
-            }
-        }
-        "heic" => "<span class=\"no-prev\">HEIC</span>".into(),
-        "tiff" => "<span class=\"no-prev\">TIFF</span>".into(),
-        "dng" => "<span class=\"no-prev\">DNG</span>".into(),
-        "mov" | "mp4" => {
-            let url = format!("file://{}", path);
-            let url_esc = esc(&url);
-            let js_url = url.replace('\'', "\\'");
-            format!(
-                "<video src=\"{url_esc}\" class=\"thumb\" preload=\"metadata\" \
-                 muted playsinline \
-                 onclick=\"openLb(event,'{js_url}','video')\" \
-                 onerror=\"this.outerHTML='<span class=\\'no-prev\\'>no preview</span>'\"></video>"
-            )
-        }
-        _ => "<span class=\"no-prev\">&mdash;</span>".into(),
-    }
 }
 
 fn generate_html(db_path: &str, stats: &Stats, groups: &[Vec<FileRow>], heic: bool, heic_original: bool) -> String {
     use chrono::Utc;
     let now = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
 
-    let mut out = String::with_capacity(256 * 1024);
+    let mut out = String::with_capacity(512 * 1024);
 
     out.push_str(concat!(
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n",
@@ -287,7 +303,7 @@ fn generate_html(db_path: &str, stats: &Stats, groups: &[Vec<FileRow>], heic: bo
         ".groups{padding:16px 32px;display:flex;flex-direction:column;gap:10px}\n",
         ".group{background:#fff;border-radius:10px;border:1px solid #e4e4e7;overflow:hidden}\n",
         ".group-header{padding:12px 16px;cursor:pointer;display:flex;align-items:center;",
-        "gap:10px;user-select:none;}\n",
+        "gap:10px;user-select:none}\n",
         ".group-header:hover{background:#fafafa}\n",
         ".arrow{font-size:9px;color:#a1a1aa;transition:transform .15s;display:inline-block;",
         "width:10px;flex-shrink:0}\n",
@@ -341,6 +357,8 @@ fn generate_html(db_path: &str, stats: &Stats, groups: &[Vec<FileRow>], heic: bo
         ".spinner{width:22px;height:22px;border:3px solid #e4e4e7;",
         "border-top-color:#3b82f6;border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}\n",
         "@keyframes spin{to{transform:rotate(360deg)}}\n",
+        ".more-wrap{text-align:center;padding:16px 0 32px}\n",
+        "#more-btn{padding:8px 28px;font-size:13px;display:none}\n",
         "</style>\n</head>\n<body>\n",
         "<div id=\"sort-overlay\"><div class=\"sort-card\">",
         "<div class=\"spinner\"></div>Sorting&hellip;</div></div>\n",
@@ -362,11 +380,11 @@ fn generate_html(db_path: &str, stats: &Stats, groups: &[Vec<FileRow>], heic: bo
             <div class=\"stat warn\"><span class=\"num\">{wasted}</span><span class=\"label\">Wasted space</span></div>\
           </div>\
         </div>\n",
-        db = esc(db_path),
-        now = now,
-        total = stats.total_files,
+        db     = esc(db_path),
+        now    = now,
+        total  = stats.total_files,
         groups = stats.duplicate_groups,
-        dups = stats.duplicate_files,
+        dups   = stats.duplicate_files,
         wasted = format_bytes(stats.wasted_bytes),
     ));
 
@@ -382,216 +400,208 @@ fn generate_html(db_path: &str, stats: &Stats, groups: &[Vec<FileRow>], heic: bo
               <option value=\"date-desc\">Date kept (newest first)</option>\
             </select>\
           </label>\
-          <span class=\"info\">{} groups</span>\
-        </div>\n<div class=\"groups\" id=\"groups-container\">\n",
+          <span class=\"info\" id=\"shown-info\">{} groups</span>\
+        </div>\n",
         stats.duplicate_groups,
     ));
 
+    // Empty groups container — JS fills it
+    out.push_str("<div class=\"groups\" id=\"groups-container\">");
     if groups.is_empty() {
-        out.push_str("<div class=\"no-dupes\">No duplicate groups found.</div>\n");
+        out.push_str("<div class=\"no-dupes\">No duplicate groups found.</div>");
     }
-
-    for (i, group) in groups.iter().enumerate() {
-        let hash = &group[0].hash;
-        let hash_prefix = &hash[..hash.len().min(8)];
-        let count = group.len();
-        let size_each = group[0].size_bytes;
-        let wasted = size_each * (count as i64 - 1);
-        let keep_date = best_date(&group[0]).to_string();
-
-        out.push_str(&format!(
-            "<div class=\"group\" id=\"g{i}\" data-waste=\"{wasted}\" data-date=\"{keep_date}\">\
-              <div class=\"group-header\" onclick=\"toggle('g{i}')\">\
-                <span class=\"arrow\">&#9654;</span>\
-                <code class=\"hash\">{hash}</code>\
-                <span class=\"group-meta\">{count} copies &middot; {each} each</span>\
-                <span class=\"waste\">&minus;{wasted_fmt} wasted</span>\
-              </div>\
-              <div class=\"group-body\">\
-                <table>\
-                  <thead><tr>\
-                    <th class=\"preview-th\">Preview</th>\
-                    <th>Status</th><th>Filename</th><th>Path</th>\
-                    <th>Size</th><th>Created</th><th>Modified</th><th>EXIF date</th>\
-                    <th>GPS</th><th>Dimensions</th>\
-                  </tr></thead><tbody>\n",
-            i = i,
-            wasted = wasted,
-            keep_date = esc(&keep_date),
-            hash = esc(hash_prefix),
-            count = count,
-            each = format_bytes(size_each),
-            wasted_fmt = format_bytes(wasted),
-        ));
-
-        for (j, file) in group.iter().enumerate() {
-            let is_keep = j == 0;
-            let row_class = if is_keep { "keep" } else { "remove" };
-            let badge_class = if is_keep { "keep-badge" } else { "remove-badge" };
-            let badge_text = if is_keep { "KEEP" } else { "REMOVE" };
-
-            let filename = std::path::Path::new(&file.path)
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-
-            let created = file
-                .created_at
-                .as_deref()
-                .map(|d| esc(&d[..d.len().min(19)]))
-                .unwrap_or_else(|| "<span class=\"dim\">\u{2014}</span>".into());
-
-            let modified = file
-                .modified_at
-                .as_deref()
-                .map(|d| esc(&d[..d.len().min(19)]))
-                .unwrap_or_else(|| "<span class=\"dim\">\u{2014}</span>".into());
-
-            let exif = file
-                .exif_date
-                .as_deref()
-                .map(|d| esc(d))
-                .unwrap_or_else(|| "<span class=\"dim\">\u{2014}</span>".into());
-
-            let gps = match (file.gps_lat, file.gps_lon) {
-                (Some(lat), Some(lon)) => format!(
-                    "<div class=\"gps\"><a href=\"https://maps.google.com/?q={lat:.6},{lon:.6}\" \
-                     target=\"_blank\" rel=\"noopener\">{dlat:.4}&deg;{ns} {dlon:.4}&deg;{ew}</a></div>",
-                    lat = lat, lon = lon,
-                    dlat = lat.abs(), ns = if lat >= 0.0 { "N" } else { "S" },
-                    dlon = lon.abs(), ew = if lon >= 0.0 { "E" } else { "W" },
-                ),
-                _ => "<span class=\"dim\">\u{2014}</span>".into(),
-            };
-
-            let dims = match (file.width, file.height) {
-                (Some(w), Some(h)) => format!("{w}\u{d7}{h}"),
-                _ => "<span class=\"dim\">\u{2014}</span>".into(),
-            };
-
-            let js_path = file.path.replace('\\', "\\\\").replace('\'', "\\'");
-
-            let ext = std::path::Path::new(&file.path)
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-
-            out.push_str(&format!(
-                "<tr class=\"{row_class}\">\
-                  <td class=\"preview\">{preview}</td>\
-                  <td class=\"badge\"><span class=\"{badge_class}\">{badge_text}</span></td>\
-                  <td class=\"filename\" title=\"{fname_esc}\">{fname_esc}</td>\
-                  <td class=\"path-cell\"><span class=\"path-text\">{path_esc}</span>\
-                    <button class=\"copy-btn\" onclick=\"copyPath('{js_path}')\" title=\"Copy path\">&#x2398;</button></td>\
-                  <td>{size}</td>\
-                  <td class=\"dim\">{created}</td>\
-                  <td class=\"dim\">{modified}</td>\
-                  <td class=\"dim\">{exif}</td>\
-                  <td>{gps}</td>\
-                  <td class=\"dim\">{dims}</td>\
-                </tr>\n",
-                row_class = row_class,
-                preview = image_cell(&file.path, &ext, heic, heic_original),
-                badge_class = badge_class,
-                badge_text = badge_text,
-                fname_esc = esc(&filename),
-                path_esc = esc(&file.path),
-                js_path = js_path,
-                size = format_bytes(file.size_bytes),
-                created = created,
-                modified = modified,
-                exif = exif,
-                gps = gps,
-                dims = dims,
-            ));
-        }
-
-        out.push_str("      </tbody></table></div></div>\n");
-    }
-
     out.push_str("</div>\n");
+    out.push_str("<div class=\"more-wrap\"><button id=\"more-btn\" onclick=\"showMore()\"></button></div>\n");
 
-    // JS
-    out.push_str(concat!(
-        "<script>\n",
-        "function toggle(id){\n",
-        "  var g=document.getElementById(id);\n",
-        "  g.classList.toggle('open');\n",
-        "  if(g.classList.contains('open')){\n",
-        "    g.querySelectorAll('img').forEach(function(img){\n",
-        "      if(img.loading==='lazy'){img.loading='eager';}\n",
-        "    });\n",
-        "    g.querySelectorAll('video').forEach(function(v){\n",
-        "      if(v.preload==='metadata'){v.preload='auto';}\n",
-        "    });\n",
-        "  }\n",
-        "}\n",
-        "function expandAll(){\n",
-        "  document.querySelectorAll('.group').forEach(function(g){\n",
-        "    g.classList.add('open');\n",
-        "    g.querySelectorAll('img').forEach(function(img){\n",
-        "      if(img.loading==='lazy'){img.loading='eager';}\n",
-        "    });\n",
-        "    g.querySelectorAll('video').forEach(function(v){\n",
-        "      if(v.preload==='metadata'){v.preload='auto';}\n",
-        "    });\n",
-        "  });\n",
-        "}\n",
-        "function collapseAll(){document.querySelectorAll('.group').forEach(function(g){g.classList.remove('open');});}\n",
-        "function copyPath(p){\n",
-        "  navigator.clipboard.writeText(p).catch(function(){\n",
-        "    var t=document.createElement('textarea');t.value=p;\n",
-        "    document.body.appendChild(t);t.select();document.execCommand('copy');\n",
-        "    document.body.removeChild(t);\n",
-        "  });\n",
-        "}\n",
-        "function openLb(e,url,type){\n",
-        "  e.preventDefault();e.stopPropagation();\n",
-        "  var img=document.getElementById('lb-img');\n",
-        "  var vid=document.getElementById('lb-vid');\n",
-        "  if(type==='video'){\n",
-        "    img.style.display='none';\n",
-        "    vid.style.display='block';\n",
-        "    vid.src=url;\n",
-        "    vid.play();\n",
-        "  } else {\n",
-        "    vid.style.display='none';\n",
-        "    img.style.display='block';\n",
-        "    img.src=url;\n",
-        "  }\n",
-        "  document.getElementById('lb').classList.add('on');\n",
-        "}\n",
-        "function closeLb(){\n",
-        "  var vid=document.getElementById('lb-vid');\n",
-        "  vid.pause();vid.src='';\n",
-        "  document.getElementById('lb-img').src='';\n",
-        "  document.getElementById('lb').classList.remove('on');\n",
-        "}\n",
-        "function sortGroups(by){\n",
-        "  var overlay=document.getElementById('sort-overlay');\n",
-        "  overlay.style.display='flex';\n",
-        "  requestAnimationFrame(function(){\n",
-        "    requestAnimationFrame(function(){\n",
-        "      var container=document.getElementById('groups-container');\n",
-        "      var groups=Array.from(container.querySelectorAll(':scope > .group'));\n",
-        "      groups.sort(function(a,b){\n",
-        "        if(by==='waste'){\n",
-        "          return Number(b.dataset.waste)-Number(a.dataset.waste);\n",
-        "        } else {\n",
-        "          var da=a.dataset.date||'\\uffff';var db=b.dataset.date||'\\uffff';\n",
-        "          return by==='date-asc'?da.localeCompare(db):db.localeCompare(da);\n",
-        "        }\n",
-        "      });\n",
-        "      groups.forEach(function(g){container.appendChild(g);});\n",
-        "      overlay.style.display='none';\n",
-        "    });\n",
-        "  });\n",
-        "}\n",
-        "document.addEventListener('keydown',function(e){if(e.key==='Escape')closeLb();});\n",
-        "</script>\n</body>\n</html>",
-    ));
+    // Embed all group data as JSON
+    out.push_str("<script>\nvar GROUPS=[\n");
+    for (i, group) in groups.iter().enumerate() {
+        if i > 0 { out.push(','); }
+        out.push('\n');
+        out.push_str(&group_to_json(group, heic, heic_original));
+    }
+    out.push_str("\n];\n");
 
+    // All rendering JS using raw string to avoid escaping hell
+    out.push_str(r#"
+var PAGE=100,sorted=GROUPS.slice(),shown=0;
+
+function escA(s){
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function escH(s){
+  return s?String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'):'';
+}
+function fmtB(b){
+  if(b>=1073741824)return(b/1073741824).toFixed(1)+' GB';
+  if(b>=1048576)return(b/1048576).toFixed(1)+' MB';
+  if(b>=1024)return Math.round(b/1024)+' KB';
+  return b+' B';
+}
+function buildPreview(f){
+  var ext=f.ext,path=f.path;
+  if(ext==='jpg'||ext==='jpeg'||ext==='png'||ext==='gif'||ext==='webp'||ext==='bmp'){
+    var url='file://'+path;
+    return '<a href="'+escA(url)+'" target="_blank" data-lb-url="'+escA(url)+'" data-lb-type="image">'+
+      '<img src="'+escA(url)+'" class="thumb" loading="lazy" '+
+      'onerror="this.parentElement.innerHTML=\'<span class=no-prev>no preview</span>\'"></a>';
+  }
+  if(ext==='heic'){
+    if(f.tb){
+      var src='data:image/jpeg;base64,'+f.tb;
+      var lb=f.fb?'data:image/jpeg;base64,'+f.fb:src;
+      return '<img src="'+src+'" class="thumb" data-lb-url="'+escA(lb)+'" data-lb-type="image">';
+    }
+    return '<span class="no-prev">HEIC</span>';
+  }
+  if(ext==='tiff')return '<span class="no-prev">TIFF</span>';
+  if(ext==='dng') return '<span class="no-prev">DNG</span>';
+  if(ext==='mov'||ext==='mp4'){
+    var url='file://'+path;
+    return '<video src="'+escA(url)+'" class="thumb" preload="metadata" muted playsinline '+
+      'data-lb-url="'+escA(url)+'" data-lb-type="video" '+
+      'onerror="this.outerHTML=\'<span class=no-prev>no preview</span>\'"></video>';
+  }
+  return '<span class="no-prev">&mdash;</span>';
+}
+function buildRow(f,isKeep){
+  var rc=isKeep?'keep':'remove';
+  var bc=isKeep?'keep-badge':'remove-badge';
+  var bt=isKeep?'KEEP':'REMOVE';
+  var fname=f.path.split('/').pop()||f.path;
+  var cr=f.cr||'<span class="dim">—</span>';
+  var mo=f.mo||'<span class="dim">—</span>';
+  var ex=f.ex||'<span class="dim">—</span>';
+  var gps='<span class="dim">—</span>';
+  if(f.lat!=null&&f.lon!=null){
+    gps='<div class="gps"><a href="https://maps.google.com/?q='+f.lat.toFixed(6)+','+f.lon.toFixed(6)+
+      '" target="_blank" rel="noopener">'+Math.abs(f.lat).toFixed(4)+'&deg;'+(f.lat>=0?'N':'S')+' '+
+      Math.abs(f.lon).toFixed(4)+'&deg;'+(f.lon>=0?'E':'W')+'</a></div>';
+  }
+  var dims=(f.w&&f.h)?f.w+'×'+f.h:'<span class="dim">—</span>';
+  return '<tr class="'+rc+'">'+
+    '<td class="preview">'+buildPreview(f)+'</td>'+
+    '<td class="badge"><span class="'+bc+'">'+bt+'</span></td>'+
+    '<td class="filename" title="'+escA(fname)+'">'+escH(fname)+'</td>'+
+    '<td class="path-cell"><span class="path-text">'+escH(f.path)+'</span>'+
+    '<button class="copy-btn" data-path="'+escA(f.path)+'" title="Copy path">&#x2398;</button></td>'+
+    '<td>'+fmtB(f.size)+'</td>'+
+    '<td class="dim">'+cr+'</td>'+
+    '<td class="dim">'+mo+'</td>'+
+    '<td class="dim">'+ex+'</td>'+
+    '<td>'+gps+'</td>'+
+    '<td class="dim">'+dims+'</td>'+
+    '</tr>';
+}
+function buildGroup(g,idx){
+  var rows=g.files.map(function(f,j){return buildRow(f,j===0);}).join('');
+  return '<div class="group" id="g'+idx+'">'+
+    '<div class="group-header">'+
+    '<span class="arrow">&#9654;</span>'+
+    '<code class="hash">'+escH(g.hash)+'</code>'+
+    '<span class="group-meta">'+g.files.length+' copies &middot; '+fmtB(g.files[0].size)+' each</span>'+
+    '<span class="waste">&minus;'+fmtB(g.waste)+' wasted</span>'+
+    '</div>'+
+    '<div class="group-body">'+
+    '<table><thead><tr>'+
+    '<th class="preview-th">Preview</th>'+
+    '<th>Status</th><th>Filename</th><th>Path</th>'+
+    '<th>Size</th><th>Created</th><th>Modified</th><th>EXIF date</th>'+
+    '<th>GPS</th><th>Dimensions</th>'+
+    '</tr></thead><tbody>'+rows+'</tbody></table></div></div>';
+}
+function render(reset){
+  var overlay=document.getElementById('sort-overlay');
+  var container=document.getElementById('groups-container');
+  if(reset){shown=0;container.innerHTML='';}
+  var end=Math.min(shown+PAGE,sorted.length);
+  var html='';
+  for(var i=shown;i<end;i++)html+=buildGroup(sorted[i],i);
+  var tmp=document.createElement('div');
+  tmp.innerHTML=html;
+  while(tmp.firstChild)container.appendChild(tmp.firstChild);
+  shown=end;
+  updateBtn();
+  overlay.style.display='none';
+}
+function updateBtn(){
+  var btn=document.getElementById('more-btn');
+  var rem=sorted.length-shown;
+  if(rem>0){btn.style.display='inline-block';btn.textContent='Show more ('+rem+' remaining)';}
+  else btn.style.display='none';
+}
+function showMore(){render(false);}
+function toggle(id){
+  var g=document.getElementById(id);
+  g.classList.toggle('open');
+  if(g.classList.contains('open')){
+    g.querySelectorAll('img').forEach(function(img){if(img.loading==='lazy')img.loading='eager';});
+    g.querySelectorAll('video').forEach(function(v){if(v.preload==='metadata')v.preload='auto';});
+  }
+}
+function expandAll(){
+  document.querySelectorAll('.group').forEach(function(g){
+    g.classList.add('open');
+    g.querySelectorAll('img').forEach(function(img){if(img.loading==='lazy')img.loading='eager';});
+    g.querySelectorAll('video').forEach(function(v){if(v.preload==='metadata')v.preload='auto';});
+  });
+}
+function collapseAll(){document.querySelectorAll('.group').forEach(function(g){g.classList.remove('open');});}
+function copyPath(p){
+  navigator.clipboard.writeText(p).catch(function(){
+    var t=document.createElement('textarea');t.value=p;
+    document.body.appendChild(t);t.select();document.execCommand('copy');
+    document.body.removeChild(t);
+  });
+}
+function openLb(url,type){
+  var img=document.getElementById('lb-img');
+  var vid=document.getElementById('lb-vid');
+  if(type==='video'){
+    img.style.display='none';vid.style.display='block';
+    vid.src=url;vid.play();
+  } else {
+    vid.style.display='none';img.style.display='block';img.src=url;
+  }
+  document.getElementById('lb').classList.add('on');
+}
+function closeLb(){
+  var vid=document.getElementById('lb-vid');
+  vid.pause();vid.src='';
+  document.getElementById('lb-img').src='';
+  document.getElementById('lb').classList.remove('on');
+}
+function sortGroups(by){
+  var overlay=document.getElementById('sort-overlay');
+  overlay.style.display='flex';
+  requestAnimationFrame(function(){
+    requestAnimationFrame(function(){
+      sorted.sort(function(a,b){
+        if(by==='waste')return b.waste-a.waste;
+        var da=a.date||'￿',db=b.date||'￿';
+        return by==='date-asc'?da.localeCompare(db):db.localeCompare(da);
+      });
+      render(true);
+    });
+  });
+}
+// Event delegation: toggle, lightbox, copy — one listener for all dynamic content
+document.addEventListener('click',function(e){
+  var lb=e.target.closest('[data-lb-url]');
+  if(lb){e.preventDefault();e.stopPropagation();openLb(lb.dataset.lbUrl,lb.dataset.lbType||'image');return;}
+  var cp=e.target.closest('[data-path]');
+  if(cp){copyPath(cp.dataset.path);return;}
+  var hdr=e.target.closest('.group-header');
+  if(hdr){toggle(hdr.closest('.group').id);return;}
+});
+document.addEventListener('keydown',function(e){if(e.key==='Escape')closeLb();});
+document.getElementById('lb').addEventListener('click',function(e){
+  if(e.target===this)closeLb();
+});
+render(true);
+"#);
+
+    out.push_str("</script>\n</body>\n</html>");
     out
 }
 
