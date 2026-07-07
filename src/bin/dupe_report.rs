@@ -46,7 +46,7 @@ struct Stats {
 
 fn best_date(r: &FileRow) -> &str {
     if let Some(d) = r.exif_date.as_deref() {
-        return d;
+        if !d.starts_with("0000") { return d; }
     }
     match (r.created_at.as_deref(), r.modified_at.as_deref()) {
         (Some(c), Some(m)) => if c < m { c } else { m },

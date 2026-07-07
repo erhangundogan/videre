@@ -68,7 +68,7 @@ fn extract_exif(path: &Path) -> ExifData {
         if let Value::Ascii(ref vec) = field.value {
             if let Some(bytes) = vec.first() {
                 let s = String::from_utf8_lossy(bytes);
-                if s.len() >= 19 {
+                if s.len() >= 19 && !s.starts_with("0000") {
                     result.exif_date = Some(format!(
                         "{}-{}-{}T{}",
                         &s[0..4],

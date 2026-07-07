@@ -7,7 +7,7 @@ use std::path::Path;
 // KEEP candidate sort key: exif_date wins; otherwise oldest of created_at / modified_at.
 fn best_date(r: &FileRecord) -> &str {
     if let Some(d) = r.exif_date.as_deref() {
-        return d;
+        if !d.starts_with("0000") { return d; }
     }
     match (r.created_at.as_deref(), r.modified_at.as_deref()) {
         (Some(c), Some(m)) => if c < m { c } else { m },
