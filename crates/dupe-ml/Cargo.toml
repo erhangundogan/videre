@@ -3,6 +3,10 @@ name = "dupe-ml"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "dupe-embed"
+path = "src/bin/dupe-embed.rs"
+
 [features]
 real-model = []
 
