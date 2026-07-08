@@ -1,0 +1,8 @@
+[package]
+name = "dupe-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+half = "2"
+rusqlite = { version = "0.32", features = ["bundled"] }
