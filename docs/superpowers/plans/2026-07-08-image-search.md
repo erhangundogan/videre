@@ -1,6 +1,6 @@
 # Image Search Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Local semantic image search: `dupe-embed` writes SigLIP embeddings for every unique image hash into SQLite; `dupe-search` answers text and image queries by brute-force vector scan.
 
@@ -55,7 +55,7 @@ Existing behavior must not change. Pure file moves plus manifest surgery.
 - Create: `Cargo.toml` (new workspace root)
 - Move: `Cargo.toml` -> `crates/dupe/Cargo.toml`, `src/` -> `crates/dupe/src/`, `tests/` -> `crates/dupe/tests/`
 
-- [ ] **Step 1: Move the crate**
+- [x] **Step 1: Move the crate**
 
 ```bash
 mkdir -p crates/dupe
@@ -64,7 +64,7 @@ git mv src crates/dupe/src
 git mv tests crates/dupe/tests
 ```
 
-- [ ] **Step 2: Write the workspace root manifest**
+- [x] **Step 2: Write the workspace root manifest**
 
 Create `Cargo.toml` at repo root:
 
@@ -74,11 +74,11 @@ resolver = "2"
 members = ["crates/dupe"]
 ```
 
-- [ ] **Step 3: Fix path-relative assumptions**
+- [x] **Step 3: Fix path-relative assumptions**
 
 Check `crates/dupe/tests/integration.rs`. If it locates binaries via `env!("CARGO_BIN_EXE_dupe")` (or `_dupe-report`, `_dupe-fix-dates`) nothing changes. If it hardcodes `target/release/...` or `target/debug/...`, replace each with the `env!("CARGO_BIN_EXE_<name>")` macro, which cargo resolves correctly inside workspaces. Test fixture paths are relative to the crate directory and keep working after the move.
 
-- [ ] **Step 4: Verify everything still builds and passes**
+- [x] **Step 4: Verify everything still builds and passes**
 
 Run: `cargo test 2>&1 | tail -20`
 Expected: same pass count as before the move, zero failures.
@@ -86,7 +86,7 @@ Expected: same pass count as before the move, zero failures.
 Run: `cargo build --release && ls target/release/dupe target/release/dupe-report target/release/dupe-fix-dates`
 Expected: all three binaries exist (workspace target dir stays at repo root).
 
-- [ ] **Step 5: Commit and push**
+- [x] **Step 5: Commit and push**
 
 ```bash
 git add -A
@@ -104,7 +104,7 @@ git push git@github.com:erhangundogan/dupe.git main
 - Create: `crates/dupe-core/src/vectors.rs`
 - Modify: `Cargo.toml` (root: add member)
 
-- [ ] **Step 1: Create the crate**
+- [x] **Step 1: Create the crate**
 
 `crates/dupe-core/Cargo.toml`:
 
@@ -131,7 +131,7 @@ Root `Cargo.toml` members becomes:
 members = ["crates/dupe", "crates/dupe-core"]
 ```
 
-- [ ] **Step 2: Write failing tests for vector round-trip and normalization**
+- [x] **Step 2: Write failing tests for vector round-trip and normalization**
 
 `crates/dupe-core/src/vectors.rs`:
 
@@ -172,12 +172,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [x] **Step 3: Run tests to verify they fail**
 
 Run: `cargo test -p dupe-core 2>&1 | tail -5`
 Expected: compile error, `to_f16_bytes` not found.
 
-- [ ] **Step 4: Implement**
+- [x] **Step 4: Implement**
 
 Prepend to `crates/dupe-core/src/vectors.rs` (above the tests module):
 
@@ -209,12 +209,12 @@ pub fn l2_normalize(v: &mut [f32]) {
 }
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `cargo test -p dupe-core 2>&1 | tail -5`
 Expected: `3 passed`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
@@ -229,7 +229,7 @@ git commit -m "feat: add dupe-core crate with f16 vector serialization"
 - Create: `crates/dupe-core/src/embeddings.rs`
 - Modify: `crates/dupe-core/src/lib.rs`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 `crates/dupe-core/src/embeddings.rs` (tests first; the `file_hashes` DDL below mirrors `crates/dupe/src/sqlite_output.rs` exactly):
 
@@ -326,12 +326,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p dupe-core 2>&1 | tail -5`
 Expected: compile error, `ensure_embeddings_table` not found.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Prepend to `crates/dupe-core/src/embeddings.rs`:
 
@@ -430,12 +430,12 @@ pub mod embeddings;
 pub mod vectors;
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p dupe-core 2>&1 | tail -5`
 Expected: `7 passed` (3 from vectors, 4 from embeddings).
 
-- [ ] **Step 5: Commit and push**
+- [x] **Step 5: Commit and push**
 
 ```bash
 git add -A
@@ -456,7 +456,7 @@ Pure-logic parts first (unit-testable without model weights).
 - Create: `crates/dupe-ml/src/search.rs`
 - Modify: `Cargo.toml` (root: add member)
 
-- [ ] **Step 1: Create the crate**
+- [x] **Step 1: Create the crate**
 
 `crates/dupe-ml/Cargo.toml` (check crates.io for the current candle version and use it; 0.9 is the floor):
 
@@ -524,7 +524,7 @@ pub fn best_device() -> Device {
 }
 ```
 
-- [ ] **Step 2: Write failing tests for top-k scoring**
+- [x] **Step 2: Write failing tests for top-k scoring**
 
 `crates/dupe-ml/src/search.rs`:
 
@@ -568,12 +568,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [x] **Step 3: Run tests to verify they fail**
 
 Run: `cargo test -p dupe-ml 2>&1 | tail -5`
 Expected: compile error, `top_k` not found. (First build compiles candle; several minutes is normal.)
 
-- [ ] **Step 4: Implement top_k**
+- [x] **Step 4: Implement top_k**
 
 Prepend to `crates/dupe-ml/src/search.rs`:
 
@@ -595,12 +595,12 @@ pub fn top_k(query: &[f32], corpus: &[(String, Vec<f32>)], k: usize) -> Vec<(Str
 }
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `cargo test -p dupe-ml 2>&1 | tail -5`
 Expected: `3 passed`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
@@ -616,7 +616,7 @@ git commit -m "feat: dupe-ml crate skeleton with device selection and top-k sear
 - Modify: `crates/dupe-ml/src/lib.rs`
 - Create: `crates/dupe-ml/tests/fixtures/red_2x2.png` (generated in Step 1)
 
-- [ ] **Step 1: Create a tiny fixture image**
+- [x] **Step 1: Create a tiny fixture image**
 
 ```bash
 mkdir -p crates/dupe-ml/tests/fixtures
@@ -635,7 +635,7 @@ open('crates/dupe-ml/tests/fixtures/red_2x2.png', 'wb').write(png)
 
 Verify: `file crates/dupe-ml/tests/fixtures/red_2x2.png` prints `PNG image data, 2 x 2`.
 
-- [ ] **Step 2: Write failing tests**
+- [x] **Step 2: Write failing tests**
 
 `crates/dupe-ml/src/preprocess.rs`:
 
@@ -668,12 +668,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [x] **Step 3: Run tests to verify they fail**
 
 Run: `cargo test -p dupe-ml 2>&1 | tail -5`
 Expected: compile error, `image_to_tensor` not found.
 
-- [ ] **Step 4: Implement**
+- [x] **Step 4: Implement**
 
 Prepend to `crates/dupe-ml/src/preprocess.rs`:
 
@@ -741,12 +741,12 @@ pub mod preprocess;
 pub mod search;
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `cargo test -p dupe-ml 2>&1 | tail -5`
 Expected: `5 passed` (3 search + 2 preprocess).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
@@ -764,7 +764,7 @@ No cheap unit test exists for this (weights are ~1.5GB). Tests are feature-gated
 - Modify: `crates/dupe-ml/src/lib.rs`
 - Modify: `crates/dupe-ml/Cargo.toml` (add feature)
 
-- [ ] **Step 1: Add the feature gate**
+- [x] **Step 1: Add the feature gate**
 
 Append to `crates/dupe-ml/Cargo.toml`:
 
@@ -773,7 +773,7 @@ Append to `crates/dupe-ml/Cargo.toml`:
 real-model = []
 ```
 
-- [ ] **Step 2: Implement the model wrapper**
+- [x] **Step 2: Implement the model wrapper**
 
 `crates/dupe-ml/src/model.rs`:
 
@@ -901,17 +901,17 @@ pub mod preprocess;
 pub mod search;
 ```
 
-- [ ] **Step 3: Verify it compiles without the feature**
+- [x] **Step 3: Verify it compiles without the feature**
 
 Run: `cargo test -p dupe-ml 2>&1 | tail -5`
 Expected: `5 passed` (real-model test not compiled).
 
-- [ ] **Step 4: Run the real-model test once locally**
+- [x] **Step 4: Run the real-model test once locally**
 
 Run: `cargo test -p dupe-ml --features real-model --release 2>&1 | tail -5`
 Expected: downloads weights on first run (several minutes), then `6 passed`. If the tokenizer or config file names differ in the HF repo, adjust to what `huggingface.co/google/siglip-so400m-patch14-384/tree/main` actually lists and re-run.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -925,7 +925,7 @@ git commit -m "feat: SigLIP model wrapper with image and text embedding"
 **Files:**
 - Create: `crates/dupe-ml/src/bin/dupe-embed.rs`
 
-- [ ] **Step 1: Implement the binary**
+- [x] **Step 1: Implement the binary**
 
 `crates/dupe-ml/src/bin/dupe-embed.rs`:
 
@@ -1027,12 +1027,12 @@ fn main() -> Result<()> {
 }
 ```
 
-- [ ] **Step 2: Verify it builds and help text works**
+- [x] **Step 2: Verify it builds and help text works**
 
 Run: `cargo build -p dupe-ml --release && ./target/release/dupe-embed --help`
 Expected: usage text with `--batch`, `--chunk`, `--silent`.
 
-- [ ] **Step 3: End-to-end smoke test against a real tiny DB**
+- [x] **Step 3: End-to-end smoke test against a real tiny DB**
 
 ```bash
 mkdir -p /tmp/dupe-embed-smoke && cp crates/dupe-ml/tests/fixtures/red_2x2.png /tmp/dupe-embed-smoke/
@@ -1045,7 +1045,7 @@ Expected: one row, model_id `siglip-so400m-384`, blob length = 2 x embedding dim
 
 Rerun `./target/release/dupe-embed /tmp/dupe-embed-smoke.db` and expect: `Nothing to embed`. That proves resumability.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add -A
@@ -1059,7 +1059,7 @@ git commit -m "feat: dupe-embed binary with chunked, resumable embedding pipelin
 **Files:**
 - Create: `crates/dupe-ml/src/bin/dupe-search.rs`
 
-- [ ] **Step 1: Implement the binary**
+- [x] **Step 1: Implement the binary**
 
 `crates/dupe-ml/src/bin/dupe-search.rs`:
 
@@ -1131,7 +1131,7 @@ fn main() -> Result<()> {
 }
 ```
 
-- [ ] **Step 2: Verify build and CLI contract**
+- [x] **Step 2: Verify build and CLI contract**
 
 Run: `cargo build -p dupe-ml --release && ./target/release/dupe-search --help`
 Expected: usage showing positional query, `--image`, `-k`, `--scores`.
@@ -1139,7 +1139,7 @@ Expected: usage showing positional query, `--image`, `-k`, `--scores`.
 Run: `./target/release/dupe-search /tmp/nonexistent.db "cat" 2>&1; echo "exit=$?"`
 Expected: clear error, nonzero exit, no panic backtrace.
 
-- [ ] **Step 3: End-to-end smoke test (both modes)**
+- [x] **Step 3: End-to-end smoke test (both modes)**
 
 Using the database from Task 7 Step 3:
 
@@ -1150,7 +1150,7 @@ Using the database from Task 7 Step 3:
 
 Expected: both print the fixture path; image mode scores near 1.0 (self-similarity).
 
-- [ ] **Step 4: Commit and push**
+- [x] **Step 4: Commit and push**
 
 ```bash
 git add -A
@@ -1166,7 +1166,7 @@ git push git@github.com:erhangundogan/dupe.git main
 - Modify: `CLAUDE.md`
 - Modify: `README.md`
 
-- [ ] **Step 1: Update CLAUDE.md**
+- [x] **Step 1: Update CLAUDE.md**
 
 In the Build & run section add:
 
@@ -1201,11 +1201,11 @@ first run. Embeddings schema:
     );
 ```
 
-- [ ] **Step 2: Update README.md**
+- [x] **Step 2: Update README.md**
 
 Mirror the same content in README style: add the two binaries to the Installation note, a "Semantic search" section with the usage examples above, and the embeddings table DDL next to the existing schema block. Mention the recommended workflow gains a step: `dupe-embed` after scanning, `dupe-search` anytime after.
 
-- [ ] **Step 3: Full workspace verification**
+- [x] **Step 3: Full workspace verification**
 
 Run: `cargo test 2>&1 | tail -10`
 Expected: all crates pass (dupe integration tests, dupe-core 7, dupe-ml 5).
@@ -1213,7 +1213,7 @@ Expected: all crates pass (dupe integration tests, dupe-core 7, dupe-ml 5).
 Run: `cargo build --release 2>&1 | tail -3 && ls target/release/{dupe,dupe-report,dupe-fix-dates,dupe-embed,dupe-search}`
 Expected: five binaries.
 
-- [ ] **Step 4: Commit and push**
+- [x] **Step 4: Commit and push**
 
 ```bash
 git add -A

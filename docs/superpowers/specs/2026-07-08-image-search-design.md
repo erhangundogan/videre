@@ -1,7 +1,7 @@
 # Image Search Design
 
 Date: 2026-07-08
-Status: Approved
+Status: Implemented
 
 ## Goal
 
@@ -78,7 +78,7 @@ dupe-embed <db> [--batch 32] [--chunk 500] [--silent]
 - Decode + resize on rayon threads feeding a bounded channel; batched inference (16-32) through the SigLIP vision tower on Metal; falls back to CPU off-macOS.
 - Writes per chunk (~500) in a single transaction. Resumable by construction: kill anytime, rerun continues where it left off.
 - HEIC decoded via `sips` (matching dupe-report); `.mov`/`.mp4` skipped in v1.
-- Weights auto-download from Hugging Face on first run to `~/.cache/dupe/`. Missing weights produce a clear instruction, not a panic.
+- Weights auto-download from Hugging Face on first run to `~/.cache/huggingface/` (standard hf-hub cache). Missing weights produce a clear error, not a panic.
 - Corrupt/unreadable images: logged to stderr, skipped, never fatal.
 - Progress on stderr; `--silent` suppresses it. Consistent with existing tools.
 
