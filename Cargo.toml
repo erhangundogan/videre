@@ -1,3 +1,3 @@
 [workspace]
 resolver = "2"
-members = ["crates/dupe", "crates/dupe-core"]
+members = ["crates/dupe", "crates/dupe-core", "crates/dupe-ml"]
