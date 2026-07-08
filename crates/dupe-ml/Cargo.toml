@@ -7,6 +7,10 @@ edition = "2021"
 name = "dupe-embed"
 path = "src/bin/dupe-embed.rs"
 
+[[bin]]
+name = "dupe-search"
+path = "src/bin/dupe-search.rs"
+
 [features]
 real-model = []
 
