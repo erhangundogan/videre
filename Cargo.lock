@@ -303,6 +303,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dupe-core"
+version = "0.1.0"
+dependencies = [
+ "half",
+ "rusqlite",
+]
+
+[[package]]
 name = "either"
 version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
