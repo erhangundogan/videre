@@ -7,6 +7,7 @@ pub const EMBEDDABLE_EXTS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "heic", "dng",
 ];
 
+#[derive(Debug, Clone)]
 pub struct PendingImage {
     pub hash: String,
     pub path: String,
@@ -15,32 +16,35 @@ pub struct PendingImage {
 pub fn ensure_embeddings_table(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS embeddings (
-            hash        TEXT PRIMARY KEY,
+            hash        TEXT PRIMARY KEY NOT NULL,
             model_id    TEXT NOT NULL,
             embedding   BLOB NOT NULL,
             embedded_at TEXT NOT NULL
-        );",
+        );
+        CREATE INDEX IF NOT EXISTS idx_file_hashes_hash ON file_hashes(hash);",
     )
 }
 
-/// Unique hashes that are embeddable but not yet embedded; one representative
-/// path per hash (MIN(path) keeps it deterministic).
-pub fn pending_images(conn: &Connection) -> Result<Vec<PendingImage>> {
+/// Unique hashes that are embeddable but not yet embedded under `model_id`;
+/// one representative path per hash (MIN(path) keeps it deterministic).
+pub fn pending_images(conn: &Connection, model_id: &str) -> Result<Vec<PendingImage>> {
     let placeholders = EMBEDDABLE_EXTS
         .iter()
         .map(|_| "?")
         .collect::<Vec<_>>()
         .join(",");
+    let model_param = EMBEDDABLE_EXTS.len() + 1;
     let sql = format!(
         "SELECT hash, MIN(path) FROM file_hashes
          WHERE lower(ext) IN ({placeholders})
-           AND hash NOT IN (SELECT hash FROM embeddings)
+           AND NOT EXISTS (SELECT 1 FROM embeddings e
+                           WHERE e.hash = file_hashes.hash AND e.model_id = ?{model_param})
          GROUP BY hash
          ORDER BY hash"
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(
-        rusqlite::params_from_iter(EMBEDDABLE_EXTS.iter()),
+        rusqlite::params_from_iter(EMBEDDABLE_EXTS.iter().copied().chain(std::iter::once(model_id))),
         |row| {
             Ok(PendingImage {
                 hash: row.get(0)?,
@@ -128,7 +132,7 @@ mod tests {
         insert_file(&conn, "/a/2.png", "h2", "png");
         insert_file(&conn, "/a/clip.mp4", "h3", "mp4");   // unsupported for embedding
 
-        let pending = pending_images(&conn).unwrap();
+        let pending = pending_images(&conn, "test-model").unwrap();
         assert_eq!(pending.len(), 2); // h1 once, h2 once, h3 excluded
         assert!(pending.iter().any(|p| p.hash == "h1"));
         assert!(pending.iter().any(|p| p.hash == "h2"));
@@ -141,9 +145,31 @@ mod tests {
         insert_file(&conn, "/a/2.jpg", "h2", "jpg");
         insert_embeddings(&conn, "test-model", &[("h1".to_string(), vec![0u8; 4])]).unwrap();
 
-        let pending = pending_images(&conn).unwrap();
+        let pending = pending_images(&conn, "test-model").unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].hash, "h2");
+    }
+
+    #[test]
+    fn pending_images_is_model_aware() {
+        let conn = test_db();
+        insert_file(&conn, "/a/1.jpg", "h1", "jpg");
+        insert_embeddings(&conn, "a", &[("h1".to_string(), vec![0u8; 4])]).unwrap();
+
+        // Embedded under model "a": nothing pending for "a" ...
+        assert!(pending_images(&conn, "a").unwrap().is_empty());
+
+        // ... but still pending for model "b" (re-embedding with a new model).
+        let pending = pending_images(&conn, "b").unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].hash, "h1");
+    }
+
+    #[test]
+    fn insert_embeddings_empty_slice_succeeds() {
+        let conn = test_db();
+        insert_embeddings(&conn, "test-model", &[]).unwrap();
+        assert!(load_embeddings(&conn, "test-model").unwrap().is_empty());
     }
 
     #[test]
