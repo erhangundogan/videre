@@ -14,6 +14,7 @@ Scans directories recursively, hashes every image with BLAKE3, and writes duplic
 - **JSONL output**: one JSON object per file, append-mode, ready for `jq` or database ingestion
 - **SQLite output**: `--output-sqlite` writes all 12 fields to a local SQLite database; re-scanning upserts by path
 - **HTML report**: `dupe-report` reads the SQLite database and generates a self-contained HTML review page
+- **Semantic search**: `dupe-embed` computes SigLIP embeddings; `dupe-search` finds images by text or example image
 
 ## Supported File Types
 
@@ -27,7 +28,7 @@ cd dupe
 cargo build --release
 ```
 
-Binaries are at `./target/release/dupe` and `./target/release/dupe-report`.
+Binaries are at `./target/release/dupe`, `./target/release/dupe-report`, `./target/release/dupe-fix-dates`, `./target/release/dupe-embed`, and `./target/release/dupe-search`.
 
 ## Usage
 
@@ -164,6 +165,35 @@ The report shows:
 - `.mov` and `.mp4` files displayed as video thumbnails; click to play in a lightbox overlay
 - `.heic` files require `--heic` for thumbnails (embedded as base64 JPEG via `sips`; macOS only)
 
+## Semantic search (`dupe-embed` / `dupe-search`)
+
+After scanning, embed images with SigLIP (google/siglip-so400m-patch14-384) and search by text or example image.
+
+```bash
+# Embed all images (downloads model weights from Hugging Face on first run; resumable)
+dupe-embed ~/photos.db
+
+# Search by text query
+dupe-search ~/photos.db "sunset on beach"
+
+# Search by example image
+dupe-search ~/photos.db --image query.jpg
+
+# Top-k results with cosine scores
+dupe-search ~/photos.db "birthday cake" -k 10 --scores
+```
+
+Embeddings are stored as 1152-dim L2-normalized f16 BLOBs keyed by content hash. Re-running `dupe-embed` only processes missing hashes. `.mov` and `.mp4` files are skipped; HEIC files are converted via `sips` (macOS only).
+
+```sql
+CREATE TABLE embeddings (
+    hash        TEXT PRIMARY KEY,
+    model_id    TEXT NOT NULL,
+    embedding   BLOB NOT NULL,
+    embedded_at TEXT NOT NULL
+);
+```
+
 ## Fixing file dates (`dupe-fix-dates`)
 
 After deduplication, run `dupe-fix-dates` to align each file's `modified_at` timestamp with its EXIF shoot date. This makes Finder, sort-by-date views, and backup tools see the correct original capture time instead of a corrupted copy timestamp.
@@ -190,6 +220,13 @@ dupe --output-sqlite ~/photos.db ~/Photos | xargs trash
 
 # 4. Fix timestamps on remaining files
 dupe-fix-dates ~/photos.db
+
+# 5. Embed for semantic search (optional)
+dupe-embed ~/photos.db
+
+# 6. Search by description or example
+dupe-search ~/photos.db "golden gate bridge"
+dupe-search ~/photos.db --image reference.jpg
 ```
 
 ## Pipeline Usage
@@ -267,17 +304,21 @@ Two images are considered similar when their Hamming distance is ≤ 10 (out of 
 ## Project Structure
 
 ```
-src/
-  main.rs          CLI entry point, argument parsing, pipeline orchestration
-  scanner.rs       Recursive file discovery, extension filtering
-  hasher.rs        BLAKE3 hashing, dHash perceptual hashing, EXIF extraction
-  output.rs        JSONL append writer, duplicate grouping, loser path output
-  sqlite_output.rs SQLite upsert writer
-  types.rs         FileRecord, DuplicateGroup structs
-  bin/
-    dupe_report.rs HTML report generator (reads SQLite, writes self-contained HTML)
-tests/
-  integration.rs   End-to-end tests against the real binary
+crates/
+  dupe/
+    Cargo.toml
+    src/{main.rs,scanner.rs,hasher.rs,output.rs,sqlite_output.rs,types.rs,bin/}
+    tests/integration.rs
+  dupe-core/
+    Cargo.toml
+    src/lib.rs
+    src/vectors.rs
+    src/embeddings.rs
+  dupe-ml/
+    Cargo.toml
+    src/lib.rs
+    src/{device.rs,model.rs,preprocess.rs,search.rs}
+    src/bin/{dupe-embed.rs,dupe-search.rs}
 ```
 
 ## License
