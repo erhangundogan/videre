@@ -141,6 +141,7 @@ dupe-fix-dates <db> --silent   # suppress per-file output (errors always shown)
 - Only `modified_at` is set (`created_at` / birth time requires a macOS-only syscall and is not supported)
 - Exits with code 1 if any file could not be updated
 
-## Design spec
+## Design specs
 
-`docs/superpowers/specs/2026-06-09-dupe-design.md`
+- `docs/superpowers/specs/2026-06-09-dupe-design.md` - core dedupe tool
+- `docs/superpowers/specs/2026-07-08-image-search-design.md` - semantic image search (dupe-embed, dupe-search; SigLIP + candle/Metal; Cargo workspace restructure)
