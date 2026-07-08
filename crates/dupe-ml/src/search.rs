@@ -4,12 +4,12 @@ pub fn top_k(query: &[f32], corpus: &[(String, Vec<f32>)], k: usize) -> Vec<(Str
     let mut scored: Vec<(String, f32)> = corpus
         .iter()
         .filter(|(_, v)| v.len() == query.len())
-        .map(|(hash, v)| {
+        .filter_map(|(hash, v)| {
             let dot: f32 = query.iter().zip(v.iter()).map(|(a, b)| a * b).sum();
-            (hash.clone(), dot)
+            dot.is_finite().then(|| (hash.clone(), dot))
         })
         .collect();
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
     scored.truncate(k);
     scored
 }
@@ -38,6 +38,20 @@ mod tests {
         let corpus = vec![("a".to_string(), vec![1.0f32])];
         let hits = top_k(&[1.0], &corpus, 10);
         assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn top_k_skips_nan_scores() {
+        let corpus = vec![
+            ("nan".to_string(), vec![f32::NAN, 0.0]),
+            ("good".to_string(), vec![1.0f32, 0.0]),
+            ("other".to_string(), vec![0.0f32, 1.0]),
+        ];
+        let hits = top_k(&[1.0, 0.0], &corpus, 10);
+        assert_eq!(hits.len(), 2);
+        assert!(hits.iter().all(|(name, _)| name != "nan"));
+        assert!(hits.iter().all(|(_, score)| score.is_finite()));
+        assert_eq!(hits[0].0, "good");
     }
 
     #[test]
