@@ -37,6 +37,9 @@ cargo build --release
 ./target/release/dupe-report ~/photos.db                        # generate HTML report
 ./target/release/dupe-fix-dates ~/photos.db --dry-run           # preview date fixes
 ./target/release/dupe-fix-dates ~/photos.db                     # apply date fixes
+./target/release/dupe-embed ~/photos.db                         # embed all images (resumable)
+./target/release/dupe-search ~/photos.db "sunset on beach"      # text search
+./target/release/dupe-search ~/photos.db --image query.jpg      # find similar images
 ```
 
 ## Supported file types
@@ -46,18 +49,21 @@ cargo build --release
 ## Project structure
 
 ```
-src/
-  main.rs          CLI entry, pipeline orchestration
-  scanner.rs       Recursive file discovery, extension filter
-  hasher.rs        BLAKE3 + dHash perceptual hash + EXIF extraction
-  output.rs        JSONL append, duplicate grouping, loser path output
-  sqlite_output.rs SQLite upsert writer
-  types.rs         FileRecord, DuplicateGroup structs
-  bin/
-    dupe_report.rs   HTML report generator (reads SQLite db)
-    dupe_fix_dates.rs Set mtime = exif_date for files in SQLite db
-tests/
-  integration.rs   End-to-end tests against both binaries
+crates/
+  dupe/
+    Cargo.toml
+    src/{main.rs,scanner.rs,hasher.rs,output.rs,sqlite_output.rs,types.rs,bin/}
+    tests/integration.rs
+  dupe-core/
+    Cargo.toml
+    src/lib.rs
+    src/vectors.rs
+    src/embeddings.rs
+  dupe-ml/
+    Cargo.toml
+    src/lib.rs
+    src/{device.rs,model.rs,preprocess.rs,search.rs}
+    src/bin/{dupe-embed.rs,dupe-search.rs}
 ```
 
 ## Key crates
@@ -72,6 +78,10 @@ tests/
 - `kamadak-exif`: EXIF metadata extraction (always on for jpg/jpeg/tiff/heic/dng)
 - `rusqlite` (bundled): SQLite output for `--output-sqlite` and `dupe-report`
 - `filetime`: set file `mtime` portably for `dupe-fix-dates`
+- `candle-core` / `candle-nn` / `candle-transformers`: SigLIP inference, Metal on macOS
+- `tokenizers`: text tokenization for SigLIP
+- `hf-hub`: Hugging Face model weight downloads
+- `half`: f16 storage for embeddings
 
 ## SQLite schema
 
@@ -140,6 +150,31 @@ dupe-fix-dates <db> --silent   # suppress per-file output (errors always shown)
 - `exif_date` is camera-local time with no timezone; treated as local system time when computing the UNIX timestamp
 - Only `modified_at` is set (`created_at` / birth time requires a macOS-only syscall and is not supported)
 - Exits with code 1 if any file could not be updated
+
+## dupe-embed / dupe-search
+
+`dupe-embed <db>` embeds every unique image hash (SigLIP so400m/14-384, 1152-dim,
+L2-normalized f16 BLOB) into an `embeddings` table keyed by content hash. Resumable:
+re-running processes only missing hashes. `--batch` (default 32), `--chunk` (rows per
+transaction, default 500), `--silent`. HEIC via sips; mov/mp4 skipped.
+
+`dupe-search <db> "query"` or `dupe-search <db> --image photo.jpg` prints matching
+paths to stdout (all duplicate paths per matched hash). `-k` top-k (default 20),
+`--scores` prepends cosine score. Brute-force exact scan; no ANN index at this scale.
+
+Model weights auto-download from Hugging Face (google/siglip-so400m-patch14-384) on
+first run.
+
+Embeddings schema:
+
+```sql
+CREATE TABLE embeddings (
+    hash        TEXT PRIMARY KEY,
+    model_id    TEXT NOT NULL,
+    embedding   BLOB NOT NULL,
+    embedded_at TEXT NOT NULL
+);
+```
 
 ## Design specs
 
