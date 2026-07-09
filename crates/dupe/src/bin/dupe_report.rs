@@ -71,7 +71,10 @@ fn query_vectors(conn: &Connection) -> Option<VectorBlock> {
         return None;
     }
     let mut stmt = conn
-        .prepare("SELECT hash, embedding FROM embeddings WHERE model_id = ?1 ORDER BY hash")
+        .prepare(
+            "SELECT hash, embedding FROM embeddings WHERE model_id = ?1 \
+             AND hash IN (SELECT hash FROM file_hashes) ORDER BY hash",
+        )
         .ok()?;
     let rows: Vec<(String, Vec<u8>)> = stmt
         .query_map([dupe_core::embeddings::DEFAULT_MODEL_ID], |r| {
@@ -450,7 +453,7 @@ fn generate_html(
         ".more-wrap{text-align:center;padding:16px 0 32px}\n",
         "#more-btn{padding:8px 28px;font-size:13px;display:none}\n",
         ".results-panel{margin:16px 32px;padding:14px 16px;background:#fff;",
-        "border:1px solid #e4e4e7;border-radius:10px}\n",
+        "border:1px solid #e4e4e7;border-radius:10px;scroll-margin-top:56px}\n",
         ".results-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}\n",
         ".results-head h2{font-size:14px}\n",
         ".results-strip{display:flex;gap:10px;overflow-x:auto;padding-bottom:6px}\n",
@@ -977,6 +980,14 @@ mod tests {
         .unwrap();
     }
 
+    fn add_file(conn: &Connection, path: &str, hash: &str) {
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, ext) VALUES (?1, ?2, 'jpg')",
+            rusqlite::params![path, hash],
+        )
+        .unwrap();
+    }
+
     #[test]
     fn query_vectors_returns_none_without_table() {
         let conn = mem_db();
@@ -994,6 +1005,9 @@ mod tests {
     fn query_vectors_orders_by_hash_and_encodes_f16() {
         let conn = mem_db();
         add_embeddings_table(&conn);
+        add_file(&conn, "/a/a.jpg", "aaa");
+        add_file(&conn, "/a/b.jpg", "bbb");
+        add_file(&conn, "/a/c.jpg", "ccc");
         // f16 1.0 = 0x3C00 little-endian = [0x00, 0x3C]
         let one = dupe_core::vectors::to_f16_bytes(&[1.0, 0.0]);
         let two = dupe_core::vectors::to_f16_bytes(&[0.0, 1.0]);
@@ -1024,6 +1038,8 @@ mod tests {
     fn query_vectors_skips_rows_with_wrong_dimension() {
         let conn = mem_db();
         add_embeddings_table(&conn);
+        add_file(&conn, "/a/a.jpg", "aaa");
+        add_file(&conn, "/a/b.jpg", "bbb");
         let good = dupe_core::vectors::to_f16_bytes(&[1.0, 0.0]);
         let bad = dupe_core::vectors::to_f16_bytes(&[1.0, 0.0, 0.0]); // 3 dims
         conn.execute(
@@ -1034,6 +1050,25 @@ mod tests {
             "INSERT INTO embeddings VALUES ('bbb', ?1, ?2, 'now')",
             rusqlite::params![dupe_core::embeddings::DEFAULT_MODEL_ID, bad],
         ).unwrap();
+        let vb = query_vectors(&conn).unwrap();
+        assert_eq!(vb.hashes, vec!["aaa".to_string()]);
+    }
+
+    #[test]
+    fn query_vectors_excludes_hashes_without_files() {
+        let conn = mem_db();
+        add_embeddings_table(&conn);
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, ext) VALUES ('/a/x.jpg', 'aaa', 'jpg')",
+            [],
+        ).unwrap();
+        let v = dupe_core::vectors::to_f16_bytes(&[1.0, 0.0]);
+        for hash in ["aaa", "orphan"] {
+            conn.execute(
+                "INSERT INTO embeddings VALUES (?1, ?2, ?3, 'now')",
+                rusqlite::params![hash, dupe_core::embeddings::DEFAULT_MODEL_ID, v.clone()],
+            ).unwrap();
+        }
         let vb = query_vectors(&conn).unwrap();
         assert_eq!(vb.hashes, vec!["aaa".to_string()]);
     }
