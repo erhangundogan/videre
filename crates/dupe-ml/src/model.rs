@@ -27,11 +27,17 @@ pub struct Embedder {
 impl Embedder {
     /// Download (or use cached) SigLIP weights and build the embedder.
     pub fn load(device: Device) -> Result<Self> {
-        let api = hf_hub::api::sync::Api::new().context("init HF Hub API")?;
-        let repo = api.model(MODEL_ID.to_string());
+        let client = hf_hub::HFClientSync::new().context("init HF Hub client")?;
+        let repo = client.model("google", "siglip-so400m-patch14-384");
+
+        eprintln!("Loading model {MODEL_ID} (downloads to hf-hub cache on first run)...");
 
         // Config
-        let config_path = repo.get("config.json").context("fetch config.json")?;
+        let config_path = repo
+            .download_file()
+            .filename("config.json")
+            .send()
+            .context("fetch config.json")?;
         let config_str =
             std::fs::read_to_string(&config_path).context("read config.json")?;
         let config: siglip::Config =
@@ -39,7 +45,9 @@ impl Embedder {
 
         // Tokenizer
         let tokenizer_path = repo
-            .get("tokenizer.json")
+            .download_file()
+            .filename("tokenizer.json")
+            .send()
             .context("fetch tokenizer.json")?;
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| anyhow::anyhow!("load tokenizer: {e}"))?;
@@ -123,23 +131,23 @@ pub fn embed_image_file(embedder: &Embedder, path: &Path) -> Result<Vec<f32>> {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+type Repo = hf_hub::HFRepositorySync<hf_hub::RepoTypeModel>;
+
 /// Return the list of safetensor paths for the model.
 /// Tries the single-file layout first; falls back to a sharded index.
-fn load_safetensor_paths(
-    repo: &hf_hub::api::sync::ApiRepo,
-) -> Result<Vec<PathBuf>> {
-    match repo.get("model.safetensors") {
+fn load_safetensor_paths(repo: &Repo) -> Result<Vec<PathBuf>> {
+    match repo.download_file().filename("model.safetensors").send() {
         Ok(p) => Ok(vec![p]),
         Err(_) => load_sharded_safetensors(repo),
     }
 }
 
 /// Parse `model.safetensors.index.json` and download each unique shard.
-fn load_sharded_safetensors(
-    repo: &hf_hub::api::sync::ApiRepo,
-) -> Result<Vec<PathBuf>> {
+fn load_sharded_safetensors(repo: &Repo) -> Result<Vec<PathBuf>> {
     let index_path = repo
-        .get("model.safetensors.index.json")
+        .download_file()
+        .filename("model.safetensors.index.json")
+        .send()
         .context("fetch model.safetensors.index.json")?;
     let index_str =
         std::fs::read_to_string(&index_path).context("read safetensors index")?;
@@ -169,7 +177,9 @@ fn load_sharded_safetensors(
     let mut paths = Vec::with_capacity(shards.len());
     for shard in &shards {
         let p = repo
-            .get(shard)
+            .download_file()
+            .filename(shard.clone())
+            .send()
             .with_context(|| format!("fetch shard {shard}"))?;
         paths.push(p);
     }
