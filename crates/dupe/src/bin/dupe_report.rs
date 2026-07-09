@@ -44,6 +44,58 @@ struct Stats {
     wasted_bytes: i64,
 }
 
+#[allow(dead_code)]
+struct VectorBlock {
+    hashes: Vec<String>,
+    b64: String,
+    dim: usize,
+}
+
+/// Load all embeddings for the default model, ordered by hash, as one
+/// base64-encoded f16 buffer. Returns None when the table is missing or empty.
+/// Rows whose blob length disagrees with the first valid row's dimension are
+/// skipped (mirrors search.rs semantics for corrupt rows).
+/// used by --all in the next task
+#[allow(dead_code)]
+fn query_vectors(conn: &Connection) -> Option<VectorBlock> {
+    let table_exists = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='embeddings'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .unwrap_or(false);
+    if !table_exists {
+        return None;
+    }
+    let mut stmt = conn
+        .prepare("SELECT hash, embedding FROM embeddings WHERE model_id = ?1 ORDER BY hash")
+        .ok()?;
+    let rows: Vec<(String, Vec<u8>)> = stmt
+        .query_map([dupe_core::embeddings::DEFAULT_MODEL_ID], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .ok()?
+        .filter_map(|r| r.ok())
+        .collect();
+    let first_len = rows.iter().map(|(_, b)| b.len()).find(|l| *l > 0 && l % 2 == 0)?;
+    let dim = first_len / 2;
+    let mut blob = Vec::with_capacity(rows.len() * first_len);
+    let mut hashes = Vec::with_capacity(rows.len());
+    for (hash, bytes) in rows {
+        if bytes.len() != first_len {
+            continue;
+        }
+        blob.extend_from_slice(&bytes);
+        hashes.push(hash);
+    }
+    if hashes.is_empty() {
+        return None;
+    }
+    Some(VectorBlock { hashes, b64: base64_encode(&blob), dim })
+}
+
 fn best_date(r: &FileRow) -> &str {
     if let Some(d) = r.exif_date.as_deref() {
         if !d.starts_with("0000") { return d; }
@@ -657,6 +709,90 @@ mod tests {
             width: None,
             height: None,
         }
+    }
+
+    fn mem_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (
+                path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
+                created_at TEXT, modified_at TEXT, ext TEXT, phash INTEGER,
+                exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER
+            );",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn add_embeddings_table(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE embeddings (
+                hash TEXT PRIMARY KEY, model_id TEXT NOT NULL,
+                embedding BLOB NOT NULL, embedded_at TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn query_vectors_returns_none_without_table() {
+        let conn = mem_db();
+        assert!(query_vectors(&conn).is_none());
+    }
+
+    #[test]
+    fn query_vectors_returns_none_when_empty() {
+        let conn = mem_db();
+        add_embeddings_table(&conn);
+        assert!(query_vectors(&conn).is_none());
+    }
+
+    #[test]
+    fn query_vectors_orders_by_hash_and_encodes_f16() {
+        let conn = mem_db();
+        add_embeddings_table(&conn);
+        // f16 1.0 = 0x3C00 little-endian = [0x00, 0x3C]
+        let one = dupe_core::vectors::to_f16_bytes(&[1.0, 0.0]);
+        let two = dupe_core::vectors::to_f16_bytes(&[0.0, 1.0]);
+        // Insert out of order to prove ORDER BY hash
+        conn.execute(
+            "INSERT INTO embeddings VALUES ('bbb', ?1, ?2, 'now')",
+            rusqlite::params![dupe_core::embeddings::DEFAULT_MODEL_ID, two],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO embeddings VALUES ('aaa', ?1, ?2, 'now')",
+            rusqlite::params![dupe_core::embeddings::DEFAULT_MODEL_ID, one.clone()],
+        ).unwrap();
+        // Wrong model id must be excluded
+        conn.execute(
+            "INSERT INTO embeddings VALUES ('ccc', 'other-model', ?1, 'now')",
+            rusqlite::params![one],
+        ).unwrap();
+
+        let vb = query_vectors(&conn).unwrap();
+        assert_eq!(vb.hashes, vec!["aaa".to_string(), "bbb".to_string()]);
+        assert_eq!(vb.dim, 2);
+        // blob = [00 3C 00 00] ++ [00 00 00 3C]
+        let expected = base64_encode(&[0x00, 0x3C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3C]);
+        assert_eq!(vb.b64, expected);
+    }
+
+    #[test]
+    fn query_vectors_skips_rows_with_wrong_dimension() {
+        let conn = mem_db();
+        add_embeddings_table(&conn);
+        let good = dupe_core::vectors::to_f16_bytes(&[1.0, 0.0]);
+        let bad = dupe_core::vectors::to_f16_bytes(&[1.0, 0.0, 0.0]); // 3 dims
+        conn.execute(
+            "INSERT INTO embeddings VALUES ('aaa', ?1, ?2, 'now')",
+            rusqlite::params![dupe_core::embeddings::DEFAULT_MODEL_ID, good],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO embeddings VALUES ('bbb', ?1, ?2, 'now')",
+            rusqlite::params![dupe_core::embeddings::DEFAULT_MODEL_ID, bad],
+        ).unwrap();
+        let vb = query_vectors(&conn).unwrap();
+        assert_eq!(vb.hashes, vec!["aaa".to_string()]);
     }
 
     #[test]
