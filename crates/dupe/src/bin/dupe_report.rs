@@ -449,6 +449,30 @@ fn generate_html(
         "@keyframes spin{to{transform:rotate(360deg)}}\n",
         ".more-wrap{text-align:center;padding:16px 0 32px}\n",
         "#more-btn{padding:8px 28px;font-size:13px;display:none}\n",
+        ".results-panel{margin:16px 32px;padding:14px 16px;background:#fff;",
+        "border:1px solid #e4e4e7;border-radius:10px}\n",
+        ".results-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}\n",
+        ".results-head h2{font-size:14px}\n",
+        ".results-strip{display:flex;gap:10px;overflow-x:auto;padding-bottom:6px}\n",
+        ".rcard{flex:0 0 auto;width:132px;text-align:center;position:relative}\n",
+        ".rcard .thumb{max-width:120px;max-height:120px}\n",
+        ".rcard.query{border-right:2px solid #e4e4e7;padding-right:10px;margin-right:4px}\n",
+        ".score{position:absolute;top:4px;left:8px;background:rgba(24,24,27,.75);color:#fff;",
+        "font-size:10px;padding:1px 5px;border-radius:4px}\n",
+        ".copies{position:absolute;top:4px;right:8px;background:#fbbf24;color:#18181b;",
+        "font-size:10px;font-weight:700;padding:1px 5px;border-radius:4px}\n",
+        ".rname{font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;",
+        "color:#52525b;margin-top:2px}\n",
+        ".gallery-head{padding:20px 32px 4px;display:flex;align-items:baseline;gap:12px}\n",
+        ".gallery-head h2{font-size:16px}\n",
+        ".gallery{padding:12px 32px;display:grid;",
+        "grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}\n",
+        ".card{background:#fff;border:1px solid #e4e4e7;border-radius:10px;padding:8px;",
+        "text-align:center;position:relative}\n",
+        ".card .thumb{max-width:100%;max-height:130px}\n",
+        ".card-meta{font-size:11px;color:#71717a;margin-top:4px;white-space:nowrap;",
+        "overflow:hidden;text-overflow:ellipsis}\n",
+        ".similar-btn{margin-top:6px;padding:2px 10px;font-size:11px}\n",
         "</style>\n</head>\n<body>\n",
         "<div id=\"sort-overlay\"><div class=\"sort-card\">",
         "<div class=\"spinner\"></div>Sorting&hellip;</div></div>\n",
@@ -621,7 +645,7 @@ function buildRow(f,isKeep){
   var dims=(f.w&&f.h)?f.w+'×'+f.h:'<span class="dim">—</span>';
   return '<tr class="'+rc+'">'+
     '<td class="preview">'+buildPreview(f)+'</td>'+
-    '<td class="badge"><span class="'+bc+'">'+bt+'</span></td>'+
+    '<td class="badge"><span class="'+bc+'">'+bt+'</span>'+similarBtn(f.hash)+'</td>'+
     '<td class="filename" title="'+escA(fname)+'">'+escH(fname)+'</td>'+
     '<td class="path-cell"><span class="path-text">'+escH(f.path)+'</span>'+
     '<button class="copy-btn" data-path="'+escA(f.path)+'" title="Copy path">&#x2398;</button></td>'+
@@ -737,6 +761,120 @@ document.addEventListener('click',function(e){
 document.addEventListener('keydown',function(e){if(e.key==='Escape')closeLb();});
 document.getElementById('lb').addEventListener('click',function(e){
   if(e.target===this)closeLb();
+});
+"#);
+
+    out.push_str(r#"
+// ---- All-files gallery and similarity search (active only with --all) ----
+var GPAGE=200,gShown=0,HASH_FILES={},VECS=null,VEC_INDEX={};
+function decodeVecs(b64,n,dim){
+  var bin=atob(b64);
+  var out=new Float32Array(n*dim);
+  for(var i=0;i<n*dim;i++){
+    var lo=bin.charCodeAt(i*2),hi=bin.charCodeAt(i*2+1);
+    var h=(hi<<8)|lo;
+    var s=(h&0x8000)?-1:1,e=(h>>10)&0x1f,f=h&0x3ff;
+    if(e===0)out[i]=s*f*Math.pow(2,-24);
+    else if(e===31)out[i]=f?NaN:s*Infinity;
+    else out[i]=s*(1+f/1024)*Math.pow(2,e-15);
+  }
+  return out;
+}
+function bestDateJs(f){
+  if(f.ex&&f.ex.indexOf('0000')!==0)return f.ex;
+  if(f.cr&&f.mo)return f.cr<f.mo?f.cr:f.mo;
+  return f.cr||f.mo||'';
+}
+function similarBtn(hash){
+  if(!VECS||VEC_INDEX[hash]==null)return '';
+  return '<button class="similar-btn" data-similar="'+escA(hash)+'">Similar</button>';
+}
+function buildCard(f){
+  var fname=f.path.split('/').pop()||f.path;
+  var copies=HASH_FILES[f.hash]&&HASH_FILES[f.hash].length>1?
+    '<span class="copies">x'+HASH_FILES[f.hash].length+'</span>':'';
+  return '<div class="card" data-hash="'+escA(f.hash)+'">'+copies+
+    buildPreview(f)+
+    '<div class="card-meta" title="'+escA(f.path)+'">'+escH(fname)+'</div>'+
+    '<div class="card-meta">'+fmtB(f.size)+(bestDateJs(f)?' &middot; '+escH(bestDateJs(f)):'')+'</div>'+
+    similarBtn(f.hash)+
+    '</div>';
+}
+function renderGallery(){
+  if(typeof ALLFILES==='undefined')return;
+  var g=document.getElementById('gallery');
+  var end=Math.min(gShown+GPAGE,ALLFILES.length);
+  var html='';
+  for(var i=gShown;i<end;i++)html+=buildCard(ALLFILES[i]);
+  var tmp=document.createElement('div');
+  tmp.innerHTML=html;
+  while(tmp.firstChild)g.appendChild(tmp.firstChild);
+  gShown=end;
+  var btn=document.getElementById('gallery-more');
+  var rem=ALLFILES.length-gShown;
+  if(rem>0){btn.style.display='inline-block';btn.textContent='Show more ('+rem+' remaining)';}
+  else btn.style.display='none';
+}
+function showMoreGallery(){renderGallery();}
+function findSimilar(hash){
+  var qi=VEC_INDEX[hash];
+  if(qi==null||!VECS)return;
+  var q=VECS.subarray(qi*VEC_DIM,(qi+1)*VEC_DIM);
+  var scores=[];
+  for(var i=0;i<VEC_HASHES.length;i++){
+    if(i===qi)continue;
+    var v=VECS.subarray(i*VEC_DIM,(i+1)*VEC_DIM);
+    var dot=0;
+    for(var d=0;d<VEC_DIM;d++)dot+=q[d]*v[d];
+    if(isFinite(dot))scores.push([i,dot]);
+  }
+  scores.sort(function(a,b){return b[1]-a[1];});
+  renderResults(hash,scores.slice(0,24));
+}
+function resultCard(hash,score,isQuery){
+  var files=HASH_FILES[hash];
+  if(!files||!files.length)return '';
+  var f=files[0];
+  var fname=f.path.split('/').pop()||f.path;
+  var badge=isQuery?'':'<span class="score">'+score.toFixed(3)+'</span>';
+  var copies=files.length>1?'<span class="copies">x'+files.length+'</span>':'';
+  return '<div class="rcard'+(isQuery?' query':'')+'" data-hash="'+escA(hash)+'">'+
+    badge+copies+buildPreview(f)+
+    '<div class="rname" title="'+escA(f.path)+'">'+(isQuery?'query: ':'')+escH(fname)+'</div>'+
+    '</div>';
+}
+function renderResults(qHash,scored){
+  var panel=document.getElementById('results');
+  var html='<div class="results-head"><h2>Similar images</h2>'+
+    '<button onclick="clearResults()">Clear</button></div>'+
+    '<div class="results-strip">'+resultCard(qHash,1,true);
+  for(var i=0;i<scored.length;i++){
+    html+=resultCard(VEC_HASHES[scored[i][0]],scored[i][1],false);
+  }
+  html+='</div>';
+  panel.innerHTML=html;
+  panel.style.display='block';
+  panel.querySelectorAll('img').forEach(function(img){if(img.loading==='lazy')img.loading='eager';});
+  panel.scrollIntoView({behavior:'smooth',block:'start'});
+}
+function clearResults(){
+  var panel=document.getElementById('results');
+  panel.style.display='none';
+  panel.innerHTML='';
+}
+if(typeof ALLFILES!=='undefined'){
+  ALLFILES.forEach(function(f){
+    (HASH_FILES[f.hash]=HASH_FILES[f.hash]||[]).push(f);
+  });
+  if(VEC_HASHES.length>0){
+    VECS=decodeVecs(VEC_B64,VEC_HASHES.length,VEC_DIM);
+    for(var vi=0;vi<VEC_HASHES.length;vi++)VEC_INDEX[VEC_HASHES[vi]]=vi;
+  }
+  renderGallery();
+}
+document.addEventListener('click',function(e){
+  var sb=e.target.closest('[data-similar]');
+  if(sb){e.preventDefault();e.stopPropagation();findSimilar(sb.dataset.similar);}
 });
 render(true);
 "#);
