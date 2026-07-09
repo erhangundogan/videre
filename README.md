@@ -204,7 +204,7 @@ dupe-fix-dates ~/photos.db             # apply: set mtime = exif_date
 dupe-fix-dates ~/photos.db --silent    # apply without per-file output
 ```
 
-Only files with `exif_date` in the database are touched. `exif_date` is treated as local system time. Only `modified_at` is updated: macOS birth time (`created_at`) is not changed.
+Only files with `exif_date` in the database are touched. `exif_date` is treated as local system time. Only `modified_at` is updated: macOS birth time (`created_at`) is not changed. Files that no longer exist on disk (e.g. duplicates already trashed) are silently skipped and shown in the summary as "no longer on disk (skipped)" rather than counted as errors.
 
 ### Recommended workflow
 

@@ -149,7 +149,8 @@ dupe-fix-dates <db> --silent   # suppress per-file output (errors always shown)
 
 - `exif_date` is camera-local time with no timezone; treated as local system time when computing the UNIX timestamp
 - Only `modified_at` is set (`created_at` / birth time requires a macOS-only syscall and is not supported)
-- Exits with code 1 if any file could not be updated
+- Files that no longer exist on disk (e.g. trashed duplicates still in the DB) are silently skipped and reported in the summary as "no longer on disk (skipped)"
+- Exits with code 1 if any file could not be updated (missing files are not counted as errors)
 
 ## dupe-embed / dupe-search
 
