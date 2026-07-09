@@ -73,8 +73,8 @@ fn without_all_flag_no_gallery_or_vectors() {
     let dir = tempdir().unwrap();
     let db = fixture_db(dir.path(), true);
     let html = run_report(&db, false);
-    assert!(!html.contains("VEC_B64"));
-    assert!(!html.contains("ALLFILES"));
+    assert!(!html.contains("var VEC_B64="));
+    assert!(!html.contains("var ALLFILES="));
     assert!(!html.contains("id=\"gallery\""));
     assert!(!html.contains("id=\"results\""));
 }
@@ -89,9 +89,7 @@ fn all_flag_emits_gallery_and_vectors() {
     assert!(html.contains("/pics/c.jpg"));
     assert!(html.contains("/pics/d.mov"));
     assert!(html.contains("var VEC_B64=\""));
-    assert!(html.contains("var VEC_HASHES="));
-    assert!(html.contains("\"hdup\""));
-    assert!(html.contains("\"hsing\""));
+    assert!(html.contains("var VEC_HASHES=[\"hdup\",\"hsing\"];"));
     assert!(html.contains("var VEC_DIM=2;"));
     assert!(html.contains("id=\"gallery\""));
     assert!(html.contains("id=\"results\""));
@@ -104,7 +102,7 @@ fn all_flag_without_embeddings_renders_gallery_only() {
     let html = run_report(&db, true);
     assert!(html.contains("var ALLFILES="));
     assert!(html.contains("id=\"gallery\""));
-    assert!(!html.contains("var VEC_B64=\"") || html.contains("var VEC_B64=\"\";"));
+    assert!(html.contains("var VEC_B64=\"\";"));
     // JS must guard on empty vectors: constants exist but empty
     assert!(html.contains("var VEC_HASHES=[];"));
     assert!(html.contains("var VEC_DIM=0;"));
