@@ -183,7 +183,7 @@ dupe-search ~/photos.db --image query.jpg
 dupe-search ~/photos.db "birthday cake" -k 10 --scores
 ```
 
-Embeddings are stored as 1152-dim L2-normalized f16 BLOBs keyed by content hash. Re-running `dupe-embed` only processes missing hashes. `.mov` and `.mp4` files are skipped; HEIC files are converted via `sips` (macOS only).
+Embeddings are stored as 1152-dim L2-normalized f16 BLOBs keyed by content hash. Re-running `dupe-embed` only processes missing hashes. `.mov`, `.mp4`, and `.dng` files are skipped (the image decoder has no DNG support; EXIF metadata is still available from the scan). HEIC files are converted via `sips` (macOS only).
 
 ```sql
 CREATE TABLE embeddings (

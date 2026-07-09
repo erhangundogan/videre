@@ -157,7 +157,8 @@ dupe-fix-dates <db> --silent   # suppress per-file output (errors always shown)
 `dupe-embed <db>` embeds every unique image hash (SigLIP so400m/14-384, 1152-dim,
 L2-normalized f16 BLOB) into an `embeddings` table keyed by content hash. Resumable:
 re-running processes only missing hashes. `--batch` (default 32), `--chunk` (rows per
-transaction, default 500), `--silent`. HEIC via sips; mov/mp4 skipped.
+transaction, default 500), `--silent`. HEIC via sips; DNG, mov, and mp4 skipped (the
+`image` crate has no DNG decoder; EXIF metadata is still available from the scan).
 
 `dupe-search <db> "query"` or `dupe-search <db> --image photo.jpg` prints matching
 paths to stdout (all duplicate paths per matched hash). `-k` top-k (default 20),
