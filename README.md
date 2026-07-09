@@ -211,12 +211,15 @@ Only files with `exif_date` in the database are touched. `exif_date` is treated 
 ```bash
 # 1. Scan
 dupe --output-sqlite ~/photos.db ~/Photos
+# Optional: save the REMOVE list now to skip the re-scan in step 3
+# dupe --output-sqlite ~/photos.db ~/Photos | tee /tmp/to_remove.txt
 
 # 2. Review
 dupe-report ~/photos.db
 
-# 3. Delete duplicates
+# 3. Delete duplicates (re-scans to produce a fresh REMOVE list)
 dupe --output-sqlite ~/photos.db ~/Photos | xargs trash
+# Or if you saved the list in step 1: xargs trash < /tmp/to_remove.txt
 
 # 4. Fix timestamps on remaining files
 dupe-fix-dates ~/photos.db
