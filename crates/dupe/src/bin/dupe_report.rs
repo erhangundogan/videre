@@ -21,6 +21,10 @@ struct Args {
     /// Embed HEIC thumbnails + full lightbox version (requires sips, macOS only; significantly increases HTML size)
     #[arg(long)]
     heic_original: bool,
+
+    /// Include every file (singular and duplicate) in a searchable gallery
+    #[arg(long)]
+    all: bool,
 }
 
 struct FileRow {
@@ -44,7 +48,6 @@ struct Stats {
     wasted_bytes: i64,
 }
 
-#[allow(dead_code)]
 struct VectorBlock {
     hashes: Vec<String>,
     b64: String,
@@ -55,8 +58,6 @@ struct VectorBlock {
 /// base64-encoded f16 buffer. Returns None when the table is missing or empty.
 /// Rows whose blob length disagrees with the first valid row's dimension are
 /// skipped (mirrors search.rs semantics for corrupt rows).
-/// used by --all in the next task
-#[allow(dead_code)]
 fn query_vectors(conn: &Connection) -> Option<VectorBlock> {
     let table_exists = conn
         .query_row(
@@ -321,7 +322,43 @@ fn query_groups(conn: &Connection) -> Vec<Vec<FileRow>> {
     groups
 }
 
-fn generate_html(db_path: &str, stats: &Stats, groups: &[Vec<FileRow>], heic: bool, heic_original: bool) -> String {
+fn query_all_files(conn: &Connection) -> Vec<FileRow> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT path, hash, size_bytes, COALESCE(ext,''), created_at, modified_at, exif_date, \
+                    gps_lat, gps_lon, width, height \
+             FROM file_hashes ORDER BY path",
+        )
+        .expect("failed to prepare query");
+    stmt.query_map([], |r| {
+        Ok(FileRow {
+            path:       r.get(0)?,
+            hash:       r.get(1)?,
+            size_bytes: r.get(2)?,
+            ext:        r.get(3)?,
+            created_at: r.get(4)?,
+            modified_at:r.get(5)?,
+            exif_date:  r.get(6)?,
+            gps_lat:    r.get(7)?,
+            gps_lon:    r.get(8)?,
+            width:      r.get(9)?,
+            height:     r.get(10)?,
+        })
+    })
+    .expect("failed to execute query")
+    .filter_map(|r| r.ok())
+    .collect()
+}
+
+fn generate_html(
+    db_path: &str,
+    stats: &Stats,
+    groups: &[Vec<FileRow>],
+    all_files: Option<&[FileRow]>,
+    vectors: Option<&VectorBlock>,
+    heic: bool,
+    heic_original: bool,
+) -> String {
     use chrono::Utc;
     let now = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
 
@@ -422,6 +459,13 @@ fn generate_html(db_path: &str, stats: &Stats, groups: &[Vec<FileRow>], heic: bo
     ));
 
     // Header
+    let embedded_stat = match vectors {
+        Some(vb) => format!(
+            "<div class=\"stat\"><span class=\"num\">{}</span><span class=\"label\">Embedded</span></div>",
+            vb.hashes.len()
+        ),
+        None => String::new(),
+    };
     out.push_str(&format!(
         "<div class=\"header\">\
           <h1>dupe report</h1>\
@@ -431,6 +475,7 @@ fn generate_html(db_path: &str, stats: &Stats, groups: &[Vec<FileRow>], heic: bo
             <div class=\"stat warn\"><span class=\"num\">{groups}</span><span class=\"label\">Duplicate groups</span></div>\
             <div class=\"stat warn\"><span class=\"num\">{dups}</span><span class=\"label\">Duplicate files</span></div>\
             <div class=\"stat warn\"><span class=\"num\">{wasted}</span><span class=\"label\">Wasted space</span></div>\
+            {embedded_stat}\
           </div>\
         </div>\n",
         db     = esc(db_path),
@@ -439,6 +484,7 @@ fn generate_html(db_path: &str, stats: &Stats, groups: &[Vec<FileRow>], heic: bo
         groups = stats.duplicate_groups,
         dups   = stats.duplicate_files,
         wasted = format_bytes(stats.wasted_bytes),
+        embedded_stat = embedded_stat,
     ));
 
     // Toolbar
@@ -458,6 +504,10 @@ fn generate_html(db_path: &str, stats: &Stats, groups: &[Vec<FileRow>], heic: bo
         stats.duplicate_groups,
     ));
 
+    if all_files.is_some() {
+        out.push_str("<div class=\"results-panel\" id=\"results\" style=\"display:none\"></div>\n");
+    }
+
     // Empty groups container — JS fills it
     out.push_str("<div class=\"groups\" id=\"groups-container\">");
     if groups.is_empty() {
@@ -465,6 +515,15 @@ fn generate_html(db_path: &str, stats: &Stats, groups: &[Vec<FileRow>], heic: bo
     }
     out.push_str("</div>\n");
     out.push_str("<div class=\"more-wrap\"><button id=\"more-btn\" onclick=\"showMore()\"></button></div>\n");
+
+    if let Some(files) = all_files {
+        out.push_str(&format!(
+            "<div class=\"gallery-head\"><h2>All files</h2><span class=\"info\" id=\"gallery-info\">{} files</span></div>\n\
+             <div class=\"gallery\" id=\"gallery\"></div>\n\
+             <div class=\"more-wrap\"><button id=\"gallery-more\" onclick=\"showMoreGallery()\"></button></div>\n",
+            files.len()
+        ));
+    }
 
     // Embed all group data as JSON
     out.push_str("<script>\nvar GROUPS=[\n");
@@ -474,6 +533,34 @@ fn generate_html(db_path: &str, stats: &Stats, groups: &[Vec<FileRow>], heic: bo
         out.push_str(&group_to_json(group, heic, heic_original));
     }
     out.push_str("\n];\n");
+
+    // All-files gallery data and similarity vectors (--all only).
+    // Without --all nothing is emitted so the page is unchanged.
+    if let Some(files) = all_files {
+        out.push_str("var ALLFILES=[\n");
+        for (i, f) in files.iter().enumerate() {
+            if i > 0 { out.push(','); }
+            out.push_str(&file_to_json(f, heic, heic_original));
+        }
+        out.push_str("\n];\n");
+        match vectors {
+            Some(vb) => {
+                out.push_str(&format!("var VEC_DIM={};\n", vb.dim));
+                out.push_str("var VEC_HASHES=[");
+                for (i, h) in vb.hashes.iter().enumerate() {
+                    if i > 0 { out.push(','); }
+                    out.push_str(&json_str(h));
+                }
+                out.push_str("];\n");
+                out.push_str("var VEC_B64=\"");
+                out.push_str(&vb.b64);
+                out.push_str("\";\n");
+            }
+            None => {
+                out.push_str("var VEC_DIM=0;\nvar VEC_HASHES=[];\nvar VEC_B64=\"\";\n");
+            }
+        }
+    }
 
     // All rendering JS using raw string to avoid escaping hell
     out.push_str(r#"
@@ -678,7 +765,25 @@ fn main() {
     let conn = Connection::open(&args.db).expect("failed to open database");
     let stats = query_stats(&conn);
     let groups = query_groups(&conn);
-    let html = generate_html(&args.db.to_string_lossy(), &stats, &groups, args.heic, args.heic_original);
+    let all_files = args.all.then(|| query_all_files(&conn));
+    let vectors = if args.all {
+        let v = query_vectors(&conn);
+        if v.is_none() {
+            eprintln!("no embeddings found; run dupe-embed for similarity search");
+        }
+        v
+    } else {
+        None
+    };
+    let html = generate_html(
+        &args.db.to_string_lossy(),
+        &stats,
+        &groups,
+        all_files.as_deref(),
+        vectors.as_ref(),
+        args.heic,
+        args.heic_original,
+    );
 
     fs::write(&output, &html).expect("failed to write HTML file");
 
