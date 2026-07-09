@@ -10,7 +10,7 @@ use candle_transformers::models::siglip;
 use std::path::{Path, PathBuf};
 use tokenizers::Tokenizer;
 
-pub const MODEL_ID: &str = "google/siglip-so400m-patch14-384";
+pub const MODEL_ID: &str = dupe_core::embeddings::DEFAULT_MODEL_ID;
 pub const IMAGE_SIZE: usize = 384;
 
 /// Maximum token sequence length for text queries.
