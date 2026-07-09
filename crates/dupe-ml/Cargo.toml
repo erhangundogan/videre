@@ -24,7 +24,7 @@ half = "2"
 anyhow = "1"
 serde_json = "1"
 tokenizers = "0.20"
-hf-hub = "0.3"
+hf-hub = { version = "1.0.0-rc.1", features = ["blocking"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 candle-core = { version = "0.11", features = ["metal"] }
