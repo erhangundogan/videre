@@ -159,10 +159,11 @@ fn file_to_json(f: &FileRow, heic: bool, heic_original: bool) -> String {
     let h = f.height.map(|v| v.to_string()).unwrap_or_else(|| "null".to_string());
 
     format!(
-        "{{\"path\":{path},\"ext\":{ext},\"size\":{size},\
+        "{{\"hash\":{hash},\"path\":{path},\"ext\":{ext},\"size\":{size},\
          \"cr\":{cr},\"mo\":{mo},\"ex\":{ex},\
          \"lat\":{lat},\"lon\":{lon},\"w\":{w},\"h\":{h},\
          \"tb\":{tb},\"fb\":{fb}}}",
+        hash = json_str(&f.hash),
         path = json_str(&f.path),
         ext  = json_str(&f.ext),
         size = f.size_bytes,
@@ -636,4 +637,32 @@ fn main() {
         stats.duplicate_files,
         format_bytes(stats.wasted_bytes)
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(path: &str, hash: &str, ext: &str) -> FileRow {
+        FileRow {
+            path: path.to_string(),
+            hash: hash.to_string(),
+            size_bytes: 100,
+            ext: ext.to_string(),
+            created_at: None,
+            modified_at: None,
+            exif_date: None,
+            gps_lat: None,
+            gps_lon: None,
+            width: None,
+            height: None,
+        }
+    }
+
+    #[test]
+    fn file_json_includes_full_hash() {
+        let f = row("/a/x.jpg", "deadbeefcafe", "jpg");
+        let json = file_to_json(&f, false, false);
+        assert!(json.contains("\"hash\":\"deadbeefcafe\""), "{json}");
+    }
 }
