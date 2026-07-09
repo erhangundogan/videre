@@ -28,7 +28,8 @@ impl Embedder {
     /// Download (or use cached) SigLIP weights and build the embedder.
     pub fn load(device: Device) -> Result<Self> {
         let client = hf_hub::HFClientSync::new().context("init HF Hub client")?;
-        let repo = client.model("google", "siglip-so400m-patch14-384");
+        let (owner, name) = MODEL_ID.split_once('/').expect("model id is owner/name");
+        let repo = client.model(owner, name);
 
         eprintln!("Loading model {MODEL_ID} (downloads to hf-hub cache on first run)...");
 
