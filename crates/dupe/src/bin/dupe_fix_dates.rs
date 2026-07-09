@@ -51,6 +51,7 @@ fn main() {
 
     let total = rows.len();
     let mut changed = 0usize;
+    let mut skipped = 0usize;
     let mut errors = 0usize;
 
     for (path, exif_date) in &rows {
@@ -79,6 +80,11 @@ fn main() {
 
         if !args.dry_run {
             if let Err(e) = filetime::set_file_mtime(path, ft) {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    // File was trashed or moved after the scan; skip silently.
+                    skipped += 1;
+                    continue;
+                }
                 eprintln!("Error: {path}: {e}");
                 errors += 1;
                 continue;
@@ -93,12 +99,18 @@ fn main() {
     }
 
     if !args.silent {
+        let skipped_note = if skipped > 0 {
+            format!(", {skipped} no longer on disk (skipped)")
+        } else {
+            String::new()
+        };
         eprintln!(
-            "{} file(s) with exif_date, {} {}, {} error(s).",
+            "{} file(s) with exif_date, {} {}, {} error(s){}.",
             total,
             changed,
             if args.dry_run { "would be updated" } else { "updated" },
             errors,
+            skipped_note,
         );
     }
 
