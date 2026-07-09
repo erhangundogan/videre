@@ -170,7 +170,7 @@ The report shows:
 After scanning, embed images with SigLIP (google/siglip-so400m-patch14-384) and search by text or example image.
 
 ```bash
-# Embed all images (downloads model weights from Hugging Face on first run; resumable)
+# Embed all images (resumable)
 dupe-embed ~/photos.db
 
 # Search by text query
@@ -182,6 +182,8 @@ dupe-search ~/photos.db --image query.jpg
 # Top-k results with cosine scores
 dupe-search ~/photos.db "birthday cake" -k 10 --scores
 ```
+
+**First run downloads the SigLIP model weights from Hugging Face (~1.8 GB).** The weights are cached at `~/.cache/huggingface/` and reused on every subsequent run - no re-download occurs. If all images in the database are already embedded, `dupe-embed` exits immediately without loading the model at all.
 
 Embeddings are stored as 1152-dim L2-normalized f16 BLOBs keyed by content hash. Re-running `dupe-embed` only processes missing hashes. `.mov`, `.mp4`, and `.dng` files are skipped (the image decoder has no DNG support; EXIF metadata is still available from the scan). HEIC files are converted via `sips` (macOS only).
 
