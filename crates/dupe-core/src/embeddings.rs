@@ -7,6 +7,10 @@ pub const EMBEDDABLE_EXTS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "heic", "dng",
 ];
 
+/// Model id used by dupe-embed / dupe-search / dupe-report. Single source of
+/// truth so the report binary can query embeddings without depending on dupe-ml.
+pub const DEFAULT_MODEL_ID: &str = "google/siglip-so400m-patch14-384";
+
 #[derive(Debug, Clone)]
 pub struct PendingImage {
     pub hash: String,
@@ -198,5 +202,10 @@ mod tests {
         insert_file(&conn, "/b/1-copy.jpg", "h1", "jpg");
         let paths = paths_for_hash(&conn, "h1").unwrap();
         assert_eq!(paths.len(), 2);
+    }
+
+    #[test]
+    fn default_model_id_is_the_siglip_checkpoint() {
+        assert_eq!(DEFAULT_MODEL_ID, "google/siglip-so400m-patch14-384");
     }
 }
