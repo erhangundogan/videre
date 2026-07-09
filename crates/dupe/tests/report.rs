@@ -107,3 +107,33 @@ fn all_flag_without_embeddings_renders_gallery_only() {
     assert!(html.contains("var VEC_HASHES=[];"));
     assert!(html.contains("var VEC_DIM=0;"));
 }
+
+#[test]
+fn all_flag_page_contains_similarity_js() {
+    let dir = tempdir().unwrap();
+    let db = fixture_db(dir.path(), true);
+    let html = run_report(&db, true);
+    for marker in [
+        "function decodeVecs(",
+        "function findSimilar(",
+        "function renderResults(",
+        "function clearResults(",
+        "function buildCard(",
+        "function showMoreGallery(",
+        "data-similar=",
+        ".results-panel",
+        ".gallery{",
+    ] {
+        assert!(html.contains(marker), "missing marker: {marker}");
+    }
+}
+
+#[test]
+fn without_all_flag_no_similarity_side_effects() {
+    let dir = tempdir().unwrap();
+    let db = fixture_db(dir.path(), true);
+    let html = run_report(&db, false);
+    // Shared JS may define functions, but no gallery containers may exist
+    assert!(!html.contains("id=\"gallery\""));
+    assert!(!html.contains("id=\"results\""));
+}
