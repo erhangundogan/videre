@@ -165,6 +165,18 @@ The report shows:
 - `.mov` and `.mp4` files displayed as video thumbnails; click to play in a lightbox overlay
 - `.heic` files require `--heic` for thumbnails (embedded as base64 JPEG via `sips`; macOS only)
 
+## Platform notes
+
+| Feature | macOS | Linux AMD64 |
+|---------|-------|-------------|
+| `dupe`, `dupe-report`, `dupe-fix-dates` | yes | yes |
+| `dupe-embed` / `dupe-search` | yes (Metal GPU) | yes (CPU only) |
+| HEIC embedding | yes (via `sips`) | skipped (`sips` not available) |
+| HEIC scanning and EXIF | yes | yes |
+| `created_at` field | yes | always null (Linux has no birth time API) |
+
+**Linux embedding performance:** inference runs on CPU only - Metal is enabled on macOS, but no GPU accelerator is configured for Linux. Embedding a large collection (tens of thousands of images) will take significantly longer than on Apple Silicon. CUDA support can be enabled by adding `features = ["cuda"]` to the candle dependencies in `crates/dupe-ml/Cargo.toml`, but is not configured out of the box.
+
 ## Semantic search (`dupe-embed` / `dupe-search`)
 
 After scanning, embed images with SigLIP (google/siglip-so400m-patch14-384) and search by text or example image.
