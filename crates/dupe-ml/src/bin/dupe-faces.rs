@@ -128,7 +128,7 @@ fn main() -> Result<()> {
                     .collect();
                 face_db::FaceRow {
                     hash: entry.hash.clone(), bbox, landmark: Some(lm_str),
-                    embedding, cluster_id: None, person_label: None, confirmed: 0,
+                    embedding, cluster_id: None, person_label: None, confirmed: 0, is_primary: 0,
                 }
             }).collect();
 
