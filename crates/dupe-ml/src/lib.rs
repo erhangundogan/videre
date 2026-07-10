@@ -1,6 +1,7 @@
 pub mod device;
 pub mod face_align;
 pub mod face_detect;
+pub mod face_embed;
 pub mod face_models;
 pub mod model;
 pub mod preprocess;
