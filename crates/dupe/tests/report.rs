@@ -11,8 +11,24 @@ fn report_bin() -> std::path::PathBuf {
 }
 
 /// Fixture: two duplicates (hash hdup), one singular (hsing), one video (hvid).
-/// Embeddings exist for hdup and hsing when with_embeddings is true.
-fn fixture_db(dir: &std::path::Path, with_embeddings: bool) -> std::path::PathBuf {
+/// Creates real files on disk so the existence filter in query_all_files passes.
+/// Returns (db_path, [path_a, path_b, path_c, path_d]).
+fn fixture_db(
+    dir: &std::path::Path,
+    with_embeddings: bool,
+) -> (std::path::PathBuf, [std::path::PathBuf; 4]) {
+    let pics = dir.join("pics");
+    std::fs::create_dir(&pics).unwrap();
+    let files = [
+        pics.join("a.jpg"),
+        pics.join("b.jpg"),
+        pics.join("c.jpg"),
+        pics.join("d.mov"),
+    ];
+    for f in &files {
+        std::fs::write(f, b"dummy").unwrap();
+    }
+
     let db = dir.join("test.db");
     let conn = Connection::open(&db).unwrap();
     conn.execute_batch(
@@ -24,10 +40,10 @@ fn fixture_db(dir: &std::path::Path, with_embeddings: bool) -> std::path::PathBu
     )
     .unwrap();
     for (path, hash, ext) in [
-        ("/pics/a.jpg", "hdup", "jpg"),
-        ("/pics/b.jpg", "hdup", "jpg"),
-        ("/pics/c.jpg", "hsing", "jpg"),
-        ("/pics/d.mov", "hvid", "mov"),
+        (files[0].to_str().unwrap(), "hdup", "jpg"),
+        (files[1].to_str().unwrap(), "hdup", "jpg"),
+        (files[2].to_str().unwrap(), "hsing", "jpg"),
+        (files[3].to_str().unwrap(), "hvid", "mov"),
     ] {
         conn.execute(
             "INSERT INTO file_hashes (path, hash, size_bytes, ext) VALUES (?1, ?2, 100, ?3)",
@@ -53,7 +69,7 @@ fn fixture_db(dir: &std::path::Path, with_embeddings: bool) -> std::path::PathBu
             .unwrap();
         }
     }
-    db
+    (db, files)
 }
 
 fn run_report(db: &std::path::Path, all: bool) -> String {
@@ -71,7 +87,7 @@ fn run_report(db: &std::path::Path, all: bool) -> String {
 #[test]
 fn without_all_flag_no_gallery_or_vectors() {
     let dir = tempdir().unwrap();
-    let db = fixture_db(dir.path(), true);
+    let (db, _) = fixture_db(dir.path(), true);
     let html = run_report(&db, false);
     assert!(!html.contains("var VEC_B64="));
     assert!(!html.contains("var ALLFILES="));
@@ -82,12 +98,12 @@ fn without_all_flag_no_gallery_or_vectors() {
 #[test]
 fn all_flag_emits_gallery_and_vectors() {
     let dir = tempdir().unwrap();
-    let db = fixture_db(dir.path(), true);
+    let (db, files) = fixture_db(dir.path(), true);
     let html = run_report(&db, true);
     assert!(html.contains("var ALLFILES="));
     // All four files present, including the singular and the video
-    assert!(html.contains("/pics/c.jpg"));
-    assert!(html.contains("/pics/d.mov"));
+    assert!(html.contains(files[2].to_str().unwrap()), "c.jpg missing");
+    assert!(html.contains(files[3].to_str().unwrap()), "d.mov missing");
     assert!(html.contains("var VEC_B64=\""));
     assert!(html.contains("var VEC_HASHES=[\"hdup\",\"hsing\"];"));
     assert!(html.contains("var VEC_DIM=2;"));
@@ -98,7 +114,7 @@ fn all_flag_emits_gallery_and_vectors() {
 #[test]
 fn all_flag_without_embeddings_renders_gallery_only() {
     let dir = tempdir().unwrap();
-    let db = fixture_db(dir.path(), false);
+    let (db, _) = fixture_db(dir.path(), false);
     let html = run_report(&db, true);
     assert!(html.contains("var ALLFILES="));
     assert!(html.contains("id=\"gallery\""));
@@ -111,7 +127,7 @@ fn all_flag_without_embeddings_renders_gallery_only() {
 #[test]
 fn all_flag_page_contains_similarity_js() {
     let dir = tempdir().unwrap();
-    let db = fixture_db(dir.path(), true);
+    let (db, _) = fixture_db(dir.path(), true);
     let html = run_report(&db, true);
     for marker in [
         "function decodeVecs(",
@@ -131,9 +147,23 @@ fn all_flag_page_contains_similarity_js() {
 #[test]
 fn without_all_flag_no_similarity_side_effects() {
     let dir = tempdir().unwrap();
-    let db = fixture_db(dir.path(), true);
+    let (db, _) = fixture_db(dir.path(), true);
     let html = run_report(&db, false);
     // Shared JS may define functions, but no gallery containers may exist
     assert!(!html.contains("id=\"gallery\""));
     assert!(!html.contains("id=\"results\""));
+}
+
+#[test]
+fn all_flag_excludes_files_deleted_after_scan() {
+    let dir = tempdir().unwrap();
+    let (db, files) = fixture_db(dir.path(), false);
+    // Delete c.jpg after it was recorded in the database
+    std::fs::remove_file(&files[2]).unwrap();
+    let html = run_report(&db, true);
+    // Deleted file must not appear in the gallery
+    assert!(!html.contains(files[2].to_str().unwrap()), "deleted file appears in gallery");
+    // The other files still on disk must appear
+    assert!(html.contains(files[0].to_str().unwrap()), "a.jpg missing");
+    assert!(html.contains(files[3].to_str().unwrap()), "d.mov missing");
 }

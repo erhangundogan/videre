@@ -351,6 +351,7 @@ fn query_all_files(conn: &Connection) -> Vec<FileRow> {
     })
     .expect("failed to execute query")
     .filter_map(|r| r.ok())
+    .filter(|f| std::path::Path::new(&f.path).exists())
     .collect()
 }
 
