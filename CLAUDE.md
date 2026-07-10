@@ -118,14 +118,18 @@ EXIF extraction runs automatically for `jpg`, `jpeg`, `tiff`, `heic`, and `dng` 
 
 ## dupe-report
 
-Reads `file_hashes` from a SQLite database and writes a self-contained HTML file.
+Reads `file_hashes` from a SQLite database and writes a self-contained HTML file. Two usage phases:
+
+**Phase 1 (pre-deletion):** run without `--all` to review duplicate groups with KEEP/REMOVE badges before deleting anything.
+
+**Phase 2 (post-deletion):** run with `--all` to browse the full cleaned collection with in-page similarity search. Files recorded in the database but no longer on disk are automatically excluded (checked at generation time; the database is not modified). `dupe-prune` is planned as a future command to remove stale rows permanently.
 
 ```bash
 dupe-report <db>                    # output: <db>_report.html
 dupe-report <db> -o <out>           # explicit output path
 dupe-report <db> --heic             # embed HEIC thumbnails as base64 JPEG (macOS/sips)
 dupe-report <db> --heic-original    # embed HEIC thumbnails + 1200px lightbox version
-dupe-report <db> --all              # also show all-files gallery + in-page similarity search
+dupe-report <db> --all              # all-files gallery + in-page similarity search
 ```
 
 Report includes:
@@ -137,7 +141,7 @@ Report includes:
 - `.mov` and `.mp4` files shown as `<video>` thumbnail; click opens lightbox with playback controls
 - `.heic` files: "HEIC" text by default; `--heic` embeds 240px JPEG thumbnail; `--heic-original` also embeds 1200px lightbox version (macOS only, requires `sips`)
 - Lightbox overlay for full-size image/video viewing; Escape or backdrop click closes
-- `--all`: all-files gallery (200-card pages, lazy thumbnails) + "Similar" button per file; click opens a results panel with top-24 cosine matches using inline SigLIP f16 embeddings (requires prior `dupe-embed` run)
+- `--all`: gallery of files that exist on disk (200-card pages, lazy thumbnails) + "Similar" button per file; click opens a results panel with top-24 cosine matches using inline SigLIP f16 embeddings (requires prior `dupe-embed` run)
 
 ## dupe-fix-dates
 

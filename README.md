@@ -88,15 +88,24 @@ Visual duplicates use [dHash](http://www.hackerfactor.com/blog/index.php?/archiv
 
 ## dupe-report
 
-Reads the SQLite database and generates a self-contained HTML file.
+Reads the SQLite database and generates a self-contained HTML file. There are two distinct phases where the report is useful.
+
+**Phase 1 - review before deleting.** Run immediately after `dupe` to visually inspect duplicate groups and confirm KEEP/REMOVE decisions before touching any files.
 
 ```bash
 dupe-report <db>               # output: <db>_report.html
 dupe-report <db> -o out.html   # explicit output path
 dupe-report <db> --heic        # embed HEIC thumbnails as JPEG (macOS only, requires sips)
 dupe-report <db> --heic-original  # same + 1200px lightbox version
-dupe-report <db> --all         # all-files gallery + in-page similarity search
 ```
+
+**Phase 2 - browse after cleaning.** Run with `--all` once duplicates have been deleted. The report becomes a full gallery of your cleaned collection with in-page semantic search.
+
+```bash
+dupe-report <db> --all
+```
+
+`--all` automatically skips files that were recorded in the database but no longer exist on disk, so the gallery always reflects the current state of your collection. Files are checked at report generation time; the database itself is not modified. If you want to clean up stale rows permanently, `dupe-prune` is planned as a future command.
 
 The report includes:
 
@@ -104,7 +113,7 @@ The report includes:
 - Toolbar: Expand all / Collapse all, sort by wasted space / date kept oldest-first / newest-first
 - Duplicate groups with KEEP/REMOVE badges, image thumbnails, EXIF date, GPS map links, copy-path buttons
 - Lightbox for full-size images and video playback (`.mov`, `.mp4`)
-- `--all`: paginated gallery of every file (200 per page) with a "Similar" button on each card that opens a results panel showing the top 24 cosine-similar images, computed client-side from SigLIP embeddings inlined in the page (requires a prior `dupe-embed` run)
+- `--all`: paginated gallery of every file on disk (200 per page) with a "Similar" button on each card that opens a results panel showing the top 24 cosine-similar images, computed client-side from SigLIP embeddings inlined in the page (requires a prior `dupe-embed` run)
 
 HEIC files show a "HEIC" placeholder by default; `--heic` embeds a 240px JPEG thumbnail via `sips` (macOS only).
 
