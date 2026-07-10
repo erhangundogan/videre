@@ -969,7 +969,7 @@ fn query_faces_data(conn: &Connection) -> rusqlite::Result<FacesResponse> {
         let mut stmt = conn.prepare(
             "SELECT id, hash, person_label FROM faces \
              WHERE confirmed = 1 AND person_label IS NOT NULL \
-             ORDER BY person_label, id",
+             ORDER BY person_label, is_primary DESC, id ASC",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
@@ -1094,8 +1094,15 @@ async fn handle_set_primary(
     AxumJson(req): AxumJson<SetPrimaryRequest>,
 ) -> Result<StatusCode, StatusCode> {
     let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // Clear primary flag for all faces of this person
     conn.execute(
-        "UPDATE faces SET confirmed = 1, person_label = ?1 WHERE id = ?2",
+        "UPDATE faces SET is_primary = 0 WHERE person_label = ?1",
+        rusqlite::params![req.person_label],
+    )
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // Set primary flag for the target face
+    conn.execute(
+        "UPDATE faces SET is_primary = 1, confirmed = 1, person_label = ?1 WHERE id = ?2",
         rusqlite::params![req.person_label, req.face_id],
     )
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
