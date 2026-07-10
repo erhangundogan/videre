@@ -11,6 +11,10 @@ path = "src/bin/dupe-embed.rs"
 name = "dupe-search"
 path = "src/bin/dupe-search.rs"
 
+[[bin]]
+name = "dupe-faces"
+path = "src/bin/dupe-faces.rs"
+
 [features]
 real-model = []
 
@@ -27,6 +31,10 @@ tokenizers = "0.20"
 ndarray = "0.17"
 ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
 hf-hub = { version = "1.0.0-rc.1", features = ["blocking"] }
+
+[dev-dependencies]
+tempfile = "3"
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 candle-core = { version = "0.11", features = ["metal"] }
