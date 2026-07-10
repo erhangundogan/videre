@@ -203,6 +203,20 @@ CREATE TABLE embeddings (
 );
 ```
 
+## Future direction
+
+The CLI tools are the current focus, but the project is intended to grow along two axes:
+
+**Agentic / LLM integration:** the tool should be driveable by LLM agents, not just humans. The SQLite database is the natural shared state. Existing semantic search (SigLIP embeddings) is a building block. New features should expose structured output (JSON, SQLite) and clean stdio interfaces so agents can compose them into pipelines.
+
+**Multi-platform deployment targets:**
+- CLI tools (current)
+- Desktop / Web app
+- iOS / Android native apps
+- Enterprise: server deployment, multi-user, API surface, agentic version
+
+Design implication: keep core logic in `dupe-core` and `dupe-ml` so it can be called from non-CLI contexts. Treat the SQLite schema and JSON output as a stable API contract across platforms - avoid breaking changes.
+
 ## Design specs
 
 - `docs/superpowers/specs/2026-06-09-dupe-design.md` - core dedupe tool
