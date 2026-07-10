@@ -74,7 +74,7 @@ crates/
 - `walkdir`: recursive traversal
 - `serde_json`: JSONL output
 - `chrono`: date formatting
-- `image` + `img_hash`: perceptual hashing for `--similar`
+- `image`: image decoding and dHash perceptual hashing for `--similar` (implemented inline, no img_hash crate)
 - `kamadak-exif`: EXIF metadata extraction (always on for jpg/jpeg/tiff/heic/dng)
 - `rusqlite` (bundled): SQLite output for `--output-sqlite` and `dupe-report`
 - `filetime`: set file `mtime` portably for `dupe-fix-dates`
