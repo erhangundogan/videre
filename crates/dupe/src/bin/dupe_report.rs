@@ -175,6 +175,7 @@ fn json_str(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
+            '<'  => out.push_str("\\u003c"),
             c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
             c    => out.push(c),
         }
@@ -1078,5 +1079,12 @@ mod tests {
         let f = row("/a/x.jpg", "deadbeefcafe", "jpg");
         let json = file_to_json(&f, false, false);
         assert!(json.contains("\"hash\":\"deadbeefcafe\""), "{json}");
+    }
+
+    #[test]
+    fn json_str_escapes_less_than_for_script_safety() {
+        let s = json_str("</script>");
+        assert!(s.contains("\\u003c/script"), "{s}");
+        assert!(!s.contains("</script>"), "{s}");
     }
 }
