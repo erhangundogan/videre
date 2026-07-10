@@ -11,6 +11,7 @@ Scans recursively, hashes every image with BLAKE3, and writes duplicate paths to
 | `dupe` | Scan a directory, print duplicate paths to stdout |
 | `dupe-report` | Read the SQLite database, generate an HTML review page |
 | `dupe-fix-dates` | Set each file's mtime to its EXIF shoot date |
+| `dupe-prune` | Remove stale rows, sync metadata, clean orphan embeddings |
 | `dupe-embed` | Compute SigLIP embeddings for every image in the database |
 | `dupe-search` | Search images by text description or example image |
 
@@ -32,6 +33,7 @@ Binaries land in `./target/release/`.
 
 ```bash
 # 1. Scan - duplicates printed to stdout, everything written to SQLite
+# If you don't wanna review duplicates visually then you can start from point 3
 dupe --output-sqlite ~/photos.db ~/Photos
 
 # 2. Review - open the HTML report in your browser
@@ -50,7 +52,10 @@ dupe-embed ~/photos.db
 dupe-search ~/photos.db "golden gate bridge at sunset"
 dupe-search ~/photos.db --image reference.jpg
 
-# 7. Browse the full collection with in-page similarity search
+# 7. Prune the database: remove stale rows, sync metadata, clean orphan embeddings
+dupe-prune ~/photos.db
+
+# 8. Browse the full collection with in-page similarity search
 dupe-report --all ~/photos.db
 ```
 
@@ -105,7 +110,7 @@ dupe-report <db> --heic-original  # same + 1200px lightbox version
 dupe-report <db> --all
 ```
 
-`--all` automatically skips files that were recorded in the database but no longer exist on disk, so the gallery always reflects the current state of your collection. Files are checked at report generation time; the database itself is not modified. If you want to clean up stale rows permanently, `dupe-prune` is planned as a future command.
+`--all` automatically skips files that were recorded in the database but no longer exist on disk, so the gallery always reflects the current state of your collection. Files are checked at report generation time; the database itself is not modified. Run `dupe-prune` to permanently clean up stale rows and sync metadata.
 
 The report includes:
 
@@ -116,6 +121,26 @@ The report includes:
 - `--all`: paginated gallery of every file on disk (200 per page) with a "Similar" button on each card that opens a results panel showing the top 24 cosine-similar images, computed client-side from SigLIP embeddings inlined in the page (requires a prior `dupe-embed` run)
 
 HEIC files show a "HEIC" placeholder by default; `--heic` embeds a 240px JPEG thumbnail via `sips` (macOS only).
+
+---
+
+## dupe-prune
+
+Syncs the database with the current state of the filesystem. Run this after deleting duplicates and fixing dates to keep the database consistent.
+
+```bash
+dupe-prune <db>            # apply all cleanup
+dupe-prune <db> --dry-run  # preview without modifying the database
+dupe-prune <db> --silent   # apply without per-file output
+```
+
+What it does in a single pass:
+
+- **Removes stale rows**: deletes `file_hashes` rows for files that no longer exist on disk (e.g. duplicates that were trashed)
+- **Syncs modified_at**: refreshes the `modified_at` column for surviving files from the current filesystem mtime - picks up changes made by `dupe-fix-dates` or any other tool
+- **Cleans orphan embeddings**: deletes rows from `embeddings` whose hash has no remaining `file_hashes` entry
+
+In dry-run mode, the orphan embedding count is a lower bound: it reflects only pre-existing orphans, not ones that would be created by the would-be row removals.
 
 ---
 
