@@ -18,6 +18,10 @@ struct Args {
     #[arg(long, conflicts_with = "query")]
     image: Option<PathBuf>,
 
+    /// Return paths containing a named person (confirmed faces only)
+    #[arg(long, conflicts_with = "query", conflicts_with = "image")]
+    person: Option<String>,
+
     /// Number of results
     #[arg(short = 'k', long, default_value_t = 20)]
     top_k: usize,
@@ -31,6 +35,17 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let conn = Connection::open(&args.db)
         .with_context(|| format!("open {}", args.db.display()))?;
+
+    if let Some(name) = &args.person {
+        let paths = dupe_core::person_search::search_by_person(&conn, name, None)?;
+        if paths.is_empty() {
+            eprintln!("No confirmed photos found for person: {name}");
+        }
+        for path in paths {
+            println!("{path}");
+        }
+        return Ok(());
+    }
 
     let corpus_raw = embeddings::load_embeddings(&conn, model::MODEL_ID)?;
     anyhow::ensure!(
