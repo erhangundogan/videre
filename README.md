@@ -13,7 +13,7 @@ Scans directories recursively, hashes every image with BLAKE3, and writes duplic
 - **Pipe-friendly output**: REMOVE candidates printed to stdout one per line; progress on stderr
 - **JSONL output**: one JSON object per file, append-mode, ready for `jq` or database ingestion
 - **SQLite output**: `--output-sqlite` writes all 12 fields to a local SQLite database; re-scanning upserts by path
-- **HTML report**: `dupe-report` reads the SQLite database and generates a self-contained HTML review page
+- **HTML report**: `dupe-report` reads the SQLite database and generates a self-contained HTML review page with gallery and in-page similarity search (`--all`)
 - **Semantic search**: `dupe-embed` computes SigLIP embeddings; `dupe-search` finds images by text or example image
 
 ## Supported File Types
@@ -66,6 +66,10 @@ dupe-report ~/photos.db
 # Also find visually similar images (review report before deleting)
 dupe --similar --output-sqlite ~/photos.db ~/Photos
 dupe-report ~/photos.db -o ~/Desktop/report.html
+
+# Full gallery with in-page similarity search (requires dupe-embed first)
+dupe-embed ~/photos.db
+dupe-report --all ~/photos.db
 ```
 
 ## Output
@@ -156,6 +160,7 @@ dupe-report ~/photos.db                         # writes photos_report.html next
 dupe-report ~/photos.db -o report.html          # explicit output path
 dupe-report ~/photos.db --heic                  # embed HEIC thumbnails (macOS only, requires sips)
 dupe-report ~/photos.db --heic-original         # embed HEIC thumbnails + 1200px lightbox version
+dupe-report ~/photos.db --all                   # also show all-files gallery + in-page similarity search
 ```
 
 The report shows:
@@ -164,6 +169,7 @@ The report shows:
 - Duplicate groups with KEEP/REMOVE badges, image thumbnails, created date, EXIF date, GPS map links, copy-path buttons
 - `.mov` and `.mp4` files displayed as video thumbnails; click to play in a lightbox overlay
 - `.heic` files require `--heic` for thumbnails (embedded as base64 JPEG via `sips`; macOS only)
+- `--all`: all-files gallery (200 cards per page with lazy loading) and a "Similar" button on every card; clicking it opens a results panel with the top 24 cosine-similar images using the SigLIP embeddings inlined in the page (requires a prior `dupe-embed` run)
 
 ## Platform notes
 
@@ -244,6 +250,9 @@ dupe-embed ~/photos.db
 # 6. Search by description or example
 dupe-search ~/photos.db "golden gate bridge"
 dupe-search ~/photos.db --image reference.jpg
+
+# 7. Browse and visually search the full collection in the report
+dupe-report --all ~/photos.db
 ```
 
 ## Pipeline Usage
