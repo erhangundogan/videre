@@ -900,7 +900,188 @@ render(true);
 
 // ---- Faces labeling server ----
 
-const FACES_HTML: &str = "<!DOCTYPE html><html><body><h1>Faces labeling - coming soon</h1></body></html>";
+const FACES_HTML: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>dupe-faces labeling</title>
+  <style>
+    body { font-family: sans-serif; margin: 0; padding: 16px; background: #f5f5f5; }
+    h2 { border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+    .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }
+    .grid { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }
+    .card { background: white; border: 2px solid #ddd; border-radius: 8px; padding: 12px; min-width: 160px; max-width: 240px; cursor: grab; }
+    .card.person-card { cursor: default; border-color: #6c8ebf; background: #e8f0fe; }
+    .card.drag-over { border-color: #2a6db5; background: #d0e4ff; }
+    .badge { display: inline-block; background: #555; color: white; border-radius: 12px; padding: 0 8px; font-size: 12px; margin-left: 4px; }
+    .face-id { display: inline-block; background: #eee; border-radius: 4px; padding: 2px 6px; font-size: 11px; margin: 2px; font-family: monospace; }
+    .face-id .remove-btn { cursor: pointer; color: red; margin-left: 4px; font-weight: bold; }
+    .new-person-area { margin-top: 8px; }
+    button { cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid #999; background: white; }
+    button.primary { background: #2a6db5; color: white; border-color: #2a6db5; }
+    input[type=text] { padding: 4px 8px; border: 1px solid #999; border-radius: 4px; width: 120px; }
+    #status { font-size: 13px; color: #555; }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <strong>dupe-faces labeling</strong>
+    <span id="status">Loading...</span>
+    <button class="primary" onclick="saveAndClose()">Save &amp; Close</button>
+  </div>
+
+  <h2>People <span id="people-count" class="badge">0</span></h2>
+  <div id="people-grid" class="grid"></div>
+
+  <h2>Unassigned Clusters <span id="cluster-count" class="badge">0</span></h2>
+  <div id="cluster-grid" class="grid"></div>
+
+  <h2>Singletons <span id="singleton-count" class="badge">0</span></h2>
+  <div id="singleton-grid" class="grid"></div>
+
+  <script>
+    let facesData = { people: [], clusters: [], singletons: [] };
+
+    async function loadFaces() {
+      try {
+        const r = await fetch('/api/faces');
+        facesData = await r.json();
+        render();
+        document.getElementById('status').textContent =
+          `${facesData.people.length} people, ${facesData.clusters.length} clusters, ${facesData.singletons.length} singletons`;
+      } catch(e) {
+        document.getElementById('status').textContent = 'Error loading: ' + e;
+      }
+    }
+
+    function hashDisplay(hash) {
+      return hash.substring(0, 8);
+    }
+
+    function faceChip(faceId) {
+      return `<span class="face-id">#${faceId}<span class="remove-btn" onclick="removeFace(${faceId})" title="Remove">x</span></span>`;
+    }
+
+    function renderPeople(people) {
+      const grid = document.getElementById('people-grid');
+      document.getElementById('people-count').textContent = people.length;
+      grid.innerHTML = people.map(p => `
+        <div class="card person-card"
+             ondragover="event.preventDefault(); this.classList.add('drag-over')"
+             ondragleave="this.classList.remove('drag-over')"
+             ondrop="onDropToPerson(event, '${p.label.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'); this.classList.remove('drag-over')">
+          <strong>${escHtml(p.label)}</strong>
+          <span class="badge">${p.face_ids.length}</span>
+          <div style="margin-top:8px">
+            ${p.face_ids.map(id => faceChip(id)).join('')}
+          </div>
+          <div style="margin-top:4px;font-size:11px;color:#666">
+            ${p.hashes.map(h => `<span style="font-family:monospace">${hashDisplay(h)}</span>`).join(' ')}
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function renderAssignableCard(faceIds, label, badgeLabel) {
+      const faceIdsJson = JSON.stringify(faceIds);
+      const overflow = faceIds.length > 4 ? `<span class="badge">+${faceIds.length - 4}</span>` : '';
+      const chips = faceIds.slice(0, 4).map(id => faceChip(id)).join('') + overflow;
+      return `
+        <div class="card"
+             draggable="true"
+             ondragstart="onDragStart(event, ${faceIdsJson})">
+          <strong>${escHtml(label)}</strong>
+          <span class="badge">${badgeLabel}</span>
+          <div style="margin-top:8px">${chips}</div>
+          <div class="new-person-area">
+            <button onclick="showNewPersonInput(this, ${faceIdsJson})">New Person</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderClusters(clusters) {
+      const grid = document.getElementById('cluster-grid');
+      document.getElementById('cluster-count').textContent = clusters.length;
+      grid.innerHTML = clusters.map(c =>
+        renderAssignableCard(c.face_ids, `Cluster ${c.cluster_id}`, `${c.face_ids.length} faces`)
+      ).join('');
+    }
+
+    function renderSingletons(singletons) {
+      const grid = document.getElementById('singleton-grid');
+      document.getElementById('singleton-count').textContent = singletons.length;
+      grid.innerHTML = singletons.map(s =>
+        renderAssignableCard([s.face_id], `Face #${s.face_id}`, `hash: ${hashDisplay(s.hash)}`)
+      ).join('');
+    }
+
+    function render() {
+      renderPeople(facesData.people);
+      renderClusters(facesData.clusters);
+      renderSingletons(facesData.singletons);
+    }
+
+    function escHtml(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function onDragStart(event, faceIds) {
+      event.dataTransfer.setData('application/json', JSON.stringify({ face_ids: faceIds }));
+    }
+
+    async function onDropToPerson(event, personLabel) {
+      event.preventDefault();
+      const data = JSON.parse(event.dataTransfer.getData('application/json'));
+      await fetch('/api/assign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ face_ids: data.face_ids, person_label: personLabel })
+      });
+      await loadFaces();
+    }
+
+    async function removeFace(faceId) {
+      await fetch('/api/remove-face', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ face_id: faceId })
+      });
+      await loadFaces();
+    }
+
+    function showNewPersonInput(btn, faceIds) {
+      const area = btn.parentElement;
+      const faceIdsJson = JSON.stringify(faceIds);
+      area.innerHTML = `
+        <input type="text" id="np-input-${faceIds[0]}" placeholder="Person name" autofocus>
+        <button class="primary" onclick="submitNewPerson('np-input-${faceIds[0]}', ${faceIdsJson})">Create</button>
+        <button onclick="loadFaces()">Cancel</button>
+      `;
+    }
+
+    async function submitNewPerson(inputId, faceIds) {
+      const input = document.getElementById(inputId);
+      const label = input.value.trim();
+      if (!label) return;
+      await fetch('/api/new-person', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ face_ids: faceIds, label: label })
+      });
+      await loadFaces();
+    }
+
+    async function saveAndClose() {
+      await fetch('/api/quit', { method: 'POST' });
+      document.body.innerHTML = '<div style="padding:32px;font-size:18px">Server stopped. You can close this tab.</div>';
+    }
+
+    loadFaces();
+  </script>
+</body>
+</html>
+"#;
 
 #[derive(Serialize)]
 struct PersonData {
