@@ -1094,18 +1094,29 @@ async fn handle_set_primary(
     AxumJson(req): AxumJson<SetPrimaryRequest>,
 ) -> Result<StatusCode, StatusCode> {
     let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    // Clear primary flag for all faces of this person
-    conn.execute(
-        "UPDATE faces SET is_primary = 0 WHERE person_label = ?1",
-        rusqlite::params![req.person_label],
-    )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    // Set primary flag for the target face
-    conn.execute(
-        "UPDATE faces SET is_primary = 1, confirmed = 1, person_label = ?1 WHERE id = ?2",
-        rusqlite::params![req.person_label, req.face_id],
-    )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    conn.execute_batch("BEGIN").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let result = (|| -> rusqlite::Result<()> {
+        // Clear primary flag for all faces of this person
+        conn.execute(
+            "UPDATE faces SET is_primary = 0 WHERE person_label = ?1",
+            rusqlite::params![req.person_label],
+        )?;
+        // Set primary flag for the target face; guard against stealing from another person
+        conn.execute(
+            "UPDATE faces SET is_primary = 1, confirmed = 1, person_label = ?1 WHERE id = ?2 AND person_label = ?1",
+            rusqlite::params![req.person_label, req.face_id],
+        )?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            conn.execute_batch("COMMIT").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        }
+        Err(_) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
     Ok(StatusCode::OK)
 }
 
