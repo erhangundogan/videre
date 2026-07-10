@@ -958,8 +958,12 @@ const FACES_HTML: &str = r#"<!DOCTYPE html>
       return hash.substring(0, 8);
     }
 
-    function faceChip(faceId) {
+    function faceChipWithRemove(faceId) {
       return `<span class="face-id">#${faceId}<span class="remove-btn" onclick="removeFace(${faceId})" title="Remove">x</span></span>`;
+    }
+
+    function faceChip(faceId) {
+      return `<span class="face-id">#${faceId}</span>`;
     }
 
     function renderPeople(people) {
@@ -967,13 +971,14 @@ const FACES_HTML: &str = r#"<!DOCTYPE html>
       document.getElementById('people-count').textContent = people.length;
       grid.innerHTML = people.map(p => `
         <div class="card person-card"
+             data-label="${escHtml(p.label)}"
              ondragover="event.preventDefault(); this.classList.add('drag-over')"
              ondragleave="this.classList.remove('drag-over')"
-             ondrop="onDropToPerson(event, '${p.label.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'); this.classList.remove('drag-over')">
+             ondrop="onDropToPerson(event, this.dataset.label); this.classList.remove('drag-over')">
           <strong>${escHtml(p.label)}</strong>
           <span class="badge">${p.face_ids.length}</span>
           <div style="margin-top:8px">
-            ${p.face_ids.map(id => faceChip(id)).join('')}
+            ${p.face_ids.map(id => faceChipWithRemove(id)).join('')}
           </div>
           <div style="margin-top:4px;font-size:11px;color:#666">
             ${p.hashes.map(h => `<span style="font-family:monospace">${hashDisplay(h)}</span>`).join(' ')}
@@ -1033,20 +1038,28 @@ const FACES_HTML: &str = r#"<!DOCTYPE html>
     async function onDropToPerson(event, personLabel) {
       event.preventDefault();
       const data = JSON.parse(event.dataTransfer.getData('application/json'));
-      await fetch('/api/assign', {
+      const r = await fetch('/api/assign', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ face_ids: data.face_ids, person_label: personLabel })
       });
+      if (!r.ok) {
+        document.getElementById('status').textContent = 'Error: assign failed';
+        return;
+      }
       await loadFaces();
     }
 
     async function removeFace(faceId) {
-      await fetch('/api/remove-face', {
+      const r = await fetch('/api/remove-face', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ face_id: faceId })
       });
+      if (!r.ok) {
+        document.getElementById('status').textContent = 'Error: remove failed';
+        return;
+      }
       await loadFaces();
     }
 
@@ -1064,11 +1077,15 @@ const FACES_HTML: &str = r#"<!DOCTYPE html>
       const input = document.getElementById(inputId);
       const label = input.value.trim();
       if (!label) return;
-      await fetch('/api/new-person', {
+      const r = await fetch('/api/new-person', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ face_ids: faceIds, label: label })
       });
+      if (!r.ok) {
+        document.getElementById('status').textContent = 'Error: create person failed';
+        return;
+      }
       await loadFaces();
     }
 
