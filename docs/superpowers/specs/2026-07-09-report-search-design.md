@@ -1,7 +1,7 @@
 # dupe-report: all-files gallery and in-page similarity search
 
 Date: 2026-07-09
-Status: Approved
+Status: Implemented
 
 ## Goal
 
