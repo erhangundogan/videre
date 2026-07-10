@@ -1,8 +1,14 @@
+use axum::extract::{Json as AxumJson, Query, State};
+use axum::http::StatusCode;
+use axum::routing::{get, post};
+use axum::Router;
 use clap::Parser;
 use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 #[derive(Parser)]
 #[command(name = "dupe-report", about = "Generate an HTML duplicate report from a dupe SQLite database")]
@@ -25,6 +31,10 @@ struct Args {
     /// Include every file (singular and duplicate) in a searchable gallery
     #[arg(long)]
     all: bool,
+
+    /// Start a local face-labeling HTTP server on port 7878
+    #[arg(long)]
+    faces: bool,
 }
 
 struct FileRow {
@@ -888,12 +898,280 @@ render(true);
     out
 }
 
+// ---- Faces labeling server ----
+
+const FACES_HTML: &str = "<!DOCTYPE html><html><body><h1>Faces labeling - coming soon</h1></body></html>";
+
+#[derive(Serialize)]
+struct PersonData {
+    label: String,
+    face_ids: Vec<i64>,
+    representative_id: i64,
+    hashes: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ClusterData {
+    cluster_id: i64,
+    face_ids: Vec<i64>,
+    hashes: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct SingletonData {
+    face_id: i64,
+    hash: String,
+}
+
+#[derive(Serialize)]
+struct FacesResponse {
+    people: Vec<PersonData>,
+    clusters: Vec<ClusterData>,
+    singletons: Vec<SingletonData>,
+}
+
+#[derive(Deserialize)]
+struct AssignRequest {
+    face_ids: Vec<i64>,
+    person_label: String,
+}
+
+#[derive(Deserialize)]
+struct NewPersonRequest {
+    face_ids: Vec<i64>,
+    label: String,
+}
+
+#[derive(Deserialize)]
+struct RemoveFaceRequest {
+    face_id: i64,
+}
+
+#[derive(Deserialize)]
+struct SetPrimaryRequest {
+    face_id: i64,
+    person_label: String,
+}
+
+#[derive(Deserialize)]
+struct PersonSearchQuery {
+    name: String,
+}
+
+struct AppState {
+    conn: Mutex<Connection>,
+    shutdown_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+
+fn query_faces_data(conn: &Connection) -> rusqlite::Result<FacesResponse> {
+    let mut people: HashMap<String, PersonData> = HashMap::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT id, hash, person_label FROM faces \
+             WHERE confirmed = 1 AND person_label IS NOT NULL \
+             ORDER BY person_label, id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        })?;
+        for row in rows {
+            let (id, hash, label) = row?;
+            let person = people.entry(label.clone()).or_insert(PersonData {
+                label: label.clone(),
+                face_ids: vec![],
+                representative_id: id,
+                hashes: vec![],
+            });
+            person.face_ids.push(id);
+            if !person.hashes.contains(&hash) {
+                person.hashes.push(hash);
+            }
+        }
+    }
+
+    let mut cluster_map: HashMap<i64, ClusterData> = HashMap::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT id, hash, cluster_id FROM faces \
+             WHERE cluster_id IS NOT NULL AND (confirmed = 0 OR person_label IS NULL) \
+             ORDER BY cluster_id, id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+        })?;
+        for row in rows {
+            let (id, hash, cid) = row?;
+            let cluster = cluster_map.entry(cid).or_insert(ClusterData {
+                cluster_id: cid,
+                face_ids: vec![],
+                hashes: vec![],
+            });
+            cluster.face_ids.push(id);
+            if !cluster.hashes.contains(&hash) {
+                cluster.hashes.push(hash);
+            }
+        }
+    }
+
+    let mut singletons: Vec<SingletonData> = vec![];
+    {
+        let mut stmt = conn.prepare(
+            "SELECT id, hash FROM faces \
+             WHERE cluster_id IS NULL AND (confirmed = 0 OR person_label IS NULL) \
+             ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+        for row in rows {
+            let (id, hash) = row?;
+            singletons.push(SingletonData { face_id: id, hash });
+        }
+    }
+
+    Ok(FacesResponse {
+        people: people.into_values().collect(),
+        clusters: cluster_map.into_values().collect(),
+        singletons,
+    })
+}
+
+async fn handle_root() -> impl axum::response::IntoResponse {
+    axum::response::Html(FACES_HTML)
+}
+
+async fn handle_get_faces(
+    State(state): State<Arc<AppState>>,
+) -> Result<AxumJson<FacesResponse>, StatusCode> {
+    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let resp = query_faces_data(&conn).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(AxumJson(resp))
+}
+
+async fn handle_assign(
+    State(state): State<Arc<AppState>>,
+    AxumJson(req): AxumJson<AssignRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    for id in &req.face_ids {
+        conn.execute(
+            "UPDATE faces SET person_label = ?1, confirmed = 1 WHERE id = ?2",
+            rusqlite::params![req.person_label, id],
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+    Ok(StatusCode::OK)
+}
+
+async fn handle_new_person(
+    State(state): State<Arc<AppState>>,
+    AxumJson(req): AxumJson<NewPersonRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    for id in &req.face_ids {
+        conn.execute(
+            "UPDATE faces SET person_label = ?1, confirmed = 1 WHERE id = ?2",
+            rusqlite::params![req.label, id],
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+    Ok(StatusCode::OK)
+}
+
+async fn handle_remove_face(
+    State(state): State<Arc<AppState>>,
+    AxumJson(req): AxumJson<RemoveFaceRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    conn.execute(
+        "UPDATE faces SET cluster_id = NULL, person_label = NULL, confirmed = 0 WHERE id = ?1",
+        [req.face_id],
+    )
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(StatusCode::OK)
+}
+
+async fn handle_set_primary(
+    State(state): State<Arc<AppState>>,
+    AxumJson(req): AxumJson<SetPrimaryRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    conn.execute(
+        "UPDATE faces SET confirmed = 1, person_label = ?1 WHERE id = ?2",
+        rusqlite::params![req.person_label, req.face_id],
+    )
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(StatusCode::OK)
+}
+
+async fn handle_search_person(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<PersonSearchQuery>,
+) -> Result<AxumJson<Vec<String>>, StatusCode> {
+    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let paths = dupe_core::person_search::search_by_person(&conn, &q.name, None)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(AxumJson(paths))
+}
+
+async fn handle_quit(State(state): State<Arc<AppState>>) -> StatusCode {
+    if let Ok(mut lock) = state.shutdown_tx.lock() {
+        if let Some(tx) = lock.take() {
+            let _ = tx.send(());
+        }
+    }
+    StatusCode::OK
+}
+
+async fn serve_faces_async(db: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let conn = Connection::open(db)?;
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let state = Arc::new(AppState {
+        conn: Mutex::new(conn),
+        shutdown_tx: Mutex::new(Some(shutdown_tx)),
+    });
+
+    let app = Router::new()
+        .route("/", get(handle_root))
+        .route("/api/faces", get(handle_get_faces))
+        .route("/api/assign", post(handle_assign))
+        .route("/api/new-person", post(handle_new_person))
+        .route("/api/remove-face", post(handle_remove_face))
+        .route("/api/set-primary", post(handle_set_primary))
+        .route("/api/search/person", get(handle_search_person))
+        .route("/api/quit", post(handle_quit))
+        .with_state(state);
+
+    let addr = "127.0.0.1:7878";
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|e| format!("Cannot bind to {addr}: {e}"))?;
+    eprintln!("Faces labeling server: http://{addr}");
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            let _ = shutdown_rx.await;
+        })
+        .await?;
+    Ok(())
+}
+
+fn serve_faces(db: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(serve_faces_async(db))
+}
+
 fn main() {
     let args = Args::parse();
 
     if !args.db.exists() {
         eprintln!("Error: {:?} does not exist", args.db);
         std::process::exit(1);
+    }
+
+    if args.faces {
+        if let Err(e) = serve_faces(&args.db) {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+        return;
     }
 
     if args.heic_original && !args.heic {
