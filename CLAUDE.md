@@ -37,6 +37,8 @@ cargo build --release
 ./target/release/dupe-report ~/photos.db                        # generate HTML report
 ./target/release/dupe-fix-dates ~/photos.db --dry-run           # preview date fixes
 ./target/release/dupe-fix-dates ~/photos.db                     # apply date fixes
+./target/release/dupe-prune ~/photos.db --dry-run               # preview prune
+./target/release/dupe-prune ~/photos.db                         # prune stale rows + sync metadata
 ./target/release/dupe-embed ~/photos.db                         # embed all images (resumable)
 ./target/release/dupe-search ~/photos.db "sunset on beach"      # text search
 ./target/release/dupe-search ~/photos.db --image query.jpg      # find similar images
@@ -157,6 +159,23 @@ dupe-fix-dates <db> --silent   # suppress per-file output (errors always shown)
 - Only `modified_at` is set (`created_at` / birth time requires a macOS-only syscall and is not supported)
 - Files that no longer exist on disk (e.g. trashed duplicates still in the DB) are silently skipped and reported in the summary as "no longer on disk (skipped)"
 - Exits with code 1 if any file could not be updated (missing files are not counted as errors)
+
+## dupe-prune
+
+Syncs the SQLite database with the current filesystem state. Run after deleting duplicates and fixing dates.
+
+```bash
+dupe-prune <db>            # apply
+dupe-prune <db> --dry-run  # preview without modifying the database
+dupe-prune <db> --silent   # apply without per-file output
+```
+
+In a single pass:
+- Deletes `file_hashes` rows for files no longer on disk
+- Refreshes `modified_at` for surviving files from their current filesystem mtime
+- Deletes `embeddings` rows whose hash has no remaining `file_hashes` entry (orphan cleanup)
+
+Shared-hash safety: if two paths share the same hash and one file is deleted, the embedding is only removed if no `file_hashes` row for that hash survives. Dry-run orphan count is a lower bound (pre-existing orphans only; does not account for orphans created by the would-be deletions). Exits with code 1 if any row update fails.
 
 ## dupe-embed / dupe-search
 

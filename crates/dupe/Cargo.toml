@@ -15,6 +15,10 @@ path = "src/bin/dupe_report.rs"
 name = "dupe-fix-dates"
 path = "src/bin/dupe_fix_dates.rs"
 
+[[bin]]
+name = "dupe-prune"
+path = "src/bin/dupe_prune.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 blake3 = "1"
