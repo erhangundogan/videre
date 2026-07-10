@@ -27,18 +27,25 @@ pub fn create_faces_table(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 pub fn replace_faces_for_hash(conn: &Connection, hash: &str, faces: &[FaceRow]) -> rusqlite::Result<()> {
-    conn.execute("DELETE FROM faces WHERE hash = ?1", rusqlite::params![hash])?;
-    for face in faces {
-        conn.execute(
-            "INSERT INTO faces (hash, bbox, landmark, embedding, cluster_id, person_label, confirmed)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![
-                face.hash, face.bbox, face.landmark, face.embedding,
-                face.cluster_id, face.person_label, face.confirmed
-            ],
-        )?;
+    conn.execute_batch("BEGIN")?;
+    let result = (|| -> rusqlite::Result<()> {
+        conn.execute("DELETE FROM faces WHERE hash = ?1", rusqlite::params![hash])?;
+        for face in faces {
+            conn.execute(
+                "INSERT INTO faces (hash, bbox, landmark, embedding, cluster_id, person_label, confirmed)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    face.hash, face.bbox, face.landmark, face.embedding,
+                    face.cluster_id, face.person_label, face.confirmed
+                ],
+            )?;
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => { conn.execute_batch("COMMIT")?; Ok(()) }
+        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); Err(e) }
     }
-    Ok(())
 }
 
 pub fn load_face_embeddings(conn: &Connection) -> rusqlite::Result<Vec<(i64, Vec<f32>)>> {
@@ -76,6 +83,7 @@ pub fn hashes_with_faces(conn: &Connection) -> rusqlite::Result<Vec<String>> {
     rows.collect()
 }
 
+#[cfg(test)]
 fn make_embedding(vals: &[f32]) -> Vec<u8> {
     vals.iter().flat_map(|&v| f16::from_f32(v).to_le_bytes()).collect()
 }

@@ -30,9 +30,8 @@ fn main() -> Result<()> {
         let mut stmt = conn.prepare(
             "SELECT path, hash FROM file_hashes WHERE ext IN ('jpg','jpeg','png','gif','webp','bmp','tiff','heic')"
         )?;
-        let rows: Vec<_> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .filter_map(|r| r.ok())
-            .collect();
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         rows
     };
 
@@ -61,6 +60,7 @@ fn main() -> Result<()> {
     let mut embedder = face_embed::FaceEmbedder::new(&rec_path)?;
 
     let mut total_faces = 0usize;
+    let mut write_errors = 0usize;
 
     // Gap 2: Batch embedding across images using --batch as the chunk size.
     // Detection runs per image (SCRFD requires fixed-size single-image input),
@@ -91,7 +91,7 @@ fn main() -> Result<()> {
                 .map(|d| face_align::align_face(&img, &d.landmarks))
                 .collect();
 
-            if !args.silent { println!("[faces] {path}: {} face(s)", detections.len()); }
+            if !args.silent { eprintln!("[faces] {path}: {} face(s)", detections.len()); }
             let n_crops = crops.len();
             chunk_crops.extend(crops);
             chunk_entries.push(ChunkEntry {
@@ -136,6 +136,7 @@ fn main() -> Result<()> {
             if !args.dry_run {
                 if let Err(e) = face_db::replace_faces_for_hash(&conn, &entry.hash, &rows) {
                     eprintln!("write failed {}: {e}", entry.path);
+                    write_errors += 1;
                 }
             }
         }
@@ -152,6 +153,9 @@ fn main() -> Result<()> {
     }
 
     if !args.silent { eprintln!("Done: {} new face(s) detected.", total_faces); }
+    if write_errors > 0 {
+        std::process::exit(1);
+    }
     Ok(())
 }
 
