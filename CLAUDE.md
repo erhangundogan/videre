@@ -42,6 +42,9 @@ cargo build --release
 ./target/release/dupe-embed ~/photos.db                         # embed all images (resumable)
 ./target/release/dupe-search ~/photos.db "sunset on beach"      # text search
 ./target/release/dupe-search ~/photos.db --image query.jpg      # find similar images
+./target/release/dupe-faces ~/photos.db                         # detect, embed, and cluster faces
+./target/release/dupe-report ~/photos.db --faces                # label faces in browser UI (localhost:7878)
+./target/release/dupe-search ~/photos.db --person "Alice"       # find photos of Alice
 ```
 
 ## Supported file types
@@ -61,11 +64,15 @@ crates/
     src/lib.rs
     src/vectors.rs
     src/embeddings.rs
+    src/face_db.rs
+    src/face_cluster.rs
+    src/person_search.rs
   dupe-ml/
     Cargo.toml
     src/lib.rs
     src/{device.rs,model.rs,preprocess.rs,search.rs}
-    src/bin/{dupe-embed.rs,dupe-search.rs}
+    src/{face_models.rs,face_detect.rs,face_align.rs,face_embed.rs}
+    src/bin/{dupe-embed.rs,dupe-search.rs,dupe-faces.rs}
 ```
 
 ## Key crates
@@ -84,6 +91,8 @@ crates/
 - `tokenizers`: text tokenization for SigLIP
 - `hf-hub`: Hugging Face model weight downloads
 - `half`: f16 storage for embeddings
+- `ort`: ONNX Runtime bindings for face detection and embedding
+- InsightFace buffalo_l: SCRFD-10GF face detector + ArcFace w600k_r50 embedder (ONNX weights, auto-downloaded to `~/.cache/ort/`)
 
 ## SQLite schema
 
@@ -102,9 +111,23 @@ CREATE TABLE file_hashes (
     width       INTEGER,
     height      INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS faces (
+    id            INTEGER PRIMARY KEY,
+    hash          TEXT NOT NULL,
+    bbox          TEXT NOT NULL,
+    landmark      TEXT,
+    embedding     BLOB NOT NULL,
+    cluster_id    INTEGER,
+    person_label  TEXT,
+    confirmed     INTEGER DEFAULT 0,
+    is_primary    INTEGER DEFAULT 0
+);
 ```
 
 Re-scanning the same folder with the same SQLite file upserts (overwrites) existing rows via `INSERT OR REPLACE`. `phash` is stored as signed `INTEGER` (cast from `u64`).
+
+`faces` rows are keyed by `id` (auto-increment). `hash` links to `file_hashes`. `bbox` and `landmark` are JSON strings. `embedding` is a raw f32 BLOB (512-dim ArcFace). `cluster_id` is assigned by DBSCAN; `person_label` and `confirmed` are set via `dupe-report --faces`.
 
 ## EXIF fields
 
@@ -132,6 +155,7 @@ dupe-report <db> -o <out>           # explicit output path
 dupe-report <db> --heic             # embed HEIC thumbnails as base64 JPEG (macOS/sips)
 dupe-report <db> --heic-original    # embed HEIC thumbnails + 1200px lightbox version
 dupe-report <db> --all              # all-files gallery + in-page similarity search
+dupe-report <db> --faces            # face labeling UI on localhost:7878 (requires dupe-faces)
 ```
 
 Report includes:
@@ -189,6 +213,8 @@ transaction, default 500), `--silent`. HEIC via sips; DNG, mov, and mp4 skipped 
 paths to stdout (all duplicate paths per matched hash). `-k` top-k (default 20),
 `--scores` prepends cosine score. Brute-force exact scan; no ANN index at this scale.
 
+`dupe-search <db> --person "Alice"` queries the `faces` table for confirmed rows whose `person_label` matches (case-insensitive prefix) and prints matching image paths. Requires a prior `dupe-faces` run and labels applied via `dupe-report --faces`.
+
 Model weights auto-download from Hugging Face (google/siglip-so400m-patch14-384) on
 first run.
 
@@ -202,6 +228,24 @@ CREATE TABLE embeddings (
     embedded_at TEXT NOT NULL
 );
 ```
+
+## dupe-faces
+
+Detects faces in every image recorded in the database, embeds each face with ArcFace, and clusters detected faces into identity groups using DBSCAN.
+
+```
+dupe-faces <db>                  # process new hashes only
+dupe-faces <db> --reprocess      # re-detect and re-embed all hashes
+dupe-faces <db> --dry-run        # detect and embed but do not write to db
+dupe-faces <db> --batch <n>      # images per ONNX batch (default: 8)
+dupe-faces <db> --silent         # suppress per-image progress
+```
+
+Uses InsightFace buffalo_l: SCRFD-10GF for detection, 5-point landmark alignment, ArcFace w600k_r50 for 512-dim L2-normalized embeddings. Weights are downloaded from `hf-hub` on first run. ONNX Runtime (`ort`) runs inference on CPU.
+
+`dupe-report --faces` starts an `axum` web server on `localhost:7878` that serves a face-labeling UI. Type a name for each cluster, click Save; labels are written back to `faces.person_label` and `faces.confirmed`.
+
+`dupe-search --person "Alice"` queries the `faces` table for confirmed rows with the given label and prints the paths of all matching images.
 
 ## Future direction
 

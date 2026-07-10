@@ -14,6 +14,7 @@ Scans recursively, hashes every image with BLAKE3, and writes duplicate paths to
 | `dupe-prune` | Remove stale rows, sync metadata, clean orphan embeddings |
 | `dupe-embed` | Compute SigLIP embeddings for every image in the database |
 | `dupe-search` | Search images by text description or example image |
+| `dupe-faces` | Detect, embed, and cluster faces; enables person search |
 
 ## Supported file types
 
@@ -52,10 +53,19 @@ dupe-embed ~/photos.db
 dupe-search ~/photos.db "golden gate bridge at sunset"
 dupe-search ~/photos.db --image reference.jpg
 
-# 7. Prune the database: remove stale rows, sync metadata, clean orphan embeddings
+# 7. Detect, embed, and cluster faces for person search
+dupe-faces ~/photos.db
+
+# 8. Label faces in the browser UI, then save and close
+dupe-report ~/photos.db --faces
+
+# 9. Find all photos of a named person
+dupe-search ~/photos.db --person "Alice"
+
+# 10. Prune the database: remove stale rows, sync metadata, clean orphan embeddings
 dupe-prune ~/photos.db
 
-# 8. Browse the full collection with in-page similarity search
+# 11. Browse the full collection with in-page similarity search
 dupe-report --all ~/photos.db
 ```
 
@@ -122,6 +132,33 @@ The report includes:
 
 HEIC files show a "HEIC" placeholder by default; `--heic` embeds a 240px JPEG thumbnail via `sips` (macOS only).
 
+`--faces` starts a local web server on `localhost:7878` that loads each detected face cluster and lets you type a name label. Labels are saved back to the `faces` table as `person_label`. Close the browser tab or press Ctrl-C to stop the server.
+
+---
+
+## dupe-faces
+
+Detects faces in every image in the database, embeds each face with ArcFace, and clusters faces across images into identity groups. Run this after `dupe-embed` (or independently) to enable person search.
+
+```bash
+dupe-faces <db>               # process new hashes only (resumable)
+dupe-faces <db> --reprocess   # re-detect and re-embed all hashes
+dupe-faces <db> --dry-run     # detect and embed but do not write to db
+dupe-faces <db> --batch <n>   # images per ONNX batch (default: 8)
+dupe-faces <db> --silent      # suppress per-image progress
+```
+
+Face detection uses InsightFace buffalo_l (SCRFD-10GF detector + ArcFace w600k_r50 embedder) via ONNX Runtime. Model weights are downloaded automatically on first run and cached in `~/.cache/ort/`.
+
+**Faces workflow:**
+
+```bash
+dupe --output-sqlite ~/photos.db ~/Photos    # scan images
+dupe-faces ~/photos.db                       # detect + embed + cluster faces
+dupe-report ~/photos.db --faces              # label in browser, save and close
+dupe-search ~/photos.db --person "Alice"     # find all photos of Alice
+```
+
 ---
 
 ## dupe-prune
@@ -160,6 +197,7 @@ dupe-embed <db> --silent          # suppress per-image output
 dupe-search <db> "sunset on beach"          # text query
 dupe-search <db> --image query.jpg          # find images similar to an example
 dupe-search <db> "birthday cake" -k 10 --scores  # top 10 with cosine scores
+dupe-search <db> --person "Alice"           # find all photos of Alice (requires dupe-faces)
 ```
 
 On macOS, inference uses Metal (Apple Silicon GPU). On Linux, CPU only - embedding large collections will be significantly slower. CUDA support can be enabled by adding `features = ["cuda"]` to the candle dependencies in `crates/dupe-ml/Cargo.toml`.
@@ -186,6 +224,7 @@ Only files with `exif_date` in the database are touched. EXIF time is treated as
 |-|-------|-------|
 | `dupe`, `dupe-report`, `dupe-fix-dates` | yes | yes |
 | `dupe-embed`, `dupe-search` | yes (Metal GPU) | yes (CPU only) |
+| `dupe-faces` | yes (CPU via ONNX Runtime) | yes (CPU via ONNX Runtime) |
 | HEIC thumbnails in report | yes (via `sips`) | no |
 | HEIC scanning and EXIF | yes | yes |
 | `created_at` field | yes | always null |
@@ -217,6 +256,18 @@ CREATE TABLE embeddings (
     model_id    TEXT NOT NULL,
     embedding   BLOB NOT NULL,
     embedded_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS faces (
+    id            INTEGER PRIMARY KEY,
+    hash          TEXT NOT NULL,
+    bbox          TEXT NOT NULL,
+    landmark      TEXT,
+    embedding     BLOB NOT NULL,
+    cluster_id    INTEGER,
+    person_label  TEXT,
+    confirmed     INTEGER DEFAULT 0,
+    is_primary    INTEGER DEFAULT 0
 );
 ```
 
