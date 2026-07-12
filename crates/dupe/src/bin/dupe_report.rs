@@ -941,11 +941,11 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     .new-person-area input[type=text] { width: 100%; box-sizing: border-box; }
     .np-btn-row { display: flex; gap: 4px; }
     .np-btn-row button { flex: 1; }
-    .new-person-btn { font-weight: 600; }
-    .cluster-card .new-person-btn { background: var(--green-bg); border-color: var(--green-border); color: var(--green-text); }
-    .cluster-card .new-person-btn:hover { background: #fff; }
-    .singleton-card .new-person-btn { background: var(--orange-bg); border-color: var(--orange-border); color: var(--orange-text); }
-    .singleton-card .new-person-btn:hover { background: #fff; }
+    .new-person-btn { background: #fff; font-weight: 600; transition: background 0.15s, color 0.15s; }
+    .cluster-card .new-person-btn { border-color: var(--green-border); color: var(--green-text); }
+    .cluster-card .new-person-btn:hover { background: var(--green-text); border-color: var(--green-text); color: #fff; }
+    .singleton-card .new-person-btn { border-color: var(--orange-border); color: var(--orange-text); }
+    .singleton-card .new-person-btn:hover { background: var(--orange-text); border-color: var(--orange-text); color: #fff; }
     button { cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid #999; background: white; }
     button.primary { background: var(--blue-hover); color: white; border-color: var(--blue-hover); }
     input[type=text] { padding: 4px 8px; border: 1px solid #999; border-radius: 4px; width: 120px; }
