@@ -245,7 +245,7 @@ fn file_to_json(f: &FileRow, heic: bool, heic_original: bool) -> String {
         "{{\"hash\":{hash},\"path\":{path},\"ext\":{ext},\"size\":{size},\
          \"cr\":{cr},\"mo\":{mo},\"ex\":{ex},\
          \"lat\":{lat},\"lon\":{lon},\"w\":{w},\"h\":{h},\
-         \"tb\":{tb},\"fb\":{fb}}}",
+         \"tb\":{tb},\"fb\":{fb},\"meta\":{{\"faces\":[],\"location\":null}}}}",
         hash = json_str(&f.hash),
         path = json_str(&f.path),
         ext  = json_str(&f.ext),
@@ -492,6 +492,13 @@ fn generate_html(
         ".lightbox.on{display:flex}\n",
         ".lightbox img,.lightbox video{max-width:90vw;max-height:90vh;object-fit:contain;",
         "border-radius:8px;box-shadow:0 8px 40px rgba(0,0,0,.6)}\n",
+        ".lb-meta{position:absolute;bottom:0;left:0;right:0;background:rgba(24,24,27,.85);",
+        "padding:10px 16px;display:none;gap:12px;align-items:flex-start;flex-wrap:wrap}\n",
+        ".lb-meta.on{display:flex}\n",
+        ".lb-face{text-align:center;font-size:11px;color:#fff}\n",
+        ".lb-face img{width:48px;height:48px;border-radius:50%;object-fit:cover;display:block;margin-bottom:4px}\n",
+        ".lb-face a{color:#fff;text-decoration:underline}\n",
+        ".lb-location{color:#e4e4e7;font-size:12px;align-self:center}\n",
         "#sort-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);",
         "z-index:2000;align-items:center;justify-content:center}\n",
         ".sort-card{background:#fff;border-radius:12px;padding:22px 36px;",
@@ -541,6 +548,7 @@ fn generate_html(
         "<div class=\"lightbox\" id=\"lb\" onclick=\"closeLb()\">\n",
         "  <img id=\"lb-img\" src=\"\" alt=\"\" onclick=\"event.stopPropagation()\">\n",
         "  <video id=\"lb-vid\" src=\"\" controls autoplay onclick=\"event.stopPropagation()\" style=\"display:none\"></video>\n",
+        "  <div class=\"lb-meta\" id=\"lbMeta\" onclick=\"event.stopPropagation()\"></div>\n",
         "</div>\n",
     ));
 
@@ -686,9 +694,11 @@ function fmtB(b){
 }
 function buildPreview(f){
   var ext=f.ext,path=f.path;
+  var metaAttr=escA(JSON.stringify(f.meta));
   if(ext==='jpg'||ext==='jpeg'||ext==='png'||ext==='gif'||ext==='webp'||ext==='bmp'){
     var url='file://'+path;
-    return '<a href="'+escA(url)+'" target="_blank" data-lb-url="'+escA(url)+'" data-lb-type="image">'+
+    return '<a href="'+escA(url)+'" target="_blank" data-lb-url="'+escA(url)+'" data-lb-type="image" '+
+      'data-lb-meta="'+metaAttr+'">'+
       '<img src="'+escA(url)+'" class="thumb" loading="lazy" '+
       'onerror="this.parentElement.innerHTML=\'<span class=no-prev>no preview</span>\'"></a>';
   }
@@ -696,7 +706,8 @@ function buildPreview(f){
     if(f.tb){
       var src='data:image/jpeg;base64,'+f.tb;
       var lb=f.fb?'data:image/jpeg;base64,'+f.fb:src;
-      return '<img src="'+src+'" class="thumb" data-lb-url="'+escA(lb)+'" data-lb-type="image">';
+      return '<img src="'+src+'" class="thumb" data-lb-url="'+escA(lb)+'" data-lb-type="image" '+
+        'data-lb-meta="'+metaAttr+'">';
     }
     return '<span class="no-prev">HEIC</span>';
   }
@@ -706,6 +717,7 @@ function buildPreview(f){
     var url='file://'+path;
     return '<video src="'+escA(url)+'" class="thumb" preload="metadata" muted playsinline '+
       'data-lb-url="'+escA(url)+'" data-lb-type="video" '+
+      'data-lb-meta="'+metaAttr+'" '+
       'onerror="this.outerHTML=\'<span class=no-prev>no preview</span>\'"></video>';
   }
   return '<span class="no-prev">&mdash;</span>';
@@ -800,7 +812,39 @@ function copyPath(p){
     document.body.removeChild(t);
   });
 }
-function openLb(url,type){
+function renderMetaPanel(meta){
+  var el = document.getElementById('lbMeta');
+  if(!meta || (!meta.faces.length && !meta.location)){
+    el.classList.remove('on'); el.innerHTML=''; return;
+  }
+  var parts = [];
+  if(meta.faces.length){
+    parts.push(meta.faces.map(function(fc){
+      return '<div class="lb-face"><img src="'+fc.thumb+'">'+
+        '<a href="/person/'+encodeURIComponent(fc.name)+'">'+fc.name+'</a></div>';
+    }).join(''));
+  }
+  if(meta.location){
+    var locId = 'lbLoc'+Math.random().toString(36).slice(2);
+    parts.push('<div class="lb-location" id="'+locId+'">Loading location...</div>');
+    fetch('/api/location?lat='+meta.location.lat+'&lon='+meta.location.lon)
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        var n = document.getElementById(locId);
+        if(n) n.textContent = d.name || 'Unknown location';
+      })
+      .catch(function(){
+        var n = document.getElementById(locId);
+        if(n) n.textContent = 'Location unavailable';
+      });
+  }
+  el.innerHTML = parts.join('');
+  el.classList.add('on');
+}
+function openLb(url,type,metaJson){
+  var meta = null;
+  try { meta = metaJson ? JSON.parse(metaJson) : null; } catch(e) {}
+  renderMetaPanel(meta);
   var img=document.getElementById('lb-img');
   var vid=document.getElementById('lb-vid');
   if(type==='video'){
@@ -908,7 +952,7 @@ function buildDayGallery(day){
 // Event delegation: toggle, lightbox, copy — one listener for all dynamic content
 document.addEventListener('click',function(e){
   var lb=e.target.closest('[data-lb-url]');
-  if(lb){e.preventDefault();e.stopPropagation();openLb(lb.dataset.lbUrl,lb.dataset.lbType||'image');return;}
+  if(lb){e.preventDefault();e.stopPropagation();openLb(lb.dataset.lbUrl,lb.dataset.lbType||'image',lb.dataset.lbMeta);return;}
   var cp=e.target.closest('[data-path]');
   if(cp){copyPath(cp.dataset.path);return;}
   var hdr=e.target.closest('.group-header');
