@@ -3,7 +3,7 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::Router;
 use clap::Parser;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -900,7 +900,7 @@ render(true);
 
 // ---- Faces labeling server ----
 
-const FACES_HTML: &str = r#"<!DOCTYPE html>
+const FACES_HTML: &str = r##"<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -909,8 +909,8 @@ const FACES_HTML: &str = r#"<!DOCTYPE html>
     body { font-family: sans-serif; margin: 0; padding: 16px; background: #f5f5f5; }
     h2 { border-bottom: 1px solid #ccc; padding-bottom: 4px; }
     .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }
-    .grid { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }
-    .card { background: white; border: 2px solid #ddd; border-radius: 8px; padding: 12px; min-width: 160px; max-width: 240px; cursor: grab; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, 160px); gap: 12px; margin-bottom: 24px; }
+    .card { background: white; border: 2px solid #ddd; border-radius: 8px; padding: 10px; width: 160px; box-sizing: border-box; cursor: grab; }
     .card.person-card { cursor: default; border-color: #6c8ebf; background: #e8f0fe; }
     .card.drag-over { border-color: #2a6db5; background: #d0e4ff; }
     .badge { display: inline-block; background: #555; color: white; border-radius: 12px; padding: 0 8px; font-size: 12px; margin-left: 4px; }
@@ -921,6 +921,7 @@ const FACES_HTML: &str = r#"<!DOCTYPE html>
     button.primary { background: #2a6db5; color: white; border-color: #2a6db5; }
     input[type=text] { padding: 4px 8px; border: 1px solid #999; border-radius: 4px; width: 120px; }
     #status { font-size: 13px; color: #555; }
+    .face-img { object-fit: cover; border-radius: 3px; background: #ddd; display: block; }
   </style>
 </head>
 <body>
@@ -954,16 +955,25 @@ const FACES_HTML: &str = r#"<!DOCTYPE html>
       }
     }
 
-    function hashDisplay(hash) {
-      return hash.substring(0, 8);
+    function faceImg(faceId, w, h) {
+      return `<img class="face-img" src="/api/face-image/${faceId}" width="${w}" height="${h}" title="#${faceId}" onerror="this.style.background='#ccc'">`;
     }
 
     function faceChipWithRemove(faceId) {
       return `<span class="face-id">#${faceId}<span class="remove-btn" onclick="removeFace(${faceId})" title="Remove">x</span></span>`;
     }
 
-    function faceChip(faceId) {
-      return `<span class="face-id">#${faceId}</span>`;
+    function thumbGrid(faceIds) {
+      if (faceIds.length === 1) {
+        return `<div style="margin-bottom:6px">${faceImg(faceIds[0], 140, 140)}</div>`;
+      }
+      const visible = faceIds.slice(0, 4);
+      const extra = faceIds.length > 4
+        ? `<div style="font-size:11px;color:#666;margin-top:2px">+${faceIds.length - 4} more</div>` : '';
+      return `
+        <div style="display:grid;grid-template-columns:repeat(2,66px);gap:4px;margin-bottom:6px">
+          ${visible.map(id => faceImg(id, 66, 66)).join('')}
+        </div>${extra}`;
     }
 
     function renderPeople(people) {
@@ -975,13 +985,11 @@ const FACES_HTML: &str = r#"<!DOCTYPE html>
              ondragover="event.preventDefault(); this.classList.add('drag-over')"
              ondragleave="this.classList.remove('drag-over')"
              ondrop="onDropToPerson(event, this.dataset.label); this.classList.remove('drag-over')">
+          <div style="margin-bottom:6px">${faceImg(p.representative_id, 140, 140)}</div>
           <strong>${escHtml(p.label)}</strong>
           <span class="badge">${p.face_ids.length}</span>
-          <div style="margin-top:8px">
+          <div style="margin-top:6px">
             ${p.face_ids.map(id => faceChipWithRemove(id)).join('')}
-          </div>
-          <div style="margin-top:4px;font-size:11px;color:#666">
-            ${p.hashes.map(h => `<span style="font-family:monospace">${hashDisplay(h)}</span>`).join(' ')}
           </div>
         </div>
       `).join('');
@@ -989,15 +997,13 @@ const FACES_HTML: &str = r#"<!DOCTYPE html>
 
     function renderAssignableCard(faceIds, label, badgeLabel) {
       const faceIdsJson = JSON.stringify(faceIds);
-      const overflow = faceIds.length > 4 ? `<span class="badge">+${faceIds.length - 4}</span>` : '';
-      const chips = faceIds.slice(0, 4).map(id => faceChip(id)).join('') + overflow;
       return `
         <div class="card"
              draggable="true"
              ondragstart="onDragStart(event, ${faceIdsJson})">
+          ${thumbGrid(faceIds)}
           <strong>${escHtml(label)}</strong>
-          <span class="badge">${badgeLabel}</span>
-          <div style="margin-top:8px">${chips}</div>
+          ${badgeLabel ? `<span class="badge">${badgeLabel}</span>` : ''}
           <div class="new-person-area">
             <button onclick="showNewPersonInput(this, ${faceIdsJson})">New Person</button>
           </div>
@@ -1017,7 +1023,7 @@ const FACES_HTML: &str = r#"<!DOCTYPE html>
       const grid = document.getElementById('singleton-grid');
       document.getElementById('singleton-count').textContent = singletons.length;
       grid.innerHTML = singletons.map(s =>
-        renderAssignableCard([s.face_id], `Face #${s.face_id}`, `hash: ${hashDisplay(s.hash)}`)
+        renderAssignableCard([s.face_id], `Face #${s.face_id}`, '')
       ).join('');
     }
 
@@ -1098,7 +1104,7 @@ const FACES_HTML: &str = r#"<!DOCTYPE html>
   </script>
 </body>
 </html>
-"#;
+"##;
 
 #[derive(Serialize)]
 struct PersonData {
@@ -1337,6 +1343,90 @@ async fn handle_quit(State(state): State<Arc<AppState>>) -> StatusCode {
     StatusCode::OK
 }
 
+fn load_image_for_thumb(path: &str, face_id: i64) -> Option<image::DynamicImage> {
+    let p = std::path::Path::new(path);
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    if ext == "heic" {
+        let tmp = std::env::temp_dir().join(format!("dupe_face_thumb_{face_id}.jpg"));
+        let ok = std::process::Command::new("sips")
+            .args(["-s", "format", "jpeg", "--resampleLongSide", "640"])
+            .arg(path)
+            .arg("--out")
+            .arg(&tmp)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            return None;
+        }
+        image::open(&tmp).ok()
+    } else {
+        image::open(p).ok()
+    }
+}
+
+fn crop_face_thumb(img: &image::DynamicImage, bbox: [f32; 4]) -> image::DynamicImage {
+    let w = img.width() as f32;
+    let h = img.height() as f32;
+    let bw = bbox[2] - bbox[0];
+    let bh = bbox[3] - bbox[1];
+    let pad_x = bw * 0.25;
+    let pad_y = bh * 0.25;
+    let x1 = (bbox[0] - pad_x).max(0.0) as u32;
+    let y1 = (bbox[1] - pad_y).max(0.0) as u32;
+    let x2 = (bbox[2] + pad_x).min(w) as u32;
+    let y2 = (bbox[3] + pad_y).min(h) as u32;
+    let cw = (x2 - x1).max(1);
+    let ch = (y2 - y1).max(1);
+    img.crop_imm(x1, y1, cw, ch)
+        .resize_exact(140, 140, image::imageops::FilterType::Triangle)
+}
+
+async fn handle_face_image(
+    axum::extract::Path(face_id): axum::extract::Path<i64>,
+    State(state): State<Arc<AppState>>,
+) -> Result<impl axum::response::IntoResponse, StatusCode> {
+    let (bbox_json, file_path) = {
+        let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        conn.query_row(
+            "SELECT f.bbox, fh.path FROM faces f \
+             JOIN file_hashes fh ON f.hash = fh.hash \
+             WHERE f.id = ?1 LIMIT 1",
+            [face_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?
+    };
+
+    // bbox is stored as "x,y,w,h" (comma-separated integers)
+    let parts: Vec<f32> = bbox_json
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+    if parts.len() != 4 {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    // convert x,y,w,h -> x1,y1,x2,y2
+    let bbox: [f32; 4] = [parts[0], parts[1], parts[0] + parts[2], parts[1] + parts[3]];
+
+    let jpeg_bytes = tokio::task::spawn_blocking(move || -> Option<Vec<u8>> {
+        let img = load_image_for_thumb(&file_path, face_id)?;
+        let thumb = crop_face_thumb(&img, bbox);
+        let mut buf = Vec::new();
+        thumb
+            .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Jpeg)
+            .ok()?;
+        Some(buf)
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .ok_or(StatusCode::NOT_FOUND)?;
+
+    Ok(([(axum::http::header::CONTENT_TYPE, "image/jpeg")], jpeg_bytes))
+}
+
 async fn serve_faces_async(db: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let conn = Connection::open(db)?;
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -1352,6 +1442,7 @@ async fn serve_faces_async(db: &Path) -> Result<(), Box<dyn std::error::Error>> 
         .route("/api/new-person", post(handle_new_person))
         .route("/api/remove-face", post(handle_remove_face))
         .route("/api/set-primary", post(handle_set_primary))
+        .route("/api/face-image/{id}", get(handle_face_image))
         .route("/api/search/person", get(handle_search_person))
         .route("/api/quit", post(handle_quit))
         .with_state(state);
