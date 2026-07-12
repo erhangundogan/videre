@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 half = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
+reverse_geocoder = "4"
