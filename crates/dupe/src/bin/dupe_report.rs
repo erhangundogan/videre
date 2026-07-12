@@ -915,7 +915,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     .card.person-card { cursor: default; border-color: #6c8ebf; background: #e8f0fe; transition: border-color 0.15s; }
     .card.person-card:hover { border-color: #2a6db5; }
     .card.drag-over { border-color: #2a6db5; background: #d0e4ff; }
-    .badge { display: inline-block; background: #555; color: white; border-radius: 12px; padding: 0 8px; font-size: 12px; margin-left: 4px; }
+    .badge { display: inline-flex; align-items: center; vertical-align: middle; background: #555; color: white; border-radius: 12px; padding: 3px 9px; font-size: 12px; line-height: 1; margin-left: 4px; }
     .new-person-area { margin-top: 8px; display: flex; gap: 4px; }
     .new-person-area button { flex: 1; }
     .new-person-area input[type=text] { flex: 1; width: auto; min-width: 0; }
