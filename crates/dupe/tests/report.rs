@@ -125,6 +125,14 @@ fn all_flag_without_embeddings_renders_gallery_only() {
 }
 
 #[test]
+fn all_files_json_includes_empty_meta_object() {
+    let dir = tempdir().unwrap();
+    let (db, _files) = fixture_db(dir.path(), false);
+    let html = run_report(&db, true);
+    assert!(html.contains("\"meta\":"), "expected a meta field on each file's JSON");
+}
+
+#[test]
 fn all_flag_page_contains_similarity_js() {
     let dir = tempdir().unwrap();
     let (db, _) = fixture_db(dir.path(), true);
