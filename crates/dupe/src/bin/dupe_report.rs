@@ -651,34 +651,35 @@ fn generate_html(
         embedded_stat = embedded_stat,
     ));
 
-    // Toolbar
-    out.push_str(&format!(
-        "<div class=\"toolbar\">\
-          <button onclick=\"expandAll()\">Expand all</button>\
-          <button onclick=\"collapseAll()\">Collapse all</button>\
-          <label class=\"sort-label\">Sort by\
-            <select id=\"sort-select\" onchange=\"sortGroups(this.value)\">\
-              <option value=\"waste\">Wasted space</option>\
-              <option value=\"date-asc\">Date kept (oldest first)</option>\
-              <option value=\"date-desc\">Date kept (newest first)</option>\
-            </select>\
-          </label>\
-          <span class=\"info\" id=\"shown-info\">{} groups</span>\
-        </div>\n",
-        stats.duplicate_groups,
-    ));
+    // Toolbar + groups list: skip entirely when there's nothing to review -
+    // an empty "0 groups" toolbar with working Expand/Collapse/Sort controls
+    // is just noise, especially alongside --by-date/--all which have their
+    // own reason to exist regardless of duplicate count.
+    if !groups.is_empty() {
+        out.push_str(&format!(
+            "<div class=\"toolbar\">\
+              <button onclick=\"expandAll()\">Expand all</button>\
+              <button onclick=\"collapseAll()\">Collapse all</button>\
+              <label class=\"sort-label\">Sort by\
+                <select id=\"sort-select\" onchange=\"sortGroups(this.value)\">\
+                  <option value=\"waste\">Wasted space</option>\
+                  <option value=\"date-asc\">Date kept (oldest first)</option>\
+                  <option value=\"date-desc\">Date kept (newest first)</option>\
+                </select>\
+              </label>\
+              <span class=\"info\" id=\"shown-info\">{} groups</span>\
+            </div>\n",
+            stats.duplicate_groups,
+        ));
+
+        // Empty groups container — JS fills it
+        out.push_str("<div class=\"groups\" id=\"groups-container\"></div>\n");
+        out.push_str("<div class=\"more-wrap\"><button id=\"more-btn\" onclick=\"showMore()\"></button></div>\n");
+    }
 
     if all_files.is_some() {
         out.push_str("<div class=\"results-panel\" id=\"results\" style=\"display:none\"></div>\n");
     }
-
-    // Empty groups container — JS fills it
-    out.push_str("<div class=\"groups\" id=\"groups-container\">");
-    if groups.is_empty() {
-        out.push_str("<div class=\"no-dupes\">No duplicate groups found.</div>");
-    }
-    out.push_str("</div>\n");
-    out.push_str("<div class=\"more-wrap\"><button id=\"more-btn\" onclick=\"showMore()\"></button></div>\n");
 
     if let Some(files) = all_files {
         out.push_str(&format!(
@@ -851,6 +852,7 @@ function buildGroup(g,idx){
 function render(reset){
   var overlay=document.getElementById('sort-overlay');
   var container=document.getElementById('groups-container');
+  if(!container){if(overlay)overlay.style.display='none';return;}
   if(reset){shown=0;container.innerHTML='';}
   var end=Math.min(shown+PAGE,sorted.length);
   var html='';
@@ -864,6 +866,7 @@ function render(reset){
 }
 function updateBtn(){
   var btn=document.getElementById('more-btn');
+  if(!btn)return;
   var rem=sorted.length-shown;
   if(rem>0){btn.style.display='inline-block';btn.textContent='Show more ('+rem+' remaining)';}
   else btn.style.display='none';
