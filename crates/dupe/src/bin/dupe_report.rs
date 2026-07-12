@@ -917,7 +917,9 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     .badge { display: inline-block; background: #555; color: white; border-radius: 12px; padding: 0 8px; font-size: 12px; margin-left: 4px; }
     .face-id { display: inline-block; background: #eee; border-radius: 4px; padding: 2px 6px; font-size: 11px; margin: 2px; font-family: monospace; }
     .face-id .remove-btn { cursor: pointer; color: red; margin-left: 4px; font-weight: bold; }
-    .new-person-area { margin-top: 8px; }
+    .new-person-area { margin-top: 8px; display: flex; gap: 4px; }
+    .new-person-area button { flex: 1; }
+    .new-person-area input[type=text] { flex: 1; width: auto; min-width: 0; }
     button { cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid #999; background: white; }
     button.primary { background: #2a6db5; color: white; border-color: #2a6db5; }
     input[type=text] { padding: 4px 8px; border: 1px solid #999; border-radius: 4px; width: 120px; }
@@ -997,8 +999,10 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
              ondragover="event.preventDefault(); this.classList.add('drag-over')"
              ondragleave="this.classList.remove('drag-over')"
              ondrop="onDropToPerson(event, this.dataset.label); this.classList.remove('drag-over')">
-          <div style="margin-bottom:6px">${faceImg(p.representative_id, 140, 140)}</div>
-          <strong>${escHtml(p.label)}</strong>
+          <a href="/person/${encodeURIComponent(p.label)}">
+            <div style="margin-bottom:6px">${faceImg(p.representative_id, 140, 140)}</div>
+          </a>
+          <a class="cluster-link" href="/person/${encodeURIComponent(p.label)}">${escHtml(p.label)}</a>
           <span class="badge">${p.face_ids.length}</span>
           <div style="margin-top:6px">
             ${p.face_ids.map(id => faceChipWithRemove(id)).join('')}
@@ -1007,22 +1011,20 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       `).join('');
     }
 
-    function renderAssignableCard(faceIds, label, badgeLabel, linkUrl) {
+    function renderAssignableCard(faceIds, label, linkUrl) {
       const faceIdsJson = JSON.stringify(faceIds);
-      const titleHtml = linkUrl
-        ? `<a class="cluster-link" href="${escHtml(linkUrl)}">${escHtml(label)}</a>`
-        : `<strong>${escHtml(label)}</strong>`;
+      const thumb = linkUrl
+        ? `<a href="${escHtml(linkUrl)}">${thumbGrid(faceIds)}</a>`
+        : thumbGrid(faceIds);
+      const titleHtml = linkUrl ? '' : `<strong>${escHtml(label)}</strong>`;
       return `
-        <div class="card"
-             draggable="true"
-             ondragstart="onDragStart(event, ${faceIdsJson})">
-          <div class="drag-handle" title="Drag to assign to a person">
+        <div class="card">
+          <div class="drag-handle" draggable="true" ondragstart="onDragStart(event, ${faceIdsJson})" title="Drag to assign to a person">
             <span class="drag-dots">&#8942;&#8942;&#8942;</span>
             <span class="drag-hint">Drag on person above</span>
           </div>
-          ${thumbGrid(faceIds)}
+          ${thumb}
           ${titleHtml}
-          ${badgeLabel ? `<span class="badge">${badgeLabel}</span>` : ''}
           <div class="new-person-area">
             <button onclick="showNewPersonInput(this, ${faceIdsJson})">New Person</button>
           </div>
@@ -1034,7 +1036,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       const grid = document.getElementById('cluster-grid');
       document.getElementById('cluster-count').textContent = clusters.length;
       grid.innerHTML = clusters.map(c =>
-        renderAssignableCard(c.face_ids, `Cluster ${c.cluster_id}`, `${c.face_ids.length} faces`, `/cluster/${c.cluster_id}`)
+        renderAssignableCard(c.face_ids, `Cluster ${c.cluster_id}`, `/cluster/${c.cluster_id}`)
       ).join('');
     }
 
@@ -1042,7 +1044,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       const grid = document.getElementById('singleton-grid');
       document.getElementById('singleton-count').textContent = singletons.length;
       grid.innerHTML = singletons.map(s =>
-        renderAssignableCard([s.face_id], `Face #${s.face_id}`, '', null)
+        renderAssignableCard([s.face_id], `Face #${s.face_id}`, null)
       ).join('');
     }
 
@@ -1257,6 +1259,93 @@ const CLUSTER_HTML: &str = r##"<!DOCTYPE html>
 </html>
 "##;
 
+const PERSON_HTML: &str = r##"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Person</title>
+  <style>
+    body { font-family: sans-serif; margin: 0; padding: 16px; background: #f5f5f5; }
+    .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+    .toolbar a { color: #2a6db5; text-decoration: none; font-size: 14px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, 200px); gap: 14px; }
+    .card { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 10px; }
+    .face-img { object-fit: cover; border-radius: 4px; display: block; background: #ddd; }
+    .path { font-size: 11px; color: #666; word-break: break-all; margin-top: 5px; }
+    .face-id { font-size: 11px; color: #999; margin-top: 2px; }
+    .btns { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+    button { cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid #999; background: white; font-size: 13px; }
+    button.danger { color: #c00; border-color: #fbb; }
+    #status { font-size: 13px; color: #555; }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <a href="/">&larr; Back to labeling</a>
+    <strong id="person-title">Person</strong>
+    <span id="face-count" style="color:#555;font-size:13px"></span>
+    <span id="status"></span>
+  </div>
+
+  <div id="faces-grid" class="grid"></div>
+
+  <script>
+    const personName = decodeURIComponent(window.location.pathname.split('/').pop());
+    let facesData = [];
+
+    async function load() {
+      try {
+        document.getElementById('person-title').textContent = personName;
+        document.title = personName;
+        const r = await fetch(`/api/person/${encodeURIComponent(personName)}`);
+        if (!r.ok) throw new Error('person fetch failed');
+        const data = await r.json();
+        facesData = data.faces;
+        document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
+        render();
+      } catch(e) {
+        document.getElementById('status').textContent = 'Error: ' + e;
+      }
+    }
+
+    function render() {
+      const grid = document.getElementById('faces-grid');
+      grid.innerHTML = facesData.map(f => `
+        <div class="card" id="card-${f.face_id}">
+          <img class="face-img" src="/api/face-image/${f.face_id}" width="180" height="180"
+               onerror="this.removeAttribute('src');this.style.background='#ddd'">
+          <div class="path" title="${escHtml(f.path)}">${escHtml(basename(f.path))}</div>
+          <div class="face-id">#${f.face_id}</div>
+          <div class="btns">
+            <button class="danger" onclick="removeFace(${f.face_id})">Remove</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function basename(p) { return p.split('/').pop() || p; }
+
+    function escHtml(s) {
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    async function removeFace(faceId) {
+      const r = await fetch('/api/remove-face', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ face_id: faceId })
+      });
+      if (!r.ok) { document.getElementById('status').textContent = 'Error: remove failed'; return; }
+      document.getElementById(`card-${faceId}`)?.remove();
+      facesData = facesData.filter(f => f.face_id !== faceId);
+      document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
+    }
+
+    load();
+  </script>
+</body>
+</html>
+"##;
+
 #[derive(Serialize)]
 struct ClusterFaceData {
     face_id: i64,
@@ -1267,6 +1356,12 @@ struct ClusterFaceData {
 #[derive(Serialize)]
 struct ClusterDetailResponse {
     cluster_id: i64,
+    faces: Vec<ClusterFaceData>,
+}
+
+#[derive(Serialize)]
+struct PersonDetailResponse {
+    label: String,
     faces: Vec<ClusterFaceData>,
 }
 
@@ -1507,7 +1602,6 @@ async fn handle_quit(State(state): State<Arc<AppState>>) -> StatusCode {
     StatusCode::OK
 }
 
-/// Read EXIF orientation tag from a JPEG/TIFF file.
 async fn handle_cluster_page(
     axum::extract::Path(cluster_id): axum::extract::Path<i64>,
 ) -> impl axum::response::IntoResponse {
@@ -1535,6 +1629,33 @@ async fn handle_cluster_api(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(AxumJson(ClusterDetailResponse { cluster_id, faces }))
+}
+
+async fn handle_person_page() -> impl axum::response::IntoResponse {
+    axum::response::Html(PERSON_HTML)
+}
+
+async fn handle_person_api(
+    axum::extract::Path(name): axum::extract::Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> Result<AxumJson<PersonDetailResponse>, StatusCode> {
+    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT f.id, f.hash, fh.path FROM faces f \
+             JOIN file_hashes fh ON f.hash = fh.hash \
+             WHERE f.person_label = ?1 AND f.confirmed = 1 \
+             ORDER BY f.is_primary DESC, f.id",
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let faces: Vec<ClusterFaceData> = stmt
+        .query_map([&name], |r| {
+            Ok(ClusterFaceData { face_id: r.get(0)?, hash: r.get(1)?, path: r.get(2)? })
+        })
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(AxumJson(PersonDetailResponse { label: name, faces }))
 }
 
 fn read_exif_orientation(path: &str) -> u16 {
@@ -1690,6 +1811,8 @@ async fn serve_faces_async(db: &Path) -> Result<(), Box<dyn std::error::Error>> 
         .route("/api/face-image/{id}", get(handle_face_image))
         .route("/cluster/{id}", get(handle_cluster_page))
         .route("/api/cluster/{id}", get(handle_cluster_api))
+        .route("/person/{name}", get(handle_person_page))
+        .route("/api/person/{name}", get(handle_person_api))
         .route("/api/search/person", get(handle_search_person))
         .route("/api/quit", post(handle_quit))
         .with_state(state);
