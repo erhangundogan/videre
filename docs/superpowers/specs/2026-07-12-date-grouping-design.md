@@ -5,10 +5,13 @@
 Add a `--by-date` flag to `dupe-report` that generates a drill-down Year → Month →
 Day browsing view over the KEEP-side of the collection (the files that survive
 dedup), reusing the existing thumbnail/lightbox machinery. Alongside it, add a
-`--show-faces` flag that shows small thumbnails and names of any already-labeled
-people below the image in the lightbox - shared across the dedup-groups page,
-the `--all` gallery, and this new `--by-date` view, since all three use the same
-lightbox.
+`--show-faces` flag that shows small thumbnails and clickable names of any
+already-labeled people, plus a reverse-geocoded location, below the image in
+the lightbox - shared across the dedup-groups page, the `--all` gallery, and
+this new `--by-date` view, since all three use the same lightbox. Because
+person click-through (`/person/<name>`) and on-demand location lookup both
+need a live backend, `--show-faces` switches `dupe-report` into the same
+server mode `--faces` already uses, rather than staying purely static HTML.
 
 ## Background
 
@@ -114,6 +117,52 @@ populating that key server-side and (2) adding one more `if (meta.x)` branch
 in `renderMetaPanel()` - no changes to `openLb()`/`closeLb()` or the surrounding
 lightbox chrome.
 
+### Architecture shift: `--show-faces` requires the live server
+
+Two things this panel needs can't be done from a static `file://` HTML page:
+
+1. **Clicking a person's name/thumbnail should navigate to `/person/<name>`** -
+   that route only exists on the `--faces` axum server (`localhost:7878`,
+   started today only by `dupe-report --faces`). A static file has no server
+   to hit.
+2. **Location lookup should be lazy/on-demand** (computed only when the
+   lightbox actually opens for a given file, not precomputed for every GPS
+   file up front) - this also requires a live endpoint to call, not a value
+   baked into the static page at generation time.
+
+**Decision: `--show-faces` starts the same axum server `--faces` uses**,
+rather than staying a purely static-HTML flag. This merges the two modes onto
+one running server process:
+
+- `GET /` - now serves the main report (dedup groups, plus `--all` gallery
+  and/or `--by-date` view if those flags are also passed) when `--show-faces`
+  is set. This is a **route change**: today `/` serves the face-labeling
+  People/Clusters/Singletons UI whenever `--faces` is passed.
+- `GET /faces` - the face-labeling UI moves here so it doesn't collide with
+  the main report at `/` when both `--faces` and `--show-faces` are passed
+  together. `/cluster/{id}` and `/person/{name}` detail pages are unaffected.
+- `GET /api/location?lat=<f64>&lon=<f64>` - new endpoint, computed on demand
+  the first time the lightbox opens for a file with GPS data (see Location
+  section below for caching).
+- Existing `/api/original-image/{id}` and face-image endpoints are unchanged.
+- Passing `--show-faces` **without** `--faces` still starts the server (for
+  `/`, `/person/{name}`, and `/api/location`), it just doesn't expose `/faces`
+  (the labeling UI) unless `--faces` is also passed.
+- Without `--show-faces`, `dupe-report` behaves exactly as it does today -
+  static HTML, no server, no metadata panel. `--by-date` and `--all` alone
+  remain fully static.
+
+**Why this is a real trade-off worth flagging:** this moves the face-labeling
+UI's default route from `/` to `/faces` - a breaking change for anyone who's
+built a habit/bookmark around `dupe-report --faces` opening straight to the
+labeling UI at `localhost:7878/`. It also means `--show-faces` no longer
+produces a portable, shareable static HTML file the way every other
+`dupe-report` mode does - the report becomes something you view while a local
+server is running, not a file you can copy/email/archive. This is a
+deliberate scope expansion from the original static-report design, made
+because the person-click-through and on-demand location lookup genuinely need
+a live backend.
+
 ### Faces section
 
 **What exists today:** `make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64)
@@ -152,20 +201,27 @@ feature (recognizing who's in the photo).
 - New `dupe-core` query (e.g. `labeled_faces_by_hash(conn) ->
   HashMap<String, Vec<(i64, [f32;4], String)>>` - hash → list of
   `(face_id, bbox, person_label)`), one query covering every hash in the
-  report, called once per report generation.
+  report, called once when the server starts (or once per `/` request - see
+  implementation plan for whether it's precomputed at startup or per-request).
 - New helper in `dupe_report.rs` (e.g. `face_thumb_b64(path, bbox, face_id) ->
-  Option<String>`) wrapping `make_face_thumb()` + JPEG encode + base64, mirroring
-  `heic_to_b64()`'s existing pattern.
+  Option<String>`) wrapping `make_face_thumb()` + JPEG encode + base64,
+  mirroring `heic_to_b64()`'s existing pattern - served inline in the `/`
+  response's `meta.faces[].thumb`, same as before.
 - Each file's `meta` object gains `faces: [{thumb, name}]`, populated only
   when the hash has labeled faces; thumbnails are computed once per hash (not
   once per duplicate path sharing that hash) and reused across all paths for
   that hash.
+- **`name` is rendered as `<a href="/person/{name}">{name}</a>`** - clicking
+  it navigates to the existing `/person/{name}` detail page on the same
+  server, listing that person's other confirmed faces (already implemented,
+  unchanged).
 - New CLI flag `--show-faces` (independent bool, same pattern as `--heic`/
   `--all`), off by default since face-crop generation is a real per-file cost
   (image decode + crop + re-encode) on top of whatever `--heic` already adds -
-  requires a prior `dupe-faces` run to have anything to show.
+  requires a prior `dupe-faces` run to have anything to show. Now also the
+  flag that starts the live server (see Architecture shift above).
 - `renderMetaPanel()` renders the faces sub-section (small ~48px thumbnails,
-  name label underneath each) whenever `meta.faces` is non-empty.
+  clickable name label underneath each) whenever `meta.faces` is non-empty.
 
 ### Location section
 
@@ -185,25 +241,33 @@ from `(lat, lon)` entirely in-process, no network) in `dupe-core`. Given
 `"{city}, {country}"` (fall back to just coordinates if no GPS or the lookup
 finds nothing nearby).
 
-**Cost model - no new flag needed:** unlike face crops (per-file image
-decode/crop/re-encode) or HEIC (per-file `qlmanage` subprocess spawn), reverse
-geocoding is a fast in-memory index lookup once the dataset is loaded (a
-one-time cost per report generation, not per file). So location is computed
-and shown automatically whenever a file has GPS data, no opt-in flag - same
-principle as the existing GPS map link, which also has no gating flag today.
+**Lazy, on-demand via the live server, persisted for the next phase.** Per
+user decision, location is looked up only when the lightbox actually opens
+for a file with GPS data - not precomputed for every GPS file at report
+generation time:
 
-**Data flow:**
-- New `dupe-core` function `location_name(lat: f64, lon: f64) -> Option<String>`
-  wrapping the reverse-geocoding crate.
-- Computed once per unique `(lat, lon)` pair per report generation (cached in
-  a `HashMap<(OrderedFloat<f64>, OrderedFloat<f64>), String>` or similar, since
-  many photos from the same trip/location share near-identical coordinates and
-  there's no reason to repeat the lookup) rather than once per file.
-- Each file's `meta` object gains `location: {name, lat, lon} | null` -
-  `name` is the reverse-geocoded string, `lat`/`lon` kept so the existing map
-  link still works unchanged.
-- `renderMetaPanel()` renders the location sub-section (place name, plus the
-  existing map link) whenever `meta.location` is non-null.
+- Schema change: new `file_hashes.location_name TEXT` column (nullable),
+  added the same way the `faces` table was added (`CREATE TABLE IF NOT
+  EXISTS`-style migration, additive, no impact on existing rows/readers).
+  This is persisted (per user decision) rather than ephemeral, since the
+  next roadmap phase (location grouping + map view, see `project_roadmap.md`)
+  will want to query/group by resolved location, not just raw coordinates -
+  a ready-made column avoids redoing this work then.
+- New endpoint `GET /api/location?lat=<f64>&lon=<f64>` on the same server
+  `--show-faces` starts: on request, checks `file_hashes.location_name` for a
+  matching row; if already populated, returns it immediately; if null, calls
+  `location_name(lat, lon)` (the offline lookup), writes the result back via
+  `UPDATE file_hashes SET location_name = ?1 WHERE ...` for every row sharing
+  those coordinates, and returns it. First lightbox-open for a given location
+  pays the lookup cost once; every subsequent open (including in future
+  report generations) is a free DB read.
+- Client-side: `renderMetaPanel()` shows a "Loading location..." placeholder
+  and fires `fetch('/api/location?lat=...&lon=...')` when the lightbox opens
+  for an item with `meta.location.lat`/`lon` present, replacing the
+  placeholder with the returned name once it resolves. `lat`/`lon` themselves
+  are still baked into `meta.location` at report-generation time (cheap,
+  already-extracted columns) so the existing map link keeps working
+  immediately without waiting on the fetch.
 
 ## Implementation shape
 
@@ -221,22 +285,31 @@ principle as the existing GPS map link, which also has no gating flag today.
   `buildYearView()`, `buildMonthView()`, `buildDayView()`, `buildDayGallery()`
   reusing `buildDateBucketKey()` (new helper, wraps the existing `bestDateJs()`
   at lines 801-805) for grouping
-- No new CLI binary, no new database writes - purely a read + new report
-  section, consistent with `dupe-report`'s existing read-only, non-mutating
-  design
-- New CLI flag `--show-faces` (independent bool); new `dupe-core` query
-  `labeled_faces_by_hash()`; new `face_thumb_b64()` helper in `dupe_report.rs`
-  wrapping the existing `make_face_thumb()`
+- `--by-date` itself stays fully static/no-server when used without
+  `--show-faces` - no new CLI binary, no new database writes for that path
+- New CLI flag `--show-faces` (independent bool) now does double duty: gates
+  the faces section as before, **and** switches `dupe-report` into
+  server mode (see Architecture shift above) - reusing the same axum server
+  `--faces` starts, with `/` repurposed to serve the main report and `/faces`
+  hosting the labeling UI when `--faces` is also passed
+- New `dupe-core` query `labeled_faces_by_hash()`; new `face_thumb_b64()`
+  helper in `dupe_report.rs` wrapping the existing `make_face_thumb()`
+- Schema migration: new `file_hashes.location_name TEXT` column (nullable,
+  additive)
 - New `dupe-core` dependency on an offline reverse-geocoding crate (e.g.
-  `reverse_geocoder`); new `location_name()` function; no new CLI flag (always
-  computed when GPS data is present)
-- A `meta: {faces: [...], location: {...} | null}` object threaded into the
-  JSON emitted by `query_groups()`'s row builder, `file_to_json()`, and the new
-  `query_keep_files()` alike, so all three views pick it up automatically via
-  one shared `renderMetaPanel()` in the lightbox JS - designed so a future
-  metadata section (e.g. camera EXIF) only needs a new key in `meta` plus one
-  new branch in `renderMetaPanel()`, no changes to the three view-specific row
-  builders beyond adding that key
+  `reverse_geocoder`); new `location_name(lat, lon)` function
+- New server route `GET /api/location?lat=&lon=` implementing the
+  check-cache-then-compute-then-persist flow described above
+- A `meta: {faces: [...], location: {name: null, lat, lon} | null}` object
+  threaded into the JSON emitted by `query_groups()`'s row builder,
+  `file_to_json()`, and the new `query_keep_files()` alike, so all three
+  views pick it up automatically via one shared `renderMetaPanel()` in the
+  lightbox JS - designed so a future metadata section (e.g. camera EXIF) only
+  needs a new key in `meta` plus one new branch in `renderMetaPanel()`, no
+  changes to the three view-specific row builders beyond adding that key
+- Route change on the existing `--faces` server: face-labeling UI moves from
+  `/` to `/faces` (only relevant when `--faces` is passed - unaffected if
+  `--show-faces` isn't also used, since then `/` keeps its current meaning)
 
 ## Testing
 
@@ -258,22 +331,34 @@ principle as the existing GPS map link, which also has no gating flag today.
   dataset), files with GPS data far from any city (verify graceful fallback),
   and files with no GPS at all - verify the location section appears only
   when appropriate, with the right place name, across all three views
-- Verify the existing GPS map link still works unchanged now that `lat`/`lon`
-  are nested under `meta.location` instead of top-level fields (if the
-  refactor moves them - or verify both old and new access paths agree, per
-  whatever the implementation plan decides)
+- Verify the existing GPS map link still works and appears immediately (not
+  waiting on the `/api/location` fetch), using `meta.location.lat`/`lon`
+- Verify `/api/location`: first request for a coordinate computes and
+  persists `location_name`, is measurably not instant (offline lookup cost);
+  second request for the same coordinate (or a different file sharing it)
+  returns the cached DB value with no recomputation
+- Verify `dupe-report --show-faces` (without `--all`/`--by-date`) starts the
+  server and serves the dedup-groups view at `/`
+- Verify `dupe-report --show-faces --faces` together: `/` serves the main
+  report, `/faces` serves the labeling UI, `/person/{name}` and `/cluster/{id}`
+  still work
+- Verify `dupe-report --faces` alone (no `--show-faces`) is unchanged from
+  today - labeling UI still at `/`, no route regression for existing users
+- Verify clicking a face's name in the lightbox navigates to `/person/{name}`
+  and shows that person's confirmed faces (existing page, unchanged)
 
 ## Out of scope
 
-- No changes to `--all` or the default dedup view beyond gaining the shared
-  `meta` field/lightbox panel
+- No changes to `--all`, `--by-date`, or the default dedup view when used
+  **without** `--show-faces` - they remain fully static, no server
 - No new binary
-- No changes to the SQLite schema (reverse-geocoding results are computed at
-  report-generation time, not cached back to the database)
-- No face detection/labeling changes - this only *displays* faces already
-  produced by `dupe-faces`/`dupe-report --faces`
 - No street-level or address-level location resolution - offline reverse
   geocoding here is nearest-city accuracy only
+- No face detection/labeling changes - this only *displays* faces already
+  produced by `dupe-faces`/`dupe-report --faces`
 - No other new EXIF metadata sections yet (camera model, ISO, etc.) - the
   panel is designed to make adding them easy later, but none are added in
   this pass
+- No location grouping or map view yet (that's the next roadmap phase per
+  `project_roadmap.md`) - this pass only persists `location_name` so that
+  phase has a ready-made column, it doesn't build grouping/map UI itself
