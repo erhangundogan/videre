@@ -12,9 +12,15 @@ use std::path::PathBuf;
 struct Args {
     db: PathBuf,
     #[arg(long)] reprocess: bool,
+    /// Skip detection; just re-run clustering on existing embeddings
+    #[arg(long)] recluster: bool,
     #[arg(long, default_value = "8")] batch: usize,
     #[arg(long)] dry_run: bool,
     #[arg(long)] silent: bool,
+    /// DBSCAN cosine-distance radius (0 = identical, 2 = opposite). Default 0.6.
+    #[arg(long, default_value = "0.6")] eps: f32,
+    /// Minimum faces per cluster (singletons below this are outliers). Default 2.
+    #[arg(long, default_value = "2")] min_cluster_size: usize,
 }
 
 fn main() -> Result<()> {
@@ -47,8 +53,25 @@ fn main() -> Result<()> {
         .filter(|(_, hash)| !skip_hashes.contains(hash) && seen_hashes.insert(hash.clone()))
         .collect();
 
-    if to_process.is_empty() {
-        if !args.silent { eprintln!("All hashes already processed."); }
+    if args.recluster || to_process.is_empty() {
+        if !args.silent && to_process.is_empty() && !args.recluster {
+            eprintln!("All hashes already processed.");
+        }
+        // Skip detection; jump straight to clustering
+        if !args.dry_run {
+            let all_embs = face_db::load_face_embeddings(&conn)?;
+            if all_embs.is_empty() {
+                if !args.silent { eprintln!("No faces in DB to cluster."); }
+            } else {
+                let assignments = face_cluster::dbscan_cosine(&all_embs, args.eps, args.min_cluster_size);
+                face_db::update_cluster_assignments(&conn, &assignments)?;
+                if !args.silent {
+                    let clustered = assignments.iter().filter(|(_, c)| c.is_some()).count();
+                    eprintln!("Clustering complete: {}/{} faces assigned to clusters (eps={:.2}).",
+                        clustered, all_embs.len(), args.eps);
+                }
+            }
+        }
         return Ok(());
     }
 
@@ -146,9 +169,13 @@ fn main() -> Result<()> {
     if !args.dry_run {
         let all_embs = face_db::load_face_embeddings(&conn)?;
         if !all_embs.is_empty() {
-            let assignments = face_cluster::dbscan_cosine(&all_embs, 0.4, 2);
+            let assignments = face_cluster::dbscan_cosine(&all_embs, args.eps, args.min_cluster_size);
             face_db::update_cluster_assignments(&conn, &assignments)?;
-            if !args.silent { eprintln!("Clustering complete: {} faces in DB.", all_embs.len()); }
+            if !args.silent {
+                let clustered = assignments.iter().filter(|(_, c)| c.is_some()).count();
+                eprintln!("Clustering complete: {}/{} faces assigned to clusters (eps={:.2}).",
+                    clustered, all_embs.len(), args.eps);
+            }
         }
     }
 

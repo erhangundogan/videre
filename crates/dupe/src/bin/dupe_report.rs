@@ -923,8 +923,13 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     input[type=text] { padding: 4px 8px; border: 1px solid #999; border-radius: 4px; width: 120px; }
     #status { font-size: 13px; color: #555; }
     .face-img { object-fit: cover; border-radius: 3px; background: #ddd; display: block; }
-    .drag-handle { text-align: center; cursor: grab; color: #aaa; font-size: 16px; letter-spacing: 2px; padding: 2px 0 6px; user-select: none; }
-    .drag-handle:hover { color: #666; }
+    .people-section { position: sticky; top: 0; background: #f5f5f5; z-index: 100; padding-bottom: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+    .people-section .grid { max-height: 260px; overflow-y: auto; }
+    .drag-handle { display: flex; align-items: center; gap: 6px; cursor: grab; color: #aaa; padding: 2px 0 6px; user-select: none; }
+    .drag-handle .drag-dots { font-size: 16px; letter-spacing: 2px; flex-shrink: 0; }
+    .drag-handle .drag-hint { font-size: 10px; color: #bbb; line-height: 1.2; }
+    .drag-handle:hover { color: #777; }
+    .drag-handle:hover .drag-hint { color: #999; }
     .cluster-link { color: #2a6db5; text-decoration: none; font-weight: bold; }
     .cluster-link:hover { text-decoration: underline; }
   </style>
@@ -936,8 +941,10 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     <button class="primary" onclick="saveAndClose()">Save &amp; Close</button>
   </div>
 
-  <h2>People <span id="people-count" class="badge">0</span></h2>
-  <div id="people-grid" class="grid"></div>
+  <div class="people-section">
+    <h2>People <span id="people-count" class="badge">0</span></h2>
+    <div id="people-grid" class="grid"></div>
+  </div>
 
   <h2>Unassigned Clusters <span id="cluster-count" class="badge">0</span></h2>
   <div id="cluster-grid" class="grid"></div>
@@ -1009,7 +1016,10 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
         <div class="card"
              draggable="true"
              ondragstart="onDragStart(event, ${faceIdsJson})">
-          <div class="drag-handle" title="Drag to assign to a person">&#8942;&#8942;&#8942;</div>
+          <div class="drag-handle" title="Drag to assign to a person">
+            <span class="drag-dots">&#8942;&#8942;&#8942;</span>
+            <span class="drag-hint">Drag here onto person above</span>
+          </div>
           ${thumbGrid(faceIds)}
           ${titleHtml}
           ${badgeLabel ? `<span class="badge">${badgeLabel}</span>` : ''}
