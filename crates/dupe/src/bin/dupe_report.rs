@@ -927,8 +927,11 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     .new-person-area { margin-top: 8px; display: flex; gap: 4px; }
     .new-person-area button { flex: 1; }
     .new-person-area input[type=text] { flex: 1; width: auto; min-width: 0; }
-    .new-person-btn { background: #fff; border-color: #6cc36c; color: #1a7a1a; font-weight: 600; }
-    .new-person-btn:hover { background: #eaf7ea; }
+    .new-person-btn { font-weight: 600; }
+    .cluster-card .new-person-btn { background: #eaf7ea; border-color: #6cc36c; color: #1a7a1a; }
+    .cluster-card .new-person-btn:hover { background: #fff; }
+    .singleton-card .new-person-btn { background: #fdf1df; border-color: #e2a03f; color: #8a5a00; }
+    .singleton-card .new-person-btn:hover { background: #fff; }
     button { cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid #999; background: white; }
     button.primary { background: #2a6db5; color: white; border-color: #2a6db5; }
     input[type=text] { padding: 4px 8px; border: 1px solid #999; border-radius: 4px; width: 120px; }
