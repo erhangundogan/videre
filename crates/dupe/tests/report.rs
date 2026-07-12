@@ -167,3 +167,14 @@ fn all_flag_excludes_files_deleted_after_scan() {
     assert!(html.contains(files[0].to_str().unwrap()), "a.jpg missing");
     assert!(html.contains(files[3].to_str().unwrap()), "d.mov missing");
 }
+
+#[test]
+fn help_lists_new_flags() {
+    let out = Command::new(report_bin())
+        .arg("--help")
+        .output()
+        .expect("failed to run dupe-report");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("by-date"), "expected --by-date in help output");
+    assert!(stdout.contains("show-faces"), "expected --show-faces in help output");
+}
