@@ -1007,19 +1007,24 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     function renderPeople(people) {
       const grid = document.getElementById('people-grid');
       document.getElementById('people-count').textContent = people.length;
-      grid.innerHTML = people.map(p => `
+      grid.innerHTML = people.map(p => {
+        const url = `/person/${encodeURIComponent(p.label)}`;
+        const extra = p.face_ids.length > 1
+          ? `<div style="font-size:11px;color:#666;margin-top:2px">+${p.face_ids.length - 1} more</div>` : '';
+        return `
         <div class="card person-card"
              data-label="${escHtml(p.label)}"
              ondragover="event.preventDefault(); this.classList.add('drag-over')"
              ondragleave="this.classList.remove('drag-over')"
              ondrop="onDropToPerson(event, this.dataset.label); this.classList.remove('drag-over')">
-          <a href="/person/${encodeURIComponent(p.label)}">
+          <a href="${url}">
             <div style="margin-bottom:6px">${faceImg(p.representative_id, 140, 140)}</div>
           </a>
-          <a class="cluster-link" href="/person/${encodeURIComponent(p.label)}">${escHtml(p.label)}</a>
-          <span class="badge">${p.face_ids.length}</span>
+          <a class="cluster-link" href="${url}">${escHtml(p.label)}</a>
+          ${extra}
         </div>
-      `).join('');
+      `;
+      }).join('');
     }
 
     function renderAssignableCard(faceIds, linkUrl, cardClass) {
