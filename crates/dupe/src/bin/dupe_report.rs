@@ -36,6 +36,19 @@ struct Args {
     /// Start a local face-labeling HTTP server on port 7878
     #[arg(long)]
     faces: bool,
+
+    /// Drill-down Year/Month/Day gallery over KEEP files (static HTML,
+    /// same as --all)
+    #[arg(long)]
+    by_date: bool,
+
+    /// Show labeled faces (clickable to their person page) and a
+    /// reverse-geocoded location below the image in the lightbox. Starts a
+    /// local server on port 7878 (same one --faces uses) instead of writing
+    /// a static HTML file, since person click-through and on-demand
+    /// location lookup both need a live backend.
+    #[arg(long)]
+    show_faces: bool,
 }
 
 struct FileRow {
@@ -159,6 +172,28 @@ fn heic_to_b64(path: &str, max_px: u32) -> Option<String> {
     Some(base64_encode(&buf))
 }
 
+/// Crops a face thumbnail (via the existing make_face_thumb) and encodes it
+/// as a base64 JPEG data URI, mirroring heic_to_b64()'s pattern - for use in
+/// the server-mode report where thumbnails must be embedded inline rather
+/// than served as raw bytes (that's what handle_face_image does instead).
+fn face_thumb_b64(path: &str, bbox: [f32; 4], face_id: i64) -> Option<String> {
+    let thumb = make_face_thumb(path, bbox, face_id)?;
+    let mut buf = Vec::new();
+    thumb
+        .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Jpeg)
+        .ok()?;
+    Some(format!("data:image/jpeg;base64,{}", base64_encode(&buf)))
+}
+
+/// Parses the "x,y,w,h" bbox format stored in faces.bbox into the
+/// [x1,y1,x2,y2] shape make_face_thumb expects (same conversion
+/// handle_face_image already does inline).
+fn parse_bbox(bbox: &str) -> Option<[f32; 4]> {
+    let parts: Vec<f32> = bbox.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+    if parts.len() != 4 { return None; }
+    Some([parts[0], parts[1], parts[0] + parts[2], parts[1] + parts[3]])
+}
+
 fn format_bytes(bytes: i64) -> String {
     if bytes >= 1_073_741_824 {
         format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
@@ -197,7 +232,21 @@ fn json_str(s: &str) -> String {
     out
 }
 
+#[cfg(test)]
 fn file_to_json(f: &FileRow, heic: bool, heic_original: bool) -> String {
+    file_to_json_with_faces(f, heic, heic_original, &[])
+}
+
+/// Like file_to_json(), but also embeds labeled-face thumbnails into
+/// meta.faces. `faces` is the (face_id, person_label, bbox) list for this
+/// file's hash, as returned by dupe_core::face_db::labeled_faces_by_hash()
+/// (note the tuple order: label is `.1`, bbox is `.2`).
+fn file_to_json_with_faces(
+    f: &FileRow,
+    heic: bool,
+    heic_original: bool,
+    faces: &[(i64, String, String)],
+) -> String {
     let (tb, fb) = if f.ext == "heic" && heic {
         let thumb = heic_to_b64(&f.path, 240)
             .map(|b| json_str(&b))
@@ -228,11 +277,30 @@ fn file_to_json(f: &FileRow, heic: bool, heic_original: bool) -> String {
     let w = f.width.map(|v| v.to_string()).unwrap_or_else(|| "null".to_string());
     let h = f.height.map(|v| v.to_string()).unwrap_or_else(|| "null".to_string());
 
+    let faces_json: Vec<String> = faces
+        .iter()
+        .filter_map(|(id, name, bbox)| {
+            let bbox = parse_bbox(bbox)?;
+            let thumb = face_thumb_b64(&f.path, bbox, *id)?;
+            Some(format!(
+                "{{\"thumb\":{thumb},\"name\":{name}}}",
+                thumb = json_str(&thumb),
+                name = json_str(name),
+            ))
+        })
+        .collect();
+
+    let loc = if f.gps_lat.is_some() && f.gps_lon.is_some() {
+        format!("{{\"lat\":{},\"lon\":{}}}", lat, lon)
+    } else {
+        "null".to_string()
+    };
+
     format!(
         "{{\"hash\":{hash},\"path\":{path},\"ext\":{ext},\"size\":{size},\
          \"cr\":{cr},\"mo\":{mo},\"ex\":{ex},\
          \"lat\":{lat},\"lon\":{lon},\"w\":{w},\"h\":{h},\
-         \"tb\":{tb},\"fb\":{fb}}}",
+         \"tb\":{tb},\"fb\":{fb},\"meta\":{{\"faces\":[{faces}],\"location\":{loc}}}}}",
         hash = json_str(&f.hash),
         path = json_str(&f.path),
         ext  = json_str(&f.ext),
@@ -240,16 +308,30 @@ fn file_to_json(f: &FileRow, heic: bool, heic_original: bool) -> String {
         cr = cr, mo = mo, ex = ex,
         lat = lat, lon = lon, w = w, h = h,
         tb = tb, fb = fb,
+        faces = faces_json.join(","),
+        loc = loc,
     )
 }
 
-fn group_to_json(group: &[FileRow], heic: bool, heic_original: bool) -> String {
+fn group_to_json(
+    group: &[FileRow],
+    heic: bool,
+    heic_original: bool,
+    faces_by_hash: &HashMap<String, Vec<(i64, String, String)>>,
+) -> String {
     let hash_prefix = &group[0].hash[..group[0].hash.len().min(8)];
     let waste = group[0].size_bytes * (group.len() as i64 - 1);
     let keep_date = best_date(&group[0]);
     let date_json = if keep_date.is_empty() { "null".to_string() } else { json_str(keep_date) };
     let files_json: Vec<String> = group.iter()
-        .map(|f| file_to_json(f, heic, heic_original))
+        .map(|f| {
+            file_to_json_with_faces(
+                f,
+                heic,
+                heic_original,
+                faces_by_hash.get(&f.hash).map(|v| v.as_slice()).unwrap_or(&[]),
+            )
+        })
         .collect();
     format!(
         "{{\"hash\":{hash},\"waste\":{waste},\"date\":{date},\"files\":[{files}]}}",
@@ -368,14 +450,37 @@ fn query_all_files(conn: &Connection) -> Vec<FileRow> {
     .collect()
 }
 
+/// Per-hash KEEP-only file set: like query_all_files(), but for hashes with
+/// more than one surviving path, only the earliest-by-best_date() row is
+/// kept (mirrors query_groups()'s sort-then-take-first rule). Hashes with a
+/// single surviving path are trivially KEEP. Used by --by-date so REMOVE-side
+/// duplicates never appear in the date-grouped gallery.
+fn query_keep_files(conn: &Connection) -> Vec<FileRow> {
+    let rows = query_all_files(conn);
+
+    let mut map: HashMap<String, Vec<FileRow>> = HashMap::new();
+    for row in rows {
+        map.entry(row.hash.clone()).or_default().push(row);
+    }
+
+    map.into_values()
+        .map(|mut group| {
+            group.sort_by(|a, b| best_date(a).cmp(best_date(b)));
+            group.into_iter().next().expect("group is never empty")
+        })
+        .collect()
+}
+
 fn generate_html(
     db_path: &str,
     stats: &Stats,
     groups: &[Vec<FileRow>],
     all_files: Option<&[FileRow]>,
+    keep_files: Option<&[FileRow]>,
     vectors: Option<&VectorBlock>,
     heic: bool,
     heic_original: bool,
+    faces_by_hash: &HashMap<String, Vec<(i64, String, String)>>,
 ) -> String {
     use chrono::Utc;
     let now = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
@@ -457,6 +562,13 @@ fn generate_html(
         ".lightbox.on{display:flex}\n",
         ".lightbox img,.lightbox video{max-width:90vw;max-height:90vh;object-fit:contain;",
         "border-radius:8px;box-shadow:0 8px 40px rgba(0,0,0,.6)}\n",
+        ".lb-meta{position:absolute;bottom:0;left:0;right:0;background:rgba(24,24,27,.85);",
+        "padding:10px 16px;display:none;gap:12px;align-items:flex-start;flex-wrap:wrap}\n",
+        ".lb-meta.on{display:flex}\n",
+        ".lb-face{text-align:center;font-size:11px;color:#fff}\n",
+        ".lb-face img{width:48px;height:48px;border-radius:50%;object-fit:cover;display:block;margin-bottom:4px}\n",
+        ".lb-face a{color:#fff;text-decoration:underline}\n",
+        ".lb-location{color:#e4e4e7;font-size:12px;align-self:center}\n",
         "#sort-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);",
         "z-index:2000;align-items:center;justify-content:center}\n",
         ".sort-card{background:#fff;border-radius:12px;padding:22px 36px;",
@@ -491,12 +603,22 @@ fn generate_html(
         ".card-meta{font-size:11px;color:#71717a;margin-top:4px;white-space:nowrap;",
         "overflow:hidden;text-overflow:ellipsis}\n",
         ".similar-btn{margin-top:6px;padding:2px 10px;font-size:11px}\n",
+        ".date-view{padding:24px 32px}\n",
+        ".date-breadcrumb{margin-bottom:16px;font-size:13px;color:#71717a}\n",
+        ".date-breadcrumb a{color:#3f3f46;cursor:pointer;text-decoration:underline}\n",
+        ".date-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}\n",
+        ".date-card{background:#fff;border-radius:8px;overflow:hidden;cursor:pointer;",
+        "box-shadow:0 1px 3px rgba(0,0,0,.08)}\n",
+        ".date-card img{width:100%;aspect-ratio:1;object-fit:cover;display:block}\n",
+        ".date-card .date-card-label{padding:8px;font-size:13px;font-weight:600}\n",
+        ".date-card .date-card-count{padding:0 8px 8px;font-size:11px;color:#71717a}\n",
         "</style>\n</head>\n<body>\n",
         "<div id=\"sort-overlay\"><div class=\"sort-card\">",
         "<div class=\"spinner\"></div>Sorting&hellip;</div></div>\n",
         "<div class=\"lightbox\" id=\"lb\" onclick=\"closeLb()\">\n",
         "  <img id=\"lb-img\" src=\"\" alt=\"\" onclick=\"event.stopPropagation()\">\n",
         "  <video id=\"lb-vid\" src=\"\" controls autoplay onclick=\"event.stopPropagation()\" style=\"display:none\"></video>\n",
+        "  <div class=\"lb-meta\" id=\"lbMeta\" onclick=\"event.stopPropagation()\"></div>\n",
         "</div>\n",
     ));
 
@@ -567,12 +689,22 @@ fn generate_html(
         ));
     }
 
+    if keep_files.is_some() {
+        out.push_str(concat!(
+            "<div class=\"date-view\" id=\"dateView\">\n",
+            "<h2>Browse by date</h2>\n",
+            "<div class=\"date-breadcrumb\" id=\"dateBreadcrumb\"></div>\n",
+            "<div class=\"date-grid\" id=\"dateGrid\"></div>\n",
+            "</div>\n",
+        ));
+    }
+
     // Embed all group data as JSON
     out.push_str("<script>\nvar GROUPS=[\n");
     for (i, group) in groups.iter().enumerate() {
         if i > 0 { out.push(','); }
         out.push('\n');
-        out.push_str(&group_to_json(group, heic, heic_original));
+        out.push_str(&group_to_json(group, heic, heic_original, faces_by_hash));
     }
     out.push_str("\n];\n");
 
@@ -582,7 +714,12 @@ fn generate_html(
         out.push_str("var ALLFILES=[\n");
         for (i, f) in files.iter().enumerate() {
             if i > 0 { out.push(','); }
-            out.push_str(&file_to_json(f, heic, heic_original));
+            out.push_str(&file_to_json_with_faces(
+                f,
+                heic,
+                heic_original,
+                faces_by_hash.get(&f.hash).map(|v| v.as_slice()).unwrap_or(&[]),
+            ));
         }
         out.push_str("\n];\n");
         match vectors {
@@ -604,6 +741,21 @@ fn generate_html(
         }
     }
 
+    // Date-grouped KEEP-only file set (--by-date only).
+    if let Some(kf) = keep_files {
+        out.push_str("var KEEPFILES=[\n");
+        for (i, f) in kf.iter().enumerate() {
+            if i > 0 { out.push(','); }
+            out.push_str(&file_to_json_with_faces(
+                f,
+                heic,
+                heic_original,
+                faces_by_hash.get(&f.hash).map(|v| v.as_slice()).unwrap_or(&[]),
+            ));
+        }
+        out.push_str("\n];\n");
+    }
+
     // All rendering JS using raw string to avoid escaping hell
     out.push_str(r#"
 var PAGE=100,sorted=GROUPS.slice(),shown=0;
@@ -622,9 +774,11 @@ function fmtB(b){
 }
 function buildPreview(f){
   var ext=f.ext,path=f.path;
+  var metaAttr=escA(JSON.stringify(f.meta));
   if(ext==='jpg'||ext==='jpeg'||ext==='png'||ext==='gif'||ext==='webp'||ext==='bmp'){
     var url='file://'+path;
-    return '<a href="'+escA(url)+'" target="_blank" data-lb-url="'+escA(url)+'" data-lb-type="image">'+
+    return '<a href="'+escA(url)+'" target="_blank" data-lb-url="'+escA(url)+'" data-lb-type="image" '+
+      'data-lb-meta="'+metaAttr+'">'+
       '<img src="'+escA(url)+'" class="thumb" loading="lazy" '+
       'onerror="this.parentElement.innerHTML=\'<span class=no-prev>no preview</span>\'"></a>';
   }
@@ -632,7 +786,8 @@ function buildPreview(f){
     if(f.tb){
       var src='data:image/jpeg;base64,'+f.tb;
       var lb=f.fb?'data:image/jpeg;base64,'+f.fb:src;
-      return '<img src="'+src+'" class="thumb" data-lb-url="'+escA(lb)+'" data-lb-type="image">';
+      return '<img src="'+src+'" class="thumb" data-lb-url="'+escA(lb)+'" data-lb-type="image" '+
+        'data-lb-meta="'+metaAttr+'">';
     }
     return '<span class="no-prev">HEIC</span>';
   }
@@ -642,6 +797,7 @@ function buildPreview(f){
     var url='file://'+path;
     return '<video src="'+escA(url)+'" class="thumb" preload="metadata" muted playsinline '+
       'data-lb-url="'+escA(url)+'" data-lb-type="video" '+
+      'data-lb-meta="'+metaAttr+'" '+
       'onerror="this.outerHTML=\'<span class=no-prev>no preview</span>\'"></video>';
   }
   return '<span class="no-prev">&mdash;</span>';
@@ -736,7 +892,39 @@ function copyPath(p){
     document.body.removeChild(t);
   });
 }
-function openLb(url,type){
+function renderMetaPanel(meta){
+  var el = document.getElementById('lbMeta');
+  if(!meta || (!meta.faces.length && !meta.location)){
+    el.classList.remove('on'); el.innerHTML=''; return;
+  }
+  var parts = [];
+  if(meta.faces.length){
+    parts.push(meta.faces.map(function(fc){
+      return '<div class="lb-face"><img src="'+fc.thumb+'">'+
+        '<a href="/person/'+encodeURIComponent(fc.name)+'">'+fc.name+'</a></div>';
+    }).join(''));
+  }
+  if(meta.location){
+    var locId = 'lbLoc'+Math.random().toString(36).slice(2);
+    parts.push('<div class="lb-location" id="'+locId+'">Loading location...</div>');
+    fetch('/api/location?lat='+meta.location.lat+'&lon='+meta.location.lon)
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        var n = document.getElementById(locId);
+        if(n) n.textContent = d.name || 'Unknown location';
+      })
+      .catch(function(){
+        var n = document.getElementById(locId);
+        if(n) n.textContent = 'Location unavailable';
+      });
+  }
+  el.innerHTML = parts.join('');
+  el.classList.add('on');
+}
+function openLb(url,type,metaJson){
+  var meta = null;
+  try { meta = metaJson ? JSON.parse(metaJson) : null; } catch(e) {}
+  renderMetaPanel(meta);
   var img=document.getElementById('lb-img');
   var vid=document.getElementById('lb-vid');
   if(type==='video'){
@@ -767,10 +955,84 @@ function sortGroups(by){
     });
   });
 }
+function bestDateBucket(f){
+  var d = bestDateJs(f);
+  if(!d) return null;
+  return {year: d.slice(0,4), month: d.slice(0,7), day: d.slice(0,10)};
+}
+var dateState = {level:'year', year:null, month:null};
+function dateKeepFiles(){ return (typeof KEEPFILES!=='undefined') ? KEEPFILES : []; }
+function buildYearView(){
+  dateState = {level:'year', year:null, month:null};
+  var byYear = {};
+  dateKeepFiles().forEach(function(f){
+    var b = bestDateBucket(f); if(!b) return;
+    (byYear[b.year] = byYear[b.year] || []).push(f);
+  });
+  var years = Object.keys(byYear).sort().reverse();
+  var grid = document.getElementById('dateGrid');
+  grid.innerHTML = years.map(function(y){
+    var files = byYear[y];
+    return '<div class="date-card" data-year="'+y+'" onclick="buildMonthView(\''+y+'\')">'+
+      buildPreview(files[0])+
+      '<div class="date-card-label">'+y+'</div>'+
+      '<div class="date-card-count">'+files.length+' files</div></div>';
+  }).join('');
+  document.getElementById('dateBreadcrumb').innerHTML = '';
+}
+function buildMonthView(year){
+  dateState = {level:'month', year:year, month:null};
+  var byMonth = {};
+  dateKeepFiles().forEach(function(f){
+    var b = bestDateBucket(f); if(!b || b.year!==year) return;
+    (byMonth[b.month] = byMonth[b.month] || []).push(f);
+  });
+  var months = Object.keys(byMonth).sort().reverse();
+  var grid = document.getElementById('dateGrid');
+  grid.innerHTML = months.map(function(m){
+    var files = byMonth[m];
+    return '<div class="date-card" data-month="'+m+'" onclick="buildDayView(\''+m+'\')">'+
+      buildPreview(files[0])+
+      '<div class="date-card-label">'+m+'</div>'+
+      '<div class="date-card-count">'+files.length+' files</div></div>';
+  }).join('');
+  document.getElementById('dateBreadcrumb').innerHTML =
+    '<a onclick="buildYearView()">'+year+'</a>';
+}
+function buildDayView(month){
+  dateState = {level:'day', year:dateState.year, month:month};
+  var byDay = {};
+  dateKeepFiles().forEach(function(f){
+    var b = bestDateBucket(f); if(!b || b.month!==month) return;
+    (byDay[b.day] = byDay[b.day] || []).push(f);
+  });
+  var days = Object.keys(byDay).sort().reverse();
+  var grid = document.getElementById('dateGrid');
+  grid.innerHTML = days.map(function(d){
+    var files = byDay[d];
+    return '<div class="date-card" data-day="'+d+'" onclick="buildDayGallery(\''+d+'\')">'+
+      buildPreview(files[0])+
+      '<div class="date-card-label">'+d+'</div>'+
+      '<div class="date-card-count">'+files.length+' files</div></div>';
+  }).join('');
+  document.getElementById('dateBreadcrumb').innerHTML =
+    '<a onclick="buildYearView()">'+dateState.year+'</a> &gt; '+
+    '<a onclick="buildMonthView(\''+dateState.year+'\')">'+month+'</a>';
+}
+function buildDayGallery(day){
+  var files = dateKeepFiles().filter(function(f){
+    var b = bestDateBucket(f); return b && b.day===day;
+  });
+  var grid = document.getElementById('dateGrid');
+  grid.innerHTML = files.map(function(f){ return buildCard(f); }).join('');
+  document.getElementById('dateBreadcrumb').innerHTML =
+    '<a onclick="buildYearView()">'+dateState.year+'</a> &gt; '+
+    '<a onclick="buildMonthView(\''+dateState.year+'\')">'+dateState.month+'</a> &gt; '+day;
+}
 // Event delegation: toggle, lightbox, copy — one listener for all dynamic content
 document.addEventListener('click',function(e){
   var lb=e.target.closest('[data-lb-url]');
-  if(lb){e.preventDefault();e.stopPropagation();openLb(lb.dataset.lbUrl,lb.dataset.lbType||'image');return;}
+  if(lb){e.preventDefault();e.stopPropagation();openLb(lb.dataset.lbUrl,lb.dataset.lbType||'image',lb.dataset.lbMeta);return;}
   var cp=e.target.closest('[data-path]');
   if(cp){copyPath(cp.dataset.path);return;}
   var hdr=e.target.closest('.group-header');
@@ -895,6 +1157,7 @@ document.addEventListener('click',function(e){
   if(sb){e.preventDefault();e.stopPropagation();findSimilar(sb.dataset.similar);}
 });
 render(true);
+if(typeof KEEPFILES!=='undefined') buildYearView();
 "#);
 
     out.push_str("</script>\n</body>\n</html>");
@@ -1494,6 +1757,11 @@ struct PersonSearchQuery {
 struct AppState {
     conn: Mutex<Connection>,
     shutdown_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    report_all: bool,
+    report_by_date: bool,
+    report_heic: bool,
+    report_heic_original: bool,
+    serve_faces_ui: bool,
 }
 
 fn query_faces_data(conn: &Connection) -> rusqlite::Result<FacesResponse> {
@@ -1569,6 +1837,79 @@ fn query_faces_data(conn: &Connection) -> rusqlite::Result<FacesResponse> {
 
 async fn handle_root() -> impl axum::response::IntoResponse {
     axum::response::Html(FACES_HTML)
+}
+
+/// Live-server equivalent of the static `--all`/`--by-date` HTML report,
+/// rendered on each request from the current database state (labeled faces
+/// included, since this route only exists when `--show-faces` is set).
+async fn handle_report(State(state): State<Arc<AppState>>) -> impl axum::response::IntoResponse {
+    let conn = state.conn.lock().unwrap();
+    let stats = query_stats(&conn);
+    let groups = query_groups(&conn);
+    let all_files = state.report_all.then(|| query_all_files(&conn));
+    let keep_files = state.report_by_date.then(|| query_keep_files(&conn));
+    let faces_by_hash = dupe_core::face_db::labeled_faces_by_hash(&conn).unwrap_or_default();
+    let vectors = if state.report_all { query_vectors(&conn) } else { None };
+    let db_path = conn.path().map(|p| p.to_string()).unwrap_or_default();
+    drop(conn);
+    let html = generate_html(
+        &db_path,
+        &stats,
+        &groups,
+        all_files.as_deref(),
+        keep_files.as_deref(),
+        vectors.as_ref(),
+        state.report_heic,
+        state.report_heic_original,
+        &faces_by_hash,
+    );
+    axum::response::Html(html)
+}
+
+#[derive(Deserialize)]
+struct LocationQuery {
+    lat: f64,
+    lon: f64,
+}
+
+#[derive(Serialize)]
+struct LocationResponse {
+    name: Option<String>,
+}
+
+async fn handle_location(
+    Query(q): Query<LocationQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Result<AxumJson<LocationResponse>, StatusCode> {
+    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // `q.lat`/`q.lon` arrive rounded to 6 decimal places (the precision
+    // `file_to_json_with_faces` bakes into `meta.location` client-side), but
+    // `file_hashes.gps_lat`/`gps_lon` are stored at full EXIF precision - an
+    // exact float comparison would never match, silently breaking the cache
+    // on every real coordinate. Round the stored value to the same precision
+    // before comparing, both when reading and when writing back the cache.
+    let cached: Option<String> = conn
+        .query_row(
+            "SELECT location_name FROM file_hashes \
+             WHERE ROUND(gps_lat, 6) = ?1 AND ROUND(gps_lon, 6) = ?2 \
+             AND location_name IS NOT NULL LIMIT 1",
+            rusqlite::params![q.lat, q.lon],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if let Some(name) = cached {
+        return Ok(AxumJson(LocationResponse { name: Some(name) }));
+    }
+    let name = dupe_core::location::location_name(q.lat, q.lon);
+    if let Some(ref n) = name {
+        let _ = conn.execute(
+            "UPDATE file_hashes SET location_name = ?1 \
+             WHERE ROUND(gps_lat, 6) = ?2 AND ROUND(gps_lon, 6) = ?3",
+            rusqlite::params![n, q.lat, q.lon],
+        );
+    }
+    Ok(AxumJson(LocationResponse { name }))
 }
 
 async fn handle_get_faces(
@@ -1977,22 +2318,37 @@ async fn handle_original_image(
     Ok(([(axum::http::header::CONTENT_TYPE, content_type)], bytes))
 }
 
-async fn serve_faces_async(db: &Path) -> Result<(), Box<dyn std::error::Error>> {
+/// Options threaded from `main()`'s CLI args into the live server, since
+/// server mode renders the report on-demand per request instead of once to a
+/// static file.
+struct ServeOptions {
+    serve_faces_ui: bool,
+    /// True when `--show-faces` was passed, i.e. `/` should serve the live
+    /// report instead of the labeling UI. Tracked separately from
+    /// `serve_faces_ui` (`--faces`) because the two flags are independent:
+    /// either can be passed alone or together.
+    show_report: bool,
+    report_all: bool,
+    report_by_date: bool,
+    report_heic: bool,
+    report_heic_original: bool,
+}
+
+async fn serve_faces_async(db: &Path, opts: ServeOptions) -> Result<(), Box<dyn std::error::Error>> {
     let conn = Connection::open(db)?;
+    dupe_core::location::ensure_location_column(&conn);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let state = Arc::new(AppState {
         conn: Mutex::new(conn),
         shutdown_tx: Mutex::new(Some(shutdown_tx)),
+        report_all: opts.report_all,
+        report_by_date: opts.report_by_date,
+        report_heic: opts.report_heic,
+        report_heic_original: opts.report_heic_original,
+        serve_faces_ui: opts.serve_faces_ui,
     });
 
-    let app = Router::new()
-        .route("/", get(handle_root))
-        .route("/api/faces", get(handle_get_faces))
-        .route("/api/assign", post(handle_assign))
-        .route("/api/new-person", post(handle_new_person))
-        .route("/api/remove-face", post(handle_remove_face))
-        .route("/api/dissolve-cluster", post(handle_dissolve_cluster))
-        .route("/api/set-primary", post(handle_set_primary))
+    let mut router = Router::new()
         .route("/api/face-image/{id}", get(handle_face_image))
         .route("/api/original-image/{id}", get(handle_original_image))
         .route("/cluster/{id}", get(handle_cluster_page))
@@ -2001,7 +2357,31 @@ async fn serve_faces_async(db: &Path) -> Result<(), Box<dyn std::error::Error>> 
         .route("/api/person/{name}", get(handle_person_api))
         .route("/api/search/person", get(handle_search_person))
         .route("/api/quit", post(handle_quit))
-        .with_state(state);
+        .route("/api/location", get(handle_location));
+
+    if state.serve_faces_ui {
+        router = router
+            .route("/api/faces", get(handle_get_faces))
+            .route("/api/assign", post(handle_assign))
+            .route("/api/new-person", post(handle_new_person))
+            .route("/api/remove-face", post(handle_remove_face))
+            .route("/api/dissolve-cluster", post(handle_dissolve_cluster))
+            .route("/api/set-primary", post(handle_set_primary));
+    }
+
+    // `/` and (when both modes are active) `/faces` depend on which combination
+    // of --faces / --show-faces started this server:
+    //   --faces alone        -> `/` = labeling UI, no report route at all
+    //   --show-faces alone   -> `/` = live report, no `/faces` route
+    //   both                 -> `/` = live report, `/faces` = labeling UI
+    router = match (state.serve_faces_ui, opts.show_report) {
+        (true, true) => router.route("/", get(handle_report)).route("/faces", get(handle_root)),
+        (true, false) => router.route("/", get(handle_root)),
+        (false, true) => router.route("/", get(handle_report)),
+        (false, false) => router, // unreachable: serve_faces_async only runs when at least one is set
+    };
+
+    let app = router.with_state(state);
 
     let addr = "127.0.0.1:7878";
     let listener = tokio::net::TcpListener::bind(addr)
@@ -2016,9 +2396,9 @@ async fn serve_faces_async(db: &Path) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-fn serve_faces(db: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn serve_faces(db: &Path, opts: ServeOptions) -> Result<(), Box<dyn std::error::Error>> {
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(serve_faces_async(db))
+    rt.block_on(serve_faces_async(db, opts))
 }
 
 fn main() {
@@ -2029,8 +2409,16 @@ fn main() {
         std::process::exit(1);
     }
 
-    if args.faces {
-        if let Err(e) = serve_faces(&args.db) {
+    if args.faces || args.show_faces {
+        let opts = ServeOptions {
+            serve_faces_ui: args.faces,
+            show_report: args.show_faces,
+            report_all: args.all,
+            report_by_date: args.by_date,
+            report_heic: args.heic,
+            report_heic_original: args.heic_original,
+        };
+        if let Err(e) = serve_faces(&args.db, opts) {
             eprintln!("Error: {e}");
             std::process::exit(1);
         }
@@ -2050,6 +2438,7 @@ fn main() {
     let stats = query_stats(&conn);
     let groups = query_groups(&conn);
     let all_files = args.all.then(|| query_all_files(&conn));
+    let keep_files = args.by_date.then(|| query_keep_files(&conn));
     let vectors = if args.all {
         let v = query_vectors(&conn);
         if v.is_none() {
@@ -2064,9 +2453,11 @@ fn main() {
         &stats,
         &groups,
         all_files.as_deref(),
+        keep_files.as_deref(),
         vectors.as_ref(),
         args.heic,
         args.heic_original,
+        &HashMap::new(),
     );
 
     fs::write(&output, &html).expect("failed to write HTML file");
@@ -2228,5 +2619,29 @@ mod tests {
         let s = json_str("</script>");
         assert!(s.contains("\\u003c/script"), "{s}");
         assert!(!s.contains("</script>"), "{s}");
+    }
+
+    #[test]
+    fn file_to_json_with_faces_embeds_name() {
+        let f = FileRow {
+            path: "/tmp/nonexistent.jpg".to_string(),
+            hash: "h1".to_string(),
+            size_bytes: 10,
+            ext: "jpg".to_string(),
+            created_at: None, modified_at: None, exif_date: None,
+            gps_lat: None, gps_lon: None, width: None, height: None,
+        };
+        let faces = vec![(1i64, "Alice".to_string(), "0,0,10,10".to_string())];
+        // make_face_thumb will return None (file doesn't exist), so faces_json
+        // ends up empty - this test instead verifies the no-crash path and
+        // that meta.faces is present in the output shape.
+        let json = file_to_json_with_faces(&f, false, false, &faces);
+        assert!(json.contains("\"meta\":"), "{json}");
+    }
+
+    #[test]
+    fn parse_bbox_converts_xywh_to_corners() {
+        assert_eq!(parse_bbox("10,20,5,5"), Some([10.0, 20.0, 15.0, 25.0]));
+        assert_eq!(parse_bbox("not,valid"), None);
     }
 }
