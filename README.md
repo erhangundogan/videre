@@ -142,9 +142,11 @@ dupe-report <db> --show-faces
 
 Passing `--faces` and `--show-faces` together moves the report to `/` and the labeling UI to `/faces` (with `--faces` alone, `/` stays the labeling UI as before).
 
+Thumbnails and the lightbox load differently depending on mode: static reports point at `file://` paths (the report itself is opened via `file://`, so that works fine), but `--show-faces` serves images/videos through `GET /api/raw?path=...` instead, since browsers block a `file://` subresource on an `http://`-served page. `/api/raw` only serves paths already known to the database.
+
 The report includes:
 
-- Stats header: files scanned, duplicate groups, wasted space
+- Stats header: files scanned always shown; duplicate groups/files/wasted-space tiles and the toolbar only appear when at least one duplicate group exists
 - Toolbar: Expand all / Collapse all, sort by wasted space / date kept oldest-first / newest-first
 - Duplicate groups with KEEP/REMOVE badges, image thumbnails, EXIF date, GPS map links, copy-path buttons
 - Lightbox for full-size images and video playback (`.mov`, `.mp4`)

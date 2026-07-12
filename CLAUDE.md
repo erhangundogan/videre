@@ -172,12 +172,14 @@ dupe-report <db> --show-faces       # live server: report with labeled-face + lo
 - `--show-faces` alone: `/` serves the live report (with face/location metadata); no `/faces` route.
 - `--faces --show-faces` together: `/` serves the live report, `/faces` serves the labeling UI.
 
+Thumbnails and the lightbox also switch URL scheme in server mode: browsers refuse to load a `file://` subresource from an `http://`-served page, so `--show-faces` serves image/video bytes through `GET /api/raw?path=<path>` instead (a `LIVE_SERVER` flag baked into the page picks the URL scheme). `/api/raw` only serves paths already present in `file_hashes.path` - it's a deliberate allowlist, not a general file server. Static reports (no `--show-faces`) keep `file://` links, since the report itself is opened via `file://` there.
+
 Report includes:
-- Stats header (files, groups, wasted space)
+- Stats header (files scanned always shown; duplicate groups/files/wasted-space tiles and the toolbar only appear when there's at least one duplicate group)
 - Toolbar: Expand all / Collapse all / Sort dropdown (wasted space, date kept oldest-first, date kept newest-first)
 - Duplicate groups sorted by wasted space by default; sorting is instant DOM reorder
 - Per-file: thumbnail preview, KEEP/REMOVE badge, filename, path + copy button, size, created, modified, EXIF date, GPS link, dimensions
-- Image thumbnails via `file://` URL (lazy-loaded, force-loaded on group expand)
+- Image thumbnails via `file://` URL in static mode, or `/api/raw?path=...` in server mode (lazy-loaded, force-loaded on group expand)
 - `.mov` and `.mp4` files shown as `<video>` thumbnail; click opens lightbox with playback controls
 - `.heic` files: "HEIC" text by default; `--heic` embeds 240px JPEG thumbnail; `--heic-original` also embeds 1200px lightbox version (macOS only, requires `qlmanage`, part of Quick Look/CoreServices)
 - Lightbox overlay for full-size image/video viewing; Escape or backdrop click closes
