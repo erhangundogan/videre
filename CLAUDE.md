@@ -152,7 +152,7 @@ Reads `file_hashes` from a SQLite database and writes a self-contained HTML file
 ```bash
 dupe-report <db>                    # output: <db>_report.html
 dupe-report <db> -o <out>           # explicit output path
-dupe-report <db> --heic             # embed HEIC thumbnails as base64 JPEG (macOS/sips)
+dupe-report <db> --heic             # embed HEIC thumbnails as base64 JPEG (macOS/qlmanage)
 dupe-report <db> --heic-original    # embed HEIC thumbnails + 1200px lightbox version
 dupe-report <db> --all              # all-files gallery + in-page similarity search
 dupe-report <db> --faces            # face labeling UI on localhost:7878 (requires dupe-faces)
@@ -165,9 +165,18 @@ Report includes:
 - Per-file: thumbnail preview, KEEP/REMOVE badge, filename, path + copy button, size, created, modified, EXIF date, GPS link, dimensions
 - Image thumbnails via `file://` URL (lazy-loaded, force-loaded on group expand)
 - `.mov` and `.mp4` files shown as `<video>` thumbnail; click opens lightbox with playback controls
-- `.heic` files: "HEIC" text by default; `--heic` embeds 240px JPEG thumbnail; `--heic-original` also embeds 1200px lightbox version (macOS only, requires `sips`)
+- `.heic` files: "HEIC" text by default; `--heic` embeds 240px JPEG thumbnail; `--heic-original` also embeds 1200px lightbox version (macOS only, requires `qlmanage`, part of Quick Look/CoreServices)
 - Lightbox overlay for full-size image/video viewing; Escape or backdrop click closes
 - `--all`: gallery of files that exist on disk (200-card pages, lazy thumbnails) + "Similar" button per file; click opens a results panel with top-24 cosine matches using inline SigLIP f16 embeddings (requires prior `dupe-embed` run)
+
+HEIC conversion (`--heic`/`--heic-original`, face thumbnails, and the original-image
+endpoint) uses `qlmanage -t` (QuickLook), not `sips -s format jpeg`. Some HEIC files
+(notably iPhone photos where iOS encodes rotation via the HEIF `irot` transform box
+rather than a classic EXIF Orientation tag) come out sideways with plain `sips`
+conversion because it copies the raw sensor-buffer pixels unrotated; `qlmanage`
+applies the same rotation Finder/Preview/Photos do. This affects `dupe-faces`
+detection, `dupe-embed`/`dupe-search` preprocessing, and every HEIC thumbnail path
+in `dupe-report` - all of them shell out to `qlmanage`, not `sips`, for this reason.
 
 ## dupe-fix-dates
 
@@ -206,8 +215,9 @@ Shared-hash safety: if two paths share the same hash and one file is deleted, th
 `dupe-embed <db>` embeds every unique image hash (SigLIP so400m/14-384, 1152-dim,
 L2-normalized f16 BLOB) into an `embeddings` table keyed by content hash. Resumable:
 re-running processes only missing hashes. `--batch` (default 32), `--chunk` (rows per
-transaction, default 500), `--silent`. HEIC via sips; DNG, mov, and mp4 skipped (the
-`image` crate has no DNG decoder; EXIF metadata is still available from the scan).
+transaction, default 500), `--silent`. HEIC via `qlmanage` (see dupe-report HEIC note
+above); DNG, mov, and mp4 skipped (the `image` crate has no DNG decoder; EXIF metadata
+is still available from the scan).
 
 `dupe-search <db> "query"` or `dupe-search <db> --image photo.jpg` prints matching
 paths to stdout (all duplicate paths per matched hash). `-k` top-k (default 20),
@@ -234,16 +244,31 @@ CREATE TABLE embeddings (
 Detects faces in every image recorded in the database, embeds each face with ArcFace, and clusters detected faces into identity groups using DBSCAN.
 
 ```
-dupe-faces <db>                  # process new hashes only
-dupe-faces <db> --reprocess      # re-detect and re-embed all hashes
-dupe-faces <db> --dry-run        # detect and embed but do not write to db
-dupe-faces <db> --batch <n>      # images per ONNX batch (default: 8)
-dupe-faces <db> --silent         # suppress per-image progress
+dupe-faces <db>                       # process new hashes only
+dupe-faces <db> --reprocess           # re-detect and re-embed all hashes
+dupe-faces <db> --recluster           # skip detection; re-run DBSCAN on existing embeddings
+dupe-faces <db> --dry-run             # detect and embed but do not write to db
+dupe-faces <db> --batch <n>           # images per ONNX batch (default: 8)
+dupe-faces <db> --silent              # suppress per-image progress
+dupe-faces <db> --eps <f32>           # DBSCAN cosine-distance radius (default: 0.6)
+dupe-faces <db> --min-cluster-size <n>  # minimum faces per cluster (default: 3)
 ```
 
-Uses InsightFace buffalo_l: SCRFD-10GF for detection, 5-point landmark alignment, ArcFace w600k_r50 for 512-dim L2-normalized embeddings. Weights are downloaded from `hf-hub` on first run. ONNX Runtime (`ort`) runs inference on CPU.
+Uses InsightFace buffalo_l: SCRFD-10GF for detection, 5-point landmark alignment, ArcFace w600k_r50 for 512-dim L2-normalized embeddings. Weights are downloaded from `hf-hub` on first run. ONNX Runtime (`ort`) runs inference on CPU. HEIC images are converted via `qlmanage` (see dupe-report HEIC note above) before detection.
 
-`dupe-report --faces` starts an `axum` web server on `localhost:7878` that serves a face-labeling UI. Type a name for each cluster, click Save; labels are written back to `faces.person_label` and `faces.confirmed`.
+Faces below `--min-cluster-size` are left as unassigned singletons rather than forming
+a small cluster. `--recluster` re-runs DBSCAN with new `--eps`/`--min-cluster-size`
+values without re-detecting or re-embedding - useful for tuning cluster tightness
+after an initial `dupe-faces` run.
+
+`dupe-report --faces` starts an `axum` web server on `localhost:7878` serving a face-labeling UI:
+- **People** (blue), **Unassigned Clusters** (green), **Singletons** (orange) sections, each color-coded consistently across cards, badges, and titles
+- Drag a cluster/singleton card's handle onto a person card to assign it, or click "New Person" to create one
+- Each unassigned cluster/singleton card links to a detail page (`/cluster/{id}` or via the card thumbnail) showing every face at full size with per-face remove/assign
+- "Dissolve cluster" on the cluster detail page ungroups a wrongly-merged cluster back into singletons (faces are not deleted)
+- Each person links to `/person/{name}`, listing their confirmed faces with per-face remove
+- Click any face thumbnail to open the full-resolution original photo via `/api/original-image/{id}` (a live server request, not a `file://` link - browsers block navigating from `http://` to `file://` for security)
+- Labels are written back to `faces.person_label` and `faces.confirmed`; close the browser tab or press Ctrl-C (or use the "Save & Close" button, which calls `/api/quit`) to stop the server
 
 `dupe-search --person "Alice"` queries the `faces` table for confirmed rows with the given label and prints the paths of all matching images.
 

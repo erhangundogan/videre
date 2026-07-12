@@ -110,7 +110,7 @@ Reads the SQLite database and generates a self-contained HTML file. There are tw
 ```bash
 dupe-report <db>               # output: <db>_report.html
 dupe-report <db> -o out.html   # explicit output path
-dupe-report <db> --heic        # embed HEIC thumbnails as JPEG (macOS only, requires sips)
+dupe-report <db> --heic        # embed HEIC thumbnails as JPEG (macOS only, requires qlmanage)
 dupe-report <db> --heic-original  # same + 1200px lightbox version
 ```
 
@@ -130,9 +130,9 @@ The report includes:
 - Lightbox for full-size images and video playback (`.mov`, `.mp4`)
 - `--all`: paginated gallery of every file on disk (200 per page) with a "Similar" button on each card that opens a results panel showing the top 24 cosine-similar images, computed client-side from SigLIP embeddings inlined in the page (requires a prior `dupe-embed` run)
 
-HEIC files show a "HEIC" placeholder by default; `--heic` embeds a 240px JPEG thumbnail via `sips` (macOS only).
+HEIC files show a "HEIC" placeholder by default; `--heic` embeds a 240px JPEG thumbnail via `qlmanage` (QuickLook, macOS only) - not `sips`, which silently skips the rotation some iPhone HEIC files need (see Platform notes).
 
-`--faces` starts a local web server on `localhost:7878` that loads each detected face cluster and lets you type a name label. Labels are saved back to the `faces` table as `person_label`. Close the browser tab or press Ctrl-C to stop the server.
+`--faces` starts a local web server on `localhost:7878` for interactive face labeling: color-coded People / Unassigned Clusters / Singletons sections, drag-and-drop assignment, a "New Person" form, per-cluster detail pages with a "Dissolve cluster" action for bad groupings, per-person detail pages, and click-to-view original photos. Labels are saved back to the `faces` table as `person_label`. Close the browser tab or press Ctrl-C to stop the server.
 
 ---
 
@@ -141,14 +141,19 @@ HEIC files show a "HEIC" placeholder by default; `--heic` embeds a 240px JPEG th
 Detects faces in every image in the database, embeds each face with ArcFace, and clusters faces across images into identity groups. Run this after `dupe-embed` (or independently) to enable person search.
 
 ```bash
-dupe-faces <db>               # process new hashes only (resumable)
-dupe-faces <db> --reprocess   # re-detect and re-embed all hashes
-dupe-faces <db> --dry-run     # detect and embed but do not write to db
-dupe-faces <db> --batch <n>   # images per ONNX batch (default: 8)
-dupe-faces <db> --silent      # suppress per-image progress
+dupe-faces <db>                         # process new hashes only (resumable)
+dupe-faces <db> --reprocess             # re-detect and re-embed all hashes
+dupe-faces <db> --recluster             # skip detection; re-run clustering only
+dupe-faces <db> --dry-run               # detect and embed but do not write to db
+dupe-faces <db> --batch <n>             # images per ONNX batch (default: 8)
+dupe-faces <db> --silent                # suppress per-image progress
+dupe-faces <db> --eps <f32>             # DBSCAN cosine-distance radius (default: 0.6)
+dupe-faces <db> --min-cluster-size <n>  # minimum faces per cluster (default: 3)
 ```
 
-Face detection uses InsightFace buffalo_l (SCRFD-10GF detector + ArcFace w600k_r50 embedder) via ONNX Runtime. Model weights are downloaded automatically on first run and cached in `~/.cache/ort/`.
+Face detection uses InsightFace buffalo_l (SCRFD-10GF detector + ArcFace w600k_r50 embedder) via ONNX Runtime. Model weights are downloaded automatically on first run and cached in `~/.cache/ort/`. HEIC images are converted via `qlmanage`, matching the rest of the pipeline (see Platform notes).
+
+Faces below `--min-cluster-size` stay as unassigned singletons instead of forming a tiny cluster. Use `--recluster --eps <value>` to retune clustering tightness without re-running detection.
 
 **Faces workflow:**
 
@@ -225,7 +230,7 @@ Only files with `exif_date` in the database are touched. EXIF time is treated as
 | `dupe`, `dupe-report`, `dupe-fix-dates` | yes | yes |
 | `dupe-embed`, `dupe-search` | yes (Metal GPU) | yes (CPU only) |
 | `dupe-faces` | yes (CPU via ONNX Runtime) | yes (CPU via ONNX Runtime) |
-| HEIC thumbnails in report | yes (via `sips`) | no |
+| HEIC thumbnails/decoding (report, faces, embed) | yes (via `qlmanage`) | no |
 | HEIC scanning and EXIF | yes | yes |
 | `created_at` field | yes | always null |
 
