@@ -67,6 +67,12 @@ dupe-prune ~/photos.db
 
 # 11. Browse the full collection with in-page similarity search
 dupe-report --all ~/photos.db
+
+# 12. Browse a Year/Month/Day drill-down gallery (static HTML, same as --all)
+dupe-report --by-date ~/photos.db
+
+# 13. Live report with labeled-face and location metadata in the lightbox
+dupe-report --show-faces ~/photos.db
 ```
 
 ---
@@ -121,6 +127,20 @@ dupe-report <db> --all
 ```
 
 `--all` automatically skips files that were recorded in the database but no longer exist on disk, so the gallery always reflects the current state of your collection. Files are checked at report generation time; the database itself is not modified. Run `dupe-prune` to permanently clean up stale rows and sync metadata.
+
+**Drill-down by date.** `--by-date` adds a static Year > Month > Day gallery over your KEEP files, generated the same way as `--all` (no server involved - it's plain HTML and can be combined with `--all`, `--heic`, and `--heic-original`).
+
+```bash
+dupe-report <db> --by-date
+```
+
+**Live report with face and location metadata.** `--show-faces` switches `dupe-report` into server mode: it starts the same local server `--faces` uses (`localhost:7878`), but serves the interactive report (not the labeling UI) at `/`. The lightbox for each photo shows its labeled faces - click one to jump to `/person/<name>` - and a reverse-geocoded location name looked up on demand via a `/api/location` call and cached into the database for next time.
+
+```bash
+dupe-report <db> --show-faces
+```
+
+Passing `--faces` and `--show-faces` together moves the report to `/` and the labeling UI to `/faces` (with `--faces` alone, `/` stays the labeling UI as before).
 
 The report includes:
 
@@ -253,7 +273,8 @@ CREATE TABLE file_hashes (
     gps_lat     REAL,
     gps_lon     REAL,
     width       INTEGER,
-    height      INTEGER
+    height      INTEGER,
+    location_name TEXT
 );
 
 CREATE TABLE embeddings (
@@ -276,7 +297,7 @@ CREATE TABLE IF NOT EXISTS faces (
 );
 ```
 
-Re-scanning upserts existing rows by `path`. `phash` is only written with `--similar`. EXIF fields (`exif_date`, `gps_lat`, `gps_lon`, `width`, `height`) are written for jpg/jpeg/tiff/heic/dng files; null for all others.
+Re-scanning upserts existing rows by `path`. `phash` is only written with `--similar`. EXIF fields (`exif_date`, `gps_lat`, `gps_lon`, `width`, `height`) are written for jpg/jpeg/tiff/heic/dng files; null for all others. `location_name` is added by an idempotent migration on `dupe-report` startup and is not written by `dupe` itself - it's populated lazily, one coordinate at a time, when `dupe-report --show-faces` resolves and caches a reverse-geocoded location name.
 
 ### JSONL record
 

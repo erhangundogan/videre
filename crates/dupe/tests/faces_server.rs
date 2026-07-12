@@ -46,3 +46,34 @@ fn make_db_with_faces_creates_valid_schema() {
     // Verify is_primary column exists
     conn.execute("UPDATE faces SET is_primary = 1 WHERE id = 1", []).unwrap();
 }
+
+#[test]
+fn help_documents_show_faces_starts_server() {
+    let out = Command::new(env!("CARGO_BIN_EXE_dupe-report"))
+        .arg("--help")
+        .output()
+        .expect("failed to run dupe-report");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("show-faces"));
+}
+
+#[test]
+fn show_faces_alone_is_accepted_by_cli_parser() {
+    // Smoke test: dupe-report should not error out on flag parsing when
+    // --show-faces is passed (it will still try to bind port 7878 and
+    // block, so this test only checks the process starts without an
+    // immediate clap parse error - full server behavior is verified
+    // manually per Task 11).
+    let dir = tempdir().unwrap();
+    let db = make_db_with_faces(dir.path());
+    let mut child = Command::new(env!("CARGO_BIN_EXE_dupe-report"))
+        .arg(&db)
+        .arg("--show-faces")
+        .spawn()
+        .expect("failed to spawn dupe-report --show-faces");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let still_running = child.try_wait().unwrap().is_none();
+    child.kill().ok();
+    child.wait().ok();
+    assert!(still_running, "dupe-report --show-faces should still be running (serving), not have exited/errored");
+}
