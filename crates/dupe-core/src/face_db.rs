@@ -1,5 +1,6 @@
 use half::f16;
 use rusqlite::Connection;
+use std::collections::HashMap;
 
 pub struct FaceRow {
     pub hash: String,
@@ -88,6 +89,34 @@ pub fn hashes_with_faces(conn: &Connection) -> rusqlite::Result<Vec<String>> {
     rows.collect()
 }
 
+/// Returns, for every hash that has at least one confirmed+labeled face, the
+/// list of (face_id, person_label, bbox) for that hash. One batched query
+/// covering every hash, not one query per file - safe to call once per
+/// report generation without N+1 overhead.
+pub fn labeled_faces_by_hash(
+    conn: &Connection,
+) -> rusqlite::Result<HashMap<String, Vec<(i64, String, String)>>> {
+    let mut stmt = conn.prepare(
+        "SELECT hash, id, bbox, person_label FROM faces \
+         WHERE confirmed = 1 AND person_label IS NOT NULL \
+         ORDER BY hash, id",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+        ))
+    })?;
+    let mut map: HashMap<String, Vec<(i64, String, String)>> = HashMap::new();
+    for row in rows {
+        let (hash, id, bbox, label) = row?;
+        map.entry(hash).or_default().push((id, label, bbox));
+    }
+    Ok(map)
+}
+
 #[cfg(test)]
 fn make_embedding(vals: &[f32]) -> Vec<u8> {
     vals.iter().flat_map(|&v| f16::from_f32(v).to_le_bytes()).collect()
@@ -159,5 +188,27 @@ mod tests {
         replace_faces_for_hash(&conn, "myhash", &[FaceRow { hash: "myhash".into(), bbox: "0,0,10,10".into(), landmark: None, embedding: emb, cluster_id: None, person_label: None, confirmed: 0, is_primary: 0 }]).unwrap();
         let hashes = hashes_with_faces(&conn).unwrap();
         assert_eq!(hashes, vec!["myhash"]);
+    }
+
+    #[test]
+    fn labeled_faces_by_hash_returns_only_confirmed_labeled() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_faces_table(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO faces (hash, bbox, embedding, person_label, confirmed) \
+             VALUES ('h1', '0,0,10,10', X'0000', 'Alice', 1); \
+             INSERT INTO faces (hash, bbox, embedding, person_label, confirmed) \
+             VALUES ('h1', '20,20,10,10', X'0000', NULL, 0); \
+             INSERT INTO faces (hash, bbox, embedding, person_label, confirmed) \
+             VALUES ('h2', '0,0,10,10', X'0000', 'Bob', 1);",
+        )
+        .unwrap();
+
+        let map = labeled_faces_by_hash(&conn).unwrap();
+        assert_eq!(map.len(), 2, "expected two hashes with labeled faces");
+        let h1 = &map["h1"];
+        assert_eq!(h1.len(), 1, "unconfirmed/unlabeled face must be excluded");
+        assert_eq!(h1[0].1, "Alice");
+        assert_eq!(map["h2"][0].1, "Bob");
     }
 }
