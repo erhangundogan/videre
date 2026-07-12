@@ -7,6 +7,7 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -922,6 +923,10 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     input[type=text] { padding: 4px 8px; border: 1px solid #999; border-radius: 4px; width: 120px; }
     #status { font-size: 13px; color: #555; }
     .face-img { object-fit: cover; border-radius: 3px; background: #ddd; display: block; }
+    .drag-handle { text-align: center; cursor: grab; color: #aaa; font-size: 16px; letter-spacing: 2px; padding: 2px 0 6px; user-select: none; }
+    .drag-handle:hover { color: #666; }
+    .cluster-link { color: #2a6db5; text-decoration: none; font-weight: bold; }
+    .cluster-link:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
@@ -956,7 +961,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     }
 
     function faceImg(faceId, w, h) {
-      return `<img class="face-img" src="/api/face-image/${faceId}" width="${w}" height="${h}" title="#${faceId}" onerror="this.style.background='#ccc'">`;
+      return `<img class="face-img" src="/api/face-image/${faceId}" width="${w}" height="${h}" title="#${faceId}" onerror="this.removeAttribute('src');this.style.background='#ddd'">`;
     }
 
     function faceChipWithRemove(faceId) {
@@ -995,14 +1000,18 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       `).join('');
     }
 
-    function renderAssignableCard(faceIds, label, badgeLabel) {
+    function renderAssignableCard(faceIds, label, badgeLabel, linkUrl) {
       const faceIdsJson = JSON.stringify(faceIds);
+      const titleHtml = linkUrl
+        ? `<a class="cluster-link" href="${escHtml(linkUrl)}">${escHtml(label)}</a>`
+        : `<strong>${escHtml(label)}</strong>`;
       return `
         <div class="card"
              draggable="true"
              ondragstart="onDragStart(event, ${faceIdsJson})">
+          <div class="drag-handle" title="Drag to assign to a person">&#8942;&#8942;&#8942;</div>
           ${thumbGrid(faceIds)}
-          <strong>${escHtml(label)}</strong>
+          ${titleHtml}
           ${badgeLabel ? `<span class="badge">${badgeLabel}</span>` : ''}
           <div class="new-person-area">
             <button onclick="showNewPersonInput(this, ${faceIdsJson})">New Person</button>
@@ -1015,7 +1024,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       const grid = document.getElementById('cluster-grid');
       document.getElementById('cluster-count').textContent = clusters.length;
       grid.innerHTML = clusters.map(c =>
-        renderAssignableCard(c.face_ids, `Cluster ${c.cluster_id}`, `${c.face_ids.length} faces`)
+        renderAssignableCard(c.face_ids, `Cluster ${c.cluster_id}`, `${c.face_ids.length} faces`, `/cluster/${c.cluster_id}`)
       ).join('');
     }
 
@@ -1023,7 +1032,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       const grid = document.getElementById('singleton-grid');
       document.getElementById('singleton-count').textContent = singletons.length;
       grid.innerHTML = singletons.map(s =>
-        renderAssignableCard([s.face_id], `Face #${s.face_id}`, '')
+        renderAssignableCard([s.face_id], `Face #${s.face_id}`, '', null)
       ).join('');
     }
 
@@ -1038,6 +1047,10 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     }
 
     function onDragStart(event, faceIds) {
+      if (!event.target.closest('.drag-handle')) {
+        event.preventDefault();
+        return;
+      }
       event.dataTransfer.setData('application/json', JSON.stringify({ face_ids: faceIds }));
     }
 
@@ -1105,6 +1118,147 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
 </body>
 </html>
 "##;
+
+const CLUSTER_HTML: &str = r##"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Cluster __CLUSTER_ID__</title>
+  <style>
+    body { font-family: sans-serif; margin: 0; padding: 16px; background: #f5f5f5; }
+    .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+    .toolbar a { color: #2a6db5; text-decoration: none; font-size: 14px; }
+    .assign-bar { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin-bottom: 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, 200px); gap: 14px; }
+    .card { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 10px; }
+    .face-img { object-fit: cover; border-radius: 4px; display: block; background: #ddd; }
+    .path { font-size: 11px; color: #666; word-break: break-all; margin-top: 5px; }
+    .face-id { font-size: 11px; color: #999; margin-top: 2px; }
+    .btns { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+    button { cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid #999; background: white; font-size: 13px; }
+    button.danger { color: #c00; border-color: #fbb; }
+    button.primary { background: #2a6db5; color: white; border-color: #2a6db5; }
+    input[type=text] { padding: 4px 8px; border: 1px solid #999; border-radius: 4px; width: 160px; font-size: 13px; }
+    #status { font-size: 13px; color: #555; }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <a href="/">&larr; Back to labeling</a>
+    <strong>Cluster __CLUSTER_ID__</strong>
+    <span id="face-count" style="color:#555;font-size:13px"></span>
+    <span id="status"></span>
+  </div>
+
+  <div class="assign-bar">
+    <strong>Assign all to:</strong>
+    <input type="text" id="person-input" placeholder="Person name" list="people-list">
+    <datalist id="people-list"></datalist>
+    <button class="primary" onclick="assignAll()">Assign cluster</button>
+  </div>
+
+  <div id="faces-grid" class="grid"></div>
+
+  <script>
+    const clusterId = __CLUSTER_ID__;
+    let facesData = [];
+
+    async function load() {
+      try {
+        const [clusterRes, mainRes] = await Promise.all([
+          fetch(`/api/cluster/${clusterId}`),
+          fetch('/api/faces')
+        ]);
+        if (!clusterRes.ok) throw new Error('cluster fetch failed');
+        const clusterData = await clusterRes.json();
+        const mainData = mainRes.ok ? await mainRes.json() : { people: [] };
+        facesData = clusterData.faces;
+        const dl = document.getElementById('people-list');
+        dl.innerHTML = mainData.people.map(p => `<option value="${escHtml(p.label)}">`).join('');
+        document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
+        render();
+      } catch(e) {
+        document.getElementById('status').textContent = 'Error: ' + e;
+      }
+    }
+
+    function render() {
+      const grid = document.getElementById('faces-grid');
+      grid.innerHTML = facesData.map(f => `
+        <div class="card" id="card-${f.face_id}">
+          <img class="face-img" src="/api/face-image/${f.face_id}" width="180" height="180"
+               onerror="this.removeAttribute('src');this.style.background='#ddd'">
+          <div class="path" title="${escHtml(f.path)}">${escHtml(basename(f.path))}</div>
+          <div class="face-id">#${f.face_id}</div>
+          <div class="btns">
+            <button class="danger" onclick="removeFace(${f.face_id})">Remove</button>
+            <button onclick="assignOne(${f.face_id})">Assign</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function basename(p) { return p.split('/').pop() || p; }
+
+    function escHtml(s) {
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    async function removeFace(faceId) {
+      const r = await fetch('/api/remove-face', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ face_id: faceId })
+      });
+      if (!r.ok) { document.getElementById('status').textContent = 'Error: remove failed'; return; }
+      document.getElementById(`card-${faceId}`)?.remove();
+      facesData = facesData.filter(f => f.face_id !== faceId);
+      document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
+    }
+
+    async function assignAll() {
+      const label = document.getElementById('person-input').value.trim();
+      if (!label) return;
+      const faceIds = facesData.map(f => f.face_id);
+      const r = await fetch('/api/new-person', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ face_ids: faceIds, label })
+      });
+      if (!r.ok) { document.getElementById('status').textContent = 'Error: assign failed'; return; }
+      document.getElementById('status').textContent = `Assigned ${faceIds.length} face(s) to "${label}"`;
+      setTimeout(() => { window.location.href = '/'; }, 800);
+    }
+
+    async function assignOne(faceId) {
+      const label = prompt('Assign face #' + faceId + ' to person:');
+      if (!label) return;
+      const r = await fetch('/api/new-person', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ face_ids: [faceId], label })
+      });
+      if (!r.ok) { document.getElementById('status').textContent = 'Error: assign failed'; return; }
+      document.getElementById(`card-${faceId}`)?.remove();
+      facesData = facesData.filter(f => f.face_id !== faceId);
+      document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
+    }
+
+    load();
+  </script>
+</body>
+</html>
+"##;
+
+#[derive(Serialize)]
+struct ClusterFaceData {
+    face_id: i64,
+    hash: String,
+    path: String,
+}
+
+#[derive(Serialize)]
+struct ClusterDetailResponse {
+    cluster_id: i64,
+    faces: Vec<ClusterFaceData>,
+}
 
 #[derive(Serialize)]
 struct PersonData {
@@ -1343,10 +1497,106 @@ async fn handle_quit(State(state): State<Arc<AppState>>) -> StatusCode {
     StatusCode::OK
 }
 
-fn load_image_for_thumb(path: &str, face_id: i64) -> Option<image::DynamicImage> {
-    let p = std::path::Path::new(path);
-    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+/// Read EXIF orientation tag from a JPEG/TIFF file.
+async fn handle_cluster_page(
+    axum::extract::Path(cluster_id): axum::extract::Path<i64>,
+) -> impl axum::response::IntoResponse {
+    axum::response::Html(CLUSTER_HTML.replace("__CLUSTER_ID__", &cluster_id.to_string()))
+}
+
+async fn handle_cluster_api(
+    axum::extract::Path(cluster_id): axum::extract::Path<i64>,
+    State(state): State<Arc<AppState>>,
+) -> Result<AxumJson<ClusterDetailResponse>, StatusCode> {
+    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT f.id, f.hash, fh.path FROM faces f \
+             JOIN file_hashes fh ON f.hash = fh.hash \
+             WHERE f.cluster_id = ?1 \
+             ORDER BY f.id",
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let faces: Vec<ClusterFaceData> = stmt
+        .query_map([cluster_id], |r| {
+            Ok(ClusterFaceData { face_id: r.get(0)?, hash: r.get(1)?, path: r.get(2)? })
+        })
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(AxumJson(ClusterDetailResponse { cluster_id, faces }))
+}
+
+fn read_exif_orientation(path: &str) -> u16 {
+    let Ok(f) = std::fs::File::open(path) else { return 1 };
+    let Ok(exif_data) = exif::Reader::new().read_from_container(&mut BufReader::new(f)) else {
+        return 1;
+    };
+    exif_data
+        .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+        .and_then(|field| {
+            if let exif::Value::Short(ref v) = field.value {
+                v.first().copied()
+            } else {
+                None
+            }
+        })
+        .unwrap_or(1)
+}
+
+/// Rotate/flip `img` to match its EXIF orientation (read from `path`).
+fn apply_exif_orientation(img: image::DynamicImage, path: &str) -> image::DynamicImage {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if !matches!(ext.as_str(), "jpg" | "jpeg" | "tiff" | "dng") {
+        return img;
+    }
+    match read_exif_orientation(path) {
+        2 => img.fliph(),
+        3 => img.rotate180(),
+        4 => img.flipv(),
+        5 => img.rotate90().fliph(),
+        6 => img.rotate90(),
+        7 => img.rotate270().fliph(),
+        8 => img.rotate270(),
+        _ => img,
+    }
+}
+
+/// Square crop centered on bbox [x1,y1,x2,y2] with 25% padding, then resize to 140x140.
+fn crop_face_square(img: &image::DynamicImage, bbox: [f32; 4]) -> image::DynamicImage {
+    let w = img.width() as f32;
+    let h = img.height() as f32;
+    let bw = bbox[2] - bbox[0];
+    let bh = bbox[3] - bbox[1];
+    let pad = (bw.max(bh) * 0.25).max(4.0);
+    let half = bw.max(bh) * 0.5 + pad;
+    let cx = (bbox[0] + bbox[2]) * 0.5;
+    let cy = (bbox[1] + bbox[3]) * 0.5;
+    let x1 = (cx - half).max(0.0) as u32;
+    let y1 = (cy - half).max(0.0) as u32;
+    let x2 = (cx + half).min(w) as u32;
+    let y2 = (cy + half).min(h) as u32;
+    let side = (x2 - x1).min(y2 - y1).max(1);
+    img.crop_imm(x1, y1, side, side)
+        .resize_exact(140, 140, image::imageops::FilterType::Triangle)
+}
+
+/// Load, crop, and orientation-correct a face thumbnail.
+///
+/// For HEIC: the face was detected on a sips-converted 640px image (sips auto-rotates).
+/// For JPEG/PNG: the face was detected on raw pixels; apply EXIF orientation after crop.
+fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image::DynamicImage> {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
     if ext == "heic" {
+        // Detection ran on sips-converted 640px image; use same scale here
         let tmp = std::env::temp_dir().join(format!("dupe_face_thumb_{face_id}.jpg"));
         let ok = std::process::Command::new("sips")
             .args(["-s", "format", "jpeg", "--resampleLongSide", "640"])
@@ -1359,27 +1609,14 @@ fn load_image_for_thumb(path: &str, face_id: i64) -> Option<image::DynamicImage>
         if !ok {
             return None;
         }
-        image::open(&tmp).ok()
+        let img = image::open(&tmp).ok()?;
+        Some(crop_face_square(&img, bbox))
     } else {
-        image::open(p).ok()
+        // Detection ran on raw pixels; crop first, then correct orientation
+        let img = image::open(path).ok()?;
+        let cropped = crop_face_square(&img, bbox);
+        Some(apply_exif_orientation(cropped, path))
     }
-}
-
-fn crop_face_thumb(img: &image::DynamicImage, bbox: [f32; 4]) -> image::DynamicImage {
-    let w = img.width() as f32;
-    let h = img.height() as f32;
-    let bw = bbox[2] - bbox[0];
-    let bh = bbox[3] - bbox[1];
-    let pad_x = bw * 0.25;
-    let pad_y = bh * 0.25;
-    let x1 = (bbox[0] - pad_x).max(0.0) as u32;
-    let y1 = (bbox[1] - pad_y).max(0.0) as u32;
-    let x2 = (bbox[2] + pad_x).min(w) as u32;
-    let y2 = (bbox[3] + pad_y).min(h) as u32;
-    let cw = (x2 - x1).max(1);
-    let ch = (y2 - y1).max(1);
-    img.crop_imm(x1, y1, cw, ch)
-        .resize_exact(140, 140, image::imageops::FilterType::Triangle)
 }
 
 async fn handle_face_image(
@@ -1400,7 +1637,7 @@ async fn handle_face_image(
         .ok_or(StatusCode::NOT_FOUND)?
     };
 
-    // bbox is stored as "x,y,w,h" (comma-separated integers)
+    // bbox stored as "x,y,w,h" → convert to x1,y1,x2,y2
     let parts: Vec<f32> = bbox_json
         .split(',')
         .filter_map(|s| s.trim().parse().ok())
@@ -1408,12 +1645,10 @@ async fn handle_face_image(
     if parts.len() != 4 {
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
-    // convert x,y,w,h -> x1,y1,x2,y2
     let bbox: [f32; 4] = [parts[0], parts[1], parts[0] + parts[2], parts[1] + parts[3]];
 
     let jpeg_bytes = tokio::task::spawn_blocking(move || -> Option<Vec<u8>> {
-        let img = load_image_for_thumb(&file_path, face_id)?;
-        let thumb = crop_face_thumb(&img, bbox);
+        let thumb = make_face_thumb(&file_path, bbox, face_id)?;
         let mut buf = Vec::new();
         thumb
             .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Jpeg)
@@ -1443,6 +1678,8 @@ async fn serve_faces_async(db: &Path) -> Result<(), Box<dyn std::error::Error>> 
         .route("/api/remove-face", post(handle_remove_face))
         .route("/api/set-primary", post(handle_set_primary))
         .route("/api/face-image/{id}", get(handle_face_image))
+        .route("/cluster/{id}", get(handle_cluster_page))
+        .route("/api/cluster/{id}", get(handle_cluster_api))
         .route("/api/search/person", get(handle_search_person))
         .route("/api/quit", post(handle_quit))
         .with_state(state);
