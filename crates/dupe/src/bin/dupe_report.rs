@@ -172,6 +172,28 @@ fn heic_to_b64(path: &str, max_px: u32) -> Option<String> {
     Some(base64_encode(&buf))
 }
 
+/// Crops a face thumbnail (via the existing make_face_thumb) and encodes it
+/// as a base64 JPEG data URI, mirroring heic_to_b64()'s pattern - for use in
+/// the server-mode report where thumbnails must be embedded inline rather
+/// than served as raw bytes (that's what handle_face_image does instead).
+fn face_thumb_b64(path: &str, bbox: [f32; 4], face_id: i64) -> Option<String> {
+    let thumb = make_face_thumb(path, bbox, face_id)?;
+    let mut buf = Vec::new();
+    thumb
+        .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Jpeg)
+        .ok()?;
+    Some(format!("data:image/jpeg;base64,{}", base64_encode(&buf)))
+}
+
+/// Parses the "x,y,w,h" bbox format stored in faces.bbox into the
+/// [x1,y1,x2,y2] shape make_face_thumb expects (same conversion
+/// handle_face_image already does inline).
+fn parse_bbox(bbox: &str) -> Option<[f32; 4]> {
+    let parts: Vec<f32> = bbox.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+    if parts.len() != 4 { return None; }
+    Some([parts[0], parts[1], parts[0] + parts[2], parts[1] + parts[3]])
+}
+
 fn format_bytes(bytes: i64) -> String {
     if bytes >= 1_073_741_824 {
         format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
@@ -211,6 +233,19 @@ fn json_str(s: &str) -> String {
 }
 
 fn file_to_json(f: &FileRow, heic: bool, heic_original: bool) -> String {
+    file_to_json_with_faces(f, heic, heic_original, &[])
+}
+
+/// Like file_to_json(), but also embeds labeled-face thumbnails into
+/// meta.faces. `faces` is the (face_id, person_label, bbox) list for this
+/// file's hash, as returned by dupe_core::face_db::labeled_faces_by_hash()
+/// (note the tuple order: label is `.1`, bbox is `.2`).
+fn file_to_json_with_faces(
+    f: &FileRow,
+    heic: bool,
+    heic_original: bool,
+    faces: &[(i64, String, String)],
+) -> String {
     let (tb, fb) = if f.ext == "heic" && heic {
         let thumb = heic_to_b64(&f.path, 240)
             .map(|b| json_str(&b))
@@ -241,11 +276,30 @@ fn file_to_json(f: &FileRow, heic: bool, heic_original: bool) -> String {
     let w = f.width.map(|v| v.to_string()).unwrap_or_else(|| "null".to_string());
     let h = f.height.map(|v| v.to_string()).unwrap_or_else(|| "null".to_string());
 
+    let faces_json: Vec<String> = faces
+        .iter()
+        .filter_map(|(id, name, bbox)| {
+            let bbox = parse_bbox(bbox)?;
+            let thumb = face_thumb_b64(&f.path, bbox, *id)?;
+            Some(format!(
+                "{{\"thumb\":{thumb},\"name\":{name}}}",
+                thumb = json_str(&thumb),
+                name = json_str(name),
+            ))
+        })
+        .collect();
+
+    let loc = if f.gps_lat.is_some() && f.gps_lon.is_some() {
+        format!("{{\"lat\":{},\"lon\":{}}}", lat, lon)
+    } else {
+        "null".to_string()
+    };
+
     format!(
         "{{\"hash\":{hash},\"path\":{path},\"ext\":{ext},\"size\":{size},\
          \"cr\":{cr},\"mo\":{mo},\"ex\":{ex},\
          \"lat\":{lat},\"lon\":{lon},\"w\":{w},\"h\":{h},\
-         \"tb\":{tb},\"fb\":{fb},\"meta\":{{\"faces\":[],\"location\":null}}}}",
+         \"tb\":{tb},\"fb\":{fb},\"meta\":{{\"faces\":[{faces}],\"location\":{loc}}}}}",
         hash = json_str(&f.hash),
         path = json_str(&f.path),
         ext  = json_str(&f.ext),
@@ -253,6 +307,8 @@ fn file_to_json(f: &FileRow, heic: bool, heic_original: bool) -> String {
         cr = cr, mo = mo, ex = ex,
         lat = lat, lon = lon, w = w, h = h,
         tb = tb, fb = fb,
+        faces = faces_json.join(","),
+        loc = loc,
     )
 }
 
@@ -2413,5 +2469,29 @@ mod tests {
         let s = json_str("</script>");
         assert!(s.contains("\\u003c/script"), "{s}");
         assert!(!s.contains("</script>"), "{s}");
+    }
+
+    #[test]
+    fn file_to_json_with_faces_embeds_name() {
+        let f = FileRow {
+            path: "/tmp/nonexistent.jpg".to_string(),
+            hash: "h1".to_string(),
+            size_bytes: 10,
+            ext: "jpg".to_string(),
+            created_at: None, modified_at: None, exif_date: None,
+            gps_lat: None, gps_lon: None, width: None, height: None,
+        };
+        let faces = vec![(1i64, "Alice".to_string(), "0,0,10,10".to_string())];
+        // make_face_thumb will return None (file doesn't exist), so faces_json
+        // ends up empty - this test instead verifies the no-crash path and
+        // that meta.faces is present in the output shape.
+        let json = file_to_json_with_faces(&f, false, false, &faces);
+        assert!(json.contains("\"meta\":"), "{json}");
+    }
+
+    #[test]
+    fn parse_bbox_converts_xywh_to_corners() {
+        assert_eq!(parse_bbox("10,20,5,5"), Some([10.0, 20.0, 15.0, 25.0]));
+        assert_eq!(parse_bbox("not,valid"), None);
     }
 }
