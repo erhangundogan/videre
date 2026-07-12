@@ -944,10 +944,10 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     .drag-handle .drag-hint { font-size: 10px; color: #bbb; line-height: 1.2; }
     .drag-handle:hover { color: #777; }
     .drag-handle:hover .drag-hint { color: #999; }
-    .cluster-card .drag-handle .drag-hint { color: #6cc36c; }
-    .cluster-card .drag-handle:hover .drag-hint { color: #1a7a1a; }
-    .singleton-card .drag-handle .drag-hint { color: #e2a03f; }
-    .singleton-card .drag-handle:hover .drag-hint { color: #8a5a00; }
+    .cluster-card .drag-handle .drag-dots, .cluster-card .drag-handle .drag-hint { color: #6cc36c; }
+    .cluster-card .drag-handle:hover .drag-dots, .cluster-card .drag-handle:hover .drag-hint { color: #1a7a1a; }
+    .singleton-card .drag-handle .drag-dots, .singleton-card .drag-handle .drag-hint { color: #e2a03f; }
+    .singleton-card .drag-handle:hover .drag-dots, .singleton-card .drag-handle:hover .drag-hint { color: #8a5a00; }
     .cluster-link { color: #2a6db5; text-decoration: none; font-weight: bold; }
     .cluster-link:hover { text-decoration: underline; }
   </style>
