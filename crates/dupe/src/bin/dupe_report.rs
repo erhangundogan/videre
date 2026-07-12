@@ -481,6 +481,7 @@ fn generate_html(
     heic: bool,
     heic_original: bool,
     faces_by_hash: &HashMap<String, Vec<(i64, String, String)>>,
+    live: bool,
 ) -> String {
     use chrono::Utc;
     let now = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
@@ -630,24 +631,36 @@ fn generate_html(
         ),
         None => String::new(),
     };
+    // The three duplicate-related tiles are only useful when there's
+    // something to report - an all-zero "Duplicate groups / Duplicate files
+    // / Wasted space" row is noise on a collection with no duplicates,
+    // especially alongside --by-date/--all.
+    let dupe_stats = if groups.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<div class=\"stat warn\"><span class=\"num\">{groups}</span><span class=\"label\">Duplicate groups</span></div>\
+             <div class=\"stat warn\"><span class=\"num\">{dups}</span><span class=\"label\">Duplicate files</span></div>\
+             <div class=\"stat warn\"><span class=\"num\">{wasted}</span><span class=\"label\">Wasted space</span></div>",
+            groups = stats.duplicate_groups,
+            dups   = stats.duplicate_files,
+            wasted = format_bytes(stats.wasted_bytes),
+        )
+    };
     out.push_str(&format!(
         "<div class=\"header\">\
           <h1>dupe report</h1>\
           <p class=\"subtitle\">{db} &mdash; {now}</p>\
           <div class=\"stats\">\
             <div class=\"stat\"><span class=\"num\">{total}</span><span class=\"label\">Files scanned</span></div>\
-            <div class=\"stat warn\"><span class=\"num\">{groups}</span><span class=\"label\">Duplicate groups</span></div>\
-            <div class=\"stat warn\"><span class=\"num\">{dups}</span><span class=\"label\">Duplicate files</span></div>\
-            <div class=\"stat warn\"><span class=\"num\">{wasted}</span><span class=\"label\">Wasted space</span></div>\
+            {dupe_stats}\
             {embedded_stat}\
           </div>\
         </div>\n",
         db     = esc(db_path),
         now    = now,
         total  = stats.total_files,
-        groups = stats.duplicate_groups,
-        dups   = stats.duplicate_files,
-        wasted = format_bytes(stats.wasted_bytes),
+        dupe_stats = dupe_stats,
         embedded_stat = embedded_stat,
     ));
 
@@ -699,6 +712,12 @@ fn generate_html(
             "</div>\n",
         ));
     }
+
+    // In server mode (--show-faces), thumbnails/lightbox point at
+    // /api/raw?path=... instead of file://, since browsers refuse to load a
+    // file:// subresource from an http://-served page. Static mode keeps
+    // file:// links, since the report itself is opened via file:// there.
+    out.push_str(&format!("<script>\nvar LIVE_SERVER={};\n</script>\n", live));
 
     // Embed all group data as JSON
     out.push_str("<script>\nvar GROUPS=[\n");
@@ -773,11 +792,14 @@ function fmtB(b){
   if(b>=1024)return Math.round(b/1024)+' KB';
   return b+' B';
 }
+function rawUrl(path){
+  return LIVE_SERVER ? '/api/raw?path='+encodeURIComponent(path) : 'file://'+path;
+}
 function buildPreview(f){
   var ext=f.ext,path=f.path;
   var metaAttr=escA(JSON.stringify(f.meta));
   if(ext==='jpg'||ext==='jpeg'||ext==='png'||ext==='gif'||ext==='webp'||ext==='bmp'){
-    var url='file://'+path;
+    var url=rawUrl(path);
     return '<a href="'+escA(url)+'" target="_blank" data-lb-url="'+escA(url)+'" data-lb-type="image" '+
       'data-lb-meta="'+metaAttr+'">'+
       '<img src="'+escA(url)+'" class="thumb" loading="lazy" '+
@@ -795,7 +817,7 @@ function buildPreview(f){
   if(ext==='tiff')return '<span class="no-prev">TIFF</span>';
   if(ext==='dng') return '<span class="no-prev">DNG</span>';
   if(ext==='mov'||ext==='mp4'){
-    var url='file://'+path;
+    var url=rawUrl(path);
     return '<video src="'+escA(url)+'" class="thumb" preload="metadata" muted playsinline '+
       'data-lb-url="'+escA(url)+'" data-lb-type="video" '+
       'data-lb-meta="'+metaAttr+'" '+
@@ -1865,6 +1887,7 @@ async fn handle_report(State(state): State<Arc<AppState>>) -> impl axum::respons
         state.report_heic,
         state.report_heic_original,
         &faces_by_hash,
+        true,
     );
     axum::response::Html(html)
 }
@@ -2268,8 +2291,49 @@ fn mime_for_ext(ext: &str) -> &'static str {
         "webp" => "image/webp",
         "bmp" => "image/bmp",
         "tiff" => "image/tiff",
+        "mov" => "video/quicktime",
+        "mp4" => "video/mp4",
         _ => "application/octet-stream",
     }
+}
+
+#[derive(Deserialize)]
+struct RawFileQuery {
+    path: String,
+}
+
+/// Streams the raw bytes of a file already recorded in `file_hashes.path` -
+/// added so the live report (server mode, --show-faces) can point thumbnail
+/// `<img>`/`<video>` tags and the lightbox at an http:// URL instead of
+/// `file://`, which browsers refuse to load as a subresource of an
+/// http://-served page. Only paths that exist as a `file_hashes.path` value
+/// are served - this is a deliberate allowlist, not a general file server,
+/// so a client can't request arbitrary paths off the filesystem.
+async fn handle_raw_file(
+    Query(q): Query<RawFileQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Result<impl axum::response::IntoResponse, StatusCode> {
+    let path = {
+        let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        conn.query_row(
+            "SELECT path FROM file_hashes WHERE path = ?1 LIMIT 1",
+            [&q.path],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?
+    };
+    let ext = std::path::Path::new(&path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let bytes = tokio::task::spawn_blocking(move || std::fs::read(&path).ok())
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(([(axum::http::header::CONTENT_TYPE, mime_for_ext(&ext))], bytes))
 }
 
 /// Serve the full, uncropped original image for a face's source file.
@@ -2360,7 +2424,8 @@ async fn serve_faces_async(db: &Path, opts: ServeOptions) -> Result<(), Box<dyn 
         .route("/api/person/{name}", get(handle_person_api))
         .route("/api/search/person", get(handle_search_person))
         .route("/api/quit", post(handle_quit))
-        .route("/api/location", get(handle_location));
+        .route("/api/location", get(handle_location))
+        .route("/api/raw", get(handle_raw_file));
 
     if state.serve_faces_ui {
         router = router
@@ -2461,6 +2526,7 @@ fn main() {
         args.heic,
         args.heic_original,
         &HashMap::new(),
+        false,
     );
 
     fs::write(&output, &html).expect("failed to write HTML file");
