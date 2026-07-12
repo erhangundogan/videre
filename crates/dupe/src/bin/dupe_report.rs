@@ -622,6 +622,13 @@ fn generate_html(
         ".date-card img{width:100%;aspect-ratio:1;object-fit:cover;display:block}\n",
         ".date-card .date-card-label{padding:8px;font-size:13px;font-weight:600}\n",
         ".date-card .date-card-count{padding:0 8px 8px;font-size:11px;color:#71717a}\n",
+        // Shimmer placeholder for HEIC thumbnails while /api/raw converts
+        // them lazily (server mode) - cleared via onload once the image
+        // paints, so the animation never runs behind a loaded image.
+        "img.heic-loading{display:block;width:100%;aspect-ratio:1;object-fit:cover;",
+        "background:linear-gradient(90deg,#e4e4e7 25%,#f4f4f5 37%,#e4e4e7 63%);",
+        "background-size:400% 100%;animation:heicShimmer 1.4s ease infinite}\n",
+        "@keyframes heicShimmer{0%{background-position:100% 0}100%{background-position:0 0}}\n",
         "</style>\n</head>\n<body>\n",
         "<div id=\"sort-overlay\"><div class=\"sort-card\">",
         "<div class=\"spinner\"></div>Sorting&hellip;</div></div>\n",
@@ -818,8 +825,9 @@ function buildPreview(f){
     if(LIVE_SERVER){
       var thumbUrl=rawUrl(path)+'&size=240';
       var lbUrl=rawUrl(path)+'&size=1200';
-      return '<img src="'+escA(thumbUrl)+'" class="thumb" loading="lazy" data-lb-url="'+escA(lbUrl)+'" '+
+      return '<img src="'+escA(thumbUrl)+'" class="thumb heic-loading" loading="lazy" data-lb-url="'+escA(lbUrl)+'" '+
         'data-lb-type="image" data-lb-meta="'+metaAttr+'" '+
+        'onload="this.classList.remove(\'heic-loading\')" '+
         'onerror="this.parentElement.innerHTML=\'<span class=no-prev>no preview</span>\'">';
     }
     if(f.tb){
