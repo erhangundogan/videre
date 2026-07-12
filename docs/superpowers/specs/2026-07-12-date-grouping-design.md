@@ -95,12 +95,26 @@ id="lb">`, lines 497-500) already used by both other views - no new lightbox
 code needed, since `buildPreview()` already emits the `data-lb-url`/
 `data-lb-type` attributes the shared `openLb()`/click-delegation handler reads.
 
-## Lightbox face display (applies to all views)
+## Lightbox metadata panel (applies to all views)
 
 Since the lightbox (lines 497-500, `openLb()`/`closeLb()` lines 739-755) is
 already shared across the dedup-groups page, the `--all` gallery, and the new
-`--by-date` view, adding "show detected faces below the image" here means it
-applies everywhere at once - one implementation point, three views benefit.
+`--by-date` view, adding richer metadata here means it applies everywhere at
+once - one implementation point, three views benefit. Rather than bolting on
+one hardcoded "faces row," the panel is a small extensible list of metadata
+*sections* rendered below the image - faces and location ship now, other EXIF
+(camera model, dimensions, etc.) can be added later as additional sections
+without restructuring the panel.
+
+JS shape: each lightbox-openable item's JSON gains a `meta` object, e.g.
+`{faces: [...], location: {...} | null}`. `openLb()` calls a single
+`renderMetaPanel(meta)` that iterates known section keys and renders whichever
+are present/non-empty; a future section (e.g. `camera: {...}`) is added by (1)
+populating that key server-side and (2) adding one more `if (meta.x)` branch
+in `renderMetaPanel()` - no changes to `openLb()`/`closeLb()` or the surrounding
+lightbox chrome.
+
+### Faces section
 
 **What exists today:** `make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64)
 -> Option<image::DynamicImage>` (`dupe_report.rs` lines 1859-1874, via
@@ -142,17 +156,54 @@ feature (recognizing who's in the photo).
 - New helper in `dupe_report.rs` (e.g. `face_thumb_b64(path, bbox, face_id) ->
   Option<String>`) wrapping `make_face_thumb()` + JPEG encode + base64, mirroring
   `heic_to_b64()`'s existing pattern.
-- Each file's JSON row (in `GROUPS`, `ALLFILES`, and the new `KEEPFILES`) gains
-  a `faces: [{thumb, name}]` array, populated only when the hash has labeled
-  faces; thumbnails are computed once per hash (not once per duplicate path
-  sharing that hash) and reused across all paths for that hash.
+- Each file's `meta` object gains `faces: [{thumb, name}]`, populated only
+  when the hash has labeled faces; thumbnails are computed once per hash (not
+  once per duplicate path sharing that hash) and reused across all paths for
+  that hash.
 - New CLI flag `--show-faces` (independent bool, same pattern as `--heic`/
   `--all`), off by default since face-crop generation is a real per-file cost
   (image decode + crop + re-encode) on top of whatever `--heic` already adds -
   requires a prior `dupe-faces` run to have anything to show.
-- Lightbox JS: `openLb()` renders a new face-row `<div>` below the image
-  (small ~48px thumbnails, name label underneath each) whenever the opened
-  item's `faces` array is non-empty; hidden entirely otherwise.
+- `renderMetaPanel()` renders the faces sub-section (small ~48px thumbnails,
+  name label underneath each) whenever `meta.faces` is non-empty.
+
+### Location section
+
+`gps_lat`/`gps_lon` are already extracted into `file_hashes` for every file
+with GPS EXIF data (see `project_dupe.md` EXIF notes) - today the report only
+shows a raw Google Maps link built from the coordinates. This adds a
+human-readable place name (e.g. "Paris, France") below the image alongside the
+faces section, using an **offline** reverse-geocoding lookup (per user
+decision - no network calls, no third-party data sharing, no rate limits,
+consistent with the project's local-first stance; city/region-level accuracy
+is fine for this purpose, not street-level).
+
+**Approach:** bundle an offline reverse-geocoding crate (e.g. `reverse_geocoder`,
+which ships a GeoNames-derived cities dataset and does nearest-city lookup
+from `(lat, lon)` entirely in-process, no network) in `dupe-core`. Given
+`(lat, lon)`, look up the nearest city and its country, format as
+`"{city}, {country}"` (fall back to just coordinates if no GPS or the lookup
+finds nothing nearby).
+
+**Cost model - no new flag needed:** unlike face crops (per-file image
+decode/crop/re-encode) or HEIC (per-file `qlmanage` subprocess spawn), reverse
+geocoding is a fast in-memory index lookup once the dataset is loaded (a
+one-time cost per report generation, not per file). So location is computed
+and shown automatically whenever a file has GPS data, no opt-in flag - same
+principle as the existing GPS map link, which also has no gating flag today.
+
+**Data flow:**
+- New `dupe-core` function `location_name(lat: f64, lon: f64) -> Option<String>`
+  wrapping the reverse-geocoding crate.
+- Computed once per unique `(lat, lon)` pair per report generation (cached in
+  a `HashMap<(OrderedFloat<f64>, OrderedFloat<f64>), String>` or similar, since
+  many photos from the same trip/location share near-identical coordinates and
+  there's no reason to repeat the lookup) rather than once per file.
+- Each file's `meta` object gains `location: {name, lat, lon} | null` -
+  `name` is the reverse-geocoded string, `lat`/`lon` kept so the existing map
+  link still works unchanged.
+- `renderMetaPanel()` renders the location sub-section (place name, plus the
+  existing map link) whenever `meta.location` is non-null.
 
 ## Implementation shape
 
@@ -175,10 +226,17 @@ feature (recognizing who's in the photo).
   design
 - New CLI flag `--show-faces` (independent bool); new `dupe-core` query
   `labeled_faces_by_hash()`; new `face_thumb_b64()` helper in `dupe_report.rs`
-  wrapping the existing `make_face_thumb()`; `faces` array threaded into the
+  wrapping the existing `make_face_thumb()`
+- New `dupe-core` dependency on an offline reverse-geocoding crate (e.g.
+  `reverse_geocoder`); new `location_name()` function; no new CLI flag (always
+  computed when GPS data is present)
+- A `meta: {faces: [...], location: {...} | null}` object threaded into the
   JSON emitted by `query_groups()`'s row builder, `file_to_json()`, and the new
   `query_keep_files()` alike, so all three views pick it up automatically via
-  the shared lightbox JS
+  one shared `renderMetaPanel()` in the lightbox JS - designed so a future
+  metadata section (e.g. camera EXIF) only needs a new key in `meta` plus one
+  new branch in `renderMetaPanel()`, no changes to the three view-specific row
+  builders beyond adding that key
 
 ## Testing
 
@@ -196,12 +254,26 @@ feature (recognizing who's in the photo).
   and name, across all three views (dedup groups, `--all`, `--by-date`)
 - Verify `--show-faces` without a prior `dupe-faces` run produces an empty
   `faces` array everywhere (no crash, no face row rendered)
+- Fixture DB with files that have GPS data (near a known city in the bundled
+  dataset), files with GPS data far from any city (verify graceful fallback),
+  and files with no GPS at all - verify the location section appears only
+  when appropriate, with the right place name, across all three views
+- Verify the existing GPS map link still works unchanged now that `lat`/`lon`
+  are nested under `meta.location` instead of top-level fields (if the
+  refactor moves them - or verify both old and new access paths agree, per
+  whatever the implementation plan decides)
 
 ## Out of scope
 
 - No changes to `--all` or the default dedup view beyond gaining the shared
-  `faces` field/lightbox row
+  `meta` field/lightbox panel
 - No new binary
-- No changes to the SQLite schema
+- No changes to the SQLite schema (reverse-geocoding results are computed at
+  report-generation time, not cached back to the database)
 - No face detection/labeling changes - this only *displays* faces already
   produced by `dupe-faces`/`dupe-report --faces`
+- No street-level or address-level location resolution - offline reverse
+  geocoding here is nearest-city accuracy only
+- No other new EXIF metadata sections yet (camera model, ISO, etc.) - the
+  panel is designed to make adding them easy later, but none are added in
+  this pass
