@@ -139,22 +139,24 @@ fn base64_encode(data: &[u8]) -> String {
     out
 }
 
+/// Convert a HEIC file to a base64 JPEG data-URI payload, downscaled so
+/// neither dimension exceeds `max_px`.
+///
+/// Uses QuickLook (see `heic_via_quicklook`) rather than `sips -s format
+/// jpeg` because `sips` copies the raw sensor-buffer pixels unrotated for
+/// HEIC files where the iPhone camera encoded rotation via the HEIF
+/// `irot` transform box rather than a classic EXIF Orientation tag.
 fn heic_to_b64(path: &str, max_px: u32) -> Option<String> {
-    use std::hash::{Hash, Hasher};
-    use std::collections::hash_map::DefaultHasher;
-    let mut h = DefaultHasher::new();
-    path.hash(&mut h);
-    let tmp = std::env::temp_dir().join(format!("dupe_{:016x}_{max_px}.jpg", h.finish()));
-    let ok = std::process::Command::new("sips")
-        .args(["-s", "format", "jpeg", "-Z", &max_px.to_string(), path, "--out"])
-        .arg(&tmp)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if !ok { return None; }
-    let bytes = std::fs::read(&tmp).ok()?;
-    let _ = std::fs::remove_file(&tmp);
-    Some(base64_encode(&bytes))
+    let img = heic_via_quicklook(path, &format!("b64_{max_px}"))?;
+    let img = if img.width() > max_px || img.height() > max_px {
+        img.resize(max_px, max_px, image::imageops::FilterType::Triangle)
+    } else {
+        img
+    };
+    let mut buf = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Jpeg)
+        .ok()?;
+    Some(base64_encode(&buf))
 }
 
 fn format_bytes(bytes: i64) -> String {
@@ -1034,7 +1036,8 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     function renderPeople(people) {
       const grid = document.getElementById('people-grid');
       document.getElementById('people-count').textContent = people.length;
-      grid.innerHTML = people.map(p => {
+      const sorted = [...people].sort((a, b) => b.face_ids.length - a.face_ids.length);
+      grid.innerHTML = sorted.map(p => {
         const url = `/person/${encodeURIComponent(p.label)}`;
         const extra = p.face_ids.length > 1
           ? `<div class="extra-count">+${p.face_ids.length - 1} more</div>` : '';
@@ -1372,8 +1375,10 @@ const PERSON_HTML: &str = r##"<!DOCTYPE html>
       const grid = document.getElementById('faces-grid');
       grid.innerHTML = facesData.map(f => `
         <div class="card" id="card-${f.face_id}">
-          <img class="face-img" src="/api/face-image/${f.face_id}" width="180" height="180"
-               onerror="this.removeAttribute('src');this.style.background='#ddd'">
+          <a href="/api/original-image/${f.face_id}" target="_blank" title="Open original image">
+            <img class="face-img" src="/api/face-image/${f.face_id}" width="180" height="180"
+                 onerror="this.removeAttribute('src');this.style.background='#ddd'">
+          </a>
           <div class="path" title="${escHtml(f.path)}">${escHtml(basename(f.path))}</div>
           <div class="face-id">#${f.face_id}</div>
           <div class="btns">
@@ -1809,6 +1814,37 @@ fn crop_face_square(img: &image::DynamicImage, bbox: [f32; 4]) -> image::Dynamic
         .resize_exact(140, 140, image::imageops::FilterType::Triangle)
 }
 
+/// Convert a HEIC file to a `DynamicImage` via QuickLook (`qlmanage -t`).
+///
+/// `sips -s format jpeg` copies the raw sensor-buffer pixels unrotated for
+/// HEIC files where the iPhone camera encoded rotation via the HEIF `irot`
+/// transform box rather than a classic EXIF Orientation tag - the same
+/// rotation Finder/Preview/Photos apply via QuickLook. dupe-faces detects
+/// (and computes bounding boxes) against a QuickLook-converted image, so
+/// this must match exactly or crops will be misaligned.
+fn heic_via_quicklook(path: &str, tag: &str) -> Option<image::DynamicImage> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    tag.hash(&mut hasher);
+    let out_dir = std::env::temp_dir().join(format!("dupe_ql_{:016x}", hasher.finish()));
+    let _ = std::fs::remove_dir_all(&out_dir);
+    std::fs::create_dir_all(&out_dir).ok()?;
+    let ok = std::process::Command::new("qlmanage")
+        .args(["-t", "-s", "10000", "-o"])
+        .arg(&out_dir)
+        .arg(path)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    let file_name = std::path::Path::new(path).file_name()?.to_str()?;
+    let out_file = out_dir.join(format!("{file_name}.png"));
+    let result = if ok { image::open(&out_file).ok() } else { None };
+    let _ = std::fs::remove_dir_all(&out_dir);
+    result
+}
+
 /// Load, crop, and orientation-correct a face thumbnail.
 ///
 /// bbox coordinates are stored in terms of the *full-size* decoded image
@@ -1816,11 +1852,10 @@ fn crop_face_square(img: &image::DynamicImage, bbox: [f32; 4]) -> image::Dynamic
 /// writing to the DB), so the thumbnail must be cropped from an image of
 /// the same dimensions used at detection time.
 ///
-/// For HEIC: dupe-faces converts via `sips -s format jpeg <path> --out <tmp>`
-/// with no resize, so we must do the exact same conversion here (sips also
-/// auto-rotates per EXIF, so no separate orientation step is needed).
-/// For JPEG/PNG/etc: detection ran on raw pixels; apply EXIF orientation
-/// after crop.
+/// For HEIC: dupe-faces converts via QuickLook (see `heic_via_quicklook`),
+/// which already applies correct rotation, so no separate orientation
+/// step is needed. For JPEG/PNG/etc: detection ran on raw pixels; apply
+/// EXIF orientation after crop.
 fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image::DynamicImage> {
     let ext = std::path::Path::new(path)
         .extension()
@@ -1828,17 +1863,7 @@ fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image::Dy
         .unwrap_or("")
         .to_lowercase();
     if ext == "heic" {
-        let tmp = std::env::temp_dir().join(format!("dupe_face_thumb_{face_id}.jpg"));
-        let ok = std::process::Command::new("sips")
-            .args(["-s", "format", "jpeg", path, "--out"])
-            .arg(&tmp)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !ok {
-            return None;
-        }
-        let img = image::open(&tmp).ok()?;
+        let img = heic_via_quicklook(path, &format!("thumb{face_id}"))?;
         Some(crop_face_square(&img, bbox))
     } else {
         // Detection ran on raw pixels; crop first, then correct orientation
@@ -1891,6 +1916,67 @@ async fn handle_face_image(
     Ok(([(axum::http::header::CONTENT_TYPE, "image/jpeg")], jpeg_bytes))
 }
 
+fn mime_for_ext(ext: &str) -> &'static str {
+    match ext {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "tiff" => "image/tiff",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Serve the full, uncropped original image for a face's source file.
+///
+/// Browsers refuse to navigate from an http:// page to a file:// URL for
+/// security reasons ("Not allowed to load local resource"), so the
+/// original can't be linked to directly - it has to be read and served
+/// over HTTP like everything else.
+async fn handle_original_image(
+    axum::extract::Path(face_id): axum::extract::Path<i64>,
+    State(state): State<Arc<AppState>>,
+) -> Result<impl axum::response::IntoResponse, StatusCode> {
+    let file_path = {
+        let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        conn.query_row(
+            "SELECT fh.path FROM faces f \
+             JOIN file_hashes fh ON f.hash = fh.hash \
+             WHERE f.id = ?1 LIMIT 1",
+            [face_id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?
+    };
+
+    let ext = std::path::Path::new(&file_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    let (content_type, bytes) = tokio::task::spawn_blocking(move || -> Option<(&'static str, Vec<u8>)> {
+        if ext == "heic" {
+            let img = heic_via_quicklook(&file_path, &format!("orig{face_id}"))?;
+            let mut buf = Vec::new();
+            img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Jpeg)
+                .ok()?;
+            Some(("image/jpeg", buf))
+        } else {
+            let bytes = std::fs::read(&file_path).ok()?;
+            Some((mime_for_ext(&ext), bytes))
+        }
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .ok_or(StatusCode::NOT_FOUND)?;
+
+    Ok(([(axum::http::header::CONTENT_TYPE, content_type)], bytes))
+}
+
 async fn serve_faces_async(db: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let conn = Connection::open(db)?;
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -1908,6 +1994,7 @@ async fn serve_faces_async(db: &Path) -> Result<(), Box<dyn std::error::Error>> 
         .route("/api/dissolve-cluster", post(handle_dissolve_cluster))
         .route("/api/set-primary", post(handle_set_primary))
         .route("/api/face-image/{id}", get(handle_face_image))
+        .route("/api/original-image/{id}", get(handle_original_image))
         .route("/cluster/{id}", get(handle_cluster_page))
         .route("/api/cluster/{id}", get(handle_cluster_api))
         .route("/person/{name}", get(handle_person_page))

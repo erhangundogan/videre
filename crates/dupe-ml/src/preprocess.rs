@@ -1,6 +1,7 @@
 //! Decode an image file into a SigLIP input tensor: resize to NxN,
 //! scale to [0,1], normalize with mean 0.5 / std 0.5 per channel -> [-1,1].
-//! HEIC is converted to a temp JPEG via sips (macOS), matching dupe-report.
+//! HEIC is converted via QuickLook (macOS), matching dupe-report and
+//! dupe-faces - see `decode_heic` for why `sips` alone isn't used.
 
 use anyhow::{Context, Result};
 use candle_core::{DType, Device, Tensor};
@@ -32,23 +33,37 @@ pub fn image_to_tensor(path: &Path, size: usize, device: &Device) -> Result<Tens
     Ok(t)
 }
 
+/// Convert a HEIC file to a `DynamicImage` via QuickLook (`qlmanage -t`).
+///
+/// `sips -s format jpeg` copies the raw sensor-buffer pixels unrotated for
+/// HEIC files where the iPhone camera encoded rotation via the HEIF `irot`
+/// transform box rather than a classic EXIF Orientation tag - the same
+/// rotation Finder/Preview/Photos apply via QuickLook. Since the resulting
+/// tensor is immediately resized square anyway, exact resolution doesn't
+/// matter here as much as getting the orientation right so the embedding
+/// represents the photo as a person actually sees it.
 fn decode_heic(path: &Path, size: usize) -> Result<image::DynamicImage> {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     path.hash(&mut h);
-    let tmp = std::env::temp_dir().join(format!("dupe_embed_{:016x}.jpg", h.finish()));
-    let status = std::process::Command::new("sips")
-        .args(["-s", "format", "jpeg", "--resampleHeightWidthMax"])
-        .arg((size * 2).to_string())
+    let out_dir = std::env::temp_dir().join(format!("dupe_embed_ql_{:016x}", h.finish()));
+    let _ = std::fs::remove_dir_all(&out_dir);
+    std::fs::create_dir_all(&out_dir).context("create qlmanage temp dir")?;
+    let target = (size * 2).to_string();
+    let status = std::process::Command::new("qlmanage")
+        .args(["-t", "-s", &target, "-o"])
+        .arg(&out_dir)
         .arg(path)
-        .args(["--out".as_ref() as &std::ffi::OsStr, tmp.as_os_str()])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .context("run sips (HEIC decode requires macOS)")?;
-    anyhow::ensure!(status.success(), "sips failed for {}", path.display());
-    let img = image::open(&tmp).with_context(|| format!("decode sips output for {}", path.display()));
-    let _ = std::fs::remove_file(&tmp);
+        .context("run qlmanage (HEIC decode requires macOS)")?;
+    anyhow::ensure!(status.success(), "qlmanage failed for {}", path.display());
+    let file_name = path.file_name().context("path has no file name")?;
+    let out_file = out_dir.join(format!("{}.png", file_name.to_string_lossy()));
+    let img = image::open(&out_file)
+        .with_context(|| format!("decode qlmanage output for {}", path.display()));
+    let _ = std::fs::remove_dir_all(&out_dir);
     img
 }
 
