@@ -919,7 +919,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       --orange-bg: #fdf1df;
       --orange-text: #8a5a00;
     }
-    body { font-family: sans-serif; margin: 0; padding: 16px; background: #f5f5f5; }
+    body { font-family: sans-serif; margin: 0; padding: 16px; background: #fff; }
     h2 { border-bottom: 1px solid #ccc; padding-bottom: 4px; }
     .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fill, 160px); gap: 12px; margin-bottom: 24px; }
@@ -949,7 +949,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     input[type=text] { padding: 4px 8px; border: 1px solid #999; border-radius: 4px; width: 120px; }
     #status { font-size: 13px; color: #555; }
     .face-img { object-fit: cover; border-radius: 3px; background: #ddd; display: block; }
-    .people-section { position: sticky; top: 0; background: #f5f5f5; z-index: 100; padding-bottom: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+    .people-section { position: sticky; top: 0; background: #fff; z-index: 100; padding-bottom: 8px; }
     .people-scroll { max-height: 45vh; overflow-y: auto; padding-bottom: 4px; }
     .drag-handle { display: flex; align-items: center; gap: 6px; cursor: grab; color: #aaa; padding: 2px 0 6px; user-select: none; }
     .drag-handle .drag-dots { font-size: 16px; letter-spacing: 2px; flex-shrink: 0; }
