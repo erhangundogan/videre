@@ -152,7 +152,7 @@ The report includes:
 - Lightbox for full-size images and video playback (`.mov`, `.mp4`)
 - `--all`: paginated gallery of every file on disk (200 per page) with a "Similar" button on each card that opens a results panel showing the top 24 cosine-similar images, computed client-side from SigLIP embeddings inlined in the page (requires a prior `dupe-embed` run)
 
-HEIC files show a "HEIC" placeholder by default; `--heic` embeds a 240px JPEG thumbnail via `qlmanage` (QuickLook, macOS only) - not `sips`, which silently skips the rotation some iPhone HEIC files need (see Platform notes).
+In static mode, HEIC files show a "HEIC" placeholder by default; `--heic` embeds a 240px JPEG thumbnail via `qlmanage` (QuickLook, macOS only) - not `sips`, which silently skips the rotation some iPhone HEIC files need (see Platform notes). In server mode (`--show-faces`), HEIC always renders automatically instead - `--heic`/`--heic-original` have no effect there, since thumbnails convert lazily per request through `/api/raw` rather than all up front (which used to make server mode take minutes to load a single page on a collection with many HEIC files).
 
 `--faces` starts a local web server on `localhost:7878` for interactive face labeling: color-coded People / Unassigned Clusters / Singletons sections, drag-and-drop assignment, a "New Person" form, per-cluster detail pages with a "Dissolve cluster" action for bad groupings, per-person detail pages, and click-to-view original photos. Labels are saved back to the `faces` table as `person_label`. Close the browser tab or press Ctrl-C to stop the server.
 
