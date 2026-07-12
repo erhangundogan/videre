@@ -1018,7 +1018,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
              ondragstart="onDragStart(event, ${faceIdsJson})">
           <div class="drag-handle" title="Drag to assign to a person">
             <span class="drag-dots">&#8942;&#8942;&#8942;</span>
-            <span class="drag-hint">Drag here onto person above</span>
+            <span class="drag-hint">Drag on person above</span>
           </div>
           ${thumbGrid(faceIds)}
           ${titleHtml}
