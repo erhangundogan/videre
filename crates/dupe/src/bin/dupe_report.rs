@@ -946,6 +946,15 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     .cluster-card .new-person-btn:hover { background: var(--green-text); border-color: var(--green-text); color: #fff; }
     .singleton-card .new-person-btn { border-color: var(--orange-border); color: var(--orange-text); }
     .singleton-card .new-person-btn:hover { background: var(--orange-text); border-color: var(--orange-text); color: #fff; }
+    .np-create-btn { font-weight: 600; color: #fff; transition: background 0.15s, border-color 0.15s; }
+    .cluster-card .np-create-btn { background: var(--green-border); border-color: var(--green-border); }
+    .cluster-card .np-create-btn:hover { background: var(--green-text); border-color: var(--green-text); }
+    .singleton-card .np-create-btn { background: var(--orange-border); border-color: var(--orange-border); }
+    .singleton-card .np-create-btn:hover { background: var(--orange-text); border-color: var(--orange-text); }
+    .cluster-card .np-input { border-color: var(--green-border); color: var(--green-text); }
+    .cluster-card .np-input:focus { outline: none; border-color: var(--green-text); box-shadow: 0 0 0 2px rgba(108,195,108,0.25); }
+    .singleton-card .np-input { border-color: var(--orange-border); color: var(--orange-text); }
+    .singleton-card .np-input:focus { outline: none; border-color: var(--orange-text); box-shadow: 0 0 0 2px rgba(226,160,63,0.25); }
     button { cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid #999; background: white; }
     button.primary { background: var(--blue-hover); color: white; border-color: var(--blue-hover); }
     input[type=text] { padding: 4px 8px; border: 1px solid #999; border-radius: 4px; width: 120px; }
@@ -1126,10 +1135,10 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       const area = btn.parentElement;
       const faceIdsJson = JSON.stringify(faceIds);
       area.innerHTML = `
-        <input type="text" id="np-input-${faceIds[0]}" placeholder="Person name" maxlength="${MAX_NAME_LEN}" autofocus>
+        <input type="text" class="np-input" id="np-input-${faceIds[0]}" placeholder="Person name" maxlength="${MAX_NAME_LEN}" autofocus>
         <div class="np-btn-row">
-          <button class="primary" onclick="submitNewPerson('np-input-${faceIds[0]}', ${faceIdsJson})">Create</button>
-          <button onclick="loadFaces()">Cancel</button>
+          <button class="np-create-btn" onclick="submitNewPerson('np-input-${faceIds[0]}', ${faceIdsJson})">Create</button>
+          <button class="new-person-btn" onclick="loadFaces()">Cancel</button>
         </div>
       `;
     }
