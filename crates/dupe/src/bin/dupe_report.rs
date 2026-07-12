@@ -36,6 +36,19 @@ struct Args {
     /// Start a local face-labeling HTTP server on port 7878
     #[arg(long)]
     faces: bool,
+
+    /// Drill-down Year/Month/Day gallery over KEEP files (static HTML,
+    /// same as --all)
+    #[arg(long)]
+    by_date: bool,
+
+    /// Show labeled faces (clickable to their person page) and a
+    /// reverse-geocoded location below the image in the lightbox. Starts a
+    /// local server on port 7878 (same one --faces uses) instead of writing
+    /// a static HTML file, since person click-through and on-demand
+    /// location lookup both need a live backend.
+    #[arg(long)]
+    show_faces: bool,
 }
 
 struct FileRow {
