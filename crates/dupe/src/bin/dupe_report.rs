@@ -912,8 +912,8 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fill, 160px); gap: 12px; margin-bottom: 24px; }
     .card { background: white; border: 2px solid #ddd; border-radius: 8px; padding: 10px; width: 160px; box-sizing: border-box; cursor: grab; }
-    .card.person-card { cursor: default; border-color: #6c8ebf; background: #e8f0fe; transition: border-color 0.15s, border-width 0.15s; }
-    .card.person-card:hover { border-color: #2a6db5; border-width: 3px; }
+    .card.person-card { cursor: default; border-color: #6c8ebf; background: #e8f0fe; transition: border-color 0.15s; }
+    .card.person-card:hover { border-color: #2a6db5; }
     .card.drag-over { border-color: #2a6db5; background: #d0e4ff; }
     .badge { display: inline-block; background: #555; color: white; border-radius: 12px; padding: 0 8px; font-size: 12px; margin-left: 4px; }
     .new-person-area { margin-top: 8px; display: flex; gap: 4px; }
