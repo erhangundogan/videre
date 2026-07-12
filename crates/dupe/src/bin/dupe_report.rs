@@ -915,8 +915,6 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     .card.person-card { cursor: default; border-color: #6c8ebf; background: #e8f0fe; }
     .card.drag-over { border-color: #2a6db5; background: #d0e4ff; }
     .badge { display: inline-block; background: #555; color: white; border-radius: 12px; padding: 0 8px; font-size: 12px; margin-left: 4px; }
-    .face-id { display: inline-block; background: #eee; border-radius: 4px; padding: 2px 6px; font-size: 11px; margin: 2px; font-family: monospace; }
-    .face-id .remove-btn { cursor: pointer; color: red; margin-left: 4px; font-weight: bold; }
     .new-person-area { margin-top: 8px; display: flex; gap: 4px; }
     .new-person-area button { flex: 1; }
     .new-person-area input[type=text] { flex: 1; width: auto; min-width: 0; }
@@ -926,7 +924,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     #status { font-size: 13px; color: #555; }
     .face-img { object-fit: cover; border-radius: 3px; background: #ddd; display: block; }
     .people-section { position: sticky; top: 0; background: #f5f5f5; z-index: 100; padding-bottom: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
-    .people-section .grid { max-height: 260px; overflow-y: auto; }
+    .people-scroll { max-height: 45vh; overflow-y: auto; padding-bottom: 4px; }
     .drag-handle { display: flex; align-items: center; gap: 6px; cursor: grab; color: #aaa; padding: 2px 0 6px; user-select: none; }
     .drag-handle .drag-dots { font-size: 16px; letter-spacing: 2px; flex-shrink: 0; }
     .drag-handle .drag-hint { font-size: 10px; color: #bbb; line-height: 1.2; }
@@ -945,7 +943,9 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
 
   <div class="people-section">
     <h2>People <span id="people-count" class="badge">0</span></h2>
-    <div id="people-grid" class="grid"></div>
+    <div class="people-scroll">
+      <div id="people-grid" class="grid"></div>
+    </div>
   </div>
 
   <h2>Unassigned Clusters <span id="cluster-count" class="badge">0</span></h2>
@@ -971,10 +971,6 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
 
     function faceImg(faceId, w, h) {
       return `<img class="face-img" src="/api/face-image/${faceId}" width="${w}" height="${h}" title="#${faceId}" onerror="this.removeAttribute('src');this.style.background='#ddd'">`;
-    }
-
-    function faceChipWithRemove(faceId) {
-      return `<span class="face-id">#${faceId}<span class="remove-btn" onclick="removeFace(${faceId})" title="Remove">x</span></span>`;
     }
 
     function thumbGrid(faceIds) {
@@ -1004,9 +1000,6 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
           </a>
           <a class="cluster-link" href="/person/${encodeURIComponent(p.label)}">${escHtml(p.label)}</a>
           <span class="badge">${p.face_ids.length}</span>
-          <div style="margin-top:6px">
-            ${p.face_ids.map(id => faceChipWithRemove(id)).join('')}
-          </div>
         </div>
       `).join('');
     }
@@ -1076,19 +1069,6 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       });
       if (!r.ok) {
         document.getElementById('status').textContent = 'Error: assign failed';
-        return;
-      }
-      await loadFaces();
-    }
-
-    async function removeFace(faceId) {
-      const r = await fetch('/api/remove-face', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_id: faceId })
-      });
-      if (!r.ok) {
-        document.getElementById('status').textContent = 'Error: remove failed';
         return;
       }
       await loadFaces();
@@ -1718,8 +1698,16 @@ fn crop_face_square(img: &image::DynamicImage, bbox: [f32; 4]) -> image::Dynamic
 
 /// Load, crop, and orientation-correct a face thumbnail.
 ///
-/// For HEIC: the face was detected on a sips-converted 640px image (sips auto-rotates).
-/// For JPEG/PNG: the face was detected on raw pixels; apply EXIF orientation after crop.
+/// bbox coordinates are stored in terms of the *full-size* decoded image
+/// (dupe-faces rescales detections back to original width/height before
+/// writing to the DB), so the thumbnail must be cropped from an image of
+/// the same dimensions used at detection time.
+///
+/// For HEIC: dupe-faces converts via `sips -s format jpeg <path> --out <tmp>`
+/// with no resize, so we must do the exact same conversion here (sips also
+/// auto-rotates per EXIF, so no separate orientation step is needed).
+/// For JPEG/PNG/etc: detection ran on raw pixels; apply EXIF orientation
+/// after crop.
 fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image::DynamicImage> {
     let ext = std::path::Path::new(path)
         .extension()
@@ -1727,12 +1715,9 @@ fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image::Dy
         .unwrap_or("")
         .to_lowercase();
     if ext == "heic" {
-        // Detection ran on sips-converted 640px image; use same scale here
         let tmp = std::env::temp_dir().join(format!("dupe_face_thumb_{face_id}.jpg"));
         let ok = std::process::Command::new("sips")
-            .args(["-s", "format", "jpeg", "--resampleLongSide", "640"])
-            .arg(path)
-            .arg("--out")
+            .args(["-s", "format", "jpeg", path, "--out"])
             .arg(&tmp)
             .status()
             .map(|s| s.success())
