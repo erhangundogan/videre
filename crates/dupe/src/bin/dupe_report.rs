@@ -936,9 +936,11 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     h2.title-people { color: var(--blue-text); }
     h2.title-clusters { color: var(--green-text); }
     h2.title-singletons { color: var(--orange-text); }
-    .new-person-area { margin-top: 8px; display: flex; gap: 4px; }
+    .new-person-area { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
     .new-person-area button { flex: 1; }
-    .new-person-area input[type=text] { flex: 1; width: auto; min-width: 0; }
+    .new-person-area input[type=text] { width: 100%; box-sizing: border-box; }
+    .np-btn-row { display: flex; gap: 4px; }
+    .np-btn-row button { flex: 1; }
     .new-person-btn { font-weight: 600; }
     .cluster-card .new-person-btn { background: var(--green-bg); border-color: var(--green-border); color: var(--green-text); }
     .cluster-card .new-person-btn:hover { background: #fff; }
@@ -1125,8 +1127,10 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       const faceIdsJson = JSON.stringify(faceIds);
       area.innerHTML = `
         <input type="text" id="np-input-${faceIds[0]}" placeholder="Person name" maxlength="${MAX_NAME_LEN}" autofocus>
-        <button class="primary" onclick="submitNewPerson('np-input-${faceIds[0]}', ${faceIdsJson})">Create</button>
-        <button onclick="loadFaces()">Cancel</button>
+        <div class="np-btn-row">
+          <button class="primary" onclick="submitNewPerson('np-input-${faceIds[0]}', ${faceIdsJson})">Create</button>
+          <button onclick="loadFaces()">Cancel</button>
+        </div>
       `;
     }
 
