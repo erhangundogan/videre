@@ -19,8 +19,8 @@ struct Args {
     #[arg(long)] silent: bool,
     /// DBSCAN cosine-distance radius (0 = identical, 2 = opposite). Default 0.6.
     #[arg(long, default_value = "0.6")] eps: f32,
-    /// Minimum faces per cluster (singletons below this are outliers). Default 2.
-    #[arg(long, default_value = "2")] min_cluster_size: usize,
+    /// Minimum faces per cluster (below this, faces are left as singletons). Default 3.
+    #[arg(long, default_value = "3")] min_cluster_size: usize,
 }
 
 fn main() -> Result<()> {

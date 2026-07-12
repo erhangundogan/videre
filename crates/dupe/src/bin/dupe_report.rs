@@ -912,12 +912,15 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fill, 160px); gap: 12px; margin-bottom: 24px; }
     .card { background: white; border: 2px solid #ddd; border-radius: 8px; padding: 10px; width: 160px; box-sizing: border-box; cursor: grab; }
-    .card.person-card { cursor: default; border-color: #6c8ebf; background: #e8f0fe; }
+    .card.person-card { cursor: default; border-color: #6c8ebf; background: #e8f0fe; transition: box-shadow 0.15s, border-color 0.15s; }
+    .card.person-card:hover { border-color: #2a6db5; box-shadow: 0 3px 10px rgba(42,109,181,0.3); }
     .card.drag-over { border-color: #2a6db5; background: #d0e4ff; }
     .badge { display: inline-block; background: #555; color: white; border-radius: 12px; padding: 0 8px; font-size: 12px; margin-left: 4px; }
     .new-person-area { margin-top: 8px; display: flex; gap: 4px; }
     .new-person-area button { flex: 1; }
     .new-person-area input[type=text] { flex: 1; width: auto; min-width: 0; }
+    .new-person-btn { background: #eaf7ea; border-color: #6cc36c; color: #1a7a1a; font-weight: 600; }
+    .new-person-btn:hover { background: #d8f0d8; }
     button { cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid #999; background: white; }
     button.primary { background: #2a6db5; color: white; border-color: #2a6db5; }
     input[type=text] { padding: 4px 8px; border: 1px solid #999; border-radius: 4px; width: 120px; }
@@ -1004,12 +1007,11 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       `).join('');
     }
 
-    function renderAssignableCard(faceIds, label, linkUrl) {
+    function renderAssignableCard(faceIds, linkUrl) {
       const faceIdsJson = JSON.stringify(faceIds);
       const thumb = linkUrl
         ? `<a href="${escHtml(linkUrl)}">${thumbGrid(faceIds)}</a>`
         : thumbGrid(faceIds);
-      const titleHtml = linkUrl ? '' : `<strong>${escHtml(label)}</strong>`;
       return `
         <div class="card">
           <div class="drag-handle" draggable="true" ondragstart="onDragStart(event, ${faceIdsJson})" title="Drag to assign to a person">
@@ -1017,9 +1019,8 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
             <span class="drag-hint">Drag on person above</span>
           </div>
           ${thumb}
-          ${titleHtml}
           <div class="new-person-area">
-            <button onclick="showNewPersonInput(this, ${faceIdsJson})">New Person</button>
+            <button class="new-person-btn" onclick="showNewPersonInput(this, ${faceIdsJson})">New Person</button>
           </div>
         </div>
       `;
@@ -1028,8 +1029,9 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     function renderClusters(clusters) {
       const grid = document.getElementById('cluster-grid');
       document.getElementById('cluster-count').textContent = clusters.length;
-      grid.innerHTML = clusters.map(c =>
-        renderAssignableCard(c.face_ids, `Cluster ${c.cluster_id}`, `/cluster/${c.cluster_id}`)
+      const sorted = [...clusters].sort((a, b) => b.face_ids.length - a.face_ids.length);
+      grid.innerHTML = sorted.map(c =>
+        renderAssignableCard(c.face_ids, `/cluster/${c.cluster_id}`)
       ).join('');
     }
 
@@ -1037,7 +1039,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       const grid = document.getElementById('singleton-grid');
       document.getElementById('singleton-count').textContent = singletons.length;
       grid.innerHTML = singletons.map(s =>
-        renderAssignableCard([s.face_id], `Face #${s.face_id}`, null)
+        renderAssignableCard([s.face_id], null)
       ).join('');
     }
 
