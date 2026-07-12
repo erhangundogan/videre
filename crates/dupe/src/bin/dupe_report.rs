@@ -486,6 +486,15 @@ fn generate_html(
     use chrono::Utc;
     let now = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
 
+    // In server mode, HEIC thumbnails are converted lazily per-request via
+    // /api/raw (see handle_raw_file) instead of eagerly here - eagerly
+    // converting every HEIC file with QuickLook before returning any
+    // response made server mode take minutes on a collection with many
+    // HEIC files. Static mode keeps the eager --heic/--heic-original
+    // behavior, since it only pays that cost once at generation time.
+    let heic = heic && !live;
+    let heic_original = heic_original && !live;
+
     let mut out = String::with_capacity(512 * 1024);
 
     out.push_str(concat!(
@@ -806,6 +815,13 @@ function buildPreview(f){
       'onerror="this.parentElement.innerHTML=\'<span class=no-prev>no preview</span>\'"></a>';
   }
   if(ext==='heic'){
+    if(LIVE_SERVER){
+      var thumbUrl=rawUrl(path)+'&size=240';
+      var lbUrl=rawUrl(path)+'&size=1200';
+      return '<img src="'+escA(thumbUrl)+'" class="thumb" loading="lazy" data-lb-url="'+escA(lbUrl)+'" '+
+        'data-lb-type="image" data-lb-meta="'+metaAttr+'" '+
+        'onerror="this.parentElement.innerHTML=\'<span class=no-prev>no preview</span>\'">';
+    }
     if(f.tb){
       var src='data:image/jpeg;base64,'+f.tb;
       var lb=f.fb?'data:image/jpeg;base64,'+f.fb:src;
@@ -2300,15 +2316,29 @@ fn mime_for_ext(ext: &str) -> &'static str {
 #[derive(Deserialize)]
 struct RawFileQuery {
     path: String,
+    /// Optional max width/height in pixels - only meaningful for HEIC
+    /// (which always needs QuickLook conversion) so the caller can request a
+    /// small thumbnail (240px in the grid) or a larger version (1200px in
+    /// the lightbox) without paying to decode/re-encode a huge image for a
+    /// tiny `<img>`. Ignored for formats served as raw bytes.
+    size: Option<u32>,
 }
 
-/// Streams the raw bytes of a file already recorded in `file_hashes.path` -
-/// added so the live report (server mode, --show-faces) can point thumbnail
+/// Streams a file already recorded in `file_hashes.path` over HTTP - added
+/// so the live report (server mode, --show-faces) can point thumbnail
 /// `<img>`/`<video>` tags and the lightbox at an http:// URL instead of
 /// `file://`, which browsers refuse to load as a subresource of an
 /// http://-served page. Only paths that exist as a `file_hashes.path` value
 /// are served - this is a deliberate allowlist, not a general file server,
 /// so a client can't request arbitrary paths off the filesystem.
+///
+/// HEIC is converted to JPEG on demand via QuickLook (same
+/// `heic_via_quicklook` helper used elsewhere), one file per request,
+/// lazily as the browser requests each thumbnail/lightbox image - NOT
+/// eagerly for the whole report up front, which is what made server mode
+/// unusably slow on a collection with many HEIC files before this endpoint
+/// existed (`generate_html` used to call `heic_to_b64` synchronously for
+/// every HEIC file before returning any response).
 async fn handle_raw_file(
     Query(q): Query<RawFileQuery>,
     State(state): State<Arc<AppState>>,
@@ -2329,11 +2359,29 @@ async fn handle_raw_file(
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
-    let bytes = tokio::task::spawn_blocking(move || std::fs::read(&path).ok())
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?;
-    Ok(([(axum::http::header::CONTENT_TYPE, mime_for_ext(&ext))], bytes))
+    let size = q.size;
+    let (content_type, bytes) = tokio::task::spawn_blocking(move || -> Option<(&'static str, Vec<u8>)> {
+        if ext == "heic" {
+            let img = heic_via_quicklook(&path, &format!("raw{}", size.unwrap_or(0)))?;
+            let img = match size {
+                Some(max_px) if img.width() > max_px || img.height() > max_px => {
+                    img.resize(max_px, max_px, image::imageops::FilterType::Triangle)
+                }
+                _ => img,
+            };
+            let mut buf = Vec::new();
+            img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Jpeg)
+                .ok()?;
+            Some(("image/jpeg", buf))
+        } else {
+            let bytes = std::fs::read(&path).ok()?;
+            Some((mime_for_ext(&ext), bytes))
+        }
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(([(axum::http::header::CONTENT_TYPE, content_type)], bytes))
 }
 
 /// Serve the full, uncropped original image for a face's source file.
