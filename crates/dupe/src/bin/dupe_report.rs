@@ -1882,10 +1882,17 @@ async fn handle_location(
     State(state): State<Arc<AppState>>,
 ) -> Result<AxumJson<LocationResponse>, StatusCode> {
     let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // `q.lat`/`q.lon` arrive rounded to 6 decimal places (the precision
+    // `file_to_json_with_faces` bakes into `meta.location` client-side), but
+    // `file_hashes.gps_lat`/`gps_lon` are stored at full EXIF precision - an
+    // exact float comparison would never match, silently breaking the cache
+    // on every real coordinate. Round the stored value to the same precision
+    // before comparing, both when reading and when writing back the cache.
     let cached: Option<String> = conn
         .query_row(
             "SELECT location_name FROM file_hashes \
-             WHERE gps_lat = ?1 AND gps_lon = ?2 AND location_name IS NOT NULL LIMIT 1",
+             WHERE ROUND(gps_lat, 6) = ?1 AND ROUND(gps_lon, 6) = ?2 \
+             AND location_name IS NOT NULL LIMIT 1",
             rusqlite::params![q.lat, q.lon],
             |r| r.get(0),
         )
@@ -1897,7 +1904,8 @@ async fn handle_location(
     let name = dupe_core::location::location_name(q.lat, q.lon);
     if let Some(ref n) = name {
         let _ = conn.execute(
-            "UPDATE file_hashes SET location_name = ?1 WHERE gps_lat = ?2 AND gps_lon = ?3",
+            "UPDATE file_hashes SET location_name = ?1 \
+             WHERE ROUND(gps_lat, 6) = ?2 AND ROUND(gps_lon, 6) = ?3",
             rusqlite::params![n, q.lat, q.lon],
         );
     }
