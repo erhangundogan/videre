@@ -77,8 +77,8 @@ fn preprocess(img: &DynamicImage) -> Array4<f32> {
 
 /// Decode SCRFD outputs into [`Detection`]s and apply NMS.
 ///
-/// Output tensor layout (9 tensors total):
-/// `[score_8, bbox_8, kps_8, score_16, bbox_16, kps_16, score_32, bbox_32, kps_32]`
+/// Output tensor layout (9 tensors total, fmc=3 groups):
+/// `[score_8, score_16, score_32, bbox_8, bbox_16, bbox_32, kps_8, kps_16, kps_32]`
 ///
 /// For stride S, grid = 640/S, n = grid^2 * 2 (2 anchors per cell).
 /// - score: [1, n, 1]
@@ -96,23 +96,27 @@ fn postprocess(
     for (stride_idx, &stride) in STRIDES.iter().enumerate() {
         let grid = (INPUT_SIZE / stride) as usize;
         let n = grid * grid * ANCHORS_PER_CELL;
-        let base = stride_idx * 3;
+        // SCRFD outputs: [score_8, score_16, score_32, bbox_8, bbox_16, bbox_32, kps_8, kps_16, kps_32]
+        // i.e. all scores first, then all bboxes, then all kps (fmc=3 groups of 3).
+        let score_idx = stride_idx;
+        let bbox_idx = stride_idx + 3;
+        let kps_idx = stride_idx + 6;
 
         // Extract output tensors by index and collect into flat Vecs for easy indexing.
         // try_extract_array::<f32>() is available because ort's "ndarray" feature is on by default.
-        let scores: Vec<f32> = outputs[base]
+        let scores: Vec<f32> = outputs[score_idx]
             .try_extract_array::<f32>()
             .context("extract score tensor")?
             .iter()
             .cloned()
             .collect();
-        let bboxes: Vec<f32> = outputs[base + 1]
+        let bboxes: Vec<f32> = outputs[bbox_idx]
             .try_extract_array::<f32>()
             .context("extract bbox tensor")?
             .iter()
             .cloned()
             .collect();
-        let kps: Vec<f32> = outputs[base + 2]
+        let kps: Vec<f32> = outputs[kps_idx]
             .try_extract_array::<f32>()
             .context("extract kps tensor")?
             .iter()
