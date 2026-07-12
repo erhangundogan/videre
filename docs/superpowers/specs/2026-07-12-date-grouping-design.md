@@ -59,12 +59,32 @@ string, parsed into year / year-month / year-month-day buckets:
 3. **Day list**: click a month → cards for each day present in that month
 4. **Day gallery**: click a day → full thumbnail grid for that day, reusing
    the existing `buildCard()`/`buildPreview()` gallery-card rendering from the
-   `--all` view (same lazy-loading `<img loading="lazy">` pattern, same
-   HEIC/video handling: HEIC thumbnails only rendered if `--heic` embedded them,
-   video files render a native `<video preload="metadata">` tag against the
-   `file://` path)
+   `--all` view (same lazy-loading `<img loading="lazy">` pattern; video files
+   render a native `<video preload="metadata">` tag against the `file://` path,
+   same as `--all`)
 5. Breadcrumb navigation (`Year` / `Year > Month` / `Year > Month > Day`) to
    move back up a level without regenerating the report
+
+### HEIC thumbnails
+
+`query_keep_files()` embeds HEIC thumbnails the same way `file_to_json()` does
+for the `--all` gallery (lines 200-215): when `--heic` is passed, each HEIC
+KEEP file gets a 240px JPEG thumbnail via `heic_to_b64(&f.path, 240)`
+(`heic_via_quicklook()` under the hood, i.e. `qlmanage`, not `sips` - see
+the HEIC rotation note in `CLAUDE.md`); when `--heic-original` is also passed,
+a 1200px version is embedded for the lightbox too. Without `--heic`, HEIC
+files fall back to the existing `<span class="no-prev">HEIC</span>` placeholder.
+This applies at every drill-down level - year/month/day representative
+thumbnails and the final day gallery all pull from the same `KEEPFILES` array,
+so there's exactly one place (`query_keep_files()`) that needs the `--heic`/
+`--heic-original` conditional, not one per level. This keeps `--by-date`
+consistent with how the duplicate-groups page and the `--faces` person/cluster
+endpoints already handle HEIC - the duplicate page requires `--heic` to embed
+thumbnails (opt-in, since QuickLook decoding has a real per-file cost), while
+the `--faces` server always decodes HEIC via `qlmanage` on demand per request
+(no flag, since it's one face crop at a time, not a whole gallery upfront).
+`--by-date` follows the duplicate-page opt-in model, since like `--all` it can
+render thousands of files in one static HTML file.
 
 Clicking any thumbnail opens the same shared lightbox (`<div class="lightbox"
 id="lb">`, lines 497-500) already used by both other views - no new lightbox
@@ -75,9 +95,11 @@ code needed, since `buildPreview()` already emits the `data-lb-url`/
 
 - New field on `Args`: `by_date: bool` (`--by-date`), independent bool like
   `all`/`heic`/`faces` - no `conflicts_with`, consistent with existing flags
-- New Rust function `query_keep_files(conn: &Connection) -> Vec<FileRow>`
+- New Rust function `query_keep_files(conn: &Connection, heic: bool, heic_original: bool) -> Vec<FileRow>`
   (parallel to `query_all_files()`) implementing the per-hash KEEP-only
-  selection described above
+  selection described above, threading `heic`/`heic_original` through to the
+  same `heic_to_b64()` calls `file_to_json()` already makes so HEIC thumbnails
+  behave identically to the `--all` gallery
 - New HTML/JS section appended in `generate_html()` when `args.by_date` is
   true, following the same pattern as the `--all` gallery section: a
   `KEEPFILES` JSON array (parallel to `ALLFILES`), a CSS block for the
