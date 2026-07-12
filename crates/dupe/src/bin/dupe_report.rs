@@ -381,11 +381,33 @@ fn query_all_files(conn: &Connection) -> Vec<FileRow> {
     .collect()
 }
 
+/// Per-hash KEEP-only file set: like query_all_files(), but for hashes with
+/// more than one surviving path, only the earliest-by-best_date() row is
+/// kept (mirrors query_groups()'s sort-then-take-first rule). Hashes with a
+/// single surviving path are trivially KEEP. Used by --by-date so REMOVE-side
+/// duplicates never appear in the date-grouped gallery.
+fn query_keep_files(conn: &Connection) -> Vec<FileRow> {
+    let rows = query_all_files(conn);
+
+    let mut map: HashMap<String, Vec<FileRow>> = HashMap::new();
+    for row in rows {
+        map.entry(row.hash.clone()).or_default().push(row);
+    }
+
+    map.into_values()
+        .map(|mut group| {
+            group.sort_by(|a, b| best_date(a).cmp(best_date(b)));
+            group.into_iter().next().expect("group is never empty")
+        })
+        .collect()
+}
+
 fn generate_html(
     db_path: &str,
     stats: &Stats,
     groups: &[Vec<FileRow>],
     all_files: Option<&[FileRow]>,
+    keep_files: Option<&[FileRow]>,
     vectors: Option<&VectorBlock>,
     heic: bool,
     heic_original: bool,
@@ -504,6 +526,15 @@ fn generate_html(
         ".card-meta{font-size:11px;color:#71717a;margin-top:4px;white-space:nowrap;",
         "overflow:hidden;text-overflow:ellipsis}\n",
         ".similar-btn{margin-top:6px;padding:2px 10px;font-size:11px}\n",
+        ".date-view{padding:24px 32px}\n",
+        ".date-breadcrumb{margin-bottom:16px;font-size:13px;color:#71717a}\n",
+        ".date-breadcrumb a{color:#3f3f46;cursor:pointer;text-decoration:underline}\n",
+        ".date-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}\n",
+        ".date-card{background:#fff;border-radius:8px;overflow:hidden;cursor:pointer;",
+        "box-shadow:0 1px 3px rgba(0,0,0,.08)}\n",
+        ".date-card img{width:100%;aspect-ratio:1;object-fit:cover;display:block}\n",
+        ".date-card .date-card-label{padding:8px;font-size:13px;font-weight:600}\n",
+        ".date-card .date-card-count{padding:0 8px 8px;font-size:11px;color:#71717a}\n",
         "</style>\n</head>\n<body>\n",
         "<div id=\"sort-overlay\"><div class=\"sort-card\">",
         "<div class=\"spinner\"></div>Sorting&hellip;</div></div>\n",
@@ -580,6 +611,16 @@ fn generate_html(
         ));
     }
 
+    if keep_files.is_some() {
+        out.push_str(concat!(
+            "<div class=\"date-view\" id=\"dateView\">\n",
+            "<h2>Browse by date</h2>\n",
+            "<div class=\"date-breadcrumb\" id=\"dateBreadcrumb\"></div>\n",
+            "<div class=\"date-grid\" id=\"dateGrid\"></div>\n",
+            "</div>\n",
+        ));
+    }
+
     // Embed all group data as JSON
     out.push_str("<script>\nvar GROUPS=[\n");
     for (i, group) in groups.iter().enumerate() {
@@ -615,6 +656,16 @@ fn generate_html(
                 out.push_str("var VEC_DIM=0;\nvar VEC_HASHES=[];\nvar VEC_B64=\"\";\n");
             }
         }
+    }
+
+    // Date-grouped KEEP-only file set (--by-date only).
+    if let Some(kf) = keep_files {
+        out.push_str("var KEEPFILES=[\n");
+        for (i, f) in kf.iter().enumerate() {
+            if i > 0 { out.push(','); }
+            out.push_str(&file_to_json(f, heic, heic_original));
+        }
+        out.push_str("\n];\n");
     }
 
     // All rendering JS using raw string to avoid escaping hell
@@ -780,6 +831,80 @@ function sortGroups(by){
     });
   });
 }
+function bestDateBucket(f){
+  var d = bestDateJs(f);
+  if(!d) return null;
+  return {year: d.slice(0,4), month: d.slice(0,7), day: d.slice(0,10)};
+}
+var dateState = {level:'year', year:null, month:null};
+function dateKeepFiles(){ return (typeof KEEPFILES!=='undefined') ? KEEPFILES : []; }
+function buildYearView(){
+  dateState = {level:'year', year:null, month:null};
+  var byYear = {};
+  dateKeepFiles().forEach(function(f){
+    var b = bestDateBucket(f); if(!b) return;
+    (byYear[b.year] = byYear[b.year] || []).push(f);
+  });
+  var years = Object.keys(byYear).sort().reverse();
+  var grid = document.getElementById('dateGrid');
+  grid.innerHTML = years.map(function(y){
+    var files = byYear[y];
+    return '<div class="date-card" data-year="'+y+'" onclick="buildMonthView(\''+y+'\')">'+
+      buildPreview(files[0])+
+      '<div class="date-card-label">'+y+'</div>'+
+      '<div class="date-card-count">'+files.length+' files</div></div>';
+  }).join('');
+  document.getElementById('dateBreadcrumb').innerHTML = '';
+}
+function buildMonthView(year){
+  dateState = {level:'month', year:year, month:null};
+  var byMonth = {};
+  dateKeepFiles().forEach(function(f){
+    var b = bestDateBucket(f); if(!b || b.year!==year) return;
+    (byMonth[b.month] = byMonth[b.month] || []).push(f);
+  });
+  var months = Object.keys(byMonth).sort().reverse();
+  var grid = document.getElementById('dateGrid');
+  grid.innerHTML = months.map(function(m){
+    var files = byMonth[m];
+    return '<div class="date-card" data-month="'+m+'" onclick="buildDayView(\''+m+'\')">'+
+      buildPreview(files[0])+
+      '<div class="date-card-label">'+m+'</div>'+
+      '<div class="date-card-count">'+files.length+' files</div></div>';
+  }).join('');
+  document.getElementById('dateBreadcrumb').innerHTML =
+    '<a onclick="buildYearView()">'+year+'</a>';
+}
+function buildDayView(month){
+  dateState = {level:'day', year:dateState.year, month:month};
+  var byDay = {};
+  dateKeepFiles().forEach(function(f){
+    var b = bestDateBucket(f); if(!b || b.month!==month) return;
+    (byDay[b.day] = byDay[b.day] || []).push(f);
+  });
+  var days = Object.keys(byDay).sort().reverse();
+  var grid = document.getElementById('dateGrid');
+  grid.innerHTML = days.map(function(d){
+    var files = byDay[d];
+    return '<div class="date-card" data-day="'+d+'" onclick="buildDayGallery(\''+d+'\')">'+
+      buildPreview(files[0])+
+      '<div class="date-card-label">'+d+'</div>'+
+      '<div class="date-card-count">'+files.length+' files</div></div>';
+  }).join('');
+  document.getElementById('dateBreadcrumb').innerHTML =
+    '<a onclick="buildYearView()">'+dateState.year+'</a> &gt; '+
+    '<a onclick="buildMonthView(\''+dateState.year+'\')">'+month+'</a>';
+}
+function buildDayGallery(day){
+  var files = dateKeepFiles().filter(function(f){
+    var b = bestDateBucket(f); return b && b.day===day;
+  });
+  var grid = document.getElementById('dateGrid');
+  grid.innerHTML = files.map(function(f){ return buildCard(f); }).join('');
+  document.getElementById('dateBreadcrumb').innerHTML =
+    '<a onclick="buildYearView()">'+dateState.year+'</a> &gt; '+
+    '<a onclick="buildMonthView(\''+dateState.year+'\')">'+dateState.month+'</a> &gt; '+day;
+}
 // Event delegation: toggle, lightbox, copy — one listener for all dynamic content
 document.addEventListener('click',function(e){
   var lb=e.target.closest('[data-lb-url]');
@@ -908,6 +1033,7 @@ document.addEventListener('click',function(e){
   if(sb){e.preventDefault();e.stopPropagation();findSimilar(sb.dataset.similar);}
 });
 render(true);
+if(typeof KEEPFILES!=='undefined') buildYearView();
 "#);
 
     out.push_str("</script>\n</body>\n</html>");
@@ -2063,6 +2189,7 @@ fn main() {
     let stats = query_stats(&conn);
     let groups = query_groups(&conn);
     let all_files = args.all.then(|| query_all_files(&conn));
+    let keep_files = args.by_date.then(|| query_keep_files(&conn));
     let vectors = if args.all {
         let v = query_vectors(&conn);
         if v.is_none() {
@@ -2077,6 +2204,7 @@ fn main() {
         &stats,
         &groups,
         all_files.as_deref(),
+        keep_files.as_deref(),
         vectors.as_ref(),
         args.heic,
         args.heic_original,
