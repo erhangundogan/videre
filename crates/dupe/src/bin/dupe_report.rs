@@ -907,33 +907,45 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
   <meta charset="UTF-8">
   <title>dupe-faces labeling</title>
   <style>
+    :root {
+      --blue-border: #6c8ebf;
+      --blue-bg: #e8f0fe;
+      --blue-text: #4a6da3;
+      --blue-hover: #2a6db5;
+      --green-border: #6cc36c;
+      --green-bg: #eaf7ea;
+      --green-text: #1a7a1a;
+      --orange-border: #e2a03f;
+      --orange-bg: #fdf1df;
+      --orange-text: #8a5a00;
+    }
     body { font-family: sans-serif; margin: 0; padding: 16px; background: #f5f5f5; }
     h2 { border-bottom: 1px solid #ccc; padding-bottom: 4px; }
     .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fill, 160px); gap: 12px; margin-bottom: 24px; }
     .card { background: white; border: 2px solid #ddd; border-radius: 8px; padding: 10px; width: 160px; box-sizing: border-box; cursor: grab; }
-    .card.person-card { cursor: default; border-color: #6c8ebf; background: #e8f0fe; transition: border-color 0.15s; }
-    .card.person-card:hover { border-color: #2a6db5; }
-    .card.drag-over { border-color: #2a6db5; background: #d0e4ff; }
-    .card.cluster-card { border-color: #6cc36c; background: #eaf7ea; }
-    .card.singleton-card { border-color: #e2a03f; background: #fdf1df; }
+    .card.person-card { cursor: default; border-color: var(--blue-border); background: var(--blue-bg); transition: border-color 0.15s; }
+    .card.person-card:hover { border-color: var(--blue-hover); }
+    .card.drag-over { border-color: var(--blue-hover); background: #d0e4ff; }
+    .card.cluster-card { border-color: var(--green-border); background: var(--green-bg); }
+    .card.singleton-card { border-color: var(--orange-border); background: var(--orange-bg); }
     .badge { display: inline-flex; align-items: center; vertical-align: middle; border-radius: 12px; padding: 3px 9px; font-size: 12px; line-height: 1; margin-left: 4px; font-weight: 600; border: 1px solid transparent; }
-    .badge-blue { background: #e8f0fe; border-color: #6c8ebf; color: #4a6da3; }
-    .badge-green { background: #eaf7ea; border-color: #6cc36c; color: #1a7a1a; }
-    .badge-orange { background: #fdf1df; border-color: #e2a03f; color: #8a5a00; }
-    h2.title-people { color: #4a6da3; }
-    h2.title-clusters { color: #1a7a1a; }
-    h2.title-singletons { color: #8a5a00; }
+    .badge-blue { background: var(--blue-bg); border-color: var(--blue-border); color: var(--blue-text); }
+    .badge-green { background: var(--green-bg); border-color: var(--green-border); color: var(--green-text); }
+    .badge-orange { background: var(--orange-bg); border-color: var(--orange-border); color: var(--orange-text); }
+    h2.title-people { color: var(--blue-text); }
+    h2.title-clusters { color: var(--green-text); }
+    h2.title-singletons { color: var(--orange-text); }
     .new-person-area { margin-top: 8px; display: flex; gap: 4px; }
     .new-person-area button { flex: 1; }
     .new-person-area input[type=text] { flex: 1; width: auto; min-width: 0; }
     .new-person-btn { font-weight: 600; }
-    .cluster-card .new-person-btn { background: #eaf7ea; border-color: #6cc36c; color: #1a7a1a; }
+    .cluster-card .new-person-btn { background: var(--green-bg); border-color: var(--green-border); color: var(--green-text); }
     .cluster-card .new-person-btn:hover { background: #fff; }
-    .singleton-card .new-person-btn { background: #fdf1df; border-color: #e2a03f; color: #8a5a00; }
+    .singleton-card .new-person-btn { background: var(--orange-bg); border-color: var(--orange-border); color: var(--orange-text); }
     .singleton-card .new-person-btn:hover { background: #fff; }
     button { cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid #999; background: white; }
-    button.primary { background: #2a6db5; color: white; border-color: #2a6db5; }
+    button.primary { background: var(--blue-hover); color: white; border-color: var(--blue-hover); }
     input[type=text] { padding: 4px 8px; border: 1px solid #999; border-radius: 4px; width: 120px; }
     #status { font-size: 13px; color: #555; }
     .face-img { object-fit: cover; border-radius: 3px; background: #ddd; display: block; }
@@ -944,12 +956,16 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     .drag-handle .drag-hint { font-size: 10px; color: #bbb; line-height: 1.2; }
     .drag-handle:hover { color: #777; }
     .drag-handle:hover .drag-hint { color: #999; }
-    .cluster-card .drag-handle .drag-dots, .cluster-card .drag-handle .drag-hint { color: #6cc36c; }
-    .cluster-card .drag-handle:hover .drag-dots, .cluster-card .drag-handle:hover .drag-hint { color: #1a7a1a; }
-    .singleton-card .drag-handle .drag-dots, .singleton-card .drag-handle .drag-hint { color: #e2a03f; }
-    .singleton-card .drag-handle:hover .drag-dots, .singleton-card .drag-handle:hover .drag-hint { color: #8a5a00; }
-    .cluster-link { color: #2a6db5; text-decoration: none; font-weight: bold; display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cluster-card .drag-handle .drag-dots, .cluster-card .drag-handle .drag-hint { color: var(--green-border); }
+    .cluster-card .drag-handle:hover .drag-dots, .cluster-card .drag-handle:hover .drag-hint { color: var(--green-text); }
+    .singleton-card .drag-handle .drag-dots, .singleton-card .drag-handle .drag-hint { color: var(--orange-border); }
+    .singleton-card .drag-handle:hover .drag-dots, .singleton-card .drag-handle:hover .drag-hint { color: var(--orange-text); }
+    .cluster-link { color: var(--blue-hover); text-decoration: none; font-weight: bold; display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .cluster-link:hover { text-decoration: underline; }
+    .extra-count { font-size: 11px; margin-top: 2px; }
+    .person-card .extra-count { color: var(--blue-text); }
+    .cluster-card .extra-count { color: var(--green-text); }
+    .singleton-card .extra-count { color: var(--orange-text); }
   </style>
 </head>
 <body>
@@ -997,7 +1013,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       }
       const visible = faceIds.slice(0, 4);
       const extra = faceIds.length > 4
-        ? `<div style="font-size:11px;color:#666;margin-top:2px">+${faceIds.length - 4} more</div>` : '';
+        ? `<div class="extra-count">+${faceIds.length - 4} more</div>` : '';
       return `
         <div style="display:grid;grid-template-columns:repeat(2,66px);gap:4px;margin-bottom:6px">
           ${visible.map(id => faceImg(id, 66, 66)).join('')}
@@ -1010,7 +1026,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       grid.innerHTML = people.map(p => {
         const url = `/person/${encodeURIComponent(p.label)}`;
         const extra = p.face_ids.length > 1
-          ? `<div style="font-size:11px;color:#666;margin-top:2px">+${p.face_ids.length - 1} more</div>` : '';
+          ? `<div class="extra-count">+${p.face_ids.length - 1} more</div>` : '';
         return `
         <div class="card person-card"
              data-label="${escHtml(p.label)}"
