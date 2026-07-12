@@ -45,6 +45,8 @@ cargo build --release
 ./target/release/dupe-faces ~/photos.db                         # detect, embed, and cluster faces
 ./target/release/dupe-report ~/photos.db --faces                # label faces in browser UI (localhost:7878)
 ./target/release/dupe-search ~/photos.db --person "Alice"       # find photos of Alice
+./target/release/dupe-report ~/photos.db --by-date               # static Year/Month/Day drill-down gallery
+./target/release/dupe-report ~/photos.db --show-faces            # live report with face/location lightbox metadata
 ```
 
 ## Supported file types
@@ -109,7 +111,8 @@ CREATE TABLE file_hashes (
     gps_lat     REAL,
     gps_lon     REAL,
     width       INTEGER,
-    height      INTEGER
+    height      INTEGER,
+    location_name TEXT
 );
 
 CREATE TABLE IF NOT EXISTS faces (
@@ -128,6 +131,8 @@ CREATE TABLE IF NOT EXISTS faces (
 Re-scanning the same folder with the same SQLite file upserts (overwrites) existing rows via `INSERT OR REPLACE`. `phash` is stored as signed `INTEGER` (cast from `u64`).
 
 `faces` rows are keyed by `id` (auto-increment). `hash` links to `file_hashes`. `bbox` and `landmark` are JSON strings. `embedding` is a raw f32 BLOB (512-dim ArcFace). `cluster_id` is assigned by DBSCAN; `person_label` and `confirmed` are set via `dupe-report --faces`.
+
+`location_name` is a nullable TEXT column added by an idempotent `ALTER TABLE file_hashes ADD COLUMN location_name TEXT` migration (run on every `dupe-report` startup; harmless if the column already exists) - it is not populated by the initial `dupe` scan. It is populated lazily, one GPS coordinate at a time, by the `/api/location` endpoint when `--show-faces` is used: the first lightbox view of a photo at a given `(gps_lat, gps_lon)` triggers a reverse-geocode lookup, and the result is cached back into this column so later lookups for the same coordinate are free.
 
 ## EXIF fields
 
@@ -156,7 +161,16 @@ dupe-report <db> --heic             # embed HEIC thumbnails as base64 JPEG (macO
 dupe-report <db> --heic-original    # embed HEIC thumbnails + 1200px lightbox version
 dupe-report <db> --all              # all-files gallery + in-page similarity search
 dupe-report <db> --faces            # face labeling UI on localhost:7878 (requires dupe-faces)
+dupe-report <db> --by-date          # static Year/Month/Day drill-down gallery over KEEP files
+dupe-report <db> --show-faces       # live server: report with labeled-face + location metadata in the lightbox
 ```
+
+`--by-date` is fully static: it writes an HTML file just like the default report or `--all` (same additive model - it can be combined with `--all`/`--heic`/`--heic-original`), grouping KEEP files into a clickable Year > Month > Day hierarchy. No server is involved.
+
+`--show-faces` is different: it switches `dupe-report` into server mode (the same `axum` server on `localhost:7878` that `--faces` starts), because the lightbox now shows each photo's labeled faces (clicking one navigates to `/person/<name>`) and a reverse-geocoded location name, both of which need a live backend - labeled faces are queried from the `faces` table per request, and location names are resolved on demand via `/api/location` (see the `location_name` column below) rather than baked into a static file. Route split when combining with `--faces`:
+- `--faces` alone: `/` serves the labeling UI (unchanged, no live report route).
+- `--show-faces` alone: `/` serves the live report (with face/location metadata); no `/faces` route.
+- `--faces --show-faces` together: `/` serves the live report, `/faces` serves the labeling UI.
 
 Report includes:
 - Stats header (files, groups, wasted space)
