@@ -1,10 +1,14 @@
-# Date Grouping (`--by-date`) Design
+# Date Grouping (`--by-date`) and Lightbox Face Display Design
 
 ## Goal
 
 Add a `--by-date` flag to `dupe-report` that generates a drill-down Year → Month →
 Day browsing view over the KEEP-side of the collection (the files that survive
-dedup), reusing the existing thumbnail/lightbox machinery.
+dedup), reusing the existing thumbnail/lightbox machinery. Alongside it, add a
+`--show-faces` flag that shows small thumbnails and names of any already-labeled
+people below the image in the lightbox - shared across the dedup-groups page,
+the `--all` gallery, and this new `--by-date` view, since all three use the same
+lightbox.
 
 ## Background
 
@@ -91,6 +95,65 @@ id="lb">`, lines 497-500) already used by both other views - no new lightbox
 code needed, since `buildPreview()` already emits the `data-lb-url`/
 `data-lb-type` attributes the shared `openLb()`/click-delegation handler reads.
 
+## Lightbox face display (applies to all views)
+
+Since the lightbox (lines 497-500, `openLb()`/`closeLb()` lines 739-755) is
+already shared across the dedup-groups page, the `--all` gallery, and the new
+`--by-date` view, adding "show detected faces below the image" here means it
+applies everywhere at once - one implementation point, three views benefit.
+
+**What exists today:** `make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64)
+-> Option<image::DynamicImage>` (`dupe_report.rs` lines 1859-1874, via
+`crop_face_square()` lines 1799-1815 - 25%-padded square crop, resized to
+140x140 with `image`'s `resize_exact`/`Triangle` filter) already does the
+cropping work, and already handles HEIC sources via `heic_via_quicklook()` and
+EXIF-orientation correction for jpg/jpeg/tiff/dng (`apply_exif_orientation()`,
+lines 1777-1796). It's currently only used by the live `--faces` axum server's
+`handle_face_image` endpoint, which serves the crop as raw JPEG bytes over
+HTTP - not usable directly in a static report, which needs an embedded data
+URI instead.
+
+**What's missing (both are genuinely new - no existing helper covers them):**
+1. A query that returns, for a given `hash`, every `faces` row with
+   `person_label`/`confirmed` (nothing like this exists yet - `handle_face_image`/
+   `handle_original_image`/`handle_cluster_api`/`handle_person_api` all query by
+   `id`, `cluster_id`, or `person_label`, never by `hash`). It also needs to run
+   as one batched query across every hash in the report, not one query per file
+   (no N+1) - the closest existing thing, `query_faces_data()` (lines
+   1499-1568), returns aggregated cluster/person groupings for the labeling UI,
+   not the flat per-hash face list this needs.
+2. A base64-JPEG-data-URI version of the crop, parallel to how `heic_to_b64()`
+   already wraps HEIC decoding into a data URI for the static report - i.e.
+   reuse `make_face_thumb()`'s `DynamicImage` output, then JPEG-encode + base64
+   it instead of serving raw bytes.
+
+**Scope: only confirmed, labeled faces.** Show a face thumbnail + name below
+the lightbox image only for `faces` rows where `confirmed = 1` and
+`person_label` is non-null (i.e. actually assigned via `dupe-report --faces`).
+Unconfirmed/unlabeled detections are skipped - there'd be no name to show, and
+showing an anonymous crop with no label adds noise without the point of this
+feature (recognizing who's in the photo).
+
+**Data flow:**
+- New `dupe-core` query (e.g. `labeled_faces_by_hash(conn) ->
+  HashMap<String, Vec<(i64, [f32;4], String)>>` - hash → list of
+  `(face_id, bbox, person_label)`), one query covering every hash in the
+  report, called once per report generation.
+- New helper in `dupe_report.rs` (e.g. `face_thumb_b64(path, bbox, face_id) ->
+  Option<String>`) wrapping `make_face_thumb()` + JPEG encode + base64, mirroring
+  `heic_to_b64()`'s existing pattern.
+- Each file's JSON row (in `GROUPS`, `ALLFILES`, and the new `KEEPFILES`) gains
+  a `faces: [{thumb, name}]` array, populated only when the hash has labeled
+  faces; thumbnails are computed once per hash (not once per duplicate path
+  sharing that hash) and reused across all paths for that hash.
+- New CLI flag `--show-faces` (independent bool, same pattern as `--heic`/
+  `--all`), off by default since face-crop generation is a real per-file cost
+  (image decode + crop + re-encode) on top of whatever `--heic` already adds -
+  requires a prior `dupe-faces` run to have anything to show.
+- Lightbox JS: `openLb()` renders a new face-row `<div>` below the image
+  (small ~48px thumbnails, name label underneath each) whenever the opened
+  item's `faces` array is non-empty; hidden entirely otherwise.
+
 ## Implementation shape
 
 - New field on `Args`: `by_date: bool` (`--by-date`), independent bool like
@@ -110,6 +173,12 @@ code needed, since `buildPreview()` already emits the `data-lb-url`/
 - No new CLI binary, no new database writes - purely a read + new report
   section, consistent with `dupe-report`'s existing read-only, non-mutating
   design
+- New CLI flag `--show-faces` (independent bool); new `dupe-core` query
+  `labeled_faces_by_hash()`; new `face_thumb_b64()` helper in `dupe_report.rs`
+  wrapping the existing `make_face_thumb()`; `faces` array threaded into the
+  JSON emitted by `query_groups()`'s row builder, `file_to_json()`, and the new
+  `query_keep_files()` alike, so all three views pick it up automatically via
+  the shared lightbox JS
 
 ## Testing
 
@@ -121,9 +190,18 @@ code needed, since `buildPreview()` already emits the `data-lb-url`/
 - Verify clicking through Year → Month → Day → thumbnail → lightbox works via
   the running report in a browser (see `superpowers:verify` skill in the
   implementation plan)
+- Fixture DB with a hash that has confirmed+labeled faces, one with
+  unconfirmed/unlabeled faces only, and one with no faces at all - verify the
+  lightbox face row appears only for the first case, with the right thumbnail
+  and name, across all three views (dedup groups, `--all`, `--by-date`)
+- Verify `--show-faces` without a prior `dupe-faces` run produces an empty
+  `faces` array everywhere (no crash, no face row rendered)
 
 ## Out of scope
 
-- No changes to `--all` or the default dedup view
+- No changes to `--all` or the default dedup view beyond gaining the shared
+  `faces` field/lightbox row
 - No new binary
 - No changes to the SQLite schema
+- No face detection/labeling changes - this only *displays* faces already
+  produced by `dupe-faces`/`dupe-report --faces`
