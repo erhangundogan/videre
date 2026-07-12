@@ -232,6 +232,7 @@ fn json_str(s: &str) -> String {
     out
 }
 
+#[cfg(test)]
 fn file_to_json(f: &FileRow, heic: bool, heic_original: bool) -> String {
     file_to_json_with_faces(f, heic, heic_original, &[])
 }
@@ -312,13 +313,25 @@ fn file_to_json_with_faces(
     )
 }
 
-fn group_to_json(group: &[FileRow], heic: bool, heic_original: bool) -> String {
+fn group_to_json(
+    group: &[FileRow],
+    heic: bool,
+    heic_original: bool,
+    faces_by_hash: &HashMap<String, Vec<(i64, String, String)>>,
+) -> String {
     let hash_prefix = &group[0].hash[..group[0].hash.len().min(8)];
     let waste = group[0].size_bytes * (group.len() as i64 - 1);
     let keep_date = best_date(&group[0]);
     let date_json = if keep_date.is_empty() { "null".to_string() } else { json_str(keep_date) };
     let files_json: Vec<String> = group.iter()
-        .map(|f| file_to_json(f, heic, heic_original))
+        .map(|f| {
+            file_to_json_with_faces(
+                f,
+                heic,
+                heic_original,
+                faces_by_hash.get(&f.hash).map(|v| v.as_slice()).unwrap_or(&[]),
+            )
+        })
         .collect();
     format!(
         "{{\"hash\":{hash},\"waste\":{waste},\"date\":{date},\"files\":[{files}]}}",
@@ -467,6 +480,7 @@ fn generate_html(
     vectors: Option<&VectorBlock>,
     heic: bool,
     heic_original: bool,
+    faces_by_hash: &HashMap<String, Vec<(i64, String, String)>>,
 ) -> String {
     use chrono::Utc;
     let now = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
@@ -690,7 +704,7 @@ fn generate_html(
     for (i, group) in groups.iter().enumerate() {
         if i > 0 { out.push(','); }
         out.push('\n');
-        out.push_str(&group_to_json(group, heic, heic_original));
+        out.push_str(&group_to_json(group, heic, heic_original, faces_by_hash));
     }
     out.push_str("\n];\n");
 
@@ -700,7 +714,12 @@ fn generate_html(
         out.push_str("var ALLFILES=[\n");
         for (i, f) in files.iter().enumerate() {
             if i > 0 { out.push(','); }
-            out.push_str(&file_to_json(f, heic, heic_original));
+            out.push_str(&file_to_json_with_faces(
+                f,
+                heic,
+                heic_original,
+                faces_by_hash.get(&f.hash).map(|v| v.as_slice()).unwrap_or(&[]),
+            ));
         }
         out.push_str("\n];\n");
         match vectors {
@@ -727,7 +746,12 @@ fn generate_html(
         out.push_str("var KEEPFILES=[\n");
         for (i, f) in kf.iter().enumerate() {
             if i > 0 { out.push(','); }
-            out.push_str(&file_to_json(f, heic, heic_original));
+            out.push_str(&file_to_json_with_faces(
+                f,
+                heic,
+                heic_original,
+                faces_by_hash.get(&f.hash).map(|v| v.as_slice()).unwrap_or(&[]),
+            ));
         }
         out.push_str("\n];\n");
     }
@@ -1733,6 +1757,11 @@ struct PersonSearchQuery {
 struct AppState {
     conn: Mutex<Connection>,
     shutdown_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    report_all: bool,
+    report_by_date: bool,
+    report_heic: bool,
+    report_heic_original: bool,
+    serve_faces_ui: bool,
 }
 
 fn query_faces_data(conn: &Connection) -> rusqlite::Result<FacesResponse> {
@@ -1808,6 +1837,71 @@ fn query_faces_data(conn: &Connection) -> rusqlite::Result<FacesResponse> {
 
 async fn handle_root() -> impl axum::response::IntoResponse {
     axum::response::Html(FACES_HTML)
+}
+
+/// Live-server equivalent of the static `--all`/`--by-date` HTML report,
+/// rendered on each request from the current database state (labeled faces
+/// included, since this route only exists when `--show-faces` is set).
+async fn handle_report(State(state): State<Arc<AppState>>) -> impl axum::response::IntoResponse {
+    let conn = state.conn.lock().unwrap();
+    let stats = query_stats(&conn);
+    let groups = query_groups(&conn);
+    let all_files = state.report_all.then(|| query_all_files(&conn));
+    let keep_files = state.report_by_date.then(|| query_keep_files(&conn));
+    let faces_by_hash = dupe_core::face_db::labeled_faces_by_hash(&conn).unwrap_or_default();
+    let vectors = if state.report_all { query_vectors(&conn) } else { None };
+    let db_path = conn.path().map(|p| p.to_string()).unwrap_or_default();
+    drop(conn);
+    let html = generate_html(
+        &db_path,
+        &stats,
+        &groups,
+        all_files.as_deref(),
+        keep_files.as_deref(),
+        vectors.as_ref(),
+        state.report_heic,
+        state.report_heic_original,
+        &faces_by_hash,
+    );
+    axum::response::Html(html)
+}
+
+#[derive(Deserialize)]
+struct LocationQuery {
+    lat: f64,
+    lon: f64,
+}
+
+#[derive(Serialize)]
+struct LocationResponse {
+    name: Option<String>,
+}
+
+async fn handle_location(
+    Query(q): Query<LocationQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Result<AxumJson<LocationResponse>, StatusCode> {
+    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let cached: Option<String> = conn
+        .query_row(
+            "SELECT location_name FROM file_hashes \
+             WHERE gps_lat = ?1 AND gps_lon = ?2 AND location_name IS NOT NULL LIMIT 1",
+            rusqlite::params![q.lat, q.lon],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if let Some(name) = cached {
+        return Ok(AxumJson(LocationResponse { name: Some(name) }));
+    }
+    let name = dupe_core::location::location_name(q.lat, q.lon);
+    if let Some(ref n) = name {
+        let _ = conn.execute(
+            "UPDATE file_hashes SET location_name = ?1 WHERE gps_lat = ?2 AND gps_lon = ?3",
+            rusqlite::params![n, q.lat, q.lon],
+        );
+    }
+    Ok(AxumJson(LocationResponse { name }))
 }
 
 async fn handle_get_faces(
@@ -2216,22 +2310,37 @@ async fn handle_original_image(
     Ok(([(axum::http::header::CONTENT_TYPE, content_type)], bytes))
 }
 
-async fn serve_faces_async(db: &Path) -> Result<(), Box<dyn std::error::Error>> {
+/// Options threaded from `main()`'s CLI args into the live server, since
+/// server mode renders the report on-demand per request instead of once to a
+/// static file.
+struct ServeOptions {
+    serve_faces_ui: bool,
+    /// True when `--show-faces` was passed, i.e. `/` should serve the live
+    /// report instead of the labeling UI. Tracked separately from
+    /// `serve_faces_ui` (`--faces`) because the two flags are independent:
+    /// either can be passed alone or together.
+    show_report: bool,
+    report_all: bool,
+    report_by_date: bool,
+    report_heic: bool,
+    report_heic_original: bool,
+}
+
+async fn serve_faces_async(db: &Path, opts: ServeOptions) -> Result<(), Box<dyn std::error::Error>> {
     let conn = Connection::open(db)?;
+    dupe_core::location::ensure_location_column(&conn);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let state = Arc::new(AppState {
         conn: Mutex::new(conn),
         shutdown_tx: Mutex::new(Some(shutdown_tx)),
+        report_all: opts.report_all,
+        report_by_date: opts.report_by_date,
+        report_heic: opts.report_heic,
+        report_heic_original: opts.report_heic_original,
+        serve_faces_ui: opts.serve_faces_ui,
     });
 
-    let app = Router::new()
-        .route("/", get(handle_root))
-        .route("/api/faces", get(handle_get_faces))
-        .route("/api/assign", post(handle_assign))
-        .route("/api/new-person", post(handle_new_person))
-        .route("/api/remove-face", post(handle_remove_face))
-        .route("/api/dissolve-cluster", post(handle_dissolve_cluster))
-        .route("/api/set-primary", post(handle_set_primary))
+    let mut router = Router::new()
         .route("/api/face-image/{id}", get(handle_face_image))
         .route("/api/original-image/{id}", get(handle_original_image))
         .route("/cluster/{id}", get(handle_cluster_page))
@@ -2240,7 +2349,31 @@ async fn serve_faces_async(db: &Path) -> Result<(), Box<dyn std::error::Error>> 
         .route("/api/person/{name}", get(handle_person_api))
         .route("/api/search/person", get(handle_search_person))
         .route("/api/quit", post(handle_quit))
-        .with_state(state);
+        .route("/api/location", get(handle_location));
+
+    if state.serve_faces_ui {
+        router = router
+            .route("/api/faces", get(handle_get_faces))
+            .route("/api/assign", post(handle_assign))
+            .route("/api/new-person", post(handle_new_person))
+            .route("/api/remove-face", post(handle_remove_face))
+            .route("/api/dissolve-cluster", post(handle_dissolve_cluster))
+            .route("/api/set-primary", post(handle_set_primary));
+    }
+
+    // `/` and (when both modes are active) `/faces` depend on which combination
+    // of --faces / --show-faces started this server:
+    //   --faces alone        -> `/` = labeling UI, no report route at all
+    //   --show-faces alone   -> `/` = live report, no `/faces` route
+    //   both                 -> `/` = live report, `/faces` = labeling UI
+    router = match (state.serve_faces_ui, opts.show_report) {
+        (true, true) => router.route("/", get(handle_report)).route("/faces", get(handle_root)),
+        (true, false) => router.route("/", get(handle_root)),
+        (false, true) => router.route("/", get(handle_report)),
+        (false, false) => router, // unreachable: serve_faces_async only runs when at least one is set
+    };
+
+    let app = router.with_state(state);
 
     let addr = "127.0.0.1:7878";
     let listener = tokio::net::TcpListener::bind(addr)
@@ -2255,9 +2388,9 @@ async fn serve_faces_async(db: &Path) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-fn serve_faces(db: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn serve_faces(db: &Path, opts: ServeOptions) -> Result<(), Box<dyn std::error::Error>> {
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(serve_faces_async(db))
+    rt.block_on(serve_faces_async(db, opts))
 }
 
 fn main() {
@@ -2268,8 +2401,16 @@ fn main() {
         std::process::exit(1);
     }
 
-    if args.faces {
-        if let Err(e) = serve_faces(&args.db) {
+    if args.faces || args.show_faces {
+        let opts = ServeOptions {
+            serve_faces_ui: args.faces,
+            show_report: args.show_faces,
+            report_all: args.all,
+            report_by_date: args.by_date,
+            report_heic: args.heic,
+            report_heic_original: args.heic_original,
+        };
+        if let Err(e) = serve_faces(&args.db, opts) {
             eprintln!("Error: {e}");
             std::process::exit(1);
         }
@@ -2308,6 +2449,7 @@ fn main() {
         vectors.as_ref(),
         args.heic,
         args.heic_original,
+        &HashMap::new(),
     );
 
     fs::write(&output, &html).expect("failed to write HTML file");
