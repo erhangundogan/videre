@@ -1147,6 +1147,7 @@ const CLUSTER_HTML: &str = r##"<!DOCTYPE html>
     <input type="text" id="person-input" placeholder="Person name" list="people-list">
     <datalist id="people-list"></datalist>
     <button class="primary" onclick="assignAll()">Assign cluster</button>
+    <button class="danger" onclick="dissolveCluster()" style="margin-left:auto">Dissolve cluster (wrong grouping)</button>
   </div>
 
   <div id="faces-grid" class="grid"></div>
@@ -1218,6 +1219,17 @@ const CLUSTER_HTML: &str = r##"<!DOCTYPE html>
       if (!r.ok) { document.getElementById('status').textContent = 'Error: assign failed'; return; }
       document.getElementById('status').textContent = `Assigned ${faceIds.length} face(s) to "${label}"`;
       setTimeout(() => { window.location.href = '/'; }, 800);
+    }
+
+    async function dissolveCluster() {
+      if (!confirm(`Dissolve cluster ${clusterId}? Its ${facesData.length} face(s) will become unassigned singletons (not deleted).`)) return;
+      const r = await fetch('/api/dissolve-cluster', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cluster_id: clusterId })
+      });
+      if (!r.ok) { document.getElementById('status').textContent = 'Error: dissolve failed'; return; }
+      document.getElementById('status').textContent = 'Cluster dissolved';
+      setTimeout(() => { window.location.href = '/'; }, 500);
     }
 
     async function assignOne(faceId) {
@@ -1391,6 +1403,11 @@ struct RemoveFaceRequest {
 }
 
 #[derive(Deserialize)]
+struct DissolveClusterRequest {
+    cluster_id: i64,
+}
+
+#[derive(Deserialize)]
 struct SetPrimaryRequest {
     face_id: i64,
     person_label: String,
@@ -1527,6 +1544,21 @@ async fn handle_remove_face(
     conn.execute(
         "UPDATE faces SET cluster_id = NULL, person_label = NULL, confirmed = 0 WHERE id = ?1",
         [req.face_id],
+    )
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(StatusCode::OK)
+}
+
+/// Ungroup a bad cluster: every face in it becomes an unassigned singleton
+/// instead of being deleted, so it can still be labeled individually later.
+async fn handle_dissolve_cluster(
+    State(state): State<Arc<AppState>>,
+    AxumJson(req): AxumJson<DissolveClusterRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    conn.execute(
+        "UPDATE faces SET cluster_id = NULL WHERE cluster_id = ?1",
+        [req.cluster_id],
     )
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(StatusCode::OK)
@@ -1792,6 +1824,7 @@ async fn serve_faces_async(db: &Path) -> Result<(), Box<dyn std::error::Error>> 
         .route("/api/assign", post(handle_assign))
         .route("/api/new-person", post(handle_new_person))
         .route("/api/remove-face", post(handle_remove_face))
+        .route("/api/dissolve-cluster", post(handle_dissolve_cluster))
         .route("/api/set-primary", post(handle_set_primary))
         .route("/api/face-image/{id}", get(handle_face_image))
         .route("/cluster/{id}", get(handle_cluster_page))
