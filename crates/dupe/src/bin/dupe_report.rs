@@ -915,12 +915,20 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     .card.person-card { cursor: default; border-color: #6c8ebf; background: #e8f0fe; transition: border-color 0.15s; }
     .card.person-card:hover { border-color: #2a6db5; }
     .card.drag-over { border-color: #2a6db5; background: #d0e4ff; }
-    .badge { display: inline-flex; align-items: center; vertical-align: middle; background: #555; color: white; border-radius: 12px; padding: 3px 9px; font-size: 12px; line-height: 1; margin-left: 4px; }
+    .card.cluster-card { border-color: #6cc36c; background: #eaf7ea; }
+    .card.singleton-card { border-color: #e2a03f; background: #fdf1df; }
+    .badge { display: inline-flex; align-items: center; vertical-align: middle; border-radius: 12px; padding: 3px 9px; font-size: 12px; line-height: 1; margin-left: 4px; font-weight: 600; border: 1px solid transparent; }
+    .badge-blue { background: #e8f0fe; border-color: #6c8ebf; color: #4a6da3; }
+    .badge-green { background: #eaf7ea; border-color: #6cc36c; color: #1a7a1a; }
+    .badge-orange { background: #fdf1df; border-color: #e2a03f; color: #8a5a00; }
+    h2.title-people { color: #4a6da3; }
+    h2.title-clusters { color: #1a7a1a; }
+    h2.title-singletons { color: #8a5a00; }
     .new-person-area { margin-top: 8px; display: flex; gap: 4px; }
     .new-person-area button { flex: 1; }
     .new-person-area input[type=text] { flex: 1; width: auto; min-width: 0; }
-    .new-person-btn { background: #eaf7ea; border-color: #6cc36c; color: #1a7a1a; font-weight: 600; }
-    .new-person-btn:hover { background: #d8f0d8; }
+    .new-person-btn { background: #fff; border-color: #6cc36c; color: #1a7a1a; font-weight: 600; }
+    .new-person-btn:hover { background: #eaf7ea; }
     button { cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid #999; background: white; }
     button.primary { background: #2a6db5; color: white; border-color: #2a6db5; }
     input[type=text] { padding: 4px 8px; border: 1px solid #999; border-radius: 4px; width: 120px; }
@@ -945,16 +953,16 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
   </div>
 
   <div class="people-section">
-    <h2>People <span id="people-count" class="badge">0</span></h2>
+    <h2 class="title-people">People <span id="people-count" class="badge badge-blue">0</span></h2>
     <div class="people-scroll">
       <div id="people-grid" class="grid"></div>
     </div>
   </div>
 
-  <h2>Unassigned Clusters <span id="cluster-count" class="badge">0</span></h2>
+  <h2 class="title-clusters">Unassigned Clusters <span id="cluster-count" class="badge badge-green">0</span></h2>
   <div id="cluster-grid" class="grid"></div>
 
-  <h2>Singletons <span id="singleton-count" class="badge">0</span></h2>
+  <h2 class="title-singletons">Singletons <span id="singleton-count" class="badge badge-orange">0</span></h2>
   <div id="singleton-grid" class="grid"></div>
 
   <script>
@@ -1007,13 +1015,13 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       `).join('');
     }
 
-    function renderAssignableCard(faceIds, linkUrl) {
+    function renderAssignableCard(faceIds, linkUrl, cardClass) {
       const faceIdsJson = JSON.stringify(faceIds);
       const thumb = linkUrl
         ? `<a href="${escHtml(linkUrl)}">${thumbGrid(faceIds)}</a>`
         : thumbGrid(faceIds);
       return `
-        <div class="card">
+        <div class="card ${cardClass}">
           <div class="drag-handle" draggable="true" ondragstart="onDragStart(event, ${faceIdsJson})" title="Drag to assign to a person">
             <span class="drag-dots">&#8942;&#8942;&#8942;</span>
             <span class="drag-hint">Drag on person above</span>
@@ -1031,7 +1039,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       document.getElementById('cluster-count').textContent = clusters.length;
       const sorted = [...clusters].sort((a, b) => b.face_ids.length - a.face_ids.length);
       grid.innerHTML = sorted.map(c =>
-        renderAssignableCard(c.face_ids, `/cluster/${c.cluster_id}`)
+        renderAssignableCard(c.face_ids, `/cluster/${c.cluster_id}`, 'cluster-card')
       ).join('');
     }
 
@@ -1039,7 +1047,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       const grid = document.getElementById('singleton-grid');
       document.getElementById('singleton-count').textContent = singletons.length;
       grid.innerHTML = singletons.map(s =>
-        renderAssignableCard([s.face_id], null)
+        renderAssignableCard([s.face_id], null, 'singleton-card')
       ).join('');
     }
 
