@@ -948,7 +948,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     .cluster-card .drag-handle:hover .drag-dots, .cluster-card .drag-handle:hover .drag-hint { color: #1a7a1a; }
     .singleton-card .drag-handle .drag-dots, .singleton-card .drag-handle .drag-hint { color: #e2a03f; }
     .singleton-card .drag-handle:hover .drag-dots, .singleton-card .drag-handle:hover .drag-hint { color: #8a5a00; }
-    .cluster-link { color: #2a6db5; text-decoration: none; font-weight: bold; }
+    .cluster-link { color: #2a6db5; text-decoration: none; font-weight: bold; display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .cluster-link:hover { text-decoration: underline; }
   </style>
 </head>
@@ -1020,11 +1020,19 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
           <a href="${url}">
             <div style="margin-bottom:6px">${faceImg(p.representative_id, 140, 140)}</div>
           </a>
-          <a class="cluster-link" href="${url}">${escHtml(p.label)}</a>
+          <a class="cluster-link" href="${url}" title="${escHtml(p.label)}">${escHtml(p.label)}</a>
           ${extra}
         </div>
       `;
       }).join('');
+    }
+
+    const MAX_NAME_LEN = 60;
+
+    // Trim, collapse internal whitespace, and cap length so a pasted
+    // wall of text can't stretch card layout or bloat the DB.
+    function sanitizeName(raw) {
+      return raw.trim().replace(/\s+/g, ' ').slice(0, MAX_NAME_LEN);
     }
 
     function renderAssignableCard(faceIds, linkUrl, cardClass) {
@@ -1100,7 +1108,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       const area = btn.parentElement;
       const faceIdsJson = JSON.stringify(faceIds);
       area.innerHTML = `
-        <input type="text" id="np-input-${faceIds[0]}" placeholder="Person name" autofocus>
+        <input type="text" id="np-input-${faceIds[0]}" placeholder="Person name" maxlength="${MAX_NAME_LEN}" autofocus>
         <button class="primary" onclick="submitNewPerson('np-input-${faceIds[0]}', ${faceIdsJson})">Create</button>
         <button onclick="loadFaces()">Cancel</button>
       `;
@@ -1108,7 +1116,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
 
     async function submitNewPerson(inputId, faceIds) {
       const input = document.getElementById(inputId);
-      const label = input.value.trim();
+      const label = sanitizeName(input.value);
       if (!label) return;
       const r = await fetch('/api/new-person', {
         method: 'POST',
@@ -1166,7 +1174,7 @@ const CLUSTER_HTML: &str = r##"<!DOCTYPE html>
 
   <div class="assign-bar">
     <strong>Assign all to:</strong>
-    <input type="text" id="person-input" placeholder="Person name" list="people-list">
+    <input type="text" id="person-input" placeholder="Person name" maxlength="60" list="people-list">
     <datalist id="people-list"></datalist>
     <button class="primary" onclick="assignAll()">Assign cluster</button>
     <button class="danger" onclick="dissolveCluster()" style="margin-left:auto">Dissolve cluster (wrong grouping)</button>
@@ -1177,6 +1185,13 @@ const CLUSTER_HTML: &str = r##"<!DOCTYPE html>
   <script>
     const clusterId = __CLUSTER_ID__;
     let facesData = [];
+    const MAX_NAME_LEN = 60;
+
+    // Trim, collapse internal whitespace, and cap length so a pasted
+    // wall of text can't stretch card layout or bloat the DB.
+    function sanitizeName(raw) {
+      return raw.trim().replace(/\s+/g, ' ').slice(0, MAX_NAME_LEN);
+    }
 
     async function load() {
       try {
@@ -1231,7 +1246,7 @@ const CLUSTER_HTML: &str = r##"<!DOCTYPE html>
     }
 
     async function assignAll() {
-      const label = document.getElementById('person-input').value.trim();
+      const label = sanitizeName(document.getElementById('person-input').value);
       if (!label) return;
       const faceIds = facesData.map(f => f.face_id);
       const r = await fetch('/api/new-person', {
@@ -1255,7 +1270,9 @@ const CLUSTER_HTML: &str = r##"<!DOCTYPE html>
     }
 
     async function assignOne(faceId) {
-      const label = prompt('Assign face #' + faceId + ' to person:');
+      const raw = prompt('Assign face #' + faceId + ' to person:');
+      if (!raw) return;
+      const label = sanitizeName(raw);
       if (!label) return;
       const r = await fetch('/api/new-person', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1528,15 +1545,27 @@ async fn handle_get_faces(
     Ok(AxumJson(resp))
 }
 
+/// Trim, collapse internal whitespace, and cap length so a client that
+/// bypasses the UI's own sanitization can't stretch card layout or bloat
+/// the DB with an unbounded label. Mirrors the client-side sanitizeName().
+fn sanitize_person_label(raw: &str) -> Option<String> {
+    let collapsed = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    Some(collapsed.chars().take(60).collect())
+}
+
 async fn handle_assign(
     State(state): State<Arc<AppState>>,
     AxumJson(req): AxumJson<AssignRequest>,
 ) -> Result<StatusCode, StatusCode> {
+    let label = sanitize_person_label(&req.person_label).ok_or(StatusCode::BAD_REQUEST)?;
     let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     for id in &req.face_ids {
         conn.execute(
             "UPDATE faces SET person_label = ?1, confirmed = 1 WHERE id = ?2",
-            rusqlite::params![req.person_label, id],
+            rusqlite::params![label, id],
         )
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     }
@@ -1547,11 +1576,12 @@ async fn handle_new_person(
     State(state): State<Arc<AppState>>,
     AxumJson(req): AxumJson<NewPersonRequest>,
 ) -> Result<StatusCode, StatusCode> {
+    let label = sanitize_person_label(&req.label).ok_or(StatusCode::BAD_REQUEST)?;
     let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     for id in &req.face_ids {
         conn.execute(
             "UPDATE faces SET person_label = ?1, confirmed = 1 WHERE id = ?2",
-            rusqlite::params![req.label, id],
+            rusqlite::params![label, id],
         )
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     }
