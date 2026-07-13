@@ -1,5 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
+use dupe::{hasher, scanner, sqlite_output, types};
+use rayon::prelude::*;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -63,7 +65,21 @@ fn main() -> Result<()> {
 }
 
 fn run_cycle(args: &Args) -> Result<()> {
-    // Stages implemented in Tasks 7-10.
-    let _ = args;
+    if args.scan {
+        run_scan_stage(args)?;
+    }
+    Ok(())
+}
+
+fn run_scan_stage(args: &Args) -> Result<()> {
+    let paths = scanner::scan(&args.directory);
+    let records: Vec<types::FileRecord> = paths
+        .par_iter()
+        .filter_map(|path| hasher::hash_file(path).ok())
+        .collect();
+    sqlite_output::write_records(&records, &args.output_sqlite)?;
+    if !args.silent {
+        eprintln!("dupe-watch: scan stage wrote {} record(s)", records.len());
+    }
     Ok(())
 }
