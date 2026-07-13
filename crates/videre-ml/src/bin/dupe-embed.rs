@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use dupe_core::{embeddings, vectors};
-use dupe_ml::{device, model, preprocess};
+use videre_core::{embeddings, vectors};
+use videre_ml::{device, model, preprocess};
 use rayon::prelude::*;
 use std::path::PathBuf;
 
@@ -26,7 +26,7 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let conn = dupe_core::db::open_wal(&args.db)
+    let conn = videre_core::db::open_wal(&args.db)
         .with_context(|| format!("open {}", args.db.display()))?;
     embeddings::ensure_embeddings_table(&conn)?;
 

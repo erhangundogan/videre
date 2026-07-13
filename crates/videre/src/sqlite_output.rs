@@ -3,7 +3,7 @@ use rusqlite::{Result, params};
 use std::path::Path;
 
 pub fn write_records(records: &[FileRecord], db_path: &Path) -> Result<()> {
-    let conn = dupe_core::db::open_wal(db_path)?;
+    let conn = videre_core::db::open_wal(db_path)?;
 
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS file_hashes (

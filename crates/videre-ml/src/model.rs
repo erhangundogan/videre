@@ -10,7 +10,7 @@ use candle_transformers::models::siglip;
 use std::path::{Path, PathBuf};
 use tokenizers::Tokenizer;
 
-pub const MODEL_ID: &str = dupe_core::embeddings::DEFAULT_MODEL_ID;
+pub const MODEL_ID: &str = videre_core::embeddings::DEFAULT_MODEL_ID;
 pub const IMAGE_SIZE: usize = 384;
 
 /// Maximum token sequence length for text queries.
@@ -95,7 +95,7 @@ impl Embedder {
         for i in 0..b {
             let row: Vec<f32> = features.get(i)?.to_vec1()?;
             let mut row = row;
-            dupe_core::vectors::l2_normalize(&mut row);
+            videre_core::vectors::l2_normalize(&mut row);
             out.push(row);
         }
         Ok(out)
@@ -124,7 +124,7 @@ impl Embedder {
             .context("text forward pass")?;
         // features: [1, embed_dim]
         let mut vec: Vec<f32> = features.get(0)?.to_vec1()?;
-        dupe_core::vectors::l2_normalize(&mut vec);
+        videre_core::vectors::l2_normalize(&mut vec);
         Ok(vec)
     }
 }

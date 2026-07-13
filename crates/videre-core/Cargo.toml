@@ -1,5 +1,5 @@
 [package]
-name = "dupe-core"
+name = "videre-core"
 version = "0.1.0"
 edition = "2021"
 

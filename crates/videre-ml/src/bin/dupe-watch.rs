@@ -1,8 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
-use dupe::{hasher, scanner, sqlite_output, types};
-use dupe_core::{db, face_db};
-use dupe_ml::pipeline::{run_clustering, run_face_pipeline};
+use videre::{hasher, scanner, sqlite_output, types};
+use videre_core::{db, face_db};
+use videre_ml::pipeline::{run_clustering, run_face_pipeline};
 use rayon::prelude::*;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -87,7 +87,7 @@ fn run_cycle(args: &Args) -> Result<()> {
             return Ok(());
         }
         face_db::create_faces_table(&conn)?;
-        dupe_core::location::ensure_location_column(&conn);
+        videre_core::location::ensure_location_column(&conn);
         if args.faces {
             run_faces_stage(args, &conn)?;
         }
@@ -155,15 +155,15 @@ fn run_heic_stage(args: &Args, conn: &rusqlite::Connection) -> Result<()> {
     let mut converted = 0usize;
     let mut failed = 0usize;
     for (path, hash) in heic_paths {
-        let need_240 = !dupe_core::thumb_cache::thumb_exists(&hash, 240);
-        let need_1200 = !dupe_core::thumb_cache::thumb_exists(&hash, 1200);
+        let need_240 = !videre_core::thumb_cache::thumb_exists(&hash, 240);
+        let need_1200 = !videre_core::thumb_cache::thumb_exists(&hash, 1200);
         if !need_240 && !need_1200 {
             continue;
         }
-        std::fs::create_dir_all(dupe_core::thumb_cache::cache_dir()).ok();
+        std::fs::create_dir_all(videre_core::thumb_cache::cache_dir()).ok();
         // Convert once, then downscale the same in-memory image for each
         // missing size (largest first) instead of re-running QuickLook per size.
-        match dupe_core::heic::heic_via_quicklook(&path, "watch") {
+        match videre_core::heic::heic_via_quicklook(&path, "watch") {
             Some(img) => {
                 for size in [1200u32, 240] {
                     let need = if size == 240 { need_240 } else { need_1200 };
@@ -175,9 +175,9 @@ fn run_heic_stage(args: &Args, conn: &rusqlite::Connection) -> Result<()> {
                     } else {
                         img.clone()
                     };
-                    let tmp_path = dupe_core::thumb_cache::thumb_tmp_path(&hash, size);
+                    let tmp_path = videre_core::thumb_cache::thumb_tmp_path(&hash, size);
                     if resized.save(&tmp_path).is_ok()
-                        && std::fs::rename(&tmp_path, dupe_core::thumb_cache::thumb_path(&hash, size)).is_ok()
+                        && std::fs::rename(&tmp_path, videre_core::thumb_cache::thumb_path(&hash, size)).is_ok()
                     {
                         converted += 1;
                     } else {
@@ -218,7 +218,7 @@ fn run_location_stage(args: &Args, conn: &rusqlite::Connection) -> Result<()> {
     };
     let mut resolved = 0usize;
     for (lat, lon) in unresolved {
-        if let Some(name) = dupe_core::location::location_name(lat, lon) {
+        if let Some(name) = videre_core::location::location_name(lat, lon) {
             conn.execute(
                 "UPDATE file_hashes SET location_name = ?1 \
                  WHERE ROUND(gps_lat, 6) = ROUND(?2, 6) AND ROUND(gps_lon, 6) = ROUND(?3, 6)",

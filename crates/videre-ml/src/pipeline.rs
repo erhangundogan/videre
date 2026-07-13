@@ -78,7 +78,7 @@ pub fn run_face_pipeline(
             let embs = &all_embeddings[emb_offset..emb_offset + n];
             emb_offset += n;
 
-            let rows: Vec<dupe_core::face_db::FaceRow> = entry.detections.iter().zip(embs.iter()).map(|(det, emb)| {
+            let rows: Vec<videre_core::face_db::FaceRow> = entry.detections.iter().zip(embs.iter()).map(|(det, emb)| {
                 let [x1, y1, x2, y2] = det.bbox;
                 let bbox = format!("{},{},{},{}", x1 as i32, y1 as i32, (x2 - x1) as i32, (y2 - y1) as i32);
                 let lm_str: String = det.landmarks.iter()
@@ -87,7 +87,7 @@ pub fn run_face_pipeline(
                 let embedding: Vec<u8> = emb.iter()
                     .flat_map(|&v| f16::from_f32(v).to_le_bytes())
                     .collect();
-                dupe_core::face_db::FaceRow {
+                videre_core::face_db::FaceRow {
                     hash: entry.hash.clone(), bbox, landmark: Some(lm_str),
                     embedding, cluster_id: None, person_label: None, confirmed: 0, is_primary: 0,
                 }
@@ -95,7 +95,7 @@ pub fn run_face_pipeline(
 
             total_faces += rows.len();
             if !dry_run {
-                if let Err(e) = dupe_core::face_db::replace_faces_for_hash(conn, &entry.hash, &rows) {
+                if let Err(e) = videre_core::face_db::replace_faces_for_hash(conn, &entry.hash, &rows) {
                     eprintln!("write failed {}: {e}", entry.path);
                     write_errors += 1;
                 }
@@ -115,15 +115,15 @@ pub fn run_clustering(
     min_cluster_size: usize,
     silent: bool,
 ) -> Result<()> {
-    let all_embs = dupe_core::face_db::load_face_embeddings(conn)?;
+    let all_embs = videre_core::face_db::load_face_embeddings(conn)?;
     if all_embs.is_empty() {
         if !silent {
             eprintln!("No faces in DB to cluster.");
         }
         return Ok(());
     }
-    let assignments = dupe_core::face_cluster::dbscan_cosine(&all_embs, eps, min_cluster_size);
-    dupe_core::face_db::update_cluster_assignments(conn, &assignments)?;
+    let assignments = videre_core::face_cluster::dbscan_cosine(&all_embs, eps, min_cluster_size);
+    videre_core::face_db::update_cluster_assignments(conn, &assignments)?;
     if !silent {
         let clustered = assignments.iter().filter(|(_, c)| c.is_some()).count();
         eprintln!("Clustering complete: {}/{} faces assigned to clusters (eps={:.2}).", clustered, all_embs.len(), eps);
@@ -135,7 +135,7 @@ fn load_image(path: &str) -> Option<image::DynamicImage> {
     if path.to_lowercase().ends_with(".heic") {
         #[cfg(target_os = "macos")]
         {
-            return dupe_core::heic::heic_via_quicklook(path, "faces");
+            return videre_core::heic::heic_via_quicklook(path, "faces");
         }
         #[cfg(not(target_os = "macos"))]
         return None;
@@ -146,7 +146,7 @@ fn load_image(path: &str) -> Option<image::DynamicImage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dupe_core::face_db;
+    use videre_core::face_db;
 
     #[test]
     fn run_face_pipeline_on_empty_input_is_a_noop() {

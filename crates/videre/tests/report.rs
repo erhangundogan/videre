@@ -59,12 +59,12 @@ fn fixture_db(
             );",
         )
         .unwrap();
-        let v1 = dupe_core::vectors::to_f16_bytes(&[1.0, 0.0]);
-        let v2 = dupe_core::vectors::to_f16_bytes(&[0.0, 1.0]);
+        let v1 = videre_core::vectors::to_f16_bytes(&[1.0, 0.0]);
+        let v2 = videre_core::vectors::to_f16_bytes(&[0.0, 1.0]);
         for (hash, v) in [("hdup", v1), ("hsing", v2)] {
             conn.execute(
                 "INSERT INTO embeddings VALUES (?1, ?2, ?3, 'now')",
-                rusqlite::params![hash, dupe_core::embeddings::DEFAULT_MODEL_ID, v],
+                rusqlite::params![hash, videre_core::embeddings::DEFAULT_MODEL_ID, v],
             )
             .unwrap();
         }

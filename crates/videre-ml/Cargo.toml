@@ -1,5 +1,5 @@
 [package]
-name = "dupe-ml"
+name = "videre-ml"
 version = "0.1.0"
 edition = "2021"
 
@@ -23,8 +23,8 @@ path = "src/bin/dupe-watch.rs"
 real-model = []
 
 [dependencies]
-dupe-core = { path = "../dupe-core" }
-dupe = { path = "../dupe" }
+videre-core = { path = "../videre-core" }
+videre = { path = "../videre" }
 clap = { version = "4", features = ["derive"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 rayon = "1"

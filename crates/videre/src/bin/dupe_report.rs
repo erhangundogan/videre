@@ -101,7 +101,7 @@ fn query_vectors(conn: &Connection) -> Option<VectorBlock> {
         )
         .ok()?;
     let rows: Vec<(String, Vec<u8>)> = stmt
-        .query_map([dupe_core::embeddings::DEFAULT_MODEL_ID], |r| {
+        .query_map([videre_core::embeddings::DEFAULT_MODEL_ID], |r| {
             Ok((r.get(0)?, r.get(1)?))
         })
         .ok()?
@@ -155,12 +155,12 @@ fn base64_encode(data: &[u8]) -> String {
 /// Convert a HEIC file to a base64 JPEG data-URI payload, downscaled so
 /// neither dimension exceeds `max_px`.
 ///
-/// Uses QuickLook (see `dupe_core::heic::heic_via_quicklook`) rather than
+/// Uses QuickLook (see `videre_core::heic::heic_via_quicklook`) rather than
 /// `sips -s format jpeg` because `sips` copies the raw sensor-buffer pixels
 /// unrotated for HEIC files where the iPhone camera encoded rotation via the
 /// HEIF `irot` transform box rather than a classic EXIF Orientation tag.
 fn heic_to_b64(path: &str, max_px: u32) -> Option<String> {
-    let img = dupe_core::heic::heic_via_quicklook(path, &format!("b64_{max_px}"))?;
+    let img = videre_core::heic::heic_via_quicklook(path, &format!("b64_{max_px}"))?;
     let img = if img.width() > max_px || img.height() > max_px {
         img.resize(max_px, max_px, image::imageops::FilterType::Triangle)
     } else {
@@ -239,7 +239,7 @@ fn file_to_json(f: &FileRow, heic: bool, heic_original: bool) -> String {
 
 /// Like file_to_json(), but also embeds labeled-face thumbnails into
 /// meta.faces. `faces` is the (face_id, person_label, bbox) list for this
-/// file's hash, as returned by dupe_core::face_db::labeled_faces_by_hash()
+/// file's hash, as returned by videre_core::face_db::labeled_faces_by_hash()
 /// (note the tuple order: label is `.1`, bbox is `.2`).
 fn file_to_json_with_faces(
     f: &FileRow,
@@ -1897,7 +1897,7 @@ async fn handle_report(State(state): State<Arc<AppState>>) -> impl axum::respons
     let groups = query_groups(&conn);
     let all_files = state.report_all.then(|| query_all_files(&conn));
     let keep_files = state.report_by_date.then(|| query_keep_files(&conn));
-    let faces_by_hash = dupe_core::face_db::labeled_faces_by_hash(&conn).unwrap_or_default();
+    let faces_by_hash = videre_core::face_db::labeled_faces_by_hash(&conn).unwrap_or_default();
     let vectors = if state.report_all { query_vectors(&conn) } else { None };
     let db_path = conn.path().map(|p| p.to_string()).unwrap_or_default();
     drop(conn);
@@ -1951,7 +1951,7 @@ async fn handle_location(
     if let Some(name) = cached {
         return Ok(AxumJson(LocationResponse { name: Some(name) }));
     }
-    let name = dupe_core::location::location_name(q.lat, q.lon);
+    let name = videre_core::location::location_name(q.lat, q.lon);
     if let Some(ref n) = name {
         let _ = conn.execute(
             "UPDATE file_hashes SET location_name = ?1 \
@@ -2077,7 +2077,7 @@ async fn handle_search_person(
     Query(q): Query<PersonSearchQuery>,
 ) -> Result<AxumJson<Vec<String>>, StatusCode> {
     let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let paths = dupe_core::person_search::search_by_person(&conn, &q.name, None)
+    let paths = videre_core::person_search::search_by_person(&conn, &q.name, None)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(AxumJson(paths))
 }
@@ -2213,7 +2213,7 @@ fn crop_face_square(img: &image::DynamicImage, bbox: [f32; 4]) -> image::Dynamic
 /// the same dimensions used at detection time.
 ///
 /// For HEIC: dupe-faces converts via QuickLook (see
-/// `dupe_core::heic::heic_via_quicklook`), which already applies correct
+/// `videre_core::heic::heic_via_quicklook`), which already applies correct
 /// rotation, so no separate orientation step is needed. For JPEG/PNG/etc:
 /// detection ran on raw pixels; apply EXIF orientation after crop.
 fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image::DynamicImage> {
@@ -2223,7 +2223,7 @@ fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image::Dy
         .unwrap_or("")
         .to_lowercase();
     if ext == "heic" {
-        let img = dupe_core::heic::heic_via_quicklook(path, &format!("thumb{face_id}"))?;
+        let img = videre_core::heic::heic_via_quicklook(path, &format!("thumb{face_id}"))?;
         Some(crop_face_square(&img, bbox))
     } else {
         // Detection ran on raw pixels; crop first, then correct orientation
@@ -2310,7 +2310,7 @@ struct RawFileQuery {
 /// so a client can't request arbitrary paths off the filesystem.
 ///
 /// HEIC is converted to JPEG on demand via QuickLook (same
-/// `dupe_core::heic::heic_via_quicklook` helper used elsewhere), one file per request,
+/// `videre_core::heic::heic_via_quicklook` helper used elsewhere), one file per request,
 /// lazily as the browser requests each thumbnail/lightbox image - NOT
 /// eagerly for the whole report up front, which is what made server mode
 /// unusably slow on a collection with many HEIC files before this endpoint
@@ -2342,7 +2342,7 @@ async fn handle_raw_file(
     // that directly instead of paying for a live qlmanage conversion.
     if ext == "heic" {
         if let Some(size) = q.size {
-            let cached_path = dupe_core::thumb_cache::thumb_path(&hash, size);
+            let cached_path = videre_core::thumb_cache::thumb_path(&hash, size);
             if let Ok(bytes) = tokio::fs::read(&cached_path).await {
                 return Ok(([(axum::http::header::CONTENT_TYPE, "image/jpeg")], bytes));
             }
@@ -2352,7 +2352,7 @@ async fn handle_raw_file(
     let size = q.size;
     let (content_type, bytes) = tokio::task::spawn_blocking(move || -> Option<(&'static str, Vec<u8>)> {
         if ext == "heic" {
-            let img = dupe_core::heic::heic_via_quicklook(&path, &format!("raw{}", size.unwrap_or(0)))?;
+            let img = videre_core::heic::heic_via_quicklook(&path, &format!("raw{}", size.unwrap_or(0)))?;
             let img = match size {
                 Some(max_px) if img.width() > max_px || img.height() > max_px => {
                     img.resize(max_px, max_px, image::imageops::FilterType::Triangle)
@@ -2406,7 +2406,7 @@ async fn handle_original_image(
 
     let (content_type, bytes) = tokio::task::spawn_blocking(move || -> Option<(&'static str, Vec<u8>)> {
         if ext == "heic" {
-            let img = dupe_core::heic::heic_via_quicklook(&file_path, &format!("orig{face_id}"))?;
+            let img = videre_core::heic::heic_via_quicklook(&file_path, &format!("orig{face_id}"))?;
             let mut buf = Vec::new();
             img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Jpeg)
                 .ok()?;
@@ -2440,8 +2440,8 @@ struct ServeOptions {
 }
 
 async fn serve_faces_async(db: &Path, opts: ServeOptions) -> Result<(), Box<dyn std::error::Error>> {
-    let conn = dupe_core::db::open_wal(db)?;
-    dupe_core::location::ensure_location_column(&conn);
+    let conn = videre_core::db::open_wal(db)?;
+    videre_core::location::ensure_location_column(&conn);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let state = Arc::new(AppState {
         conn: Mutex::new(conn),
@@ -2540,7 +2540,7 @@ fn main() {
         args.db.with_file_name(format!("{}_report.html", stem))
     });
 
-    let conn = dupe_core::db::open_wal(&args.db).expect("failed to open database");
+    let conn = videre_core::db::open_wal(&args.db).expect("failed to open database");
     let stats = query_stats(&conn);
     let groups = query_groups(&conn);
     let all_files = args.all.then(|| query_all_files(&conn));
@@ -2650,16 +2650,16 @@ mod tests {
         add_file(&conn, "/a/b.jpg", "bbb");
         add_file(&conn, "/a/c.jpg", "ccc");
         // f16 1.0 = 0x3C00 little-endian = [0x00, 0x3C]
-        let one = dupe_core::vectors::to_f16_bytes(&[1.0, 0.0]);
-        let two = dupe_core::vectors::to_f16_bytes(&[0.0, 1.0]);
+        let one = videre_core::vectors::to_f16_bytes(&[1.0, 0.0]);
+        let two = videre_core::vectors::to_f16_bytes(&[0.0, 1.0]);
         // Insert out of order to prove ORDER BY hash
         conn.execute(
             "INSERT INTO embeddings VALUES ('bbb', ?1, ?2, 'now')",
-            rusqlite::params![dupe_core::embeddings::DEFAULT_MODEL_ID, two],
+            rusqlite::params![videre_core::embeddings::DEFAULT_MODEL_ID, two],
         ).unwrap();
         conn.execute(
             "INSERT INTO embeddings VALUES ('aaa', ?1, ?2, 'now')",
-            rusqlite::params![dupe_core::embeddings::DEFAULT_MODEL_ID, one.clone()],
+            rusqlite::params![videre_core::embeddings::DEFAULT_MODEL_ID, one.clone()],
         ).unwrap();
         // Wrong model id must be excluded
         conn.execute(
@@ -2681,15 +2681,15 @@ mod tests {
         add_embeddings_table(&conn);
         add_file(&conn, "/a/a.jpg", "aaa");
         add_file(&conn, "/a/b.jpg", "bbb");
-        let good = dupe_core::vectors::to_f16_bytes(&[1.0, 0.0]);
-        let bad = dupe_core::vectors::to_f16_bytes(&[1.0, 0.0, 0.0]); // 3 dims
+        let good = videre_core::vectors::to_f16_bytes(&[1.0, 0.0]);
+        let bad = videre_core::vectors::to_f16_bytes(&[1.0, 0.0, 0.0]); // 3 dims
         conn.execute(
             "INSERT INTO embeddings VALUES ('aaa', ?1, ?2, 'now')",
-            rusqlite::params![dupe_core::embeddings::DEFAULT_MODEL_ID, good],
+            rusqlite::params![videre_core::embeddings::DEFAULT_MODEL_ID, good],
         ).unwrap();
         conn.execute(
             "INSERT INTO embeddings VALUES ('bbb', ?1, ?2, 'now')",
-            rusqlite::params![dupe_core::embeddings::DEFAULT_MODEL_ID, bad],
+            rusqlite::params![videre_core::embeddings::DEFAULT_MODEL_ID, bad],
         ).unwrap();
         let vb = query_vectors(&conn).unwrap();
         assert_eq!(vb.hashes, vec!["aaa".to_string()]);
@@ -2703,11 +2703,11 @@ mod tests {
             "INSERT INTO file_hashes (path, hash, ext) VALUES ('/a/x.jpg', 'aaa', 'jpg')",
             [],
         ).unwrap();
-        let v = dupe_core::vectors::to_f16_bytes(&[1.0, 0.0]);
+        let v = videre_core::vectors::to_f16_bytes(&[1.0, 0.0]);
         for hash in ["aaa", "orphan"] {
             conn.execute(
                 "INSERT INTO embeddings VALUES (?1, ?2, ?3, 'now')",
-                rusqlite::params![hash, dupe_core::embeddings::DEFAULT_MODEL_ID, v.clone()],
+                rusqlite::params![hash, videre_core::embeddings::DEFAULT_MODEL_ID, v.clone()],
             ).unwrap();
         }
         let vb = query_vectors(&conn).unwrap();

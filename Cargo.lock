@@ -1027,62 +1027,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
-name = "dupe"
-version = "0.1.0"
-dependencies = [
- "axum",
- "blake3",
- "chrono",
- "clap",
- "dupe-core",
- "filetime",
- "image",
- "kamadak-exif",
- "rayon",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "walkdir",
-]
-
-[[package]]
-name = "dupe-core"
-version = "0.1.0"
-dependencies = [
- "half",
- "image",
- "reverse_geocoder",
- "rusqlite",
- "tempfile",
-]
-
-[[package]]
-name = "dupe-ml"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "candle-core",
- "candle-nn",
- "candle-transformers",
- "chrono",
- "clap",
- "dupe",
- "dupe-core",
- "half",
- "hf-hub",
- "image",
- "ndarray",
- "ort",
- "rayon",
- "rusqlite",
- "serde_json",
- "tempfile",
- "tokenizers 0.20.4",
-]
-
-[[package]]
 name = "dyn-stack"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4850,6 +4794,62 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "videre"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "blake3",
+ "chrono",
+ "clap",
+ "filetime",
+ "image",
+ "kamadak-exif",
+ "rayon",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "videre-core",
+ "walkdir",
+]
+
+[[package]]
+name = "videre-core"
+version = "0.1.0"
+dependencies = [
+ "half",
+ "image",
+ "reverse_geocoder",
+ "rusqlite",
+ "tempfile",
+]
+
+[[package]]
+name = "videre-ml"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "candle-core",
+ "candle-nn",
+ "candle-transformers",
+ "chrono",
+ "clap",
+ "half",
+ "hf-hub",
+ "image",
+ "ndarray",
+ "ort",
+ "rayon",
+ "rusqlite",
+ "serde_json",
+ "tempfile",
+ "tokenizers 0.20.4",
+ "videre",
+ "videre-core",
+]
 
 [[package]]
 name = "walkdir"
