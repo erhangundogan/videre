@@ -51,7 +51,7 @@ fn main() {
         eprintln!("Dry run: no changes will be made to the database.");
     }
 
-    let conn = dupe_core::db::open_wal(&args.db).expect("failed to open database");
+    let conn = videre_core::db::open_wal(&args.db).expect("failed to open database");
 
     let paths: Vec<String> = {
         let mut stmt = conn

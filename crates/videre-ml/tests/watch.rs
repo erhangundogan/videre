@@ -90,7 +90,7 @@ fn heic_stage_writes_no_cache_file_for_non_heic_hashes() {
     child.kill().ok();
     child.wait().ok();
 
-    assert!(!dupe_core::thumb_cache::thumb_exists("hjpg", 240), "non-HEIC hash must not get a cached thumbnail");
+    assert!(!videre_core::thumb_cache::thumb_exists("hjpg", 240), "non-HEIC hash must not get a cached thumbnail");
 }
 
 #[test]

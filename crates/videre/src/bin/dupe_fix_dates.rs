@@ -32,7 +32,7 @@ fn main() {
         eprintln!("Dry run: no files will be modified.");
     }
 
-    let conn = dupe_core::db::open_wal(&args.db).expect("failed to open database");
+    let conn = videre_core::db::open_wal(&args.db).expect("failed to open database");
 
     let mut stmt = conn
         .prepare(

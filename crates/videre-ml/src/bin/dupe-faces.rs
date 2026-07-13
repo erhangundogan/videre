@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
-use dupe_core::face_db;
-use dupe_ml::pipeline::{run_clustering, run_face_pipeline};
+use videre_core::face_db;
+use videre_ml::pipeline::{run_clustering, run_face_pipeline};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -25,7 +25,7 @@ fn main() -> Result<()> {
     if !args.db.exists() {
         anyhow::bail!("{:?} does not exist", args.db);
     }
-    let conn = dupe_core::db::open_wal(&args.db)?;
+    let conn = videre_core::db::open_wal(&args.db)?;
     face_db::create_faces_table(&conn)?;
 
     // 1. Determine which hashes to process

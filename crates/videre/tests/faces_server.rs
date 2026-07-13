@@ -83,10 +83,10 @@ fn thumb_cache_hit_avoids_qlmanage_conversion() {
     // Seed a fake cached thumbnail file directly, then confirm handle_raw_file's
     // cache-check path would find it - since handle_raw_file itself needs a
     // running server + real HEIC file to test end-to-end, this instead verifies
-    // the shared dupe_core::thumb_cache helpers dupe-report will call.
+    // the shared videre_core::thumb_cache helpers dupe-report will call.
     let hash = "test-cache-hit-hash";
-    std::fs::create_dir_all(dupe_core::thumb_cache::cache_dir()).unwrap();
-    std::fs::write(dupe_core::thumb_cache::thumb_path(hash, 240), b"fake-jpeg-bytes").unwrap();
-    assert!(dupe_core::thumb_cache::thumb_exists(hash, 240));
-    std::fs::remove_file(dupe_core::thumb_cache::thumb_path(hash, 240)).ok();
+    std::fs::create_dir_all(videre_core::thumb_cache::cache_dir()).unwrap();
+    std::fs::write(videre_core::thumb_cache::thumb_path(hash, 240), b"fake-jpeg-bytes").unwrap();
+    assert!(videre_core::thumb_cache::thumb_exists(hash, 240));
+    std::fs::remove_file(videre_core::thumb_cache::thumb_path(hash, 240)).ok();
 }

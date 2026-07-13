@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use dupe_core::{embeddings, vectors};
-use dupe_ml::{device, model, search};
+use videre_core::{embeddings, vectors};
+use videre_ml::{device, model, search};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -32,11 +32,11 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let conn = dupe_core::db::open_wal(&args.db)
+    let conn = videre_core::db::open_wal(&args.db)
         .with_context(|| format!("open {}", args.db.display()))?;
 
     if let Some(name) = &args.person {
-        let paths = dupe_core::person_search::search_by_person(&conn, name, None)?;
+        let paths = videre_core::person_search::search_by_person(&conn, name, None)?;
         if paths.is_empty() {
             eprintln!("No confirmed photos found for person: {name}");
         }
