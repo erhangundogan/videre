@@ -85,21 +85,27 @@ fn run_cycle(args: &Args) -> Result<()> {
     Ok(())
 }
 
+/// Queries (path, hash) pairs from file_hashes matching a SQL WHERE clause,
+/// deduped to one representative path per hash.
+fn dedup_paths_by_hash(conn: &rusqlite::Connection, where_clause: &str) -> Result<Vec<(String, String)>> {
+    let sql = format!("SELECT path, hash FROM file_hashes WHERE {where_clause}");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows: Vec<(String, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut seen = std::collections::HashSet::new();
+    Ok(rows.into_iter().filter(|(_, hash)| seen.insert(hash.clone())).collect())
+}
+
 fn run_faces_stage(args: &Args, conn: &rusqlite::Connection) -> Result<()> {
-    let all_paths: Vec<(String, String)> = {
-        let mut stmt = conn.prepare(
-            "SELECT path, hash FROM file_hashes WHERE ext IN ('jpg','jpeg','png','gif','webp','bmp','tiff','heic')"
-        )?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows
-    };
+    let all_paths = dedup_paths_by_hash(
+        conn,
+        "ext IN ('jpg','jpeg','png','gif','webp','bmp','tiff','heic')",
+    )?;
     let skip_hashes: std::collections::HashSet<String> =
         face_db::hashes_with_faces(conn)?.into_iter().collect();
-    let mut seen_hashes = std::collections::HashSet::new();
     let to_process: Vec<(String, String)> = all_paths
         .into_iter()
-        .filter(|(_, hash)| !skip_hashes.contains(hash) && seen_hashes.insert(hash.clone()))
+        .filter(|(_, hash)| !skip_hashes.contains(hash))
         .collect();
 
     if !to_process.is_empty() {
@@ -117,36 +123,53 @@ fn run_faces_stage(args: &Args, conn: &rusqlite::Connection) -> Result<()> {
 }
 
 fn run_heic_stage(args: &Args, conn: &rusqlite::Connection) -> Result<()> {
-    let heic_paths: Vec<(String, String)> = {
-        let mut stmt = conn.prepare("SELECT path, hash FROM file_hashes WHERE ext = 'heic'")?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows
-    };
+    let heic_paths = dedup_paths_by_hash(conn, "ext = 'heic'")?;
     let mut converted = 0usize;
-    let mut seen = std::collections::HashSet::new();
+    let mut failed = 0usize;
     for (path, hash) in heic_paths {
-        if !seen.insert(hash.clone()) { continue; } // one representative path per hash
-        if dupe_core::thumb_cache::thumb_exists(&hash, 240) && dupe_core::thumb_cache::thumb_exists(&hash, 1200) {
+        let need_240 = !dupe_core::thumb_cache::thumb_exists(&hash, 240);
+        let need_1200 = !dupe_core::thumb_cache::thumb_exists(&hash, 1200);
+        if !need_240 && !need_1200 {
             continue;
         }
         std::fs::create_dir_all(dupe_core::thumb_cache::cache_dir()).ok();
-        for size in [240u32, 1200] {
-            if dupe_core::thumb_cache::thumb_exists(&hash, size) { continue; }
-            if let Some(img) = dupe_core::heic::heic_via_quicklook(&path, &format!("watch{size}")) {
-                let img = if img.width() > size || img.height() > size {
-                    img.resize(size, size, image::imageops::FilterType::Triangle)
-                } else {
-                    img
-                };
-                if img.save(dupe_core::thumb_cache::thumb_path(&hash, size)).is_ok() {
-                    converted += 1;
+        // Convert once, then downscale the same in-memory image for each
+        // missing size (largest first) instead of re-running QuickLook per size.
+        match dupe_core::heic::heic_via_quicklook(&path, "watch") {
+            Some(img) => {
+                for size in [1200u32, 240] {
+                    let need = if size == 240 { need_240 } else { need_1200 };
+                    if !need {
+                        continue;
+                    }
+                    let resized = if img.width() > size || img.height() > size {
+                        img.resize(size, size, image::imageops::FilterType::Triangle)
+                    } else {
+                        img.clone()
+                    };
+                    if resized.save(dupe_core::thumb_cache::thumb_path(&hash, size)).is_ok() {
+                        converted += 1;
+                    } else {
+                        failed += 1;
+                    }
+                }
+            }
+            None => {
+                if need_240 {
+                    failed += 1;
+                }
+                if need_1200 {
+                    failed += 1;
                 }
             }
         }
     }
-    if !args.silent && converted > 0 {
-        eprintln!("dupe-watch: heic stage cached {converted} thumbnail(s)");
+    if !args.silent && (converted > 0 || failed > 0) {
+        if failed > 0 {
+            eprintln!("dupe-watch: heic stage cached {converted} thumbnail(s), {failed} failed");
+        } else {
+            eprintln!("dupe-watch: heic stage cached {converted} thumbnail(s)");
+        }
     }
     Ok(())
 }
