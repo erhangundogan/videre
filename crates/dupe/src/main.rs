@@ -1,10 +1,5 @@
-mod hasher;
-mod output;
-mod scanner;
-mod sqlite_output;
-mod types;
-
 use clap::Parser;
+use dupe::{hasher, output, scanner, sqlite_output, types};
 use rayon::prelude::*;
 use std::path::PathBuf;
 use std::process;

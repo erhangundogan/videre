@@ -3,6 +3,10 @@ name = "dupe"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "dupe"
+path = "src/lib.rs"
+
 [[bin]]
 name = "dupe"
 path = "src/main.rs"
