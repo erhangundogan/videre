@@ -23,6 +23,10 @@ path = "src/bin/dupe_fix_dates.rs"
 name = "dupe-prune"
 path = "src/bin/dupe_prune.rs"
 
+[[bin]]
+name = "dupe-watch"
+path = "src/bin/dupe_watch.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 blake3 = "1"
@@ -36,8 +40,10 @@ kamadak-exif = "0.5"
 filetime = "0.2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 videre-core = { path = "../videre-core" }
+videre-ml = { path = "../videre-ml" }
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
+anyhow = "1"
 
 [dev-dependencies]
 tempfile = "3"
