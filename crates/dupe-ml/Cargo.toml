@@ -15,11 +15,16 @@ path = "src/bin/dupe-search.rs"
 name = "dupe-faces"
 path = "src/bin/dupe-faces.rs"
 
+[[bin]]
+name = "dupe-watch"
+path = "src/bin/dupe-watch.rs"
+
 [features]
 real-model = []
 
 [dependencies]
 dupe-core = { path = "../dupe-core" }
+dupe = { path = "../dupe" }
 clap = { version = "4", features = ["derive"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 rayon = "1"
@@ -31,6 +36,7 @@ tokenizers = "0.20"
 ndarray = "0.17"
 ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
 hf-hub = { version = "1.0.0-rc.1", features = ["blocking"] }
+chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
 tempfile = "3"
