@@ -4,7 +4,6 @@ use dupe_core::{face_cluster, face_db};
 use dupe_ml::{face_align, face_detect, face_embed, face_models};
 use half::f16;
 use image::DynamicImage;
-use rusqlite::Connection;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -28,7 +27,7 @@ fn main() -> Result<()> {
     if !args.db.exists() {
         anyhow::bail!("{:?} does not exist", args.db);
     }
-    let conn = Connection::open(&args.db)?;
+    let conn = dupe_core::db::open_wal(&args.db)?;
     face_db::create_faces_table(&conn)?;
 
     // 1. Determine which hashes to process

@@ -2458,7 +2458,7 @@ struct ServeOptions {
 }
 
 async fn serve_faces_async(db: &Path, opts: ServeOptions) -> Result<(), Box<dyn std::error::Error>> {
-    let conn = Connection::open(db)?;
+    let conn = dupe_core::db::open_wal(db)?;
     dupe_core::location::ensure_location_column(&conn);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let state = Arc::new(AppState {
