@@ -19,6 +19,16 @@ pub fn thumb_exists(hash: &str, size: u32) -> bool {
     thumb_path(hash, size).exists()
 }
 
+/// Path to a scratch file for writing a thumbnail before it's atomically
+/// renamed into place at `thumb_path`. Lives in the same directory as the
+/// final file so the rename is same-filesystem (and thus atomic on POSIX).
+/// Includes the current process ID so concurrent writers (e.g. two
+/// `dupe-watch` instances, or a leftover file from a crashed process) don't
+/// collide on the same temp name.
+pub fn thumb_tmp_path(hash: &str, size: u32) -> PathBuf {
+    cache_dir().join(format!("{hash}_{size}.tmp{}", std::process::id()))
+}
+
 fn dirs_cache_dir() -> PathBuf {
     std::env::var_os("HOME")
         .map(|home| PathBuf::from(home).join(".cache"))
