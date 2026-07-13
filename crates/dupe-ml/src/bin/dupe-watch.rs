@@ -77,7 +77,10 @@ fn run_cycle(args: &Args) -> Result<()> {
         if args.faces {
             run_faces_stage(args, &conn)?;
         }
-        // heic/location stages added in Tasks 9-10
+        if args.heic {
+            run_heic_stage(args, &conn)?;
+        }
+        // location stage added in Task 10
     }
     Ok(())
 }
@@ -110,6 +113,41 @@ fn run_faces_stage(args: &Args, conn: &rusqlite::Connection) -> Result<()> {
         }
     }
     run_clustering(conn, 0.6, 3, args.silent)?;
+    Ok(())
+}
+
+fn run_heic_stage(args: &Args, conn: &rusqlite::Connection) -> Result<()> {
+    let heic_paths: Vec<(String, String)> = {
+        let mut stmt = conn.prepare("SELECT path, hash FROM file_hashes WHERE ext = 'heic'")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let mut converted = 0usize;
+    let mut seen = std::collections::HashSet::new();
+    for (path, hash) in heic_paths {
+        if !seen.insert(hash.clone()) { continue; } // one representative path per hash
+        if dupe_core::thumb_cache::thumb_exists(&hash, 240) && dupe_core::thumb_cache::thumb_exists(&hash, 1200) {
+            continue;
+        }
+        std::fs::create_dir_all(dupe_core::thumb_cache::cache_dir()).ok();
+        for size in [240u32, 1200] {
+            if dupe_core::thumb_cache::thumb_exists(&hash, size) { continue; }
+            if let Some(img) = dupe_core::heic::heic_via_quicklook(&path, &format!("watch{size}")) {
+                let img = if img.width() > size || img.height() > size {
+                    img.resize(size, size, image::imageops::FilterType::Triangle)
+                } else {
+                    img
+                };
+                if img.save(dupe_core::thumb_cache::thumb_path(&hash, size)).is_ok() {
+                    converted += 1;
+                }
+            }
+        }
+    }
+    if !args.silent && converted > 0 {
+        eprintln!("dupe-watch: heic stage cached {converted} thumbnail(s)");
+    }
     Ok(())
 }
 

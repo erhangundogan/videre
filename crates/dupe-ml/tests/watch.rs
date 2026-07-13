@@ -66,3 +66,29 @@ fn faces_stage_skips_hashes_already_processed() {
     child.wait().ok();
     assert!(still_running, "dupe-watch --faces should not have crashed on an already-processed hash");
 }
+
+#[test]
+fn heic_stage_writes_no_cache_file_for_non_heic_hashes() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("test.db");
+    let conn = Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL, ext TEXT);
+         INSERT INTO file_hashes (path, hash, ext) VALUES ('/tmp/a.jpg', 'hjpg', 'jpg');",
+    ).unwrap();
+    drop(conn);
+
+    let mut child = Command::new(watch_bin())
+        .arg(dir.path())
+        .arg("--output-sqlite").arg(&db)
+        .arg("--heic")
+        .arg("--interval").arg("3600")
+        .arg("--silent")
+        .spawn()
+        .expect("failed to spawn dupe-watch");
+    std::thread::sleep(std::time::Duration::from_millis(800));
+    child.kill().ok();
+    child.wait().ok();
+
+    assert!(!dupe_core::thumb_cache::thumb_exists("hjpg", 240), "non-HEIC hash must not get a cached thumbnail");
+}
