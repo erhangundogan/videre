@@ -2558,7 +2558,7 @@ fn main() {
         args.db.with_file_name(format!("{}_report.html", stem))
     });
 
-    let conn = Connection::open(&args.db).expect("failed to open database");
+    let conn = dupe_core::db::open_wal(&args.db).expect("failed to open database");
     let stats = query_stats(&conn);
     let groups = query_groups(&conn);
     let all_files = args.all.then(|| query_all_files(&conn));

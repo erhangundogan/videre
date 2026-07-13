@@ -7,3 +7,6 @@ edition = "2021"
 half = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 reverse_geocoder = "4"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1054,6 +1054,7 @@ dependencies = [
  "half",
  "reverse_geocoder",
  "rusqlite",
+ "tempfile",
 ]
 
 [[package]]

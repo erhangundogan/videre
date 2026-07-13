@@ -1,6 +1,5 @@
 use clap::Parser;
 use filetime::FileTime;
-use rusqlite::Connection;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -33,7 +32,7 @@ fn main() {
         eprintln!("Dry run: no files will be modified.");
     }
 
-    let conn = Connection::open(&args.db).expect("failed to open database");
+    let conn = dupe_core::db::open_wal(&args.db).expect("failed to open database");
 
     let mut stmt = conn
         .prepare(

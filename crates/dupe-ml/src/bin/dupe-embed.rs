@@ -3,7 +3,6 @@ use clap::Parser;
 use dupe_core::{embeddings, vectors};
 use dupe_ml::{device, model, preprocess};
 use rayon::prelude::*;
-use rusqlite::Connection;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -27,7 +26,7 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let conn = Connection::open(&args.db)
+    let conn = dupe_core::db::open_wal(&args.db)
         .with_context(|| format!("open {}", args.db.display()))?;
     embeddings::ensure_embeddings_table(&conn)?;
 
