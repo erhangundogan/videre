@@ -4,5 +4,6 @@ pub mod face_detect;
 pub mod face_embed;
 pub mod face_models;
 pub mod model;
+pub mod pipeline;
 pub mod preprocess;
 pub mod search;
