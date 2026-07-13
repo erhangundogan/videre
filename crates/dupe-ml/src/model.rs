@@ -55,6 +55,19 @@ impl Embedder {
 
         // Weights - try single file first, then sharded index
         let weight_paths = load_safetensor_paths(&repo)?;
+        // Paging a multi-GB mmap in from disk can take minutes when the file
+        // is cold and the process runs at background QoS (nohup/launchd/cron),
+        // where macOS throttles disk I/O hard - print the size so a slow load
+        // is distinguishable from a hang.
+        let total_bytes: u64 = weight_paths
+            .iter()
+            .filter_map(|p| std::fs::metadata(p).ok())
+            .map(|m| m.len())
+            .sum();
+        eprintln!(
+            "Loading weights ({:.1} GB; cold first read can take minutes, longer at background priority)...",
+            total_bytes as f64 / 1e9
+        );
         let vb = unsafe {
             VarBuilder::from_mmaped_safetensors(&weight_paths, DType::F32, &device)
                 .context("mmap safetensors")?
