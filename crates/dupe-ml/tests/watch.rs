@@ -94,6 +94,28 @@ fn heic_stage_writes_no_cache_file_for_non_heic_hashes() {
 }
 
 #[test]
+fn faces_stage_against_fresh_database_does_not_crash_or_hang() {
+    let dir = tempdir().unwrap();
+    // No db file exists yet, and no --scan flag either - simulates a user
+    // running `dupe-watch --faces` before any `dupe`/`dupe-watch --scan`
+    // run has ever created file_hashes.
+    let db = dir.path().join("fresh.db");
+
+    let mut child = Command::new(watch_bin())
+        .arg(dir.path())
+        .arg("--output-sqlite").arg(&db)
+        .arg("--faces")
+        .arg("--interval").arg("3600")
+        .spawn()
+        .expect("failed to spawn dupe-watch");
+    std::thread::sleep(std::time::Duration::from_millis(800));
+    let still_running = child.try_wait().unwrap().is_none();
+    child.kill().ok();
+    child.wait().ok();
+    assert!(still_running, "dupe-watch --faces against a fresh database should not crash");
+}
+
+#[test]
 fn location_stage_populates_location_name_for_gps_rows() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("test.db");

@@ -68,11 +68,24 @@ fn main() -> Result<()> {
 
 fn run_cycle(args: &Args) -> Result<()> {
     if args.scan {
-        run_scan_stage(args)?;
+        // A scan failure this cycle doesn't invalidate file_hashes rows from
+        // previous cycles, so don't let it block the faces/heic/location
+        // block below - just log and move on.
+        if let Err(e) = run_scan_stage(args) {
+            eprintln!("dupe-watch: scan stage error: {e}");
+        }
     }
     if args.faces || args.heic || args.location {
         // These three stages all read file_hashes; open once and reuse.
         let conn = db::open_wal(&args.output_sqlite)?;
+        if !file_hashes_table_exists(&conn)? {
+            if !args.silent {
+                eprintln!(
+                    "dupe-watch: file_hashes table not found - run 'dupe --output-sqlite <db> <dir>' or 'dupe-watch --scan ...' first"
+                );
+            }
+            return Ok(());
+        }
         face_db::create_faces_table(&conn)?;
         dupe_core::location::ensure_location_column(&conn);
         if args.faces {
@@ -86,6 +99,18 @@ fn run_cycle(args: &Args) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// True if the `file_hashes` table exists in `conn`. Used to give a clear,
+/// one-shot-per-cycle diagnostic instead of letting queries against a
+/// fresh/empty database fail with "no such table" every cycle forever.
+fn file_hashes_table_exists(conn: &rusqlite::Connection) -> Result<bool> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='file_hashes')",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(exists)
 }
 
 /// Queries (path, hash) pairs from file_hashes matching a SQL WHERE clause,
@@ -150,10 +175,14 @@ fn run_heic_stage(args: &Args, conn: &rusqlite::Connection) -> Result<()> {
                     } else {
                         img.clone()
                     };
-                    if resized.save(dupe_core::thumb_cache::thumb_path(&hash, size)).is_ok() {
+                    let tmp_path = dupe_core::thumb_cache::thumb_tmp_path(&hash, size);
+                    if resized.save(&tmp_path).is_ok()
+                        && std::fs::rename(&tmp_path, dupe_core::thumb_cache::thumb_path(&hash, size)).is_ok()
+                    {
                         converted += 1;
                     } else {
                         failed += 1;
+                        let _ = std::fs::remove_file(&tmp_path);
                     }
                 }
             }
