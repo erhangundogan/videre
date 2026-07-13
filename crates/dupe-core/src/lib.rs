@@ -5,4 +5,5 @@ pub mod face_db;
 pub mod heic;
 pub mod location;
 pub mod person_search;
+pub mod thumb_cache;
 pub mod vectors;
