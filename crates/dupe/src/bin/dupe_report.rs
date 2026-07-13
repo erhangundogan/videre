@@ -155,12 +155,12 @@ fn base64_encode(data: &[u8]) -> String {
 /// Convert a HEIC file to a base64 JPEG data-URI payload, downscaled so
 /// neither dimension exceeds `max_px`.
 ///
-/// Uses QuickLook (see `heic_via_quicklook`) rather than `sips -s format
-/// jpeg` because `sips` copies the raw sensor-buffer pixels unrotated for
-/// HEIC files where the iPhone camera encoded rotation via the HEIF
-/// `irot` transform box rather than a classic EXIF Orientation tag.
+/// Uses QuickLook (see `dupe_core::heic::heic_via_quicklook`) rather than
+/// `sips -s format jpeg` because `sips` copies the raw sensor-buffer pixels
+/// unrotated for HEIC files where the iPhone camera encoded rotation via the
+/// HEIF `irot` transform box rather than a classic EXIF Orientation tag.
 fn heic_to_b64(path: &str, max_px: u32) -> Option<String> {
-    let img = heic_via_quicklook(path, &format!("b64_{max_px}"))?;
+    let img = dupe_core::heic::heic_via_quicklook(path, &format!("b64_{max_px}"))?;
     let img = if img.width() > max_px || img.height() > max_px {
         img.resize(max_px, max_px, image::imageops::FilterType::Triangle)
     } else {
@@ -2205,37 +2205,6 @@ fn crop_face_square(img: &image::DynamicImage, bbox: [f32; 4]) -> image::Dynamic
         .resize_exact(140, 140, image::imageops::FilterType::Triangle)
 }
 
-/// Convert a HEIC file to a `DynamicImage` via QuickLook (`qlmanage -t`).
-///
-/// `sips -s format jpeg` copies the raw sensor-buffer pixels unrotated for
-/// HEIC files where the iPhone camera encoded rotation via the HEIF `irot`
-/// transform box rather than a classic EXIF Orientation tag - the same
-/// rotation Finder/Preview/Photos apply via QuickLook. dupe-faces detects
-/// (and computes bounding boxes) against a QuickLook-converted image, so
-/// this must match exactly or crops will be misaligned.
-fn heic_via_quicklook(path: &str, tag: &str) -> Option<image::DynamicImage> {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    path.hash(&mut hasher);
-    tag.hash(&mut hasher);
-    let out_dir = std::env::temp_dir().join(format!("dupe_ql_{:016x}", hasher.finish()));
-    let _ = std::fs::remove_dir_all(&out_dir);
-    std::fs::create_dir_all(&out_dir).ok()?;
-    let ok = std::process::Command::new("qlmanage")
-        .args(["-t", "-s", "10000", "-o"])
-        .arg(&out_dir)
-        .arg(path)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    let file_name = std::path::Path::new(path).file_name()?.to_str()?;
-    let out_file = out_dir.join(format!("{file_name}.png"));
-    let result = if ok { image::open(&out_file).ok() } else { None };
-    let _ = std::fs::remove_dir_all(&out_dir);
-    result
-}
-
 /// Load, crop, and orientation-correct a face thumbnail.
 ///
 /// bbox coordinates are stored in terms of the *full-size* decoded image
@@ -2243,10 +2212,10 @@ fn heic_via_quicklook(path: &str, tag: &str) -> Option<image::DynamicImage> {
 /// writing to the DB), so the thumbnail must be cropped from an image of
 /// the same dimensions used at detection time.
 ///
-/// For HEIC: dupe-faces converts via QuickLook (see `heic_via_quicklook`),
-/// which already applies correct rotation, so no separate orientation
-/// step is needed. For JPEG/PNG/etc: detection ran on raw pixels; apply
-/// EXIF orientation after crop.
+/// For HEIC: dupe-faces converts via QuickLook (see
+/// `dupe_core::heic::heic_via_quicklook`), which already applies correct
+/// rotation, so no separate orientation step is needed. For JPEG/PNG/etc:
+/// detection ran on raw pixels; apply EXIF orientation after crop.
 fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image::DynamicImage> {
     let ext = std::path::Path::new(path)
         .extension()
@@ -2254,7 +2223,7 @@ fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image::Dy
         .unwrap_or("")
         .to_lowercase();
     if ext == "heic" {
-        let img = heic_via_quicklook(path, &format!("thumb{face_id}"))?;
+        let img = dupe_core::heic::heic_via_quicklook(path, &format!("thumb{face_id}"))?;
         Some(crop_face_square(&img, bbox))
     } else {
         // Detection ran on raw pixels; crop first, then correct orientation
@@ -2341,7 +2310,7 @@ struct RawFileQuery {
 /// so a client can't request arbitrary paths off the filesystem.
 ///
 /// HEIC is converted to JPEG on demand via QuickLook (same
-/// `heic_via_quicklook` helper used elsewhere), one file per request,
+/// `dupe_core::heic::heic_via_quicklook` helper used elsewhere), one file per request,
 /// lazily as the browser requests each thumbnail/lightbox image - NOT
 /// eagerly for the whole report up front, which is what made server mode
 /// unusably slow on a collection with many HEIC files before this endpoint
@@ -2370,7 +2339,7 @@ async fn handle_raw_file(
     let size = q.size;
     let (content_type, bytes) = tokio::task::spawn_blocking(move || -> Option<(&'static str, Vec<u8>)> {
         if ext == "heic" {
-            let img = heic_via_quicklook(&path, &format!("raw{}", size.unwrap_or(0)))?;
+            let img = dupe_core::heic::heic_via_quicklook(&path, &format!("raw{}", size.unwrap_or(0)))?;
             let img = match size {
                 Some(max_px) if img.width() > max_px || img.height() > max_px => {
                     img.resize(max_px, max_px, image::imageops::FilterType::Triangle)
@@ -2424,7 +2393,7 @@ async fn handle_original_image(
 
     let (content_type, bytes) = tokio::task::spawn_blocking(move || -> Option<(&'static str, Vec<u8>)> {
         if ext == "heic" {
-            let img = heic_via_quicklook(&file_path, &format!("orig{face_id}"))?;
+            let img = dupe_core::heic::heic_via_quicklook(&file_path, &format!("orig{face_id}"))?;
             let mut buf = Vec::new();
             img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Jpeg)
                 .ok()?;

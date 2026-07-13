@@ -189,41 +189,10 @@ fn load_image(path: &str) -> Option<DynamicImage> {
     if path.to_lowercase().ends_with(".heic") {
         #[cfg(target_os = "macos")]
         {
-            return heic_via_quicklook(path);
+            return dupe_core::heic::heic_via_quicklook(path, "faces");
         }
         #[cfg(not(target_os = "macos"))]
         return None;
     }
     image::open(path).ok()
-}
-
-/// Convert a HEIC file to a `DynamicImage` via QuickLook (`qlmanage -t`).
-///
-/// `sips -s format jpeg` copies the raw sensor-buffer pixels unrotated for
-/// HEIC files where the iPhone camera encoded rotation via the HEIF `irot`
-/// transform box rather than a classic EXIF Orientation tag - the same
-/// rotation Finder/Preview/Photos apply via QuickLook. Using `sips` here
-/// would detect faces (and compute bounding boxes) against the wrongly
-/// oriented image.
-#[cfg(target_os = "macos")]
-fn heic_via_quicklook(path: &str) -> Option<DynamicImage> {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    path.hash(&mut hasher);
-    let out_dir = std::env::temp_dir().join(format!("dupe_faces_ql_{:016x}", hasher.finish()));
-    let _ = std::fs::remove_dir_all(&out_dir);
-    std::fs::create_dir_all(&out_dir).ok()?;
-    let ok = std::process::Command::new("qlmanage")
-        .args(["-t", "-s", "10000", "-o"])
-        .arg(&out_dir)
-        .arg(path)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    let file_name = std::path::Path::new(path).file_name()?.to_str()?;
-    let out_file = out_dir.join(format!("{file_name}.png"));
-    let result = if ok { image::open(&out_file).ok() } else { None };
-    let _ = std::fs::remove_dir_all(&out_dir);
-    result
 }
