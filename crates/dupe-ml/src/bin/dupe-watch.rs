@@ -191,7 +191,8 @@ fn run_location_stage(args: &Args, conn: &rusqlite::Connection) -> Result<()> {
     for (lat, lon) in unresolved {
         if let Some(name) = dupe_core::location::location_name(lat, lon) {
             conn.execute(
-                "UPDATE file_hashes SET location_name = ?1 WHERE gps_lat = ?2 AND gps_lon = ?3",
+                "UPDATE file_hashes SET location_name = ?1 \
+                 WHERE ROUND(gps_lat, 6) = ROUND(?2, 6) AND ROUND(gps_lon, 6) = ROUND(?3, 6)",
                 rusqlite::params![name, lat, lon],
             )?;
             resolved += 1;
