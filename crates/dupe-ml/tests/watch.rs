@@ -28,7 +28,7 @@ fn scan_stage_populates_file_hashes() {
         .arg("--silent")
         .spawn()
         .expect("failed to spawn dupe-watch");
-    std::thread::sleep(std::time::Duration::from_millis(800));
+    std::thread::sleep(std::time::Duration::from_millis(1500));
     child.kill().ok();
     child.wait().ok();
 
@@ -91,4 +91,36 @@ fn heic_stage_writes_no_cache_file_for_non_heic_hashes() {
     child.wait().ok();
 
     assert!(!dupe_core::thumb_cache::thumb_exists("hjpg", 240), "non-HEIC hash must not get a cached thumbnail");
+}
+
+#[test]
+fn location_stage_populates_location_name_for_gps_rows() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("test.db");
+    let conn = Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL, ext TEXT,
+             gps_lat REAL, gps_lon REAL, location_name TEXT);
+         INSERT INTO file_hashes (path, hash, ext, gps_lat, gps_lon)
+             VALUES ('/tmp/paris.jpg', 'hparis', 'jpg', 48.8566, 2.3522);",
+    ).unwrap();
+    drop(conn);
+
+    let mut child = Command::new(watch_bin())
+        .arg(dir.path())
+        .arg("--output-sqlite").arg(&db)
+        .arg("--location")
+        .arg("--interval").arg("3600")
+        .arg("--silent")
+        .spawn()
+        .expect("failed to spawn dupe-watch");
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    child.kill().ok();
+    child.wait().ok();
+
+    let conn = Connection::open(&db).unwrap();
+    let name: Option<String> = conn
+        .query_row("SELECT location_name FROM file_hashes WHERE hash = 'hparis'", [], |r| r.get(0))
+        .unwrap();
+    assert!(name.is_some(), "expected the location stage to have resolved and cached a name");
 }
