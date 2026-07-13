@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
 use dupe::{hasher, scanner, sqlite_output, types};
+use dupe_core::{db, face_db};
+use dupe_ml::pipeline::{run_clustering, run_face_pipeline};
 use rayon::prelude::*;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -68,6 +70,46 @@ fn run_cycle(args: &Args) -> Result<()> {
     if args.scan {
         run_scan_stage(args)?;
     }
+    if args.faces || args.heic || args.location {
+        // These three stages all read file_hashes; open once and reuse.
+        let conn = db::open_wal(&args.output_sqlite)?;
+        face_db::create_faces_table(&conn)?;
+        if args.faces {
+            run_faces_stage(args, &conn)?;
+        }
+        // heic/location stages added in Tasks 9-10
+    }
+    Ok(())
+}
+
+fn run_faces_stage(args: &Args, conn: &rusqlite::Connection) -> Result<()> {
+    let all_paths: Vec<(String, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT path, hash FROM file_hashes WHERE ext IN ('jpg','jpeg','png','gif','webp','bmp','tiff','heic')"
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let skip_hashes: std::collections::HashSet<String> =
+        face_db::hashes_with_faces(conn)?.into_iter().collect();
+    let mut seen_hashes = std::collections::HashSet::new();
+    let to_process: Vec<(String, String)> = all_paths
+        .into_iter()
+        .filter(|(_, hash)| !skip_hashes.contains(hash) && seen_hashes.insert(hash.clone()))
+        .collect();
+
+    if !to_process.is_empty() {
+        let result = run_face_pipeline(conn, &to_process, 8, false, args.silent)?;
+        if !args.silent {
+            eprintln!(
+                "dupe-watch: faces stage processed {} new hash(es), {} face(s)",
+                to_process.len(),
+                result.total_faces
+            );
+        }
+    }
+    run_clustering(conn, 0.6, 3, args.silent)?;
     Ok(())
 }
 
