@@ -74,13 +74,16 @@ fn run_cycle(args: &Args) -> Result<()> {
         // These three stages all read file_hashes; open once and reuse.
         let conn = db::open_wal(&args.output_sqlite)?;
         face_db::create_faces_table(&conn)?;
+        dupe_core::location::ensure_location_column(&conn);
         if args.faces {
             run_faces_stage(args, &conn)?;
         }
         if args.heic {
             run_heic_stage(args, &conn)?;
         }
-        // location stage added in Task 10
+        if args.location {
+            run_location_stage(args, &conn)?;
+        }
     }
     Ok(())
 }
@@ -170,6 +173,32 @@ fn run_heic_stage(args: &Args, conn: &rusqlite::Connection) -> Result<()> {
         } else {
             eprintln!("dupe-watch: heic stage cached {converted} thumbnail(s)");
         }
+    }
+    Ok(())
+}
+
+fn run_location_stage(args: &Args, conn: &rusqlite::Connection) -> Result<()> {
+    let unresolved: Vec<(f64, f64)> = {
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT gps_lat, gps_lon FROM file_hashes \
+             WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL AND location_name IS NULL"
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let mut resolved = 0usize;
+    for (lat, lon) in unresolved {
+        if let Some(name) = dupe_core::location::location_name(lat, lon) {
+            conn.execute(
+                "UPDATE file_hashes SET location_name = ?1 WHERE gps_lat = ?2 AND gps_lon = ?3",
+                rusqlite::params![name, lat, lon],
+            )?;
+            resolved += 1;
+        }
+    }
+    if !args.silent && resolved > 0 {
+        eprintln!("dupe-watch: location stage resolved {resolved} coordinate(s)");
     }
     Ok(())
 }
