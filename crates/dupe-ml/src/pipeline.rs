@@ -117,6 +117,9 @@ pub fn run_clustering(
 ) -> Result<()> {
     let all_embs = dupe_core::face_db::load_face_embeddings(conn)?;
     if all_embs.is_empty() {
+        if !silent {
+            eprintln!("No faces in DB to cluster.");
+        }
         return Ok(());
     }
     let assignments = dupe_core::face_cluster::dbscan_cosine(&all_embs, eps, min_cluster_size);
