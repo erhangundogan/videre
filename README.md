@@ -15,6 +15,7 @@ Scans recursively, hashes every image with BLAKE3, and writes duplicate paths to
 | `dupe-embed` | Compute SigLIP embeddings for every image in the database |
 | `dupe-search` | Search images by text description or example image |
 | `dupe-faces` | Detect, embed, and cluster faces; enables person search |
+| `dupe-watch` | Background loop that keeps scan/faces/HEIC-cache/location data fresh |
 
 ## Supported file types
 
@@ -73,6 +74,9 @@ dupe-report --by-date ~/photos.db
 
 # 13. Live report with labeled-face and location metadata in the lightbox
 dupe-report --show-faces ~/photos.db
+
+# 14. Keep everything fresh in the background (run alongside step 13, same db)
+dupe-watch --output-sqlite ~/photos.db ~/Photos
 ```
 
 ---
@@ -188,6 +192,34 @@ dupe-search ~/photos.db --person "Alice"     # find all photos of Alice
 
 ---
 
+## dupe-watch
+
+A background process that keeps your database warm: rescans for new photos, detects faces on them, pre-converts HEIC thumbnails, and resolves GPS coordinates to place names - all on a timer, so `dupe-report --show-faces` never has to do this work on the fly. It's a simple foreground loop, not a daemon: run it in its own terminal or tmux pane, watch its progress on stderr, and stop it with Ctrl-C.
+
+```bash
+dupe-watch --output-sqlite ~/photos.db ~/Photos               # all four stages, every 5 minutes
+dupe-watch --output-sqlite ~/photos.db ~/Photos --interval 60 # check every 60 seconds instead
+dupe-watch --output-sqlite ~/photos.db ~/Photos --scan --faces # only rescan and detect faces
+dupe-watch --output-sqlite ~/photos.db ~/Photos --silent      # quiet mode
+```
+
+| Flag | Description |
+|------|-------------|
+| `--scan` | Rescan the directory and update `file_hashes` (same as running `dupe`) |
+| `--faces` | Detect, embed, and cluster faces on any images not yet processed |
+| `--heic` | Pre-convert and cache HEIC thumbnails (240px and 1200px) per photo |
+| `--location` | Reverse-geocode any GPS coordinates not yet resolved to a place name |
+| `--interval <seconds>` | Time between cycles (default: 300) |
+| `--silent` | Suppress per-cycle progress output |
+
+Pass none of the four stage flags and all four run every cycle - that's the intended default for "just keep my library up to date." Pass any subset to run only those stages.
+
+Cached HEIC thumbnails land in `~/.cache/dupe/thumbnails/`, keyed by the photo's content hash so the same file is never converted twice even across different databases. `dupe-report --show-faces` checks this cache before falling back to a live conversion, so running `dupe-watch --heic` in the background makes browsing HEIC-heavy libraries noticeably snappier.
+
+`dupe-watch` and `dupe-report --show-faces` are safe to run at the same time against the same database file - both now open it in SQLite's WAL mode, which allows concurrent readers and a writer without lock errors.
+
+---
+
 ## dupe-prune
 
 Syncs the database with the current state of the filesystem. Run this after deleting duplicates and fixing dates to keep the database consistent.
@@ -252,7 +284,8 @@ Only files with `exif_date` in the database are touched. EXIF time is treated as
 | `dupe`, `dupe-report`, `dupe-fix-dates` | yes | yes |
 | `dupe-embed`, `dupe-search` | yes (Metal GPU) | yes (CPU only) |
 | `dupe-faces` | yes (CPU via ONNX Runtime) | yes (CPU via ONNX Runtime) |
-| HEIC thumbnails/decoding (report, faces, embed) | yes (via `qlmanage`) | no |
+| `dupe-watch` | yes | yes (`--heic` stage only works on macOS, same as HEIC row below) |
+| HEIC thumbnails/decoding (report, faces, embed, watch) | yes (via `qlmanage`) | no |
 | HEIC scanning and EXIF | yes | yes |
 | `created_at` field | yes | always null |
 
@@ -299,7 +332,9 @@ CREATE TABLE IF NOT EXISTS faces (
 );
 ```
 
-Re-scanning upserts existing rows by `path`. `phash` is only written with `--similar`. EXIF fields (`exif_date`, `gps_lat`, `gps_lon`, `width`, `height`) are written for jpg/jpeg/tiff/heic/dng files; null for all others. `location_name` is added by an idempotent migration on `dupe-report` startup and is not written by `dupe` itself - it's populated lazily, one coordinate at a time, when `dupe-report --show-faces` resolves and caches a reverse-geocoded location name.
+Re-scanning upserts existing rows by `path`. `phash` is only written with `--similar`. EXIF fields (`exif_date`, `gps_lat`, `gps_lon`, `width`, `height`) are written for jpg/jpeg/tiff/heic/dng files; null for all others. `location_name` is added by an idempotent migration on `dupe-report` startup and is not written by `dupe` itself - it's populated lazily, one coordinate at a time, when `dupe-report --show-faces` (or `dupe-watch --location`) resolves and caches a reverse-geocoded location name.
+
+Every binary opens the database in SQLite's WAL journal mode, so `dupe-watch` and `dupe-report --show-faces` can safely read and write the same database file at the same time.
 
 ### JSONL record
 

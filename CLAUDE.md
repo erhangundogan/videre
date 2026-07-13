@@ -47,6 +47,7 @@ cargo build --release
 ./target/release/dupe-search ~/photos.db --person "Alice"       # find photos of Alice
 ./target/release/dupe-report ~/photos.db --by-date               # static Year/Month/Day drill-down gallery
 ./target/release/dupe-report ~/photos.db --show-faces            # live report with face/location lightbox metadata
+./target/release/dupe-watch --output-sqlite ~/photos.db ~/Photos # background: scan + faces + HEIC cache + location, looping
 ```
 
 ## Supported file types
@@ -133,6 +134,8 @@ Re-scanning the same folder with the same SQLite file upserts (overwrites) exist
 `faces` rows are keyed by `id` (auto-increment). `hash` links to `file_hashes`. `bbox` and `landmark` are JSON strings. `embedding` is a raw f32 BLOB (512-dim ArcFace). `cluster_id` is assigned by DBSCAN; `person_label` and `confirmed` are set via `dupe-report --faces`.
 
 `location_name` is a nullable TEXT column added by an idempotent `ALTER TABLE file_hashes ADD COLUMN location_name TEXT` migration (run on every `dupe-report` startup; harmless if the column already exists) - it is not populated by the initial `dupe` scan. It is populated lazily, one GPS coordinate at a time, by the `/api/location` endpoint when `--show-faces` is used: the first lightbox view of a photo at a given `(gps_lat, gps_lon)` triggers a reverse-geocode lookup, and the result is cached back into this column so later lookups for the same coordinate are free.
+
+Every binary opens the database via `dupe_core::db::open_wal`, which switches the connection to SQLite's WAL journal mode (`PRAGMA journal_mode = WAL`). WAL mode persists in the database file itself once set, so `open_wal` is idempotent - safe to call on every connection open, not just the first. This allows one writer plus many concurrent readers without "database is locked" errors, which matters now that `dupe-watch` can run in the background writing to the same file that a `dupe-report --show-faces` server has open for reading (and occasional writes, e.g. `/api/location`).
 
 ## EXIF fields
 
@@ -287,6 +290,30 @@ after an initial `dupe-faces` run.
 - Labels are written back to `faces.person_label` and `faces.confirmed`; close the browser tab or press Ctrl-C (or use the "Save & Close" button, which calls `/api/quit`) to stop the server
 
 `dupe-search --person "Alice"` queries the `faces` table for confirmed rows with the given label and prints the paths of all matching images.
+
+## dupe-watch
+
+Long-running background process that keeps the pipeline populated so `dupe-report --show-faces` (or any other reader) always sees fresh data, without anyone manually re-running `dupe`, `dupe-faces`, or waiting on lazy HEIC/location conversions. No server, no UI: it loops in the foreground, logging progress to stderr, until killed with Ctrl-C.
+
+```bash
+dupe-watch --output-sqlite <db> <directory>                        # all four stages, every 300s
+dupe-watch --output-sqlite <db> <directory> --scan --faces         # only these stages
+dupe-watch --output-sqlite <db> <directory> --interval 60          # custom cycle interval (seconds)
+dupe-watch --output-sqlite <db> <directory> --silent               # suppress per-cycle stderr output
+```
+
+Four independent stages, selected with `--scan` / `--faces` / `--heic` / `--location`. If none of the four flags are passed, all four run (the common case is "just keep everything up to date", not memorizing four flags):
+
+- `--scan`: re-runs the same scan/hash/EXIF pipeline as `dupe`, upserting `file_hashes` for the given directory
+- `--faces`: incremental face detection - queries hashes not yet in the `faces` table, runs detection/embedding/clustering only on those, then re-runs DBSCAN clustering over all existing embeddings (same defaults as `dupe-faces`: `eps` 0.6, `min-cluster-size` 3)
+- `--heic`: pre-converts and caches HEIC thumbnails (240px and 1200px) for every HEIC file's content hash, skipping hashes already cached; one `qlmanage` conversion per hash, downscaled in memory for each missing size rather than re-converting per size
+- `--location`: reverse-geocodes every distinct `(gps_lat, gps_lon)` pair with `location_name IS NULL` and writes the result back to `file_hashes`, the same lookup `--show-faces`'s `/api/location` endpoint performs on demand
+
+`--interval <seconds>` (default 300) is the sleep between cycles; each cycle runs the selected stages once, logs a per-stage summary to stderr (unless `--silent`), then sleeps. There's no daemonization or systemd unit - run it in a terminal, tmux/screen pane, or your own process supervisor, and stop it with Ctrl-C.
+
+Thumbnails land in `~/.cache/dupe/thumbnails/`, keyed by content hash rather than file path (`<hash>_240.jpg`, `<hash>_1200.jpg`) - mirrors the project's existing `~/.cache/ort/` convention for cached model weights, and means the same photo scanned into a different database only needs converting once. `dupe-report`'s `/api/raw?path=...&size=N` endpoint (server mode, `--show-faces`) checks this cache first for HEIC requests and serves the cached JPEG directly if present, falling back to a live `qlmanage` conversion otherwise - so running `dupe-watch --heic` alongside `dupe-report --show-faces` eliminates the per-request HEIC conversion cost for anything already warmed.
+
+`dupe-watch` and `dupe-report --show-faces` are designed to run concurrently against the same SQLite file (see the WAL-mode note in the SQLite schema section above).
 
 ## Design specs
 
