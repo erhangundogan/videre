@@ -288,21 +288,12 @@ after an initial `dupe-faces` run.
 
 `dupe-search --person "Alice"` queries the `faces` table for confirmed rows with the given label and prints the paths of all matching images.
 
-## Future direction
-
-The CLI tools are the current focus, but the project is intended to grow along two axes:
-
-**Agentic / LLM integration:** the tool should be driveable by LLM agents, not just humans. The SQLite database is the natural shared state. Existing semantic search (SigLIP embeddings) is a building block. New features should expose structured output (JSON, SQLite) and clean stdio interfaces so agents can compose them into pipelines.
-
-**Multi-platform deployment targets:**
-- CLI tools (current)
-- Desktop / Web app
-- iOS / Android native apps
-- Enterprise: server deployment, multi-user, API surface, agentic version
-
-Design implication: keep core logic in `dupe-core` and `dupe-ml` so it can be called from non-CLI contexts. Treat the SQLite schema and JSON output as a stable API contract across platforms - avoid breaking changes.
-
 ## Design specs
 
 - `docs/superpowers/specs/2026-06-09-dupe-design.md` - core dedupe tool
+- `docs/superpowers/specs/2026-06-10-exif-extraction-design.md` - EXIF metadata extraction
 - `docs/superpowers/specs/2026-07-08-image-search-design.md` - semantic image search (dupe-embed, dupe-search; SigLIP + candle/Metal; Cargo workspace restructure)
+- `docs/superpowers/specs/2026-07-09-report-search-design.md` - in-page similarity search in `dupe-report --all`
+- `docs/superpowers/specs/2026-07-10-dupe-faces-design.md` - face detection, embedding, clustering, and labeling UI
+- `docs/superpowers/specs/2026-07-12-date-grouping-design.md` - `--by-date` gallery and `--show-faces` lightbox metadata
+- `docs/superpowers/specs/2026-07-13-dupe-watch-design.md` - background pipeline populator
