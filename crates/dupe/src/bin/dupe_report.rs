@@ -2320,12 +2320,12 @@ async fn handle_raw_file(
     Query(q): Query<RawFileQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl axum::response::IntoResponse, StatusCode> {
-    let path = {
+    let (path, hash) = {
         let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         conn.query_row(
-            "SELECT path FROM file_hashes WHERE path = ?1 LIMIT 1",
+            "SELECT path, hash FROM file_hashes WHERE path = ?1 LIMIT 1",
             [&q.path],
-            |r| r.get::<_, String>(0),
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
         )
         .optional()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
@@ -2336,6 +2336,19 @@ async fn handle_raw_file(
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
+
+    // dupe-watch's `--heic` stage may have already pre-converted and cached
+    // a thumbnail for this file's content hash at this exact size - serve
+    // that directly instead of paying for a live qlmanage conversion.
+    if ext == "heic" {
+        if let Some(size) = q.size {
+            let cached_path = dupe_core::thumb_cache::thumb_path(&hash, size);
+            if let Ok(bytes) = tokio::fs::read(&cached_path).await {
+                return Ok(([(axum::http::header::CONTENT_TYPE, "image/jpeg")], bytes));
+            }
+        }
+    }
+
     let size = q.size;
     let (content_type, bytes) = tokio::task::spawn_blocking(move || -> Option<(&'static str, Vec<u8>)> {
         if ext == "heic" {
