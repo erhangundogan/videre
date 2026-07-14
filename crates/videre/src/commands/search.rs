@@ -1,13 +1,11 @@
 use anyhow::{Context, Result};
-use clap::Parser;
 use videre_core::{embeddings, vectors};
 use videre_ml::{device, model, search};
 use std::path::PathBuf;
 
-#[derive(Parser)]
-#[command(name = "dupe-search", about = "Semantic image search over a dupe SQLite database")]
-struct Args {
-    /// SQLite database with embeddings (run dupe-embed first)
+#[derive(clap::Args)]
+pub struct SearchArgs {
+    /// SQLite database with embeddings (run videre embed first)
     db: PathBuf,
 
     /// Text query, e.g. "sunset on beach" (omit when using --image)
@@ -30,8 +28,7 @@ struct Args {
     scores: bool,
 }
 
-fn main() -> Result<()> {
-    let args = Args::parse();
+pub fn run(args: SearchArgs) -> Result<()> {
     let conn = videre_core::db::open_wal(&args.db)
         .with_context(|| format!("open {}", args.db.display()))?;
 
@@ -49,7 +46,7 @@ fn main() -> Result<()> {
     let corpus_raw = embeddings::load_embeddings(&conn, model::MODEL_ID)?;
     anyhow::ensure!(
         !corpus_raw.is_empty(),
-        "no embeddings found in {} for model {}; run dupe-embed first",
+        "no embeddings found in {} for model {}; run videre embed first",
         args.db.display(),
         model::MODEL_ID
     );

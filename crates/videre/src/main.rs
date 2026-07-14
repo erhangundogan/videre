@@ -23,6 +23,10 @@ enum Command {
     FixDates(commands::fix_dates::FixDatesArgs),
     /// Remove stale rows, sync metadata, clean orphan embeddings
     Prune(commands::prune::PruneArgs),
+    /// Compute SigLIP embeddings for every image in the database
+    Embed(commands::embed::EmbedArgs),
+    /// Search images by text, example image, or person name
+    Search(commands::search::SearchArgs),
 }
 
 fn main() {
@@ -32,6 +36,8 @@ fn main() {
         Command::Report(args) => commands::report::run(args),
         Command::FixDates(args) => commands::fix_dates::run(args),
         Command::Prune(args) => commands::prune::run(args),
+        Command::Embed(args) => commands::embed::run(args),
+        Command::Search(args) => commands::search::run(args),
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");

@@ -4,14 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "dupe-embed"
-path = "src/bin/dupe-embed.rs"
-
-[[bin]]
-name = "dupe-search"
-path = "src/bin/dupe-search.rs"
-
-[[bin]]
 name = "dupe-faces"
 path = "src/bin/dupe-faces.rs"
 
@@ -22,7 +14,6 @@ real-model = []
 videre-core = { path = "../videre-core" }
 clap = { version = "4", features = ["derive"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
-rayon = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
 half = "2"
 anyhow = "1"

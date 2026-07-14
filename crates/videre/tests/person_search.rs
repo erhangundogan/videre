@@ -4,9 +4,9 @@ use tempfile::tempdir;
 
 fn bin() -> std::path::PathBuf {
     let mut p = std::env::current_exe().unwrap();
-    p.pop();
-    p.pop();
-    p.push("dupe-search");
+    p.pop(); // deps/
+    p.pop(); // debug/
+    p.push("videre");
     p
 }
 
@@ -43,11 +43,12 @@ fn person_search_prints_confirmed_paths() {
     let dir = tempdir().unwrap();
     let db = make_db(dir.path());
     let out = Command::new(bin())
+        .arg("search")
         .arg(&db)
         .arg("--person")
         .arg("Alice")
         .output()
-        .expect("failed to run dupe-search");
+        .expect("failed to run videre search");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success());
     assert!(
@@ -69,11 +70,12 @@ fn person_search_empty_for_unknown_name() {
     let dir = tempdir().unwrap();
     let db = make_db(dir.path());
     let out = Command::new(bin())
+        .arg("search")
         .arg(&db)
         .arg("--person")
         .arg("Unknown")
         .output()
-        .expect("failed to run dupe-search");
+        .expect("failed to run videre search");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success());
     assert!(
@@ -104,11 +106,12 @@ fn person_search_unconfirmed_not_returned() {
     )
     .unwrap();
     let out = Command::new(bin())
+        .arg("search")
         .arg(&db)
         .arg("--person")
         .arg("Carol")
         .output()
-        .expect("failed to run dupe-search");
+        .expect("failed to run videre search");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success());
     assert!(

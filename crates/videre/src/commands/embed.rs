@@ -1,14 +1,12 @@
 use anyhow::{Context, Result};
-use clap::Parser;
 use videre_core::{embeddings, vectors};
 use videre_ml::{device, model, preprocess};
 use rayon::prelude::*;
 use std::path::PathBuf;
 
-#[derive(Parser)]
-#[command(name = "dupe-embed", about = "Generate SigLIP embeddings for images in a dupe SQLite database")]
-struct Args {
-    /// SQLite database produced by: dupe --output-sqlite <db>
+#[derive(clap::Args)]
+pub struct EmbedArgs {
+    /// SQLite database produced by: videre dedupe --output-sqlite <db>
     db: PathBuf,
 
     /// Inference batch size
@@ -24,8 +22,7 @@ struct Args {
     silent: bool,
 }
 
-fn main() -> Result<()> {
-    let args = Args::parse();
+pub fn run(args: EmbedArgs) -> Result<()> {
     let conn = videre_core::db::open_wal(&args.db)
         .with_context(|| format!("open {}", args.db.display()))?;
     embeddings::ensure_embeddings_table(&conn)?;
