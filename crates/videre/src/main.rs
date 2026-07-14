@@ -35,6 +35,7 @@ enum Command {
 
 fn main() {
     let cli = Cli::parse();
+    videre_core::thumb_cache::migrate_legacy_dupe_cache();
     let result = match cli.command {
         Command::Dedupe(args) => commands::dedupe::run(args),
         Command::Report(args) => commands::report::run(args),
