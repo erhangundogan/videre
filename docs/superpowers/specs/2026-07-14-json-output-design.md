@@ -48,7 +48,11 @@ json: bool,
   nothing on stderr - the clean agent invocation.
 - `--json` is orthogonal to dedupe's `--output` / `--output-sqlite`: those still persist records
   to a file / DB exactly as before. `videre dedupe <dir> --output-sqlite db.sqlite --json` both
-  persists and prints the JSON structure to stdout.
+  persists and prints the JSON structure to stdout. Note this includes the **default**
+  `--output /tmp/hashes`: a plain `videre dedupe <dir> --json` still appends the JSONL records
+  file as a side effect, exactly as the text mode does. This is intentional (zero behavior change
+  outside stdout); an agent that wants no file side effect passes `--output-sqlite` to a scratch
+  DB or accepts the default append.
 
 ### `search`: `--scores` interaction
 
@@ -147,8 +151,11 @@ process exits nonzero:
 { "schema_version": 1, "error": { "message": "no embeddings found in photos.db for model ...; run videre embed first" } }
 ```
 
-- `error.message` is the human error string (the `anyhow` error chain rendered as it is on stderr
-  today, e.g. `{e:#}`).
+- `error.message` is the human error string (the `anyhow` error chain rendered `{e:#}`, the same
+  text stderr would carry today).
+- In `--json` mode the error appears **only** in the stdout JSON object; stderr gets nothing (the
+  control flow exits before `main.rs`'s `eprintln!("error: {e:#}")` would run). One error, one
+  channel - agents read stdout.
 - Exit code is nonzero (1), matching today's failure exit.
 - A success document never contains an `error` key; an error document never contains
   `results`/`duplicate_groups`. An agent distinguishes them by exit code or by the presence of
@@ -207,6 +214,15 @@ The existing text path is refactored minimally so the data-gathering it already 
 `run_core` (the scan/hash for dedupe, the search for search). Keep the refactor small: extract just
 enough to build the struct; do not restructure unrelated logic.
 
+**`process::exit` trap (dedupe).** The always-valid-JSON guarantee only holds if every failure in
+JSON mode reaches the `Err` branch. `dedupe.rs` today reports its failures via `eprintln!` +
+`process::exit(1)` directly (missing directory, `--output` / `--output-sqlite` write errors) - those
+never return an `Err`, so if `run_core` reused them verbatim the process would die with **empty
+stdout**. Therefore `run_core` must surface these as `Err(anyhow::Error)` (e.g.
+`bail!("directory {:?} does not exist", ...)`). The **text** path keeps its verbatim
+`eprintln!` + `process::exit(1)` calls so its stderr text and exit codes stay byte-identical.
+(`search.rs` already returns `anyhow::Result` everywhere; no such conversion needed there.)
+
 ## Testing
 
 Integration tests (spawning the `videre` binary), added to the existing `tests/integration.rs`
@@ -220,8 +236,12 @@ Integration tests (spawning the `videre` binary), added to the existing `tests/i
   a `results` array whose entries carry `path`/`hash`/`score`, and `count == results.len()`.
 - **search `--person` `--json`**: entries have `path` only (no `hash`/`score` keys).
 - **`--scores` + `--json`**: does not error (exit 0) and produces the same JSON as `--json` alone.
-- **error-as-JSON**: `search <bad.db> "q" --json` (or a DB with no embeddings) exits nonzero AND
-  emits a single JSON object on stdout with an `error.message` key and no `results` key.
+- **error-as-JSON (search)**: run `search --json` against an empty/fresh DB. Note SQLite creates
+  missing DB files on open, so a "bad path" does not fail at open; the reliable failure is
+  `load_embeddings` erroring (no `embeddings` table) or the empty-corpus `ensure!`. Assert nonzero
+  exit AND a single JSON object on stdout with an `error.message` key and no `results` key.
+- **error-as-JSON (dedupe)**: run `dedupe <nonexistent-dir> --json`; assert nonzero exit and an
+  error JSON object on stdout (this pins the `process::exit` -> `Err` conversion above).
 - **default output unchanged**: existing non-`--json` tests continue to pass verbatim (regression
   guard on the pipe contract).
 
