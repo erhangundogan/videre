@@ -119,3 +119,67 @@ fn person_search_unconfirmed_not_returned() {
         "Unconfirmed faces should not be returned:\n{stdout}"
     );
 }
+
+#[test]
+fn person_search_json_outputs_document() {
+    let dir = tempdir().unwrap();
+    let db = make_db(dir.path());
+    let out = Command::new(bin())
+        .arg("search")
+        .arg(&db)
+        .arg("--person")
+        .arg("Alice")
+        .arg("--json")
+        .output()
+        .expect("failed to run videre search");
+    assert!(out.status.success());
+    let doc: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("stdout must be one valid JSON object");
+    assert_eq!(doc["schema_version"], 1);
+    assert_eq!(doc["query"]["kind"], "person");
+    assert_eq!(doc["query"]["value"], "Alice");
+    assert_eq!(doc["count"], 2);
+    let results = doc["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    for r in results {
+        assert!(r["path"].as_str().unwrap().contains("alice"));
+        assert!(r.get("hash").is_none(), "person hits omit hash: {r}");
+        assert!(r.get("score").is_none(), "person hits omit score: {r}");
+    }
+}
+
+#[test]
+fn person_search_json_scores_flag_is_silent_noop() {
+    let dir = tempdir().unwrap();
+    let db = make_db(dir.path());
+    let plain = Command::new(bin())
+        .arg("search").arg(&db).arg("--person").arg("Alice").arg("--json")
+        .output().expect("failed to run videre search");
+    let with_scores = Command::new(bin())
+        .arg("search").arg(&db).arg("--person").arg("Alice").arg("--json").arg("--scores")
+        .output().expect("failed to run videre search");
+    assert!(with_scores.status.success(), "--scores with --json must not be rejected");
+    assert_eq!(plain.stdout, with_scores.stdout, "--scores must be a no-op under --json");
+}
+
+#[test]
+fn search_json_error_is_json_object_on_stdout() {
+    let dir = tempdir().unwrap();
+    // Fresh DB with no tables: open_wal succeeds (SQLite creates the file),
+    // then load_embeddings fails (no embeddings table): the reliable error trigger.
+    let db = dir.path().join("empty.db");
+    Connection::open(&db).unwrap();
+    let out = Command::new(bin())
+        .arg("search")
+        .arg(&db)
+        .arg("beach")
+        .arg("--json")
+        .output()
+        .expect("failed to run videre search");
+    assert!(!out.status.success(), "must exit nonzero");
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .expect("even on error, stdout must be one valid JSON object");
+    assert_eq!(doc["schema_version"], 1);
+    assert!(doc["error"]["message"].as_str().is_some());
+    assert!(doc.get("results").is_none());
+}
