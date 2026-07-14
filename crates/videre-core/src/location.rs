@@ -17,7 +17,7 @@ pub fn ensure_location_column(conn: &Connection) {
 static GEOCODER: OnceLock<ReverseGeocoder> = OnceLock::new();
 
 /// Returns the process-wide reverse geocoder, building it on first access.
-/// Callers doing many lookups in a loop (e.g. `dupe-watch`'s location stage)
+/// Callers doing many lookups in a loop (e.g. `videre watch`'s location stage)
 /// should call this once and reuse the reference rather than calling
 /// `location_name` per coordinate, since `location_name` itself goes through
 /// this same cached instance but still incurs a function-call/lookup

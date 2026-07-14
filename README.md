@@ -1,21 +1,21 @@
-# dupe
+# videre
 
-Find and remove duplicate images across large file collections.
+A local-first media library toolkit: dedupe, semantic search, faces, and reports over one SQLite database.
 
-Scans recursively, hashes every image with BLAKE3, and writes duplicate paths to stdout one per line - ready to pipe into `trash` or `rm`. Results persist in SQLite for review, date-fixing, and semantic search.
+Scans recursively, hashes every image with BLAKE3, and writes duplicate paths to stdout one per line - ready to pipe into `trash` or `rm`. Results persist in a single SQLite database shared by every subcommand: date-fixing, pruning, semantic embedding/search, face detection and labeling, and HTML reports.
 
-## Binaries
+## Subcommands
 
-| Binary | Purpose |
-|--------|---------|
-| `dupe` | Scan a directory, print duplicate paths to stdout |
-| `dupe-report` | Read the SQLite database, generate an HTML review page |
-| `dupe-fix-dates` | Set each file's mtime to its EXIF shoot date |
-| `dupe-prune` | Remove stale rows, sync metadata, clean orphan embeddings |
-| `dupe-embed` | Compute SigLIP embeddings for every image in the database |
-| `dupe-search` | Search images by text description or example image |
-| `dupe-faces` | Detect, embed, and cluster faces; enables person search |
-| `dupe-watch` | Background loop that keeps scan/faces/HEIC-cache/location data fresh |
+| Subcommand | Purpose |
+|------------|---------|
+| `videre dedupe` | Scan a directory, print duplicate paths to stdout |
+| `videre report` | Read the SQLite database, generate an HTML review page (or serve the live report/labeling UI) |
+| `videre fix-dates` | Set each file's mtime to its EXIF shoot date |
+| `videre prune` | Remove stale rows, sync metadata, clean orphan embeddings |
+| `videre embed` | Compute SigLIP embeddings for every image in the database |
+| `videre search` | Search images by text description, example image, or person name |
+| `videre faces` | Detect, embed, and cluster faces; enables person search |
+| `videre watch` | Background loop that keeps scan/faces/HEIC-cache/location data fresh |
 
 ## Supported file types
 
@@ -24,67 +24,67 @@ Scans recursively, hashes every image with BLAKE3, and writes duplicate paths to
 ## Install
 
 ```bash
-git clone git@github.com:erhangundogan/dupe.git
-cd dupe
+git clone git@github.com:erhangundogan/videre.git
+cd videre
 cargo build --release
 ```
 
-Binaries land in `./target/release/`.
+The single binary lands at `./target/release/videre`.
 
 ## Quickstart
 
 ```bash
 # 1. Scan - duplicates printed to stdout, everything written to SQLite
 # If you don't wanna review duplicates visually then you can start from point 3
-dupe --output-sqlite ~/photos.db ~/Photos
+videre dedupe --output-sqlite ~/photos.db ~/Photos
 
 # 2. Review - open the HTML report in your browser
-dupe-report ~/photos.db
+videre report ~/photos.db
 
 # 3. Delete duplicates
-dupe --output-sqlite ~/photos.db ~/Photos | xargs trash
+videre dedupe --output-sqlite ~/photos.db ~/Photos | xargs trash
 
 # 4. Fix timestamps - set mtime = EXIF shoot date on remaining files
-dupe-fix-dates ~/photos.db
+videre fix-dates ~/photos.db
 
 # 5. Embed images for semantic search (downloads ~1.8 GB model on first run)
-dupe-embed ~/photos.db
+videre embed ~/photos.db
 
 # 6. Search by text or example image
-dupe-search ~/photos.db "golden gate bridge at sunset"
-dupe-search ~/photos.db --image reference.jpg
+videre search ~/photos.db "golden gate bridge at sunset"
+videre search ~/photos.db --image reference.jpg
 
 # 7. Detect, embed, and cluster faces for person search
-dupe-faces ~/photos.db
+videre faces ~/photos.db
 
 # 8. Label faces in the browser UI, then save and close
-dupe-report ~/photos.db --faces
+videre report ~/photos.db --faces
 
 # 9. Find all photos of a named person
-dupe-search ~/photos.db --person "Alice"
+videre search ~/photos.db --person "Alice"
 
 # 10. Prune the database: remove stale rows, sync metadata, clean orphan embeddings
-dupe-prune ~/photos.db
+videre prune ~/photos.db
 
 # 11. Browse the full collection with in-page similarity search
-dupe-report --all ~/photos.db
+videre report --all ~/photos.db
 
 # 12. Browse a Year/Month/Day drill-down gallery (static HTML, same as --all)
-dupe-report --by-date ~/photos.db
+videre report --by-date ~/photos.db
 
 # 13. Live report with labeled-face and location metadata in the lightbox
-dupe-report --show-faces ~/photos.db
+videre report --show-faces ~/photos.db
 
 # 14. Keep everything fresh in the background (run alongside step 13, same db)
-dupe-watch --output-sqlite ~/photos.db ~/Photos
+videre watch --output-sqlite ~/photos.db ~/Photos
 ```
 
 ---
 
-## dupe
+## videre dedupe
 
 ```
-dupe [OPTIONS] <directory>
+videre dedupe [OPTIONS] <directory>
 ```
 
 | Flag | Description |
@@ -101,47 +101,47 @@ dupe [OPTIONS] <directory>
 **stderr** shows scan progress and a summary. Suppressed by `--silent`.
 
 ```bash
-dupe ~/Photos                                        # preview removals
-dupe ~/Photos | xargs trash                          # delete immediately
-dupe --silent ~/Photos > to_delete.txt               # save list for later
-dupe --similar --output-sqlite ~/photos.db ~/Photos  # include visual duplicates
+videre dedupe ~/Photos                                        # preview removals
+videre dedupe ~/Photos | xargs trash                          # delete immediately
+videre dedupe --silent ~/Photos > to_delete.txt               # save list for later
+videre dedupe --similar --output-sqlite ~/photos.db ~/Photos  # include visual duplicates
 ```
 
-Visual duplicates use [dHash](http://www.hackerfactor.com/blog/index.php?/archives/529-Kind-of-Like-That.html): images are resized to 9x8 grayscale, adjacent pixel pairs produce a 64-bit fingerprint, and pairs with Hamming distance <= 10 are grouped as similar. Visual groups are logged to stderr only - review with `dupe-report` before deleting.
+Visual duplicates use [dHash](http://www.hackerfactor.com/blog/index.php?/archives/529-Kind-of-Like-That.html): images are resized to 9x8 grayscale, adjacent pixel pairs produce a 64-bit fingerprint, and pairs with Hamming distance <= 10 are grouped as similar. Visual groups are logged to stderr only - review with `videre report` before deleting.
 
 ---
 
-## dupe-report
+## videre report
 
 Reads the SQLite database and generates a self-contained HTML file. There are two distinct phases where the report is useful.
 
-**Phase 1 - review before deleting.** Run immediately after `dupe` to visually inspect duplicate groups and confirm KEEP/REMOVE decisions before touching any files.
+**Phase 1: review before deleting.** Run immediately after `videre dedupe` to visually inspect duplicate groups and confirm KEEP/REMOVE decisions before touching any files.
 
 ```bash
-dupe-report <db>               # output: <db>_report.html
-dupe-report <db> -o out.html   # explicit output path
-dupe-report <db> --heic        # embed HEIC thumbnails as JPEG (macOS only, requires qlmanage)
-dupe-report <db> --heic-original  # same + 1200px lightbox version
+videre report <db>                  # output: <db>_report.html
+videre report <db> -o out.html      # explicit output path
+videre report <db> --heic           # embed HEIC thumbnails as JPEG (macOS only, requires qlmanage)
+videre report <db> --heic-original  # same + 1200px lightbox version
 ```
 
-**Phase 2 - browse after cleaning.** Run with `--all` once duplicates have been deleted. The report becomes a full gallery of your cleaned collection with in-page semantic search.
+**Phase 2: browse after cleaning.** Run with `--all` once duplicates have been deleted. The report becomes a full gallery of your cleaned collection with in-page semantic search.
 
 ```bash
-dupe-report <db> --all
+videre report <db> --all
 ```
 
-`--all` automatically skips files that were recorded in the database but no longer exist on disk, so the gallery always reflects the current state of your collection. Files are checked at report generation time; the database itself is not modified. Run `dupe-prune` to permanently clean up stale rows and sync metadata.
+`--all` automatically skips files that were recorded in the database but no longer exist on disk, so the gallery always reflects the current state of your collection. Files are checked at report generation time; the database itself is not modified. Run `videre prune` to permanently clean up stale rows and sync metadata.
 
 **Drill-down by date.** `--by-date` adds a static Year > Month > Day gallery over your KEEP files, generated the same way as `--all` (no server involved - it's plain HTML and can be combined with `--all`, `--heic`, and `--heic-original`).
 
 ```bash
-dupe-report <db> --by-date
+videre report <db> --by-date
 ```
 
-**Live report with face and location metadata.** `--show-faces` switches `dupe-report` into server mode: it starts the same local server `--faces` uses (`localhost:7878`), but serves the interactive report (not the labeling UI) at `/`. The lightbox for each photo shows its labeled faces - click one to jump to `/person/<name>` - and a reverse-geocoded location name looked up on demand via a `/api/location` call and cached into the database for next time.
+**Live report with face and location metadata.** `--show-faces` switches `videre report` into server mode: it starts the same local server `--faces` uses (`localhost:7878`), but serves the interactive report (not the labeling UI) at `/`. The lightbox for each photo shows its labeled faces - click one to jump to `/person/<name>` - and a reverse-geocoded location name looked up on demand via a `/api/location` call and cached into the database for next time.
 
 ```bash
-dupe-report <db> --show-faces
+videre report <db> --show-faces
 ```
 
 Passing `--faces` and `--show-faces` together moves the report to `/` and the labeling UI to `/faces` (with `--faces` alone, `/` stays the labeling UI as before).
@@ -154,27 +154,27 @@ The report includes:
 - Toolbar: Expand all / Collapse all, sort by wasted space / date kept oldest-first / newest-first
 - Duplicate groups with KEEP/REMOVE badges, image thumbnails, EXIF date, GPS map links, copy-path buttons
 - Lightbox for full-size images and video playback (`.mov`, `.mp4`)
-- `--all`: paginated gallery of every file on disk (200 per page) with a "Similar" button on each card that opens a results panel showing the top 24 cosine-similar images, computed client-side from SigLIP embeddings inlined in the page (requires a prior `dupe-embed` run)
+- `--all`: paginated gallery of every file on disk (200 per page) with a "Similar" button on each card that opens a results panel showing the top 24 cosine-similar images, computed client-side from SigLIP embeddings inlined in the page (requires a prior `videre embed` run)
 
-In static mode, HEIC files show a "HEIC" placeholder by default; `--heic` embeds a 240px JPEG thumbnail via `qlmanage` (QuickLook, macOS only) - not `sips`, which silently skips the rotation some iPhone HEIC files need (see Platform notes). In server mode (`--show-faces`), HEIC always renders automatically instead - `--heic`/`--heic-original` have no effect there, since thumbnails convert lazily per request through `/api/raw`, checking `dupe-watch`'s pre-populated thumbnail cache first and only falling back to a live conversion on a cache miss, rather than all up front (which used to make server mode take minutes to load a single page on a collection with many HEIC files).
+In static mode, HEIC files show a "HEIC" placeholder by default; `--heic` embeds a 240px JPEG thumbnail via `qlmanage` (QuickLook, macOS only) - not `sips`, which silently skips the rotation some iPhone HEIC files need (see Platform notes). In server mode (`--show-faces`), HEIC always renders automatically instead - `--heic`/`--heic-original` have no effect there, since thumbnails convert lazily per request through `/api/raw`, checking `videre watch`'s pre-populated thumbnail cache first and only falling back to a live conversion on a cache miss, rather than all up front (which used to make server mode take minutes to load a single page on a collection with many HEIC files).
 
 `--faces` starts a local web server on `localhost:7878` for interactive face labeling: color-coded People / Unassigned Clusters / Singletons sections, drag-and-drop assignment, a "New Person" form, per-cluster detail pages with a "Dissolve cluster" action for bad groupings, per-person detail pages, and click-to-view original photos. Labels are saved back to the `faces` table as `person_label`. Close the browser tab or press Ctrl-C to stop the server.
 
 ---
 
-## dupe-faces
+## videre faces
 
-Detects faces in every image in the database, embeds each face with ArcFace, and clusters faces across images into identity groups. Run this after `dupe-embed` (or independently) to enable person search.
+Detects faces in every image in the database, embeds each face with ArcFace, and clusters faces across images into identity groups. Run this after `videre embed` (or independently) to enable person search.
 
 ```bash
-dupe-faces <db>                         # process new hashes only (resumable)
-dupe-faces <db> --reprocess             # re-detect and re-embed all hashes
-dupe-faces <db> --recluster             # skip detection; re-run clustering only
-dupe-faces <db> --dry-run               # detect and embed but do not write to db
-dupe-faces <db> --batch <n>             # images per ONNX batch (default: 8)
-dupe-faces <db> --silent                # suppress per-image progress
-dupe-faces <db> --eps <f32>             # DBSCAN cosine-distance radius (default: 0.6)
-dupe-faces <db> --min-cluster-size <n>  # minimum faces per cluster (default: 3)
+videre faces <db>                         # process new hashes only (resumable)
+videre faces <db> --reprocess             # re-detect and re-embed all hashes
+videre faces <db> --recluster             # skip detection; re-run clustering only
+videre faces <db> --dry-run               # detect and embed but do not write to db
+videre faces <db> --batch <n>             # images per ONNX batch (default: 8)
+videre faces <db> --silent                # suppress per-image progress
+videre faces <db> --eps <f32>             # DBSCAN cosine-distance radius (default: 0.6)
+videre faces <db> --min-cluster-size <n>  # minimum faces per cluster (default: 3)
 ```
 
 Face detection uses InsightFace buffalo_l (SCRFD-10GF detector + ArcFace w600k_r50 embedder) via ONNX Runtime. Model weights are downloaded automatically on first run and cached in `~/.cache/ort/`. HEIC images are converted via `qlmanage`, matching the rest of the pipeline (see Platform notes).
@@ -184,28 +184,28 @@ Faces below `--min-cluster-size` stay as unassigned singletons instead of formin
 **Faces workflow:**
 
 ```bash
-dupe --output-sqlite ~/photos.db ~/Photos    # scan images
-dupe-faces ~/photos.db                       # detect + embed + cluster faces
-dupe-report ~/photos.db --faces              # label in browser, save and close
-dupe-search ~/photos.db --person "Alice"     # find all photos of Alice
+videre dedupe --output-sqlite ~/photos.db ~/Photos    # scan images
+videre faces ~/photos.db                              # detect + embed + cluster faces
+videre report ~/photos.db --faces                     # label in browser, save and close
+videre search ~/photos.db --person "Alice"            # find all photos of Alice
 ```
 
 ---
 
-## dupe-watch
+## videre watch
 
-A background process that keeps your database warm: rescans for new photos, detects faces on them, pre-converts HEIC thumbnails, and resolves GPS coordinates to place names - all on a timer, so `dupe-report --show-faces` never has to do this work on the fly. It's a simple foreground loop, not a daemon: run it in its own terminal or tmux pane, watch its progress on stderr, and stop it with Ctrl-C.
+A background loop that keeps your database warm: rescans for new photos, detects faces on them, pre-converts HEIC thumbnails, and resolves GPS coordinates to place names - all on a timer, so `videre report --show-faces` never has to do this work on the fly. It's a simple foreground loop, not a daemon: run it in its own terminal or tmux pane, watch its progress on stderr, and stop it with Ctrl-C.
 
 ```bash
-dupe-watch --output-sqlite ~/photos.db ~/Photos               # all four stages, every 5 minutes
-dupe-watch --output-sqlite ~/photos.db ~/Photos --interval 60 # check every 60 seconds instead
-dupe-watch --output-sqlite ~/photos.db ~/Photos --scan --faces # only rescan and detect faces
-dupe-watch --output-sqlite ~/photos.db ~/Photos --silent      # quiet mode
+videre watch --output-sqlite ~/photos.db ~/Photos                # all four stages, every 5 minutes
+videre watch --output-sqlite ~/photos.db ~/Photos --interval 60  # check every 60 seconds instead
+videre watch --output-sqlite ~/photos.db ~/Photos --scan --faces # only rescan and detect faces
+videre watch --output-sqlite ~/photos.db ~/Photos --silent       # quiet mode
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--scan` | Rescan the directory and update `file_hashes` (same as running `dupe`) |
+| `--scan` | Rescan the directory and update `file_hashes` (same as running `videre dedupe`) |
 | `--faces` | Detect, embed, and cluster faces on any images not yet processed |
 | `--heic` | Pre-convert and cache HEIC thumbnails (240px and 1200px) per photo |
 | `--location` | Reverse-geocode any GPS coordinates not yet resolved to a place name |
@@ -214,63 +214,63 @@ dupe-watch --output-sqlite ~/photos.db ~/Photos --silent      # quiet mode
 
 Pass none of the four stage flags and all four run every cycle - that's the intended default for "just keep my library up to date." Pass any subset to run only those stages.
 
-Cached HEIC thumbnails land in `~/.cache/dupe/thumbnails/`, keyed by the photo's content hash so the same file is never converted twice even across different databases. `dupe-report --show-faces` checks this cache before falling back to a live conversion, so running `dupe-watch --heic` in the background makes browsing HEIC-heavy libraries noticeably snappier.
+Cached HEIC thumbnails land in `~/.cache/videre/thumbnails/`, keyed by the photo's content hash so the same file is never converted twice even across different databases. On first run, if the pre-rename cache at `~/.cache/dupe/thumbnails/` still exists and the new one doesn't, it's migrated automatically (a plain rename, so it's atomic and a no-op on error, since the cache regenerates lazily anyway). `videre report --show-faces` checks the cache before falling back to a live conversion, so running `videre watch --heic` in the background makes browsing HEIC-heavy libraries noticeably snappier.
 
-`dupe-watch` and `dupe-report --show-faces` are safe to run at the same time against the same database file - both now open it in SQLite's WAL mode, which allows concurrent readers and a writer without lock errors.
+`videre watch` and `videre report --show-faces` are safe to run at the same time against the same database file - both open it in SQLite's WAL mode, which allows concurrent readers and a writer without lock errors.
 
 ---
 
-## dupe-prune
+## videre prune
 
 Syncs the database with the current state of the filesystem. Run this after deleting duplicates and fixing dates to keep the database consistent.
 
 ```bash
-dupe-prune <db>            # apply all cleanup
-dupe-prune <db> --dry-run  # preview without modifying the database
-dupe-prune <db> --silent   # apply without per-file output
+videre prune <db>            # apply all cleanup
+videre prune <db> --dry-run  # preview without modifying the database
+videre prune <db> --silent   # apply without per-file output
 ```
 
 What it does in a single pass:
 
 - **Removes stale rows**: deletes `file_hashes` rows for files that no longer exist on disk (e.g. duplicates that were trashed)
-- **Syncs modified_at**: refreshes the `modified_at` column for surviving files from the current filesystem mtime - picks up changes made by `dupe-fix-dates` or any other tool
+- **Syncs modified_at**: refreshes the `modified_at` column for surviving files from the current filesystem mtime - picks up changes made by `videre fix-dates` or any other tool
 - **Cleans orphan embeddings**: deletes rows from `embeddings` whose hash has no remaining `file_hashes` entry
 
 In dry-run mode, the orphan embedding count is a lower bound: it reflects only pre-existing orphans, not ones that would be created by the would-be row removals.
 
 ---
 
-## dupe-embed and dupe-search
+## videre embed and videre search
 
-`dupe-embed` computes SigLIP embeddings (google/siglip-so400m-patch14-384, 1152-dim f16) for every image in the database and stores them keyed by content hash. Re-running only processes images not yet embedded. `.mov`, `.mp4`, and `.dng` files are skipped.
-
-```bash
-dupe-embed <db>                   # embed all unprocessed images
-dupe-embed <db> --batch 64        # larger batch size (default: 32)
-dupe-embed <db> --silent          # suppress per-image output
-```
-
-**First run downloads ~1.8 GB of model weights from Hugging Face.** Weights are cached in `~/.cache/huggingface/` and reused on every subsequent run. If all images are already embedded, the binary exits immediately without loading the model.
+`videre embed` computes SigLIP embeddings (google/siglip-so400m-patch14-384, 1152-dim f16) for every image in the database and stores them keyed by content hash. Re-running only processes images not yet embedded. `.mov`, `.mp4`, and `.dng` files are skipped.
 
 ```bash
-dupe-search <db> "sunset on beach"          # text query
-dupe-search <db> --image query.jpg          # find images similar to an example
-dupe-search <db> "birthday cake" -k 10 --scores  # top 10 with cosine scores
-dupe-search <db> --person "Alice"           # find all photos of Alice (requires dupe-faces)
+videre embed <db>                   # embed all unprocessed images
+videre embed <db> --batch 64        # larger batch size (default: 32)
+videre embed <db> --silent          # suppress per-image output
 ```
 
-On macOS, inference uses Metal (Apple Silicon GPU). On Linux, CPU only - embedding large collections will be significantly slower. CUDA support can be enabled by adding `features = ["cuda"]` to the candle dependencies in `crates/dupe-ml/Cargo.toml`.
+**First run downloads ~1.8 GB of model weights from Hugging Face.** Weights are cached in `~/.cache/huggingface/` and reused on every subsequent run. If all images are already embedded, the command exits immediately without loading the model.
+
+```bash
+videre search <db> "sunset on beach"               # text query
+videre search <db> --image query.jpg               # find images similar to an example
+videre search <db> "birthday cake" -k 10 --scores  # top 10 with cosine scores
+videre search <db> --person "Alice"                # find all photos of Alice (requires videre faces)
+```
+
+On macOS, inference uses Metal (Apple Silicon GPU). On Linux, CPU only - embedding large collections will be significantly slower. CUDA support can be enabled by adding `features = ["cuda"]` to the candle dependencies in `crates/videre-ml/Cargo.toml`.
 
 ---
 
-## dupe-fix-dates
+## videre fix-dates
 
 Sets each file's `modified_at` timestamp to its EXIF shoot date, so Finder, sort-by-date views, and backup tools see the correct original capture time.
 
 ```bash
-dupe-fix-dates <db> --dry-run  # preview without changing anything
-dupe-fix-dates <db>            # apply
-dupe-fix-dates <db> --silent   # apply without per-file output
+videre fix-dates <db> --dry-run  # preview without changing anything
+videre fix-dates <db>            # apply
+videre fix-dates <db> --silent   # apply without per-file output
 ```
 
 Only files with `exif_date` in the database are touched. EXIF time is treated as local system time. Only `mtime` is updated (`created_at` / birth time is not changed). Files that no longer exist on disk are silently skipped and reported in the summary.
@@ -281,10 +281,10 @@ Only files with `exif_date` in the database are touched. EXIF time is treated as
 
 | | macOS | Linux |
 |-|-------|-------|
-| `dupe`, `dupe-report`, `dupe-fix-dates` | yes | yes |
-| `dupe-embed`, `dupe-search` | yes (Metal GPU) | yes (CPU only) |
-| `dupe-faces` | yes (CPU via ONNX Runtime) | yes (CPU via ONNX Runtime) |
-| `dupe-watch` | yes | yes (`--heic` unavailable) |
+| `videre dedupe`, `videre report`, `videre fix-dates` | yes | yes |
+| `videre embed`, `videre search` | yes (Metal GPU) | yes (CPU only) |
+| `videre faces` | yes (CPU via ONNX Runtime) | yes (CPU via ONNX Runtime) |
+| `videre watch` | yes | yes (`--heic` unavailable) |
 | HEIC thumbnails/decoding (report, faces, embed, watch) | yes (via `qlmanage`) | no |
 | HEIC scanning and EXIF | yes | yes |
 | `created_at` field | yes | always null |
@@ -332,9 +332,9 @@ CREATE TABLE IF NOT EXISTS faces (
 );
 ```
 
-Re-scanning upserts existing rows by `path`. `phash` is only written with `--similar`. EXIF fields (`exif_date`, `gps_lat`, `gps_lon`, `width`, `height`) are written for jpg/jpeg/tiff/heic/dng files; null for all others. `location_name` is added by an idempotent migration on `dupe-report` startup and is not written by `dupe` itself - it's populated lazily, one coordinate at a time, when `dupe-report --show-faces` (or `dupe-watch --location`) resolves and caches a reverse-geocoded location name.
+Re-scanning upserts existing rows by `path`. `phash` is only written with `--similar`. EXIF fields (`exif_date`, `gps_lat`, `gps_lon`, `width`, `height`) are written for jpg/jpeg/tiff/heic/dng files; null for all others. `location_name` is added by an idempotent migration on `videre report` startup and is not written by `videre dedupe` itself - it's populated lazily, one coordinate at a time, when `videre report --show-faces` (or `videre watch --location`) resolves and caches a reverse-geocoded location name.
 
-Every binary opens the database in SQLite's WAL journal mode, so `dupe-watch` and `dupe-report --show-faces` can safely read and write the same database file at the same time.
+Every command opens the database in SQLite's WAL journal mode, so `videre watch` and `videre report --show-faces` can safely read and write the same database file at the same time.
 
 ### JSONL record
 
