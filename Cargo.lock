@@ -4838,7 +4838,6 @@ dependencies = [
  "candle-core",
  "candle-nn",
  "candle-transformers",
- "clap",
  "half",
  "hf-hub",
  "image",
@@ -4846,7 +4845,6 @@ dependencies = [
  "ort",
  "rusqlite",
  "serde_json",
- "tempfile",
  "tokenizers 0.20.4",
  "videre-core",
 ]

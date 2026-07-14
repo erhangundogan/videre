@@ -5,7 +5,7 @@ use tempfile::tempdir;
 fn bin() -> std::path::PathBuf {
     let mut p = std::env::current_exe().unwrap();
     p.pop(); p.pop();
-    p.push("dupe-faces");
+    p.push("videre");
     p
 }
 
@@ -26,8 +26,9 @@ fn exits_zero_on_empty_db() {
     let dir = tempdir().unwrap();
     let db = make_db(dir.path());
     let status = Command::new(bin())
+        .arg("faces")
         .arg(&db).arg("--silent")
-        .status().expect("failed to run dupe-faces");
+        .status().expect("failed to run videre faces");
     assert!(status.success());
 }
 
@@ -35,7 +36,7 @@ fn exits_zero_on_empty_db() {
 fn creates_faces_table() {
     let dir = tempdir().unwrap();
     let db = make_db(dir.path());
-    Command::new(bin()).arg(&db).arg("--silent").status().unwrap();
+    Command::new(bin()).arg("faces").arg(&db).arg("--silent").status().unwrap();
     let conn = Connection::open(&db).unwrap();
     let n: i64 = conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='faces'", [], |r| r.get(0)

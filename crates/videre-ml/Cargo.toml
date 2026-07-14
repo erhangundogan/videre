@@ -3,16 +3,11 @@ name = "videre-ml"
 version = "0.1.0"
 edition = "2021"
 
-[[bin]]
-name = "dupe-faces"
-path = "src/bin/dupe-faces.rs"
-
 [features]
 real-model = []
 
 [dependencies]
 videre-core = { path = "../videre-core" }
-clap = { version = "4", features = ["derive"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
 half = "2"
@@ -24,7 +19,6 @@ ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
 hf-hub = { version = "1.0.0-rc.1", features = ["blocking"] }
 
 [dev-dependencies]
-tempfile = "3"
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -1,12 +1,10 @@
 use anyhow::Result;
-use clap::Parser;
 use videre_core::face_db;
 use videre_ml::pipeline::{run_clustering, run_face_pipeline};
 use std::path::PathBuf;
 
-#[derive(Parser)]
-#[command(name = "dupe-faces", about = "Detect, embed, and cluster faces in a dupe SQLite database.")]
-struct Args {
+#[derive(clap::Args)]
+pub struct FacesArgs {
     db: PathBuf,
     #[arg(long)] reprocess: bool,
     /// Skip detection; just re-run clustering on existing embeddings
@@ -20,8 +18,7 @@ struct Args {
     #[arg(long, default_value = "3")] min_cluster_size: usize,
 }
 
-fn main() -> Result<()> {
-    let args = Args::parse();
+pub fn run(args: FacesArgs) -> Result<()> {
     if !args.db.exists() {
         anyhow::bail!("{:?} does not exist", args.db);
     }
