@@ -12,10 +12,6 @@ name = "videre"
 path = "src/main.rs"
 
 [[bin]]
-name = "dupe-report"
-path = "src/bin/dupe_report.rs"
-
-[[bin]]
 name = "dupe-fix-dates"
 path = "src/bin/dupe_fix_dates.rs"
 

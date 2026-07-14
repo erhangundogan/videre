@@ -25,10 +25,11 @@ fn make_db_with_faces(dir: &std::path::Path) -> std::path::PathBuf {
 fn get_faces_returns_singletons() {
     let _dir = tempdir().unwrap();
     // Verify --faces appears in help output, confirming the flag is registered
-    let out = Command::new(env!("CARGO_BIN_EXE_dupe-report"))
+    let out = Command::new(env!("CARGO_BIN_EXE_videre"))
+        .arg("report")
         .arg("--help")
         .output()
-        .expect("failed to run dupe-report");
+        .expect("failed to run videre report");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("faces"), "Expected --faces in help output, got: {stdout}");
 }
@@ -49,10 +50,11 @@ fn make_db_with_faces_creates_valid_schema() {
 
 #[test]
 fn help_documents_show_faces_starts_server() {
-    let out = Command::new(env!("CARGO_BIN_EXE_dupe-report"))
+    let out = Command::new(env!("CARGO_BIN_EXE_videre"))
+        .arg("report")
         .arg("--help")
         .output()
-        .expect("failed to run dupe-report");
+        .expect("failed to run videre report");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("show-faces"));
 }
@@ -66,16 +68,17 @@ fn show_faces_alone_is_accepted_by_cli_parser() {
     // manually per Task 11).
     let dir = tempdir().unwrap();
     let db = make_db_with_faces(dir.path());
-    let mut child = Command::new(env!("CARGO_BIN_EXE_dupe-report"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_videre"))
+        .arg("report")
         .arg(&db)
         .arg("--show-faces")
         .spawn()
-        .expect("failed to spawn dupe-report --show-faces");
+        .expect("failed to spawn videre report --show-faces");
     std::thread::sleep(std::time::Duration::from_millis(300));
     let still_running = child.try_wait().unwrap().is_none();
     child.kill().ok();
     child.wait().ok();
-    assert!(still_running, "dupe-report --show-faces should still be running (serving), not have exited/errored");
+    assert!(still_running, "videre report --show-faces should still be running (serving), not have exited/errored");
 }
 
 #[test]
