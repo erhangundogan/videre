@@ -1,118 +1,31 @@
-use clap::Parser;
-use videre::{hasher, output, scanner, sqlite_output, types};
-use rayon::prelude::*;
-use std::path::PathBuf;
-use std::process;
+use clap::{Parser, Subcommand};
+
+mod commands;
 
 #[derive(Parser)]
-#[command(name = "dupe", version, about = "Find duplicate images in a directory")]
-struct Args {
-    /// Directory to scan recursively
-    directory: PathBuf,
+#[command(
+    name = "videre",
+    version,
+    about = "Local-first media library toolkit: dedupe, semantic search, faces, and reports over one SQLite database"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
 
-    /// JSONL output file (appended); cannot be used with --output-sqlite
-    #[arg(long, default_value = "/tmp/hashes", conflicts_with = "output_sqlite")]
-    output: PathBuf,
-
-    /// SQLite output file (upserted by path); cannot be used with --output
-    #[arg(long)]
-    output_sqlite: Option<PathBuf>,
-
-    /// Also find visually similar images via perceptual hash
-    #[arg(long)]
-    similar: bool,
-
-    /// Suppress progress output on stderr (duplicate paths are always written to stdout)
-    #[arg(long)]
-    silent: bool,
+#[derive(Subcommand)]
+enum Command {
+    /// Scan a directory, hash every image, and print duplicate paths to stdout
+    Dedupe(commands::dedupe::DedupeArgs),
 }
 
 fn main() {
-    let args = Args::parse();
-
-    if !args.directory.exists() {
-        eprintln!("Error: directory {:?} does not exist", args.directory);
-        process::exit(1);
-    }
-
-    if !args.silent {
-        eprintln!("Scanning {:?}...", args.directory);
-    }
-
-    let paths = scanner::scan(&args.directory);
-
-    if !args.silent {
-        eprintln!("Found {} file(s) to process", paths.len());
-    }
-
-    let silent = args.silent;
-    let records: Vec<_> = paths
-        .par_iter()
-        .filter_map(|path| {
-            hasher::hash_file(path)
-                .map_err(|e| {
-                    if !silent {
-                        eprintln!("Warning: skipping {:?}: {}", path, e);
-                    }
-                })
-                .ok()
-        })
-        .collect();
-
-    // Compute pHash for each file if --similar requested
-    let records: Vec<types::FileRecord> = if args.similar {
-        records
-            .into_iter()
-            .map(|mut r| {
-                r.phash = hasher::compute_dhash(std::path::Path::new(&r.path));
-                r
-            })
-            .collect()
-    } else {
-        records
+    let cli = Cli::parse();
+    let result = match cli.command {
+        Command::Dedupe(args) => commands::dedupe::run(args),
     };
-
-    if let Some(ref db_path) = args.output_sqlite {
-        if let Err(e) = sqlite_output::write_records(&records, db_path) {
-            eprintln!("Error writing to {:?}: {}", db_path, e);
-            process::exit(1);
-        }
-        if !args.silent {
-            eprintln!("Wrote {} record(s) to {:?}", records.len(), db_path);
-        }
-    } else {
-        if let Err(e) = output::append_records(&records, &args.output) {
-            eprintln!("Error writing to {:?}: {}", args.output, e);
-            process::exit(1);
-        }
-        if !args.silent {
-            eprintln!("Wrote {} record(s) to {:?}", records.len(), args.output);
-        }
-    }
-
-    // Exact duplicates: print REMOVE candidates to stdout (one path per line)
-    let groups = output::find_duplicate_groups(&records);
-    if !args.silent {
-        if groups.is_empty() {
-            eprintln!("No exact duplicates found.");
-        } else {
-            eprintln!("{} duplicate group(s), {} file(s) to remove.",
-                groups.len(),
-                groups.iter().map(|g| g.files.len() - 1).sum::<usize>()
-            );
-        }
-    }
-    output::print_losers(&groups);
-
-    // Similar groups: informational only: review via dupe-report before acting
-    if args.similar {
-        let similar = output::find_similar_groups(&records, 10);
-        if !args.silent {
-            if similar.is_empty() {
-                eprintln!("No visually similar images found.");
-            } else {
-                eprintln!("{} visually similar group(s) found: review with dupe-report before deleting.", similar.len());
-            }
-        }
+    if let Err(e) = result {
+        eprintln!("error: {e:#}");
+        std::process::exit(1);
     }
 }

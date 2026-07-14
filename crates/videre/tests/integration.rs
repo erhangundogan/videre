@@ -6,7 +6,7 @@ fn dupe_bin() -> std::path::PathBuf {
     let mut path = std::env::current_exe().unwrap();
     path.pop(); // deps/
     path.pop(); // debug/
-    path.push("dupe");
+    path.push("videre");
     path
 }
 
@@ -22,6 +22,7 @@ fn exact_duplicates_appear_in_output_file() {
     fs::write(scan_dir.path().join("c.jpg"), b"different").unwrap();
 
     let status = Command::new(dupe_bin())
+        .arg("dedupe")
         .arg("--silent")
         .arg("--output")
         .arg(&output)
@@ -50,6 +51,7 @@ fn exact_duplicates_appear_in_output_file() {
 #[test]
 fn missing_directory_exits_nonzero() {
     let status = Command::new(dupe_bin())
+        .arg("dedupe")
         .arg("--silent")
         .arg("/nonexistent/path/abc123")
         .status()
@@ -70,6 +72,7 @@ fn exif_fields_populated_for_jpeg_with_exif() {
     .unwrap();
 
     let status = Command::new(dupe_bin())
+        .arg("dedupe")
         .arg("--silent")
         .arg("--output")
         .arg(&output)
@@ -99,6 +102,7 @@ fn sqlite_output_writes_records_to_db() {
     fs::write(scan_dir.path().join("b.jpg"), b"content beta").unwrap();
 
     let status = Command::new(dupe_bin())
+        .arg("dedupe")
         .arg("--silent")
         .arg("--output-sqlite")
         .arg(&db_path)
@@ -126,6 +130,7 @@ fn sqlite_output_upserts_on_repeated_run() {
 
     // First run
     Command::new(dupe_bin())
+        .arg("dedupe")
         .arg("--silent")
         .arg("--output-sqlite")
         .arg(&db_path)
@@ -138,6 +143,7 @@ fn sqlite_output_upserts_on_repeated_run() {
 
     // Second run with same folder — should overwrite, not append
     Command::new(dupe_bin())
+        .arg("dedupe")
         .arg("--silent")
         .arg("--output-sqlite")
         .arg(&db_path)
@@ -161,6 +167,7 @@ fn sqlite_and_output_flags_conflict() {
     let out_dir = tempdir().unwrap();
 
     let status = Command::new(dupe_bin())
+        .arg("dedupe")
         .arg("--output")
         .arg(out_dir.path().join("hashes"))
         .arg("--output-sqlite")
