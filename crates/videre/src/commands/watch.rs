@@ -1,5 +1,4 @@
 use anyhow::Result;
-use clap::Parser;
 use videre::{hasher, scanner, sqlite_output, types};
 use videre_core::{db, face_db};
 use videre_ml::pipeline::{run_clustering, run_face_pipeline};
@@ -7,13 +6,12 @@ use rayon::prelude::*;
 use std::path::PathBuf;
 use std::time::Duration;
 
-#[derive(Parser)]
-#[command(name = "dupe-watch", about = "Periodically populate the scan/faces/HEIC-cache/location pipeline in the background")]
-struct Args {
+#[derive(clap::Args)]
+pub struct WatchArgs {
     /// Directory to scan recursively
     directory: PathBuf,
 
-    /// SQLite database to populate (same file dupe-report reads)
+    /// SQLite database to populate (same file videre report reads)
     #[arg(long)]
     output_sqlite: PathBuf,
 
@@ -38,8 +36,7 @@ struct Args {
     silent: bool,
 }
 
-fn main() -> Result<()> {
-    let mut args = Args::parse();
+pub fn run(mut args: WatchArgs) -> Result<()> {
     if !args.directory.exists() {
         anyhow::bail!("{:?} does not exist", args.directory);
     }
@@ -54,25 +51,25 @@ fn main() -> Result<()> {
 
     loop {
         if !args.silent {
-            eprintln!("dupe-watch: cycle starting ({})", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
+            eprintln!("videre watch: cycle starting ({})", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
         }
         if let Err(e) = run_cycle(&args) {
-            eprintln!("dupe-watch: cycle error: {e}");
+            eprintln!("videre watch: cycle error: {e}");
         }
         if !args.silent {
-            eprintln!("dupe-watch: sleeping {}s", args.interval);
+            eprintln!("videre watch: sleeping {}s", args.interval);
         }
         std::thread::sleep(Duration::from_secs(args.interval));
     }
 }
 
-fn run_cycle(args: &Args) -> Result<()> {
+fn run_cycle(args: &WatchArgs) -> Result<()> {
     if args.scan {
         // A scan failure this cycle doesn't invalidate file_hashes rows from
         // previous cycles, so don't let it block the faces/heic/location
         // block below - just log and move on.
         if let Err(e) = run_scan_stage(args) {
-            eprintln!("dupe-watch: scan stage error: {e}");
+            eprintln!("videre watch: scan stage error: {e}");
         }
     }
     if args.faces || args.heic || args.location {
@@ -81,7 +78,7 @@ fn run_cycle(args: &Args) -> Result<()> {
         if !file_hashes_table_exists(&conn)? {
             if !args.silent {
                 eprintln!(
-                    "dupe-watch: file_hashes table not found - run 'dupe --output-sqlite <db> <dir>' or 'dupe-watch --scan ...' first"
+                    "videre watch: file_hashes table not found - run 'videre dedupe --output-sqlite <db> <dir>' or 'videre watch --scan ...' first"
                 );
             }
             return Ok(());
@@ -124,7 +121,7 @@ fn dedup_paths_by_hash(conn: &rusqlite::Connection, where_clause: &str) -> Resul
     Ok(rows.into_iter().filter(|(_, hash)| seen.insert(hash.clone())).collect())
 }
 
-fn run_faces_stage(args: &Args, conn: &rusqlite::Connection) -> Result<()> {
+fn run_faces_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> {
     let all_paths = dedup_paths_by_hash(
         conn,
         "ext IN ('jpg','jpeg','png','gif','webp','bmp','tiff','heic')",
@@ -140,7 +137,7 @@ fn run_faces_stage(args: &Args, conn: &rusqlite::Connection) -> Result<()> {
         let result = run_face_pipeline(conn, &to_process, 8, false, args.silent)?;
         if !args.silent {
             eprintln!(
-                "dupe-watch: faces stage processed {} new hash(es), {} face(s)",
+                "videre watch: faces stage processed {} new hash(es), {} face(s)",
                 to_process.len(),
                 result.total_faces
             );
@@ -150,7 +147,7 @@ fn run_faces_stage(args: &Args, conn: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 
-fn run_heic_stage(args: &Args, conn: &rusqlite::Connection) -> Result<()> {
+fn run_heic_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> {
     let heic_paths = dedup_paths_by_hash(conn, "ext = 'heic'")?;
     let mut converted = 0usize;
     let mut failed = 0usize;
@@ -198,15 +195,15 @@ fn run_heic_stage(args: &Args, conn: &rusqlite::Connection) -> Result<()> {
     }
     if !args.silent && (converted > 0 || failed > 0) {
         if failed > 0 {
-            eprintln!("dupe-watch: heic stage cached {converted} thumbnail(s), {failed} failed");
+            eprintln!("videre watch: heic stage cached {converted} thumbnail(s), {failed} failed");
         } else {
-            eprintln!("dupe-watch: heic stage cached {converted} thumbnail(s)");
+            eprintln!("videre watch: heic stage cached {converted} thumbnail(s)");
         }
     }
     Ok(())
 }
 
-fn run_location_stage(args: &Args, conn: &rusqlite::Connection) -> Result<()> {
+fn run_location_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> {
     let unresolved: Vec<(f64, f64)> = {
         let mut stmt = conn.prepare(
             "SELECT DISTINCT gps_lat, gps_lon FROM file_hashes \
@@ -228,12 +225,12 @@ fn run_location_stage(args: &Args, conn: &rusqlite::Connection) -> Result<()> {
         }
     }
     if !args.silent && resolved > 0 {
-        eprintln!("dupe-watch: location stage resolved {resolved} coordinate(s)");
+        eprintln!("videre watch: location stage resolved {resolved} coordinate(s)");
     }
     Ok(())
 }
 
-fn run_scan_stage(args: &Args) -> Result<()> {
+fn run_scan_stage(args: &WatchArgs) -> Result<()> {
     let paths = scanner::scan(&args.directory);
     let records: Vec<types::FileRecord> = paths
         .par_iter()
@@ -241,7 +238,7 @@ fn run_scan_stage(args: &Args) -> Result<()> {
         .collect();
     sqlite_output::write_records(&records, &args.output_sqlite)?;
     if !args.silent {
-        eprintln!("dupe-watch: scan stage wrote {} record(s)", records.len());
+        eprintln!("videre watch: scan stage wrote {} record(s)", records.len());
     }
     Ok(())
 }
