@@ -8,7 +8,7 @@ name = "videre"
 path = "src/lib.rs"
 
 [[bin]]
-name = "dupe"
+name = "videre"
 path = "src/main.rs"
 
 [[bin]]
