@@ -2,11 +2,11 @@ use rusqlite::Connection;
 use std::process::Command;
 use tempfile::tempdir;
 
-fn watch_bin() -> std::path::PathBuf {
+fn videre_bin() -> std::path::PathBuf {
     let mut path = std::env::current_exe().unwrap();
     path.pop();
     path.pop();
-    path.push("dupe-watch");
+    path.push("videre");
     path
 }
 
@@ -20,14 +20,14 @@ fn scan_stage_populates_file_hashes() {
 
     // Run one cycle directly via a very short interval, then kill after
     // giving it time for exactly one cycle.
-    let mut child = Command::new(watch_bin())
+    let mut child = Command::new(videre_bin()).arg("watch")
         .arg(&pics)
         .arg("--output-sqlite").arg(&db)
         .arg("--scan")
         .arg("--interval").arg("3600") // long enough we only observe one cycle
         .arg("--silent")
         .spawn()
-        .expect("failed to spawn dupe-watch");
+        .expect("failed to spawn videre watch");
     std::thread::sleep(std::time::Duration::from_millis(1500));
     child.kill().ok();
     child.wait().ok();
@@ -52,19 +52,19 @@ fn faces_stage_skips_hashes_already_processed() {
     ).unwrap();
     drop(conn);
 
-    let mut child = Command::new(watch_bin())
+    let mut child = Command::new(videre_bin()).arg("watch")
         .arg(dir.path())
         .arg("--output-sqlite").arg(&db)
         .arg("--faces")
         .arg("--interval").arg("3600")
         .arg("--silent")
         .spawn()
-        .expect("failed to spawn dupe-watch");
+        .expect("failed to spawn videre watch");
     std::thread::sleep(std::time::Duration::from_millis(800));
     let still_running = child.try_wait().unwrap().is_none();
     child.kill().ok();
     child.wait().ok();
-    assert!(still_running, "dupe-watch --faces should not have crashed on an already-processed hash");
+    assert!(still_running, "videre watch --faces should not have crashed on an already-processed hash");
 }
 
 #[test]
@@ -78,14 +78,14 @@ fn heic_stage_writes_no_cache_file_for_non_heic_hashes() {
     ).unwrap();
     drop(conn);
 
-    let mut child = Command::new(watch_bin())
+    let mut child = Command::new(videre_bin()).arg("watch")
         .arg(dir.path())
         .arg("--output-sqlite").arg(&db)
         .arg("--heic")
         .arg("--interval").arg("3600")
         .arg("--silent")
         .spawn()
-        .expect("failed to spawn dupe-watch");
+        .expect("failed to spawn videre watch");
     std::thread::sleep(std::time::Duration::from_millis(800));
     child.kill().ok();
     child.wait().ok();
@@ -97,22 +97,22 @@ fn heic_stage_writes_no_cache_file_for_non_heic_hashes() {
 fn faces_stage_against_fresh_database_does_not_crash_or_hang() {
     let dir = tempdir().unwrap();
     // No db file exists yet, and no --scan flag either - simulates a user
-    // running `dupe-watch --faces` before any `dupe`/`dupe-watch --scan`
+    // running `videre watch --faces` before any `videre dedupe`/`videre watch --scan`
     // run has ever created file_hashes.
     let db = dir.path().join("fresh.db");
 
-    let mut child = Command::new(watch_bin())
+    let mut child = Command::new(videre_bin()).arg("watch")
         .arg(dir.path())
         .arg("--output-sqlite").arg(&db)
         .arg("--faces")
         .arg("--interval").arg("3600")
         .spawn()
-        .expect("failed to spawn dupe-watch");
+        .expect("failed to spawn videre watch");
     std::thread::sleep(std::time::Duration::from_millis(800));
     let still_running = child.try_wait().unwrap().is_none();
     child.kill().ok();
     child.wait().ok();
-    assert!(still_running, "dupe-watch --faces against a fresh database should not crash");
+    assert!(still_running, "videre watch --faces against a fresh database should not crash");
 }
 
 #[test]
@@ -128,14 +128,14 @@ fn location_stage_populates_location_name_for_gps_rows() {
     ).unwrap();
     drop(conn);
 
-    let mut child = Command::new(watch_bin())
+    let mut child = Command::new(videre_bin()).arg("watch")
         .arg(dir.path())
         .arg("--output-sqlite").arg(&db)
         .arg("--location")
         .arg("--interval").arg("3600")
         .arg("--silent")
         .spawn()
-        .expect("failed to spawn dupe-watch");
+        .expect("failed to spawn videre watch");
     std::thread::sleep(std::time::Duration::from_millis(1500));
     child.kill().ok();
     child.wait().ok();

@@ -29,6 +29,8 @@ enum Command {
     Search(commands::search::SearchArgs),
     /// Detect, embed, and cluster faces; enables person search
     Faces(commands::faces::FacesArgs),
+    /// Background loop keeping scan/faces/HEIC-cache/location data fresh
+    Watch(commands::watch::WatchArgs),
 }
 
 fn main() {
@@ -41,6 +43,7 @@ fn main() {
         Command::Embed(args) => commands::embed::run(args),
         Command::Search(args) => commands::search::run(args),
         Command::Faces(args) => commands::faces::run(args),
+        Command::Watch(args) => commands::watch::run(args),
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");
