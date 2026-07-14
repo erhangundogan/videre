@@ -27,6 +27,8 @@ enum Command {
     Embed(commands::embed::EmbedArgs),
     /// Search images by text, example image, or person name
     Search(commands::search::SearchArgs),
+    /// Detect, embed, and cluster faces; enables person search
+    Faces(commands::faces::FacesArgs),
 }
 
 fn main() {
@@ -38,6 +40,7 @@ fn main() {
         Command::Prune(args) => commands::prune::run(args),
         Command::Embed(args) => commands::embed::run(args),
         Command::Search(args) => commands::search::run(args),
+        Command::Faces(args) => commands::faces::run(args),
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");
