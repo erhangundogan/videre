@@ -12,18 +12,18 @@ use std::sync::{Arc, Mutex};
 
 #[derive(clap::Args)]
 pub struct ReportArgs {
-    /// SQLite database produced by: dupe --output-sqlite <db>
+    /// SQLite database produced by: videre dedupe --output-sqlite <db>
     db: PathBuf,
 
     /// HTML output path [default: <db>_report.html]
     #[arg(short, long)]
     output: Option<PathBuf>,
 
-    /// Embed HEIC thumbnails as base64 JPEG (requires sips, macOS only; increases HTML size)
+    /// Embed HEIC thumbnails as base64 JPEG (requires qlmanage, macOS only; increases HTML size)
     #[arg(long)]
     heic: bool,
 
-    /// Embed HEIC thumbnails + full lightbox version (requires sips, macOS only; significantly increases HTML size)
+    /// Embed HEIC thumbnails + full lightbox version (requires qlmanage, macOS only; significantly increases HTML size)
     #[arg(long)]
     heic_original: bool,
 
@@ -499,7 +499,7 @@ fn generate_html(
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n",
         "<meta charset=\"UTF-8\">\n",
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n",
-        "<title>dupe report</title>\n<style>\n",
+        "<title>videre report</title>\n<style>\n",
         "*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}\n",
         "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;",
         "background:#f4f4f5;color:#18181b;font-size:14px;line-height:1.5}\n",
@@ -663,7 +663,7 @@ fn generate_html(
     };
     out.push_str(&format!(
         "<div class=\"header\">\
-          <h1>dupe report</h1>\
+          <h1>videre report</h1>\
           <p class=\"subtitle\">{db} &mdash; {now}</p>\
           <div class=\"stats\">\
             <div class=\"stat\"><span class=\"num\">{total}</span><span class=\"label\">Files scanned</span></div>\
@@ -1217,7 +1217,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>dupe-faces labeling</title>
+  <title>videre faces labeling</title>
   <style>
     :root {
       --blue-border: #6c8ebf;
@@ -1293,7 +1293,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
 </head>
 <body>
   <div class="toolbar">
-    <strong>dupe-faces labeling</strong>
+    <strong>videre faces labeling</strong>
     <span id="status">Loading...</span>
     <button class="primary" onclick="saveAndClose()">Save &amp; Close</button>
   </div>
@@ -2206,11 +2206,11 @@ fn crop_face_square(img: &image::DynamicImage, bbox: [f32; 4]) -> image::Dynamic
 /// Load, crop, and orientation-correct a face thumbnail.
 ///
 /// bbox coordinates are stored in terms of the *full-size* decoded image
-/// (dupe-faces rescales detections back to original width/height before
+/// (videre faces rescales detections back to original width/height before
 /// writing to the DB), so the thumbnail must be cropped from an image of
 /// the same dimensions used at detection time.
 ///
-/// For HEIC: dupe-faces converts via QuickLook (see
+/// For HEIC: videre faces converts via QuickLook (see
 /// `videre_core::heic::heic_via_quicklook`), which already applies correct
 /// rotation, so no separate orientation step is needed. For JPEG/PNG/etc:
 /// detection ran on raw pixels; apply EXIF orientation after crop.
@@ -2335,7 +2335,7 @@ async fn handle_raw_file(
         .unwrap_or("")
         .to_lowercase();
 
-    // dupe-watch's `--heic` stage may have already pre-converted and cached
+    // videre watch's `--heic` stage may have already pre-converted and cached
     // a thumbnail for this file's content hash at this exact size - serve
     // that directly instead of paying for a live qlmanage conversion.
     if ext == "heic" {
@@ -2544,7 +2544,7 @@ pub fn run(args: ReportArgs) -> anyhow::Result<()> {
     let vectors = if args.all {
         let v = query_vectors(&conn);
         if v.is_none() {
-            eprintln!("no embeddings found; run dupe-embed for similarity search");
+            eprintln!("no embeddings found; run videre embed for similarity search");
         }
         v
     } else {

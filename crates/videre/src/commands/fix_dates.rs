@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 #[derive(clap::Args)]
 pub struct FixDatesArgs {
-    /// SQLite database produced by: dupe --output-sqlite <db>
+    /// SQLite database produced by: videre dedupe --output-sqlite <db>
     db: PathBuf,
 
     /// Preview changes without modifying any files

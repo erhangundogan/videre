@@ -3,8 +3,8 @@ use std::path::Path;
 
 /// Opens a SQLite connection and switches it to WAL journal mode - allows
 /// one writer plus many concurrent readers without "database is locked"
-/// errors, which matters once dupe-watch (writing in the background) and a
-/// running dupe-report --show-faces server (reading/writing) hold separate
+/// errors, which matters once videre watch (writing in the background) and a
+/// running videre report --show-faces server (reading/writing) hold separate
 /// connections to the same file at the same time. WAL mode persists in the
 /// database file itself once set, so this is idempotent - safe to call on
 /// every connection open, not just the first.
