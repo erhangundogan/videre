@@ -28,6 +28,74 @@ pub struct DuplicateGroup {
     pub files: Vec<FileRecord>,
 }
 
+/// Version of the --json output schema. Additive changes (new fields) do not
+/// bump this; removals or renames would.
+pub const SCHEMA_VERSION: u32 = 1;
+
+/// One exact-duplicate group in `dedupe --json`: byte-identical files split
+/// into the one to keep (oldest by the KEEP rule) and the rest to remove.
+#[derive(Debug, Serialize)]
+pub struct DupGroupJson {
+    pub hash: String,
+    pub keep: FileRecord,
+    pub remove: Vec<FileRecord>,
+}
+
+impl From<DuplicateGroup> for DupGroupJson {
+    fn from(group: DuplicateGroup) -> Self {
+        let mut files = group.files.into_iter();
+        let keep = files.next().expect("duplicate groups always have >= 2 files");
+        DupGroupJson { hash: group.hash, keep, remove: files.collect() }
+    }
+}
+
+/// One perceptual-hash near-duplicate group in `dedupe --json --similar`.
+/// Deliberately a flat review cluster with no keep/remove split: these files
+/// are NOT byte-identical, so no deletion is safe without human/agent judgment.
+#[derive(Debug, Serialize)]
+pub struct SimilarGroupJson {
+    pub hash: String,
+    pub files: Vec<FileRecord>,
+}
+
+impl From<DuplicateGroup> for SimilarGroupJson {
+    fn from(group: DuplicateGroup) -> Self {
+        SimilarGroupJson { hash: group.hash, files: group.files }
+    }
+}
+
+/// Top-level document for `dedupe --json`.
+#[derive(Debug, Serialize)]
+pub struct DedupeJson {
+    pub schema_version: u32,
+    pub scanned: usize,
+    pub duplicate_groups: Vec<DupGroupJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub similar_groups: Option<Vec<SimilarGroupJson>>,
+}
+
+/// Error document: in --json mode stdout always carries exactly one valid JSON
+/// object, so runtime failures are emitted as this instead of leaving stdout empty.
+#[derive(Debug, Serialize)]
+pub struct ErrorJson {
+    pub schema_version: u32,
+    pub error: ErrorBody,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ErrorBody {
+    pub message: String,
+}
+
+impl ErrorJson {
+    pub fn from_err(e: &anyhow::Error) -> Self {
+        ErrorJson {
+            schema_version: SCHEMA_VERSION,
+            error: ErrorBody { message: format!("{e:#}") },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,5 +176,75 @@ mod tests {
         assert!(!json.contains("gps_lon"));
         assert!(!json.contains("width"));
         assert!(!json.contains("height"));
+    }
+
+    fn rec(path: &str, hash: &str) -> FileRecord {
+        FileRecord {
+            path: path.to_string(),
+            hash: hash.to_string(),
+            size_bytes: 1,
+            created_at: None,
+            modified_at: None,
+            ext: "jpg".to_string(),
+            phash: None,
+            exif_date: None,
+            gps_lat: None,
+            gps_lon: None,
+            width: None,
+            height: None,
+        }
+    }
+
+    #[test]
+    fn dup_group_json_splits_keep_and_remove() {
+        let group = DuplicateGroup {
+            hash: "h".to_string(),
+            files: vec![rec("/keep.jpg", "h"), rec("/rm1.jpg", "h"), rec("/rm2.jpg", "h")],
+        };
+        let json_group = DupGroupJson::from(group);
+        assert_eq!(json_group.keep.path, "/keep.jpg");
+        assert_eq!(json_group.remove.len(), 2);
+        assert_eq!(json_group.remove[0].path, "/rm1.jpg");
+    }
+
+    #[test]
+    fn dedupe_json_omits_similar_groups_when_none() {
+        let doc = DedupeJson {
+            schema_version: SCHEMA_VERSION,
+            scanned: 3,
+            duplicate_groups: vec![],
+            similar_groups: None,
+        };
+        let json = serde_json::to_string(&doc).unwrap();
+        assert!(json.starts_with("{\"schema_version\":1"));
+        assert!(!json.contains("similar_groups"));
+    }
+
+    #[test]
+    fn dedupe_json_includes_similar_groups_when_some() {
+        let doc = DedupeJson {
+            schema_version: SCHEMA_VERSION,
+            scanned: 2,
+            duplicate_groups: vec![],
+            similar_groups: Some(vec![SimilarGroupJson {
+                hash: "phash:00000000000000ff".to_string(),
+                files: vec![rec("/x.jpg", "111"), rec("/y.jpg", "222")],
+            }]),
+        };
+        let json = serde_json::to_string(&doc).unwrap();
+        assert!(json.contains("\"similar_groups\""));
+        assert!(json.contains("\"files\""));
+        assert!(!json.contains("\"keep\""), "similar groups are flat clusters, not keep/remove");
+    }
+
+    #[test]
+    fn error_json_contains_schema_version_and_message() {
+        let err = anyhow::anyhow!("root cause").context("outer");
+        let doc = ErrorJson::from_err(&err);
+        let json = serde_json::to_string(&doc).unwrap();
+        assert!(json.starts_with("{\"schema_version\":1"));
+        assert!(json.contains("\"error\""));
+        assert!(json.contains("outer"), "message must render the anyhow chain: {json}");
+        assert!(json.contains("root cause"), "chain rendered with {{e:#}}: {json}");
     }
 }
