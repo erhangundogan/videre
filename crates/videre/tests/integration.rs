@@ -178,3 +178,95 @@ fn sqlite_and_output_flags_conflict() {
 
     assert!(!status.success(), "should fail when both --output and --output-sqlite are given");
 }
+
+#[test]
+fn json_output_reports_duplicate_groups() {
+    let scan_dir = tempdir().unwrap();
+    let out_dir = tempdir().unwrap();
+    let output = out_dir.path().join("hashes");
+
+    fs::write(scan_dir.path().join("a.jpg"), b"same content").unwrap();
+    fs::write(scan_dir.path().join("b.jpg"), b"same content").unwrap();
+    fs::write(scan_dir.path().join("c.jpg"), b"different").unwrap();
+
+    let out = Command::new(videre_bin())
+        .arg("dedupe")
+        .arg("--silent")
+        .arg("--output")
+        .arg(&output)
+        .arg("--json")
+        .arg(scan_dir.path())
+        .output()
+        .expect("failed to run videre");
+
+    assert!(out.status.success());
+    let doc: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("stdout must be one valid JSON object");
+    assert_eq!(doc["schema_version"], 1);
+    assert_eq!(doc["scanned"], 3);
+
+    let groups = doc["duplicate_groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 1, "one exact-duplicate group expected");
+    let keep = groups[0]["keep"]["path"].as_str().unwrap();
+    let remove = groups[0]["remove"].as_array().unwrap();
+    assert_eq!(remove.len(), 1);
+    let removed = remove[0]["path"].as_str().unwrap();
+
+    // a.jpg and b.jpg are the identical pair; which is KEEP is date-tie dependent
+    let mut pair = vec![keep.to_string(), removed.to_string()];
+    pair.sort();
+    assert!(pair[0].ends_with("a.jpg") && pair[1].ends_with("b.jpg"),
+        "keep+remove must be exactly the identical pair, got {pair:?}");
+    assert!(keep != removed);
+
+    assert!(doc.get("similar_groups").is_none(),
+        "similar_groups key must be absent without --similar");
+}
+
+#[test]
+fn json_with_similar_flag_includes_similar_groups_key() {
+    let scan_dir = tempdir().unwrap();
+    let out_dir = tempdir().unwrap();
+    let output = out_dir.path().join("hashes");
+
+    // Not decodable as images, so no phash -> similar_groups is present but empty
+    fs::write(scan_dir.path().join("a.jpg"), b"content one").unwrap();
+    fs::write(scan_dir.path().join("b.jpg"), b"content two").unwrap();
+
+    let out = Command::new(videre_bin())
+        .arg("dedupe")
+        .arg("--silent")
+        .arg("--output")
+        .arg(&output)
+        .arg("--similar")
+        .arg("--json")
+        .arg(scan_dir.path())
+        .output()
+        .expect("failed to run videre");
+
+    assert!(out.status.success());
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let similar = doc["similar_groups"]
+        .as_array()
+        .expect("similar_groups key must be present (an array) with --similar");
+    assert!(similar.is_empty());
+}
+
+#[test]
+fn json_error_object_for_missing_directory() {
+    let out = Command::new(videre_bin())
+        .arg("dedupe")
+        .arg("--silent")
+        .arg("--json")
+        .arg("/nonexistent/path/abc123")
+        .output()
+        .expect("failed to run videre");
+
+    assert!(!out.status.success(), "must exit nonzero");
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .expect("even on error, stdout must be one valid JSON object");
+    assert_eq!(doc["schema_version"], 1);
+    let msg = doc["error"]["message"].as_str().unwrap();
+    assert!(msg.contains("does not exist"), "unexpected message: {msg}");
+    assert!(doc.get("duplicate_groups").is_none());
+}

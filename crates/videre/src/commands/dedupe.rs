@@ -1,4 +1,5 @@
 use videre::{hasher, output, scanner, sqlite_output, types};
+use videre::types::{DedupeJson, DupGroupJson, ErrorJson, SimilarGroupJson, SCHEMA_VERSION};
 use rayon::prelude::*;
 use std::path::PathBuf;
 use std::process;
@@ -23,14 +24,35 @@ pub struct DedupeArgs {
     /// Suppress progress output on stderr (duplicate paths are always written to stdout)
     #[arg(long)]
     silent: bool,
+
+    /// Emit a single JSON object on stdout instead of human-readable text
+    #[arg(long)]
+    json: bool,
 }
 
 pub fn run(args: DedupeArgs) -> anyhow::Result<()> {
-    if !args.directory.exists() {
-        eprintln!("Error: directory {:?} does not exist", args.directory);
-        process::exit(1);
+    if args.json {
+        match run_json(&args) {
+            Ok(doc) => {
+                println!("{}", serde_json::to_string(&doc)?);
+                Ok(())
+            }
+            Err(e) => {
+                // stdout must always carry exactly one valid JSON object; the
+                // error goes here (not stderr) and we exit before main's eprintln.
+                println!("{}", serde_json::to_string(&ErrorJson::from_err(&e))?);
+                process::exit(1);
+            }
+        }
+    } else {
+        run_text(args)
     }
+}
 
+/// Scan, hash (in parallel), and optionally phash. Shared by both output modes;
+/// contains no exit calls so the JSON path can also use it. Progress and
+/// warnings go to stderr, gated by --silent, exactly as before.
+fn gather_records(args: &DedupeArgs) -> Vec<types::FileRecord> {
     if !args.silent {
         eprintln!("Scanning {:?}...", args.directory);
     }
@@ -55,8 +77,7 @@ pub fn run(args: DedupeArgs) -> anyhow::Result<()> {
         })
         .collect();
 
-    // Compute pHash for each file if --similar requested
-    let records: Vec<types::FileRecord> = if args.similar {
+    if args.similar {
         records
             .into_iter()
             .map(|mut r| {
@@ -66,7 +87,18 @@ pub fn run(args: DedupeArgs) -> anyhow::Result<()> {
             .collect()
     } else {
         records
-    };
+    }
+}
+
+/// The pre-existing text mode, byte-identical: same stderr text, same
+/// process::exit(1) sites, same stdout lines.
+fn run_text(args: DedupeArgs) -> anyhow::Result<()> {
+    if !args.directory.exists() {
+        eprintln!("Error: directory {:?} does not exist", args.directory);
+        process::exit(1);
+    }
+
+    let records = gather_records(&args);
 
     if let Some(ref db_path) = args.output_sqlite {
         if let Err(e) = sqlite_output::write_records(&records, db_path) {
@@ -113,4 +145,52 @@ pub fn run(args: DedupeArgs) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// JSON mode: identical pipeline, but every failure becomes Err so run() can
+/// emit the error JSON document (text mode's process::exit paths would
+/// otherwise kill the process with empty stdout).
+fn run_json(args: &DedupeArgs) -> anyhow::Result<DedupeJson> {
+    anyhow::ensure!(
+        args.directory.exists(),
+        "directory {:?} does not exist",
+        args.directory
+    );
+
+    let records = gather_records(args);
+
+    if let Some(ref db_path) = args.output_sqlite {
+        sqlite_output::write_records(&records, db_path)
+            .map_err(|e| anyhow::anyhow!("writing to {:?}: {}", db_path, e))?;
+        if !args.silent {
+            eprintln!("Wrote {} record(s) to {:?}", records.len(), db_path);
+        }
+    } else {
+        output::append_records(&records, &args.output)
+            .map_err(|e| anyhow::anyhow!("writing to {:?}: {}", args.output, e))?;
+        if !args.silent {
+            eprintln!("Wrote {} record(s) to {:?}", records.len(), args.output);
+        }
+    }
+
+    // find_duplicate_groups / find_similar_groups only ever return groups with
+    // >= 2 files, which DupGroupJson::from relies on (keep = files[0]).
+    let scanned = records.len();
+    let duplicate_groups = output::find_duplicate_groups(&records)
+        .into_iter()
+        .map(DupGroupJson::from)
+        .collect();
+    let similar_groups = args.similar.then(|| {
+        output::find_similar_groups(&records, 10)
+            .into_iter()
+            .map(SimilarGroupJson::from)
+            .collect()
+    });
+
+    Ok(DedupeJson {
+        schema_version: SCHEMA_VERSION,
+        scanned,
+        duplicate_groups,
+        similar_groups,
+    })
 }
