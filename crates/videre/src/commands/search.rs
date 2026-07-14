@@ -1,4 +1,6 @@
 use anyhow::{Context, Result};
+use serde::Serialize;
+use videre::types::{ErrorJson, SCHEMA_VERSION};
 use videre_core::{embeddings, vectors};
 use videre_ml::{device, model, search};
 use std::path::PathBuf;
@@ -23,12 +25,82 @@ pub struct SearchArgs {
     #[arg(short = 'k', long, default_value_t = 20)]
     top_k: usize,
 
-    /// Prepend the cosine score to each output line
+    /// Prepend the cosine score to each output line (no-op with --json: score is always included)
     #[arg(long)]
     scores: bool,
+
+    /// Emit a single JSON object on stdout instead of human-readable text
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct SearchJson {
+    schema_version: u32,
+    query: QueryJson,
+    count: usize,
+    results: Vec<SearchHitJson>,
+}
+
+#[derive(Debug, Serialize)]
+struct QueryJson {
+    kind: &'static str,
+    value: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SearchHitJson {
+    path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    score: Option<f32>,
 }
 
 pub fn run(args: SearchArgs) -> Result<()> {
+    if args.json {
+        match run_json(&args) {
+            Ok(doc) => {
+                println!("{}", serde_json::to_string(&doc)?);
+                Ok(())
+            }
+            Err(e) => {
+                // stdout must always carry exactly one valid JSON object; the
+                // error goes here (not stderr) and we exit before main's eprintln.
+                println!("{}", serde_json::to_string(&ErrorJson::from_err(&e))?);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        run_text(&args)
+    }
+}
+
+fn run_text(args: &SearchArgs) -> Result<()> {
+    let (_query, hits) = collect_hits(args)?;
+    for hit in hits {
+        match hit.score {
+            Some(score) if args.scores => println!("{score:.4}\t{}", hit.path),
+            _ => println!("{}", hit.path),
+        }
+    }
+    Ok(())
+}
+
+fn run_json(args: &SearchArgs) -> Result<SearchJson> {
+    let (query, results) = collect_hits(args)?;
+    Ok(SearchJson {
+        schema_version: SCHEMA_VERSION,
+        query,
+        count: results.len(),
+        results,
+    })
+}
+
+/// The single query pipeline behind both output modes. Person hits carry only
+/// a path (person search returns bare paths, no hash/score); text and image
+/// hits carry hash + cosine score, one entry per on-disk path of a matched hash.
+fn collect_hits(args: &SearchArgs) -> Result<(QueryJson, Vec<SearchHitJson>)> {
     let conn = videre_core::db::open_wal(&args.db)
         .with_context(|| format!("open {}", args.db.display()))?;
 
@@ -37,10 +109,11 @@ pub fn run(args: SearchArgs) -> Result<()> {
         if paths.is_empty() {
             eprintln!("No confirmed photos found for person: {name}");
         }
-        for path in paths {
-            println!("{path}");
-        }
-        return Ok(());
+        let hits = paths
+            .into_iter()
+            .map(|path| SearchHitJson { path, hash: None, score: None })
+            .collect();
+        return Ok((QueryJson { kind: "person", value: name.clone() }, hits));
     }
 
     let corpus_raw = embeddings::load_embeddings(&conn, model::MODEL_ID)?;
@@ -56,21 +129,70 @@ pub fn run(args: SearchArgs) -> Result<()> {
         .collect();
 
     let embedder = model::Embedder::load(device::best_device())?;
-    let query_vec = match (&args.query, &args.image) {
-        (Some(text), None) => embedder.embed_text(text)?,
-        (None, Some(img)) => model::embed_image_file(&embedder, img)?,
+    let (query_vec, query) = match (&args.query, &args.image) {
+        (Some(text), None) => (
+            embedder.embed_text(text)?,
+            QueryJson { kind: "text", value: text.clone() },
+        ),
+        (None, Some(img)) => (
+            model::embed_image_file(&embedder, img)?,
+            QueryJson { kind: "image", value: img.display().to_string() },
+        ),
         _ => anyhow::bail!("provide either a text query or --image <path>"),
     };
 
-    let hits = search::top_k(&query_vec, &corpus, args.top_k);
-    for (hash, score) in hits {
+    let mut hits = Vec::new();
+    for (hash, score) in search::top_k(&query_vec, &corpus, args.top_k) {
         for path in embeddings::paths_for_hash(&conn, &hash)? {
-            if args.scores {
-                println!("{score:.4}\t{path}");
-            } else {
-                println!("{path}");
-            }
+            hits.push(SearchHitJson {
+                path,
+                hash: Some(hash.clone()),
+                score: Some(score),
+            });
         }
     }
-    Ok(())
+    Ok((query, hits))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_hit_serializes_with_hash_and_score() {
+        let doc = SearchJson {
+            schema_version: SCHEMA_VERSION,
+            query: QueryJson { kind: "text", value: "sunset".to_string() },
+            count: 1,
+            results: vec![SearchHitJson {
+                path: "/a.jpg".to_string(),
+                hash: Some("abc".to_string()),
+                score: Some(0.5),
+            }],
+        };
+        let json = serde_json::to_string(&doc).unwrap();
+        assert!(json.starts_with("{\"schema_version\":1"));
+        assert!(json.contains("\"kind\":\"text\""));
+        assert!(json.contains("\"hash\":\"abc\""));
+        assert!(json.contains("\"score\":0.5"));
+        assert!(json.contains("\"count\":1"));
+    }
+
+    #[test]
+    fn person_hit_omits_hash_and_score_keys() {
+        let doc = SearchJson {
+            schema_version: SCHEMA_VERSION,
+            query: QueryJson { kind: "person", value: "Alice".to_string() },
+            count: 1,
+            results: vec![SearchHitJson {
+                path: "/a.jpg".to_string(),
+                hash: None,
+                score: None,
+            }],
+        };
+        let json = serde_json::to_string(&doc).unwrap();
+        assert!(!json.contains("hash"));
+        assert!(!json.contains("score"));
+        assert!(json.contains("\"path\":\"/a.jpg\""));
+    }
 }
