@@ -19,6 +19,10 @@ enum Command {
     Dedupe(commands::dedupe::DedupeArgs),
     /// Generate an HTML review page, or serve the live report/labeling UI
     Report(commands::report::ReportArgs),
+    /// Set each file's mtime to its EXIF shoot date
+    FixDates(commands::fix_dates::FixDatesArgs),
+    /// Remove stale rows, sync metadata, clean orphan embeddings
+    Prune(commands::prune::PruneArgs),
 }
 
 fn main() {
@@ -26,6 +30,8 @@ fn main() {
     let result = match cli.command {
         Command::Dedupe(args) => commands::dedupe::run(args),
         Command::Report(args) => commands::report::run(args),
+        Command::FixDates(args) => commands::fix_dates::run(args),
+        Command::Prune(args) => commands::prune::run(args),
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");
