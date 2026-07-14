@@ -5,7 +5,7 @@ use std::path::PathBuf;
 /// only needs converting once. Mirrors this project's existing
 /// `~/.cache/ort/` convention for cached model weights.
 pub fn cache_dir() -> PathBuf {
-    dirs_cache_dir().join("dupe").join("thumbnails")
+    dirs_cache_dir().join("videre").join("thumbnails")
 }
 
 /// Path to a cached thumbnail for `hash` at `size` pixels (e.g. 240 or
@@ -35,6 +35,29 @@ fn dirs_cache_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".cache"))
 }
 
+/// One-time migration from the pre-rename cache location. Thumbnails are
+/// content-hash keyed and expensive to regenerate for large HEIC libraries,
+/// so a rename of the tool should not orphan them. Only fires when the old
+/// dir exists and the new one does not; a plain rename, so it is atomic on
+/// the same filesystem and a no-op on any error (cache regenerates lazily).
+pub fn migrate_legacy_dupe_cache() {
+    let old = dirs_cache_dir().join("dupe").join("thumbnails");
+    let new = cache_dir();
+    migrate_dir(&old, &new);
+}
+
+fn migrate_dir(old: &std::path::Path, new: &std::path::Path) {
+    if old.is_dir() && !new.exists() {
+        if let Some(parent) = new.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::rename(old, new);
+        if let Some(old_parent) = old.parent() {
+            let _ = std::fs::remove_dir(old_parent); // only removes if empty
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -52,5 +75,24 @@ mod tests {
     #[test]
     fn thumb_exists_false_for_missing_file() {
         assert!(!thumb_exists("nonexistent-hash-xyz", 240));
+    }
+
+    #[test]
+    fn cache_dir_is_under_videre() {
+        assert!(cache_dir().to_string_lossy().contains("videre"));
+        assert!(!cache_dir().to_string_lossy().contains("/dupe/"));
+    }
+
+    #[test]
+    fn migrate_dir_moves_old_into_place() {
+        let tmp = std::env::temp_dir().join(format!("thumb_migrate_{}", std::process::id()));
+        let old = tmp.join("old_cache");
+        let new = tmp.join("new_cache");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("h_240.jpg"), b"x").unwrap();
+        migrate_dir(&old, &new);
+        assert!(new.join("h_240.jpg").exists(), "cached file must survive migration");
+        assert!(!old.exists(), "old dir must be gone after migration");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
