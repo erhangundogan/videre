@@ -1,13 +1,8 @@
-use clap::Parser;
 use filetime::FileTime;
 use std::path::PathBuf;
 
-#[derive(Parser)]
-#[command(
-    name = "dupe-fix-dates",
-    about = "Set modified_at to exif_date for files in a dupe SQLite database"
-)]
-struct Args {
+#[derive(clap::Args)]
+pub struct FixDatesArgs {
     /// SQLite database produced by: dupe --output-sqlite <db>
     db: PathBuf,
 
@@ -20,9 +15,7 @@ struct Args {
     silent: bool,
 }
 
-fn main() {
-    let args = Args::parse();
-
+pub fn run(args: FixDatesArgs) -> anyhow::Result<()> {
     if !args.db.exists() {
         eprintln!("Error: {:?} does not exist", args.db);
         std::process::exit(1);
@@ -116,4 +109,6 @@ fn main() {
     if errors > 0 {
         std::process::exit(1);
     }
+
+    Ok(())
 }

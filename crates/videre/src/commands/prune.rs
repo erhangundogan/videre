@@ -1,17 +1,10 @@
 use chrono::{DateTime, Utc};
-use clap::Parser;
 use rusqlite::Connection;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-#[derive(Parser)]
-#[command(
-    name = "dupe-prune",
-    about = "Remove stale rows and sync file metadata in a dupe SQLite database.\n\
-             Removes rows for files no longer on disk, refreshes modified_at for\n\
-             surviving files from the filesystem, and removes orphan embeddings."
-)]
-struct Args {
+#[derive(clap::Args)]
+pub struct PruneArgs {
     /// SQLite database produced by: dupe --output-sqlite <db>
     db: PathBuf,
 
@@ -39,9 +32,7 @@ fn embeddings_table_exists(conn: &Connection) -> bool {
         > 0
 }
 
-fn main() {
-    let args = Args::parse();
-
+pub fn run(args: PruneArgs) -> anyhow::Result<()> {
     if !args.db.exists() {
         eprintln!("Error: {:?} does not exist", args.db);
         std::process::exit(1);
@@ -154,4 +145,6 @@ fn main() {
     if errors > 0 {
         std::process::exit(1);
     }
+
+    Ok(())
 }

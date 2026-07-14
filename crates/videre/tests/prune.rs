@@ -6,7 +6,7 @@ fn prune_bin() -> std::path::PathBuf {
     let mut path = std::env::current_exe().unwrap();
     path.pop(); // deps/
     path.pop(); // debug/
-    path.push("dupe-prune");
+    path.push("videre");
     path
 }
 
@@ -95,11 +95,11 @@ fn embedding_exists(db: &std::path::Path, hash: &str) -> bool {
 
 fn run_prune(db: &std::path::Path, dry_run: bool) {
     let mut cmd = Command::new(prune_bin());
-    cmd.arg(db).arg("--silent");
+    cmd.arg("prune").arg(db).arg("--silent");
     if dry_run {
         cmd.arg("--dry-run");
     }
-    let status = cmd.status().expect("failed to run dupe-prune");
+    let status = cmd.status().expect("failed to run videre prune");
     assert!(status.success());
 }
 
