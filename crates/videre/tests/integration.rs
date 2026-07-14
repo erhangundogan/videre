@@ -2,7 +2,7 @@ use std::fs;
 use std::process::Command;
 use tempfile::tempdir;
 
-fn dupe_bin() -> std::path::PathBuf {
+fn videre_bin() -> std::path::PathBuf {
     let mut path = std::env::current_exe().unwrap();
     path.pop(); // deps/
     path.pop(); // debug/
@@ -21,14 +21,14 @@ fn exact_duplicates_appear_in_output_file() {
     fs::write(scan_dir.path().join("b.jpg"), b"same content").unwrap();
     fs::write(scan_dir.path().join("c.jpg"), b"different").unwrap();
 
-    let status = Command::new(dupe_bin())
+    let status = Command::new(videre_bin())
         .arg("dedupe")
         .arg("--silent")
         .arg("--output")
         .arg(&output)
         .arg(scan_dir.path())
         .status()
-        .expect("failed to run dupe");
+        .expect("failed to run videre");
 
     assert!(status.success());
 
@@ -50,12 +50,12 @@ fn exact_duplicates_appear_in_output_file() {
 
 #[test]
 fn missing_directory_exits_nonzero() {
-    let status = Command::new(dupe_bin())
+    let status = Command::new(videre_bin())
         .arg("dedupe")
         .arg("--silent")
         .arg("/nonexistent/path/abc123")
         .status()
-        .expect("failed to run dupe");
+        .expect("failed to run videre");
     assert!(!status.success());
 }
 
@@ -71,14 +71,14 @@ fn exif_fields_populated_for_jpeg_with_exif() {
     )
     .unwrap();
 
-    let status = Command::new(dupe_bin())
+    let status = Command::new(videre_bin())
         .arg("dedupe")
         .arg("--silent")
         .arg("--output")
         .arg(&output)
         .arg(scan_dir.path())
         .status()
-        .expect("failed to run dupe");
+        .expect("failed to run videre");
 
     assert!(status.success());
 
@@ -101,14 +101,14 @@ fn sqlite_output_writes_records_to_db() {
     fs::write(scan_dir.path().join("a.jpg"), b"content alpha").unwrap();
     fs::write(scan_dir.path().join("b.jpg"), b"content beta").unwrap();
 
-    let status = Command::new(dupe_bin())
+    let status = Command::new(videre_bin())
         .arg("dedupe")
         .arg("--silent")
         .arg("--output-sqlite")
         .arg(&db_path)
         .arg(scan_dir.path())
         .status()
-        .expect("failed to run dupe");
+        .expect("failed to run videre");
 
     assert!(status.success());
     assert!(db_path.exists());
@@ -129,27 +129,27 @@ fn sqlite_output_upserts_on_repeated_run() {
     fs::write(scan_dir.path().join("photo.jpg"), b"original content").unwrap();
 
     // First run
-    Command::new(dupe_bin())
+    Command::new(videre_bin())
         .arg("dedupe")
         .arg("--silent")
         .arg("--output-sqlite")
         .arg(&db_path)
         .arg(scan_dir.path())
         .status()
-        .expect("failed to run dupe")
+        .expect("failed to run videre")
         .success()
         .then_some(())
         .expect("first run failed");
 
     // Second run with same folder — should overwrite, not append
-    Command::new(dupe_bin())
+    Command::new(videre_bin())
         .arg("dedupe")
         .arg("--silent")
         .arg("--output-sqlite")
         .arg(&db_path)
         .arg(scan_dir.path())
         .status()
-        .expect("failed to run dupe")
+        .expect("failed to run videre")
         .success()
         .then_some(())
         .expect("second run failed");
@@ -166,7 +166,7 @@ fn sqlite_and_output_flags_conflict() {
     let scan_dir = tempdir().unwrap();
     let out_dir = tempdir().unwrap();
 
-    let status = Command::new(dupe_bin())
+    let status = Command::new(videre_bin())
         .arg("dedupe")
         .arg("--output")
         .arg(out_dir.path().join("hashes"))
@@ -174,7 +174,7 @@ fn sqlite_and_output_flags_conflict() {
         .arg(out_dir.path().join("hashes.db"))
         .arg(scan_dir.path())
         .status()
-        .expect("failed to run dupe");
+        .expect("failed to run videre");
 
     assert!(!status.success(), "should fail when both --output and --output-sqlite are given");
 }

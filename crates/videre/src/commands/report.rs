@@ -2,7 +2,6 @@ use axum::extract::{Json as AxumJson, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::Router;
-use clap::Parser;
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -11,9 +10,8 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-#[derive(Parser)]
-#[command(name = "dupe-report", about = "Generate an HTML duplicate report from a dupe SQLite database")]
-struct Args {
+#[derive(clap::Args)]
+pub struct ReportArgs {
     /// SQLite database produced by: dupe --output-sqlite <db>
     db: PathBuf,
 
@@ -2507,9 +2505,7 @@ fn serve_faces(db: &Path, opts: ServeOptions) -> Result<(), Box<dyn std::error::
     rt.block_on(serve_faces_async(db, opts))
 }
 
-fn main() {
-    let args = Args::parse();
-
+pub fn run(args: ReportArgs) -> anyhow::Result<()> {
     if !args.db.exists() {
         eprintln!("Error: {:?} does not exist", args.db);
         std::process::exit(1);
@@ -2528,7 +2524,7 @@ fn main() {
             eprintln!("Error: {e}");
             std::process::exit(1);
         }
-        return;
+        return Ok(());
     }
 
     if args.heic_original && !args.heic {
@@ -2576,6 +2572,8 @@ fn main() {
         stats.duplicate_files,
         format_bytes(stats.wasted_bytes)
     );
+
+    Ok(())
 }
 
 #[cfg(test)]
