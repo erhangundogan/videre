@@ -147,6 +147,20 @@ fn run_faces_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> 
     Ok(())
 }
 
+/// Writes `img` as a JPEG to `tmp_path`, then atomically renames it to
+/// `final_path`. Returns true on success.
+///
+/// `image::DynamicImage::save()` infers the encoder from the file
+/// extension via `Path::extension()`; a tmp path like `hash_240.tmp19181`
+/// has extension `tmp19181`, which maps to no encoder and always fails.
+/// The tmp-file-then-rename pattern is correct for atomic publishing into
+/// the cache; only the encode step must not rely on extension inference,
+/// so the format is passed explicitly.
+fn publish_thumb(img: &image::DynamicImage, tmp_path: &std::path::Path, final_path: &std::path::Path) -> bool {
+    img.save_with_format(tmp_path, image::ImageFormat::Jpeg).is_ok()
+        && std::fs::rename(tmp_path, final_path).is_ok()
+}
+
 fn run_heic_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> {
     let heic_paths = dedup_paths_by_hash(conn, "ext = 'heic'")?;
     let mut converted = 0usize;
@@ -173,9 +187,8 @@ fn run_heic_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> {
                         img.clone()
                     };
                     let tmp_path = videre_core::thumb_cache::thumb_tmp_path(&hash, size);
-                    if resized.save(&tmp_path).is_ok()
-                        && std::fs::rename(&tmp_path, videre_core::thumb_cache::thumb_path(&hash, size)).is_ok()
-                    {
+                    let final_path = videre_core::thumb_cache::thumb_path(&hash, size);
+                    if publish_thumb(&resized, &tmp_path, &final_path) {
                         converted += 1;
                     } else {
                         failed += 1;
@@ -241,4 +254,31 @@ fn run_scan_stage(args: &WatchArgs) -> Result<()> {
         eprintln!("videre watch: scan stage wrote {} record(s)", records.len());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod publish_thumb_tests {
+    use super::*;
+
+    #[test]
+    fn publish_thumb_writes_jpeg_despite_tmp_extension() {
+        // Regression test: the watch heic stage writes through a tmp path
+        // shaped like `hash_240.tmp<pid>` (see thumb_cache::thumb_tmp_path),
+        // then renames it into place. image::DynamicImage::save() infers the
+        // encoder from the file extension, and a ".tmp<pid>" suffix maps to
+        // no encoder, so a plain save() always fails on this tmp path shape.
+        let tmp_dir = std::env::temp_dir().join(format!("publish_thumb_test_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let tmp_path = tmp_dir.join(format!("hash_240.tmp{}", std::process::id()));
+        let final_path = tmp_dir.join("hash_240.jpg");
+
+        let img = image::DynamicImage::new_rgb8(4, 4);
+        let ok = publish_thumb(&img, &tmp_path, &final_path);
+
+        assert!(ok, "publish_thumb should succeed even though the tmp path has no recognizable extension");
+        assert!(final_path.exists(), "final thumbnail file should exist after publish");
+        assert!(!tmp_path.exists(), "tmp file should be gone after rename");
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
 }
