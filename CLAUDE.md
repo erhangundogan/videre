@@ -18,6 +18,7 @@ Options:
   --output-sqlite <path>   SQLite output file; upserts by path; mutually exclusive with --output
   --similar                Also find visually similar images (perceptual hash)
   --silent                 Suppress progress output on stderr (stdout paths are always written)
+  --json                   Emit a single JSON object on stdout instead of human-readable text
 ```
 
 `--output` and `--output-sqlite` cannot be used together: passing both is an error.
@@ -28,6 +29,8 @@ Options:
 - **stderr**: scan progress and summary (suppressed by `--silent`)
 
 KEEP candidate within each group = oldest `exif_date`; falls back to `min(created_at, modified_at)` if absent. `exif_date` values of `0000-00-00T00:00:00` (cameras with unset clocks) are treated as absent.
+
+With `--json`, stdout is instead one compact JSON object, always (an error object plus a nonzero exit code on failure), never the REMOVE-path lines above.
 
 ## Build & run
 
@@ -251,6 +254,10 @@ is still available from the scan).
 `videre search <db> "query"` or `videre search <db> --image photo.jpg` prints matching
 paths to stdout (all duplicate paths per matched hash). `-k` top-k (default 20),
 `--scores` prepends cosine score. Brute-force exact scan; no ANN index at this scale.
+`videre search ... --json` emits a single JSON document (`schema_version`, `query`,
+`count`, `results` with per-path `hash`/`score`; `--person` hits carry `path` only)
+instead of the printed paths above; `--scores` is a no-op under `--json` since the
+score is always included.
 
 `videre search <db> --person "Alice"` queries the `faces` table for confirmed rows whose `person_label` matches (case-insensitive prefix) and prints matching image paths. Requires a prior `videre faces` run and labels applied via `videre report --faces`.
 

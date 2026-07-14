@@ -93,6 +93,7 @@ videre dedupe [OPTIONS] <directory>
 | `--output <path>` | Write results to JSONL (appended on each run, default: `/tmp/hashes`) |
 | `--similar` | Also find visually similar images via dHash perceptual hashing |
 | `--silent` | Suppress progress on stderr (stdout paths are always written) |
+| `--json` | Emit a single JSON object on stdout instead of text |
 
 `--output` and `--output-sqlite` are mutually exclusive.
 
@@ -259,6 +260,12 @@ videre search <db> "birthday cake" -k 10 --scores  # top 10 with cosine scores
 videre search <db> --person "Alice"                # find all photos of Alice (requires videre faces)
 ```
 
+| Flag | Description |
+|------|-------------|
+| `--json` | Emit a single JSON object on stdout instead of text |
+
+`--scores` is a no-op under `--json`: the score is always included in each result.
+
 On macOS, inference uses Metal (Apple Silicon GPU). On Linux, CPU only - embedding large collections will be significantly slower. CUDA support can be enabled by adding `features = ["cuda"]` to the candle dependencies in `crates/videre-ml/Cargo.toml`.
 
 ---
@@ -274,6 +281,20 @@ videre fix-dates <db> --silent   # apply without per-file output
 ```
 
 Only files with `exif_date` in the database are touched. EXIF time is treated as local system time. Only `mtime` is updated (`created_at` / birth time is not changed). Files that no longer exist on disk are silently skipped and reported in the summary.
+
+---
+
+## JSON output (agentic use)
+
+`videre search` and `videre dedupe` accept `--json`. With it, stdout is always exactly one
+compact JSON object; progress stays on stderr (`--silent` suppresses it). Every document
+starts with `"schema_version": 1`. On failure the object is
+`{"schema_version":1,"error":{"message":"..."}}` and the exit code is nonzero, so callers can
+always parse stdout first and then branch. `dedupe --json` reports exact duplicates as
+`duplicate_groups` with a safe `keep`/`remove` split; with `--similar` it adds review-only
+`similar_groups` (flat file clusters, no keep/remove: near-duplicates are not safe to
+auto-delete). `search --json` returns per-path `results` with `hash` and `score` (omitted for
+`--person` hits).
 
 ---
 
