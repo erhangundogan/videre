@@ -5,7 +5,9 @@ use std::path::PathBuf;
 
 #[derive(clap::Args)]
 pub struct FacesArgs {
-    db: PathBuf,
+    /// SQLite database (default: resolved from ~/.videre; see 'videre config')
+    #[arg(long)]
+    db: Option<PathBuf>,
     #[arg(long)] reprocess: bool,
     /// Skip detection; just re-run clustering on existing embeddings
     #[arg(long)] recluster: bool,
@@ -19,10 +21,11 @@ pub struct FacesArgs {
 }
 
 pub fn run(args: FacesArgs) -> Result<()> {
-    if !args.db.exists() {
-        anyhow::bail!("{:?} does not exist", args.db);
+    let db = super::resolve_reader_db(args.db.clone())?;
+    if !db.exists() {
+        anyhow::bail!("{:?} does not exist", db);
     }
-    let conn = videre_core::db::open_wal(&args.db)?;
+    let conn = videre_core::db::open_wal(&db)?;
     face_db::create_faces_table(&conn)?;
 
     // 1. Determine which hashes to process

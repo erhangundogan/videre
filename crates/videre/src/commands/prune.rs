@@ -5,8 +5,9 @@ use std::time::SystemTime;
 
 #[derive(clap::Args)]
 pub struct PruneArgs {
-    /// SQLite database produced by: videre dedupe --output-sqlite <db>
-    db: PathBuf,
+    /// SQLite database (default: resolved from ~/.videre; see 'videre config')
+    #[arg(long)]
+    db: Option<PathBuf>,
 
     /// Preview changes without modifying the database
     #[arg(long)]
@@ -33,8 +34,10 @@ fn embeddings_table_exists(conn: &Connection) -> bool {
 }
 
 pub fn run(args: PruneArgs) -> anyhow::Result<()> {
-    if !args.db.exists() {
-        eprintln!("Error: {:?} does not exist", args.db);
+    let db = super::resolve_reader_db(args.db.clone())?;
+
+    if !db.exists() {
+        eprintln!("Error: {:?} does not exist", db);
         std::process::exit(1);
     }
 
@@ -42,7 +45,7 @@ pub fn run(args: PruneArgs) -> anyhow::Result<()> {
         eprintln!("Dry run: no changes will be made to the database.");
     }
 
-    let conn = videre_core::db::open_wal(&args.db).expect("failed to open database");
+    let conn = videre_core::db::open_wal(&db).expect("failed to open database");
 
     let paths: Vec<String> = {
         let mut stmt = conn

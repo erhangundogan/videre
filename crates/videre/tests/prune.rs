@@ -93,9 +93,24 @@ fn embedding_exists(db: &std::path::Path, hash: &str) -> bool {
         > 0
 }
 
+#[test]
+fn missing_default_db_prints_friendly_error() {
+    let home = tempdir().unwrap();
+    let out = Command::new(prune_bin())
+        .arg("prune")
+        .arg("--dry-run")
+        .env("VIDERE_HOME", home.path())
+        .output()
+        .expect("failed to run videre prune");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("no database found at"), "{stderr}");
+    assert!(stderr.contains("videre dedupe"), "{stderr}");
+}
+
 fn run_prune(db: &std::path::Path, dry_run: bool) {
     let mut cmd = Command::new(prune_bin());
-    cmd.arg("prune").arg(db).arg("--silent");
+    cmd.arg("prune").arg("--db").arg(db).arg("--silent");
     if dry_run {
         cmd.arg("--dry-run");
     }

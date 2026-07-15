@@ -3,8 +3,9 @@ use std::path::PathBuf;
 
 #[derive(clap::Args)]
 pub struct FixDatesArgs {
-    /// SQLite database produced by: videre dedupe --output-sqlite <db>
-    db: PathBuf,
+    /// SQLite database (default: resolved from ~/.videre; see 'videre config')
+    #[arg(long)]
+    db: Option<PathBuf>,
 
     /// Preview changes without modifying any files
     #[arg(long)]
@@ -16,8 +17,10 @@ pub struct FixDatesArgs {
 }
 
 pub fn run(args: FixDatesArgs) -> anyhow::Result<()> {
-    if !args.db.exists() {
-        eprintln!("Error: {:?} does not exist", args.db);
+    let db = super::resolve_reader_db(args.db.clone())?;
+
+    if !db.exists() {
+        eprintln!("Error: {:?} does not exist", db);
         std::process::exit(1);
     }
 
@@ -25,7 +28,7 @@ pub fn run(args: FixDatesArgs) -> anyhow::Result<()> {
         eprintln!("Dry run: no files will be modified.");
     }
 
-    let conn = videre_core::db::open_wal(&args.db).expect("failed to open database");
+    let conn = videre_core::db::open_wal(&db).expect("failed to open database");
 
     let mut stmt = conn
         .prepare(

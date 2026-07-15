@@ -11,8 +11,6 @@ pub mod watch;
 /// Reader-side db resolution. Explicit paths keep their command's existing
 /// semantics untouched; defaulted paths must already exist (SQLite would
 /// otherwise create an empty db on open and silently serve an empty library).
-// callers arrive with the --db conversion (Tasks 3-4)
-#[allow(dead_code)]
 pub(crate) fn resolve_reader_db(
     explicit: Option<std::path::PathBuf>,
 ) -> anyhow::Result<std::path::PathBuf> {

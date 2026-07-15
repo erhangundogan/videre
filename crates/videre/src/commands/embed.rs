@@ -6,8 +6,9 @@ use std::path::PathBuf;
 
 #[derive(clap::Args)]
 pub struct EmbedArgs {
-    /// SQLite database produced by: videre dedupe --output-sqlite <db>
-    db: PathBuf,
+    /// SQLite database (default: resolved from ~/.videre; see 'videre config')
+    #[arg(long)]
+    db: Option<PathBuf>,
 
     /// Inference batch size
     #[arg(long, default_value_t = 32)]
@@ -23,8 +24,9 @@ pub struct EmbedArgs {
 }
 
 pub fn run(args: EmbedArgs) -> Result<()> {
-    let conn = videre_core::db::open_wal(&args.db)
-        .with_context(|| format!("open {}", args.db.display()))?;
+    let db = super::resolve_reader_db(args.db.clone())?;
+    let conn = videre_core::db::open_wal(&db)
+        .with_context(|| format!("open {}", db.display()))?;
     embeddings::ensure_embeddings_table(&conn)?;
 
     let pending = embeddings::pending_images(&conn, model::MODEL_ID)?;
