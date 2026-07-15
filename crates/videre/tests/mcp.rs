@@ -244,3 +244,62 @@ fn find_duplicates_tool_returns_keep_remove_groups() {
 
     client.shutdown();
 }
+
+#[test]
+fn search_person_tool_returns_document() {
+    let dir = tempdir().unwrap();
+    let db = make_db(dir.path());
+    let mut client = McpClient::start(&db);
+    let resp = client.call_tool(5, "search", json!({"person": "Alice"}));
+    let doc = &resp["result"]["structuredContent"];
+    assert_eq!(doc["schema_version"], 1, "full response: {resp}");
+    assert_eq!(doc["query"]["kind"], "person");
+    assert_eq!(doc["query"]["value"], "Alice");
+    // Alice's confirmed faces span hash1 (2 duplicate paths: alice1.jpg,
+    // alice1_copy.jpg) and hash2 (alice2.jpg): 3 distinct paths total.
+    assert_eq!(doc["count"], 3);
+    let results = doc["results"].as_array().unwrap();
+    assert_eq!(results.len(), 3);
+    for r in results {
+        assert!(r["path"].as_str().unwrap().contains("alice"));
+        assert!(r.get("hash").is_none(), "person hits omit hash: {r}");
+        assert!(r.get("score").is_none(), "person hits omit score: {r}");
+    }
+    client.shutdown();
+}
+
+#[test]
+fn search_text_without_embeddings_is_tool_error_and_server_survives() {
+    let dir = tempdir().unwrap();
+    let db = make_db(dir.path()); // embeddings table exists but is empty
+    let mut client = McpClient::start(&db);
+
+    let resp = client.call_tool(6, "search", json!({"query": "beach"}));
+    assert_eq!(resp["result"]["isError"], true, "full response: {resp}");
+    let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("no embeddings found"), "{text}");
+
+    // the failure must not kill the server: a follow-up call still works
+    let resp2 = client.call_tool(7, "stats", json!({}));
+    assert_eq!(resp2["result"]["structuredContent"]["schema_version"], 1);
+    client.shutdown();
+}
+
+#[test]
+fn search_with_zero_or_two_query_modes_is_tool_error() {
+    let dir = tempdir().unwrap();
+    let db = make_db(dir.path());
+    let mut client = McpClient::start(&db);
+
+    let none = client.call_tool(8, "search", json!({}));
+    assert_eq!(none["result"]["isError"], true, "{none}");
+    assert!(none["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("exactly one"));
+
+    let two = client.call_tool(9, "search", json!({"query": "x", "person": "Alice"}));
+    assert_eq!(two["result"]["isError"], true, "{two}");
+
+    client.shutdown();
+}

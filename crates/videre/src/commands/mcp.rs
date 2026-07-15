@@ -10,6 +10,7 @@ use rmcp::{
 use rusqlite::Connection;
 use serde::Serialize;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use videre::types::SCHEMA_VERSION;
 
@@ -42,6 +43,7 @@ pub fn run(args: McpArgs) -> Result<()> {
 #[derive(Clone)]
 struct VidereServer {
     db: PathBuf,
+    embedder: Arc<std::sync::Mutex<Option<videre_ml::model::Embedder>>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -49,6 +51,7 @@ impl VidereServer {
     fn new(db: PathBuf) -> Self {
         Self {
             db,
+            embedder: Arc::new(std::sync::Mutex::new(None)),
             tool_router: Self::tool_router(),
         }
     }
@@ -202,6 +205,92 @@ fn build_find_duplicates(db: &std::path::Path, include_similar: bool) -> anyhow:
     })
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct SearchParams {
+    /// Text query, e.g. "sunset on beach" (requires prior 'videre embed')
+    #[serde(default)]
+    query: Option<String>,
+    /// Person name, confirmed faces only (requires 'videre faces' + labeling)
+    #[serde(default)]
+    person: Option<String>,
+    /// Path to a local example image to search by (requires prior 'videre embed')
+    #[serde(default)]
+    image_path: Option<String>,
+    /// Maximum matched hashes to return (default 20); paths may exceed this
+    /// when duplicate files share a hash
+    #[serde(default)]
+    top_k: Option<usize>,
+}
+
+fn build_search(
+    db: &std::path::Path,
+    embedder_cell: &std::sync::Mutex<Option<videre_ml::model::Embedder>>,
+    params: &SearchParams,
+) -> anyhow::Result<crate::commands::search::SearchJson> {
+    use crate::commands::search::{self as search_cmd, QueryJson};
+
+    let mode_count = [
+        params.query.is_some(),
+        params.person.is_some(),
+        params.image_path.is_some(),
+    ]
+    .iter()
+    .filter(|b| **b)
+    .count();
+    anyhow::ensure!(
+        mode_count == 1,
+        "provide exactly one of 'query', 'person', or 'image_path'"
+    );
+
+    let conn = videre_core::db::open_wal(db)?;
+    let top_k = params.top_k.unwrap_or(20);
+
+    let (query, results) = if let Some(name) = &params.person {
+        let hits = search_cmd::person_hits(&conn, name)?;
+        (QueryJson { kind: "person", value: name.clone() }, hits)
+    } else {
+        // Corpus first (fails fast without embeddings, before any model load).
+        let corpus = search_cmd::load_corpus(&conn, db)?;
+
+        let (query_vec, query) = {
+            let mut guard = embedder_cell
+                .lock()
+                .map_err(|_| anyhow::anyhow!("embedder lock poisoned"))?;
+            if guard.is_none() {
+                *guard = Some(videre_ml::model::Embedder::load(
+                    videre_ml::device::best_device(),
+                )?);
+            }
+            let embedder = guard.as_ref().expect("just initialized");
+
+            if let Some(text) = &params.query {
+                (
+                    embedder.embed_text(text)?,
+                    QueryJson { kind: "text", value: text.clone() },
+                )
+            } else {
+                let img =
+                    std::path::PathBuf::from(params.image_path.as_ref().expect("mode checked"));
+                (
+                    videre_ml::model::embed_image_file(embedder, &img)?,
+                    QueryJson { kind: "image", value: img.display().to_string() },
+                )
+            }
+            // guard drops here, before ranked_hits runs
+        };
+
+        let hits = search_cmd::ranked_hits(&conn, &corpus, &query_vec, top_k)?;
+        (query, hits)
+    };
+
+    Ok(search_cmd::SearchJson {
+        schema_version: SCHEMA_VERSION,
+        query,
+        count: results.len(),
+        results,
+    })
+}
+
 #[tool_router]
 impl VidereServer {
     /// Library orientation summary: file/size/hash counts, embedding and face
@@ -228,6 +317,22 @@ impl VidereServer {
     ) -> Result<CallToolResult, McpError> {
         let db = self.db.clone();
         match blocking(move || build_find_duplicates(&db, params.include_similar)).await? {
+            Ok(doc) => json_result(&doc),
+            Err(e) => Ok(tool_error(&e)),
+        }
+    }
+
+    /// Semantic and person search over the indexed library.
+    #[tool(
+        description = "Search the videre library. Provide exactly one of: 'query' (semantic text search), 'person' (labeled person name), or 'image_path' (find similar to a local image). Returns per-path results with hash and cosine score (person hits carry path only). The first text/image search loads the embedding model and may be slow; later calls are fast. Requires 'videre embed' for text/image and 'videre faces' + labeling for person."
+    )]
+    async fn search(
+        &self,
+        Parameters(params): Parameters<SearchParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let db = self.db.clone();
+        let embedder = self.embedder.clone();
+        match blocking(move || build_search(&db, &embedder, &params)).await? {
             Ok(doc) => json_result(&doc),
             Err(e) => Ok(tool_error(&e)),
         }
