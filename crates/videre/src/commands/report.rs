@@ -12,8 +12,9 @@ use std::sync::{Arc, Mutex};
 
 #[derive(clap::Args)]
 pub struct ReportArgs {
-    /// SQLite database produced by: videre dedupe --output-sqlite <db>
-    db: PathBuf,
+    /// SQLite database (default: resolved from ~/.videre; see 'videre config')
+    #[arg(long)]
+    db: Option<PathBuf>,
 
     /// HTML output path [default: <db>_report.html]
     #[arg(short, long)]
@@ -2506,8 +2507,10 @@ fn serve_faces(db: &Path, opts: ServeOptions) -> Result<(), Box<dyn std::error::
 }
 
 pub fn run(args: ReportArgs) -> anyhow::Result<()> {
-    if !args.db.exists() {
-        eprintln!("Error: {:?} does not exist", args.db);
+    let db = super::resolve_reader_db(args.db.clone())?;
+
+    if !db.exists() {
+        eprintln!("Error: {:?} does not exist", db);
         std::process::exit(1);
     }
 
@@ -2520,7 +2523,7 @@ pub fn run(args: ReportArgs) -> anyhow::Result<()> {
             report_heic: args.heic,
             report_heic_original: args.heic_original,
         };
-        if let Err(e) = serve_faces(&args.db, opts) {
+        if let Err(e) = serve_faces(&db, opts) {
             eprintln!("Error: {e}");
             std::process::exit(1);
         }
@@ -2532,11 +2535,11 @@ pub fn run(args: ReportArgs) -> anyhow::Result<()> {
     }
 
     let output = args.output.unwrap_or_else(|| {
-        let stem = args.db.file_stem().unwrap_or_default().to_string_lossy();
-        args.db.with_file_name(format!("{}_report.html", stem))
+        let stem = db.file_stem().unwrap_or_default().to_string_lossy();
+        db.with_file_name(format!("{}_report.html", stem))
     });
 
-    let conn = videre_core::db::open_wal(&args.db).expect("failed to open database");
+    let conn = videre_core::db::open_wal(&db).expect("failed to open database");
     let stats = query_stats(&conn);
     let groups = query_groups(&conn);
     let all_files = args.all.then(|| query_all_files(&conn));
@@ -2551,7 +2554,7 @@ pub fn run(args: ReportArgs) -> anyhow::Result<()> {
         None
     };
     let html = generate_html(
-        &args.db.to_string_lossy(),
+        &db.to_string_lossy(),
         &stats,
         &groups,
         all_files.as_deref(),

@@ -7,8 +7,9 @@ use std::path::PathBuf;
 
 #[derive(clap::Args)]
 pub struct SearchArgs {
-    /// SQLite database with embeddings (run videre embed first)
-    db: PathBuf,
+    /// SQLite database with embeddings (default: resolved from ~/.videre; see 'videre config')
+    #[arg(long)]
+    db: Option<PathBuf>,
 
     /// Text query, e.g. "sunset on beach" (omit when using --image)
     query: Option<String>,
@@ -101,8 +102,9 @@ fn run_json(args: &SearchArgs) -> Result<SearchJson> {
 /// a path (person search returns bare paths, no hash/score); text and image
 /// hits carry hash + cosine score, one entry per on-disk path of a matched hash.
 fn collect_hits(args: &SearchArgs) -> Result<(QueryJson, Vec<SearchHitJson>)> {
-    let conn = videre_core::db::open_wal(&args.db)
-        .with_context(|| format!("open {}", args.db.display()))?;
+    let db = super::resolve_reader_db(args.db.clone())?;
+    let conn = videre_core::db::open_wal(&db)
+        .with_context(|| format!("open {}", db.display()))?;
 
     if let Some(name) = &args.person {
         let paths = videre_core::person_search::search_by_person(&conn, name, None)?;
@@ -122,7 +124,7 @@ fn collect_hits(args: &SearchArgs) -> Result<(QueryJson, Vec<SearchHitJson>)> {
     anyhow::ensure!(
         !corpus_raw.is_empty(),
         "no embeddings found in {} for model {}; run videre embed first",
-        args.db.display(),
+        db.display(),
         model::MODEL_ID
     );
     let corpus: Vec<(String, Vec<f32>)> = corpus_raw

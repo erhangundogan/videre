@@ -44,7 +44,7 @@ fn person_search_prints_confirmed_paths() {
     let db = make_db(dir.path());
     let out = Command::new(bin())
         .arg("search")
-        .arg(&db)
+        .arg("--db").arg(&db)
         .arg("--person")
         .arg("Alice")
         .output()
@@ -71,7 +71,7 @@ fn person_search_empty_for_unknown_name() {
     let db = make_db(dir.path());
     let out = Command::new(bin())
         .arg("search")
-        .arg(&db)
+        .arg("--db").arg(&db)
         .arg("--person")
         .arg("Unknown")
         .output()
@@ -107,7 +107,7 @@ fn person_search_unconfirmed_not_returned() {
     .unwrap();
     let out = Command::new(bin())
         .arg("search")
-        .arg(&db)
+        .arg("--db").arg(&db)
         .arg("--person")
         .arg("Carol")
         .output()
@@ -126,7 +126,7 @@ fn person_search_json_outputs_document() {
     let db = make_db(dir.path());
     let out = Command::new(bin())
         .arg("search")
-        .arg(&db)
+        .arg("--db").arg(&db)
         .arg("--person")
         .arg("Alice")
         .arg("--json")
@@ -153,10 +153,10 @@ fn person_search_json_scores_flag_is_silent_noop() {
     let dir = tempdir().unwrap();
     let db = make_db(dir.path());
     let plain = Command::new(bin())
-        .arg("search").arg(&db).arg("--person").arg("Alice").arg("--json")
+        .arg("search").arg("--db").arg(&db).arg("--person").arg("Alice").arg("--json")
         .output().expect("failed to run videre search");
     let with_scores = Command::new(bin())
-        .arg("search").arg(&db).arg("--person").arg("Alice").arg("--json").arg("--scores")
+        .arg("search").arg("--db").arg(&db).arg("--person").arg("Alice").arg("--json").arg("--scores")
         .output().expect("failed to run videre search");
     assert!(with_scores.status.success(), "--scores with --json must not be rejected");
     assert_eq!(plain.stdout, with_scores.stdout, "--scores must be a no-op under --json");
@@ -171,7 +171,7 @@ fn search_json_error_is_json_object_on_stdout() {
     Connection::open(&db).unwrap();
     let out = Command::new(bin())
         .arg("search")
-        .arg(&db)
+        .arg("--db").arg(&db)
         .arg("beach")
         .arg("--json")
         .output()
@@ -192,7 +192,7 @@ fn person_search_json_empty_is_silent_on_stderr() {
     let db = make_db(dir.path());
     let out = Command::new(bin())
         .arg("search")
-        .arg(&db)
+        .arg("--db").arg(&db)
         .arg("--person")
         .arg("Unknown")
         .arg("--json")
@@ -207,4 +207,59 @@ fn person_search_json_empty_is_silent_on_stderr() {
         !stderr.contains("No confirmed photos"),
         "--json must not print the human not-found line to stderr:\n{stderr}"
     );
+}
+
+#[test]
+fn search_json_missing_default_db_yields_json_error() {
+    let home = tempdir().unwrap();
+    let out = Command::new(bin())
+        .arg("search")
+        .arg("beach")
+        .arg("--json")
+        .env("VIDERE_HOME", home.path())
+        .output()
+        .expect("failed to run videre search");
+    assert!(!out.status.success());
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .expect("stdout must be one valid JSON object even on error");
+    assert_eq!(doc["schema_version"], 1);
+    let msg = doc["error"]["message"].as_str().unwrap();
+    assert!(msg.contains("no database found"), "{msg}");
+}
+
+#[test]
+fn config_default_db_redirects_bare_search_and_explicit_db_wins() {
+    let dir = tempdir().unwrap();
+    let db = make_db(dir.path());
+    let home = tempdir().unwrap();
+
+    let set = Command::new(bin())
+        .arg("config").arg("set").arg("db").arg(&db)
+        .env("VIDERE_HOME", home.path())
+        .status()
+        .unwrap();
+    assert!(set.success());
+
+    // bare search resolves the configured db
+    let out = Command::new(bin())
+        .arg("search").arg("--person").arg("Alice")
+        .env("VIDERE_HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("/tmp/alice1.jpg"));
+
+    // explicit --db wins for one invocation and does not modify config
+    let cfg_before = std::fs::read_to_string(home.path().join("config.toml")).unwrap();
+    let dir2 = tempdir().unwrap();
+    let db2 = make_db(dir2.path());
+    let out2 = Command::new(bin())
+        .arg("search").arg("--db").arg(&db2).arg("--person").arg("Bob")
+        .env("VIDERE_HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(out2.status.success());
+    assert!(String::from_utf8_lossy(&out2.stdout).contains("/tmp/bob.jpg"));
+    let cfg_after = std::fs::read_to_string(home.path().join("config.toml")).unwrap();
+    assert_eq!(cfg_before, cfg_after, "explicit --db must not modify config");
 }

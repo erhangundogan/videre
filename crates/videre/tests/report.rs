@@ -75,7 +75,7 @@ fn fixture_db(
 fn run_report(db: &std::path::Path, all: bool) -> String {
     let out = db.with_extension("html");
     let mut cmd = Command::new(report_bin());
-    cmd.arg("report").arg(db).arg("-o").arg(&out);
+    cmd.arg("report").arg("--db").arg(db).arg("-o").arg(&out);
     if all {
         cmd.arg("--all");
     }
@@ -192,6 +192,7 @@ fn run_report_by_date(db: &std::path::Path) -> String {
     let out = db.with_extension("html");
     Command::new(report_bin())
         .arg("report")
+        .arg("--db")
         .arg(db)
         .arg("-o")
         .arg(&out)
