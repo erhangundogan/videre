@@ -191,12 +191,12 @@ pub(crate) fn person_hits(conn: &Connection, name: &str) -> Result<Vec<SearchHit
 
 /// Load the embedding corpus, erroring if empty. Called BEFORE any model load
 /// so a db without embeddings fails fast without downloading weights.
-pub(crate) fn load_corpus(conn: &Connection, db_label: &str) -> Result<Vec<(String, Vec<f32>)>> {
+pub(crate) fn load_corpus(conn: &Connection, db: &Path) -> Result<Vec<(String, Vec<f32>)>> {
     let corpus_raw = embeddings::load_embeddings(conn, model::MODEL_ID)?;
     anyhow::ensure!(
         !corpus_raw.is_empty(),
         "no embeddings found in {} for model {}; run videre embed first",
-        db_label,
+        db.display(),
         model::MODEL_ID
     );
     Ok(corpus_raw
