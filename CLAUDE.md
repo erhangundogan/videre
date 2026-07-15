@@ -4,7 +4,7 @@ A fast Rust CLI tool for managing a local media library: duplicate detection, se
 
 ## What it does
 
-`videre` is a single binary with nine subcommands. `videre dedupe` scans a directory recursively, hashes every image file (BLAKE3), and writes REMOVE candidates to stdout one per line: ready to pipe into `trash` or `rm`. Bare `videre dedupe <dir>` writes SQLite to the resolved default database (see `~/.videre` below); JSONL output requires `--output`. `videre report` reads the SQLite database and generates an HTML review page (or serves a live web UI). The remaining subcommands (`fix-dates`, `prune`, `embed`, `search`, `faces`, `watch`) operate on the same SQLite database to fix timestamps, sync metadata, compute semantic embeddings, run text/image/person search, and detect/label faces. `videre config` shows or edits the resolved paths and `~/.videre/config.toml` settings.
+`videre` is a single binary with ten subcommands. `videre dedupe` scans a directory recursively, hashes every image file (BLAKE3), and writes REMOVE candidates to stdout one per line: ready to pipe into `trash` or `rm`. Bare `videre dedupe <dir>` writes SQLite to the resolved default database (see `~/.videre` below); JSONL output requires `--output`. `videre report` reads the SQLite database and generates an HTML review page (or serves a live web UI). The remaining subcommands (`fix-dates`, `prune`, `embed`, `search`, `faces`, `watch`) operate on the same SQLite database to fix timestamps, sync metadata, compute semantic embeddings, run text/image/person search, and detect/label faces. `videre config` shows or edits the resolved paths and `~/.videre/config.toml` settings. `videre mcp` serves read-only search/find_duplicates/stats tools over stdio for LLM agents.
 
 Note: `docs/superpowers/` design specs and implementation plans predate the videre rename and refer to the old `dupe-*` binary names historically; they are not rewritten here.
 
@@ -59,6 +59,8 @@ cargo build --release
 ./target/release/videre watch --output-sqlite ~/photos.db ~/Photos       # same, against an explicit db
 ./target/release/videre config                                           # show resolved home dir, config.toml, and db paths
 ./target/release/videre config set db ~/photos.db                        # persist a default db in config.toml
+./target/release/videre mcp                                              # serve MCP tools over stdio, default db
+./target/release/videre mcp --db ~/photos.db                             # same, against an explicit db
 ```
 
 ## Supported file types
@@ -69,7 +71,7 @@ cargo build --release
 
 Every subcommand shares a home directory at `~/.videre` (override with the `VIDERE_HOME` env var), created lazily by writers (`dedupe`, `watch`, `config set`) - readers never create it. It holds `hashes.db` (default SQLite database), `hashes.jsonl` (default JSONL output, only written when `--output` is used bare), and `config.toml` (optional overrides, currently just `default_db`).
 
-Database resolution order for every subcommand: explicit path (`--db` on the six readers - `report`, `fix-dates`, `prune`, `embed`, `search`, `faces`; `--output-sqlite` on the two writers - `dedupe`, `watch`) > `default_db` in `config.toml` > `~/.videre/hashes.db`. Readers never create a database; if the resolved path doesn't exist they print `no database found at <path>; run 'videre dedupe <dir>' first` and exit 1 (arrives as the JSON error object under `search --json`).
+Database resolution order for every subcommand: explicit path (`--db` on the seven readers - `report`, `fix-dates`, `prune`, `embed`, `search`, `faces`, `mcp`; `--output-sqlite` on the two writers - `dedupe`, `watch`) > `default_db` in `config.toml` > `~/.videre/hashes.db`. Readers never create a database; if the resolved path doesn't exist they print `no database found at <path>; run 'videre dedupe <dir>' first` and exit 1 (arrives as the JSON error object under `search --json`).
 
 `videre config` shows the resolved home dir, `config.toml` path, `default_db`, resolved db, and jsonl path. `videre config set db <path>` writes an absolute path to `config.toml` as `default_db`, preserving any other keys already present. `videre config unset db` removes it, falling back to `~/.videre/hashes.db`.
 
@@ -80,9 +82,9 @@ crates/
   videre/
     Cargo.toml
     src/main.rs
-    src/commands/{mod.rs,dedupe.rs,report.rs,fix_dates.rs,prune.rs,embed.rs,search.rs,faces.rs,watch.rs,config.rs}
+    src/commands/{mod.rs,dedupe.rs,report.rs,fix_dates.rs,prune.rs,embed.rs,search.rs,faces.rs,watch.rs,config.rs,mcp.rs}
     src/{lib.rs,scanner.rs,hasher.rs,output.rs,sqlite_output.rs,types.rs}
-    tests/{integration.rs,report.rs,prune.rs,watch.rs,faces_pipeline.rs,faces_server.rs,person_search.rs}
+    tests/{integration.rs,report.rs,prune.rs,watch.rs,faces_pipeline.rs,faces_server.rs,person_search.rs,mcp.rs}
   videre-core/
     Cargo.toml
     src/lib.rs
@@ -123,6 +125,8 @@ The `videre` crate builds a single `[[bin]]` (`videre`, from `src/main.rs`) plus
 - `half`: f16 storage for embeddings
 - `ort`: ONNX Runtime bindings for face detection and embedding
 - InsightFace buffalo_l: SCRFD-10GF face detector + ArcFace w600k_r50 embedder (ONNX weights, auto-downloaded to `~/.cache/ort/`)
+- `rmcp`: official Rust MCP SDK, stdio server for `videre mcp`
+- `schemars`: JSON-schema generation for MCP tool parameters
 
 ## SQLite schema
 
@@ -351,6 +355,34 @@ Four independent stages, selected with `--scan` / `--faces` / `--heic` / `--loca
 Thumbnails land in `~/.cache/videre/thumbnails/`, keyed by content hash rather than file path (`<hash>_240.jpg`, `<hash>_1200.jpg`) - mirrors the project's existing `~/.cache/ort/` convention for cached model weights, and means the same photo scanned into a different database only needs converting once. On first run of any `videre` subcommand, if the pre-rename cache at `~/.cache/dupe/thumbnails/` still exists and `~/.cache/videre/thumbnails/` doesn't, it's migrated automatically (a plain directory rename, atomic on the same filesystem, and a no-op on any error since the cache regenerates lazily). `videre report`'s `/api/raw?path=...&size=N` endpoint (server mode, `--show-faces`) checks this cache first for HEIC requests and serves the cached JPEG directly if present, falling back to a live `qlmanage` conversion otherwise - so running `videre watch --heic` alongside `videre report --show-faces` eliminates the per-request HEIC conversion cost for anything already warmed.
 
 `videre watch` and `videre report --show-faces` are designed to run concurrently against the same SQLite file (see the WAL-mode note in the SQLite schema section above).
+
+## videre mcp
+
+Serves three read-only tools over stdio (line-delimited JSON-RPC, the standard MCP client transport) using the official `rmcp` SDK: `search` (text/person/image, same modes as `videre search`), `find_duplicates` (keep/remove groups, plus review-only similar clusters via `include_similar`), and `stats` (library summary, no params).
+
+```bash
+videre mcp                # default db
+videre mcp --db <path>    # explicit db
+```
+
+Database resolution is identical to every other reader (`--db` > `default_db` in `config.toml` > `~/.videre/hashes.db`), but `mcp` binds the resolved path once at startup for the life of the process rather than per-invocation, so the resolved db must already exist - even an explicit `--db` to a nonexistent path fails at startup with `no database found at <path>; run 'videre dedupe <dir>' first` on stderr, nothing on stdout, exit 1.
+
+Once serving, a failing tool call returns `isError: true` with the rendered anyhow error chain as the result text; the server itself stays alive and keeps serving subsequent calls. All three tools' result documents share `"schema_version": 1` with the CLI's `--json` output and reuse the same shapes (`duplicate_groups`/`keep`/`remove`, `similar_groups`, `results` with `hash`/`score`, omitted for person hits).
+
+The SigLIP embedding model loads lazily on the first text/image search and stays cached in server memory for the life of the process, unlike the CLI which reloads it per invocation. Person search never touches the model.
+
+Client configuration:
+
+```json
+{
+  "mcpServers": {
+    "videre": {
+      "command": "/path/to/videre",
+      "args": ["mcp"]
+    }
+  }
+}
+```
 
 ## Design specs
 
