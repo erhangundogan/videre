@@ -17,6 +17,7 @@ Scans recursively, hashes every image with BLAKE3, and writes duplicate paths to
 | `videre faces` | Detect, embed, and cluster faces; enables person search |
 | `videre watch` | Background loop that keeps scan/faces/HEIC-cache/location data fresh |
 | `videre config` | Show or edit videre's config and default paths (`~/.videre`) |
+| `videre mcp` | Serve read-only MCP tools for LLM agents over stdio |
 
 ## Supported file types
 
@@ -113,7 +114,7 @@ nothing is written just by running a reader.
 **Database resolution order**, used by every subcommand that reads or writes SQLite:
 
 1. An explicit path: `--db <path>` on readers (`report`, `fix-dates`, `prune`, `embed`,
-   `search`, `faces`), `--output-sqlite <path>` on writers (`dedupe`, `watch`)
+   `search`, `faces`, `mcp`), `--output-sqlite <path>` on writers (`dedupe`, `watch`)
 2. `default_db` in `~/.videre/config.toml`, if set
 3. `~/.videre/hashes.db`
 
@@ -371,6 +372,35 @@ always parse stdout first and then branch. `dedupe --json` reports exact duplica
 `similar_groups` (flat file clusters, no keep/remove: near-duplicates are not safe to
 auto-delete). `search --json` returns per-path `results` with `hash` and `score` (omitted for
 `--person` hits).
+
+---
+
+## MCP server (agentic use)
+
+`videre mcp` serves three read-only tools over stdio for MCP clients (Claude Code,
+Cursor, and others): `search` (text/person/image), `find_duplicates` (keep/remove
+groups; review-only similar clusters with include_similar), and `stats` (library
+summary). It binds one database at startup, resolved like every reader:
+`--db <path>`, else `default_db` from `~/.videre/config.toml`, else
+`~/.videre/hashes.db`; the file must exist. Results reflect the last scan (keep it
+fresh with `videre watch`), and tool documents reuse the same shapes and
+`"schema_version": 1` as the CLI `--json` output. The first text/image search loads
+the embedding model (slow once, then cached for the life of the server).
+
+Client configuration:
+
+```json
+{
+  "mcpServers": {
+    "videre": {
+      "command": "/path/to/videre",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Add `"--db", "/path/to/other.db"` to `args` to serve a non-default library.
 
 ---
 
