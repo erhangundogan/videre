@@ -70,6 +70,7 @@ fn show_faces_alone_is_accepted_by_cli_parser() {
     let db = make_db_with_faces(dir.path());
     let mut child = Command::new(env!("CARGO_BIN_EXE_videre"))
         .arg("report")
+        .arg("--db")
         .arg(&db)
         .arg("--show-faces")
         .spawn()
