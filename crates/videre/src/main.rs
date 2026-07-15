@@ -33,6 +33,8 @@ enum Command {
     Watch(commands::watch::WatchArgs),
     /// Show or edit videre's config and default paths (~/.videre)
     Config(commands::config::ConfigArgs),
+    /// Serve read-only MCP tools (search, find_duplicates, stats) over stdio for LLM agents
+    Mcp(commands::mcp::McpArgs),
 }
 
 fn main() {
@@ -48,6 +50,7 @@ fn main() {
         Command::Faces(args) => commands::faces::run(args),
         Command::Watch(args) => commands::watch::run(args),
         Command::Config(args) => commands::config::run(args),
+        Command::Mcp(args) => commands::mcp::run(args),
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");
