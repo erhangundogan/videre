@@ -30,17 +30,21 @@ Later slices can add dry-run preview tools and more; nothing here forecloses tha
 
 ## CLI shape and lifecycle
 
-New (ninth) subcommand:
+New subcommand (amended 2026-07-14 by `2026-07-14-home-dir-defaults-design.md`, which
+implements first):
 
 ```
-videre mcp <db>
+videre mcp [--db <path>]
 ```
 
-- `db` (positional, required): SQLite database produced by `videre dedupe --output-sqlite`.
+- `--db` (optional): SQLite database path. When omitted, resolved exactly like every other
+  reader command: `default_db` from `$VIDERE_HOME/config.toml`, else `$VIDERE_HOME/hashes.db`
+  (`VIDERE_HOME` defaults to `~/.videre`).
 - Serves MCP over stdio until the client closes stdin (normal client shutdown), then exits 0.
-- Startup validation: the db file must already exist. SQLite creates missing files on open,
-  so a typo'd path would otherwise silently serve an empty library. If the file does not
-  exist: one stderr line, exit 1, nothing on stdout.
+- Startup validation: the resolved db file must already exist (mcp is a reader). SQLite
+  creates missing files on open, so a typo'd or empty-library path would otherwise silently
+  serve an empty library. If the file does not exist: one stderr line, exit 1, nothing on
+  stdout.
 - On successful startup, one stderr line (e.g. `videre mcp: serving <db>`), then the protocol
   loop. The pre-dispatch `migrate_legacy_dupe_cache()` call in `main.rs` runs as usual.
 
@@ -51,11 +55,13 @@ Client configuration (documented in README):
   "mcpServers": {
     "videre": {
       "command": "/path/to/videre",
-      "args": ["mcp", "/Users/you/photos.db"]
+      "args": ["mcp"]
     }
   }
 }
 ```
+
+(Add `"--db", "/path/to/other.db"` to `args` to serve a non-default library.)
 
 Server identity: name `videre`, version from `CARGO_PKG_VERSION`.
 
