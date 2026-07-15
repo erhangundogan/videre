@@ -4,7 +4,7 @@ A fast Rust CLI tool for managing a local media library: duplicate detection, se
 
 ## What it does
 
-`videre` is a single binary with eight subcommands. `videre dedupe` scans a directory recursively, hashes every image file (BLAKE3), and writes REMOVE candidates to stdout one per line: ready to pipe into `trash` or `rm`. Results are also saved to JSONL or SQLite for downstream analysis. `videre report` reads the SQLite database and generates an HTML review page (or serves a live web UI). The remaining subcommands (`fix-dates`, `prune`, `embed`, `search`, `faces`, `watch`) operate on the same SQLite database to fix timestamps, sync metadata, compute semantic embeddings, run text/image/person search, and detect/label faces.
+`videre` is a single binary with nine subcommands. `videre dedupe` scans a directory recursively, hashes every image file (BLAKE3), and writes REMOVE candidates to stdout one per line: ready to pipe into `trash` or `rm`. Bare `videre dedupe <dir>` writes SQLite to the resolved default database (see `~/.videre` below); JSONL output requires `--output`. `videre report` reads the SQLite database and generates an HTML review page (or serves a live web UI). The remaining subcommands (`fix-dates`, `prune`, `embed`, `search`, `faces`, `watch`) operate on the same SQLite database to fix timestamps, sync metadata, compute semantic embeddings, run text/image/person search, and detect/label faces. `videre config` shows or edits the resolved paths and `~/.videre/config.toml` settings.
 
 Note: `docs/superpowers/` design specs and implementation plans predate the videre rename and refer to the old `dupe-*` binary names historically; they are not rewritten here.
 
@@ -14,8 +14,8 @@ Note: `docs/superpowers/` design specs and implementation plans predate the vide
 videre dedupe [OPTIONS] <directory>
 
 Options:
-  --output <path>          JSONL output file [default: /tmp/hashes]; mutually exclusive with --output-sqlite
-  --output-sqlite <path>   SQLite output file; upserts by path; mutually exclusive with --output
+  --output [<path>]        JSONL output file (appended). Bare --output (no value) targets ~/.videre/hashes.jsonl; must come AFTER the directory positional, or clap consumes the directory as the flag's value. Mutually exclusive with --output-sqlite
+  --output-sqlite <path>   SQLite output file; upserts by path; mutually exclusive with --output. When neither --output nor --output-sqlite is given, records go to the resolved default db (see ~/.videre below)
   --similar                Also find visually similar images (perceptual hash)
   --silent                 Suppress progress output on stderr (stdout paths are always written)
   --json                   Emit a single JSON object on stdout instead of human-readable text
@@ -32,32 +32,46 @@ KEEP candidate within each group = oldest `exif_date`; falls back to `min(create
 
 With `--json`, stdout is instead one compact JSON object, always (an error object plus a nonzero exit code on failure), never the REMOVE-path lines above.
 
+Bare `videre dedupe <dir>` writes SQLite to the resolved default database (no JSONL). JSONL output only happens when `--output` is passed, with or without a value.
+
 ## Build & run
 
 ```bash
 cargo build --release
-./target/release/videre dedupe ~/Photos                                  # preview removals
+./target/release/videre dedupe ~/Photos                                  # preview removals, writes SQLite to the default db
 ./target/release/videre dedupe ~/Photos | xargs trash                    # delete duplicates
-./target/release/videre dedupe --output-sqlite ~/photos.db ~/Photos      # scan to SQLite
-./target/release/videre report ~/photos.db                               # generate HTML report
-./target/release/videre fix-dates ~/photos.db --dry-run                  # preview date fixes
-./target/release/videre fix-dates ~/photos.db                            # apply date fixes
-./target/release/videre prune ~/photos.db --dry-run                      # preview prune
-./target/release/videre prune ~/photos.db                                # prune stale rows + sync metadata
-./target/release/videre embed ~/photos.db                                # embed all images (resumable)
-./target/release/videre search ~/photos.db "sunset on beach"             # text search
-./target/release/videre search ~/photos.db --image query.jpg             # find similar images
-./target/release/videre faces ~/photos.db                                # detect, embed, and cluster faces
-./target/release/videre report ~/photos.db --faces                       # label faces in browser UI (localhost:7878)
-./target/release/videre search ~/photos.db --person "Alice"              # find photos of Alice
-./target/release/videre report ~/photos.db --by-date                     # static Year/Month/Day drill-down gallery
-./target/release/videre report ~/photos.db --show-faces                  # live report with face/location lightbox metadata
-./target/release/videre watch --output-sqlite ~/photos.db ~/Photos       # background: scan + faces + HEIC cache + location, looping
+./target/release/videre dedupe --output-sqlite ~/photos.db ~/Photos      # scan to an explicit SQLite db
+./target/release/videre report                                           # generate HTML report from the default db
+./target/release/videre report --db ~/photos.db                          # generate HTML report from an explicit db
+./target/release/videre fix-dates --dry-run                              # preview date fixes on the default db
+./target/release/videre fix-dates                                        # apply date fixes
+./target/release/videre prune --dry-run                                  # preview prune
+./target/release/videre prune                                            # prune stale rows + sync metadata
+./target/release/videre embed                                            # embed all images (resumable)
+./target/release/videre search "sunset on beach"                         # text search
+./target/release/videre search --image query.jpg                         # find similar images
+./target/release/videre faces                                            # detect, embed, and cluster faces
+./target/release/videre report --faces                                   # label faces in browser UI (localhost:7878)
+./target/release/videre search --person "Alice"                          # find photos of Alice
+./target/release/videre report --by-date                                 # static Year/Month/Day drill-down gallery
+./target/release/videre report --show-faces                              # live report with face/location lightbox metadata
+./target/release/videre watch ~/Photos                                   # background: scan + faces + HEIC cache + location, looping, default db
+./target/release/videre watch --output-sqlite ~/photos.db ~/Photos       # same, against an explicit db
+./target/release/videre config                                           # show resolved home dir, config.toml, and db paths
+./target/release/videre config set db ~/photos.db                        # persist a default db in config.toml
 ```
 
 ## Supported file types
 
 `.jpg` `.jpeg` `.png` `.gif` `.webp` `.bmp` `.tiff` `.mov` `.heic` `.mp4` `.dng`
+
+## ~/.videre home directory
+
+Every subcommand shares a home directory at `~/.videre` (override with the `VIDERE_HOME` env var), created lazily by writers (`dedupe`, `watch`, `config set`) - readers never create it. It holds `hashes.db` (default SQLite database), `hashes.jsonl` (default JSONL output, only written when `--output` is used bare), and `config.toml` (optional overrides, currently just `default_db`).
+
+Database resolution order for every subcommand: explicit path (`--db` on the six readers - `report`, `fix-dates`, `prune`, `embed`, `search`, `faces`; `--output-sqlite` on the two writers - `dedupe`, `watch`) > `default_db` in `config.toml` > `~/.videre/hashes.db`. Readers never create a database; if the resolved path doesn't exist they print `no database found at <path>; run 'videre dedupe <dir>' first` and exit 1 (arrives as the JSON error object under `search --json`).
+
+`videre config` shows the resolved home dir, `config.toml` path, `default_db`, resolved db, and jsonl path. `videre config set db <path>` writes an absolute path to `config.toml` as `default_db`, preserving any other keys already present. `videre config unset db` removes it, falling back to `~/.videre/hashes.db`.
 
 ## Project structure
 
@@ -66,7 +80,7 @@ crates/
   videre/
     Cargo.toml
     src/main.rs
-    src/commands/{mod.rs,dedupe.rs,report.rs,fix_dates.rs,prune.rs,embed.rs,search.rs,faces.rs,watch.rs}
+    src/commands/{mod.rs,dedupe.rs,report.rs,fix_dates.rs,prune.rs,embed.rs,search.rs,faces.rs,watch.rs,config.rs}
     src/{lib.rs,scanner.rs,hasher.rs,output.rs,sqlite_output.rs,types.rs}
     tests/{integration.rs,report.rs,prune.rs,watch.rs,faces_pipeline.rs,faces_server.rs,person_search.rs}
   videre-core/
@@ -81,6 +95,7 @@ crates/
     src/heic.rs
     src/location.rs
     src/thumb_cache.rs
+    src/home.rs
   videre-ml/
     Cargo.toml (lib-only, no binaries)
     src/lib.rs
@@ -170,14 +185,15 @@ Reads `file_hashes` from a SQLite database and writes a self-contained HTML file
 **Phase 2 (post-deletion):** run with `--all` to browse the full cleaned collection with in-page similarity search. Files recorded in the database but no longer on disk are automatically excluded (checked at generation time; the database is not modified). `videre prune` removes stale rows permanently.
 
 ```bash
-videre report <db>                    # output: <db>_report.html
-videre report <db> -o <out>           # explicit output path
-videre report <db> --heic             # embed HEIC thumbnails as base64 JPEG (macOS/qlmanage)
-videre report <db> --heic-original    # embed HEIC thumbnails + 1200px lightbox version
-videre report <db> --all              # all-files gallery + in-page similarity search
-videre report <db> --faces            # face labeling UI on localhost:7878 (requires videre faces)
-videre report <db> --by-date          # static Year/Month/Day drill-down gallery over KEEP files
-videre report <db> --show-faces       # live server: report with labeled-face + location metadata in the lightbox
+videre report                         # default db, output: <db>_report.html
+videre report --db <db>               # explicit db
+videre report -o <out>                # explicit output path
+videre report --heic                  # embed HEIC thumbnails as base64 JPEG (macOS/qlmanage)
+videre report --heic-original         # embed HEIC thumbnails + 1200px lightbox version
+videre report --all                   # all-files gallery + in-page similarity search
+videre report --faces                 # face labeling UI on localhost:7878 (requires videre faces)
+videre report --by-date               # static Year/Month/Day drill-down gallery over KEEP files
+videre report --show-faces            # live server: report with labeled-face + location metadata in the lightbox
 ```
 
 `--by-date` is fully static: it writes an HTML file just like the default report or `--all` (same additive model - it can be combined with `--all`/`--heic`/`--heic-original`), grouping KEEP files into a clickable Year > Month > Day hierarchy. No server is involved.
@@ -215,9 +231,10 @@ in `videre report` - all of them shell out to `qlmanage`, not `sips`, for this r
 Reads `file_hashes` from a SQLite database and sets `modified_at` on each file to its `exif_date`. Only files with `exif_date` present are touched. Operates on all such files (KEEP and REMOVE alike: REMOVE files will be deleted afterward anyway).
 
 ```bash
-videre fix-dates <db>            # apply: set mtime = exif_date for all files with EXIF
-videre fix-dates <db> --dry-run  # preview without modifying anything
-videre fix-dates <db> --silent   # suppress per-file output (errors always shown)
+videre fix-dates                 # default db; apply: set mtime = exif_date for all files with EXIF
+videre fix-dates --db <db>       # explicit db
+videre fix-dates --dry-run       # preview without modifying anything
+videre fix-dates --silent        # suppress per-file output (errors always shown)
 ```
 
 - `exif_date` is camera-local time with no timezone; treated as local system time when computing the UNIX timestamp
@@ -230,9 +247,10 @@ videre fix-dates <db> --silent   # suppress per-file output (errors always shown
 Syncs the SQLite database with the current filesystem state. Run after deleting duplicates and fixing dates.
 
 ```bash
-videre prune <db>            # apply
-videre prune <db> --dry-run  # preview without modifying the database
-videre prune <db> --silent   # apply without per-file output
+videre prune                 # default db; apply
+videre prune --db <db>       # explicit db
+videre prune --dry-run       # preview without modifying the database
+videre prune --silent        # apply without per-file output
 ```
 
 In a single pass:
@@ -244,14 +262,14 @@ Shared-hash safety: if two paths share the same hash and one file is deleted, th
 
 ## videre embed / videre search
 
-`videre embed <db>` embeds every unique image hash (SigLIP so400m/14-384, 1152-dim,
+`videre embed` (optionally `--db <db>`) embeds every unique image hash (SigLIP so400m/14-384, 1152-dim,
 L2-normalized f16 BLOB) into an `embeddings` table keyed by content hash. Resumable:
 re-running processes only missing hashes. `--batch` (default 32), `--chunk` (rows per
 transaction, default 500), `--silent`. HEIC via `qlmanage` (see videre report HEIC note
 above); DNG, mov, and mp4 skipped (the `image` crate has no DNG decoder; EXIF metadata
 is still available from the scan).
 
-`videre search <db> "query"` or `videre search <db> --image photo.jpg` prints matching
+`videre search "query"` or `videre search --image photo.jpg` (optionally `--db <db>`) prints matching
 paths to stdout (all duplicate paths per matched hash). `-k` top-k (default 20),
 `--scores` prepends cosine score. Brute-force exact scan; no ANN index at this scale.
 `videre search ... --json` emits a single JSON document (`schema_version`, `query`,
@@ -259,7 +277,7 @@ paths to stdout (all duplicate paths per matched hash). `-k` top-k (default 20),
 instead of the printed paths above; `--scores` is a no-op under `--json` since the
 score is always included.
 
-`videre search <db> --person "Alice"` queries the `faces` table for confirmed rows whose `person_label` matches (case-insensitive prefix) and prints matching image paths. Requires a prior `videre faces` run and labels applied via `videre report --faces`.
+`videre search --person "Alice"` queries the `faces` table for confirmed rows whose `person_label` matches (case-insensitive prefix) and prints matching image paths. Requires a prior `videre faces` run and labels applied via `videre report --faces`.
 
 Model weights auto-download from Hugging Face (google/siglip-so400m-patch14-384) on
 first run.
@@ -280,14 +298,15 @@ CREATE TABLE embeddings (
 Detects faces in every image recorded in the database, embeds each face with ArcFace, and clusters detected faces into identity groups using DBSCAN.
 
 ```
-videre faces <db>                       # process new hashes only
-videre faces <db> --reprocess           # re-detect and re-embed all hashes
-videre faces <db> --recluster           # skip detection; re-run DBSCAN on existing embeddings
-videre faces <db> --dry-run             # detect and embed but do not write to db
-videre faces <db> --batch <n>           # images per ONNX batch (default: 8)
-videre faces <db> --silent              # suppress per-image progress
-videre faces <db> --eps <f32>           # DBSCAN cosine-distance radius (default: 0.6)
-videre faces <db> --min-cluster-size <n>  # minimum faces per cluster (default: 3)
+videre faces                            # default db; process new hashes only
+videre faces --db <db>                  # explicit db
+videre faces --reprocess                # re-detect and re-embed all hashes
+videre faces --recluster                # skip detection; re-run DBSCAN on existing embeddings
+videre faces --dry-run                  # detect and embed but do not write to db
+videre faces --batch <n>                # images per ONNX batch (default: 8)
+videre faces --silent                   # suppress per-image progress
+videre faces --eps <f32>                # DBSCAN cosine-distance radius (default: 0.6)
+videre faces --min-cluster-size <n>     # minimum faces per cluster (default: 3)
 ```
 
 Uses InsightFace buffalo_l: SCRFD-10GF for detection, 5-point landmark alignment, ArcFace w600k_r50 for 512-dim L2-normalized embeddings. Weights are downloaded from `hf-hub` on first run. ONNX Runtime (`ort`) runs inference on CPU. HEIC images are converted via `qlmanage` (see videre report HEIC note above) before detection.
@@ -313,10 +332,11 @@ after an initial `videre faces` run.
 Long-running background process that keeps the pipeline populated so `videre report --show-faces` (or any other reader) always sees fresh data, without anyone manually re-running `videre dedupe`, `videre faces`, or waiting on lazy HEIC/location conversions. No server, no UI: it loops in the foreground, logging progress to stderr, until killed with Ctrl-C.
 
 ```bash
-videre watch --output-sqlite <db> <directory>                        # all four stages, every 300s
-videre watch --output-sqlite <db> <directory> --scan --faces         # only these stages
-videre watch --output-sqlite <db> <directory> --interval 60          # custom cycle interval (seconds)
-videre watch --output-sqlite <db> <directory> --silent               # suppress per-cycle stderr output
+videre watch <directory>                                             # default db; all four stages, every 300s
+videre watch <directory> --scan --faces                              # only these stages
+videre watch <directory> --interval 60                                # custom cycle interval (seconds)
+videre watch <directory> --silent                                    # suppress per-cycle stderr output
+videre watch --output-sqlite <db> <directory>                        # explicit db instead of the default
 ```
 
 Four independent stages, selected with `--scan` / `--faces` / `--heic` / `--location`. If none of the four flags are passed, all four run (the common case is "just keep everything up to date", not memorizing four flags):
