@@ -106,7 +106,9 @@ fn collect_hits(args: &SearchArgs) -> Result<(QueryJson, Vec<SearchHitJson>)> {
 
     if let Some(name) = &args.person {
         let paths = videre_core::person_search::search_by_person(&conn, name, None)?;
-        if paths.is_empty() {
+        if paths.is_empty() && !args.json {
+            // In --json mode the empty result is conveyed as count 0; keep stdout
+            // the only channel so a clean agent invocation emits nothing on stderr.
             eprintln!("No confirmed photos found for person: {name}");
         }
         let hits = paths

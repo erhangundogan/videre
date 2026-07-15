@@ -183,3 +183,28 @@ fn search_json_error_is_json_object_on_stdout() {
     assert!(doc["error"]["message"].as_str().is_some());
     assert!(doc.get("results").is_none());
 }
+
+#[test]
+fn person_search_json_empty_is_silent_on_stderr() {
+    // A clean agent invocation (--json) must not leak the human "No confirmed
+    // photos" line to stderr; the empty result is already conveyed as count 0.
+    let dir = tempdir().unwrap();
+    let db = make_db(dir.path());
+    let out = Command::new(bin())
+        .arg("search")
+        .arg(&db)
+        .arg("--person")
+        .arg("Unknown")
+        .arg("--json")
+        .output()
+        .expect("failed to run videre search");
+    assert!(out.status.success());
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["count"], 0);
+    assert!(doc["results"].as_array().unwrap().is_empty());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("No confirmed photos"),
+        "--json must not print the human not-found line to stderr:\n{stderr}"
+    );
+}
