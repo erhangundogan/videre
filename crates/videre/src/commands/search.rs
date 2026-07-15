@@ -1,9 +1,10 @@
 use anyhow::{Context, Result};
+use rusqlite::Connection;
 use serde::Serialize;
 use videre::types::{ErrorJson, SCHEMA_VERSION};
 use videre_core::{embeddings, vectors};
 use videre_ml::{device, model, search};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(clap::Args)]
 pub struct SearchArgs {
@@ -36,26 +37,26 @@ pub struct SearchArgs {
 }
 
 #[derive(Debug, Serialize)]
-struct SearchJson {
-    schema_version: u32,
-    query: QueryJson,
-    count: usize,
-    results: Vec<SearchHitJson>,
+pub(crate) struct SearchJson {
+    pub(crate) schema_version: u32,
+    pub(crate) query: QueryJson,
+    pub(crate) count: usize,
+    pub(crate) results: Vec<SearchHitJson>,
 }
 
 #[derive(Debug, Serialize)]
-struct QueryJson {
-    kind: &'static str,
-    value: String,
+pub(crate) struct QueryJson {
+    pub(crate) kind: &'static str,
+    pub(crate) value: String,
 }
 
 #[derive(Debug, Serialize)]
-struct SearchHitJson {
-    path: String,
+pub(crate) struct SearchHitJson {
+    pub(crate) path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    hash: Option<String>,
+    pub(crate) hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    score: Option<f32>,
+    pub(crate) score: Option<f32>,
 }
 
 pub fn run(args: SearchArgs) -> Result<()> {
@@ -98,6 +99,52 @@ fn run_json(args: &SearchArgs) -> Result<SearchJson> {
     })
 }
 
+/// Person query: bare paths, no hash/score (confirmed faces only).
+pub(crate) fn person_hits(conn: &Connection, name: &str) -> Result<Vec<SearchHitJson>> {
+    let paths = videre_core::person_search::search_by_person(conn, name, None)?;
+    Ok(paths
+        .into_iter()
+        .map(|path| SearchHitJson { path, hash: None, score: None })
+        .collect())
+}
+
+/// Load the embedding corpus, erroring if empty. Called BEFORE any model load
+/// so a db without embeddings fails fast without downloading weights.
+pub(crate) fn load_corpus(conn: &Connection, db: &Path) -> Result<Vec<(String, Vec<f32>)>> {
+    let corpus_raw = embeddings::load_embeddings(conn, model::MODEL_ID)?;
+    anyhow::ensure!(
+        !corpus_raw.is_empty(),
+        "no embeddings found in {} for model {}; run videre embed first",
+        db.display(),
+        model::MODEL_ID
+    );
+    Ok(corpus_raw
+        .into_iter()
+        .map(|(hash, blob)| (hash, vectors::from_f16_bytes(&blob)))
+        .collect())
+}
+
+/// Rank the corpus against a query vector; one hit per on-disk path of each
+/// matched hash, carrying hash + cosine score.
+pub(crate) fn ranked_hits(
+    conn: &Connection,
+    corpus: &[(String, Vec<f32>)],
+    query_vec: &[f32],
+    top_k: usize,
+) -> Result<Vec<SearchHitJson>> {
+    let mut hits = Vec::new();
+    for (hash, score) in search::top_k(query_vec, corpus, top_k) {
+        for path in embeddings::paths_for_hash(conn, &hash)? {
+            hits.push(SearchHitJson {
+                path,
+                hash: Some(hash.clone()),
+                score: Some(score),
+            });
+        }
+    }
+    Ok(hits)
+}
+
 /// The single query pipeline behind both output modes. Person hits carry only
 /// a path (person search returns bare paths, no hash/score); text and image
 /// hits carry hash + cosine score, one entry per on-disk path of a matched hash.
@@ -107,30 +154,16 @@ fn collect_hits(args: &SearchArgs) -> Result<(QueryJson, Vec<SearchHitJson>)> {
         .with_context(|| format!("open {}", db.display()))?;
 
     if let Some(name) = &args.person {
-        let paths = videre_core::person_search::search_by_person(&conn, name, None)?;
-        if paths.is_empty() && !args.json {
+        let hits = person_hits(&conn, name)?;
+        if hits.is_empty() && !args.json {
             // In --json mode the empty result is conveyed as count 0; keep stdout
             // the only channel so a clean agent invocation emits nothing on stderr.
             eprintln!("No confirmed photos found for person: {name}");
         }
-        let hits = paths
-            .into_iter()
-            .map(|path| SearchHitJson { path, hash: None, score: None })
-            .collect();
         return Ok((QueryJson { kind: "person", value: name.clone() }, hits));
     }
 
-    let corpus_raw = embeddings::load_embeddings(&conn, model::MODEL_ID)?;
-    anyhow::ensure!(
-        !corpus_raw.is_empty(),
-        "no embeddings found in {} for model {}; run videre embed first",
-        db.display(),
-        model::MODEL_ID
-    );
-    let corpus: Vec<(String, Vec<f32>)> = corpus_raw
-        .into_iter()
-        .map(|(hash, blob)| (hash, vectors::from_f16_bytes(&blob)))
-        .collect();
+    let corpus = load_corpus(&conn, &db)?;
 
     let embedder = model::Embedder::load(device::best_device())?;
     let (query_vec, query) = match (&args.query, &args.image) {
@@ -145,16 +178,7 @@ fn collect_hits(args: &SearchArgs) -> Result<(QueryJson, Vec<SearchHitJson>)> {
         _ => anyhow::bail!("provide either a text query or --image <path>"),
     };
 
-    let mut hits = Vec::new();
-    for (hash, score) in search::top_k(&query_vec, &corpus, args.top_k) {
-        for path in embeddings::paths_for_hash(&conn, &hash)? {
-            hits.push(SearchHitJson {
-                path,
-                hash: Some(hash.clone()),
-                score: Some(score),
-            });
-        }
-    }
+    let hits = ranked_hits(&conn, &corpus, &query_vec, args.top_k)?;
     Ok((query, hits))
 }
 
