@@ -31,6 +31,8 @@ enum Command {
     Faces(commands::faces::FacesArgs),
     /// Background loop keeping scan/faces/HEIC-cache/location data fresh
     Watch(commands::watch::WatchArgs),
+    /// Show or edit videre's config and default paths (~/.videre)
+    Config(commands::config::ConfigArgs),
 }
 
 fn main() {
@@ -45,6 +47,7 @@ fn main() {
         Command::Search(args) => commands::search::run(args),
         Command::Faces(args) => commands::faces::run(args),
         Command::Watch(args) => commands::watch::run(args),
+        Command::Config(args) => commands::config::run(args),
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");

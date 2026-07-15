@@ -22,7 +22,8 @@ pub struct Config {
     pub default_db: Option<PathBuf>,
 }
 
-fn config_path(home: &Path) -> PathBuf {
+/// Path of the config file inside a given home dir: <home>/config.toml.
+pub fn config_path(home: &Path) -> PathBuf {
     home.join("config.toml")
 }
 
