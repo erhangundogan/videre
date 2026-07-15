@@ -1,5 +1,7 @@
-use videre::{hasher, output, scanner, sqlite_output, types};
-use videre::types::{DedupeJson, DupGroupJson, ErrorJson, SimilarGroupJson, SCHEMA_VERSION};
+use videre::{
+    hasher, output, scanner, sqlite_output,
+    types::{self, DedupeJson, DupGroupJson, ErrorJson, SimilarGroupJson, SCHEMA_VERSION},
+};
 use rayon::prelude::*;
 use std::path::PathBuf;
 use std::process;
