@@ -11,9 +11,10 @@ pub struct WatchArgs {
     /// Directory to scan recursively
     directory: PathBuf,
 
-    /// SQLite database to populate (same file videre report reads)
+    /// SQLite database to populate (same file videre report reads).
+    /// Default: resolved from ~/.videre; see 'videre config'
     #[arg(long)]
-    output_sqlite: PathBuf,
+    output_sqlite: Option<PathBuf>,
 
     /// Re-run the scan/hash/EXIF pipeline each cycle
     #[arg(long)]
@@ -49,11 +50,24 @@ pub fn run(mut args: WatchArgs) -> Result<()> {
         args.location = true;
     }
 
+    // Watch is a writer: create the parent dir for a defaulted db path (that
+    // is how ~/.videre comes into existence on first use).
+    let db: PathBuf = match &args.output_sqlite {
+        Some(p) => p.clone(),
+        None => {
+            let db = videre_core::home::resolve_db(None)?;
+            if let Some(parent) = db.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            db
+        }
+    };
+
     loop {
         if !args.silent {
             eprintln!("videre watch: cycle starting ({})", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
         }
-        if let Err(e) = run_cycle(&args) {
+        if let Err(e) = run_cycle(&args, &db) {
             eprintln!("videre watch: cycle error: {e}");
         }
         if !args.silent {
@@ -63,18 +77,18 @@ pub fn run(mut args: WatchArgs) -> Result<()> {
     }
 }
 
-fn run_cycle(args: &WatchArgs) -> Result<()> {
+fn run_cycle(args: &WatchArgs, db: &std::path::Path) -> Result<()> {
     if args.scan {
         // A scan failure this cycle doesn't invalidate file_hashes rows from
         // previous cycles, so don't let it block the faces/heic/location
         // block below - just log and move on.
-        if let Err(e) = run_scan_stage(args) {
+        if let Err(e) = run_scan_stage(args, db) {
             eprintln!("videre watch: scan stage error: {e}");
         }
     }
     if args.faces || args.heic || args.location {
         // These three stages all read file_hashes; open once and reuse.
-        let conn = db::open_wal(&args.output_sqlite)?;
+        let conn = db::open_wal(db)?;
         if !file_hashes_table_exists(&conn)? {
             if !args.silent {
                 eprintln!(
@@ -243,13 +257,13 @@ fn run_location_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<(
     Ok(())
 }
 
-fn run_scan_stage(args: &WatchArgs) -> Result<()> {
+fn run_scan_stage(args: &WatchArgs, db: &std::path::Path) -> Result<()> {
     let paths = scanner::scan(&args.directory);
     let records: Vec<types::FileRecord> = paths
         .par_iter()
         .filter_map(|path| hasher::hash_file(path).ok())
         .collect();
-    sqlite_output::write_records(&records, &args.output_sqlite)?;
+    sqlite_output::write_records(&records, db)?;
     if !args.silent {
         eprintln!("videre watch: scan stage wrote {} record(s)", records.len());
     }

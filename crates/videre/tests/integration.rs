@@ -50,10 +50,12 @@ fn exact_duplicates_appear_in_output_file() {
 
 #[test]
 fn missing_directory_exits_nonzero() {
+    let home = tempdir().unwrap();
     let status = Command::new(videre_bin())
         .arg("dedupe")
         .arg("--silent")
         .arg("/nonexistent/path/abc123")
+        .env("VIDERE_HOME", home.path())
         .status()
         .expect("failed to run videre");
     assert!(!status.success());
@@ -254,11 +256,13 @@ fn json_with_similar_flag_includes_similar_groups_key() {
 
 #[test]
 fn json_error_object_for_missing_directory() {
+    let home = tempdir().unwrap();
     let out = Command::new(videre_bin())
         .arg("dedupe")
         .arg("--silent")
         .arg("--json")
         .arg("/nonexistent/path/abc123")
+        .env("VIDERE_HOME", home.path())
         .output()
         .expect("failed to run videre");
 
@@ -269,4 +273,55 @@ fn json_error_object_for_missing_directory() {
     let msg = doc["error"]["message"].as_str().unwrap();
     assert!(msg.contains("does not exist"), "unexpected message: {msg}");
     assert!(doc.get("duplicate_groups").is_none());
+}
+
+#[test]
+fn bare_dedupe_writes_default_sqlite_db() {
+    let scan_dir = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    fs::write(scan_dir.path().join("a.jpg"), b"same content").unwrap();
+    fs::write(scan_dir.path().join("b.jpg"), b"same content").unwrap();
+
+    let out = Command::new(videre_bin())
+        .arg("dedupe")
+        .arg("--silent")
+        .arg(scan_dir.path())
+        .env("VIDERE_HOME", home.path())
+        .output()
+        .expect("failed to run videre");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // REMOVE candidate still printed to stdout (pipe contract intact)
+    assert_eq!(String::from_utf8_lossy(&out.stdout).lines().count(), 1);
+
+    let db = home.path().join("hashes.db");
+    assert!(db.exists(), "bare dedupe must create the default db");
+    assert!(!home.path().join("hashes.jsonl").exists(), "no jsonl by default");
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 2);
+}
+
+#[test]
+fn bare_output_flag_writes_default_jsonl() {
+    let scan_dir = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    fs::write(scan_dir.path().join("a.jpg"), b"content").unwrap();
+
+    // The bare --output must come AFTER the directory: clap's optional-value
+    // arg would otherwise consume the directory as the flag's value.
+    let out = Command::new(videre_bin())
+        .arg("dedupe")
+        .arg("--silent")
+        .arg(scan_dir.path())
+        .arg("--output")
+        .env("VIDERE_HOME", home.path())
+        .output()
+        .expect("failed to run videre");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let jsonl = home.path().join("hashes.jsonl");
+    assert!(jsonl.exists(), "bare --output must target the default jsonl");
+    assert_eq!(fs::read_to_string(&jsonl).unwrap().lines().count(), 1);
+    assert!(!home.path().join("hashes.db").exists(), "no sqlite db when --output used");
 }
