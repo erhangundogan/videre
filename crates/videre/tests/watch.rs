@@ -146,3 +146,32 @@ fn location_stage_populates_location_name_for_gps_rows() {
         .unwrap();
     assert!(name.is_some(), "expected the location stage to have resolved and cached a name");
 }
+
+#[test]
+fn bare_watch_writes_default_sqlite_db() {
+    let dir = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let pics = dir.path().join("pics");
+    std::fs::create_dir(&pics).unwrap();
+    std::fs::write(pics.join("a.jpg"), b"dummy-bytes").unwrap();
+
+    // Run one cycle directly via a very short interval, then kill after
+    // giving it time for exactly one cycle.
+    let mut child = Command::new(videre_bin()).arg("watch")
+        .arg(&pics)
+        .arg("--scan")
+        .arg("--interval").arg("3600") // long enough we only observe one cycle
+        .arg("--silent")
+        .env("VIDERE_HOME", home.path())
+        .spawn()
+        .expect("failed to spawn videre watch");
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    child.kill().ok();
+    child.wait().ok();
+
+    let db = home.path().join("hashes.db");
+    assert!(db.exists(), "bare watch must create the default db");
+    let conn = Connection::open(&db).unwrap();
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0)).unwrap();
+    assert_eq!(count, 1, "expected the scan stage to have inserted the one file");
+}

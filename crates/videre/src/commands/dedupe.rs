@@ -11,11 +11,13 @@ pub struct DedupeArgs {
     /// Directory to scan recursively
     directory: PathBuf,
 
-    /// JSONL output file (appended); cannot be used with --output-sqlite
-    #[arg(long, default_value = "/tmp/hashes", conflicts_with = "output_sqlite")]
-    output: PathBuf,
+    /// JSONL output file (appended). Bare --output targets ~/.videre/hashes.jsonl.
+    /// Note: place a bare --output AFTER the directory. Cannot be used with --output-sqlite
+    #[arg(long, num_args = 0..=1, conflicts_with = "output_sqlite")]
+    output: Option<Option<PathBuf>>,
 
-    /// SQLite output file (upserted by path); cannot be used with --output
+    /// SQLite output file (upserted by path). When neither --output nor
+    /// --output-sqlite is given, records go to the resolved default db
     #[arg(long)]
     output_sqlite: Option<PathBuf>,
 
@@ -92,6 +94,38 @@ fn gather_records(args: &DedupeArgs) -> Vec<types::FileRecord> {
     }
 }
 
+enum OutputTarget {
+    Sqlite(PathBuf),
+    Jsonl(PathBuf),
+}
+
+/// Where records go. Explicit flags behave exactly as before; the bare default
+/// is SQLite at the resolved db, and a bare --output is JSONL at the default
+/// jsonl path. Defaulted destinations get their parent dir created (that is
+/// how ~/.videre comes into existence on first use).
+fn output_target(args: &DedupeArgs) -> anyhow::Result<OutputTarget> {
+    if let Some(ref db) = args.output_sqlite {
+        return Ok(OutputTarget::Sqlite(db.clone()));
+    }
+    match &args.output {
+        Some(Some(path)) => Ok(OutputTarget::Jsonl(path.clone())),
+        Some(None) => {
+            let path = videre_core::home::default_jsonl()?;
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            Ok(OutputTarget::Jsonl(path))
+        }
+        None => {
+            let db = videre_core::home::resolve_db(None)?;
+            if let Some(parent) = db.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            Ok(OutputTarget::Sqlite(db))
+        }
+    }
+}
+
 /// The pre-existing text mode, byte-identical: same stderr text, same
 /// process::exit(1) sites, same stdout lines.
 fn run_text(args: DedupeArgs) -> anyhow::Result<()> {
@@ -102,21 +136,28 @@ fn run_text(args: DedupeArgs) -> anyhow::Result<()> {
 
     let records = gather_records(&args);
 
-    if let Some(ref db_path) = args.output_sqlite {
-        if let Err(e) = sqlite_output::write_records(&records, db_path) {
-            eprintln!("Error writing to {:?}: {}", db_path, e);
+    match output_target(&args) {
+        Err(e) => {
+            eprintln!("Error: {e:#}");
             process::exit(1);
         }
-        if !args.silent {
-            eprintln!("Wrote {} record(s) to {:?}", records.len(), db_path);
+        Ok(OutputTarget::Sqlite(db_path)) => {
+            if let Err(e) = sqlite_output::write_records(&records, &db_path) {
+                eprintln!("Error writing to {:?}: {}", db_path, e);
+                process::exit(1);
+            }
+            if !args.silent {
+                eprintln!("Wrote {} record(s) to {:?}", records.len(), db_path);
+            }
         }
-    } else {
-        if let Err(e) = output::append_records(&records, &args.output) {
-            eprintln!("Error writing to {:?}: {}", args.output, e);
-            process::exit(1);
-        }
-        if !args.silent {
-            eprintln!("Wrote {} record(s) to {:?}", records.len(), args.output);
+        Ok(OutputTarget::Jsonl(path)) => {
+            if let Err(e) = output::append_records(&records, &path) {
+                eprintln!("Error writing to {:?}: {}", path, e);
+                process::exit(1);
+            }
+            if !args.silent {
+                eprintln!("Wrote {} record(s) to {:?}", records.len(), path);
+            }
         }
     }
 
@@ -161,17 +202,20 @@ fn run_json(args: &DedupeArgs) -> anyhow::Result<DedupeJson> {
 
     let records = gather_records(args);
 
-    if let Some(ref db_path) = args.output_sqlite {
-        sqlite_output::write_records(&records, db_path)
-            .map_err(|e| anyhow::anyhow!("writing to {:?}: {}", db_path, e))?;
-        if !args.silent {
-            eprintln!("Wrote {} record(s) to {:?}", records.len(), db_path);
+    match output_target(args)? {
+        OutputTarget::Sqlite(db_path) => {
+            sqlite_output::write_records(&records, &db_path)
+                .map_err(|e| anyhow::anyhow!("writing to {:?}: {}", db_path, e))?;
+            if !args.silent {
+                eprintln!("Wrote {} record(s) to {:?}", records.len(), db_path);
+            }
         }
-    } else {
-        output::append_records(&records, &args.output)
-            .map_err(|e| anyhow::anyhow!("writing to {:?}: {}", args.output, e))?;
-        if !args.silent {
-            eprintln!("Wrote {} record(s) to {:?}", records.len(), args.output);
+        OutputTarget::Jsonl(path) => {
+            output::append_records(&records, &path)
+                .map_err(|e| anyhow::anyhow!("writing to {:?}: {}", path, e))?;
+            if !args.silent {
+                eprintln!("Wrote {} record(s) to {:?}", records.len(), path);
+            }
         }
     }
 
