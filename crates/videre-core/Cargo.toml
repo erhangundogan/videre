@@ -7,7 +7,7 @@ edition = "2021"
 anyhow = "1"
 half = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
-toml = "0.8"
+toml = { version = "0.8", features = ["preserve_order"] }
 reverse_geocoder = "4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
 
