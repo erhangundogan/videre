@@ -2,6 +2,7 @@ use anyhow::Result;
 use rmcp::{
     ErrorData as McpError, ServerHandler, ServiceExt,
     handler::server::router::tool::ToolRouter,
+    handler::server::wrapper::Parameters,
     model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo},
     tool, tool_handler, tool_router,
     transport::stdio,
@@ -164,6 +165,43 @@ fn build_stats(db: &std::path::Path) -> anyhow::Result<StatsJson> {
     })
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct FindDuplicatesParams {
+    /// Also return perceptual-hash near-duplicate clusters (review-only)
+    #[serde(default)]
+    include_similar: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct FindDuplicatesJson {
+    schema_version: u32,
+    total_files: usize,
+    duplicate_groups: Vec<videre::types::DupGroupJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    similar_groups: Option<Vec<videre::types::SimilarGroupJson>>,
+}
+
+fn build_find_duplicates(db: &std::path::Path, include_similar: bool) -> anyhow::Result<FindDuplicatesJson> {
+    let records = videre::sqlite_output::load_records(db)?;
+    let total_files = records.len();
+    let duplicate_groups = videre::output::find_duplicate_groups(&records)
+        .into_iter()
+        .map(videre::types::DupGroupJson::from)
+        .collect();
+    let similar_groups = include_similar.then(|| {
+        videre::output::find_similar_groups(&records, 10)
+            .into_iter()
+            .map(videre::types::SimilarGroupJson::from)
+            .collect()
+    });
+    Ok(FindDuplicatesJson {
+        schema_version: SCHEMA_VERSION,
+        total_files,
+        duplicate_groups,
+        similar_groups,
+    })
+}
+
 #[tool_router]
 impl VidereServer {
     /// Library orientation summary: file/size/hash counts, embedding and face
@@ -175,6 +213,21 @@ impl VidereServer {
     async fn stats(&self) -> Result<CallToolResult, McpError> {
         let db = self.db.clone();
         match blocking(move || build_stats(&db)).await? {
+            Ok(doc) => json_result(&doc),
+            Err(e) => Ok(tool_error(&e)),
+        }
+    }
+
+    /// Exact-duplicate groups from the database, instantly (no scan).
+    #[tool(
+        description = "Exact-duplicate groups from the videre database. Each group has 'keep' (the oldest file, safe to keep) and 'remove' (byte-identical copies, safe to delete). With include_similar=true, also returns review-only near-duplicate clusters ('files' arrays; NOT safe to auto-delete). Results reflect the last scan: verify paths still exist before acting."
+    )]
+    async fn find_duplicates(
+        &self,
+        Parameters(params): Parameters<FindDuplicatesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let db = self.db.clone();
+        match blocking(move || build_find_duplicates(&db, params.include_similar)).await? {
             Ok(doc) => json_result(&doc),
             Err(e) => Ok(tool_error(&e)),
         }

@@ -215,3 +215,32 @@ fn startup_fails_without_db() {
     assert!(out2.stdout.is_empty());
     assert!(String::from_utf8_lossy(&out2.stderr).contains("no database found"));
 }
+
+#[test]
+fn find_duplicates_tool_returns_keep_remove_groups() {
+    let dir = tempdir().unwrap();
+    let db = make_db(dir.path());
+    let mut client = McpClient::start(&db);
+
+    // without include_similar: no similar_groups key
+    let resp = client.call_tool(3, "find_duplicates", json!({}));
+    let doc = &resp["result"]["structuredContent"];
+    assert_eq!(doc["schema_version"], 1, "full response: {resp}");
+    assert_eq!(doc["total_files"], 4);
+    let groups = doc["duplicate_groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0]["hash"], "hash1");
+    assert_eq!(groups[0]["keep"]["path"], "/tmp/alice1.jpg", "oldest is KEEP");
+    let remove = groups[0]["remove"].as_array().unwrap();
+    assert_eq!(remove.len(), 1);
+    assert_eq!(remove[0]["path"], "/tmp/alice1_copy.jpg");
+    assert!(doc.get("similar_groups").is_none(), "absent without include_similar");
+
+    // with include_similar: key present (empty here, fixture has no phashes)
+    let resp2 = client.call_tool(4, "find_duplicates", json!({"include_similar": true}));
+    let doc2 = &resp2["result"]["structuredContent"];
+    let similar = doc2["similar_groups"].as_array().expect("similar_groups present");
+    assert!(similar.is_empty());
+
+    client.shutdown();
+}
