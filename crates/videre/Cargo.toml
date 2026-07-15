@@ -28,6 +28,8 @@ videre-ml = { path = "../videre-ml" }
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
+rmcp = { version = "2.2", features = ["transport-io"] }
+schemars = "1"
 
 [dev-dependencies]
 tempfile = "3"
