@@ -177,7 +177,7 @@ pub(crate) struct SearchHitJson {
 }
 ```
 
-2. Add `use rusqlite::Connection;` to the imports and extract three pub(crate) helpers (bodies lifted verbatim from today's `collect_hits`):
+2. Add `use rusqlite::Connection;` and `use std::path::Path;` to the imports (the latter for `load_corpus`'s `db: &Path` parameter) and extract three pub(crate) helpers (bodies lifted verbatim from today's `collect_hits`):
 
 ```rust
 /// Person query: bare paths, no hash/score (confirmed faces only).
@@ -247,7 +247,7 @@ fn collect_hits(args: &SearchArgs) -> Result<(QueryJson, Vec<SearchHitJson>)> {
         return Ok((QueryJson { kind: "person", value: name.clone() }, hits));
     }
 
-    let corpus = load_corpus(&conn, &db.display().to_string())?;
+    let corpus = load_corpus(&conn, &db)?;
 
     let embedder = model::Embedder::load(device::best_device())?;
     let (query_vec, query) = match (&args.query, &args.image) {
@@ -1042,7 +1042,7 @@ fn build_search(
         (QueryJson { kind: "person", value: name.clone() }, hits)
     } else {
         // Corpus first (fails fast without embeddings, before any model load).
-        let corpus = search_cmd::load_corpus(&conn, &db.display().to_string())?;
+        let corpus = search_cmd::load_corpus(&conn, db)?;
 
         let mut guard = embedder_cell
             .lock()
