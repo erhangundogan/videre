@@ -6,6 +6,7 @@ pub mod fix_dates;
 pub mod mcp;
 pub mod prune;
 pub mod report;
+pub mod scan;
 pub mod search;
 pub mod watch;
 
