@@ -22,12 +22,58 @@ pub(crate) fn resolve_reader_db(
             let db = videre_core::home::resolve_db(None)?;
             anyhow::ensure!(
                 db.exists(),
-                "no database found at {}; run 'videre dedupe <dir>' first",
+                "no database found at {}; run 'videre scan <dir>' first",
                 db.display()
             );
             Ok(db)
         }
     }
+}
+
+/// Like `resolve_reader_db`, but checks existence even for an explicit path.
+/// Used by commands that bind to one db for their whole session (mcp) or that
+/// have no separate ingestion step to fall back on (dedupe, after the
+/// scan/dedupe split): a typo'd explicit path should fail loudly, not
+/// silently serve or create an empty database.
+pub(crate) fn resolve_reader_db_must_exist(
+    explicit: Option<std::path::PathBuf>,
+) -> anyhow::Result<std::path::PathBuf> {
+    let db = match explicit {
+        Some(p) => p,
+        None => videre_core::home::resolve_db(None)?,
+    };
+    anyhow::ensure!(
+        db.exists(),
+        "no database found at {}; run 'videre scan <dir>' first",
+        db.display()
+    );
+    Ok(db)
+}
+
+/// Shared by `dedupe --json` and the MCP `find_duplicates` tool so the two
+/// surfaces cannot silently diverge in shape.
+pub(crate) fn build_find_duplicates(
+    db: &std::path::Path,
+    include_similar: bool,
+) -> anyhow::Result<videre::types::FindDuplicatesJson> {
+    let records = videre::sqlite_output::load_records(db)?;
+    let total_files = records.len();
+    let duplicate_groups = videre::output::find_duplicate_groups(&records)
+        .into_iter()
+        .map(videre::types::DupGroupJson::from)
+        .collect();
+    let similar_groups = include_similar.then(|| {
+        videre::output::find_similar_groups(&records, 10)
+            .into_iter()
+            .map(videre::types::SimilarGroupJson::from)
+            .collect()
+    });
+    Ok(videre::types::FindDuplicatesJson {
+        schema_version: videre::types::SCHEMA_VERSION,
+        total_files,
+        duplicate_groups,
+        similar_groups,
+    })
 }
 
 /// Directory resolution for the two directory-taking commands (dedupe, watch):
