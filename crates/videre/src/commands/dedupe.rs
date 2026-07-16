@@ -8,8 +8,8 @@ use std::process;
 
 #[derive(clap::Args)]
 pub struct DedupeArgs {
-    /// Directory to scan recursively
-    directory: PathBuf,
+    /// Directory to scan recursively (default: 'path' from videre config)
+    directory: Option<PathBuf>,
 
     /// JSONL output file (appended). Bare --output targets ~/.videre/hashes.jsonl.
     /// Note: place a bare --output AFTER the directory. Cannot be used with --output-sqlite
@@ -56,12 +56,12 @@ pub fn run(args: DedupeArgs) -> anyhow::Result<()> {
 /// Scan, hash (in parallel), and optionally phash. Shared by both output modes;
 /// contains no exit calls so the JSON path can also use it. Progress and
 /// warnings go to stderr, gated by --silent, exactly as before.
-fn gather_records(args: &DedupeArgs) -> Vec<types::FileRecord> {
+fn gather_records(args: &DedupeArgs, directory: &std::path::Path) -> Vec<types::FileRecord> {
     if !args.silent {
-        eprintln!("Scanning {:?}...", args.directory);
+        eprintln!("Scanning {:?}...", directory);
     }
 
-    let paths = scanner::scan(&args.directory);
+    let paths = scanner::scan(directory);
 
     if !args.silent {
         eprintln!("Found {} file(s) to process", paths.len());
@@ -129,12 +129,19 @@ fn output_target(args: &DedupeArgs) -> anyhow::Result<OutputTarget> {
 /// The pre-existing text mode, byte-identical: same stderr text, same
 /// process::exit(1) sites, same stdout lines.
 fn run_text(args: DedupeArgs) -> anyhow::Result<()> {
-    if !args.directory.exists() {
-        eprintln!("Error: directory {:?} does not exist", args.directory);
+    let directory = match super::resolve_directory(args.directory.clone()) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("Error: {e:#}");
+            process::exit(1);
+        }
+    };
+    if !directory.exists() {
+        eprintln!("Error: directory {:?} does not exist", directory);
         process::exit(1);
     }
 
-    let records = gather_records(&args);
+    let records = gather_records(&args, &directory);
 
     match output_target(&args) {
         Err(e) => {
@@ -194,13 +201,14 @@ fn run_text(args: DedupeArgs) -> anyhow::Result<()> {
 /// emit the error JSON document (text mode's process::exit paths would
 /// otherwise kill the process with empty stdout).
 fn run_json(args: &DedupeArgs) -> anyhow::Result<DedupeJson> {
+    let directory = super::resolve_directory(args.directory.clone())?;
     anyhow::ensure!(
-        args.directory.exists(),
+        directory.exists(),
         "directory {:?} does not exist",
-        args.directory
+        directory
     );
 
-    let records = gather_records(args);
+    let records = gather_records(args, &directory);
 
     match output_target(args)? {
         OutputTarget::Sqlite(db_path) => {

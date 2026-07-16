@@ -8,8 +8,8 @@ use std::time::Duration;
 
 #[derive(clap::Args)]
 pub struct WatchArgs {
-    /// Directory to scan recursively
-    directory: PathBuf,
+    /// Directory to scan recursively (default: 'path' from videre config)
+    directory: Option<PathBuf>,
 
     /// SQLite database to populate (same file videre report reads).
     /// Default: resolved from ~/.videre; see 'videre config'
@@ -38,8 +38,9 @@ pub struct WatchArgs {
 }
 
 pub fn run(mut args: WatchArgs) -> Result<()> {
-    if !args.directory.exists() {
-        anyhow::bail!("{:?} does not exist", args.directory);
+    let directory = super::resolve_directory(args.directory.clone())?;
+    if !directory.exists() {
+        anyhow::bail!("{:?} does not exist", directory);
     }
     // If no stage flags were passed, run all four - the common case is
     // "just keep everything up to date", not memorizing four flags.
@@ -67,7 +68,7 @@ pub fn run(mut args: WatchArgs) -> Result<()> {
         if !args.silent {
             eprintln!("videre watch: cycle starting ({})", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
         }
-        if let Err(e) = run_cycle(&args, &db) {
+        if let Err(e) = run_cycle(&args, &directory, &db) {
             eprintln!("videre watch: cycle error: {e}");
         }
         if !args.silent {
@@ -77,12 +78,12 @@ pub fn run(mut args: WatchArgs) -> Result<()> {
     }
 }
 
-fn run_cycle(args: &WatchArgs, db: &std::path::Path) -> Result<()> {
+fn run_cycle(args: &WatchArgs, directory: &std::path::Path, db: &std::path::Path) -> Result<()> {
     if args.scan {
         // A scan failure this cycle doesn't invalidate file_hashes rows from
         // previous cycles, so don't let it block the faces/heic/location
         // block below - just log and move on.
-        if let Err(e) = run_scan_stage(args, db) {
+        if let Err(e) = run_scan_stage(args, directory, db) {
             eprintln!("videre watch: scan stage error: {e}");
         }
     }
@@ -257,8 +258,8 @@ fn run_location_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<(
     Ok(())
 }
 
-fn run_scan_stage(args: &WatchArgs, db: &std::path::Path) -> Result<()> {
-    let paths = scanner::scan(&args.directory);
+fn run_scan_stage(args: &WatchArgs, directory: &std::path::Path, db: &std::path::Path) -> Result<()> {
+    let paths = scanner::scan(directory);
     let records: Vec<types::FileRecord> = paths
         .par_iter()
         .filter_map(|path| hasher::hash_file(path).ok())

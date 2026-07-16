@@ -175,3 +175,37 @@ fn bare_watch_writes_default_sqlite_db() {
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0)).unwrap();
     assert_eq!(count, 1, "expected the scan stage to have inserted the one file");
 }
+
+#[test]
+fn config_path_supplies_watch_directory() {
+    let dir = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let pics = dir.path().join("pics");
+    std::fs::create_dir(&pics).unwrap();
+    std::fs::write(pics.join("a.jpg"), b"dummy-bytes").unwrap();
+
+    let set = Command::new(videre_bin())
+        .arg("config").arg("set").arg("path").arg(&pics)
+        .env("VIDERE_HOME", home.path())
+        .status()
+        .expect("failed to run videre config set");
+    assert!(set.success());
+
+    // No directory argument: watch must pick it up from config.
+    let mut child = Command::new(videre_bin()).arg("watch")
+        .arg("--scan")
+        .arg("--interval").arg("3600")
+        .arg("--silent")
+        .env("VIDERE_HOME", home.path())
+        .spawn()
+        .expect("failed to spawn videre watch");
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    child.kill().ok();
+    child.wait().ok();
+
+    let db = home.path().join("hashes.db");
+    assert!(db.exists(), "watch must create the default db from the configured path");
+    let conn = Connection::open(&db).unwrap();
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0)).unwrap();
+    assert_eq!(count, 1, "expected the scan stage to have inserted the one file");
+}
