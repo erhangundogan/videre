@@ -122,29 +122,35 @@ pub fn run_face_pipeline(
     Ok(FacesRunResult { total_faces, write_errors, images_processed, detect_errors })
 }
 
+pub struct ClusteringResult {
+    pub total_faces: usize,
+    pub clustered_faces: usize,
+    pub cluster_count: usize,
+}
+
 /// Re-runs DBSCAN clustering over every face embedding currently in the
 /// database - safe to call whether or not run_face_pipeline found anything
-/// new, since re-clustering is idempotent.
+/// new, since re-clustering is idempotent. Returns `None` when there are no
+/// faces in the database to cluster; callers decide whether/how to report
+/// that.
 pub fn run_clustering(
     conn: &Connection,
     eps: f32,
     min_cluster_size: usize,
-    silent: bool,
-) -> Result<()> {
+) -> Result<Option<ClusteringResult>> {
     let all_embs = videre_core::face_db::load_face_embeddings(conn)?;
     if all_embs.is_empty() {
-        if !silent {
-            eprintln!("No faces in DB to cluster.");
-        }
-        return Ok(());
+        return Ok(None);
     }
     let assignments = videre_core::face_cluster::dbscan_cosine(&all_embs, eps, min_cluster_size);
     videre_core::face_db::update_cluster_assignments(conn, &assignments)?;
-    if !silent {
-        let clustered = assignments.iter().filter(|(_, c)| c.is_some()).count();
-        eprintln!("Clustering complete: {}/{} faces assigned to clusters (eps={:.2}).", clustered, all_embs.len(), eps);
-    }
-    Ok(())
+    let clustered_faces = assignments.iter().filter(|(_, c)| c.is_some()).count();
+    let cluster_count = assignments
+        .iter()
+        .filter_map(|(_, c)| *c)
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    Ok(Some(ClusteringResult { total_faces: all_embs.len(), clustered_faces, cluster_count }))
 }
 
 fn load_image(path: &str) -> Option<image::DynamicImage> {
@@ -179,6 +185,7 @@ mod tests {
     fn run_clustering_on_empty_db_does_not_error() {
         let conn = Connection::open_in_memory().unwrap();
         face_db::create_faces_table(&conn).unwrap();
-        run_clustering(&conn, 0.6, 3, true).unwrap();
+        let result = run_clustering(&conn, 0.6, 3).unwrap();
+        assert!(result.is_none());
     }
 }

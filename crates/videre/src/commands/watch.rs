@@ -1,4 +1,5 @@
 use anyhow::Result;
+use super::faces::format_clustering_only_summary;
 use videre::{hasher, scanner, sqlite_output, types};
 use videre_core::{db, face_db};
 use videre_ml::pipeline::{run_clustering, run_face_pipeline};
@@ -158,7 +159,10 @@ fn run_faces_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> 
             );
         }
     }
-    run_clustering(conn, 0.6, 3, args.silent)?;
+    let clustering = run_clustering(conn, 0.6, 3)?;
+    if !args.silent {
+        eprintln!("videre watch: {}", format_clustering_only_summary(clustering, 0.6));
+    }
     Ok(())
 }
 
