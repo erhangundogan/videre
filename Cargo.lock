@@ -5017,6 +5017,7 @@ dependencies = [
  "anyhow",
  "half",
  "image",
+ "indicatif",
  "reverse_geocoder",
  "rusqlite",
  "tempfile",
