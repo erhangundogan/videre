@@ -49,7 +49,7 @@ Relocated verbatim from today's `dedupe.rs`, no behavior change:
 - First-use adoption via `super::maybe_adopt_default_path` (fires exactly as it does today, just from `scan` instead of `dedupe`).
 - `gather_records` (scan + parallel hash + optional phash), `output_target`/`OutputTarget` (SQLite vs JSONL resolution, parent-dir creation), all existing stderr progress lines (`"Scanning {:?}..."`, `"Found N file(s) to process"`, `"Warning: skipping..."`, `"Wrote N record(s) to {:?}"`), all existing error text and `process::exit(1)` sites for missing directory / write failure.
 
-**Behavior change, deliberate:** `scan`'s text mode no longer prints REMOVE candidate paths to stdout, and no longer prints the "N duplicate group(s)" / "No exact duplicates found" / similar-groups summary lines to stderr — that reporting is `dedupe`'s job now, not scan's. Stdout is empty in text mode (all output is progress, on stderr, exactly like `watch`). `scan --json` returns a new, minimal document describing the scan itself, not duplicate data:
+**Behavior change, deliberate:** `scan`'s text mode no longer prints REMOVE candidate paths to stdout, and no longer prints the "N duplicate group(s)" / "No exact duplicates found" / similar-groups summary lines to stderr: that reporting is `dedupe`'s job now, not scan's. Stdout is empty in text mode (all output is progress, on stderr, exactly like `watch`). `scan --json` returns a new, minimal document describing the scan itself, not duplicate data:
 
 ```json
 { "schema_version": 1, "total_files": 1200, "output": { "kind": "sqlite", "path": "/Users/you/.videre/hashes.db" } }
