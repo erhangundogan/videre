@@ -20,11 +20,25 @@ pub fn default_jsonl() -> Result<PathBuf> {
 #[derive(Debug, Default, PartialEq)]
 pub struct Config {
     pub default_db: Option<PathBuf>,
+    pub default_path: Option<PathBuf>,
 }
 
 /// Path of the config file inside a given home dir: <home>/config.toml.
 pub fn config_path(home: &Path) -> PathBuf {
     home.join("config.toml")
+}
+
+fn path_key(table: &toml::Table, file: &Path, key: &str) -> Result<Option<PathBuf>> {
+    match table.get(key) {
+        None => Ok(None),
+        Some(toml::Value::String(s)) => Ok(Some(PathBuf::from(s))),
+        Some(other) => bail!(
+            "malformed config {}: {} must be a string, got {}",
+            file.display(),
+            key,
+            other.type_str()
+        ),
+    }
 }
 
 /// Load <home>/config.toml. A missing file is the default config; a file that
@@ -39,16 +53,10 @@ pub fn load_config(home: &Path) -> Result<Config> {
     let table: toml::Table = text
         .parse()
         .with_context(|| format!("malformed config {}", path.display()))?;
-    let default_db = match table.get("default_db") {
-        None => None,
-        Some(toml::Value::String(s)) => Some(PathBuf::from(s)),
-        Some(other) => bail!(
-            "malformed config {}: default_db must be a string, got {}",
-            path.display(),
-            other.type_str()
-        ),
-    };
-    Ok(Config { default_db })
+    Ok(Config {
+        default_db: path_key(&table, &path, "default_db")?,
+        default_path: path_key(&table, &path, "default_path")?,
+    })
 }
 
 /// Resolution for a given home: config default_db, else <home>/hashes.db.
@@ -67,12 +75,12 @@ pub fn resolve_db(explicit: Option<&Path>) -> Result<PathBuf> {
     }
 }
 
-/// Write default_db (absolutized) into <home>/config.toml, creating the home
-/// dir. Unknown keys already in the file are preserved. The db need not exist
-/// yet (you may set it before the first scan).
-pub fn set_default_db(home: &Path, db: &Path) -> Result<()> {
-    let abs = std::path::absolute(db)
-        .with_context(|| format!("cannot absolutize {}", db.display()))?;
+/// Write one path-valued key (absolutized) into <home>/config.toml, creating
+/// the home dir. Unknown keys already in the file are preserved. The target
+/// need not exist yet (you may set it before the first scan).
+fn set_path_key(home: &Path, key: &str, value: &Path) -> Result<()> {
+    let abs = std::path::absolute(value)
+        .with_context(|| format!("cannot absolutize {}", value.display()))?;
     std::fs::create_dir_all(home).with_context(|| format!("create {}", home.display()))?;
     let path = config_path(home);
     let mut table: toml::Table = match std::fs::read_to_string(&path) {
@@ -83,7 +91,7 @@ pub fn set_default_db(home: &Path, db: &Path) -> Result<()> {
         Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
     };
     table.insert(
-        "default_db".to_string(),
+        key.to_string(),
         toml::Value::String(abs.to_string_lossy().into_owned()),
     );
     std::fs::write(&path, toml::to_string_pretty(&table)?)
@@ -91,8 +99,8 @@ pub fn set_default_db(home: &Path, db: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Remove default_db from <home>/config.toml. Missing file or key is a no-op.
-pub fn unset_default_db(home: &Path) -> Result<()> {
+/// Remove one key from <home>/config.toml. Missing file or key is a no-op.
+fn unset_key(home: &Path, key: &str) -> Result<()> {
     let path = config_path(home);
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
@@ -102,11 +110,34 @@ pub fn unset_default_db(home: &Path) -> Result<()> {
     let mut table: toml::Table = text
         .parse()
         .with_context(|| format!("malformed config {}", path.display()))?;
-    if table.remove("default_db").is_some() {
+    if table.remove(key).is_some() {
         std::fs::write(&path, toml::to_string_pretty(&table)?)
             .with_context(|| format!("write {}", path.display()))?;
     }
     Ok(())
+}
+
+pub fn set_default_db(home: &Path, db: &Path) -> Result<()> {
+    set_path_key(home, "default_db", db)
+}
+
+pub fn unset_default_db(home: &Path) -> Result<()> {
+    unset_key(home, "default_db")
+}
+
+pub fn set_default_path(home: &Path, dir: &Path) -> Result<()> {
+    set_path_key(home, "default_path", dir)
+}
+
+pub fn unset_default_path(home: &Path) -> Result<()> {
+    unset_key(home, "default_path")
+}
+
+/// The configured default scan/watch directory, if any (config `path` key,
+/// stored as `default_path`). There is no built-in fallback: None means the
+/// user must pass a directory explicitly.
+pub fn default_path() -> Result<Option<PathBuf>> {
+    Ok(load_config(&videre_home()?)?.default_path)
 }
 
 #[cfg(test)]
@@ -183,6 +214,34 @@ mod tests {
         std::fs::write(home.join("config.toml"), "not = = toml").unwrap();
         let err = load_config(&home).unwrap_err();
         assert!(format!("{err:#}").contains("malformed config"), "{err:#}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn default_path_roundtrips_and_absolutizes() {
+        let home = tmp_home("path_roundtrip");
+        set_default_path(&home, Path::new("photos")).unwrap();
+        let dir = load_config(&home).unwrap().default_path.unwrap();
+        assert!(dir.is_absolute(), "saved path must be absolute: {}", dir.display());
+        assert!(dir.ends_with("photos"));
+        unset_default_path(&home).unwrap();
+        assert_eq!(load_config(&home).unwrap().default_path, None);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn db_and_path_keys_coexist_independently() {
+        let home = tmp_home("coexist");
+        set_default_db(&home, Path::new("/tmp/a.db")).unwrap();
+        set_default_path(&home, Path::new("/tmp/photos")).unwrap();
+        let config = load_config(&home).unwrap();
+        assert_eq!(config.default_db, Some(PathBuf::from("/tmp/a.db")));
+        assert_eq!(config.default_path, Some(PathBuf::from("/tmp/photos")));
+        // unsetting one must not disturb the other
+        unset_default_db(&home).unwrap();
+        let config = load_config(&home).unwrap();
+        assert_eq!(config.default_db, None);
+        assert_eq!(config.default_path, Some(PathBuf::from("/tmp/photos")));
         let _ = std::fs::remove_dir_all(&home);
     }
 }

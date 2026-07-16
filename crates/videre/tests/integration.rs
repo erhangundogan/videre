@@ -325,3 +325,59 @@ fn bare_output_flag_writes_default_jsonl() {
     assert_eq!(fs::read_to_string(&jsonl).unwrap().lines().count(), 1);
     assert!(!home.path().join("hashes.db").exists(), "no sqlite db when --output used");
 }
+
+#[test]
+fn bare_dedupe_without_directory_or_config_path_errors() {
+    let home = tempdir().unwrap();
+    let out = Command::new(videre_bin())
+        .arg("dedupe")
+        .arg("--silent")
+        .env("VIDERE_HOME", home.path())
+        .output()
+        .expect("failed to run videre");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("videre config set path"), "{stderr}");
+
+    // --json mode: the same failure arrives as the JSON error object
+    let out2 = Command::new(videre_bin())
+        .arg("dedupe")
+        .arg("--silent")
+        .arg("--json")
+        .env("VIDERE_HOME", home.path())
+        .output()
+        .expect("failed to run videre");
+    assert!(!out2.status.success());
+    let doc: serde_json::Value = serde_json::from_slice(&out2.stdout)
+        .expect("stdout must be one valid JSON object even on error");
+    assert!(
+        doc["error"]["message"].as_str().unwrap().contains("config set path"),
+        "{doc}"
+    );
+}
+
+#[test]
+fn config_path_supplies_dedupe_directory() {
+    let scan_dir = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    fs::write(scan_dir.path().join("a.jpg"), b"same content").unwrap();
+    fs::write(scan_dir.path().join("b.jpg"), b"same content").unwrap();
+
+    let set = Command::new(videre_bin())
+        .arg("config").arg("set").arg("path").arg(scan_dir.path())
+        .env("VIDERE_HOME", home.path())
+        .status()
+        .unwrap();
+    assert!(set.success());
+
+    let out = Command::new(videre_bin())
+        .arg("dedupe")
+        .arg("--silent")
+        .env("VIDERE_HOME", home.path())
+        .output()
+        .expect("failed to run videre");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // REMOVE candidate printed; db created in the default location
+    assert_eq!(String::from_utf8_lossy(&out.stdout).lines().count(), 1);
+    assert!(home.path().join("hashes.db").exists());
+}

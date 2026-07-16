@@ -11,7 +11,7 @@ Note: `docs/superpowers/` design specs and implementation plans predate the vide
 ## Usage
 
 ```
-videre dedupe [OPTIONS] <directory>
+videre dedupe [OPTIONS] [directory]   # directory optional when 'path' is set in videre config
 
 Options:
   --output [<path>]        JSONL output file (appended). Bare --output (no value) targets ~/.videre/hashes.jsonl; must come AFTER the directory positional, or clap consumes the directory as the flag's value. Mutually exclusive with --output-sqlite
@@ -59,6 +59,7 @@ cargo build --release
 ./target/release/videre watch --output-sqlite ~/photos.db ~/Photos       # same, against an explicit db
 ./target/release/videre config                                           # show resolved home dir, config.toml, and db paths
 ./target/release/videre config set db ~/photos.db                        # persist a default db in config.toml
+./target/release/videre config set path ~/Photos                         # persist a default directory for dedupe/watch
 ./target/release/videre mcp                                              # serve MCP tools over stdio, default db
 ./target/release/videre mcp --db ~/photos.db                             # same, against an explicit db
 ```
@@ -73,7 +74,7 @@ Every subcommand shares a home directory at `~/.videre` (override with the `VIDE
 
 Database resolution order for every subcommand: explicit path (`--db` on the seven readers - `report`, `fix-dates`, `prune`, `embed`, `search`, `faces`, `mcp`; `--output-sqlite` on the two writers - `dedupe`, `watch`) > `default_db` in `config.toml` > `~/.videre/hashes.db`. Readers never create a database; if the resolved path doesn't exist they print `no database found at <path>; run 'videre dedupe <dir>' first` and exit 1 (arrives as the JSON error object under `search --json`).
 
-`videre config` shows the resolved home dir, `config.toml` path, the `db` setting (labeled by its settable key, with a set-command hint when unset), resolved db, and jsonl path. `videre config set db <path>` writes an absolute path to `config.toml` as `default_db`, preserving any other keys already present. `videre config unset db` removes it, falling back to `~/.videre/hashes.db`.
+`videre config` shows the resolved home dir, `config.toml` path, the `db` and `path` settings (labeled by their settable keys, with a set-command hint when unset), resolved db, and jsonl path. `videre config set db <path>` writes an absolute path to `config.toml` as `default_db`; `videre config set path <dir>` writes `default_path`, which `videre dedupe` and `videre watch` use when their directory positional is omitted (no built-in fallback: without it, the directory is required). Both setters preserve any other keys already present; `videre config unset db|path` removes a key.
 
 ## Project structure
 
@@ -336,7 +337,7 @@ after an initial `videre faces` run.
 Long-running background process that keeps the pipeline populated so `videre report --show-faces` (or any other reader) always sees fresh data, without anyone manually re-running `videre dedupe`, `videre faces`, or waiting on lazy HEIC/location conversions. No server, no UI: it loops in the foreground, logging progress to stderr, until killed with Ctrl-C.
 
 ```bash
-videre watch <directory>                                             # default db; all four stages, every 300s
+videre watch [directory]                                             # default db; all four stages, every 300s; directory optional when 'path' is set in videre config
 videre watch <directory> --scan --faces                              # only these stages
 videre watch <directory> --interval 60                                # custom cycle interval (seconds)
 videre watch <directory> --silent                                    # suppress per-cycle stderr output
