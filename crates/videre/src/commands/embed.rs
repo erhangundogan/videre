@@ -41,7 +41,7 @@ pub fn run(args: EmbedArgs) -> Result<()> {
     let dev = device::best_device();
     let embedder = model::Embedder::load(dev.clone())?;
 
-    let mut progress = videre_core::progress::Progress::new(pending.len() as u64, args.silent);
+    let progress = videre_core::progress::Progress::new(pending.len() as u64, args.silent);
 
     let mut done = 0usize;
     let mut failed = 0usize;
