@@ -1,8 +1,17 @@
 # videre
 
-A local-first media library toolkit: dedupe, semantic search, faces, and reports over one SQLite database.
+A local-first media management CLI, offering:
 
-`videre scan` hashes every image with BLAKE3 into a single SQLite database; `videre dedupe` reads it back and writes duplicate paths to stdout one per line, ready to pipe into `trash` or `rm`. That same database is shared by every subcommand: date-fixing, pruning, semantic embedding/search, face detection and labeling, and HTML reports.
+- file scanning
+- duplicate elimination
+- comprehensive HTML reports
+- EXIF-based date fixing
+- semantic embedding
+- image search
+- face detection, clustering, and search
+- agentic access via an MCP server
+
+Everything runs over a single shared SQLite database.
 
 ## Subcommands
 
@@ -144,19 +153,6 @@ videre config unset db               # remove default_db, falling back to ~/.vid
 
 `config set`/`config unset` preserve any other keys already in `config.toml`.
 
-### Breaking changes
-
-If you're upgrading from an earlier version, four behaviors changed:
-
-1. The six reader commands (`report`, `fix-dates`, `prune`, `embed`, `search`, `faces`) no
-   longer take a database positional argument - pass `--db <path>` instead.
-2. Bare `videre dedupe <dir>` (now `videre scan <dir>`, see #4) used to write SQLite to the
-   resolved default db instead of JSONL to `/tmp/hashes`. Use `--output` (with or without a
-   value) to get JSONL again.
-3. `videre watch --output-sqlite <path>` is now optional; it defaults to the resolved db.
-4. `videre dedupe` no longer scans a directory; it only reads the database. Run `videre scan
-   <dir>` first (or rely on `videre watch`), then `videre dedupe`.
-
 ---
 
 ## videre scan
@@ -248,15 +244,11 @@ videre report --all
 videre report --by-date
 ```
 
-**Live report with face and location metadata.** `--show-faces` switches `videre report` into server mode: it starts the same local server `--faces` uses (`localhost:7878`), but serves the interactive report (not the labeling UI) at `/`. The lightbox for each photo shows its labeled faces - click one to jump to `/person/<name>` - and a reverse-geocoded location name looked up on demand via a `/api/location` call and cached into the database for next time.
+**Live report with face and location metadata.** `--show-faces` serves the report from a local server (`localhost:7878`) instead of a static file, so the lightbox can show labeled faces and reverse-geocoded locations on demand.
 
 ```bash
 videre report --show-faces
 ```
-
-Passing `--faces` and `--show-faces` together moves the report to `/` and the labeling UI to `/faces` (with `--faces` alone, `/` stays the labeling UI as before).
-
-Thumbnails and the lightbox load differently depending on mode: static reports point at `file://` paths (the report itself is opened via `file://`, so that works fine), but `--show-faces` serves images/videos through `GET /api/raw?path=...` instead, since browsers block a `file://` subresource on an `http://`-served page. `/api/raw` only serves paths already known to the database.
 
 The report includes:
 
