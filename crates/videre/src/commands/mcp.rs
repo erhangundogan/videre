@@ -22,14 +22,7 @@ pub struct McpArgs {
 }
 
 pub fn run(args: McpArgs) -> Result<()> {
-    let db = super::resolve_reader_db(args.db)?;
-    // mcp is a reader bound for the whole session: even an explicit --db must
-    // exist, or a typo'd path would silently serve an empty library.
-    anyhow::ensure!(
-        db.exists(),
-        "no database found at {}; run 'videre dedupe <dir>' first",
-        db.display()
-    );
+    let db = super::resolve_reader_db_must_exist(args.db)?;
     eprintln!("videre mcp: serving {}", db.display());
 
     let rt = tokio::runtime::Runtime::new()?;
@@ -175,36 +168,6 @@ struct FindDuplicatesParams {
     include_similar: bool,
 }
 
-#[derive(Debug, Serialize)]
-struct FindDuplicatesJson {
-    schema_version: u32,
-    total_files: usize,
-    duplicate_groups: Vec<videre::types::DupGroupJson>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    similar_groups: Option<Vec<videre::types::SimilarGroupJson>>,
-}
-
-fn build_find_duplicates(db: &std::path::Path, include_similar: bool) -> anyhow::Result<FindDuplicatesJson> {
-    let records = videre::sqlite_output::load_records(db)?;
-    let total_files = records.len();
-    let duplicate_groups = videre::output::find_duplicate_groups(&records)
-        .into_iter()
-        .map(videre::types::DupGroupJson::from)
-        .collect();
-    let similar_groups = include_similar.then(|| {
-        videre::output::find_similar_groups(&records, 10)
-            .into_iter()
-            .map(videre::types::SimilarGroupJson::from)
-            .collect()
-    });
-    Ok(FindDuplicatesJson {
-        schema_version: SCHEMA_VERSION,
-        total_files,
-        duplicate_groups,
-        similar_groups,
-    })
-}
-
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct SearchParams {
     /// Text query, e.g. "sunset on beach" (requires prior 'videre embed')
@@ -316,7 +279,7 @@ impl VidereServer {
         Parameters(params): Parameters<FindDuplicatesParams>,
     ) -> Result<CallToolResult, McpError> {
         let db = self.db.clone();
-        match blocking(move || build_find_duplicates(&db, params.include_similar)).await? {
+        match blocking(move || super::build_find_duplicates(&db, params.include_similar)).await? {
             Ok(doc) => json_result(&doc),
             Err(e) => Ok(tool_error(&e)),
         }
@@ -346,7 +309,7 @@ impl ServerHandler for VidereServer {
             .with_instructions(
                 "Read-only query tools over a videre media library (SQLite). \
                  Results reflect the last scan; verify paths still exist before \
-                 acting on them, and run 'videre dedupe'/'videre watch' to freshen.",
+                 acting on them, and run 'videre scan'/'videre watch' to freshen.",
             )
             .with_server_info(Implementation::new("videre", env!("CARGO_PKG_VERSION")))
     }
