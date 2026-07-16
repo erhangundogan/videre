@@ -23,17 +23,26 @@ Note: `docs/superpowers/` design specs and implementation plans predate the vide
 
 ```
 videre scan [OPTIONS] [directory]     # directory optional when 'path' is set in videre config
-videre dedupe [OPTIONS]               # reads the database; no directory argument
 
 Options:
   --output [<path>]        JSONL output file (appended). Bare --output (no value) targets ~/.videre/hashes.jsonl; must come AFTER the directory positional, or clap consumes the directory as the flag's value. Mutually exclusive with --output-sqlite
   --output-sqlite <path>   SQLite output file; upserts by path; mutually exclusive with --output. When neither --output nor --output-sqlite is given, records go to the resolved default db (see ~/.videre below)
-  --similar                Also find visually similar images (perceptual hash)
-  --silent                 Suppress progress output on stderr (stdout paths are always written)
+  --similar                Also compute and store perceptual hashes for near-duplicate detection
+  --silent                 Suppress progress output on stderr
   --json                   Emit a single JSON object on stdout instead of human-readable text
 ```
 
 `--output` and `--output-sqlite` cannot be used together: passing both is an error.
+
+```
+videre dedupe [OPTIONS]               # reads the database; no directory argument
+
+Options:
+  --db <path>   SQLite database (default: resolved from ~/.videre; see 'videre config')
+  --similar     Also report perceptual-hash near-duplicate clusters (review-only)
+  --silent      Suppress progress output on stderr (duplicate paths are always written to stdout)
+  --json        Emit a single JSON object on stdout instead of human-readable text
+```
 
 ## Output behavior
 
