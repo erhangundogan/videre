@@ -97,7 +97,7 @@ fn heic_stage_writes_no_cache_file_for_non_heic_hashes() {
 fn faces_stage_against_fresh_database_does_not_crash_or_hang() {
     let dir = tempdir().unwrap();
     // No db file exists yet, and no --scan flag either - simulates a user
-    // running `videre watch --faces` before any `videre dedupe`/`videre watch --scan`
+    // running `videre watch --faces` before any `videre scan`/`videre watch --scan`
     // run has ever created file_hashes.
     let db = dir.path().join("fresh.db");
 
