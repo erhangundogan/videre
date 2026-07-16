@@ -19,7 +19,8 @@ fn config_show_works_with_empty_home() {
         .expect("failed to run videre config");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("default_db:  (not set)"), "{stdout}");
+    assert!(stdout.contains("db:            (not set)"), "{stdout}");
+    assert!(stdout.contains("videre config set db"), "the not-set hint must name the settable key: {stdout}");
     assert!(stdout.contains("hashes.db"), "{stdout}");
 }
 
@@ -40,7 +41,7 @@ fn config_set_and_unset_db_roundtrip() {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&show.stdout);
-    assert!(stdout.contains("default_db:  /tmp/custom.db"), "{stdout}");
+    assert!(stdout.contains("db:            /tmp/custom.db"), "{stdout}");
 
     let unset = Command::new(videre_bin())
         .arg("config").arg("unset").arg("db")
@@ -53,7 +54,7 @@ fn config_set_and_unset_db_roundtrip() {
         .env("VIDERE_HOME", home.path())
         .output()
         .unwrap();
-    assert!(String::from_utf8_lossy(&show2.stdout).contains("default_db:  (not set)"));
+    assert!(String::from_utf8_lossy(&show2.stdout).contains("db:            (not set)"));
 }
 
 #[test]

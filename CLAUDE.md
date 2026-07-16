@@ -73,7 +73,7 @@ Every subcommand shares a home directory at `~/.videre` (override with the `VIDE
 
 Database resolution order for every subcommand: explicit path (`--db` on the seven readers - `report`, `fix-dates`, `prune`, `embed`, `search`, `faces`, `mcp`; `--output-sqlite` on the two writers - `dedupe`, `watch`) > `default_db` in `config.toml` > `~/.videre/hashes.db`. Readers never create a database; if the resolved path doesn't exist they print `no database found at <path>; run 'videre dedupe <dir>' first` and exit 1 (arrives as the JSON error object under `search --json`).
 
-`videre config` shows the resolved home dir, `config.toml` path, `default_db`, resolved db, and jsonl path. `videre config set db <path>` writes an absolute path to `config.toml` as `default_db`, preserving any other keys already present. `videre config unset db` removes it, falling back to `~/.videre/hashes.db`.
+`videre config` shows the resolved home dir, `config.toml` path, the `db` setting (labeled by its settable key, with a set-command hint when unset), resolved db, and jsonl path. `videre config set db <path>` writes an absolute path to `config.toml` as `default_db`, preserving any other keys already present. `videre config unset db` removes it, falling back to `~/.videre/hashes.db`.
 
 ## Project structure
 

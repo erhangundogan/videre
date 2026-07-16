@@ -129,7 +129,7 @@ and exit 1 (under `search --json` this arrives as the JSON error object instead)
 **`videre config`** shows the resolved paths and current settings:
 
 ```bash
-videre config                        # show home dir, config.toml path, default_db, resolved db, jsonl path
+videre config                        # show home dir, config.toml path, db setting, resolved db, jsonl path
 videre config set db ~/photos.db     # persist default_db (written as an absolute path)
 videre config unset db               # remove default_db, falling back to ~/.videre/hashes.db
 ```
