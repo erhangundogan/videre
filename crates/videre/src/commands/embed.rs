@@ -36,12 +36,12 @@ pub fn run(args: EmbedArgs) -> Result<()> {
         }
         return Ok(());
     }
-    if !args.silent {
-        eprintln!("{} image(s) to embed", pending.len());
-    }
 
+    let started = std::time::Instant::now();
     let dev = device::best_device();
     let embedder = model::Embedder::load(dev.clone())?;
+
+    let mut progress = videre_core::progress::Progress::new(pending.len() as u64, args.silent);
 
     let mut done = 0usize;
     let mut failed = 0usize;
@@ -57,7 +57,7 @@ pub fn run(args: EmbedArgs) -> Result<()> {
                 ) {
                     Ok(t) => Some((p.hash.clone(), t)),
                     Err(e) => {
-                        eprintln!("skip {}: {e:#}", p.path);
+                        progress.println(&format!("skip {}: {e:#}", p.path));
                         None
                     }
                 }
@@ -81,13 +81,42 @@ pub fn run(args: EmbedArgs) -> Result<()> {
 
         embeddings::insert_embeddings(&conn, model::MODEL_ID, &rows)?;
         done += rows.len();
-        if !args.silent {
-            eprintln!("embedded {done}/{} ({failed} skipped)", pending.len());
-        }
+        progress.tick_by(chunk.len() as u64);
     }
 
+    progress.finish();
+
     if !args.silent {
-        eprintln!("Done: {done} embedded, {failed} skipped.");
+        eprintln!("{}", format_summary(done, failed, started.elapsed()));
     }
     Ok(())
+}
+
+/// Assembles the single consolidated summary line printed after embedding
+/// finishes. Not `pub(crate)` (unlike `videre faces`'s equivalent
+/// `format_summary`): nothing outside this file calls it - `videre embed`
+/// has no `videre watch` stage equivalent that shares this logic.
+fn format_summary(done: usize, failed: usize, elapsed: std::time::Duration) -> String {
+    if failed > 0 {
+        format!("{done} image(s) embedded, {failed} skipped, done in {}s", elapsed.as_secs())
+    } else {
+        format!("{done} image(s) embedded, done in {}s", elapsed.as_secs())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_summary_no_skips() {
+        let summary = format_summary(234, 0, std::time::Duration::from_secs(41));
+        assert_eq!(summary, "234 image(s) embedded, done in 41s");
+    }
+
+    #[test]
+    fn format_summary_with_skips() {
+        let summary = format_summary(230, 4, std::time::Duration::from_secs(41));
+        assert_eq!(summary, "230 image(s) embedded, 4 skipped, done in 41s");
+    }
 }
