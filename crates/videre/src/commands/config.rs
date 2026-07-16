@@ -38,17 +38,19 @@ pub fn run(args: ConfigArgs) -> Result<()> {
 fn show(home: &std::path::Path) -> Result<()> {
     let config_file = home::config_path(home);
     let config = home::load_config(home)?;
-    println!("home:        {}", home.display());
+    println!("home:          {}", home.display());
     println!(
-        "config:      {}{}",
+        "config:        {}{}",
         config_file.display(),
         if config_file.exists() { "" } else { " (absent)" }
     );
+    // Display keys match the names `videre config set <key>` accepts, so the
+    // output doubles as documentation for how to change each value.
     match &config.default_db {
-        Some(db) => println!("default_db:  {}", db.display()),
-        None => println!("default_db:  (not set)"),
+        Some(db) => println!("db:            {} [from config.toml]", db.display()),
+        None => println!("db:            (not set) [set with: videre config set db <path>]"),
     }
-    println!("resolved db: {}", home::resolve_db_in(home)?.display());
-    println!("jsonl:       {}", home.join("hashes.jsonl").display());
+    println!("resolved db:   {}", home::resolve_db_in(home)?.display());
+    println!("jsonl:         {}", home.join("hashes.jsonl").display());
     Ok(())
 }
