@@ -4,6 +4,8 @@ use rusqlite::Connection;
 pub struct FacesRunResult {
     pub total_faces: usize,
     pub write_errors: usize,
+    pub images_processed: usize,
+    pub detect_errors: usize,
 }
 
 /// Detects, embeds, and writes faces for the given (path, hash) pairs -
@@ -22,17 +24,19 @@ pub fn run_face_pipeline(
     use half::f16;
 
     if to_process.is_empty() {
-        return Ok(FacesRunResult { total_faces: 0, write_errors: 0 });
+        return Ok(FacesRunResult { total_faces: 0, write_errors: 0, images_processed: 0, detect_errors: 0 });
     }
-
-    if !silent { eprintln!("Processing {} images...", to_process.len()); }
 
     let (det_path, rec_path) = face_models::buffalo_l_paths()?;
     let mut detector = face_detect::FaceDetector::new(&det_path)?;
     let mut embedder = face_embed::FaceEmbedder::new(&rec_path)?;
 
+    let mut progress = videre_core::progress::Progress::new(to_process.len() as u64, silent);
+
     let mut total_faces = 0usize;
     let mut write_errors = 0usize;
+    let mut images_processed = 0usize;
+    let mut detect_errors = 0usize;
 
     for chunk in to_process.chunks(batch) {
         struct ChunkEntry {
@@ -45,31 +49,41 @@ pub fn run_face_pipeline(
         let mut chunk_crops: Vec<image::RgbImage> = Vec::new();
 
         for (path, hash) in chunk {
+            images_processed += 1;
             let img = match load_image(path) {
                 Some(i) => i,
-                None => continue,
+                None => { progress.tick(); continue; }
             };
             let detections = match detector.detect(&img) {
                 Ok(d) => d,
-                Err(e) => { eprintln!("detect failed {path}: {e}"); continue; }
+                Err(e) => {
+                    progress.println(&format!("detect failed {path}: {e}"));
+                    detect_errors += 1;
+                    progress.tick();
+                    continue;
+                }
             };
-            if detections.is_empty() { continue; }
+            if detections.is_empty() { progress.tick(); continue; }
 
             let crops: Vec<image::RgbImage> = detections.iter()
                 .map(|d| face_align::align_face(&img, &d.landmarks))
                 .collect();
 
-            if !silent { eprintln!("[faces] {path}: {} face(s)", detections.len()); }
             let n_crops = crops.len();
             chunk_crops.extend(crops);
             chunk_entries.push(ChunkEntry { path: path.clone(), hash: hash.clone(), detections, n_crops });
+            progress.tick();
         }
 
         if chunk_crops.is_empty() { continue; }
 
         let all_embeddings = match embedder.embed_batch(&chunk_crops) {
             Ok(e) => e,
-            Err(e) => { eprintln!("embed_batch failed: {e}"); continue; }
+            Err(e) => {
+                progress.println(&format!("embed_batch failed: {e}"));
+                detect_errors += chunk_entries.len();
+                continue;
+            }
         };
 
         let mut emb_offset = 0;
@@ -96,14 +110,16 @@ pub fn run_face_pipeline(
             total_faces += rows.len();
             if !dry_run {
                 if let Err(e) = videre_core::face_db::replace_faces_for_hash(conn, &entry.hash, &rows) {
-                    eprintln!("write failed {}: {e}", entry.path);
+                    progress.println(&format!("write failed {}: {e}", entry.path));
                     write_errors += 1;
                 }
             }
         }
     }
 
-    Ok(FacesRunResult { total_faces, write_errors })
+    progress.finish();
+
+    Ok(FacesRunResult { total_faces, write_errors, images_processed, detect_errors })
 }
 
 /// Re-runs DBSCAN clustering over every face embedding currently in the
@@ -155,6 +171,8 @@ mod tests {
         let result = run_face_pipeline(&conn, &[], 8, false, true).unwrap();
         assert_eq!(result.total_faces, 0);
         assert_eq!(result.write_errors, 0);
+        assert_eq!(result.images_processed, 0);
+        assert_eq!(result.detect_errors, 0);
     }
 
     #[test]
