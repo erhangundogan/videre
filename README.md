@@ -2,7 +2,7 @@
 
 A local-first media library toolkit: dedupe, semantic search, faces, and reports over one SQLite database.
 
-Scans recursively, hashes every image with BLAKE3, and writes duplicate paths to stdout one per line - ready to pipe into `trash` or `rm`. Results persist in a single SQLite database shared by every subcommand: date-fixing, pruning, semantic embedding/search, face detection and labeling, and HTML reports.
+`videre scan` hashes every image with BLAKE3 into a single SQLite database; `videre dedupe` reads it back and writes duplicate paths to stdout one per line, ready to pipe into `trash` or `rm`. That same database is shared by every subcommand: date-fixing, pruning, semantic embedding/search, face detection and labeling, and HTML reports.
 
 ## Subcommands
 
@@ -150,8 +150,9 @@ If you're upgrading from an earlier version, four behaviors changed:
 
 1. The six reader commands (`report`, `fix-dates`, `prune`, `embed`, `search`, `faces`) no
    longer take a database positional argument - pass `--db <path>` instead.
-2. Bare `videre dedupe <dir>` now writes SQLite to the resolved default db instead of JSONL
-   to `/tmp/hashes`. Use `--output` (with or without a value) to get JSONL again.
+2. Bare `videre dedupe <dir>` (now `videre scan <dir>`, see #4) used to write SQLite to the
+   resolved default db instead of JSONL to `/tmp/hashes`. Use `--output` (with or without a
+   value) to get JSONL again.
 3. `videre watch --output-sqlite <path>` is now optional; it defaults to the resolved db.
 4. `videre dedupe` no longer scans a directory; it only reads the database. Run `videre scan
    <dir>` first (or rely on `videre watch`), then `videre dedupe`.
