@@ -381,3 +381,109 @@ fn config_path_supplies_dedupe_directory() {
     assert_eq!(String::from_utf8_lossy(&out.stdout).lines().count(), 1);
     assert!(home.path().join("hashes.db").exists());
 }
+
+#[test]
+fn first_explicit_dedupe_adopts_directory_as_default_path() {
+    let scan_dir = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    fs::write(scan_dir.path().join("a.jpg"), b"content").unwrap();
+
+    let out = Command::new(videre_bin())
+        .arg("dedupe")
+        .arg(scan_dir.path())
+        .env("VIDERE_HOME", home.path())
+        .output()
+        .expect("failed to run videre");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("saved"), "expected an adoption note: {stderr}");
+    assert!(stderr.contains("videre config set path"), "{stderr}");
+
+    // a later BARE dedupe (no directory) now resolves it from config
+    let out2 = Command::new(videre_bin())
+        .arg("dedupe")
+        .arg("--silent")
+        .env("VIDERE_HOME", home.path())
+        .output()
+        .expect("failed to run videre");
+    assert!(out2.status.success(), "{}", String::from_utf8_lossy(&out2.stderr));
+}
+
+#[test]
+fn second_explicit_dedupe_does_not_overwrite_adopted_default_path() {
+    let first_dir = tempdir().unwrap();
+    let second_dir = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    fs::write(first_dir.path().join("a.jpg"), b"content").unwrap();
+    fs::write(second_dir.path().join("b.jpg"), b"other content").unwrap();
+
+    Command::new(videre_bin())
+        .arg("dedupe").arg("--silent").arg(first_dir.path())
+        .env("VIDERE_HOME", home.path())
+        .status().unwrap();
+
+    let out = Command::new(videre_bin())
+        .arg("dedupe").arg("--silent").arg(second_dir.path())
+        .env("VIDERE_HOME", home.path())
+        .output().unwrap();
+    assert!(out.status.success());
+    // --silent suppresses the note even on the first (adopting) run; confirm
+    // the SECOND run produced no note either (nothing to adopt: already set)
+    assert!(String::from_utf8_lossy(&out.stderr).trim().is_empty()
+        || !String::from_utf8_lossy(&out.stderr).contains("saved"));
+
+    let config = Command::new(videre_bin())
+        .arg("config")
+        .env("VIDERE_HOME", home.path())
+        .output().unwrap();
+    let stdout = String::from_utf8_lossy(&config.stdout);
+    assert!(
+        stdout.contains(&first_dir.path().display().to_string()),
+        "default_path must still be the FIRST directory, not overwritten: {stdout}"
+    );
+}
+
+#[test]
+fn silent_flag_suppresses_the_adoption_note() {
+    let scan_dir = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    fs::write(scan_dir.path().join("a.jpg"), b"content").unwrap();
+
+    let out = Command::new(videre_bin())
+        .arg("dedupe").arg("--silent").arg(scan_dir.path())
+        .env("VIDERE_HOME", home.path())
+        .output().unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).trim().is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    // but the path WAS adopted (silent only suppresses the note, not the effect)
+    let config = Command::new(videre_bin())
+        .arg("config")
+        .env("VIDERE_HOME", home.path())
+        .output().unwrap();
+    assert!(String::from_utf8_lossy(&config.stdout)
+        .contains(&scan_dir.path().display().to_string()));
+}
+
+#[test]
+fn json_mode_adopts_default_path_without_polluting_stdout() {
+    let scan_dir = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    fs::write(scan_dir.path().join("a.jpg"), b"content").unwrap();
+
+    let out = Command::new(videre_bin())
+        .arg("dedupe").arg("--silent").arg("--json").arg(scan_dir.path())
+        .env("VIDERE_HOME", home.path())
+        .output().unwrap();
+    assert!(out.status.success());
+    // stdout must still be exactly one valid JSON document
+    let _doc: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .expect("stdout must remain pure JSON even when adopting a default path");
+
+    let config = Command::new(videre_bin())
+        .arg("config")
+        .env("VIDERE_HOME", home.path())
+        .output().unwrap();
+    assert!(String::from_utf8_lossy(&config.stdout)
+        .contains(&scan_dir.path().display().to_string()));
+}

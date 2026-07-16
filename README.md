@@ -132,6 +132,7 @@ and exit 1 (under `search --json` this arrives as the JSON error object instead)
 videre config                        # show home dir, config.toml path, db setting, resolved db, jsonl path
 videre config set db ~/photos.db     # persist default_db (written as an absolute path)
 videre config set path ~/Photos      # persist default_path: dedupe/watch use it when the directory is omitted
+# 'videre dedupe <dir>' also does this automatically the first time (when no path is set yet); it prints a note unless --silent
 videre config unset path             # remove it; dedupe/watch require an explicit directory again
 videre config unset db               # remove default_db, falling back to ~/.videre/hashes.db
 ```

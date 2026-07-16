@@ -140,6 +140,7 @@ fn run_text(args: DedupeArgs) -> anyhow::Result<()> {
         eprintln!("Error: directory {:?} does not exist", directory);
         process::exit(1);
     }
+    super::maybe_adopt_default_path(args.directory.as_deref(), args.silent);
 
     let records = gather_records(&args, &directory);
 
@@ -207,6 +208,7 @@ fn run_json(args: &DedupeArgs) -> anyhow::Result<DedupeJson> {
         "directory {:?} does not exist",
         directory
     );
+    super::maybe_adopt_default_path(args.directory.as_deref(), args.silent);
 
     let records = gather_records(args, &directory);
 

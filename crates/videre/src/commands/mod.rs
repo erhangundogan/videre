@@ -45,3 +45,29 @@ pub(crate) fn resolve_directory(
         }),
     }
 }
+
+/// First-use convenience for `dedupe`: if the caller gave an explicit
+/// directory and no default path is configured yet, adopt it as the default
+/// so future bare `videre dedupe` / `videre watch` calls need no argument.
+/// Only fires once (the unset check makes it a true "first use", not a
+/// silent overwrite of a value the user already chose or set explicitly).
+/// Best-effort: any error here (unreadable HOME, unwritable config) is
+/// swallowed rather than failing the dedupe run over a convenience feature.
+/// Prints a one-line stderr note unless `silent`, since even a one-time
+/// automatic config write should be visible, not silent.
+pub(crate) fn maybe_adopt_default_path(explicit: Option<&std::path::Path>, silent: bool) {
+    let Some(dir) = explicit else { return };
+    let Ok(home) = videre_core::home::videre_home() else { return };
+    let Ok(config) = videre_core::home::load_config(&home) else { return };
+    if config.default_path.is_some() {
+        return;
+    }
+    if videre_core::home::set_default_path(&home, dir).is_ok() && !silent {
+        eprintln!(
+            "videre: saved {:?} as the default path (first use); \
+             change it anytime with 'videre config set path <dir>' \
+             or remove it with 'videre config unset path'",
+            dir
+        );
+    }
+}
