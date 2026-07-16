@@ -358,6 +358,47 @@ fn silent_flag_suppresses_the_adoption_note() {
 }
 
 #[test]
+fn skipped_files_are_reported_in_wrote_summary() {
+    let scan_dir = tempdir().unwrap();
+    let out_dir = tempdir().unwrap();
+    let db_path = out_dir.path().join("hashes.db");
+
+    fs::write(scan_dir.path().join("a.jpg"), b"valid content").unwrap();
+    // A broken symlink is filtered out by scanner::scan's is_file() check
+    // before it ever reaches hasher::hash_file, so it can't exercise the
+    // skip-count path. An unreadable regular file does: fs::metadata
+    // succeeds (no read permission needed), but File::open fails with
+    // EACCES, so hash_file returns Err and gather_records counts it as
+    // skipped.
+    let unreadable = scan_dir.path().join("unreadable.jpg");
+    fs::write(&unreadable, b"unreadable content").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+    }
+
+    let out = Command::new(videre_bin())
+        .arg("scan")
+        .arg("--output-sqlite")
+        .arg(&db_path)
+        .arg(scan_dir.path())
+        .output()
+        .expect("failed to run videre");
+
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Wrote 1 record(s)"), "{stderr}");
+    assert!(stderr.contains("(1 skipped)"), "{stderr}");
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 1, "only the valid file should have been written");
+}
+
+#[test]
 fn json_error_object_for_missing_directory() {
     let home = tempdir().unwrap();
     let out = Command::new(videre_bin())
