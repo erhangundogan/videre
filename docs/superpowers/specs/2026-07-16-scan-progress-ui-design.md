@@ -388,8 +388,11 @@ than introducing a new one. See the integration-test changes below instead.
 - One new test is warranted: scan a directory containing a broken symlink
   (created via `std::os::unix::fs::symlink("/nonexistent/target", scan_dir.path().join("broken.jpg"))`)
   alongside one valid file. `hasher::hash_file` fails deterministically on a
-  broken symlink (`hasher.rs:114`'s `File::open(path)?` fails to open a
-  symlink whose target does not exist), and this is fully portable for this
+  broken symlink at `hasher.rs:108`'s `fs::metadata(path)?` call (the first
+  fallible call in the function, evaluated before `File::open` at
+  `hasher.rs:114` - `fs::metadata` follows symlinks by default and returns
+  `NotFound` when the target does not exist, so the function returns `Err`
+  before ever reaching `File::open`), and this is fully portable for this
   project's actual target platforms - confirmed via `README.md`/`CLAUDE.md`
   containing no Windows-specific code paths or CI targets anywhere (this
   project already assumes macOS/Linux only, per its existing `qlmanage`/
