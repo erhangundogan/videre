@@ -92,16 +92,6 @@ pub struct ScanJson {
     pub output: ScanOutputJson,
 }
 
-/// Top-level document for `dedupe --json`.
-#[derive(Debug, Serialize)]
-pub struct DedupeJson {
-    pub schema_version: u32,
-    pub scanned: usize,
-    pub duplicate_groups: Vec<DupGroupJson>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub similar_groups: Option<Vec<SimilarGroupJson>>,
-}
-
 /// Error document: in --json mode stdout always carries exactly one valid JSON
 /// object, so runtime failures are emitted as this instead of leaving stdout empty.
 #[derive(Debug, Serialize)]
@@ -236,10 +226,10 @@ mod tests {
     }
 
     #[test]
-    fn dedupe_json_omits_similar_groups_when_none() {
-        let doc = DedupeJson {
+    fn find_duplicates_json_via_dedupe_omits_similar_groups_when_none() {
+        let doc = FindDuplicatesJson {
             schema_version: SCHEMA_VERSION,
-            scanned: 3,
+            total_files: 3,
             duplicate_groups: vec![],
             similar_groups: None,
         };
@@ -249,10 +239,10 @@ mod tests {
     }
 
     #[test]
-    fn dedupe_json_includes_similar_groups_when_some() {
-        let doc = DedupeJson {
+    fn find_duplicates_json_via_dedupe_includes_similar_groups_when_some() {
+        let doc = FindDuplicatesJson {
             schema_version: SCHEMA_VERSION,
-            scanned: 2,
+            total_files: 2,
             duplicate_groups: vec![],
             similar_groups: Some(vec![SimilarGroupJson {
                 hash: "phash:00000000000000ff".to_string(),
