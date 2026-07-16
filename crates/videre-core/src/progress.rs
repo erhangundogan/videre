@@ -63,6 +63,26 @@ impl Progress {
         }
     }
 
+    /// Advance by `n` items at once (for callers that complete work in
+    /// batches rather than one item at a time, e.g. `videre embed`'s
+    /// chunked pipeline). `n` must not exceed the number of items remaining
+    /// toward `total` (mirrors the same implicit contract `tick()` already
+    /// has: callers are responsible for not calling it more times than
+    /// `total` allows).
+    pub fn tick_by(&mut self, n: u64) {
+        let before = self.done;
+        self.done += n;
+        match &self.mode {
+            Mode::Bar(bar) => bar.set_position(self.done),
+            Mode::Plain => {
+                if self.done / LOG_INTERVAL != before / LOG_INTERVAL || self.done == self.total {
+                    eprintln!("{}/{} images processed", self.done, self.total);
+                }
+            }
+            Mode::Silent => {}
+        }
+    }
+
     /// Print a line that survives an active progress bar without corrupting
     /// its rendering. Always prints, regardless of `silent` - matches the
     /// existing unconditional behavior of per-image error messages
@@ -112,6 +132,14 @@ mod tests {
     fn zero_total_does_not_panic() {
         let mut p = Progress::new(0, true);
         p.tick();
+        p.finish();
+    }
+
+    #[test]
+    fn silent_mode_tick_by_does_not_panic() {
+        let mut p = Progress::new(100, true);
+        p.tick_by(40);
+        p.tick_by(60);
         p.finish();
     }
 }
