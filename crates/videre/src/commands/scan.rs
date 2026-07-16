@@ -57,16 +57,7 @@ pub fn run(args: ScanArgs) -> anyhow::Result<()> {
 /// which always print via `Progress::println`). Returns the records plus the
 /// count of files that were scanned but failed to hash.
 fn gather_records(args: &ScanArgs, directory: &std::path::Path) -> (Vec<videre::types::FileRecord>, usize) {
-    if !args.silent {
-        eprintln!("Scanning {:?}...", directory);
-    }
-
     let paths = scanner::scan(directory);
-
-    if !args.silent {
-        eprintln!("Found {} file(s) to process", paths.len());
-    }
-
     let progress = videre_core::progress::Progress::new(paths.len() as u64, args.silent);
 
     let records: Vec<_> = paths
