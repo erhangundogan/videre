@@ -55,7 +55,7 @@ impl Progress {
         match &self.mode {
             Mode::Bar(bar) => bar.set_position(self.done),
             Mode::Plain => {
-                if self.done % LOG_INTERVAL == 0 || self.done == self.total {
+                if self.done.is_multiple_of(LOG_INTERVAL) || self.done == self.total {
                     eprintln!("{}/{} images processed", self.done, self.total);
                 }
             }
