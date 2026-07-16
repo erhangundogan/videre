@@ -8,7 +8,8 @@ Scans recursively, hashes every image with BLAKE3, and writes duplicate paths to
 
 | Subcommand | Purpose |
 |------------|---------|
-| `videre dedupe` | Scan a directory, print duplicate paths to stdout |
+| `videre scan` | Scan a directory, hash every image, and populate the database |
+| `videre dedupe` | Report duplicate files from the database, print paths to remove |
 | `videre report` | Read the SQLite database, generate an HTML review page (or serve the live report/labeling UI) |
 | `videre fix-dates` | Set each file's mtime to its EXIF shoot date |
 | `videre prune` | Remove stale rows, sync metadata, clean orphan embeddings |
@@ -40,55 +41,59 @@ on first write. Pass `--db <path>` (readers) or `--output-sqlite <path>` (writer
 at a different file instead - see [The ~/.videre home directory](#the-videre-home-directory).
 
 ```bash
-# 1. Scan - duplicates printed to stdout, everything written to the default SQLite db
-# If you don't wanna review duplicates visually then you can start from point 3
-videre dedupe ~/Photos
+# 1. Scan - everything written to the default SQLite db
+videre scan ~/Photos
 
-# 2. Review - open the HTML report in your browser
+# 2. Preview duplicates - printed to stdout
+# If you don't wanna review duplicates visually then you can start from point 4
+videre dedupe
+
+# 3. Review - open the HTML report in your browser
 videre report
 
-# 3. Delete duplicates
-videre dedupe ~/Photos | xargs trash
+# 4. Delete duplicates
+videre dedupe | xargs trash
 
-# 4. Fix timestamps - set mtime = EXIF shoot date on remaining files
+# 5. Fix timestamps - set mtime = EXIF shoot date on remaining files
 videre fix-dates
 
-# 5. Embed images for semantic search (downloads ~1.8 GB model on first run)
+# 6. Embed images for semantic search (downloads ~1.8 GB model on first run)
 videre embed
 
-# 6. Search by text or example image
+# 7. Search by text or example image
 videre search "golden gate bridge at sunset"
 videre search --image reference.jpg
 
-# 7. Detect, embed, and cluster faces for person search
+# 8. Detect, embed, and cluster faces for person search
 videre faces
 
-# 8. Label faces in the browser UI, then save and close
+# 9. Label faces in the browser UI, then save and close
 videre report --faces
 
-# 9. Find all photos of a named person
+# 10. Find all photos of a named person
 videre search --person "Alice"
 
-# 10. Prune the database: remove stale rows, sync metadata, clean orphan embeddings
+# 11. Prune the database: remove stale rows, sync metadata, clean orphan embeddings
 videre prune
 
-# 11. Browse the full collection with in-page similarity search
+# 12. Browse the full collection with in-page similarity search
 videre report --all
 
-# 12. Browse a Year/Month/Day drill-down gallery (static HTML, same as --all)
+# 13. Browse a Year/Month/Day drill-down gallery (static HTML, same as --all)
 videre report --by-date
 
-# 13. Live report with labeled-face and location metadata in the lightbox
+# 14. Live report with labeled-face and location metadata in the lightbox
 videre report --show-faces
 
-# 14. Keep everything fresh in the background (run alongside step 13, same db)
+# 15. Keep everything fresh in the background (run alongside step 14, same db)
 videre watch ~/Photos
 ```
 
 To use an explicit database file instead of the default:
 
 ```bash
-videre dedupe --output-sqlite ~/photos.db ~/Photos
+videre scan --output-sqlite ~/photos.db ~/Photos
+videre dedupe --db ~/photos.db
 videre report --db ~/photos.db
 videre search --db ~/photos.db "golden gate bridge at sunset"
 videre watch --output-sqlite ~/photos.db ~/Photos
@@ -108,20 +113,20 @@ environment variable). It holds:
   config.toml    # optional overrides, e.g. default_db
 ```
 
-The directory and its files are created lazily by writers (`dedupe`, `watch`, `config set`) -
+The directory and its files are created lazily by writers (`scan`, `watch`, `config set`) -
 nothing is written just by running a reader.
 
 **Database resolution order**, used by every subcommand that reads or writes SQLite:
 
 1. An explicit path: `--db <path>` on readers (`report`, `fix-dates`, `prune`, `embed`,
-   `search`, `faces`, `mcp`), `--output-sqlite <path>` on writers (`dedupe`, `watch`)
+   `search`, `faces`, `mcp`, `dedupe`), `--output-sqlite <path>` on writers (`scan`, `watch`)
 2. `default_db` in `~/.videre/config.toml`, if set
 3. `~/.videre/hashes.db`
 
 Readers never create a database. If the resolved path doesn't exist, they print:
 
 ```
-no database found at <path>; run 'videre dedupe <dir>' first
+no database found at <path>; run 'videre scan <dir>' first
 ```
 
 and exit 1 (under `search --json` this arrives as the JSON error object instead).
@@ -131,9 +136,9 @@ and exit 1 (under `search --json` this arrives as the JSON error object instead)
 ```bash
 videre config                        # show home dir, config.toml path, db setting, resolved db, jsonl path
 videre config set db ~/photos.db     # persist default_db (written as an absolute path)
-videre config set path ~/Photos      # persist default_path: dedupe/watch use it when the directory is omitted
-# 'videre dedupe <dir>' also does this automatically the first time (when no path is set yet); it prints a note unless --silent
-videre config unset path             # remove it; dedupe/watch require an explicit directory again
+videre config set path ~/Photos      # persist default_path: scan/watch use it when the directory is omitted
+# 'videre scan <dir>' also does this automatically the first time (when no path is set yet); it prints a note unless --silent
+videre config unset path             # remove it; scan/watch require an explicit directory again
 videre config unset db               # remove default_db, falling back to ~/.videre/hashes.db
 ```
 
@@ -141,43 +146,73 @@ videre config unset db               # remove default_db, falling back to ~/.vid
 
 ### Breaking changes
 
-If you're upgrading from an earlier version, three behaviors changed:
+If you're upgrading from an earlier version, four behaviors changed:
 
 1. The six reader commands (`report`, `fix-dates`, `prune`, `embed`, `search`, `faces`) no
    longer take a database positional argument - pass `--db <path>` instead.
 2. Bare `videre dedupe <dir>` now writes SQLite to the resolved default db instead of JSONL
    to `/tmp/hashes`. Use `--output` (with or without a value) to get JSONL again.
 3. `videre watch --output-sqlite <path>` is now optional; it defaults to the resolved db.
+4. `videre dedupe` no longer scans a directory; it only reads the database. Run `videre scan
+   <dir>` first (or rely on `videre watch`), then `videre dedupe`.
 
 ---
 
-## videre dedupe
+## videre scan
 
 ```
-videre dedupe [OPTIONS] [directory]   # directory optional when 'path' is set in videre config
+videre scan [OPTIONS] [directory]   # directory optional when 'path' is set in videre config
 ```
 
 | Flag | Description |
 |------|-------------|
 | `--output-sqlite <path>` | Write results to SQLite (upserts by path on each run); with neither this nor `--output`, records go to the resolved default db (see [The ~/.videre home directory](#the-videre-home-directory)) |
 | `--output [<path>]` | Write results to JSONL (appended on each run) instead of SQLite. A bare `--output` (no value) targets `~/.videre/hashes.jsonl` - it must come *after* the directory positional, or clap consumes the directory as the flag's value and fails with "required argument DIRECTORY" |
-| `--similar` | Also find visually similar images via dHash perceptual hashing |
-| `--silent` | Suppress progress on stderr (stdout paths are always written) |
+| `--similar` | Also compute and store perceptual hashes for near-duplicate detection |
+| `--silent` | Suppress progress on stderr |
 | `--json` | Emit a single JSON object on stdout instead of text |
 
 `--output` and `--output-sqlite` are mutually exclusive.
 
-**stdout** receives REMOVE candidate paths, one per line - pipe directly into any deletion tool. The KEEP candidate in each group is the file with the oldest `exif_date`; falls back to `min(created_at, modified_at)` when EXIF is absent. `0000-*` EXIF dates (cameras with unset clocks) are treated as absent.
+**stdout** is empty in text mode: scanning only populates the database (or JSONL file), it doesn't report duplicates - that's `videre dedupe`'s job.
 
 **stderr** shows scan progress and a summary. Suppressed by `--silent`.
 
 ```bash
-videre dedupe ~/Photos                                        # preview removals, write to default db
-videre dedupe ~/Photos | xargs trash                          # delete immediately
-videre dedupe --silent ~/Photos > to_delete.txt                # save list for later
-videre dedupe ~/Photos --output                                # write JSONL to ~/.videre/hashes.jsonl
-videre dedupe --output-sqlite ~/photos.db ~/Photos             # write to an explicit db instead
-videre dedupe --similar --output-sqlite ~/photos.db ~/Photos  # include visual duplicates
+videre scan ~/Photos                                          # populate the default db
+videre scan --silent ~/Photos                                 # quiet mode
+videre scan ~/Photos --output                                 # write JSONL to ~/.videre/hashes.jsonl
+videre scan --output-sqlite ~/photos.db ~/Photos               # write to an explicit db instead
+videre scan --similar --output-sqlite ~/photos.db ~/Photos    # also compute perceptual hashes
+```
+
+---
+
+## videre dedupe
+
+```
+videre dedupe [OPTIONS]   # reads the database; no directory argument
+```
+
+| Flag | Description |
+|------|-------------|
+| `--db <path>` | SQLite database to read (default: resolved from `~/.videre`; see [The ~/.videre home directory](#the-videre-home-directory)) |
+| `--similar` | Also report perceptual-hash near-duplicate clusters (review-only) |
+| `--silent` | Suppress progress on stderr (stdout paths are always written) |
+| `--json` | Emit a single JSON object on stdout instead of text |
+
+**stdout** receives REMOVE candidate paths, one per line - pipe directly into any deletion tool. The KEEP candidate in each group is the file with the oldest `exif_date`; falls back to `min(created_at, modified_at)` when EXIF is absent. `0000-*` EXIF dates (cameras with unset clocks) are treated as absent.
+
+**stderr** shows a summary. Suppressed by `--silent`.
+
+```bash
+videre scan ~/Photos                                          # populate the default db
+videre dedupe                                                 # preview removals
+videre dedupe | xargs trash                                   # delete immediately
+videre dedupe --silent > to_delete.txt                        # save list for later
+videre scan --output ~/Photos                                 # write JSONL to ~/.videre/hashes.jsonl
+videre scan --output-sqlite ~/photos.db ~/Photos               # scan to an explicit db
+videre dedupe --db ~/photos.db --similar                       # explicit db, include visual duplicates
 ```
 
 Visual duplicates use [dHash](http://www.hackerfactor.com/blog/index.php?/archives/529-Kind-of-Like-That.html): images are resized to 9x8 grayscale, adjacent pixel pairs produce a 64-bit fingerprint, and pairs with Hamming distance <= 10 are grouped as similar. Visual groups are logged to stderr only - review with `videre report` before deleting.
@@ -188,7 +223,7 @@ Visual duplicates use [dHash](http://www.hackerfactor.com/blog/index.php?/archiv
 
 Reads the SQLite database and generates a self-contained HTML file. There are two distinct phases where the report is useful.
 
-**Phase 1: review before deleting.** Run immediately after `videre dedupe` to visually inspect duplicate groups and confirm KEEP/REMOVE decisions before touching any files.
+**Phase 1: review before deleting.** Run `videre scan` then `videre dedupe` to visually inspect duplicate groups and confirm KEEP/REMOVE decisions before touching any files.
 
 ```bash
 videre report                          # reads the default db, output: <db>_report.html
@@ -259,7 +294,7 @@ Faces below `--min-cluster-size` stay as unassigned singletons instead of formin
 **Faces workflow:**
 
 ```bash
-videre dedupe ~/Photos                    # scan images into the default db
+videre scan ~/Photos                      # scan images into the default db
 videre faces                              # detect + embed + cluster faces
 videre report --faces                     # label in browser, save and close
 videre search --person "Alice"            # find all photos of Alice
@@ -282,7 +317,7 @@ videre watch --output-sqlite ~/photos.db ~/Photos                 # explicit db 
 | Flag | Description |
 |------|-------------|
 | `--output-sqlite <path>` | Database to populate; defaults to the resolved db (see [The ~/.videre home directory](#the-videre-home-directory)) if omitted |
-| `--scan` | Rescan the directory and update `file_hashes` (same as running `videre dedupe`) |
+| `--scan` | Rescan the directory and update `file_hashes` (same as running `videre scan`) |
 | `--faces` | Detect, embed, and cluster faces on any images not yet processed |
 | `--heic` | Pre-convert and cache HEIC thumbnails (240px and 1200px) per photo |
 | `--location` | Reverse-geocode any GPS coordinates not yet resolved to a place name |
@@ -462,7 +497,7 @@ CREATE TABLE IF NOT EXISTS faces (
 );
 ```
 
-Re-scanning upserts existing rows by `path`. `phash` is only written with `--similar`. EXIF fields (`exif_date`, `gps_lat`, `gps_lon`, `width`, `height`) are written for jpg/jpeg/tiff/heic/dng files; null for all others. `location_name` is added by an idempotent migration on `videre report` startup and is not written by `videre dedupe` itself - it's populated lazily, one coordinate at a time, when `videre report --show-faces` (or `videre watch --location`) resolves and caches a reverse-geocoded location name.
+Re-scanning upserts existing rows by `path`. `phash` is only written with `--similar`. EXIF fields (`exif_date`, `gps_lat`, `gps_lon`, `width`, `height`) are written for jpg/jpeg/tiff/heic/dng files; null for all others. `location_name` is added by an idempotent migration on `videre report` startup and is not written by `videre scan` itself - it's populated lazily, one coordinate at a time, when `videre report --show-faces` (or `videre watch --location`) resolves and caches a reverse-geocoded location name.
 
 Every command opens the database in SQLite's WAL journal mode, so `videre watch` and `videre report --show-faces` can safely read and write the same database file at the same time.
 

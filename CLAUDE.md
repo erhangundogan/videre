@@ -4,14 +4,26 @@ A fast Rust CLI tool for managing a local media library: duplicate detection, se
 
 ## What it does
 
-`videre` is a single binary with ten subcommands. `videre dedupe` scans a directory recursively, hashes every image file (BLAKE3), and writes REMOVE candidates to stdout one per line: ready to pipe into `trash` or `rm`. Bare `videre dedupe <dir>` writes SQLite to the resolved default database (see `~/.videre` below); JSONL output requires `--output`. `videre report` reads the SQLite database and generates an HTML review page (or serves a live web UI). The remaining subcommands (`fix-dates`, `prune`, `embed`, `search`, `faces`, `watch`) operate on the same SQLite database to fix timestamps, sync metadata, compute semantic embeddings, run text/image/person search, and detect/label faces. `videre config` shows or edits the resolved paths and `~/.videre/config.toml` settings. `videre mcp` serves read-only search/find_duplicates/stats tools over stdio for LLM agents.
+`videre` is a single binary with eleven subcommands. `videre scan` scans a directory
+recursively, hashes every image file (BLAKE3), and writes the results into the database
+(or JSONL with `--output`). `videre dedupe` reads that database and writes REMOVE
+candidates to stdout one per line: ready to pipe into `trash` or `rm`. Bare `videre scan
+<dir>` writes SQLite to the resolved default database (see `~/.videre` below); JSONL
+output requires `--output`. `videre report` reads the SQLite database and generates an
+HTML review page (or serves a live web UI). The remaining subcommands (`fix-dates`,
+`prune`, `embed`, `search`, `faces`, `watch`) operate on the same SQLite database to fix
+timestamps, sync metadata, compute semantic embeddings, run text/image/person search,
+and detect/label faces. `videre config` shows or edits the resolved paths and
+`~/.videre/config.toml` settings. `videre mcp` serves read-only search/find_duplicates/
+stats tools over stdio for LLM agents.
 
 Note: `docs/superpowers/` design specs and implementation plans predate the videre rename and refer to the old `dupe-*` binary names historically; they are not rewritten here.
 
 ## Usage
 
 ```
-videre dedupe [OPTIONS] [directory]   # directory optional when 'path' is set in videre config
+videre scan [OPTIONS] [directory]     # directory optional when 'path' is set in videre config
+videre dedupe [OPTIONS]               # reads the database; no directory argument
 
 Options:
   --output [<path>]        JSONL output file (appended). Bare --output (no value) targets ~/.videre/hashes.jsonl; must come AFTER the directory positional, or clap consumes the directory as the flag's value. Mutually exclusive with --output-sqlite
@@ -32,15 +44,16 @@ KEEP candidate within each group = oldest `exif_date`; falls back to `min(create
 
 With `--json`, stdout is instead one compact JSON object, always (an error object plus a nonzero exit code on failure), never the REMOVE-path lines above.
 
-Bare `videre dedupe <dir>` writes SQLite to the resolved default database (no JSONL). JSONL output only happens when `--output` is passed, with or without a value.
+Bare `videre scan <dir>` writes SQLite to the resolved default database (no JSONL). JSONL output only happens when `--output` is passed, with or without a value.
 
 ## Build & run
 
 ```bash
 cargo build --release
-./target/release/videre dedupe ~/Photos                                  # preview removals, writes SQLite to the default db
-./target/release/videre dedupe ~/Photos | xargs trash                    # delete duplicates
-./target/release/videre dedupe --output-sqlite ~/photos.db ~/Photos      # scan to an explicit SQLite db
+./target/release/videre scan ~/Photos                                    # populate the default db
+./target/release/videre dedupe | xargs trash                             # delete duplicates
+./target/release/videre scan --output-sqlite ~/photos.db ~/Photos        # scan to an explicit SQLite db
+./target/release/videre dedupe --db ~/photos.db                          # read from an explicit db
 ./target/release/videre report                                           # generate HTML report from the default db
 ./target/release/videre report --db ~/photos.db                          # generate HTML report from an explicit db
 ./target/release/videre fix-dates --dry-run                              # preview date fixes on the default db
@@ -70,11 +83,11 @@ cargo build --release
 
 ## ~/.videre home directory
 
-Every subcommand shares a home directory at `~/.videre` (override with the `VIDERE_HOME` env var), created lazily by writers (`dedupe`, `watch`, `config set`) - readers never create it. It holds `hashes.db` (default SQLite database), `hashes.jsonl` (default JSONL output, only written when `--output` is used bare), and `config.toml` (optional overrides, currently just `default_db`).
+Every subcommand shares a home directory at `~/.videre` (override with the `VIDERE_HOME` env var), created lazily by writers (`scan`, `watch`, `config set`) - readers never create it. It holds `hashes.db` (default SQLite database), `hashes.jsonl` (default JSONL output, only written when `--output` is used bare), and `config.toml` (optional overrides, currently just `default_db`).
 
-Database resolution order for every subcommand: explicit path (`--db` on the seven readers - `report`, `fix-dates`, `prune`, `embed`, `search`, `faces`, `mcp`; `--output-sqlite` on the two writers - `dedupe`, `watch`) > `default_db` in `config.toml` > `~/.videre/hashes.db`. Readers never create a database; if the resolved path doesn't exist they print `no database found at <path>; run 'videre dedupe <dir>' first` and exit 1 (arrives as the JSON error object under `search --json`).
+Database resolution order for every subcommand: explicit path (`--db` on the eight readers - `report`, `fix-dates`, `prune`, `embed`, `search`, `faces`, `mcp`, `dedupe`; `--output-sqlite` on the two writers - `scan`, `watch`) > `default_db` in `config.toml` > `~/.videre/hashes.db`. Readers never create a database; if the resolved path doesn't exist they print `no database found at <path>; run 'videre scan <dir>' first` and exit 1 (arrives as the JSON error object under `search --json`).
 
-`videre config` shows the resolved home dir, `config.toml` path, the `db` and `path` settings (labeled by their settable keys, with a set-command hint when unset), resolved db, and jsonl path. `videre config set db <path>` writes an absolute path to `config.toml` as `default_db`; `videre config set path <dir>` writes `default_path`, which `videre dedupe` and `videre watch` use when their directory positional is omitted (no built-in fallback: without it, the directory is required). Both setters preserve any other keys already present; `videre config unset db|path` removes a key. `videre dedupe <dir>` also adopts `<dir>` as `default_path` automatically the first time it is run with no `default_path` already set (a one-time convenience for the common case of a single photo library); it prints a one-line stderr note when it does (suppressed by `--silent`), and never overwrites an already-configured `default_path` on later runs.
+`videre config` shows the resolved home dir, `config.toml` path, the `db` and `path` settings (labeled by their settable keys, with a set-command hint when unset), resolved db, and jsonl path. `videre config set db <path>` writes an absolute path to `config.toml` as `default_db`; `videre config set path <dir>` writes `default_path`, which `videre scan` and `videre watch` use when their directory positional is omitted (no built-in fallback: without it, the directory is required). Both setters preserve any other keys already present; `videre config unset db|path` removes a key. `videre scan <dir>` also adopts `<dir>` as `default_path` automatically the first time it is run with no `default_path` already set (a one-time convenience for the common case of a single photo library); it prints a one-line stderr note when it does (suppressed by `--silent`), and never overwrites an already-configured `default_path` on later runs.
 
 ## Project structure
 
@@ -83,9 +96,9 @@ crates/
   videre/
     Cargo.toml
     src/main.rs
-    src/commands/{mod.rs,dedupe.rs,report.rs,fix_dates.rs,prune.rs,embed.rs,search.rs,faces.rs,watch.rs,config.rs,mcp.rs}
+    src/commands/{mod.rs,dedupe.rs,report.rs,scan.rs,fix_dates.rs,prune.rs,embed.rs,search.rs,faces.rs,watch.rs,config.rs,mcp.rs}
     src/{lib.rs,scanner.rs,hasher.rs,output.rs,sqlite_output.rs,types.rs}
-    tests/{integration.rs,report.rs,prune.rs,watch.rs,faces_pipeline.rs,faces_server.rs,person_search.rs,mcp.rs}
+    tests/{integration.rs,report.rs,prune.rs,watch.rs,faces_pipeline.rs,faces_server.rs,person_search.rs,mcp.rs,scan.rs}
   videre-core/
     Cargo.toml
     src/lib.rs
@@ -165,7 +178,7 @@ Re-scanning the same folder with the same SQLite file upserts (overwrites) exist
 
 `faces` rows are keyed by `id` (auto-increment). `hash` links to `file_hashes`. `bbox` and `landmark` are JSON strings. `embedding` is a raw f32 BLOB (512-dim ArcFace). `cluster_id` is assigned by DBSCAN; `person_label` and `confirmed` are set via `videre report --faces`.
 
-`location_name` is a nullable TEXT column added by an idempotent `ALTER TABLE file_hashes ADD COLUMN location_name TEXT` migration (run on every `videre report` startup; harmless if the column already exists) - it is not populated by the initial `videre dedupe` scan. It is populated lazily, one GPS coordinate at a time, by the `/api/location` endpoint when `--show-faces` is used: the first lightbox view of a photo at a given `(gps_lat, gps_lon)` triggers a reverse-geocode lookup, and the result is cached back into this column so later lookups for the same coordinate are free.
+`location_name` is a nullable TEXT column added by an idempotent `ALTER TABLE file_hashes ADD COLUMN location_name TEXT` migration (run on every `videre report` startup; harmless if the column already exists) - it is not populated by the initial `videre scan`. It is populated lazily, one GPS coordinate at a time, by the `/api/location` endpoint when `--show-faces` is used: the first lightbox view of a photo at a given `(gps_lat, gps_lon)` triggers a reverse-geocode lookup, and the result is cached back into this column so later lookups for the same coordinate are free.
 
 Every subcommand opens the database via `videre_core::db::open_wal`, which switches the connection to SQLite's WAL journal mode (`PRAGMA journal_mode = WAL`). WAL mode persists in the database file itself once set, so `open_wal` is idempotent - safe to call on every connection open, not just the first. This allows one writer plus many concurrent readers without "database is locked" errors, which matters now that `videre watch` can run in the background writing to the same file that a `videre report --show-faces` server has open for reading (and occasional writes, e.g. `/api/location`).
 
@@ -334,7 +347,7 @@ after an initial `videre faces` run.
 
 ## videre watch
 
-Long-running background process that keeps the pipeline populated so `videre report --show-faces` (or any other reader) always sees fresh data, without anyone manually re-running `videre dedupe`, `videre faces`, or waiting on lazy HEIC/location conversions. No server, no UI: it loops in the foreground, logging progress to stderr, until killed with Ctrl-C.
+Long-running background process that keeps the pipeline populated so `videre report --show-faces` (or any other reader) always sees fresh data, without anyone manually re-running `videre scan`, `videre faces`, or waiting on lazy HEIC/location conversions. No server, no UI: it loops in the foreground, logging progress to stderr, until killed with Ctrl-C.
 
 ```bash
 videre watch [directory]                                             # default db; all four stages, every 300s; directory optional when 'path' is set in videre config
@@ -346,7 +359,7 @@ videre watch --output-sqlite <db> <directory>                        # explicit 
 
 Four independent stages, selected with `--scan` / `--faces` / `--heic` / `--location`. If none of the four flags are passed, all four run (the common case is "just keep everything up to date", not memorizing four flags):
 
-- `--scan`: re-runs the same scan/hash/EXIF pipeline as `videre dedupe`, upserting `file_hashes` for the given directory
+- `--scan`: re-runs the same scan/hash/EXIF pipeline as `videre scan`, upserting `file_hashes` for the given directory
 - `--faces`: incremental face detection - queries hashes not yet in the `faces` table, runs detection/embedding/clustering only on those, then re-runs DBSCAN clustering over all existing embeddings (same defaults as `videre faces`: `eps` 0.6, `min-cluster-size` 3)
 - `--heic`: pre-converts and caches HEIC thumbnails (240px and 1200px) for every HEIC file's content hash, skipping hashes already cached; one `qlmanage` conversion per hash, downscaled in memory for each missing size rather than re-converting per size
 - `--location`: reverse-geocodes every distinct `(gps_lat, gps_lon)` pair with `location_name IS NULL` and writes the result back to `file_hashes`, the same lookup `--show-faces`'s `/api/location` endpoint performs on demand
@@ -366,7 +379,7 @@ videre mcp                # default db
 videre mcp --db <path>    # explicit db
 ```
 
-Database resolution is identical to every other reader (`--db` > `default_db` in `config.toml` > `~/.videre/hashes.db`), but `mcp` binds the resolved path once at startup for the life of the process rather than per-invocation, so the resolved db must already exist - even an explicit `--db` to a nonexistent path fails at startup with `no database found at <path>; run 'videre dedupe <dir>' first` on stderr, nothing on stdout, exit 1.
+Database resolution is identical to every other reader (`--db` > `default_db` in `config.toml` > `~/.videre/hashes.db`), but `mcp` binds the resolved path once at startup for the life of the process rather than per-invocation, so the resolved db must already exist - even an explicit `--db` to a nonexistent path fails at startup with `no database found at <path>; run 'videre scan <dir>' first` on stderr, nothing on stdout, exit 1.
 
 Once serving, a failing tool call returns `isError: true` with the rendered anyhow error chain as the result text; the server itself stays alive and keeps serving subsequent calls. All three tools' result documents share `"schema_version": 1` with the CLI's `--json` output and reuse the same shapes (`duplicate_groups`/`keep`/`remove`, `similar_groups`, `results` with `hash`/`score`, omitted for person hits).
 
