@@ -31,7 +31,7 @@ pub fn run_face_pipeline(
     let mut detector = face_detect::FaceDetector::new(&det_path)?;
     let mut embedder = face_embed::FaceEmbedder::new(&rec_path)?;
 
-    let mut progress = videre_core::progress::Progress::new(to_process.len() as u64, silent);
+    let progress = videre_core::progress::Progress::new(to_process.len() as u64, silent);
 
     let mut total_faces = 0usize;
     let mut write_errors = 0usize;
