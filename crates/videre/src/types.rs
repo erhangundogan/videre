@@ -64,6 +64,34 @@ impl From<DuplicateGroup> for SimilarGroupJson {
     }
 }
 
+/// Top-level document for `dedupe --json` and the MCP `find_duplicates` tool.
+/// Shared by both so they cannot silently diverge in shape.
+#[derive(Debug, Serialize)]
+pub struct FindDuplicatesJson {
+    pub schema_version: u32,
+    pub total_files: usize,
+    pub duplicate_groups: Vec<DupGroupJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub similar_groups: Option<Vec<SimilarGroupJson>>,
+}
+
+/// Where `scan --json` wrote records: `"sqlite"` or `"jsonl"`, and the resolved path.
+#[derive(Debug, Serialize)]
+pub struct ScanOutputJson {
+    pub kind: &'static str,
+    pub path: String,
+}
+
+/// Top-level document for `scan --json`. Describes the scan itself (files
+/// processed, where they were written), not duplicate data - that is
+/// `dedupe`'s job, not scan's.
+#[derive(Debug, Serialize)]
+pub struct ScanJson {
+    pub schema_version: u32,
+    pub total_files: usize,
+    pub output: ScanOutputJson,
+}
+
 /// Top-level document for `dedupe --json`.
 #[derive(Debug, Serialize)]
 pub struct DedupeJson {
@@ -235,6 +263,50 @@ mod tests {
         assert!(json.contains("\"similar_groups\""));
         assert!(json.contains("\"files\""));
         assert!(!json.contains("\"keep\""), "similar groups are flat clusters, not keep/remove");
+    }
+
+    #[test]
+    fn find_duplicates_json_omits_similar_groups_when_none() {
+        let doc = FindDuplicatesJson {
+            schema_version: SCHEMA_VERSION,
+            total_files: 3,
+            duplicate_groups: vec![],
+            similar_groups: None,
+        };
+        let json = serde_json::to_string(&doc).unwrap();
+        assert!(json.starts_with("{\"schema_version\":1"));
+        assert!(!json.contains("similar_groups"));
+    }
+
+    #[test]
+    fn find_duplicates_json_includes_similar_groups_when_some() {
+        let doc = FindDuplicatesJson {
+            schema_version: SCHEMA_VERSION,
+            total_files: 2,
+            duplicate_groups: vec![],
+            similar_groups: Some(vec![SimilarGroupJson {
+                hash: "phash:00000000000000ff".to_string(),
+                files: vec![rec("/x.jpg", "111"), rec("/y.jpg", "222")],
+            }]),
+        };
+        let json = serde_json::to_string(&doc).unwrap();
+        assert!(json.contains("\"similar_groups\""));
+        assert!(json.contains("\"files\""));
+        assert!(!json.contains("\"keep\""), "similar groups are flat clusters, not keep/remove");
+    }
+
+    #[test]
+    fn scan_json_reports_output_kind_and_path() {
+        let doc = ScanJson {
+            schema_version: SCHEMA_VERSION,
+            total_files: 5,
+            output: ScanOutputJson { kind: "sqlite", path: "/tmp/hashes.db".to_string() },
+        };
+        let json = serde_json::to_string(&doc).unwrap();
+        assert!(json.starts_with("{\"schema_version\":1"));
+        assert!(json.contains("\"total_files\":5"));
+        assert!(json.contains("\"kind\":\"sqlite\""));
+        assert!(json.contains("\"path\":\"/tmp/hashes.db\""));
     }
 
     #[test]
