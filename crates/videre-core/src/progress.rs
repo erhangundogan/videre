@@ -1,5 +1,6 @@
 use indicatif::{ProgressBar, ProgressStyle};
 use std::io::IsTerminal;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Reports progress for a batch of N items as an in-place bar (brew/docker/
 /// npm style) when stderr is a terminal, or periodic plain-text lines when
@@ -12,9 +13,14 @@ use std::io::IsTerminal;
 /// `faces.rs`, whose summary spans both detection and clustering, not just
 /// the `Progress`-tracked detection phase) should use their own `Instant`
 /// spanning whatever the summary needs to cover.
+///
+/// Safe to share across threads: every method takes `&self`, so a single
+/// `Progress` value can be ticked concurrently from multiple `rayon`
+/// worker threads (e.g. from inside a `.par_iter()` closure) with no
+/// external `Arc`/`Mutex` wrapping needed at the call site.
 pub struct Progress {
     total: u64,
-    done: u64,
+    done: AtomicU64,
     mode: Mode,
 }
 
@@ -46,37 +52,31 @@ impl Progress {
         } else {
             Mode::Plain
         };
-        Progress { total, done: 0, mode }
+        Progress { total, done: AtomicU64::new(0), mode }
     }
 
-    /// Advance by one item.
-    pub fn tick(&mut self) {
-        self.done += 1;
-        match &self.mode {
-            Mode::Bar(bar) => bar.set_position(self.done),
-            Mode::Plain => {
-                if self.done.is_multiple_of(LOG_INTERVAL) || self.done == self.total {
-                    eprintln!("{}/{} images processed", self.done, self.total);
-                }
-            }
-            Mode::Silent => {}
-        }
+    /// Advance by one item. Safe to call concurrently from multiple threads
+    /// (e.g. from inside a `rayon` `.par_iter()` closure) via a shared
+    /// `&Progress` - no external synchronization needed.
+    pub fn tick(&self) {
+        self.tick_by(1);
     }
 
     /// Advance by `n` items at once (for callers that complete work in
     /// batches rather than one item at a time, e.g. `videre embed`'s
     /// chunked pipeline). `n` must not exceed the number of items remaining
     /// toward `total` (mirrors the same implicit contract `tick()` already
-    /// has: callers are responsible for not calling it more times than
-    /// `total` allows).
-    pub fn tick_by(&mut self, n: u64) {
-        let before = self.done;
-        self.done += n;
+    /// has: callers are responsible for not calling it more times, or with
+    /// a larger cumulative `n`, than `total` allows). Safe to call
+    /// concurrently from multiple threads, same as `tick()`.
+    pub fn tick_by(&self, n: u64) {
+        let before = self.done.fetch_add(n, Ordering::Relaxed);
+        let after = before + n;
         match &self.mode {
-            Mode::Bar(bar) => bar.set_position(self.done),
+            Mode::Bar(bar) => bar.set_position(after),
             Mode::Plain => {
-                if self.done / LOG_INTERVAL != before / LOG_INTERVAL || self.done == self.total {
-                    eprintln!("{}/{} images processed", self.done, self.total);
+                if after / LOG_INTERVAL != before / LOG_INTERVAL || after == self.total {
+                    eprintln!("{}/{} images processed", after, self.total);
                 }
             }
             Mode::Silent => {}
@@ -112,7 +112,7 @@ mod tests {
 
     #[test]
     fn silent_mode_tick_does_not_panic() {
-        let mut p = Progress::new(10, true);
+        let p = Progress::new(10, true);
         for _ in 0..10 {
             p.tick();
         }
@@ -130,16 +130,36 @@ mod tests {
 
     #[test]
     fn zero_total_does_not_panic() {
-        let mut p = Progress::new(0, true);
+        let p = Progress::new(0, true);
         p.tick();
         p.finish();
     }
 
     #[test]
     fn silent_mode_tick_by_does_not_panic() {
-        let mut p = Progress::new(100, true);
+        let p = Progress::new(100, true);
         p.tick_by(40);
         p.tick_by(60);
         p.finish();
+    }
+
+    #[test]
+    fn concurrent_tick_from_multiple_threads_reaches_correct_total() {
+        use std::sync::Arc;
+        let progress = Arc::new(Progress::new(1000, true));
+        let handles: Vec<_> = (0..10)
+            .map(|_| {
+                let p = Arc::clone(&progress);
+                std::thread::spawn(move || {
+                    for _ in 0..100 {
+                        p.tick();
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(progress.done.load(Ordering::Relaxed), 1000);
     }
 }
