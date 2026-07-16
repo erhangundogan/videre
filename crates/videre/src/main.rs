@@ -15,7 +15,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Scan a directory, hash every image, and print duplicate paths to stdout
+    /// Report duplicate files from the database and print paths to remove
     Dedupe(commands::dedupe::DedupeArgs),
     /// Generate an HTML review page, or serve the live report/labeling UI
     Report(commands::report::ReportArgs),

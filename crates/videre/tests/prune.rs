@@ -105,7 +105,7 @@ fn missing_default_db_prints_friendly_error() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("no database found at"), "{stderr}");
-    assert!(stderr.contains("videre dedupe"), "{stderr}");
+    assert!(stderr.contains("videre scan"), "{stderr}");
 }
 
 fn run_prune(db: &std::path::Path, dry_run: bool) {

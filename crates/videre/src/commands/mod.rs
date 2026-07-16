@@ -76,7 +76,7 @@ pub(crate) fn build_find_duplicates(
     })
 }
 
-/// Directory resolution for the two directory-taking commands (dedupe, watch):
+/// Directory resolution for the two directory-taking commands (scan, watch):
 /// an explicit positional wins; otherwise the config `path` key (default_path
 /// in config.toml). There is no built-in fallback directory.
 pub(crate) fn resolve_directory(
@@ -93,9 +93,9 @@ pub(crate) fn resolve_directory(
     }
 }
 
-/// First-use convenience for `dedupe`: if the caller gave an explicit
+/// First-use convenience for `scan`: if the caller gave an explicit
 /// directory and no default path is configured yet, adopt it as the default
-/// so future bare `videre dedupe` / `videre watch` calls need no argument.
+/// so future bare `videre scan` / `videre watch` calls need no argument.
 /// Only fires once (the unset check makes it a true "first use", not a
 /// silent overwrite of a value the user already chose or set explicitly).
 /// Best-effort: any error here (unreadable HOME, unwritable config) is

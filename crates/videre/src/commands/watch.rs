@@ -93,7 +93,7 @@ fn run_cycle(args: &WatchArgs, directory: &std::path::Path, db: &std::path::Path
         if !file_hashes_table_exists(&conn)? {
             if !args.silent {
                 eprintln!(
-                    "videre watch: file_hashes table not found - run 'videre dedupe --output-sqlite <db> <dir>' or 'videre watch --scan ...' first"
+                    "videre watch: file_hashes table not found - run 'videre scan --output-sqlite <db> <dir>' or 'videre watch --scan ...' first"
                 );
             }
             return Ok(());
