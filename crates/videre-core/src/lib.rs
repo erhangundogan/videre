@@ -6,5 +6,6 @@ pub mod heic;
 pub mod home;
 pub mod location;
 pub mod person_search;
+pub mod progress;
 pub mod thumb_cache;
 pub mod vectors;
