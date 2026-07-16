@@ -53,8 +53,10 @@ pub fn run(args: ScanArgs) -> anyhow::Result<()> {
 
 /// Scan, hash (in parallel), and optionally phash. Shared by both output modes;
 /// contains no exit calls so the JSON path can also use it. Progress and
-/// warnings go to stderr, gated by --silent.
-fn gather_records(args: &ScanArgs, directory: &std::path::Path) -> Vec<videre::types::FileRecord> {
+/// warnings go to stderr, gated by --silent (except hash-failure warnings,
+/// which always print via `Progress::println`). Returns the records plus the
+/// count of files that were scanned but failed to hash.
+fn gather_records(args: &ScanArgs, directory: &std::path::Path) -> (Vec<videre::types::FileRecord>, usize) {
     if !args.silent {
         eprintln!("Scanning {:?}...", directory);
     }
@@ -65,21 +67,26 @@ fn gather_records(args: &ScanArgs, directory: &std::path::Path) -> Vec<videre::t
         eprintln!("Found {} file(s) to process", paths.len());
     }
 
-    let silent = args.silent;
+    let progress = videre_core::progress::Progress::new(paths.len() as u64, args.silent);
+
     let records: Vec<_> = paths
         .par_iter()
         .filter_map(|path| {
-            hasher::hash_file(path)
+            let result = hasher::hash_file(path)
                 .map_err(|e| {
-                    if !silent {
-                        eprintln!("Warning: skipping {:?}: {}", path, e);
-                    }
+                    progress.println(&format!("Warning: skipping {:?}: {}", path, e));
                 })
-                .ok()
+                .ok();
+            progress.tick();
+            result
         })
         .collect();
 
-    if args.similar {
+    progress.finish();
+
+    let skipped = paths.len() - records.len();
+
+    let records = if args.similar {
         records
             .into_iter()
             .map(|mut r| {
@@ -89,6 +96,19 @@ fn gather_records(args: &ScanArgs, directory: &std::path::Path) -> Vec<videre::t
             .collect()
     } else {
         records
+    };
+
+    (records, skipped)
+}
+
+/// Formats the "Wrote N record(s) to <path>" summary line, with an
+/// "(M skipped)" suffix when `skipped > 0`, omitted entirely when `skipped
+/// == 0` (matching `videre embed`'s equivalent omit-when-zero precedent).
+fn format_write_summary(written: usize, skipped: usize, dest: &str) -> String {
+    if skipped > 0 {
+        format!("Wrote {written} record(s) to {dest} ({skipped} skipped)")
+    } else {
+        format!("Wrote {written} record(s) to {dest}")
     }
 }
 
@@ -140,7 +160,7 @@ fn run_text(args: ScanArgs) -> anyhow::Result<()> {
     }
     super::maybe_adopt_default_path(args.directory.as_deref(), args.silent);
 
-    let records = gather_records(&args, &directory);
+    let (records, skipped) = gather_records(&args, &directory);
 
     match output_target(&args) {
         Err(e) => {
@@ -153,7 +173,7 @@ fn run_text(args: ScanArgs) -> anyhow::Result<()> {
                 process::exit(1);
             }
             if !args.silent {
-                eprintln!("Wrote {} record(s) to {:?}", records.len(), db_path);
+                eprintln!("{}", format_write_summary(records.len(), skipped, &format!("{:?}", db_path)));
             }
         }
         Ok(OutputTarget::Jsonl(path)) => {
@@ -162,7 +182,7 @@ fn run_text(args: ScanArgs) -> anyhow::Result<()> {
                 process::exit(1);
             }
             if !args.silent {
-                eprintln!("Wrote {} record(s) to {:?}", records.len(), path);
+                eprintln!("{}", format_write_summary(records.len(), skipped, &format!("{:?}", path)));
             }
         }
     }
@@ -182,14 +202,14 @@ fn run_json(args: &ScanArgs) -> anyhow::Result<ScanJson> {
     );
     super::maybe_adopt_default_path(args.directory.as_deref(), args.silent);
 
-    let records = gather_records(args, &directory);
+    let (records, skipped) = gather_records(args, &directory);
 
     let output = match output_target(args)? {
         OutputTarget::Sqlite(db_path) => {
             sqlite_output::write_records(&records, &db_path)
                 .map_err(|e| anyhow::anyhow!("writing to {:?}: {}", db_path, e))?;
             if !args.silent {
-                eprintln!("Wrote {} record(s) to {:?}", records.len(), db_path);
+                eprintln!("{}", format_write_summary(records.len(), skipped, &format!("{:?}", db_path)));
             }
             ScanOutputJson { kind: "sqlite", path: db_path.display().to_string() }
         }
@@ -197,7 +217,7 @@ fn run_json(args: &ScanArgs) -> anyhow::Result<ScanJson> {
             output::append_records(&records, &path)
                 .map_err(|e| anyhow::anyhow!("writing to {:?}: {}", path, e))?;
             if !args.silent {
-                eprintln!("Wrote {} record(s) to {:?}", records.len(), path);
+                eprintln!("{}", format_write_summary(records.len(), skipped, &format!("{:?}", path)));
             }
             ScanOutputJson { kind: "jsonl", path: path.display().to_string() }
         }
