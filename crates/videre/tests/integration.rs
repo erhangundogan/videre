@@ -243,7 +243,8 @@ fn mcp_find_duplicates(db: &std::path::Path) -> serde_json::Value {
         let mut line = String::new();
         loop {
             line.clear();
-            reader.read_line(&mut line).expect("read from server");
+            let n = reader.read_line(&mut line).expect("read from server");
+            assert!(n > 0, "server closed stdout unexpectedly");
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
