@@ -1,6 +1,6 @@
 use anyhow::Result;
 use videre_core::face_db;
-use videre_ml::pipeline::{run_clustering, run_face_pipeline};
+use videre_ml::pipeline::{run_clustering, run_face_pipeline, ClusteringResult, FacesRunResult};
 use std::path::PathBuf;
 
 #[derive(clap::Args)]
@@ -56,21 +56,120 @@ pub fn run(args: FacesArgs) -> Result<()> {
         }
         // Skip detection; jump straight to clustering
         if !args.dry_run {
-            run_clustering(&conn, args.eps, args.min_cluster_size, args.silent)?;
+            let clustering = run_clustering(&conn, args.eps, args.min_cluster_size)?;
+            if !args.silent {
+                eprintln!("{}", format_clustering_only_summary(clustering, args.eps));
+            }
         }
         return Ok(());
     }
 
+    let started = std::time::Instant::now();
     let result = run_face_pipeline(&conn, &to_process, args.batch, args.dry_run, args.silent)?;
 
     // Cluster whenever there are faces in the DB, not only when new faces were found
-    if !args.dry_run {
-        run_clustering(&conn, args.eps, args.min_cluster_size, args.silent)?;
+    let clustering = if !args.dry_run {
+        run_clustering(&conn, args.eps, args.min_cluster_size)?
+    } else {
+        None
+    };
+
+    if !args.silent {
+        eprintln!("{}", format_summary(&result, clustering, args.eps, started.elapsed()));
     }
 
-    if !args.silent { eprintln!("Done: {} new face(s) detected.", result.total_faces); }
-    if result.write_errors > 0 {
+    if result.write_errors > 0 || result.detect_errors > 0 {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Assembles the single consolidated summary line printed after both
+/// detection and clustering finish. `pub(crate)` since `watch.rs`'s faces
+/// stage does not call this one (it has no per-run elapsed-time figure to
+/// report - see `format_clustering_only_summary` for its equivalent), but
+/// keeping visibility consistent with its sibling function below.
+pub(crate) fn format_summary(
+    result: &FacesRunResult,
+    clustering: Option<ClusteringResult>,
+    eps: f32,
+    elapsed: std::time::Duration,
+) -> String {
+    let mut s = format!(
+        "{} image(s) processed, {} face(s) found",
+        result.images_processed, result.total_faces
+    );
+    if let Some(c) = &clustering {
+        s.push_str(&format!(
+            ", {}/{} clustered into {} people (eps={:.2})",
+            c.clustered_faces, c.total_faces, c.cluster_count, eps
+        ));
+    }
+    s.push_str(&format!(", done in {}s", elapsed.as_secs()));
+    let error_count = result.write_errors + result.detect_errors;
+    if error_count > 0 {
+        s.push_str(&format!(", {error_count} error(s) (see above)"));
+    }
+    s
+}
+
+/// Assembles the summary line for the `--recluster` (and "nothing new to
+/// process, but recluster anyway") path, where no detection ran this
+/// invocation - so there is no image count or elapsed-time figure to report.
+/// `pub(crate)` since `watch.rs`'s faces stage also calls this.
+pub(crate) fn format_clustering_only_summary(clustering: Option<ClusteringResult>, eps: f32) -> String {
+    match clustering {
+        Some(c) => format!(
+            "{}/{} faces clustered into {} people (eps={:.2})",
+            c.clustered_faces, c.total_faces, c.cluster_count, eps
+        ),
+        None => format!("no faces in database to cluster (eps={eps:.2})"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_summary_no_errors() {
+        let result = FacesRunResult { total_faces: 187, write_errors: 0, images_processed: 234, detect_errors: 0 };
+        let clustering = Some(ClusteringResult { total_faces: 187, clustered_faces: 152, cluster_count: 14 });
+        let summary = format_summary(&result, clustering, 0.6, std::time::Duration::from_secs(41));
+        assert_eq!(
+            summary,
+            "234 image(s) processed, 187 face(s) found, 152/187 clustered into 14 people (eps=0.60), done in 41s"
+        );
+    }
+
+    #[test]
+    fn format_summary_with_errors() {
+        let result = FacesRunResult { total_faces: 187, write_errors: 2, images_processed: 234, detect_errors: 1 };
+        let clustering = Some(ClusteringResult { total_faces: 187, clustered_faces: 152, cluster_count: 14 });
+        let summary = format_summary(&result, clustering, 0.6, std::time::Duration::from_secs(41));
+        assert_eq!(
+            summary,
+            "234 image(s) processed, 187 face(s) found, 152/187 clustered into 14 people (eps=0.60), done in 41s, 3 error(s) (see above)"
+        );
+    }
+
+    #[test]
+    fn format_summary_no_faces_found() {
+        let result = FacesRunResult { total_faces: 0, write_errors: 0, images_processed: 234, detect_errors: 0 };
+        let summary = format_summary(&result, None, 0.6, std::time::Duration::from_secs(41));
+        assert_eq!(summary, "234 image(s) processed, 0 face(s) found, done in 41s");
+    }
+
+    #[test]
+    fn format_clustering_only_summary_some() {
+        let clustering = Some(ClusteringResult { total_faces: 187, clustered_faces: 152, cluster_count: 14 });
+        let summary = format_clustering_only_summary(clustering, 0.6);
+        assert_eq!(summary, "152/187 faces clustered into 14 people (eps=0.60)");
+    }
+
+    #[test]
+    fn format_clustering_only_summary_none() {
+        let summary = format_clustering_only_summary(None, 0.6);
+        assert_eq!(summary, "no faces in database to cluster (eps=0.60)");
+    }
 }
