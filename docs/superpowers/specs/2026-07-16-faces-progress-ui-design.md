@@ -18,10 +18,12 @@ consolidated summary line after clustering finishes, covering: images
 processed, faces found, clustering outcome (people found, eps used), elapsed
 time, and error count (only shown when errors occurred).
 
-Scope: `videre faces` only (`crates/videre-ml/src/pipeline.rs`,
-`crates/videre/src/commands/faces.rs`). `videre embed` and `videre scan` have
-similar per-file verbosity but are explicitly out of scope for this change -
-revisit them later if wanted, informed by how this one turns out.
+Scope: `videre faces` and `videre watch`'s faces stage, since both call the
+`run_face_pipeline`/`run_clustering` functions this design changes
+(`crates/videre/src/commands/watch.rs:152` and `:161` - see the dedicated
+section below). `videre embed` and `videre scan` have similar per-file
+verbosity but are explicitly out of scope for this change - revisit them
+later if wanted, informed by how this one turns out.
 
 ## Approach
 
@@ -48,7 +50,6 @@ behavior.
 ```rust
 use indicatif::{ProgressBar, ProgressStyle};
 use std::io::IsTerminal;
-use std::time::Instant;
 
 /// Reports progress for a batch of N items as an in-place bar (brew/docker/
 /// npm style) when stderr is a terminal, or periodic plain-text lines when
@@ -56,10 +57,14 @@ use std::time::Instant;
 /// log file, without per-item spam either way. `silent` suppresses the bar
 /// and periodic lines entirely, but NOT error output (see `println`) or the
 /// caller's own decision about whether to print a final summary.
+///
+/// Does not track elapsed time itself: callers that need it (e.g.
+/// `faces.rs`, whose summary spans both detection and clustering, not just
+/// the `Progress`-tracked detection phase) should use their own `Instant`
+/// spanning whatever the summary needs to cover.
 pub struct Progress {
     total: u64,
     done: u64,
-    started: Instant,
     mode: Mode,
 }
 
@@ -88,7 +93,7 @@ impl Progress {
         } else {
             Mode::Plain
         };
-        Progress { total, done: 0, started: Instant::now(), mode }
+        Progress { total, done: 0, mode }
     }
 
     /// Advance by one item.
@@ -116,11 +121,6 @@ impl Progress {
             Mode::Bar(bar) => bar.println(msg),
             Mode::Plain | Mode::Silent => eprintln!("{msg}"),
         }
-    }
-
-    /// Elapsed time since `new()`, for the caller's final summary line.
-    pub fn elapsed(&self) -> std::time::Duration {
-        self.started.elapsed()
     }
 
     /// Clears the bar (if any) so the final summary prints cleanly below it
@@ -163,7 +163,7 @@ pub struct FacesRunResult {
 }
 ```
 
-  `images_processed` = `to_process.len()` (every image attempted, matching what the bar counted). `detect_errors` counts detection failures (`pipeline.rs:54`'s branch) plus, for each `embed_batch` failure (`pipeline.rs:72`'s branch), the number of images in that chunk whose crops were discarded (`chunk_entries.len()` at that point) - both are failures that prevented faces from being detected/embedded, distinct from `write_errors` (faces were found but couldn't be persisted). Existing tests referencing `FacesRunResult { total_faces, write_errors }` field-by-name construction need updating for the two new fields (see Testing section).
+  `images_processed` = `to_process.len()` (every image attempted, matching what the bar counted). `detect_errors` counts detection failures (`pipeline.rs:54`'s branch) plus, for each `embed_batch` failure (`pipeline.rs:72`'s branch), the number of images in that chunk whose crops were discarded (`chunk_entries.len()` at that point) - both are failures that prevented faces from being detected/embedded, distinct from `write_errors` (faces were found but couldn't be persisted). The early-return branch at `pipeline.rs:24-26` (`if to_process.is_empty() { return Ok(FacesRunResult { total_faces: 0, write_errors: 0 }); }`) constructs `FacesRunResult` by field name and needs the two new fields added there too (see Testing section for the corresponding test update).
 
 ### `run_clustering`
 
@@ -235,6 +235,26 @@ When there are no faces at all to cluster (fresh library, nothing detected):
 234 image(s) processed, 0 face(s) found, done in 41s
 ```
 
+**`format_clustering_only_summary`** covers the separate `--recluster` path
+(and the "nothing new to process, but recluster anyway" path), where no
+detection ran this invocation, so there is no "images processed" count and no
+elapsed-time figure worth reporting (DBSCAN over already-loaded embeddings is
+near-instant; the earlier design decision against a clustering progress
+indicator applies here too). Signature:
+`fn format_clustering_only_summary(clustering: Option<ClusteringResult>, eps: f32) -> String`.
+Exact output:
+
+```
+152/187 faces clustered into 14 people (eps=0.60)
+```
+
+When `clustering` is `None` (no faces in the database at all - replaces the
+old `"No faces in DB to cluster."` message):
+
+```
+no faces in database to cluster (eps=0.60)
+```
+
 Implementation:
 
 ```rust
@@ -281,19 +301,119 @@ pub fn run(args: FacesArgs) -> Result<()> {
 }
 ```
 
-`format_summary` and `format_clustering_only_summary` are small private
-functions in `faces.rs` that assemble the exact strings shown above from
-`FacesRunResult`, `Option<ClusteringResult>`, `eps`, and elapsed
-`Duration` - kept as plain string-building functions (not part of the
-`Progress` module, since summary content is caller-specific, per the
-`Progress::finish()` doc comment above) so they're independently unit
-testable without needing a database or the ML pipeline.
+`format_summary` and `format_clustering_only_summary` are small `pub(crate)`
+functions in `faces.rs` (not private, since `watch.rs`'s `run_faces_stage`
+also calls `format_clustering_only_summary` - see the dedicated section
+below) that assemble the exact strings shown above from `FacesRunResult`,
+`Option<ClusteringResult>`, `eps`, and elapsed `Duration` - kept as plain
+string-building functions (not part of the `Progress` module, since summary
+content is caller-specific, per the `Progress::finish()` doc comment above)
+so they're independently unit testable without needing a database or the ML
+pipeline.
 
 The existing exit-code behavior (`process::exit(1)` when errors occurred)
 extends to cover `detect_errors` in addition to `write_errors`, since a
 detection or embedding failure is just as much a partial-failure signal as a
 write failure - the previous code only checked `write_errors`, which was an
-existing gap this change also closes incidentally.
+existing gap this change also closes incidentally. Two consequences of this,
+both intentional and worth stating explicitly rather than leaving implicit:
+
+- `--dry-run` can now exit 1 when `detect_errors > 0`, even though dry-run
+  never writes (so `write_errors` alone could never trigger a nonzero exit
+  under `--dry-run` before this change). This is correct: a detector or
+  embedder crashing during a dry run is exactly the kind of thing a preview
+  run should surface with a nonzero exit, not swallow silently.
+- `load_image`'s silent `None` return for unreadable/undecodable files
+  (`pipeline.rs:48-51`, `.filter_map`-equivalent `continue` on failure) is
+  **not** counted in `detect_errors` and therefore still never affects the
+  exit code - this is a pre-existing gap (unreadable files were already
+  silently skipped before this change, with no error signal of any kind) that
+  this design does not attempt to close. Flagged here so it isn't mistaken
+  for an oversight introduced by this change; closing it is out of scope.
+
+## Changes to `crates/videre/src/commands/watch.rs`
+
+`run_faces_stage` (`watch.rs:139-163`) also calls `run_face_pipeline` and
+`run_clustering`, so it must be updated for the new signatures or it will not
+compile. Current code:
+
+```rust
+fn run_faces_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> {
+    let all_paths = dedup_paths_by_hash(
+        conn,
+        "ext IN ('jpg','jpeg','png','gif','webp','bmp','tiff','heic')",
+    )?;
+    let skip_hashes: std::collections::HashSet<String> =
+        face_db::hashes_with_faces(conn)?.into_iter().collect();
+    let to_process: Vec<(String, String)> = all_paths
+        .into_iter()
+        .filter(|(_, hash)| !skip_hashes.contains(hash))
+        .collect();
+
+    if !to_process.is_empty() {
+        let result = run_face_pipeline(conn, &to_process, 8, false, args.silent)?;
+        if !args.silent {
+            eprintln!(
+                "videre watch: faces stage processed {} new hash(es), {} face(s)",
+                to_process.len(),
+                result.total_faces
+            );
+        }
+    }
+    run_clustering(conn, 0.6, 3, args.silent)?;
+    Ok(())
+}
+```
+
+Decision: reuse `run_face_pipeline` unchanged (`videre watch` is documented
+as "run it in its own terminal or tmux pane", so it is normally attached to a
+real terminal just like `videre faces` - the same `IsTerminal` check applies
+correctly there, and when `watch` is instead redirected into a log file for
+truly unattended background use, `Progress`'s `Mode::Plain` fallback produces
+exactly the periodic-line behavior a log file needs. No watch-specific
+branching in `Progress` is needed). Update the call site only for the changed
+signatures:
+
+```rust
+fn run_faces_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> {
+    let all_paths = dedup_paths_by_hash(
+        conn,
+        "ext IN ('jpg','jpeg','png','gif','webp','bmp','tiff','heic')",
+    )?;
+    let skip_hashes: std::collections::HashSet<String> =
+        face_db::hashes_with_faces(conn)?.into_iter().collect();
+    let to_process: Vec<(String, String)> = all_paths
+        .into_iter()
+        .filter(|(_, hash)| !skip_hashes.contains(hash))
+        .collect();
+
+    if !to_process.is_empty() {
+        let result = run_face_pipeline(conn, &to_process, 8, false, args.silent)?;
+        if !args.silent {
+            eprintln!(
+                "videre watch: faces stage processed {} new hash(es), {} face(s)",
+                to_process.len(),
+                result.total_faces
+            );
+        }
+    }
+    let clustering = run_clustering(conn, 0.6, 3)?;
+    if !args.silent {
+        eprintln!("videre watch: {}", format_clustering_only_summary(clustering, 0.6));
+    }
+    Ok(())
+}
+```
+
+`format_clustering_only_summary` (defined in `crates/videre/src/commands/faces.rs`
+per the section above, as `pub(crate)`) is reused here rather than
+duplicated. `watch.rs` does not currently import anything from
+`commands::faces` (verified: its existing `use` block at `watch.rs:1-7` has
+no such import), so this is a new cross-module dependency, not an extension
+of an existing pattern. Add `use super::faces::format_clustering_only_summary;`
+to `watch.rs`'s imports - both `faces` and `watch` are sibling `pub mod`
+declarations under `crates/videre/src/commands/mod.rs`, so a `pub(crate)`
+item in one is reachable from the other via `super::<module>::<item>`.
 
 ## `--dry-run` and `--silent` interaction (unchanged behavior, stated for clarity)
 
@@ -321,20 +441,32 @@ implicitly via the function's return value and call `run_clustering` with a
   the now-removed `silent` argument, and assert the return value is
   `Ok(None)` instead of `Ok(())`.
 
+No existing test in `crates/videre/tests/watch.rs` or elsewhere asserts on
+`run_faces_stage`'s output text or calls it directly (checked: no matches for
+"faces stage" or "run_faces_stage" outside `watch.rs` itself), so the
+`watch.rs` changes above are a compile-fix with no test updates required
+beyond the workspace continuing to build and `cargo test --workspace`
+passing.
+
 New tests to add:
 
 - `crates/videre-core/src/progress.rs`: a `#[cfg(test)] mod tests` covering
-  `Progress::new`/`tick`/`elapsed` in `Mode::Silent` (constructed with
-  `silent: true`) produces no panics and `elapsed()` returns a sane
-  non-negative duration; this is the only mode reliably testable without
-  mocking a TTY, since `Mode::Bar` vs `Mode::Plain` depends on whether the
-  test runner's stderr is a terminal (not controllable in a unit test) - the
-  design deliberately keeps `Progress`'s branching on `IsTerminal` untested
-  directly and relies on manual verification (see below) for the two
-  terminal-dependent code paths.
-- `crates/videre/src/commands/faces.rs`: unit tests for `format_summary` and
-  `format_clustering_only_summary` covering the three example strings shown
-  above (no errors, with errors, no faces found).
+  `Progress::new`/`tick`/`println`/`finish` in `Mode::Silent` (constructed
+  with `silent: true`) produces no panics; this is the only mode reliably
+  testable without mocking a TTY, since `Mode::Bar` vs `Mode::Plain` depends
+  on whether the test runner's stderr is a terminal (not controllable in a
+  unit test). This design deliberately keeps `Progress`'s branching on
+  `IsTerminal` untested directly rather than injecting a fake terminal check
+  (e.g. via `indicatif::ProgressBar::with_draw_target` and a
+  `ProgressDrawTarget::hidden()`/`stderr()` parameter) - that would add a
+  layer of indirection to test a three-line `if` in a small module whose two
+  terminal-dependent branches are each simple enough to verify by manual
+  inspection (see below) instead. Revisit if `Progress` grows more branching
+  logic later.
+- `crates/videre/src/commands/faces.rs`: unit tests for `format_summary`
+  (covering its three example strings above: no errors, with errors, no
+  faces found) and `format_clustering_only_summary` (covering its two
+  example strings above: `Some(ClusteringResult)`, `None`).
 
 Manual verification (not automatable, documented for whoever implements
 this): run `videre faces` in a real terminal against a small local test
