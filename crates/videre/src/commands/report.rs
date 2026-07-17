@@ -317,7 +317,7 @@ fn group_to_json(
     group: &[FileRow],
     heic: bool,
     heic_original: bool,
-    faces_by_hash: &HashMap<String, Vec<(i64, String, String)>>,
+    faces_by_hash: &videre_core::face_db::LabeledFacesByHash,
 ) -> String {
     let hash_prefix = &group[0].hash[..group[0].hash.len().min(8)];
     let waste = group[0].size_bytes * (group.len() as i64 - 1);
@@ -480,7 +480,7 @@ fn generate_html(
     vectors: Option<&VectorBlock>,
     heic: bool,
     heic_original: bool,
-    faces_by_hash: &HashMap<String, Vec<(i64, String, String)>>,
+    faces_by_hash: &videre_core::face_db::LabeledFacesByHash,
     live: bool,
 ) -> String {
     use chrono::Utc;
