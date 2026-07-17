@@ -1686,22 +1686,63 @@ const PERSON_HTML: &str = r##"<!DOCTYPE html>
 </head>
 <body>
   <div class="toolbar">
-    <a href="/">&larr; Back to labeling</a>
+    <a id="backLink" href="/">&larr; Back to labeling</a>
     <strong id="person-title">Person</strong>
     <span id="face-count" style="color:#555;font-size:13px"></span>
     <span id="status"></span>
+    <span id="renameArea" style="display:none">
+      <input type="text" id="renameInput" maxlength="60">
+      <button onclick="submitRename()">Save</button>
+    </span>
+    <button id="removeBtn" class="danger" style="display:none;margin-left:auto" onclick="removePerson()">Remove person</button>
   </div>
 
   <div id="faces-grid" class="grid"></div>
 
   <script>
     const personName = decodeURIComponent(window.location.pathname.split('/').pop());
+    const FACES_UI_ENABLED = __FACES_UI_ENABLED__;
+    const MAX_NAME_LEN = 60;
     let facesData = [];
+
+    (function() {
+      const params = new URLSearchParams(location.search);
+      if (params.get('from') === 'lightbox') {
+        const link = document.getElementById('backLink');
+        link.textContent = '← Back';
+        link.href = '#';
+        link.onclick = function(e) { e.preventDefault(); history.back(); };
+      }
+    })();
+
+    if (FACES_UI_ENABLED) {
+      document.getElementById('removeBtn').style.display = 'inline-block';
+      document.getElementById('renameArea').style.display = 'inline-flex';
+    }
+
+    // Trim, collapse internal whitespace, strip control/bidi-spoofing
+    // characters, and cap length by code point - mirrors the sanitization in
+    // FACES_HTML/CLUSTER_HTML.
+    function sanitizeName(raw) {
+      const filtered = Array.from(raw).filter(function(ch) {
+        const cp = ch.codePointAt(0);
+        if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)) return false;
+        if (cp === 0x200B) return false;
+        if (cp === 0x200E || cp === 0x200F) return false;
+        if (cp >= 0x202A && cp <= 0x202E) return false;
+        if (cp >= 0x2060 && cp <= 0x2069) return false;
+        if (cp === 0xFEFF) return false;
+        return true;
+      }).join('');
+      const collapsed = filtered.trim().replace(/\s+/g, ' ');
+      return Array.from(collapsed).slice(0, MAX_NAME_LEN).join('');
+    }
 
     async function load() {
       try {
         document.getElementById('person-title').textContent = personName;
         document.title = personName;
+        document.getElementById('renameInput').value = personName;
         const r = await fetch(`/api/person/${encodeURIComponent(personName)}`);
         if (!r.ok) throw new Error('person fetch failed');
         const data = await r.json();
@@ -1745,6 +1786,28 @@ const PERSON_HTML: &str = r##"<!DOCTYPE html>
       document.getElementById(`card-${faceId}`)?.remove();
       facesData = facesData.filter(f => f.face_id !== faceId);
       document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
+    }
+
+    async function removePerson() {
+      if (!confirm('Remove ' + personName + '? Their ' + facesData.length + ' photo(s) will become unassigned.')) return;
+      const r = await fetch('/api/delete-person', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: personName })
+      });
+      if (!r.ok) { alert('Failed to remove person.'); return; }
+      window.location.href = '/';
+    }
+
+    async function submitRename() {
+      const newLabel = sanitizeName(document.getElementById('renameInput').value);
+      if (!newLabel) return;
+      const r = await fetch('/api/rename-person', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ old_label: personName, new_label: newLabel })
+      });
+      if (r.status === 409) { alert('A person named "' + newLabel + '" already exists.'); return; }
+      if (!r.ok) { alert('Rename failed.'); return; }
+      window.location.href = '/person/' + encodeURIComponent(newLabel);
     }
 
     load();
@@ -2253,8 +2316,12 @@ async fn handle_cluster_api(
     Ok(AxumJson(ClusterDetailResponse { cluster_id, faces }))
 }
 
-async fn handle_person_page() -> impl axum::response::IntoResponse {
-    axum::response::Html(PERSON_HTML)
+async fn handle_person_page(State(state): State<Arc<AppState>>) -> axum::response::Html<String> {
+    let html = PERSON_HTML.replace(
+        "__FACES_UI_ENABLED__",
+        if state.serve_faces_ui { "true" } else { "false" },
+    );
+    axum::response::Html(html)
 }
 
 async fn handle_person_api(
@@ -3172,5 +3239,21 @@ mod tests {
         assert!(result.is_ok(), "must serve from cache instead of failing to convert a nonexistent source file");
 
         let _ = std::fs::remove_file(&cache_path);
+    }
+
+    #[tokio::test]
+    async fn person_page_injects_faces_ui_enabled_true_when_serve_faces_ui() {
+        let conn = mem_db_with_faces();
+        let state = test_state(conn, true);
+        let axum::response::Html(html) = handle_person_page(State(state)).await;
+        assert!(html.contains("const FACES_UI_ENABLED = true;"), "{html}");
+    }
+
+    #[tokio::test]
+    async fn person_page_injects_faces_ui_enabled_false_when_show_faces_only() {
+        let conn = mem_db_with_faces();
+        let state = test_state(conn, false);
+        let axum::response::Html(html) = handle_person_page(State(state)).await;
+        assert!(html.contains("const FACES_UI_ENABLED = false;"), "{html}");
     }
 }
