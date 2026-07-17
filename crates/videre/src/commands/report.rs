@@ -1464,13 +1464,17 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     function showNewPersonInput(btn, faceIds) {
       const area = btn.parentElement;
       const faceIdsJson = JSON.stringify(faceIds);
+      const inputId = `np-input-${faceIds[0]}`;
       area.innerHTML = `
-        <input type="text" class="np-input" id="np-input-${faceIds[0]}" placeholder="Person name" maxlength="${MAX_NAME_LEN}" autofocus>
+        <input type="text" class="np-input" id="${inputId}" placeholder="Person name" maxlength="${MAX_NAME_LEN}" autofocus>
         <div class="np-btn-row">
-          <button class="np-create-btn" onclick="submitNewPerson('np-input-${faceIds[0]}', ${faceIdsJson})">Create</button>
+          <button class="np-create-btn" onclick="submitNewPerson('${inputId}', ${faceIdsJson})">Create</button>
           <button class="new-person-btn" onclick="loadFaces()">Cancel</button>
         </div>
       `;
+      document.getElementById(inputId).addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); submitNewPerson(inputId, faceIds); }
+      });
     }
 
     async function submitNewPerson(inputId, faceIds) {
@@ -1566,6 +1570,10 @@ const CLUSTER_HTML: &str = r##"<!DOCTYPE html>
       const collapsed = filtered.trim().replace(/\s+/g, ' ');
       return Array.from(collapsed).slice(0, MAX_NAME_LEN).join('');
     }
+
+    document.getElementById('person-input').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { e.preventDefault(); assignAll(); }
+    });
 
     async function load() {
       try {
