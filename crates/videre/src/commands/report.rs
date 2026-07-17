@@ -1822,6 +1822,11 @@ struct DissolveClusterRequest {
 }
 
 #[derive(Deserialize)]
+struct DeletePersonRequest {
+    label: String,
+}
+
+#[derive(Deserialize)]
 struct SetPrimaryRequest {
     face_id: i64,
     person_label: String,
@@ -2081,6 +2086,29 @@ async fn handle_remove_face(
     )
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(StatusCode::OK)
+}
+
+/// Resets every face carrying `label` back to unassigned. Deliberately does
+/// NOT touch `cluster_id`: a face that came from a DBSCAN cluster rejoins
+/// that cluster's unassigned group (picked up by query_faces_data's cluster
+/// query) instead of scattering to Singletons; a face that was already a
+/// singleton (cluster_id already NULL) stays a singleton. Does not trigger
+/// re-clustering - there is no live DBSCAN re-run in this server.
+async fn handle_delete_person(
+    State(state): State<Arc<AppState>>,
+    AxumJson(req): AxumJson<DeletePersonRequest>,
+) -> StatusCode {
+    let conn = match state.conn.lock() {
+        Ok(c) => c,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    match conn.execute(
+        "UPDATE faces SET person_label = NULL, confirmed = 0, is_primary = 0 WHERE person_label = ?1",
+        rusqlite::params![req.label],
+    ) {
+        Ok(_) => StatusCode::OK,
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
 }
 
 /// Ungroup a bad cluster: every face in it becomes an unassigned singleton
@@ -2528,6 +2556,7 @@ async fn serve_faces_async(db: &Path, opts: ServeOptions) -> Result<(), Box<dyn 
             .route("/api/assign", post(handle_assign))
             .route("/api/new-person", post(handle_new_person))
             .route("/api/remove-face", post(handle_remove_face))
+            .route("/api/delete-person", post(handle_delete_person))
             .route("/api/dissolve-cluster", post(handle_dissolve_cluster))
             .route("/api/set-primary", post(handle_set_primary));
     }
@@ -2880,5 +2909,46 @@ mod tests {
         let conn = state.conn.lock().unwrap();
         let is_primary: i64 = conn.query_row("SELECT is_primary FROM faces WHERE id = 1", [], |r| r.get(0)).unwrap();
         assert_eq!(is_primary, 0, "is_primary must be reset when a face is removed");
+    }
+
+    #[tokio::test]
+    async fn delete_person_resets_faces_but_keeps_cluster_id() {
+        let conn = mem_db_with_faces();
+        conn.execute(
+            "INSERT INTO faces (id, hash, bbox, embedding, cluster_id, person_label, confirmed, is_primary) \
+             VALUES (1, 'h1', '0,0,10,10', X'0000', 5, 'Alice', 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO faces (id, hash, bbox, embedding, cluster_id, person_label, confirmed, is_primary) \
+             VALUES (2, 'h2', '0,0,10,10', X'0000', NULL, 'Alice', 1, 0)",
+            [],
+        )
+        .unwrap();
+        let state = test_state(conn, true);
+        let result = handle_delete_person(
+            State(state.clone()),
+            AxumJson(DeletePersonRequest { label: "Alice".to_string() }),
+        )
+        .await;
+        assert_eq!(result, StatusCode::OK);
+
+        let conn = state.conn.lock().unwrap();
+        let (cluster_id, person_label, confirmed, is_primary): (Option<i64>, Option<String>, i64, i64) = conn
+            .query_row(
+                "SELECT cluster_id, person_label, confirmed, is_primary FROM faces WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(cluster_id, Some(5), "cluster_id must survive removal - the face rejoins its unassigned cluster");
+        assert_eq!(person_label, None);
+        assert_eq!(confirmed, 0);
+        assert_eq!(is_primary, 0);
+
+        let cluster_id2: Option<i64> =
+            conn.query_row("SELECT cluster_id FROM faces WHERE id = 2", [], |r| r.get(0)).unwrap();
+        assert_eq!(cluster_id2, None, "a face that was already a singleton stays a singleton");
     }
 }
