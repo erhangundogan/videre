@@ -89,13 +89,18 @@ pub fn hashes_with_faces(conn: &Connection) -> rusqlite::Result<Vec<String>> {
     rows.collect()
 }
 
+/// (face_id, person_label, bbox) for one labeled face.
+pub type LabeledFace = (i64, String, String);
+
+/// Maps a file hash to every labeled face on it, as returned by
+/// `labeled_faces_by_hash`.
+pub type LabeledFacesByHash = HashMap<String, Vec<LabeledFace>>;
+
 /// Returns, for every hash that has at least one confirmed+labeled face, the
 /// list of (face_id, person_label, bbox) for that hash. One batched query
 /// covering every hash, not one query per file - safe to call once per
 /// report generation without N+1 overhead.
-pub fn labeled_faces_by_hash(
-    conn: &Connection,
-) -> rusqlite::Result<HashMap<String, Vec<(i64, String, String)>>> {
+pub fn labeled_faces_by_hash(conn: &Connection) -> rusqlite::Result<LabeledFacesByHash> {
     let mut stmt = conn.prepare(
         "SELECT hash, id, bbox, person_label FROM faces \
          WHERE confirmed = 1 AND person_label IS NOT NULL \
@@ -109,7 +114,7 @@ pub fn labeled_faces_by_hash(
             r.get::<_, String>(3)?,
         ))
     })?;
-    let mut map: HashMap<String, Vec<(i64, String, String)>> = HashMap::new();
+    let mut map: LabeledFacesByHash = HashMap::new();
     for row in rows {
         let (hash, id, bbox, label) = row?;
         map.entry(hash).or_default().push((id, label, bbox));
