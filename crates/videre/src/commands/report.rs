@@ -2097,18 +2097,14 @@ async fn handle_remove_face(
 async fn handle_delete_person(
     State(state): State<Arc<AppState>>,
     AxumJson(req): AxumJson<DeletePersonRequest>,
-) -> StatusCode {
-    let conn = match state.conn.lock() {
-        Ok(c) => c,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
-    };
-    match conn.execute(
+) -> Result<StatusCode, StatusCode> {
+    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    conn.execute(
         "UPDATE faces SET person_label = NULL, confirmed = 0, is_primary = 0 WHERE person_label = ?1",
         rusqlite::params![req.label],
-    ) {
-        Ok(_) => StatusCode::OK,
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
-    }
+    )
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(StatusCode::OK)
 }
 
 /// Ungroup a bad cluster: every face in it becomes an unassigned singleton
@@ -2932,7 +2928,7 @@ mod tests {
             AxumJson(DeletePersonRequest { label: "Alice".to_string() }),
         )
         .await;
-        assert_eq!(result, StatusCode::OK);
+        assert_eq!(result, Ok(StatusCode::OK));
 
         let conn = state.conn.lock().unwrap();
         let (cluster_id, person_label, confirmed, is_primary): (Option<i64>, Option<String>, i64, i64) = conn
