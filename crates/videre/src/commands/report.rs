@@ -1370,10 +1370,25 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
 
     const MAX_NAME_LEN = 60;
 
-    // Trim, collapse internal whitespace, and cap length so a pasted
-    // wall of text can't stretch card layout or bloat the DB.
+    // Trim, collapse internal whitespace, strip control/bidi-spoofing
+    // characters, and cap length by code point (not UTF-16 code unit) so a
+    // pasted wall of text or a spoofed name can't stretch card layout,
+    // corrupt display order, or bloat the DB.
     function sanitizeName(raw) {
-      return raw.trim().replace(/\s+/g, ' ').slice(0, MAX_NAME_LEN);
+      const filtered = Array.from(raw).filter(function(ch) {
+        const cp = ch.codePointAt(0);
+        if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)) return false;
+        if (cp === 0x200B) return false;
+        if (cp === 0x200E || cp === 0x200F) return false;
+        // 0x200C (ZWNJ) and 0x200D (ZWJ) are intentionally allowed -
+        // required for Persian/Indic text and emoji ZWJ sequences.
+        if (cp >= 0x202A && cp <= 0x202E) return false;
+        if (cp >= 0x2060 && cp <= 0x2069) return false;
+        if (cp === 0xFEFF) return false;
+        return true;
+      }).join('');
+      const collapsed = filtered.trim().replace(/\s+/g, ' ');
+      return Array.from(collapsed).slice(0, MAX_NAME_LEN).join('');
     }
 
     function renderAssignableCard(faceIds, linkUrl, cardClass) {
@@ -1530,10 +1545,25 @@ const CLUSTER_HTML: &str = r##"<!DOCTYPE html>
     let facesData = [];
     const MAX_NAME_LEN = 60;
 
-    // Trim, collapse internal whitespace, and cap length so a pasted
-    // wall of text can't stretch card layout or bloat the DB.
+    // Trim, collapse internal whitespace, strip control/bidi-spoofing
+    // characters, and cap length by code point (not UTF-16 code unit) so a
+    // pasted wall of text or a spoofed name can't stretch card layout,
+    // corrupt display order, or bloat the DB.
     function sanitizeName(raw) {
-      return raw.trim().replace(/\s+/g, ' ').slice(0, MAX_NAME_LEN);
+      const filtered = Array.from(raw).filter(function(ch) {
+        const cp = ch.codePointAt(0);
+        if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)) return false;
+        if (cp === 0x200B) return false;
+        if (cp === 0x200E || cp === 0x200F) return false;
+        // 0x200C (ZWNJ) and 0x200D (ZWJ) are intentionally allowed -
+        // required for Persian/Indic text and emoji ZWJ sequences.
+        if (cp >= 0x202A && cp <= 0x202E) return false;
+        if (cp >= 0x2060 && cp <= 0x2069) return false;
+        if (cp === 0xFEFF) return false;
+        return true;
+      }).join('');
+      const collapsed = filtered.trim().replace(/\s+/g, ' ');
+      return Array.from(collapsed).slice(0, MAX_NAME_LEN).join('');
     }
 
     async function load() {
@@ -1973,11 +2003,32 @@ async fn handle_get_faces(
 /// bypasses the UI's own sanitization can't stretch card layout or bloat
 /// the DB with an unbounded label. Mirrors the client-side sanitizeName().
 fn sanitize_person_label(raw: &str) -> Option<String> {
-    let collapsed = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let filtered: String = raw
+        .chars()
+        .filter(|c| !c.is_control() && !is_disallowed_format_char(*c))
+        .collect();
+    let collapsed = filtered.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.is_empty() {
         return None;
     }
     Some(collapsed.chars().take(60).collect())
+}
+
+/// Zero-width and bidi-override characters that can visually spoof a name
+/// (e.g. right-to-left override) without being caught by `char::is_control`.
+/// Deliberately excludes U+200C (ZWNJ) and U+200D (ZWJ): both are required
+/// for legitimate text - ZWJ joins emoji sequences (a family emoji is three
+/// emoji joined by ZWJ; stripping it splits them apart) and ZWNJ is
+/// orthographically required in Persian and several Indic scripts.
+fn is_disallowed_format_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200B}' // zero-width space
+        | '\u{200E}'..='\u{200F}' // LRM/RLM
+        | '\u{202A}'..='\u{202E}' // LRE/RLE/PDF/LRO/RLO bidi overrides
+        | '\u{2060}'..='\u{2069}' // word joiner, invisible operators, isolates
+        | '\u{FEFF}' // BOM / zero-width no-break space
+    )
 }
 
 async fn handle_assign(
@@ -2751,5 +2802,30 @@ mod tests {
     fn parse_bbox_converts_xywh_to_corners() {
         assert_eq!(parse_bbox("10,20,5,5"), Some([10.0, 20.0, 15.0, 25.0]));
         assert_eq!(parse_bbox("not,valid"), None);
+    }
+
+    #[test]
+    fn sanitize_person_label_strips_control_chars() {
+        assert_eq!(sanitize_person_label("Al\u{0007}ice"), Some("Alice".to_string()));
+    }
+
+    #[test]
+    fn sanitize_person_label_strips_bidi_override() {
+        assert_eq!(sanitize_person_label("A\u{202E}lice"), Some("Alice".to_string()));
+    }
+
+    #[test]
+    fn sanitize_person_label_keeps_zwj_emoji_sequences() {
+        // family emoji: man + ZWJ + woman + ZWJ + girl - must survive intact,
+        // since stripping the ZWJ (U+200D) would split it into three separate emoji.
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+        assert_eq!(sanitize_person_label(family), Some(family.to_string()));
+    }
+
+    #[test]
+    fn sanitize_person_label_truncates_by_char_not_byte() {
+        let long = "e".repeat(65);
+        let result = sanitize_person_label(&long).unwrap();
+        assert_eq!(result.chars().count(), 60);
     }
 }
