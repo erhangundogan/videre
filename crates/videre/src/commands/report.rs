@@ -1827,6 +1827,12 @@ struct DeletePersonRequest {
 }
 
 #[derive(Deserialize)]
+struct RenamePersonRequest {
+    old_label: String,
+    new_label: String,
+}
+
+#[derive(Deserialize)]
 struct SetPrimaryRequest {
     face_id: i64,
     person_label: String,
@@ -2105,6 +2111,50 @@ async fn handle_delete_person(
     )
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(StatusCode::OK)
+}
+
+/// Renames every face carrying `old_label` to `new_label`. Rejects a
+/// collision with an existing person (409) rather than silently merging -
+/// a silent merge would be irreversible and could leave the merged person
+/// with two faces marked is_primary = 1, violating the invariant
+/// handle_set_primary maintains via its clear-then-set transaction.
+async fn handle_rename_person(
+    State(state): State<Arc<AppState>>,
+    AxumJson(req): AxumJson<RenamePersonRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let Some(sanitized) = sanitize_person_label(&req.new_label) else {
+        return Err(StatusCode::BAD_REQUEST);
+    };
+    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let old_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM faces WHERE person_label = ?1",
+            rusqlite::params![req.old_label],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if old_count == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let collision_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM faces WHERE person_label = ?1",
+            rusqlite::params![sanitized],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if collision_count > 0 && sanitized != req.old_label {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    conn.execute(
+        "UPDATE faces SET person_label = ?1 WHERE person_label = ?2",
+        rusqlite::params![sanitized, req.old_label],
+    )
+    .map(|_| StatusCode::OK)
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 /// Ungroup a bad cluster: every face in it becomes an unassigned singleton
@@ -2553,6 +2603,7 @@ async fn serve_faces_async(db: &Path, opts: ServeOptions) -> Result<(), Box<dyn 
             .route("/api/new-person", post(handle_new_person))
             .route("/api/remove-face", post(handle_remove_face))
             .route("/api/delete-person", post(handle_delete_person))
+            .route("/api/rename-person", post(handle_rename_person))
             .route("/api/dissolve-cluster", post(handle_dissolve_cluster))
             .route("/api/set-primary", post(handle_set_primary));
     }
@@ -2946,5 +2997,65 @@ mod tests {
         let cluster_id2: Option<i64> =
             conn.query_row("SELECT cluster_id FROM faces WHERE id = 2", [], |r| r.get(0)).unwrap();
         assert_eq!(cluster_id2, None, "a face that was already a singleton stays a singleton");
+    }
+
+    #[tokio::test]
+    async fn rename_person_updates_label() {
+        let conn = mem_db_with_faces();
+        conn.execute(
+            "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
+             VALUES (1, 'h1', '0,0,10,10', X'0000', 'Alice', 1)",
+            [],
+        )
+        .unwrap();
+        let state = test_state(conn, true);
+        let result = handle_rename_person(
+            State(state.clone()),
+            AxumJson(RenamePersonRequest { old_label: "Alice".to_string(), new_label: "Alicia".to_string() }),
+        )
+        .await;
+        assert_eq!(result, Ok(StatusCode::OK));
+        let conn = state.conn.lock().unwrap();
+        let label: String = conn.query_row("SELECT person_label FROM faces WHERE id = 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(label, "Alicia");
+    }
+
+    #[tokio::test]
+    async fn rename_person_rejects_collision_with_existing_label() {
+        let conn = mem_db_with_faces();
+        conn.execute(
+            "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
+             VALUES (1, 'h1', '0,0,10,10', X'0000', 'Alice', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
+             VALUES (2, 'h2', '0,0,10,10', X'0000', 'Bob', 1)",
+            [],
+        )
+        .unwrap();
+        let state = test_state(conn, true);
+        let result = handle_rename_person(
+            State(state.clone()),
+            AxumJson(RenamePersonRequest { old_label: "Alice".to_string(), new_label: "Bob".to_string() }),
+        )
+        .await;
+        assert_eq!(result, Err(StatusCode::CONFLICT));
+        let conn = state.conn.lock().unwrap();
+        let label: String = conn.query_row("SELECT person_label FROM faces WHERE id = 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(label, "Alice", "rename must not have applied on collision");
+    }
+
+    #[tokio::test]
+    async fn rename_person_rejects_nonexistent_old_label() {
+        let conn = mem_db_with_faces();
+        let state = test_state(conn, true);
+        let result = handle_rename_person(
+            State(state.clone()),
+            AxumJson(RenamePersonRequest { old_label: "Ghost".to_string(), new_label: "Someone".to_string() }),
+        )
+        .await;
+        assert_eq!(result, Err(StatusCode::NOT_FOUND));
     }
 }
