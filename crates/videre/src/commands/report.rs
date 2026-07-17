@@ -2002,6 +2002,13 @@ async fn handle_get_faces(
 /// Trim, collapse internal whitespace, and cap length so a client that
 /// bypasses the UI's own sanitization can't stretch card layout or bloat
 /// the DB with an unbounded label. Mirrors the client-side sanitizeName().
+/// Known, accepted gaps: this filters control and bidi/zero-width format
+/// characters, not visual homoglyph confusables (e.g. Cyrillic A vs Latin
+/// A) - full spoof-proofing would need a confusables-detection dependency,
+/// which is out of scope here. The 60-char cap also truncates by raw code
+/// point rather than grapheme cluster, so it can in principle bisect a
+/// multi-codepoint sequence (e.g. a ZWJ emoji sequence) sitting right at
+/// the boundary.
 fn sanitize_person_label(raw: &str) -> Option<String> {
     let filtered: String = raw
         .chars()
@@ -2824,7 +2831,8 @@ mod tests {
 
     #[test]
     fn sanitize_person_label_truncates_by_char_not_byte() {
-        let long = "e".repeat(65);
+        let long = "é".repeat(65); // each char is 2 bytes in UTF-8 - this is what actually
+                                    // distinguishes .chars().take(60) from a byte-based slice
         let result = sanitize_person_label(&long).unwrap();
         assert_eq!(result.chars().count(), 60);
     }
