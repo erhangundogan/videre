@@ -2076,7 +2076,7 @@ async fn handle_remove_face(
 ) -> Result<StatusCode, StatusCode> {
     let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     conn.execute(
-        "UPDATE faces SET cluster_id = NULL, person_label = NULL, confirmed = 0 WHERE id = ?1",
+        "UPDATE faces SET cluster_id = NULL, person_label = NULL, confirmed = 0, is_primary = 0 WHERE id = ?1",
         [req.face_id],
     )
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -2670,6 +2670,34 @@ mod tests {
         conn
     }
 
+    fn mem_db_with_faces() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL,
+             size_bytes INTEGER, created_at TEXT, modified_at TEXT, ext TEXT,
+             phash INTEGER, exif_date TEXT, gps_lat REAL, gps_lon REAL,
+             width INTEGER, height INTEGER);
+             CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL,
+             bbox TEXT NOT NULL, landmark TEXT, embedding BLOB NOT NULL,
+             cluster_id INTEGER, person_label TEXT, confirmed INTEGER DEFAULT 0,
+             is_primary INTEGER DEFAULT 0);",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn test_state(conn: Connection, serve_faces_ui: bool) -> Arc<AppState> {
+        Arc::new(AppState {
+            conn: Mutex::new(conn),
+            shutdown_tx: Mutex::new(None),
+            report_all: false,
+            report_by_date: false,
+            report_heic: false,
+            report_heic_original: false,
+            serve_faces_ui,
+        })
+    }
+
     fn add_embeddings_table(conn: &Connection) {
         conn.execute_batch(
             "CREATE TABLE embeddings (
@@ -2835,5 +2863,22 @@ mod tests {
                                     // distinguishes .chars().take(60) from a byte-based slice
         let result = sanitize_person_label(&long).unwrap();
         assert_eq!(result.chars().count(), 60);
+    }
+
+    #[tokio::test]
+    async fn remove_face_resets_is_primary() {
+        let conn = mem_db_with_faces();
+        conn.execute(
+            "INSERT INTO faces (id, hash, bbox, embedding, cluster_id, person_label, confirmed, is_primary) \
+             VALUES (1, 'h1', '0,0,10,10', X'0000', 5, 'Alice', 1, 1)",
+            [],
+        )
+        .unwrap();
+        let state = test_state(conn, true);
+        let result = handle_remove_face(State(state.clone()), AxumJson(RemoveFaceRequest { face_id: 1 })).await;
+        assert_eq!(result, Ok(StatusCode::OK));
+        let conn = state.conn.lock().unwrap();
+        let is_primary: i64 = conn.query_row("SELECT is_primary FROM faces WHERE id = 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(is_primary, 0, "is_primary must be reset when a face is removed");
     }
 }
