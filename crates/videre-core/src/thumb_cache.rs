@@ -19,6 +19,29 @@ pub fn thumb_exists(hash: &str, size: u32) -> bool {
     thumb_path(hash, size).exists()
 }
 
+/// Cache path for a single face crop. Distinct from `thumb_path` because
+/// many faces can share one source `hash` - the face id disambiguates.
+pub fn face_thumb_path(hash: &str, face_id: i64, size: u32) -> PathBuf {
+    cache_dir().join(format!("{hash}_face{face_id}_{size}.jpg"))
+}
+
+/// True if a cached face crop already exists for this hash/face_id/size.
+pub fn face_thumb_exists(hash: &str, face_id: i64, size: u32) -> bool {
+    face_thumb_path(hash, face_id, size).exists()
+}
+
+/// Cache path for a full-resolution HEIC-converted original. One per hash
+/// (not per face - the original photo is the same regardless of which face
+/// on it was clicked).
+pub fn original_path(hash: &str) -> PathBuf {
+    cache_dir().join(format!("{hash}_original.jpg"))
+}
+
+/// True if a cached full-resolution original already exists for this hash.
+pub fn original_exists(hash: &str) -> bool {
+    original_path(hash).exists()
+}
+
 /// Path to a scratch file for writing a thumbnail before it's atomically
 /// renamed into place at `thumb_path`. Lives in the same directory as the
 /// final file so the rename is same-filesystem (and thus atomic on POSIX).
@@ -81,6 +104,34 @@ mod tests {
     fn cache_dir_is_under_videre() {
         assert!(cache_dir().to_string_lossy().contains("videre"));
         assert!(!cache_dir().to_string_lossy().contains("/dupe/"));
+    }
+
+    #[test]
+    fn face_thumb_path_is_keyed_by_hash_face_id_and_size() {
+        let p1 = face_thumb_path("abc123", 1, 140);
+        let p2 = face_thumb_path("abc123", 2, 140);
+        let p3 = face_thumb_path("def456", 1, 140);
+        assert_ne!(p1, p2, "different face ids must produce different paths");
+        assert_ne!(p1, p3, "different hashes must produce different paths");
+        assert!(p1.to_string_lossy().contains("abc123_face1_140.jpg"));
+    }
+
+    #[test]
+    fn face_thumb_exists_false_for_missing_file() {
+        assert!(!face_thumb_exists("nonexistent-hash-xyz", 99, 140));
+    }
+
+    #[test]
+    fn original_path_is_keyed_by_hash() {
+        let p1 = original_path("abc123");
+        let p2 = original_path("def456");
+        assert_ne!(p1, p2);
+        assert!(p1.to_string_lossy().contains("abc123_original.jpg"));
+    }
+
+    #[test]
+    fn original_exists_false_for_missing_file() {
+        assert!(!original_exists("nonexistent-hash-xyz"));
     }
 
     #[test]
