@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[derive(clap::Args)]
@@ -1851,6 +1852,7 @@ struct AppState {
     report_heic: bool,
     report_heic_original: bool,
     serve_faces_ui: bool,
+    tmp_counter: AtomicU64,
 }
 
 fn query_faces_data(conn: &Connection) -> rusqlite::Result<FacesResponse> {
@@ -2368,19 +2370,28 @@ async fn handle_face_image(
     axum::extract::Path(face_id): axum::extract::Path<i64>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl axum::response::IntoResponse, StatusCode> {
-    let (bbox_json, file_path) = {
+    let (bbox_json, file_path, hash) = {
         let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         conn.query_row(
-            "SELECT f.bbox, fh.path FROM faces f \
+            "SELECT f.bbox, fh.path, f.hash FROM faces f \
              JOIN file_hashes fh ON f.hash = fh.hash \
              WHERE f.id = ?1 LIMIT 1",
             [face_id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
         )
         .optional()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?
     };
+
+    const FACE_THUMB_SIZE: u32 = 140;
+    if videre_core::thumb_cache::face_thumb_exists(&hash, face_id, FACE_THUMB_SIZE) {
+        if let Ok(bytes) =
+            tokio::fs::read(videre_core::thumb_cache::face_thumb_path(&hash, face_id, FACE_THUMB_SIZE)).await
+        {
+            return Ok(([(axum::http::header::CONTENT_TYPE, "image/jpeg")], bytes));
+        }
+    }
 
     // bbox stored as "x,y,w,h" → convert to x1,y1,x2,y2
     let parts: Vec<f32> = bbox_json
@@ -2392,6 +2403,7 @@ async fn handle_face_image(
     }
     let bbox: [f32; 4] = [parts[0], parts[1], parts[0] + parts[2], parts[1] + parts[3]];
 
+    let tmp_id = state.tmp_counter.fetch_add(1, Ordering::Relaxed);
     let jpeg_bytes = tokio::task::spawn_blocking(move || -> Option<Vec<u8>> {
         let thumb = make_face_thumb(&file_path, bbox, face_id)?;
         let mut buf = Vec::new();
@@ -2403,6 +2415,21 @@ async fn handle_face_image(
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     .ok_or(StatusCode::NOT_FOUND)?;
+
+    // Best-effort write-through: a cache write failure (disk full,
+    // permissions) must not fail the request - caching is a performance
+    // optimization, not a correctness requirement. The per-request `tmp_id`
+    // suffix (distinct from the pid-only scheme `thumb_tmp_path` uses)
+    // prevents two concurrent requests for the same uncached face from
+    // colliding on the same tmp path and corrupting the cache.
+    let final_path = videre_core::thumb_cache::face_thumb_path(&hash, face_id, FACE_THUMB_SIZE);
+    let tmp_path = final_path.with_extension(format!("tmp{}-{}", std::process::id(), tmp_id));
+    if let Some(parent) = final_path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    if tokio::fs::write(&tmp_path, &jpeg_bytes).await.is_ok() {
+        let _ = tokio::fs::rename(&tmp_path, &final_path).await;
+    }
 
     Ok(([(axum::http::header::CONTENT_TYPE, "image/jpeg")], jpeg_bytes))
 }
@@ -2582,6 +2609,7 @@ async fn serve_faces_async(db: &Path, opts: ServeOptions) -> Result<(), Box<dyn 
         report_heic: opts.report_heic,
         report_heic_original: opts.report_heic_original,
         serve_faces_ui: opts.serve_faces_ui,
+        tmp_counter: AtomicU64::new(0),
     });
 
     let mut router = Router::new()
@@ -2771,6 +2799,7 @@ mod tests {
             report_heic: false,
             report_heic_original: false,
             serve_faces_ui,
+            tmp_counter: AtomicU64::new(0),
         })
     }
 
@@ -2956,6 +2985,40 @@ mod tests {
         let conn = state.conn.lock().unwrap();
         let is_primary: i64 = conn.query_row("SELECT is_primary FROM faces WHERE id = 1", [], |r| r.get(0)).unwrap();
         assert_eq!(is_primary, 0, "is_primary must be reset when a face is removed");
+    }
+
+    #[tokio::test]
+    async fn face_image_request_populates_and_then_hits_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let img_path = dir.path().join("test.jpg");
+        let img = image::DynamicImage::new_rgb8(20, 20);
+        img.save(&img_path).unwrap();
+
+        let conn = mem_db_with_faces();
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, ext) VALUES (?1, 'facecachehash', 'jpg')",
+            rusqlite::params![img_path.to_str().unwrap()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO faces (id, hash, bbox, embedding) VALUES (9001, 'facecachehash', '0,0,10,10', X'0000')",
+            [],
+        )
+        .unwrap();
+        let state = test_state(conn, true);
+
+        let cache_path = videre_core::thumb_cache::face_thumb_path("facecachehash", 9001, 140);
+        let _ = std::fs::remove_file(&cache_path);
+        assert!(!cache_path.exists(), "precondition: no stale cache file");
+
+        let first = handle_face_image(axum::extract::Path(9001), State(state.clone())).await;
+        assert!(first.is_ok());
+        assert!(cache_path.exists(), "handler must write through to the cache on a miss");
+
+        let second = handle_face_image(axum::extract::Path(9001), State(state.clone())).await;
+        assert!(second.is_ok(), "second request must be served from cache");
+
+        let _ = std::fs::remove_file(&cache_path);
     }
 
     #[tokio::test]
