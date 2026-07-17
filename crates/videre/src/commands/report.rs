@@ -1694,6 +1694,13 @@ const CLUSTER_HTML: &str = r##"<!DOCTYPE html>
       if (e.key === 'Enter') { e.preventDefault(); submitAssignModal(); }
     });
 
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') closeAssignModal();
+    });
+    document.getElementById('assignModal').addEventListener('click', function(e) {
+      if (e.target === this) closeAssignModal();
+    });
+
     async function dissolveCluster() {
       if (!confirm(`Dissolve cluster ${clusterId}? Its ${facesData.length} face(s) will become unassigned singletons (not deleted).`)) return;
       const r = await fetch('/api/dissolve-cluster', {
