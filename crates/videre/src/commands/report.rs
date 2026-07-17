@@ -1525,6 +1525,12 @@ const CLUSTER_HTML: &str = r##"<!DOCTYPE html>
     button.primary { background: #2a6db5; color: white; border-color: #2a6db5; }
     input[type=text] { padding: 4px 8px; border: 1px solid #999; border-radius: 4px; width: 160px; font-size: 13px; }
     #status { font-size: 13px; color: #555; }
+    .modal-backdrop { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); align-items: center; justify-content: center; z-index: 100; }
+    .modal-backdrop.on { display: flex; }
+    .modal { background: white; border-radius: 8px; padding: 20px; min-width: 280px; }
+    .modal h3 { margin: 0 0 12px; font-size: 15px; }
+    .modal input { width: 100%; box-sizing: border-box; margin-bottom: 12px; }
+    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
   </style>
 </head>
 <body>
@@ -1545,9 +1551,22 @@ const CLUSTER_HTML: &str = r##"<!DOCTYPE html>
 
   <div id="faces-grid" class="grid"></div>
 
+  <div id="assignModal" class="modal-backdrop">
+    <div class="modal">
+      <h3>Assign to person</h3>
+      <input id="assignInput" list="assign-people-list" placeholder="Person name" maxlength="60">
+      <datalist id="assign-people-list"></datalist>
+      <div class="modal-actions">
+        <button onclick="submitAssignModal()">Assign</button>
+        <button onclick="closeAssignModal()">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const clusterId = __CLUSTER_ID__;
     let facesData = [];
+    let mainData = { people: [] };
     const MAX_NAME_LEN = 60;
 
     // Trim, collapse internal whitespace, strip control/bidi-spoofing
@@ -1583,7 +1602,7 @@ const CLUSTER_HTML: &str = r##"<!DOCTYPE html>
         ]);
         if (!clusterRes.ok) throw new Error('cluster fetch failed');
         const clusterData = await clusterRes.json();
-        const mainData = mainRes.ok ? await mainRes.json() : { people: [] };
+        mainData = mainRes.ok ? await mainRes.json() : { people: [] };
         facesData = clusterData.faces;
         const dl = document.getElementById('people-list');
         dl.innerHTML = mainData.people.map(p => `<option value="${escHtml(p.label)}">`).join('');
@@ -1640,6 +1659,41 @@ const CLUSTER_HTML: &str = r##"<!DOCTYPE html>
       setTimeout(() => { window.location.href = '/'; }, 800);
     }
 
+    let assignModalFaceId = null;
+
+    function openAssignModal(faceId) {
+      assignModalFaceId = faceId;
+      document.getElementById('assign-people-list').innerHTML =
+        mainData.people.map(p => `<option value="${escHtml(p.label)}">`).join('');
+      document.getElementById('assignModal').classList.add('on');
+      document.getElementById('assignInput').value = '';
+      document.getElementById('assignInput').focus();
+    }
+
+    function closeAssignModal() {
+      document.getElementById('assignModal').classList.remove('on');
+      assignModalFaceId = null;
+    }
+
+    async function submitAssignModal() {
+      const label = sanitizeName(document.getElementById('assignInput').value);
+      if (!label) return;
+      const faceId = assignModalFaceId;
+      const r = await fetch('/api/assign', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ face_ids: [faceId], person_label: label })
+      });
+      if (!r.ok) { document.getElementById('status').textContent = 'Error: assign failed'; return; }
+      closeAssignModal();
+      document.getElementById(`card-${faceId}`)?.remove();
+      facesData = facesData.filter(f => f.face_id !== faceId);
+      document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
+    }
+
+    document.getElementById('assignInput').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { e.preventDefault(); submitAssignModal(); }
+    });
+
     async function dissolveCluster() {
       if (!confirm(`Dissolve cluster ${clusterId}? Its ${facesData.length} face(s) will become unassigned singletons (not deleted).`)) return;
       const r = await fetch('/api/dissolve-cluster', {
@@ -1651,19 +1705,8 @@ const CLUSTER_HTML: &str = r##"<!DOCTYPE html>
       setTimeout(() => { window.location.href = '/'; }, 500);
     }
 
-    async function assignOne(faceId) {
-      const raw = prompt('Assign face #' + faceId + ' to person:');
-      if (!raw) return;
-      const label = sanitizeName(raw);
-      if (!label) return;
-      const r = await fetch('/api/new-person', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_ids: [faceId], label })
-      });
-      if (!r.ok) { document.getElementById('status').textContent = 'Error: assign failed'; return; }
-      document.getElementById(`card-${faceId}`)?.remove();
-      facesData = facesData.filter(f => f.face_id !== faceId);
-      document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
+    function assignOne(faceId) {
+      openAssignModal(faceId);
     }
 
     load();
