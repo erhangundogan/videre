@@ -2542,14 +2542,14 @@ async fn handle_original_image(
     axum::extract::Path(face_id): axum::extract::Path<i64>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl axum::response::IntoResponse, StatusCode> {
-    let file_path = {
+    let (file_path, hash) = {
         let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         conn.query_row(
-            "SELECT fh.path FROM faces f \
+            "SELECT fh.path, f.hash FROM faces f \
              JOIN file_hashes fh ON f.hash = fh.hash \
              WHERE f.id = ?1 LIMIT 1",
             [face_id],
-            |r| r.get::<_, String>(0),
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
         )
         .optional()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
@@ -2562,6 +2562,15 @@ async fn handle_original_image(
         .unwrap_or("")
         .to_lowercase();
 
+    if ext == "heic" {
+        if let Ok(bytes) = tokio::fs::read(videre_core::thumb_cache::original_path(&hash)).await {
+            return Ok(([(axum::http::header::CONTENT_TYPE, "image/jpeg")], bytes));
+        }
+    }
+
+    let tmp_id = state.tmp_counter.fetch_add(1, Ordering::Relaxed);
+    let hash_for_cache = hash.clone();
+    let ext_for_cache = ext.clone();
     let (content_type, bytes) = tokio::task::spawn_blocking(move || -> Option<(&'static str, Vec<u8>)> {
         if ext == "heic" {
             let img = videre_core::heic::heic_via_quicklook(&file_path, &format!("orig{face_id}"))?;
@@ -2577,6 +2586,20 @@ async fn handle_original_image(
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     .ok_or(StatusCode::NOT_FOUND)?;
+
+    // Only cache the HEIC-conversion case - non-HEIC files are served as raw
+    // bytes with no conversion cost to save, and the read path above only
+    // ever checks the cache when ext == "heic".
+    if ext_for_cache == "heic" {
+        let final_path = videre_core::thumb_cache::original_path(&hash_for_cache);
+        let tmp_path = final_path.with_extension(format!("tmp{}-{}", std::process::id(), tmp_id));
+        if let Some(parent) = final_path.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+        if tokio::fs::write(&tmp_path, &bytes).await.is_ok() {
+            let _ = tokio::fs::rename(&tmp_path, &final_path).await;
+        }
+    }
 
     Ok(([(axum::http::header::CONTENT_TYPE, content_type)], bytes))
 }
@@ -3120,5 +3143,34 @@ mod tests {
         )
         .await;
         assert_eq!(result, Err(StatusCode::NOT_FOUND));
+    }
+
+    #[tokio::test]
+    async fn original_image_request_serves_cached_heic_without_reconversion() {
+        let conn = mem_db_with_faces();
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, ext) \
+             VALUES ('/nonexistent/path/that/would/fail/to/convert.heic', 'origcachehash', 'heic')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO faces (id, hash, bbox, embedding) VALUES (9002, 'origcachehash', '0,0,10,10', X'0000')",
+            [],
+        )
+        .unwrap();
+        let state = test_state(conn, true);
+
+        let cache_path = videre_core::thumb_cache::original_path("origcachehash");
+        std::fs::create_dir_all(videre_core::thumb_cache::cache_dir()).unwrap();
+        std::fs::write(&cache_path, b"fake-cached-jpeg-bytes").unwrap();
+
+        // The source file path doesn't exist, so a live-conversion attempt
+        // would fail (NOT_FOUND) - success here proves the cache was used
+        // instead of trying to convert the (nonexistent) source file.
+        let result = handle_original_image(axum::extract::Path(9002), State(state.clone())).await;
+        assert!(result.is_ok(), "must serve from cache instead of failing to convert a nonexistent source file");
+
+        let _ = std::fs::remove_file(&cache_path);
     }
 }
