@@ -949,8 +949,8 @@ function renderMetaPanel(meta){
   var parts = [];
   if(meta.faces.length){
     parts.push(meta.faces.map(function(fc){
-      return '<div class="lb-face"><img src="'+fc.thumb+'">'+
-        '<a href="/person/'+encodeURIComponent(fc.name)+'">'+fc.name+'</a></div>';
+      return '<div class="lb-face"><img src="'+escA(fc.thumb)+'">'+
+        '<a href="/person/'+encodeURIComponent(fc.name)+'?from=lightbox">'+escH(fc.name)+'</a></div>';
     }).join(''));
   }
   if(meta.location){
@@ -3255,5 +3255,19 @@ mod tests {
         let state = test_state(conn, false);
         let axum::response::Html(html) = handle_person_page(State(state)).await;
         assert!(html.contains("const FACES_UI_ENABLED = false;"), "{html}");
+    }
+
+    #[test]
+    fn generated_html_links_person_faces_with_from_lightbox_and_escapes_name() {
+        let stats = Stats { total_files: 0, duplicate_groups: 0, duplicate_files: 0, wasted_bytes: 0 };
+        let html = generate_html("/tmp/test.db", &stats, &[], None, None, None, false, false, &HashMap::new(), true);
+        assert!(
+            html.contains("?from=lightbox\">'+escH(fc.name)+'</a>"),
+            "person link in the lightbox meta panel must carry ?from=lightbox and escape the name"
+        );
+        assert!(
+            html.contains("<img src=\"'+escA(fc.thumb)+'\">"),
+            "face thumbnail src must be escaped too"
+        );
     }
 }
