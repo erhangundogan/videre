@@ -14,10 +14,22 @@ pub struct FacesArgs {
     #[arg(long, default_value = "8")] batch: usize,
     #[arg(long)] dry_run: bool,
     #[arg(long)] silent: bool,
-    /// DBSCAN cosine-distance radius (0 = identical, 2 = opposite). Default 0.6.
+    /// Average-linkage cosine-distance radius (0 = identical, 2 = opposite). Default 0.6.
     #[arg(long, default_value = "0.6")] eps: f32,
     /// Minimum faces per cluster (below this, faces are left as singletons). Default 3.
     #[arg(long, default_value = "3")] min_cluster_size: usize,
+    /// Centroid-merge similarity: after clustering, clusters whose mean embeddings
+    /// are at least this cosine-similar are merged (reunites one person's fragmented
+    /// clusters). 0 = identical direction required, 1 = disables merging. Default 0.35.
+    #[arg(long, default_value = "0.35")] merge_sim: f32,
+    /// Minimum face size (smaller bbox side, px) to take part in clustering. Smaller
+    /// faces embed poorly and pile into a mixed junk cluster, so they are held out as
+    /// unassigned singletons. 0 disables the gate. Default 80.
+    #[arg(long, default_value = "80")] min_face_size: f32,
+    /// Distinctiveness gate: faces whose embedding is more than this cosine-similar to
+    /// the population-average face (occluded/profile/blurry/false detections) are held
+    /// out of clustering. Lower = stricter. 1 disables. Default 0.4.
+    #[arg(long, default_value = "0.4")] max_generic_sim: f32,
 }
 
 pub fn run(args: FacesArgs) -> Result<()> {
@@ -56,7 +68,7 @@ pub fn run(args: FacesArgs) -> Result<()> {
         }
         // Skip detection; jump straight to clustering
         if !args.dry_run {
-            let clustering = run_clustering(&conn, args.eps, args.min_cluster_size)?;
+            let clustering = run_clustering(&conn, args.eps, args.min_cluster_size, args.merge_sim, args.min_face_size, args.max_generic_sim)?;
             if !args.silent {
                 eprintln!("{}", format_clustering_only_summary(clustering, args.eps));
             }
@@ -69,7 +81,7 @@ pub fn run(args: FacesArgs) -> Result<()> {
 
     // Cluster whenever there are faces in the DB, not only when new faces were found
     let clustering = if !args.dry_run {
-        run_clustering(&conn, args.eps, args.min_cluster_size)?
+        run_clustering(&conn, args.eps, args.min_cluster_size, args.merge_sim, args.min_face_size, args.max_generic_sim)?
     } else {
         None
     };

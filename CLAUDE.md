@@ -185,7 +185,7 @@ CREATE TABLE IF NOT EXISTS faces (
 
 Re-scanning the same folder with the same SQLite file upserts (overwrites) existing rows via `INSERT OR REPLACE`. `phash` is stored as signed `INTEGER` (cast from `u64`).
 
-`faces` rows are keyed by `id` (auto-increment). `hash` links to `file_hashes`. `bbox` and `landmark` are JSON strings. `embedding` is a raw f32 BLOB (512-dim ArcFace). `cluster_id` is assigned by DBSCAN; `person_label` and `confirmed` are set via `videre report --faces`.
+`faces` rows are keyed by `id` (auto-increment). `hash` links to `file_hashes`. `bbox` and `landmark` are JSON strings. `embedding` is a raw f16 BLOB (512-dim ArcFace, 1024 bytes). `cluster_id` is assigned by the two-stage clustering (average-linkage, then a centroid-merge pass); `person_label` and `confirmed` are set via `videre report --faces`.
 
 `location_name` is a nullable TEXT column added by an idempotent `ALTER TABLE file_hashes ADD COLUMN location_name TEXT` migration (run on every `videre report` startup; harmless if the column already exists) - it is not populated by the initial `videre scan`. It is populated lazily, one GPS coordinate at a time, by the `/api/location` endpoint when `--show-faces` is used: the first lightbox view of a photo at a given `(gps_lat, gps_lon)` triggers a reverse-geocode lookup, and the result is cached back into this column so later lookups for the same coordinate are free.
 
@@ -322,26 +322,68 @@ CREATE TABLE embeddings (
 
 ## videre faces
 
-Detects faces in every image recorded in the database, embeds each face with ArcFace, and clusters detected faces into identity groups using DBSCAN.
+Detects faces in every image recorded in the database, embeds each face with ArcFace, and clusters detected faces into identity groups using a two-stage pipeline: average-linkage agglomeration, then a centroid-merge pass that reunites one person's fragmented sub-clusters (see below).
 
 ```
 videre faces                            # default db; process new hashes only
 videre faces --db <db>                  # explicit db
 videre faces --reprocess                # re-detect and re-embed all hashes
-videre faces --recluster                # skip detection; re-run DBSCAN on existing embeddings
+videre faces --recluster                # skip detection; re-run clustering on existing embeddings
 videre faces --dry-run                  # detect and embed but do not write to db
 videre faces --batch <n>                # images per ONNX batch (default: 8)
 videre faces --silent                   # suppress per-image progress
-videre faces --eps <f32>                # DBSCAN cosine-distance radius (default: 0.6)
+videre faces --eps <f32>                # average-linkage cosine-distance radius (default: 0.6)
 videre faces --min-cluster-size <n>     # minimum faces per cluster (default: 3)
+videre faces --merge-sim <f32>          # centroid-merge similarity threshold (default: 0.35; 1 disables)
+videre faces --min-face-size <px>       # min face bbox side (px) to cluster; smaller held out (default: 80; 0 disables)
+videre faces --max-generic-sim <f32>    # distinctiveness gate: hold out faces too similar to the average face (default: 0.4; 1 disables)
 ```
 
 Uses InsightFace buffalo_l: SCRFD-10GF for detection, 5-point landmark alignment, ArcFace w600k_r50 for 512-dim L2-normalized embeddings. Weights are downloaded from `hf-hub` on first run. ONNX Runtime (`ort`) runs inference on CPU. HEIC images are converted via `qlmanage` (see videre report HEIC note above) before detection.
 
 Faces below `--min-cluster-size` are left as unassigned singletons rather than forming
-a small cluster. `--recluster` re-runs DBSCAN with new `--eps`/`--min-cluster-size`
+a small cluster. `--recluster` re-runs clustering with new `--eps`/`--min-cluster-size`/`--merge-sim`/`--min-face-size`
 values without re-detecting or re-embedding - useful for tuning cluster tightness
 after an initial `videre faces` run.
+
+Before clustering, a two-signal quality gate holds low-quality faces out of clustering
+entirely (they come back as unassigned singletons, still visible and manually labelable).
+Low-quality faces embed into near-degenerate ArcFace vectors that all point the same
+generic direction regardless of who they are, so if clustered they pile into one large
+*mixed* junk cluster (and then get centroid-merged into an even bigger one). A face is
+held out when it fails **either** signal:
+
+- **Size** (`--min-face-size`, default 80px): faces whose smaller bbox side is under this
+  many pixels. Tiny crops (e.g. distant faces in group shots) upscale to ArcFace's 112px
+  input as mostly blur. On real data, genuine person clusters are essentially all >100px
+  per side while a degenerate junk cluster sat at ~60px median.
+- **Distinctiveness** (`--max-generic-sim`, default 0.4): faces whose embedding cosine
+  similarity to the population-average embedding exceeds this. Occluded (sunglasses,
+  masks), non-frontal (profile), blurry, or false-positive detections (e.g. a carved
+  statue face) carry little identity information, so ArcFace maps them close to the
+  generic average. This catches low-quality faces the size gate misses (a large but
+  sunglassed or profile face). On real data, 0.4 removed ~78% of a mixed junk cluster
+  while touching 0% of confirmed real-person clusters; a genuinely distinctive person's
+  own occluded shots survive because his many high-quality frontal photos anchor a
+  centroid far from the generic average.
+
+`--min-face-size 0` and `--max-generic-sim 1` each disable their signal. Residual junk
+that slips through both gates (faces in the ambiguous overlap zone) is best cleared with
+the labeling UI's "Dissolve cluster" button rather than by tightening the gates further,
+which would start removing real faces.
+
+Clustering is two-stage. First, average-linkage agglomeration groups faces by
+average pairwise cosine distance (`--eps`). Average-linkage alone still fragments a
+single person into several clusters, because one person's photos legitimately spread
+wide in embedding space (pose, lighting, age) and the average cross-cluster distance
+can exceed `--eps` even for the same identity. So a second centroid-merge pass then
+joins any two clusters (each already at least `--min-cluster-size`) whose L2-normalized
+mean embeddings are at least `--merge-sim` cosine-similar. Deciding on centroids rather
+than raw pairs cancels per-face spread: on real data, confirmed *different* people never
+exceed ~0.29 centroid similarity while one person's fragments run 0.37-0.76, so the 0.35
+default reunites fragments with a safe margin. Only established clusters take part in the
+merge, never lone singletons - a single bad crop can sit within `--merge-sim` of a
+different person's centroid, whereas a whole cluster's averaged centroid cannot.
 
 `videre report --faces` starts an `axum` web server on `localhost:7878` serving a face-labeling UI:
 - **People** (blue), **Unassigned Clusters** (green), **Singletons** (orange) sections, each color-coded consistently across cards, badges, and titles
@@ -369,7 +411,7 @@ videre watch --output-sqlite <db> <directory>                        # explicit 
 Four independent stages, selected with `--scan` / `--faces` / `--heic` / `--location`. If none of the four flags are passed, all four run (the common case is "just keep everything up to date", not memorizing four flags):
 
 - `--scan`: re-runs the same scan/hash/EXIF pipeline as `videre scan`, upserting `file_hashes` for the given directory
-- `--faces`: incremental face detection - queries hashes not yet in the `faces` table, runs detection/embedding/clustering only on those, then re-runs DBSCAN clustering over all existing embeddings (same defaults as `videre faces`: `eps` 0.6, `min-cluster-size` 3)
+- `--faces`: incremental face detection - queries hashes not yet in the `faces` table, runs detection/embedding/clustering only on those, then re-runs the two-stage clustering (average-linkage + centroid-merge, with the same size + distinctiveness quality gate) over all existing embeddings (same defaults as `videre faces`: `eps` 0.6, `min-cluster-size` 3, `merge-sim` 0.35, `min-face-size` 80, `max-generic-sim` 0.4)
 - `--heic`: pre-converts and caches HEIC thumbnails (240px and 1200px) for every HEIC file's content hash, skipping hashes already cached; one `qlmanage` conversion per hash, downscaled in memory for each missing size rather than re-converting per size
 - `--location`: reverse-geocodes every distinct `(gps_lat, gps_lon)` pair with `location_name IS NULL` and writes the result back to `file_hashes`, the same lookup `--show-faces`'s `/api/location` endpoint performs on demand
 

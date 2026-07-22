@@ -63,27 +63,29 @@ videre report
 # 4. Delete duplicates
 videre dedupe | xargs trash
 
-# 5. Fix timestamps - set mtime = EXIF shoot date on remaining files
+# 5. Prune the database: remove stale rows for the files just deleted, sync
+# metadata, clean orphan embeddings - do this before the steps below so they
+# never waste time on rows for files that no longer exist
+videre prune
+
+# 6. Fix timestamps - set mtime = EXIF shoot date on remaining files
 videre fix-dates
 
-# 6. Embed images for semantic search (downloads ~1.8 GB model on first run)
+# 7. Embed images for semantic search (downloads ~1.8 GB model on first run)
 videre embed
 
-# 7. Search by text or example image
+# 8. Search by text or example image
 videre search "golden gate bridge at sunset"
 videre search --image reference.jpg
 
-# 8. Detect, embed, and cluster faces for person search
+# 9. Detect, embed, and cluster faces for person search
 videre faces
 
-# 9. Label faces in the browser UI, then save and close
+# 10. Label faces in the browser UI, then save and close
 videre report --faces
 
-# 10. Find all photos of a named person
+# 11. Find all photos of a named person
 videre search --person "Alice"
-
-# 11. Prune the database: remove stale rows, sync metadata, clean orphan embeddings
-videre prune
 
 # 12. Browse the full collection with in-page similarity search
 videre report --all
@@ -276,13 +278,20 @@ videre faces --recluster                  # skip detection; re-run clustering on
 videre faces --dry-run                    # detect and embed but do not write to db
 videre faces --batch <n>                  # images per ONNX batch (default: 8)
 videre faces --silent                     # suppress per-image progress
-videre faces --eps <f32>                  # DBSCAN cosine-distance radius (default: 0.6)
+videre faces --eps <f32>                  # average-linkage cosine-distance radius (default: 0.6)
 videre faces --min-cluster-size <n>       # minimum faces per cluster (default: 3)
+videre faces --merge-sim <f32>            # centroid-merge similarity threshold (default: 0.35; 1 disables)
+videre faces --min-face-size <px>         # min face bbox side (px) to cluster (default: 80; 0 disables)
+videre faces --max-generic-sim <f32>      # distinctiveness gate (default: 0.4; 1 disables)
 ```
 
 Face detection uses InsightFace buffalo_l (SCRFD-10GF detector + ArcFace w600k_r50 embedder) via ONNX Runtime. Model weights are downloaded automatically on first run and cached in `~/.cache/ort/`. HEIC images are converted via `qlmanage`, matching the rest of the pipeline (see Platform notes).
 
-Faces below `--min-cluster-size` stay as unassigned singletons instead of forming a tiny cluster. Use `--recluster --eps <value>` to retune clustering tightness without re-running detection.
+Clustering is two-stage: average-linkage agglomeration (`--eps`) followed by a centroid-merge pass (`--merge-sim`) that reunites one person's photos when pose/lighting spread them across several clusters. Before clustering, a two-signal quality gate holds low-quality faces out of the automatic grouping: faces smaller than `--min-face-size` pixels, and faces whose embedding is too close to the population-average face (`--max-generic-sim`) because they are occluded (sunglasses/masks), non-frontal, blurry, or false detections. Such faces embed into near-generic vectors that would otherwise pile into one large mixed cluster.
+
+Faces below `--min-cluster-size`, and any face held out by the quality gate, stay as unassigned singletons instead of being grouped. This is why a library can show many singletons: they are the low-resolution or low-quality crops that ArcFace cannot embed into a reliable identity, so they cannot be clustered safely. You can still hand-assign any individual one you recognize in the labeling UI.
+
+Recovering low-quality faces: a real person who appears mostly in distant or occluded photos will have those specific faces in the singletons. To pull more of them back in, re-cluster with looser gates, for example `videre faces --recluster --min-face-size 60 --max-generic-sim 0.45` (or `--eps`/`--merge-sim` to retune cluster tightness) - no re-detection or re-embedding runs, only clustering. Expect some mixed "junk" grouping to reappear as you loosen; the 80px / 0.4 defaults are tuned to avoid it. Residual mixed clusters are best cleared with the "Dissolve cluster" button in the labeling UI rather than by over-loosening.
 
 **Faces workflow:**
 

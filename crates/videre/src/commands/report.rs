@@ -2218,11 +2218,11 @@ async fn handle_remove_face(
 }
 
 /// Resets every face carrying `label` back to unassigned. Deliberately does
-/// NOT touch `cluster_id`: a face that came from a DBSCAN cluster rejoins
-/// that cluster's unassigned group (picked up by query_faces_data's cluster
+/// NOT touch `cluster_id`: a face that came from a cluster rejoins that
+/// cluster's unassigned group (picked up by query_faces_data's cluster
 /// query) instead of scattering to Singletons; a face that was already a
 /// singleton (cluster_id already NULL) stays a singleton. Does not trigger
-/// re-clustering - there is no live DBSCAN re-run in this server.
+/// re-clustering - there is no live re-cluster run in this server.
 async fn handle_delete_person(
     State(state): State<Arc<AppState>>,
     AxumJson(req): AxumJson<DeletePersonRequest>,
