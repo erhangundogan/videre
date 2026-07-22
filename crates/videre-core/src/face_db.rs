@@ -73,6 +73,39 @@ pub fn load_face_embeddings(conn: &Connection) -> rusqlite::Result<Vec<(i64, Vec
     Ok(out)
 }
 
+/// Like [`load_face_embeddings`] but also returns each face's smaller bbox
+/// side in pixels (the shorter of width/height), parsed from the `"x,y,w,h"`
+/// bbox string. Used as a quality signal: very small face crops embed into
+/// near-degenerate ArcFace vectors that cluster together regardless of
+/// identity, so callers gate them out of clustering. A bbox that fails to
+/// parse yields a min-side of 0.0 (treated as lowest quality).
+pub fn load_faces_for_clustering(conn: &Connection) -> rusqlite::Result<Vec<(i64, Vec<f32>, f32)>> {
+    let mut stmt = conn.prepare("SELECT id, embedding, bbox FROM faces")?;
+    let rows = stmt.query_map([], |row| {
+        let id: i64 = row.get(0)?;
+        let blob: Vec<u8> = row.get(1)?;
+        let bbox: String = row.get(2)?;
+        Ok((id, blob, bbox))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, blob, bbox) = row?;
+        let emb: Vec<f32> = blob
+            .chunks_exact(2)
+            .map(|b| f16::from_le_bytes([b[0], b[1]]).to_f32())
+            .collect();
+        out.push((id, emb, bbox_min_side(&bbox)));
+    }
+    Ok(out)
+}
+
+/// Smaller side (min of width, height) of a `"x,y,w,h"` bbox string, or 0.0 if
+/// it does not parse into at least four numeric fields.
+fn bbox_min_side(bbox: &str) -> f32 {
+    let nums: Vec<f32> = bbox.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+    if nums.len() >= 4 { nums[2].min(nums[3]) } else { 0.0 }
+}
+
 pub fn update_cluster_assignments(conn: &Connection, assignments: &[(i64, Option<i64>)]) -> rusqlite::Result<()> {
     for (face_id, cluster_id) in assignments {
         conn.execute(
@@ -184,6 +217,22 @@ mod tests {
         update_cluster_assignments(&conn, &[(id, Some(3))]).unwrap();
         let n: i64 = conn.query_row("SELECT cluster_id FROM faces WHERE id=?1", [id], |r| r.get(0)).unwrap();
         assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn load_faces_for_clustering_returns_bbox_min_side() {
+        let conn = open();
+        let emb = make_embedding(&vec![0.25f32; 512]);
+        // bbox "x,y,w,h": min side is min(w,h).
+        replace_faces_for_hash(&conn, "h1", &[
+            FaceRow { hash: "h1".into(), bbox: "10,10,200,300".into(), landmark: None, embedding: emb.clone(), cluster_id: None, person_label: None, confirmed: 0, is_primary: 0 },
+            FaceRow { hash: "h1".into(), bbox: "0,0,40,25".into(), landmark: None, embedding: emb, cluster_id: None, person_label: None, confirmed: 0, is_primary: 0 },
+        ]).unwrap();
+        let mut rows = load_faces_for_clustering(&conn).unwrap();
+        rows.sort_by(|a, b| b.2.total_cmp(&a.2));
+        assert_eq!(rows[0].2, 200.0, "min side of 200x300 bbox");
+        assert_eq!(rows[1].2, 25.0, "min side of 40x25 bbox");
+        assert_eq!(rows[0].1.len(), 512, "embedding still decoded");
     }
 
     #[test]
