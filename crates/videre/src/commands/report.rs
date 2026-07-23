@@ -8,7 +8,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use videre_api::{ClusterDetail, FacesData, PersonDetail};
 
@@ -2092,7 +2091,6 @@ struct AppState {
     report_heic: bool,
     report_heic_original: bool,
     serve_faces_ui: bool,
-    tmp_counter: AtomicU64,
 }
 
 async fn handle_root() -> impl axum::response::IntoResponse {
@@ -2293,16 +2291,6 @@ async fn handle_person_page(State(state): State<Arc<AppState>>) -> axum::respons
     axum::response::Html(html)
 }
 
-async fn handle_person_api(
-    axum::extract::Path(name): axum::extract::Path<String>,
-    State(state): State<Arc<AppState>>,
-) -> Result<AxumJson<PersonDetail>, StatusCode> {
-    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    videre_api::person_detail(&conn, &name)
-        .map(AxumJson)
-        .map_err(api_status)
-}
-
 fn read_exif_orientation(path: &str) -> u16 {
     let Ok(f) = std::fs::File::open(path) else { return 1 };
     let Ok(exif_data) = exif::Reader::new().read_from_container(&mut BufReader::new(f)) else {
@@ -2372,6 +2360,11 @@ fn crop_face_square(img: &image::DynamicImage, bbox: [f32; 4]) -> image::Dynamic
 /// `videre_core::heic::heic_via_quicklook`), which already applies correct
 /// rotation, so no separate orientation step is needed. For JPEG/PNG/etc:
 /// detection ran on raw pixels; apply EXIF orientation after crop.
+///
+/// NOTE: this helper is still used directly by `face_thumb_b64` (server-mode
+/// inline report embedding), so it - and the three helpers above it - could
+/// not be removed as part of the videre-api delegation; only
+/// `handle_face_image`/`handle_original_image` were rewritten to delegate.
 fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image::DynamicImage> {
     let ext = std::path::Path::new(path)
         .extension()
@@ -2389,86 +2382,32 @@ fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image::Dy
     }
 }
 
+async fn handle_person_api(
+    axum::extract::Path(name): axum::extract::Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> Result<AxumJson<PersonDetail>, StatusCode> {
+    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    videre_api::person_detail(&conn, &name)
+        .map(AxumJson)
+        .map_err(api_status)
+}
+
 async fn handle_face_image(
     axum::extract::Path(face_id): axum::extract::Path<i64>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl axum::response::IntoResponse, StatusCode> {
-    let (bbox_json, file_path, hash) = {
+    let state = state.clone();
+    let bytes = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, StatusCode> {
         let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        conn.query_row(
-            "SELECT f.bbox, fh.path, f.hash FROM faces f \
-             JOIN file_hashes fh ON f.hash = fh.hash \
-             WHERE f.id = ?1 LIMIT 1",
-            [face_id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
-        )
-        .optional()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?
-    };
-
-    const FACE_THUMB_SIZE: u32 = 140;
-    if videre_core::thumb_cache::face_thumb_exists(&hash, face_id, FACE_THUMB_SIZE) {
-        if let Ok(bytes) =
-            tokio::fs::read(videre_core::thumb_cache::face_thumb_path(&hash, face_id, FACE_THUMB_SIZE)).await
-        {
-            return Ok(([(axum::http::header::CONTENT_TYPE, "image/jpeg")], bytes));
-        }
-    }
-
-    // bbox stored as "x,y,w,h" → convert to x1,y1,x2,y2
-    let parts: Vec<f32> = bbox_json
-        .split(',')
-        .filter_map(|s| s.trim().parse().ok())
-        .collect();
-    if parts.len() != 4 {
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    }
-    let bbox: [f32; 4] = [parts[0], parts[1], parts[0] + parts[2], parts[1] + parts[3]];
-
-    let tmp_id = state.tmp_counter.fetch_add(1, Ordering::Relaxed);
-    let jpeg_bytes = tokio::task::spawn_blocking(move || -> Option<Vec<u8>> {
-        let thumb = make_face_thumb(&file_path, bbox, face_id)?;
-        let mut buf = Vec::new();
-        thumb
-            .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Jpeg)
-            .ok()?;
-        Some(buf)
+        videre_api::face_image_bytes(&conn, face_id).map_err(|_| StatusCode::NOT_FOUND)
     })
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    .ok_or(StatusCode::NOT_FOUND)?;
-
-    // Best-effort write-through: a cache write failure (disk full,
-    // permissions) must not fail the request - caching is a performance
-    // optimization, not a correctness requirement. The per-request `tmp_id`
-    // suffix (distinct from the pid-only scheme `thumb_tmp_path` uses)
-    // prevents two concurrent requests for the same uncached face from
-    // colliding on the same tmp path and corrupting the cache.
-    let final_path = videre_core::thumb_cache::face_thumb_path(&hash, face_id, FACE_THUMB_SIZE);
-    let tmp_path = final_path.with_extension(format!("tmp{}-{}", std::process::id(), tmp_id));
-    if let Some(parent) = final_path.parent() {
-        let _ = tokio::fs::create_dir_all(parent).await;
-    }
-    if tokio::fs::write(&tmp_path, &jpeg_bytes).await.is_ok() {
-        let _ = tokio::fs::rename(&tmp_path, &final_path).await;
-    }
-
-    Ok(([(axum::http::header::CONTENT_TYPE, "image/jpeg")], jpeg_bytes))
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+    Ok(([(axum::http::header::CONTENT_TYPE, "image/jpeg")], bytes))
 }
 
 fn mime_for_ext(ext: &str) -> &'static str {
-    match ext {
-        "jpg" | "jpeg" => "image/jpeg",
-        "png" => "image/png",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "bmp" => "image/bmp",
-        "tiff" => "image/tiff",
-        "mov" => "video/quicktime",
-        "mp4" => "video/mp4",
-        _ => "application/octet-stream",
-    }
+    videre_api::mime_for_ext(ext)
 }
 
 #[derive(Deserialize)]
@@ -2565,65 +2504,14 @@ async fn handle_original_image(
     axum::extract::Path(face_id): axum::extract::Path<i64>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl axum::response::IntoResponse, StatusCode> {
-    let (file_path, hash) = {
-        let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        conn.query_row(
-            "SELECT fh.path, f.hash FROM faces f \
-             JOIN file_hashes fh ON f.hash = fh.hash \
-             WHERE f.id = ?1 LIMIT 1",
-            [face_id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-        )
-        .optional()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?
-    };
-
-    let ext = std::path::Path::new(&file_path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    if ext == "heic" {
-        if let Ok(bytes) = tokio::fs::read(videre_core::thumb_cache::original_path(&hash)).await {
-            return Ok(([(axum::http::header::CONTENT_TYPE, "image/jpeg")], bytes));
-        }
-    }
-
-    let tmp_id = state.tmp_counter.fetch_add(1, Ordering::Relaxed);
-    let hash_for_cache = hash.clone();
-    let ext_for_cache = ext.clone();
-    let (content_type, bytes) = tokio::task::spawn_blocking(move || -> Option<(&'static str, Vec<u8>)> {
-        if ext == "heic" {
-            let img = videre_core::heic::heic_via_quicklook(&file_path, &format!("orig{face_id}"))?;
-            let mut buf = Vec::new();
-            img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Jpeg)
-                .ok()?;
-            Some(("image/jpeg", buf))
-        } else {
-            let bytes = std::fs::read(&file_path).ok()?;
-            Some((mime_for_ext(&ext), bytes))
-        }
-    })
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    .ok_or(StatusCode::NOT_FOUND)?;
-
-    // Only cache the HEIC-conversion case - non-HEIC files are served as raw
-    // bytes with no conversion cost to save, and the read path above only
-    // ever checks the cache when ext == "heic".
-    if ext_for_cache == "heic" {
-        let final_path = videre_core::thumb_cache::original_path(&hash_for_cache);
-        let tmp_path = final_path.with_extension(format!("tmp{}-{}", std::process::id(), tmp_id));
-        if let Some(parent) = final_path.parent() {
-            let _ = tokio::fs::create_dir_all(parent).await;
-        }
-        if tokio::fs::write(&tmp_path, &bytes).await.is_ok() {
-            let _ = tokio::fs::rename(&tmp_path, &final_path).await;
-        }
-    }
-
+    let state = state.clone();
+    let (content_type, bytes) =
+        tokio::task::spawn_blocking(move || -> Result<(&'static str, Vec<u8>), StatusCode> {
+            let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            videre_api::original_image_bytes(&conn, face_id).map_err(|_| StatusCode::NOT_FOUND)
+        })
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
     Ok(([(axum::http::header::CONTENT_TYPE, content_type)], bytes))
 }
 
@@ -2655,7 +2543,6 @@ async fn serve_faces_async(db: &Path, opts: ServeOptions) -> Result<(), Box<dyn 
         report_heic: opts.report_heic,
         report_heic_original: opts.report_heic_original,
         serve_faces_ui: opts.serve_faces_ui,
-        tmp_counter: AtomicU64::new(0),
     });
 
     let mut router = Router::new()
@@ -2845,7 +2732,6 @@ mod tests {
             report_heic: false,
             report_heic_original: false,
             serve_faces_ui,
-            tmp_counter: AtomicU64::new(0),
         })
     }
 
