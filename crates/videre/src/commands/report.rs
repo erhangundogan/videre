@@ -1291,12 +1291,30 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     .person-card .extra-count { color: var(--blue-text); }
     .cluster-card .extra-count { color: var(--green-text); }
     .singleton-card .extra-count { color: var(--orange-text); }
+    /* Right-hand People sidebar (toggled, remembered in localStorage). */
+    body.sidebar-mode { padding-right: 316px; }
+    body.sidebar-mode .people-section { position: fixed; top: 0; right: 0; bottom: 0; width: 300px; margin: 0; padding: 16px 12px; overflow-y: auto; border-left: 1px solid #ddd; box-shadow: -2px 0 8px rgba(0,0,0,0.05); z-index: 200; }
+    body.sidebar-mode .people-scroll { max-height: none; overflow: visible; }
+    body.sidebar-mode #people-grid { grid-template-columns: repeat(auto-fill, 132px); gap: 8px; }
+    body.sidebar-mode #people-grid .card { width: 132px; padding: 8px; }
+    /* Singleton multi-select. */
+    .singleton-card.selected { border-color: var(--blue-hover); box-shadow: 0 0 0 2px var(--blue-hover); }
+    .sel-zone { position: relative; cursor: pointer; }
+    .sel-check { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; border-radius: 50%; background: var(--blue-hover); color: #fff; align-items: center; justify-content: center; font-size: 13px; z-index: 5; display: none; }
+    .singleton-card.selected .sel-check { display: flex; }
+    .sel-bar { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--blue-hover); color: #fff; padding: 10px 16px; border-radius: 10px; display: none; gap: 12px; align-items: center; z-index: 300; box-shadow: 0 4px 16px rgba(0,0,0,0.25); flex-wrap: wrap; }
+    .sel-bar.on { display: flex; }
+    .sel-bar .sel-count { font-weight: 600; }
+    .sel-bar .sel-hint { font-size: 12px; opacity: 0.85; }
+    .sel-bar button { background: #fff; color: var(--blue-hover); font-weight: 600; border: none; }
+    .sel-bar input[type=text] { width: 160px; }
   </style>
 </head>
 <body>
   <div class="toolbar">
     <strong>videre faces labeling</strong>
     <span id="status">Loading...</span>
+    <button id="layout-toggle" onclick="toggleLayout()">People: Top</button>
     <button class="primary" onclick="saveAndClose()">Save &amp; Close</button>
   </div>
 
@@ -1312,6 +1330,8 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
 
   <h2 class="title-singletons">Singletons <span id="singleton-count" class="badge badge-orange">0</span></h2>
   <div id="singleton-grid" class="grid"></div>
+
+  <div class="sel-bar" id="sel-bar"></div>
 
   <script>
     let facesData = { people: [], clusters: [], singletons: [] };
@@ -1348,7 +1368,10 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     function renderPeople(people) {
       const grid = document.getElementById('people-grid');
       document.getElementById('people-count').textContent = people.length;
-      const sorted = [...people].sort((a, b) => b.face_ids.length - a.face_ids.length);
+      // Sort by name (case-insensitive) so cards keep a stable position while
+      // you drag clusters onto them - count-sort reshuffled them mid-assign.
+      const sorted = [...people].sort((a, b) =>
+        a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
       grid.innerHTML = sorted.map(p => {
         const url = `/person/${encodeURIComponent(p.label)}`;
         const extra = p.face_ids.length > 1
@@ -1392,13 +1415,28 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       return Array.from(collapsed).slice(0, MAX_NAME_LEN).join('');
     }
 
-    function renderAssignableCard(faceIds, linkUrl, cardClass) {
+    function renderAssignableCard(faceIds, linkUrl, cardClass, selFaceId) {
       const faceIdsJson = JSON.stringify(faceIds);
-      const thumb = linkUrl
-        ? `<a href="${escHtml(linkUrl)}">${thumbGrid(faceIds)}</a>`
-        : thumbGrid(faceIds);
+      // Singletons carry a selection id: clicking the thumbnail toggles
+      // multi-select. The click target is scoped to the thumbnail ("select
+      // zone") rather than the whole card so the drag handle and the New
+      // Person controls - which live outside it - never toggle selection
+      // (they mutate the card, which would break a whole-card click guard).
+      // Clusters (selFaceId undefined) are unaffected.
+      const selectable = selFaceId != null;
+      const inner = thumbGrid(faceIds);
+      let thumb;
+      if (selectable) {
+        thumb = `<div class="sel-zone" onclick="toggleSingleton(${selFaceId})" title="Click to select">`
+          + `<div class="sel-check">&#10003;</div>${inner}</div>`;
+      } else if (linkUrl) {
+        thumb = `<a href="${escHtml(linkUrl)}">${inner}</a>`;
+      } else {
+        thumb = inner;
+      }
+      const selAttr = selectable ? `data-sel-id="${selFaceId}"` : '';
       return `
-        <div class="card ${cardClass}">
+        <div class="card ${cardClass}" ${selAttr}>
           <div class="drag-handle" draggable="true" ondragstart="onDragStart(event, ${faceIdsJson})" title="Drag to assign to a person">
             <span class="drag-dots">&#8942;&#8942;&#8942;</span>
             <span class="drag-hint">Drag on person above</span>
@@ -1424,7 +1462,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       const grid = document.getElementById('singleton-grid');
       document.getElementById('singleton-count').textContent = singletons.length;
       grid.innerHTML = singletons.map(s =>
-        renderAssignableCard([s.face_id], null, 'singleton-card')
+        renderAssignableCard([s.face_id], null, 'singleton-card', s.face_id)
       ).join('');
     }
 
@@ -1432,6 +1470,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       renderPeople(facesData.people);
       renderClusters(facesData.clusters);
       renderSingletons(facesData.singletons);
+      updateSelectionUI();
     }
 
     function escHtml(s) {
@@ -1443,7 +1482,96 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
         event.preventDefault();
         return;
       }
-      event.dataTransfer.setData('application/json', JSON.stringify({ face_ids: faceIds }));
+      // Dragging a selected singleton carries the whole current selection, so
+      // one drop assigns every selected face at once.
+      let ids = faceIds;
+      const card = event.target.closest('.card');
+      const selId = card && card.dataset.selId != null ? Number(card.dataset.selId) : null;
+      if (selId != null && selectedSingletons.has(selId) && selectedSingletons.size > 1) {
+        ids = Array.from(selectedSingletons);
+      }
+      event.dataTransfer.setData('application/json', JSON.stringify({ face_ids: ids }));
+    }
+
+    // ---- singleton multi-select ----
+    let selectedSingletons = new Set();
+
+    function toggleSingleton(faceId) {
+      if (selectedSingletons.has(faceId)) selectedSingletons.delete(faceId);
+      else selectedSingletons.add(faceId);
+      updateSelectionUI();
+    }
+
+    function updateSelectionUI() {
+      document.querySelectorAll('.singleton-card').forEach(c => {
+        const id = c.dataset.selId != null ? Number(c.dataset.selId) : null;
+        c.classList.toggle('selected', id != null && selectedSingletons.has(id));
+      });
+      rebuildSelBar();
+    }
+
+    function rebuildSelBar() {
+      const bar = document.getElementById('sel-bar');
+      const n = selectedSingletons.size;
+      bar.classList.toggle('on', n > 0);
+      if (n === 0) { bar.innerHTML = ''; return; }
+      bar.innerHTML =
+        `<span class="sel-count">${n} selected</span>` +
+        `<button onclick="newPersonFromSelection()">New Person</button>` +
+        `<button onclick="clearSelection()">Clear</button>` +
+        `<span class="sel-hint">or drag any selected onto a person</span>`;
+    }
+
+    function clearSelection() {
+      selectedSingletons.clear();
+      updateSelectionUI();
+    }
+
+    function newPersonFromSelection() {
+      if (selectedSingletons.size === 0) return;
+      const bar = document.getElementById('sel-bar');
+      bar.innerHTML =
+        `<input type="text" id="sel-np-input" placeholder="Person name" maxlength="${MAX_NAME_LEN}">` +
+        `<button onclick="submitSelectionPerson()">Create</button>` +
+        `<button onclick="rebuildSelBar()">Cancel</button>`;
+      const inp = document.getElementById('sel-np-input');
+      inp.focus();
+      inp.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); submitSelectionPerson(); }
+      });
+    }
+
+    async function submitSelectionPerson() {
+      const input = document.getElementById('sel-np-input');
+      if (!input) return;
+      const label = sanitizeName(input.value);
+      if (!label) return;
+      const ids = Array.from(selectedSingletons);
+      const r = await fetch('/api/new-person', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ face_ids: ids, label: label })
+      });
+      if (!r.ok) {
+        document.getElementById('status').textContent = 'Error: create person failed';
+        return;
+      }
+      clearSelection();
+      await loadFaces();
+    }
+
+    // ---- People placement toggle (top bar vs right sidebar) ----
+    function applyLayout() {
+      const mode = localStorage.getItem('videre_people_layout') || 'top';
+      document.body.classList.toggle('sidebar-mode', mode === 'right');
+      const btn = document.getElementById('layout-toggle');
+      if (btn) btn.textContent = mode === 'right' ? 'People: Right' : 'People: Top';
+    }
+
+    function toggleLayout() {
+      const cur = localStorage.getItem('videre_people_layout') || 'top';
+      localStorage.setItem('videre_people_layout', cur === 'right' ? 'top' : 'right');
+      applyLayout();
     }
 
     async function onDropToPerson(event, personLabel) {
@@ -1458,6 +1586,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
         document.getElementById('status').textContent = 'Error: assign failed';
         return;
       }
+      clearSelection();
       await loadFaces();
     }
 
@@ -1498,6 +1627,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       document.body.innerHTML = '<div style="padding:32px;font-size:18px">Server stopped. You can close this tab.</div>';
     }
 
+    applyLayout();
     loadFaces();
   </script>
 </body>
@@ -3116,6 +3246,29 @@ mod tests {
                                     // distinguishes .chars().take(60) from a byte-based slice
         let result = sanitize_person_label(&long).unwrap();
         assert_eq!(result.chars().count(), 60);
+    }
+
+    #[test]
+    fn faces_html_wires_up_name_sort_sidebar_toggle_and_multiselect() {
+        // Guards that the labeling-UI features are present in the served page:
+        // People sorted by name, the top/right sidebar toggle (persisted), and
+        // singleton multi-select with a bulk action bar.
+        assert!(
+            FACES_HTML.contains("a.label.localeCompare(b.label"),
+            "People must be sorted by name"
+        );
+        assert!(
+            FACES_HTML.contains("videre_people_layout")
+                && FACES_HTML.contains("sidebar-mode")
+                && FACES_HTML.contains("toggleLayout"),
+            "People placement toggle (top/right sidebar, persisted) must be wired"
+        );
+        assert!(
+            FACES_HTML.contains("selectedSingletons")
+                && FACES_HTML.contains("toggleSingleton")
+                && FACES_HTML.contains("newPersonFromSelection"),
+            "Singleton multi-select and bulk assign must be wired"
+        );
     }
 
     #[tokio::test]
