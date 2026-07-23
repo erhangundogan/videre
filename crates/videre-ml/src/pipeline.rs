@@ -63,7 +63,15 @@ pub fn run_face_pipeline(
                     continue;
                 }
             };
-            if detections.is_empty() { progress.tick(); continue; }
+            if detections.is_empty() {
+                // Record the no-face image as scanned so it is never
+                // re-detected on a later (resumed) run.
+                if !dry_run {
+                    let _ = videre_core::face_db::mark_scanned(conn, hash);
+                }
+                progress.tick();
+                continue;
+            }
 
             let crops: Vec<image::RgbImage> = detections.iter()
                 .map(|d| face_align::align_face(&img, &d.landmarks))
@@ -112,6 +120,10 @@ pub fn run_face_pipeline(
                 if let Err(e) = videre_core::face_db::replace_faces_for_hash(conn, &entry.hash, &rows) {
                     progress.println(&format!("write failed {}: {e}", entry.path));
                     write_errors += 1;
+                } else {
+                    // Mark scanned only after the faces are durably written, so
+                    // an interrupt before this point re-processes the hash.
+                    let _ = videre_core::face_db::mark_scanned(conn, &entry.hash);
                 }
             }
         }

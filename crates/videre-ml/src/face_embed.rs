@@ -19,9 +19,7 @@ impl FaceEmbedder {
     ///
     /// Uses `Session::builder().commit_from_file()` as per ort 2.0.0-rc.12.
     pub fn new(model_path: &Path) -> Result<Self> {
-        let session = Session::builder()
-            .context("create ort SessionBuilder")?
-            .commit_from_file(model_path)
+        let session = crate::face_models::build_session(model_path)
             .context("load ArcFace ONNX model")?;
         Ok(Self { session })
     }

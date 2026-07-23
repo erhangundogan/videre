@@ -187,6 +187,8 @@ Re-scanning the same folder with the same SQLite file upserts (overwrites) exist
 
 `faces` rows are keyed by `id` (auto-increment). `hash` links to `file_hashes`. `bbox` and `landmark` are JSON strings. `embedding` is a raw f16 BLOB (512-dim ArcFace, 1024 bytes). `cluster_id` is assigned by the two-stage clustering (average-linkage, then a centroid-merge pass); `person_label` and `confirmed` are set via `videre report --faces`.
 
+A companion `faces_scanned` table (`hash TEXT PRIMARY KEY, scanned_at TEXT`) records every hash that face detection has processed, **including images where zero faces were found** (which produce no `faces` row). This is what makes `videre faces` resumable - the skip set is "already scanned", so no-face images are detected once rather than every run. Created by `create_faces_table` alongside `faces`; written per hash as detection proceeds.
+
 `location_name` is a nullable TEXT column added by an idempotent `ALTER TABLE file_hashes ADD COLUMN location_name TEXT` migration (run on every `videre report` startup; harmless if the column already exists) - it is not populated by the initial `videre scan`. It is populated lazily, one GPS coordinate at a time, by the `/api/location` endpoint when `--show-faces` is used: the first lightbox view of a photo at a given `(gps_lat, gps_lon)` triggers a reverse-geocode lookup, and the result is cached back into this column so later lookups for the same coordinate are free.
 
 Every subcommand opens the database via `videre_core::db::open_wal`, which switches the connection to SQLite's WAL journal mode (`PRAGMA journal_mode = WAL`). WAL mode persists in the database file itself once set, so `open_wal` is idempotent - safe to call on every connection open, not just the first. This allows one writer plus many concurrent readers without "database is locked" errors, which matters now that `videre watch` can run in the background writing to the same file that a `videre report --show-faces` server has open for reading (and occasional writes, e.g. `/api/location`).
@@ -325,8 +327,9 @@ CREATE TABLE embeddings (
 Detects faces in every image recorded in the database, embeds each face with ArcFace, and clusters detected faces into identity groups using a two-stage pipeline: average-linkage agglomeration, then a centroid-merge pass that reunites one person's fragmented sub-clusters (see below).
 
 ```
-videre faces                            # default db; process new hashes only
+videre faces                            # default db; scan not-yet-scanned images (resumable)
 videre faces --db <db>                  # explicit db
+videre faces --limit <n>                # scan at most N not-yet-scanned images, then stop (resumable; skips clustering)
 videre faces --reprocess                # re-detect and re-embed all hashes
 videre faces --recluster                # skip detection; re-run clustering on existing embeddings
 videre faces --dry-run                  # detect and embed but do not write to db
@@ -339,7 +342,9 @@ videre faces --min-face-size <px>       # min face bbox side (px) to cluster; sm
 videre faces --max-generic-sim <f32>    # distinctiveness gate: hold out faces too similar to the average face (default: 0.4; 1 disables)
 ```
 
-Uses InsightFace buffalo_l: SCRFD-10GF for detection, 5-point landmark alignment, ArcFace w600k_r50 for 512-dim L2-normalized embeddings. Weights are downloaded from `hf-hub` on first run. ONNX Runtime (`ort`) runs inference on CPU. HEIC images are converted via `qlmanage` (see videre report HEIC note above) before detection.
+Uses InsightFace buffalo_l: SCRFD-10GF for detection, 5-point landmark alignment, ArcFace w600k_r50 for 512-dim L2-normalized embeddings. Weights are downloaded from `hf-hub` on first run. ONNX Runtime (`ort`) runs inference on CPU (its default all-core intra-op thread pool; the macOS CoreML execution provider was measured to give no speedup for these models and is not used). HEIC images are converted via `qlmanage` (see videre report HEIC note above) before detection.
+
+Detection is **resumable**. Every processed hash is recorded in a `faces_scanned` table - including images where zero faces were detected, which leave no `faces` row. The skip set for a run is "already scanned" (unioned with "already has faces", so a first run after upgrading doesn't redo prior work), not merely "has a face", so a no-face image is detected exactly once ever rather than re-detected on every run. Faces and the scanned marker are committed per hash as the run proceeds, so an interrupt (Ctrl-C) loses at most the in-flight image and a rerun continues where it left off. `--limit <n>` processes at most N not-yet-scanned images then stops (for chipping away at a large library in bounded chunks); a limited run skips the final clustering step (it is an O(n^2) whole-library pass not worth repeating after every chunk) - run `videre faces --recluster` once scanning is complete.
 
 Faces below `--min-cluster-size` are left as unassigned singletons rather than forming
 a small cluster. `--recluster` re-runs clustering with new `--eps`/`--min-cluster-size`/`--merge-sim`/`--min-face-size`

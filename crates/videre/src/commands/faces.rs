@@ -26,6 +26,11 @@ pub struct FacesArgs {
     /// faces embed poorly and pile into a mixed junk cluster, so they are held out as
     /// unassigned singletons. 0 disables the gate. Default 80.
     #[arg(long, default_value = "80")] min_face_size: f32,
+    /// Process at most N not-yet-scanned images this run, then stop. Resumable: each
+    /// run records what it scanned (including images with no faces) and a rerun
+    /// continues where it left off. Clustering is skipped on a limited run - run
+    /// `videre faces --recluster` when you're done scanning.
+    #[arg(long)] limit: Option<usize>,
     /// Distinctiveness gate: faces whose embedding is more than this cosine-similar to
     /// the population-average face (occluded/profile/blurry/false detections) are held
     /// out of clustering. Lower = stricter. 1 disables. Default 0.4.
@@ -50,17 +55,22 @@ pub fn run(args: FacesArgs) -> Result<()> {
         rows
     };
 
+    // Skip anything already scanned. The marker (`faces_scanned`) records every
+    // processed hash including images with zero faces, which is what makes reruns
+    // resumable instead of re-detecting the whole no-face population every time.
+    // Union in hashes that already have faces so a first run after upgrading (when
+    // the marker table is empty but faces exist) doesn't redo that work.
     let skip_hashes: std::collections::HashSet<String> = if args.reprocess {
         std::collections::HashSet::new()
     } else {
-        face_db::hashes_with_faces(&conn)?.into_iter().collect()
+        let mut s: std::collections::HashSet<String> =
+            face_db::scanned_hashes(&conn)?.into_iter().collect();
+        s.extend(face_db::hashes_with_faces(&conn)?);
+        s
     };
 
-    // Gap 1: Deduplicate by hash - one representative path per hash
-    let mut seen_hashes = std::collections::HashSet::new();
-    let to_process: Vec<(String, String)> = all_paths.into_iter()
-        .filter(|(_, hash)| !skip_hashes.contains(hash) && seen_hashes.insert(hash.clone()))
-        .collect();
+    // Dedup by hash, drop skipped, cap at --limit for a partial/lazy pass.
+    let to_process = face_db::select_unscanned(&all_paths, &skip_hashes, args.limit);
 
     if args.recluster || to_process.is_empty() {
         if !args.silent && to_process.is_empty() && !args.recluster {
@@ -79,8 +89,11 @@ pub fn run(args: FacesArgs) -> Result<()> {
     let started = std::time::Instant::now();
     let result = run_face_pipeline(&conn, &to_process, args.batch, args.dry_run, args.silent)?;
 
-    // Cluster whenever there are faces in the DB, not only when new faces were found
-    let clustering = if !args.dry_run {
+    // Cluster at the end of a full pass, but skip it on a partial (--limit) run:
+    // clustering is an O(n^2) whole-library step and re-running it after every
+    // small chunk is wasted work. On a limited run, tell the user to cluster once
+    // they've finished scanning.
+    let clustering = if !args.dry_run && args.limit.is_none() {
         run_clustering(&conn, args.eps, args.min_cluster_size, args.merge_sim, args.min_face_size, args.max_generic_sim)?
     } else {
         None
@@ -88,6 +101,12 @@ pub fn run(args: FacesArgs) -> Result<()> {
 
     if !args.silent {
         eprintln!("{}", format_summary(&result, clustering, args.eps, started.elapsed()));
+        if args.limit.is_some() && !args.dry_run {
+            let remaining = face_db::scanned_hashes(&conn)?.len();
+            eprintln!(
+                "partial run (--limit): {remaining} image(s) scanned so far; rerun to continue, then 'videre faces --recluster' to cluster"
+            );
+        }
     }
 
     if result.write_errors > 0 || result.detect_errors > 0 {
