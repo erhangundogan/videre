@@ -8,10 +8,7 @@ mod label;
 mod types;
 
 pub use error::{Error, Result};
-// pub use faces::{
-//     assign, cluster_detail, delete_person, dissolve_cluster, faces_list, new_person,
-//     person_detail, remove_face, rename_person, search_person, set_primary,
-// };
+pub use faces::{cluster_detail, faces_list, person_detail, search_person};
 pub use label::sanitize_person_label;
 pub use types::{
     ClusterData, ClusterDetail, ClusterFaceData, FacesData, PersonData, PersonDetail,
