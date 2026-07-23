@@ -264,7 +264,19 @@ mod tests {
     #[test]
     fn delete_person_unassigns_without_touching_cluster() {
         let conn = seed();
+        // Give one of Alice's faces a cluster_id so we can prove delete_person
+        // leaves cluster_id intact (it must, so the face rejoins its cluster's
+        // unassigned group rather than scattering to singletons).
+        conn.execute("UPDATE faces SET cluster_id = 42 WHERE id = 1", []).unwrap();
         delete_person(&conn, "Alice").unwrap();
-        assert_eq!(faces_list(&conn).unwrap().people.len(), 0);
+        assert_eq!(faces_list(&conn).unwrap().people.len(), 0, "Alice is gone");
+        let (cid, label, confirmed): (Option<i64>, Option<String>, i64) = conn
+            .query_row(
+                "SELECT cluster_id, person_label, confirmed FROM faces WHERE id = 1",
+                [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap();
+        assert_eq!(cid, Some(42), "cluster_id must be preserved");
+        assert_eq!(label, None, "person_label cleared");
+        assert_eq!(confirmed, 0, "confirmed cleared");
     }
 }
