@@ -1,0 +1,9 @@
+[package]
+name = "videre-api"
+version = "0.3.2"
+edition = "2021"
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+videre-core = { path = "../videre-core" }

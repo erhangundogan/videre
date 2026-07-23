@@ -1,3 +1,3 @@
 [workspace]
 resolver = "2"
-members = ["crates/videre", "crates/videre-core", "crates/videre-ml"]
+members = ["crates/videre", "crates/videre-api", "crates/videre-core", "crates/videre-ml"]
