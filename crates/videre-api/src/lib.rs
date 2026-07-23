@@ -13,7 +13,7 @@ pub use error::{Error, Result};
 //     person_detail, remove_face, rename_person, search_person, set_primary,
 // };
 // pub use label::sanitize_person_label;
-// pub use types::{
-//     ClusterData, ClusterDetail, ClusterFaceData, FacesData, PersonData, PersonDetail,
-//     PersonFaceData, SingletonData,
-// };
+pub use types::{
+    ClusterData, ClusterDetail, ClusterFaceData, FacesData, PersonData, PersonDetail,
+    PersonFaceData, SingletonData,
+};
