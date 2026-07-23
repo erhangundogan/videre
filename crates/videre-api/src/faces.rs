@@ -421,4 +421,13 @@ mod tests {
         assert_eq!(person_detail(&conn, "Alicia").unwrap().faces.len(), 2);
         assert_eq!(person_detail(&conn, "Alice").unwrap().faces.len(), 0);
     }
+
+    #[test]
+    fn rename_to_empty_label_is_invalid() {
+        let conn = seed();
+        assert!(matches!(
+            rename_person(&conn, "Alice", "   "),
+            Err(Error::Invalid)
+        ));
+    }
 }

@@ -60,4 +60,12 @@ mod tests {
         let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
         assert_eq!(sanitize_person_label(family).as_deref(), Some(family));
     }
+
+    #[test]
+    fn strips_control_chars() {
+        assert_eq!(
+            sanitize_person_label("A\u{0007}li\tce").as_deref(),
+            Some("Alice")
+        );
+    }
 }
