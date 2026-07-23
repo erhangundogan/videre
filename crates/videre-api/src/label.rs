@@ -33,14 +33,26 @@ mod tests {
 
     #[test]
     fn trims_collapses_and_caps() {
-        assert_eq!(sanitize_person_label("  Alice   B  ").as_deref(), Some("Alice B"));
+        assert_eq!(
+            sanitize_person_label("  Alice   B  ").as_deref(),
+            Some("Alice B")
+        );
         assert_eq!(sanitize_person_label("   ").as_deref(), None);
-        assert_eq!(sanitize_person_label(&"x".repeat(70)).unwrap().chars().count(), 60);
+        assert_eq!(
+            sanitize_person_label(&"x".repeat(70))
+                .unwrap()
+                .chars()
+                .count(),
+            60
+        );
     }
 
     #[test]
     fn strips_bidi_override() {
-        assert_eq!(sanitize_person_label("A\u{202E}lice").as_deref(), Some("Alice"));
+        assert_eq!(
+            sanitize_person_label("A\u{202E}lice").as_deref(),
+            Some("Alice")
+        );
     }
 
     #[test]
