@@ -1,4 +1,5 @@
 mod commands;
+mod protocols;
 mod state;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -20,6 +21,8 @@ pub fn run() {
             commands::set_primary,
             commands::rename_person,
         ])
+        .register_asynchronous_uri_scheme_protocol("videre-face", protocols::face)
+        .register_asynchronous_uri_scheme_protocol("videre-original", protocols::original)
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
