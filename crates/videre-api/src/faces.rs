@@ -168,6 +168,70 @@ pub fn delete_person(conn: &Connection, label: &str) -> Result<()> {
     Ok(())
 }
 
+/// Mark one face as the person's primary (their labeling-page thumbnail),
+/// clearing any previous primary in the same transaction so exactly one
+/// remains. The target update is guarded by person_label so it can't steal a
+/// face from another person.
+pub fn set_primary(conn: &Connection, face_id: i64, person_label: &str) -> Result<()> {
+    conn.execute_batch("BEGIN")?;
+    let result = (|| -> rusqlite::Result<()> {
+        conn.execute(
+            "UPDATE faces SET is_primary = 0 WHERE person_label = ?1",
+            rusqlite::params![person_label],
+        )?;
+        conn.execute(
+            "UPDATE faces SET is_primary = 1, confirmed = 1, person_label = ?1 WHERE id = ?2 AND person_label = ?1",
+            rusqlite::params![person_label, face_id],
+        )?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(Error::Db(e))
+        }
+    }
+}
+
+/// Rename a person. `NotFound` if `old_label` has no faces; `Conflict` if
+/// `new_label` (after sanitizing) already belongs to a different person;
+/// `Invalid` if the new label sanitizes to empty.
+pub fn rename_person(conn: &Connection, old_label: &str, new_label: &str) -> Result<()> {
+    let sanitized = crate::label::sanitize_person_label(new_label).ok_or(Error::Invalid)?;
+
+    let old_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM faces WHERE person_label = ?1",
+            rusqlite::params![old_label],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if old_count == 0 {
+        return Err(Error::NotFound);
+    }
+
+    let collision_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM faces WHERE person_label = ?1",
+            rusqlite::params![sanitized],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if collision_count > 0 && sanitized != old_label {
+        return Err(Error::Conflict);
+    }
+
+    conn.execute(
+        "UPDATE faces SET person_label = ?1 WHERE person_label = ?2",
+        rusqlite::params![sanitized, old_label],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,5 +342,37 @@ mod tests {
         assert_eq!(cid, Some(42), "cluster_id must be preserved");
         assert_eq!(label, None, "person_label cleared");
         assert_eq!(confirmed, 0, "confirmed cleared");
+    }
+
+    #[test]
+    fn set_primary_is_exclusive_per_person() {
+        let conn = seed();
+        set_primary(&conn, 2, "Alice").unwrap();
+        let primaries: Vec<i64> = {
+            let mut s = conn.prepare("SELECT id FROM faces WHERE person_label='Alice' AND is_primary=1").unwrap();
+            s.query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+        };
+        assert_eq!(primaries, vec![2], "exactly one primary, now face 2");
+    }
+
+    #[test]
+    fn rename_missing_person_is_not_found() {
+        let conn = seed();
+        assert!(matches!(rename_person(&conn, "Nobody", "X"), Err(Error::NotFound)));
+    }
+
+    #[test]
+    fn rename_onto_existing_person_conflicts() {
+        let conn = seed();
+        assign(&conn, &[3], "Bob").unwrap(); // Bob now exists
+        assert!(matches!(rename_person(&conn, "Alice", "Bob"), Err(Error::Conflict)));
+    }
+
+    #[test]
+    fn rename_succeeds() {
+        let conn = seed();
+        rename_person(&conn, "Alice", "Alicia").unwrap();
+        assert_eq!(person_detail(&conn, "Alicia").unwrap().faces.len(), 2);
+        assert_eq!(person_detail(&conn, "Alice").unwrap().faces.len(), 0);
     }
 }

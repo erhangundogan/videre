@@ -10,7 +10,7 @@ mod types;
 pub use error::{Error, Result};
 pub use faces::{
     assign, cluster_detail, delete_person, dissolve_cluster, faces_list, new_person,
-    person_detail, remove_face, search_person,
+    person_detail, remove_face, rename_person, search_person, set_primary,
 };
 pub use label::sanitize_person_label;
 pub use types::{
