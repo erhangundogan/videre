@@ -3,7 +3,7 @@
 //! `Error`. Called by both the axum `--faces` server and the Tauri desktop
 //! app.
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::types::*;
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -122,6 +122,52 @@ pub fn search_person(conn: &Connection, name: &str) -> Result<Vec<String>> {
     Ok(videre_core::person_search::search_by_person(conn, name, None)?)
 }
 
+/// Assign faces to an existing/new person: sets person_label + confirmed.
+/// Rejects an empty label after sanitizing.
+pub fn assign(conn: &Connection, face_ids: &[i64], person_label: &str) -> Result<()> {
+    let label = crate::label::sanitize_person_label(person_label).ok_or(Error::Invalid)?;
+    for id in face_ids {
+        conn.execute(
+            "UPDATE faces SET person_label = ?1, confirmed = 1 WHERE id = ?2",
+            rusqlite::params![label, id],
+        )?;
+    }
+    Ok(())
+}
+
+/// Create a person from faces. Same effect as `assign`; kept as a distinct
+/// operation because callers treat "new person" and "assign to existing" as
+/// separate user intents.
+pub fn new_person(conn: &Connection, face_ids: &[i64], label: &str) -> Result<()> {
+    assign(conn, face_ids, label)
+}
+
+/// Reset one face to fully unassigned (cluster, label, confirmed, primary).
+pub fn remove_face(conn: &Connection, face_id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE faces SET cluster_id = NULL, person_label = NULL, confirmed = 0, is_primary = 0 WHERE id = ?1",
+        [face_id],
+    )?;
+    Ok(())
+}
+
+/// Ungroup a bad cluster: its faces become unassigned singletons (not deleted).
+pub fn dissolve_cluster(conn: &Connection, cluster_id: i64) -> Result<()> {
+    conn.execute("UPDATE faces SET cluster_id = NULL WHERE cluster_id = ?1", [cluster_id])?;
+    Ok(())
+}
+
+/// Reset every face of a person back to unassigned. Deliberately does NOT touch
+/// cluster_id, so a face rejoins its cluster's unassigned group rather than
+/// scattering to singletons.
+pub fn delete_person(conn: &Connection, label: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE faces SET person_label = NULL, confirmed = 0, is_primary = 0 WHERE person_label = ?1",
+        rusqlite::params![label],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,5 +225,46 @@ mod tests {
         let c = cluster_detail(&conn, 7).unwrap();
         assert_eq!(c.cluster_id, 7);
         assert_eq!(c.faces.iter().map(|f| f.face_id).collect::<Vec<_>>(), vec![3, 4]);
+    }
+
+    #[test]
+    fn assign_labels_and_confirms() {
+        let conn = seed();
+        assign(&conn, &[3, 4], "Bob").unwrap();
+        let p = person_detail(&conn, "Bob").unwrap();
+        assert_eq!(p.faces.len(), 2, "both faces now confirmed under Bob");
+    }
+
+    #[test]
+    fn assign_rejects_empty_label() {
+        let conn = seed();
+        assert!(matches!(assign(&conn, &[3], "   "), Err(Error::Invalid)));
+    }
+
+    #[test]
+    fn remove_face_unassigns_everything() {
+        let conn = seed();
+        remove_face(&conn, 1).unwrap();
+        let (cid, label, confirmed, prim): (Option<i64>, Option<String>, i64, i64) = conn
+            .query_row(
+                "SELECT cluster_id, person_label, confirmed, is_primary FROM faces WHERE id=1",
+                [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap();
+        assert_eq!((cid, label, confirmed, prim), (None, None, 0, 0));
+    }
+
+    #[test]
+    fn dissolve_cluster_nulls_cluster_id() {
+        let conn = seed();
+        dissolve_cluster(&conn, 7).unwrap();
+        assert_eq!(faces_list(&conn).unwrap().clusters.len(), 0);
+        assert_eq!(faces_list(&conn).unwrap().singletons.len(), 3, "3,4 join 5 as singletons");
+    }
+
+    #[test]
+    fn delete_person_unassigns_without_touching_cluster() {
+        let conn = seed();
+        delete_person(&conn, "Alice").unwrap();
+        assert_eq!(faces_list(&conn).unwrap().people.len(), 0);
     }
 }
