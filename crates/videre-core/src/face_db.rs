@@ -29,7 +29,56 @@ pub fn create_faces_table(conn: &Connection) -> rusqlite::Result<()> {
     )?;
     // Migration for existing tables without is_primary column; ignored if already exists.
     let _ = conn.execute_batch("ALTER TABLE faces ADD COLUMN is_primary INTEGER DEFAULT 0");
+    // Records every hash whose faces have been scanned, INCLUDING images where
+    // zero faces were detected (which leave no `faces` row). This is what makes
+    // `videre faces` resumable: the skip set is "already scanned", not merely
+    // "has a face", so a no-face image is never re-detected on a later run.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS faces_scanned (
+            hash        TEXT PRIMARY KEY,
+            scanned_at  TEXT DEFAULT (datetime('now'))
+        );",
+    )?;
     Ok(())
+}
+
+/// Marks a hash as face-scanned (idempotent). Call after detection runs for a
+/// hash regardless of whether any faces were found.
+pub fn mark_scanned(conn: &Connection, hash: &str) -> rusqlite::Result<()> {
+    conn.execute("INSERT OR IGNORE INTO faces_scanned (hash) VALUES (?1)", rusqlite::params![hash])?;
+    Ok(())
+}
+
+/// Every hash recorded as face-scanned.
+pub fn scanned_hashes(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT hash FROM faces_scanned")?;
+    let rows = stmt.query_map([], |r| r.get(0))?;
+    rows.collect()
+}
+
+/// From `(path, hash)` pairs, drop hashes in `skip`, keep one representative
+/// path per remaining hash (first seen), preserving input order, and cap the
+/// result at `limit` distinct hashes (`None` = no cap). Used to build the work
+/// list for a resumable, optionally partial face-detection pass.
+pub fn select_unscanned(
+    all: &[(String, String)],
+    skip: &std::collections::HashSet<String>,
+    limit: Option<usize>,
+) -> Vec<(String, String)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for (path, hash) in all {
+        if skip.contains(hash) || !seen.insert(hash.clone()) {
+            continue;
+        }
+        out.push((path.clone(), hash.clone()));
+        if let Some(n) = limit {
+            if out.len() >= n {
+                break;
+            }
+        }
+    }
+    out
 }
 
 pub fn replace_faces_for_hash(conn: &Connection, hash: &str, faces: &[FaceRow]) -> rusqlite::Result<()> {
@@ -233,6 +282,51 @@ mod tests {
         assert_eq!(rows[0].2, 200.0, "min side of 200x300 bbox");
         assert_eq!(rows[1].2, 25.0, "min side of 40x25 bbox");
         assert_eq!(rows[0].1.len(), 512, "embedding still decoded");
+    }
+
+    #[test]
+    fn mark_scanned_records_hash_even_with_zero_faces() {
+        let conn = open();
+        // A hash processed with no detected faces leaves no `faces` row, but
+        // must still be recorded as scanned so it is not re-processed.
+        mark_scanned(&conn, "noface").unwrap();
+        assert_eq!(scanned_hashes(&conn).unwrap(), vec!["noface".to_string()]);
+        // hashes_with_faces stays empty - the marker is independent of faces.
+        assert!(hashes_with_faces(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn mark_scanned_is_idempotent() {
+        let conn = open();
+        mark_scanned(&conn, "h").unwrap();
+        mark_scanned(&conn, "h").unwrap();
+        assert_eq!(scanned_hashes(&conn).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn select_unscanned_skips_dedups_and_limits() {
+        // Two paths share hash "a"; "b" is skipped; "c","d","e" remain.
+        let all = vec![
+            ("/1.jpg".to_string(), "a".to_string()),
+            ("/1copy.jpg".to_string(), "a".to_string()),
+            ("/2.jpg".to_string(), "b".to_string()),
+            ("/3.jpg".to_string(), "c".to_string()),
+            ("/4.jpg".to_string(), "d".to_string()),
+            ("/5.jpg".to_string(), "e".to_string()),
+        ];
+        let skip: std::collections::HashSet<String> = ["b".to_string()].into_iter().collect();
+        // No limit: one path per unscanned hash (a,c,d,e), b excluded.
+        let out = select_unscanned(&all, &skip, None);
+        assert_eq!(
+            out.iter().map(|(_, h)| h.clone()).collect::<Vec<_>>(),
+            vec!["a", "c", "d", "e"]
+        );
+        // Limit 2: first two unscanned hashes only.
+        let out2 = select_unscanned(&all, &skip, Some(2));
+        assert_eq!(
+            out2.iter().map(|(_, h)| h.clone()).collect::<Vec<_>>(),
+            vec!["a", "c"]
+        );
     }
 
     #[test]

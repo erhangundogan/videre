@@ -142,8 +142,12 @@ fn run_faces_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> 
         conn,
         "ext IN ('jpg','jpeg','png','gif','webp','bmp','tiff','heic')",
     )?;
-    let skip_hashes: std::collections::HashSet<String> =
-        face_db::hashes_with_faces(conn)?.into_iter().collect();
+    // Skip already-scanned hashes (marker includes no-face images), unioned with
+    // hashes that already have faces for pre-marker migration - same resumable
+    // skip set as `videre faces`.
+    let mut skip_hashes: std::collections::HashSet<String> =
+        face_db::scanned_hashes(conn)?.into_iter().collect();
+    skip_hashes.extend(face_db::hashes_with_faces(conn)?);
     let to_process: Vec<(String, String)> = all_paths
         .into_iter()
         .filter(|(_, hash)| !skip_hashes.contains(hash))
