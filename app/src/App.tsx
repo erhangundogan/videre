@@ -1,51 +1,44 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
 
-function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+type FacesData = {
+  people: { label: string; representative_id: number }[];
+  clusters: { cluster_id: number; face_ids: number[] }[];
+  singletons: { face_id: number; hash: string }[];
+};
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+export default function App() {
+  const [data, setData] = useState<FacesData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    invoke<FacesData>("faces_list").then(setData).catch((e) => setError(String(e)));
+  }, []);
+
+  if (error) return <pre style={{ color: "crimson", padding: 16 }}>Error: {error}</pre>;
+  if (!data) return <p style={{ padding: 16 }}>Loading…</p>;
+
+  const firstFace =
+    data.people[0]?.representative_id ??
+    data.clusters[0]?.face_ids[0] ??
+    data.singletons[0]?.face_id;
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
+    <main style={{ padding: 16, fontFamily: "sans-serif" }}>
+      <h1>videre (smoke test)</h1>
+      <p>
+        {data.people.length} people · {data.clusters.length} clusters ·{" "}
+        {data.singletons.length} singletons
+      </p>
+      {firstFace != null && (
+        <img
+          src={`videre-face://${firstFace}`}
+          width={140}
+          height={140}
+          alt={`face ${firstFace}`}
+          style={{ borderRadius: 8, background: "#ddd" }}
         />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
+      )}
     </main>
   );
 }
-
-export default App;
