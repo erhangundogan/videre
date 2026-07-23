@@ -5005,6 +5005,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "videre-api",
  "videre-core",
  "videre-ml",
  "walkdir",
