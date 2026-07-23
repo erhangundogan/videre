@@ -18,7 +18,11 @@ pub fn faces_list(conn: &Connection) -> Result<FacesData> {
              ORDER BY person_label, is_primary DESC, id ASC",
         )?;
         let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
         })?;
         for row in rows {
             let (id, hash, label) = row?;
@@ -43,7 +47,11 @@ pub fn faces_list(conn: &Connection) -> Result<FacesData> {
              ORDER BY cluster_id, id",
         )?;
         let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
         })?;
         for row in rows {
             let (id, hash, cid) = row?;
@@ -89,7 +97,11 @@ pub fn cluster_detail(conn: &Connection, cluster_id: i64) -> Result<ClusterDetai
     )?;
     let faces = stmt
         .query_map([cluster_id], |r| {
-            Ok(ClusterFaceData { face_id: r.get(0)?, hash: r.get(1)?, path: r.get(2)? })
+            Ok(ClusterFaceData {
+                face_id: r.get(0)?,
+                hash: r.get(1)?,
+                path: r.get(2)?,
+            })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(ClusterDetail { cluster_id, faces })
@@ -113,13 +125,18 @@ pub fn person_detail(conn: &Connection, name: &str) -> Result<PersonDetail> {
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(PersonDetail { label: name.to_string(), faces })
+    Ok(PersonDetail {
+        label: name.to_string(),
+        faces,
+    })
 }
 
 /// Image paths for confirmed faces of a person (prefix match), for the
 /// person-name autocomplete. Delegates to the existing core search.
 pub fn search_person(conn: &Connection, name: &str) -> Result<Vec<String>> {
-    Ok(videre_core::person_search::search_by_person(conn, name, None)?)
+    Ok(videre_core::person_search::search_by_person(
+        conn, name, None,
+    )?)
 }
 
 /// Assign faces to an existing/new person: sets person_label + confirmed.
@@ -153,7 +170,10 @@ pub fn remove_face(conn: &Connection, face_id: i64) -> Result<()> {
 
 /// Ungroup a bad cluster: its faces become unassigned singletons (not deleted).
 pub fn dissolve_cluster(conn: &Connection, cluster_id: i64) -> Result<()> {
-    conn.execute("UPDATE faces SET cluster_id = NULL WHERE cluster_id = ?1", [cluster_id])?;
+    conn.execute(
+        "UPDATE faces SET cluster_id = NULL WHERE cluster_id = ?1",
+        [cluster_id],
+    )?;
     Ok(())
 }
 
@@ -266,7 +286,10 @@ mod tests {
         let d = faces_list(&conn).unwrap();
         assert_eq!(d.people.len(), 1);
         assert_eq!(d.people[0].label, "Alice");
-        assert_eq!(d.people[0].representative_id, 1, "primary face is representative");
+        assert_eq!(
+            d.people[0].representative_id, 1,
+            "primary face is representative"
+        );
         assert_eq!(d.clusters.len(), 1);
         assert_eq!(d.clusters[0].cluster_id, 7);
         assert_eq!(d.clusters[0].face_ids, vec![3, 4]);
@@ -288,7 +311,10 @@ mod tests {
         let conn = seed();
         let c = cluster_detail(&conn, 7).unwrap();
         assert_eq!(c.cluster_id, 7);
-        assert_eq!(c.faces.iter().map(|f| f.face_id).collect::<Vec<_>>(), vec![3, 4]);
+        assert_eq!(
+            c.faces.iter().map(|f| f.face_id).collect::<Vec<_>>(),
+            vec![3, 4]
+        );
     }
 
     #[test]
@@ -312,7 +338,9 @@ mod tests {
         let (cid, label, confirmed, prim): (Option<i64>, Option<String>, i64, i64) = conn
             .query_row(
                 "SELECT cluster_id, person_label, confirmed, is_primary FROM faces WHERE id=1",
-                [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
             .unwrap();
         assert_eq!((cid, label, confirmed, prim), (None, None, 0, 0));
     }
@@ -322,7 +350,11 @@ mod tests {
         let conn = seed();
         dissolve_cluster(&conn, 7).unwrap();
         assert_eq!(faces_list(&conn).unwrap().clusters.len(), 0);
-        assert_eq!(faces_list(&conn).unwrap().singletons.len(), 3, "3,4 join 5 as singletons");
+        assert_eq!(
+            faces_list(&conn).unwrap().singletons.len(),
+            3,
+            "3,4 join 5 as singletons"
+        );
     }
 
     #[test]
@@ -331,13 +363,16 @@ mod tests {
         // Give one of Alice's faces a cluster_id so we can prove delete_person
         // leaves cluster_id intact (it must, so the face rejoins its cluster's
         // unassigned group rather than scattering to singletons).
-        conn.execute("UPDATE faces SET cluster_id = 42 WHERE id = 1", []).unwrap();
+        conn.execute("UPDATE faces SET cluster_id = 42 WHERE id = 1", [])
+            .unwrap();
         delete_person(&conn, "Alice").unwrap();
         assert_eq!(faces_list(&conn).unwrap().people.len(), 0, "Alice is gone");
         let (cid, label, confirmed): (Option<i64>, Option<String>, i64) = conn
             .query_row(
                 "SELECT cluster_id, person_label, confirmed FROM faces WHERE id = 1",
-                [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
             .unwrap();
         assert_eq!(cid, Some(42), "cluster_id must be preserved");
         assert_eq!(label, None, "person_label cleared");
@@ -349,8 +384,13 @@ mod tests {
         let conn = seed();
         set_primary(&conn, 2, "Alice").unwrap();
         let primaries: Vec<i64> = {
-            let mut s = conn.prepare("SELECT id FROM faces WHERE person_label='Alice' AND is_primary=1").unwrap();
-            s.query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+            let mut s = conn
+                .prepare("SELECT id FROM faces WHERE person_label='Alice' AND is_primary=1")
+                .unwrap();
+            s.query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
         };
         assert_eq!(primaries, vec![2], "exactly one primary, now face 2");
     }
@@ -358,14 +398,20 @@ mod tests {
     #[test]
     fn rename_missing_person_is_not_found() {
         let conn = seed();
-        assert!(matches!(rename_person(&conn, "Nobody", "X"), Err(Error::NotFound)));
+        assert!(matches!(
+            rename_person(&conn, "Nobody", "X"),
+            Err(Error::NotFound)
+        ));
     }
 
     #[test]
     fn rename_onto_existing_person_conflicts() {
         let conn = seed();
         assign(&conn, &[3], "Bob").unwrap(); // Bob now exists
-        assert!(matches!(rename_person(&conn, "Alice", "Bob"), Err(Error::Conflict)));
+        assert!(matches!(
+            rename_person(&conn, "Alice", "Bob"),
+            Err(Error::Conflict)
+        ));
     }
 
     #[test]
