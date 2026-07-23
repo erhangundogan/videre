@@ -10,6 +10,7 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use videre_api::{ClusterDetail, FacesData, PersonDetail};
 
 #[derive(clap::Args)]
 pub struct ReportArgs {
@@ -2027,59 +2028,16 @@ const PERSON_HTML: &str = r##"<!DOCTYPE html>
 </html>
 "##;
 
-#[derive(Serialize)]
-struct ClusterFaceData {
-    face_id: i64,
-    hash: String,
-    path: String,
-}
-
-#[derive(Serialize)]
-struct ClusterDetailResponse {
-    cluster_id: i64,
-    faces: Vec<ClusterFaceData>,
-}
-
-#[derive(Serialize)]
-struct PersonFaceData {
-    face_id: i64,
-    hash: String,
-    path: String,
-    is_primary: bool,
-}
-
-#[derive(Serialize)]
-struct PersonDetailResponse {
-    label: String,
-    faces: Vec<PersonFaceData>,
-}
-
-#[derive(Serialize)]
-struct PersonData {
-    label: String,
-    face_ids: Vec<i64>,
-    representative_id: i64,
-    hashes: Vec<String>,
-}
-
-#[derive(Serialize)]
-struct ClusterData {
-    cluster_id: i64,
-    face_ids: Vec<i64>,
-    hashes: Vec<String>,
-}
-
-#[derive(Serialize)]
-struct SingletonData {
-    face_id: i64,
-    hash: String,
-}
-
-#[derive(Serialize)]
-struct FacesResponse {
-    people: Vec<PersonData>,
-    clusters: Vec<ClusterData>,
-    singletons: Vec<SingletonData>,
+/// Maps a `videre-api` facade error to the HTTP status code the axum
+/// handlers return, preserving the exact 400/404/409/500 behavior the
+/// handlers had before delegating to the facade.
+fn api_status(e: videre_api::Error) -> StatusCode {
+    match e {
+        videre_api::Error::NotFound => StatusCode::NOT_FOUND,
+        videre_api::Error::Conflict => StatusCode::CONFLICT,
+        videre_api::Error::Invalid => StatusCode::BAD_REQUEST,
+        videre_api::Error::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
 }
 
 #[derive(Deserialize)]
@@ -2135,77 +2093,6 @@ struct AppState {
     report_heic_original: bool,
     serve_faces_ui: bool,
     tmp_counter: AtomicU64,
-}
-
-fn query_faces_data(conn: &Connection) -> rusqlite::Result<FacesResponse> {
-    let mut people: HashMap<String, PersonData> = HashMap::new();
-    {
-        let mut stmt = conn.prepare(
-            "SELECT id, hash, person_label FROM faces \
-             WHERE confirmed = 1 AND person_label IS NOT NULL \
-             ORDER BY person_label, is_primary DESC, id ASC",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
-        })?;
-        for row in rows {
-            let (id, hash, label) = row?;
-            let person = people.entry(label.clone()).or_insert(PersonData {
-                label: label.clone(),
-                face_ids: vec![],
-                representative_id: id,
-                hashes: vec![],
-            });
-            person.face_ids.push(id);
-            if !person.hashes.contains(&hash) {
-                person.hashes.push(hash);
-            }
-        }
-    }
-
-    let mut cluster_map: HashMap<i64, ClusterData> = HashMap::new();
-    {
-        let mut stmt = conn.prepare(
-            "SELECT id, hash, cluster_id FROM faces \
-             WHERE cluster_id IS NOT NULL AND (confirmed = 0 OR person_label IS NULL) \
-             ORDER BY cluster_id, id",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
-        })?;
-        for row in rows {
-            let (id, hash, cid) = row?;
-            let cluster = cluster_map.entry(cid).or_insert(ClusterData {
-                cluster_id: cid,
-                face_ids: vec![],
-                hashes: vec![],
-            });
-            cluster.face_ids.push(id);
-            if !cluster.hashes.contains(&hash) {
-                cluster.hashes.push(hash);
-            }
-        }
-    }
-
-    let mut singletons: Vec<SingletonData> = vec![];
-    {
-        let mut stmt = conn.prepare(
-            "SELECT id, hash FROM faces \
-             WHERE cluster_id IS NULL AND (confirmed = 0 OR person_label IS NULL) \
-             ORDER BY id",
-        )?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
-        for row in rows {
-            let (id, hash) = row?;
-            singletons.push(SingletonData { face_id: id, hash });
-        }
-    }
-
-    Ok(FacesResponse {
-        people: people.into_values().collect(),
-        clusters: cluster_map.into_values().collect(),
-        singletons,
-    })
 }
 
 async fn handle_root() -> impl axum::response::IntoResponse {
@@ -2288,81 +2175,29 @@ async fn handle_location(
 
 async fn handle_get_faces(
     State(state): State<Arc<AppState>>,
-) -> Result<AxumJson<FacesResponse>, StatusCode> {
+) -> Result<AxumJson<FacesData>, StatusCode> {
     let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let resp = query_faces_data(&conn).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(AxumJson(resp))
-}
-
-/// Trim, collapse internal whitespace, and cap length so a client that
-/// bypasses the UI's own sanitization can't stretch card layout or bloat
-/// the DB with an unbounded label. Mirrors the client-side sanitizeName().
-/// Known, accepted gaps: this filters control and bidi/zero-width format
-/// characters, not visual homoglyph confusables (e.g. Cyrillic A vs Latin
-/// A) - full spoof-proofing would need a confusables-detection dependency,
-/// which is out of scope here. The 60-char cap also truncates by raw code
-/// point rather than grapheme cluster, so it can in principle bisect a
-/// multi-codepoint sequence (e.g. a ZWJ emoji sequence) sitting right at
-/// the boundary.
-fn sanitize_person_label(raw: &str) -> Option<String> {
-    let filtered: String = raw
-        .chars()
-        .filter(|c| !c.is_control() && !is_disallowed_format_char(*c))
-        .collect();
-    let collapsed = filtered.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.is_empty() {
-        return None;
-    }
-    Some(collapsed.chars().take(60).collect())
-}
-
-/// Zero-width and bidi-override characters that can visually spoof a name
-/// (e.g. right-to-left override) without being caught by `char::is_control`.
-/// Deliberately excludes U+200C (ZWNJ) and U+200D (ZWJ): both are required
-/// for legitimate text - ZWJ joins emoji sequences (a family emoji is three
-/// emoji joined by ZWJ; stripping it splits them apart) and ZWNJ is
-/// orthographically required in Persian and several Indic scripts.
-fn is_disallowed_format_char(c: char) -> bool {
-    matches!(
-        c,
-        '\u{200B}' // zero-width space
-        | '\u{200E}'..='\u{200F}' // LRM/RLM
-        | '\u{202A}'..='\u{202E}' // LRE/RLE/PDF/LRO/RLO bidi overrides
-        | '\u{2060}'..='\u{2069}' // word joiner, invisible operators, isolates
-        | '\u{FEFF}' // BOM / zero-width no-break space
-    )
+    videre_api::faces_list(&conn).map(AxumJson).map_err(api_status)
 }
 
 async fn handle_assign(
     State(state): State<Arc<AppState>>,
     AxumJson(req): AxumJson<AssignRequest>,
 ) -> Result<StatusCode, StatusCode> {
-    let label = sanitize_person_label(&req.person_label).ok_or(StatusCode::BAD_REQUEST)?;
     let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    for id in &req.face_ids {
-        conn.execute(
-            "UPDATE faces SET person_label = ?1, confirmed = 1 WHERE id = ?2",
-            rusqlite::params![label, id],
-        )
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    }
-    Ok(StatusCode::OK)
+    videre_api::assign(&conn, &req.face_ids, &req.person_label)
+        .map(|_| StatusCode::OK)
+        .map_err(api_status)
 }
 
 async fn handle_new_person(
     State(state): State<Arc<AppState>>,
     AxumJson(req): AxumJson<NewPersonRequest>,
 ) -> Result<StatusCode, StatusCode> {
-    let label = sanitize_person_label(&req.label).ok_or(StatusCode::BAD_REQUEST)?;
     let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    for id in &req.face_ids {
-        conn.execute(
-            "UPDATE faces SET person_label = ?1, confirmed = 1 WHERE id = ?2",
-            rusqlite::params![label, id],
-        )
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    }
-    Ok(StatusCode::OK)
+    videre_api::new_person(&conn, &req.face_ids, &req.label)
+        .map(|_| StatusCode::OK)
+        .map_err(api_status)
 }
 
 async fn handle_remove_face(
@@ -2370,90 +2205,39 @@ async fn handle_remove_face(
     AxumJson(req): AxumJson<RemoveFaceRequest>,
 ) -> Result<StatusCode, StatusCode> {
     let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    conn.execute(
-        "UPDATE faces SET cluster_id = NULL, person_label = NULL, confirmed = 0, is_primary = 0 WHERE id = ?1",
-        [req.face_id],
-    )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(StatusCode::OK)
+    videre_api::remove_face(&conn, req.face_id)
+        .map(|_| StatusCode::OK)
+        .map_err(api_status)
 }
 
-/// Resets every face carrying `label` back to unassigned. Deliberately does
-/// NOT touch `cluster_id`: a face that came from a cluster rejoins that
-/// cluster's unassigned group (picked up by query_faces_data's cluster
-/// query) instead of scattering to Singletons; a face that was already a
-/// singleton (cluster_id already NULL) stays a singleton. Does not trigger
-/// re-clustering - there is no live re-cluster run in this server.
 async fn handle_delete_person(
     State(state): State<Arc<AppState>>,
     AxumJson(req): AxumJson<DeletePersonRequest>,
 ) -> Result<StatusCode, StatusCode> {
     let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    conn.execute(
-        "UPDATE faces SET person_label = NULL, confirmed = 0, is_primary = 0 WHERE person_label = ?1",
-        rusqlite::params![req.label],
-    )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(StatusCode::OK)
+    videre_api::delete_person(&conn, &req.label)
+        .map(|_| StatusCode::OK)
+        .map_err(api_status)
 }
 
-/// Renames every face carrying `old_label` to `new_label`. Rejects a
-/// collision with an existing person (409) rather than silently merging -
-/// a silent merge would be irreversible and could leave the merged person
-/// with two faces marked is_primary = 1, violating the invariant
-/// handle_set_primary maintains via its clear-then-set transaction.
 async fn handle_rename_person(
     State(state): State<Arc<AppState>>,
     AxumJson(req): AxumJson<RenamePersonRequest>,
 ) -> Result<StatusCode, StatusCode> {
-    let Some(sanitized) = sanitize_person_label(&req.new_label) else {
-        return Err(StatusCode::BAD_REQUEST);
-    };
     let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    let old_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM faces WHERE person_label = ?1",
-            rusqlite::params![req.old_label],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
-    if old_count == 0 {
-        return Err(StatusCode::NOT_FOUND);
-    }
-
-    let collision_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM faces WHERE person_label = ?1",
-            rusqlite::params![sanitized],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
-    if collision_count > 0 && sanitized != req.old_label {
-        return Err(StatusCode::CONFLICT);
-    }
-
-    conn.execute(
-        "UPDATE faces SET person_label = ?1 WHERE person_label = ?2",
-        rusqlite::params![sanitized, req.old_label],
-    )
-    .map(|_| StatusCode::OK)
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    videre_api::rename_person(&conn, &req.old_label, &req.new_label)
+        .map(|_| StatusCode::OK)
+        .map_err(api_status)
 }
 
-/// Ungroup a bad cluster: every face in it becomes an unassigned singleton
-/// instead of being deleted, so it can still be labeled individually later.
 async fn handle_dissolve_cluster(
     State(state): State<Arc<AppState>>,
     AxumJson(req): AxumJson<DissolveClusterRequest>,
 ) -> Result<StatusCode, StatusCode> {
     let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    conn.execute(
-        "UPDATE faces SET cluster_id = NULL WHERE cluster_id = ?1",
-        [req.cluster_id],
-    )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(StatusCode::OK)
+    videre_api::dissolve_cluster(&conn, req.cluster_id)
+        .map(|_| StatusCode::OK)
+        .map_err(api_status)
 }
 
 async fn handle_set_primary(
@@ -2461,30 +2245,9 @@ async fn handle_set_primary(
     AxumJson(req): AxumJson<SetPrimaryRequest>,
 ) -> Result<StatusCode, StatusCode> {
     let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    conn.execute_batch("BEGIN").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let result = (|| -> rusqlite::Result<()> {
-        // Clear primary flag for all faces of this person
-        conn.execute(
-            "UPDATE faces SET is_primary = 0 WHERE person_label = ?1",
-            rusqlite::params![req.person_label],
-        )?;
-        // Set primary flag for the target face; guard against stealing from another person
-        conn.execute(
-            "UPDATE faces SET is_primary = 1, confirmed = 1, person_label = ?1 WHERE id = ?2 AND person_label = ?1",
-            rusqlite::params![req.person_label, req.face_id],
-        )?;
-        Ok(())
-    })();
-    match result {
-        Ok(()) => {
-            conn.execute_batch("COMMIT").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        }
-        Err(_) => {
-            let _ = conn.execute_batch("ROLLBACK");
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-    }
-    Ok(StatusCode::OK)
+    videre_api::set_primary(&conn, req.face_id, &req.person_label)
+        .map(|_| StatusCode::OK)
+        .map_err(api_status)
 }
 
 async fn handle_search_person(
@@ -2492,9 +2255,9 @@ async fn handle_search_person(
     Query(q): Query<PersonSearchQuery>,
 ) -> Result<AxumJson<Vec<String>>, StatusCode> {
     let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let paths = videre_core::person_search::search_by_person(&conn, &q.name, None)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(AxumJson(paths))
+    videre_api::search_person(&conn, &q.name)
+        .map(AxumJson)
+        .map_err(api_status)
 }
 
 async fn handle_quit(State(state): State<Arc<AppState>>) -> StatusCode {
@@ -2515,24 +2278,11 @@ async fn handle_cluster_page(
 async fn handle_cluster_api(
     axum::extract::Path(cluster_id): axum::extract::Path<i64>,
     State(state): State<Arc<AppState>>,
-) -> Result<AxumJson<ClusterDetailResponse>, StatusCode> {
+) -> Result<AxumJson<ClusterDetail>, StatusCode> {
     let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT f.id, f.hash, fh.path FROM faces f \
-             JOIN file_hashes fh ON f.hash = fh.hash \
-             WHERE f.cluster_id = ?1 \
-             ORDER BY f.id",
-        )
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let faces: Vec<ClusterFaceData> = stmt
-        .query_map([cluster_id], |r| {
-            Ok(ClusterFaceData { face_id: r.get(0)?, hash: r.get(1)?, path: r.get(2)? })
-        })
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(AxumJson(ClusterDetailResponse { cluster_id, faces }))
+    videre_api::cluster_detail(&conn, cluster_id)
+        .map(AxumJson)
+        .map_err(api_status)
 }
 
 async fn handle_person_page(State(state): State<Arc<AppState>>) -> axum::response::Html<String> {
@@ -2546,29 +2296,11 @@ async fn handle_person_page(State(state): State<Arc<AppState>>) -> axum::respons
 async fn handle_person_api(
     axum::extract::Path(name): axum::extract::Path<String>,
     State(state): State<Arc<AppState>>,
-) -> Result<AxumJson<PersonDetailResponse>, StatusCode> {
+) -> Result<AxumJson<PersonDetail>, StatusCode> {
     let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT f.id, f.hash, fh.path, f.is_primary FROM faces f \
-             JOIN file_hashes fh ON f.hash = fh.hash \
-             WHERE f.person_label = ?1 AND f.confirmed = 1 \
-             ORDER BY f.is_primary DESC, f.id",
-        )
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let faces: Vec<PersonFaceData> = stmt
-        .query_map([&name], |r| {
-            Ok(PersonFaceData {
-                face_id: r.get(0)?,
-                hash: r.get(1)?,
-                path: r.get(2)?,
-                is_primary: r.get::<_, i64>(3)? != 0,
-            })
-        })
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(AxumJson(PersonDetailResponse { label: name, faces }))
+    videre_api::person_detail(&conn, &name)
+        .map(AxumJson)
+        .map_err(api_status)
 }
 
 fn read_exif_orientation(path: &str) -> u16 {
@@ -3256,32 +2988,6 @@ mod tests {
     fn parse_bbox_converts_xywh_to_corners() {
         assert_eq!(parse_bbox("10,20,5,5"), Some([10.0, 20.0, 15.0, 25.0]));
         assert_eq!(parse_bbox("not,valid"), None);
-    }
-
-    #[test]
-    fn sanitize_person_label_strips_control_chars() {
-        assert_eq!(sanitize_person_label("Al\u{0007}ice"), Some("Alice".to_string()));
-    }
-
-    #[test]
-    fn sanitize_person_label_strips_bidi_override() {
-        assert_eq!(sanitize_person_label("A\u{202E}lice"), Some("Alice".to_string()));
-    }
-
-    #[test]
-    fn sanitize_person_label_keeps_zwj_emoji_sequences() {
-        // family emoji: man + ZWJ + woman + ZWJ + girl - must survive intact,
-        // since stripping the ZWJ (U+200D) would split it into three separate emoji.
-        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
-        assert_eq!(sanitize_person_label(family), Some(family.to_string()));
-    }
-
-    #[test]
-    fn sanitize_person_label_truncates_by_char_not_byte() {
-        let long = "é".repeat(65); // each char is 2 bytes in UTF-8 - this is what actually
-                                    // distinguishes .chars().take(60) from a byte-based slice
-        let result = sanitize_person_label(&long).unwrap();
-        assert_eq!(result.chars().count(), 60);
     }
 
     #[test]
