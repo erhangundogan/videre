@@ -5015,6 +5015,8 @@ dependencies = [
 name = "videre-api"
 version = "0.3.2"
 dependencies = [
+ "image",
+ "kamadak-exif",
  "rusqlite",
  "serde",
  "videre-core",

@@ -4,6 +4,7 @@
 
 mod error;
 mod faces;
+mod images;
 mod label;
 mod types;
 
@@ -12,6 +13,7 @@ pub use faces::{
     assign, cluster_detail, delete_person, dissolve_cluster, faces_list, new_person, person_detail,
     remove_face, rename_person, search_person, set_primary,
 };
+pub use images::{face_image_bytes, mime_for_ext, original_image_bytes};
 pub use label::sanitize_person_label;
 pub use types::{
     ClusterData, ClusterDetail, ClusterFaceData, FacesData, PersonData, PersonDetail,
