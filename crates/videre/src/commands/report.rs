@@ -1273,7 +1273,10 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     button.primary { background: var(--blue-hover); color: white; border-color: var(--blue-hover); }
     input[type=text] { padding: 4px 8px; border: 1px solid #999; border-radius: 4px; width: 120px; }
     #status { font-size: 13px; color: #555; }
-    .face-img { object-fit: cover; border-radius: 3px; background: #ddd; display: block; }
+    /* max-width keeps the fixed-size (140/66px) thumbnails from overflowing a
+       narrower card, e.g. the People cards in right-sidebar mode; aspect-ratio
+       + height:auto keep them square while they scale down. */
+    .face-img { object-fit: cover; border-radius: 3px; background: #ddd; display: block; max-width: 100%; height: auto; aspect-ratio: 1 / 1; }
     .people-section { position: sticky; top: 0; background: #fff; z-index: 100; padding-bottom: 8px; }
     .people-scroll { max-height: 45vh; overflow-y: auto; padding-bottom: 4px; }
     .drag-handle { display: flex; align-items: center; gap: 6px; cursor: grab; color: #aaa; padding: 2px 0 6px; user-select: none; }
@@ -1869,6 +1872,10 @@ const PERSON_HTML: &str = r##"<!DOCTYPE html>
     .btns { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
     button { cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid #999; background: white; font-size: 13px; }
     button.danger { color: #c00; border-color: #fbb; }
+    button:disabled { cursor: default; opacity: 0.6; }
+    .card { position: relative; }
+    .default-badge { position: absolute; top: 6px; left: 6px; background: #2a6db5; color: #fff; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; z-index: 2; }
+    .card.is-default { border-color: #2a6db5; box-shadow: 0 0 0 2px #2a6db5; }
     #status { font-size: 13px; color: #555; }
   </style>
 </head>
@@ -1945,7 +1952,8 @@ const PERSON_HTML: &str = r##"<!DOCTYPE html>
     function render() {
       const grid = document.getElementById('faces-grid');
       grid.innerHTML = facesData.map(f => `
-        <div class="card" id="card-${f.face_id}">
+        <div class="card${f.is_primary ? ' is-default' : ''}" id="card-${f.face_id}">
+          ${f.is_primary ? '<span class="default-badge">&#9733; Default</span>' : ''}
           <a href="/api/original-image/${f.face_id}" target="_blank" title="Open original image">
             <img class="face-img" src="/api/face-image/${f.face_id}" width="180" height="180"
                  onerror="this.removeAttribute('src');this.style.background='#ddd'">
@@ -1954,6 +1962,7 @@ const PERSON_HTML: &str = r##"<!DOCTYPE html>
           <div class="face-id">#${f.face_id}</div>
           <div class="btns">
             <button class="danger" onclick="removeFace(${f.face_id})">Remove</button>
+            <button onclick="setDefault(${f.face_id})" ${f.is_primary ? 'disabled title="Already the default photo"' : 'title="Show this photo for this person on the labeling page"'}>Set Default</button>
           </div>
         </div>
       `).join('');
@@ -1974,6 +1983,20 @@ const PERSON_HTML: &str = r##"<!DOCTYPE html>
       document.getElementById(`card-${faceId}`)?.remove();
       facesData = facesData.filter(f => f.face_id !== faceId);
       document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
+    }
+
+    async function setDefault(faceId) {
+      const r = await fetch('/api/set-primary', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ face_id: faceId, person_label: personName })
+      });
+      if (!r.ok) { document.getElementById('status').textContent = 'Error: set default failed'; return; }
+      // Move the flag locally and re-render so the badge and disabled state
+      // follow, without a full round-trip; the labeling page picks up the new
+      // primary on its next load.
+      facesData.forEach(f => { f.is_primary = (f.face_id === faceId); });
+      render();
+      document.getElementById('status').textContent = 'Default photo updated';
     }
 
     async function removePerson() {
@@ -2018,9 +2041,17 @@ struct ClusterDetailResponse {
 }
 
 #[derive(Serialize)]
+struct PersonFaceData {
+    face_id: i64,
+    hash: String,
+    path: String,
+    is_primary: bool,
+}
+
+#[derive(Serialize)]
 struct PersonDetailResponse {
     label: String,
-    faces: Vec<ClusterFaceData>,
+    faces: Vec<PersonFaceData>,
 }
 
 #[derive(Serialize)]
@@ -2519,15 +2550,20 @@ async fn handle_person_api(
     let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut stmt = conn
         .prepare(
-            "SELECT f.id, f.hash, fh.path FROM faces f \
+            "SELECT f.id, f.hash, fh.path, f.is_primary FROM faces f \
              JOIN file_hashes fh ON f.hash = fh.hash \
              WHERE f.person_label = ?1 AND f.confirmed = 1 \
              ORDER BY f.is_primary DESC, f.id",
         )
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let faces: Vec<ClusterFaceData> = stmt
+    let faces: Vec<PersonFaceData> = stmt
         .query_map([&name], |r| {
-            Ok(ClusterFaceData { face_id: r.get(0)?, hash: r.get(1)?, path: r.get(2)? })
+            Ok(PersonFaceData {
+                face_id: r.get(0)?,
+                hash: r.get(1)?,
+                path: r.get(2)?,
+                is_primary: r.get::<_, i64>(3)? != 0,
+            })
         })
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .collect::<Result<Vec<_>, _>>()
@@ -3268,6 +3304,21 @@ mod tests {
                 && FACES_HTML.contains("toggleSingleton")
                 && FACES_HTML.contains("newPersonFromSelection"),
             "Singleton multi-select and bulk assign must be wired"
+        );
+    }
+
+    #[test]
+    fn person_page_wires_up_set_default_photo() {
+        // The Set Default button posts to the existing set-primary endpoint and
+        // the current default is marked from the is_primary flag the person API
+        // now returns.
+        assert!(
+            PERSON_HTML.contains("setDefault") && PERSON_HTML.contains("/api/set-primary"),
+            "Set Default button must call the set-primary endpoint"
+        );
+        assert!(
+            PERSON_HTML.contains("is_primary") && PERSON_HTML.contains("default-badge"),
+            "Current default photo must be marked from is_primary"
         );
     }
 
