@@ -6,7 +6,9 @@
 
 **Architecture:** All data flows through a typed `VidereClient` interface (components never call Tauri `invoke` directly), with a `TauriClient` implementation now and an `HttpClient` left as a future drop-in for the web/on-prem dashboard. TanStack Query hooks wrap the client and own cache invalidation. Images load via the existing `videre-face://<id>` / `videre-original://<id>` protocols. React Router provides the three routes.
 
-**Tech Stack:** Existing Tauri v2 app at `app/` (Vite + React + TypeScript). Adds: Tailwind CSS + shadcn/ui, `@tanstack/react-query`, `react-router-dom`. Backend is unchanged - Plan 2 already exposes the 11 commands (`faces_list`, `cluster_detail`, `person_detail`, `search_person`, `assign`, `new_person`, `remove_face`, `dissolve_cluster`, `delete_person`, `set_primary`, `rename_person`) and the two image protocols. This is Plan 3 of 3; see `docs/superpowers/specs/2026-07-23-desktop-app-design.md`.
+**Tech Stack:** Existing Tauri v2 app at `app/` (Vite + React + TypeScript). Adds: Tailwind CSS + shadcn/ui, `@tanstack/react-query`, `react-router-dom`, and the **`@shadcnblocks/application-shell4`** dashboard shell block (sidebar + header + content) used as the app layout wrapping all routes. Backend is unchanged - Plan 2 already exposes the 11 commands (`faces_list`, `cluster_detail`, `person_detail`, `search_person`, `assign`, `new_person`, `remove_face`, `dissolve_cluster`, `delete_person`, `set_primary`, `rename_person`) and the two image protocols. This is Plan 3 of 3; see `docs/superpowers/specs/2026-07-23-desktop-app-design.md`.
+
+**App shell:** The three views render inside the `@shadcnblocks/application-shell4` layout (a dashboard shell: left sidebar nav + top header + main content area). Installed via `npx shadcn add @shadcnblocks/application-shell4`, which requires the `@shadcnblocks` registry to be configured in `components.json` (Task 1). Its exact file/prop shape is not known at plan-writing time (the registry isn't reachable until `components.json` exists); once added, use the shadcn MCP (`view_items_in_registries ["@shadcnblocks/application-shell4"]`) or read the generated file under `src/components/` to wire the sidebar/nav and place `<Routes>` in its content slot.
 
 **Parity reference:** The behaviors to reproduce live in `crates/videre/src/commands/report.rs` as `FACES_HTML` (labeling page: People/Clusters/Singletons, name-sorted people, top/right sidebar toggle persisted in localStorage, drag-assign, singleton multi-select + bulk assign, New Person), `CLUSTER_HTML` (cluster detail: faces grid, per-face Remove/Assign, "Assign cluster", "Dissolve cluster"), and `PERSON_HTML` (person detail: faces grid, "Set Default" with a ★ Default badge, per-face Remove, rename, delete person). Read those for exact UX; this plan rebuilds them as React components.
 
@@ -48,7 +50,9 @@ Image URLs: `videre-face://<id>` (140px thumbnail), `videre-original://<id>` (fu
 - Modify: `app/package.json` - add deps (Tailwind, shadcn deps, react-query, react-router-dom)
 - Create: `app/tailwind.config.js`, `app/postcss.config.js`, `app/src/index.css` (Tailwind directives + shadcn CSS vars)
 - Modify: `app/src/main.tsx` - wrap in `QueryClientProvider`, `BrowserRouter`, `ClientProvider`; import `index.css`
-- Create: `app/components.json` - shadcn config; `app/src/lib/utils.ts` - `cn()` helper
+- Create: `app/components.json` - shadcn config (incl. the `@shadcnblocks` registry); `app/src/lib/utils.ts` - `cn()` helper
+- Create: `app/src/components/app-shell/*` (or wherever the block lands) - the `@shadcnblocks/application-shell4` layout
+- Create: `app/src/components/AppShell.tsx` - thin wrapper adapting the block to videre's nav (a single "Faces" nav item -> `/`) with `<Outlet/>` in the content slot
 - Create: `app/src/lib/models.ts` - TS types mirroring the serde shapes
 - Create: `app/src/lib/client.ts` - `VidereClient` interface + `TauriClient` + image URL helpers
 - Create: `app/src/lib/ClientProvider.tsx` - React context + `useClient()`
@@ -80,9 +84,15 @@ npx tailwindcss init -p
 
 Set `app/tailwind.config.js` `content` to `["./index.html", "./src/**/*.{ts,tsx}"]`, add `darkMode: ["class"]`, and the shadcn theme extension (colors mapped to CSS vars). Replace `app/src/index.css` with the standard shadcn base: `@tailwind base; @tailwind components; @tailwind utilities;` plus the `:root` / `.dark` CSS-variable blocks (copy the default shadcn "slate" variables - the exact block is documented at ui.shadcn.com/docs/installation/vite; reproduce it verbatim here so no external fetch is needed at build time).
 
-- [ ] **Step 3: shadcn init + utils**
+- [ ] **Step 3: shadcn init + utils + @shadcnblocks registry**
 
-Create `app/components.json` (shadcn config: style "default", tailwind config path, `@/` alias -> `src/`, RSC false, tsx true). Add the `@/*` path alias to `app/tsconfig.json` (`"paths": { "@/*": ["./src/*"] }`) and to `app/vite.config.ts` (`resolve.alias` mapping `@` to `path.resolve(__dirname, "./src")`). Create `app/src/lib/utils.ts`:
+Create `app/components.json` (shadcn config: style "default", tailwind config path, `@/` alias -> `src/`, RSC false, tsx true) AND register the shadcnblocks registry under `registries`:
+```json
+"registries": {
+  "@shadcnblocks": "https://shadcnblocks.com/r/{name}.json"
+}
+```
+NOTE: confirm the exact `@shadcnblocks` registry URL/format from shadcnblocks.com docs (and any access token env var it needs for the block) before running the add - the placeholder above may differ; if `npx shadcn add @shadcnblocks/application-shell4` errors on the registry, fix this URL first. Add the `@/*` path alias to `app/tsconfig.json` (`"paths": { "@/*": ["./src/*"] }`) and to `app/vite.config.ts` (`resolve.alias` mapping `@` to `path.resolve(__dirname, "./src")`). Create `app/src/lib/utils.ts`:
 ```ts
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
@@ -90,9 +100,13 @@ export function cn(...inputs: ClassValue[]) { return twMerge(clsx(inputs)); }
 ```
 Run `npm install clsx tailwind-merge`.
 
-- [ ] **Step 4: Add shadcn primitives**
+- [ ] **Step 4: Add shadcn primitives + the application shell**
 
-Run: `npx shadcn@latest add button card input badge dialog` (creates `src/components/ui/*`). If the CLI prompts, accept defaults. Verify the files compile.
+Run: `npx shadcn@latest add button card input badge dialog` (creates `src/components/ui/*`). Then add the dashboard shell block:
+```bash
+npx shadcn add @shadcnblocks/application-shell4
+```
+This pulls the shell into `src/components/` (note the exact path it writes). If the CLI prompts, accept defaults. Inspect the generated file (or `mcp__shadcn__view_items_in_registries ["@shadcnblocks/application-shell4"]` now that the registry is configured) to learn its component name and props. Verify everything compiles (`npm run build` may need Task 2's files; at minimum `npx tsc --noEmit` on the ui + shell files should type-check).
 
 - [ ] **Step 5: Providers in main.tsx**
 
@@ -313,9 +327,12 @@ Rebuild `PERSON_HTML`. Read `:name` (decode URI), `usePersonDetail(name)`. Show:
 
 **Files:** `app/src/App.tsx`
 
-- [ ] **Step 1: Route table** - replace `app/src/App.tsx`:
+- [ ] **Step 1: AppShell wrapper** - create `app/src/components/AppShell.tsx` that renders the `@shadcnblocks/application-shell4` block (imported from wherever Task 1 Step 4 placed it) with a minimal sidebar/nav (one item, "Faces", linking to `/`; app title "videre") and React Router's `<Outlet />` in its main content slot. Adapt to the block's actual prop API (nav items array, header slot, children/content slot) as discovered from the generated file. Keep it thin - it only supplies videre's nav + the outlet; the block owns the layout/styling.
+
+- [ ] **Step 2: Route table (layout route)** - replace `app/src/App.tsx` so the shell wraps every page:
 ```tsx
 import { Routes, Route } from "react-router-dom";
+import { AppShell } from "./components/AppShell";
 import { LabelingPage } from "./routes/LabelingPage";
 import { ClusterPage } from "./routes/ClusterPage";
 import { PersonPage } from "./routes/PersonPage";
@@ -323,19 +340,21 @@ import { PersonPage } from "./routes/PersonPage";
 export default function App() {
   return (
     <Routes>
-      <Route path="/" element={<LabelingPage />} />
-      <Route path="/cluster/:id" element={<ClusterPage />} />
-      <Route path="/person/:name" element={<PersonPage />} />
+      <Route element={<AppShell />}>
+        <Route path="/" element={<LabelingPage />} />
+        <Route path="/cluster/:id" element={<ClusterPage />} />
+        <Route path="/person/:name" element={<PersonPage />} />
+      </Route>
     </Routes>
   );
 }
 ```
-Ensure each route component is a named export matching these imports.
+Ensure each route component is a named export matching these imports, and `AppShell` renders `<Outlet />` from `react-router-dom` inside the block's content area.
 
-- [ ] **Step 2: Frontend build** - `cd app && npm run build` (tsc + vite). Must pass clean.
-- [ ] **Step 3: Backend build** - `cd app/src-tauri && cargo build`. Must pass.
-- [ ] **Step 4: End-to-end run (human/manual)** - `cd app && npm run tauri dev`. Confirm: labeling page shows real People/Clusters/Singletons with thumbnails; drag a cluster onto a person assigns it; open a cluster, dissolve it; open a person, set a default (badge moves) and rename. If headless, SKIP the launch and report the build passing as the achievable verification (note it, like Plan 2 Task 6).
-- [ ] **Step 5: Commit** `git add app && git commit -m "feat(app): wire routes for the faces UI"`
+- [ ] **Step 3: Frontend build** - `cd app && npm run build` (tsc + vite). Must pass clean.
+- [ ] **Step 4: Backend build** - `cd app/src-tauri && cargo build`. Must pass.
+- [ ] **Step 5: End-to-end run (human/manual)** - `cd app && npm run tauri dev`. Confirm: the app shell renders with its sidebar/header; the labeling page shows real People/Clusters/Singletons with thumbnails; drag a cluster onto a person assigns it; open a cluster, dissolve it; open a person, set a default (badge moves) and rename. If headless, SKIP the launch and report the build passing as the achievable verification (note it, like Plan 2 Task 6).
+- [ ] **Step 6: Commit** `git add app && git commit -m "feat(app): app shell + wired routes for the faces UI"`
 
 ---
 
