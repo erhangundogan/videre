@@ -36,25 +36,46 @@ fn respond<R: tauri::Runtime>(
             }
         };
         let db = app.state::<DbState>();
-        let result = {
-            let conn = match db.0.lock() {
-                Ok(c) => c,
-                Err(_) => {
-                    responder.respond(
-                        tauri::http::Response::builder()
-                            .status(500)
-                            .body(Vec::new())
-                            .unwrap(),
-                    );
-                    return;
-                }
+        // Lock only for the cheap single-row lookup, then release it before
+        // the expensive decode/crop/resize/encode work below - holding the
+        // shared connection lock across that work would serialize every
+        // thumbnail request in the app behind one mutex (the actual cause of
+        // multi-second-per-thumbnail rendering in a library with thousands
+        // of faces).
+        let result = if original {
+            let lookup = {
+                let conn = match db.0.lock() {
+                    Ok(c) => c,
+                    Err(_) => {
+                        responder.respond(
+                            tauri::http::Response::builder()
+                                .status(500)
+                                .body(Vec::new())
+                                .unwrap(),
+                        );
+                        return;
+                    }
+                };
+                videre_api::original_lookup(&conn, id)
             };
-            if original {
-                videre_api::original_image_bytes(&conn, id)
-                    .map(|(ct, bytes)| (ct.to_string(), bytes))
-            } else {
-                videre_api::face_image_bytes(&conn, id).map(|b| ("image/jpeg".to_string(), b))
-            }
+            lookup.and_then(|l| videre_api::original_bytes_from_lookup(&l, id)).map(|(ct, bytes)| (ct.to_string(), bytes))
+        } else {
+            let lookup = {
+                let conn = match db.0.lock() {
+                    Ok(c) => c,
+                    Err(_) => {
+                        responder.respond(
+                            tauri::http::Response::builder()
+                                .status(500)
+                                .body(Vec::new())
+                                .unwrap(),
+                        );
+                        return;
+                    }
+                };
+                videre_api::face_lookup(&conn, id)
+            };
+            lookup.and_then(|l| videre_api::face_bytes_from_lookup(&l, id)).map(|b| ("image/jpeg".to_string(), b))
         };
         let resp = match result {
             Ok((content_type, bytes)) => tauri::http::Response::builder()
