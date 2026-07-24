@@ -1,3 +1,6 @@
 /target
 .DS_Store
 verify_exif.rs
+
+# Local-only MCP server config (shadcn component fetching for the app)
+.mcp.json
