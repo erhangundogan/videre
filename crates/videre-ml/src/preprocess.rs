@@ -68,6 +68,7 @@ fn decode_heic(path: &Path, size: usize) -> Result<image::DynamicImage> {
     let _ = std::fs::remove_dir_all(&out_dir);
     std::fs::create_dir_all(&out_dir).context("create qlmanage temp dir")?;
     let target = (size * 2).to_string();
+    let _permit = videre_core::heic::qlmanage_semaphore().acquire();
     let mut child = std::process::Command::new("qlmanage")
         .args(["-t", "-s", &target, "-o"])
         .arg(&out_dir)

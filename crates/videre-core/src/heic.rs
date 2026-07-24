@@ -1,5 +1,7 @@
 use crate::io_timeout::{wait_with_timeout, WaitOutcome};
+use crate::semaphore::Semaphore;
 use image::DynamicImage;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 /// Ceiling for a single `qlmanage` conversion. A disconnected/stale external
@@ -7,6 +9,26 @@ use std::time::Duration;
 /// rather than fail fast, which otherwise freezes the calling command with
 /// no output; this bounds that to a single conversion's worth of waiting.
 const QLMANAGE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Max `qlmanage` processes running at once, process-wide. QuickLook's
+/// thumbnail-generation agent is a single shared per-user service, not
+/// something that scales with parallel callers - a UI rendering hundreds of
+/// HEIC thumbnails at once (or the Tauri app and a `videre faces` run both
+/// hitting the same library concurrently) can launch enough simultaneous
+/// `qlmanage` processes to make the agent and the source drive's I/O queue
+/// up, causing conversions that would normally take under a second to
+/// occasionally exceed even `QLMANAGE_TIMEOUT`. Capping concurrency here
+/// keeps every caller (Tauri app, axum server, faces/embed/watch) well
+/// behaved without needing to coordinate with each other.
+const QLMANAGE_MAX_CONCURRENT: usize = 3;
+
+/// Shared across every `qlmanage` call site in the codebase (this module's
+/// own `heic_via_quicklook` and `videre-ml`'s separate `decode_heic`), so the
+/// concurrency cap is process-wide rather than per-call-site.
+pub fn qlmanage_semaphore() -> &'static Semaphore {
+    static SEM: OnceLock<Semaphore> = OnceLock::new();
+    SEM.get_or_init(|| Semaphore::new(QLMANAGE_MAX_CONCURRENT))
+}
 
 /// Convert a HEIC file to a `DynamicImage` via QuickLook (`qlmanage -t`).
 ///
@@ -29,6 +51,7 @@ pub fn heic_via_quicklook(path: &str, tag: &str) -> Option<DynamicImage> {
     let out_dir = std::env::temp_dir().join(format!("dupe_ql_{:016x}", hasher.finish()));
     let _ = std::fs::remove_dir_all(&out_dir);
     std::fs::create_dir_all(&out_dir).ok()?;
+    let _permit = qlmanage_semaphore().acquire();
     let mut child = std::process::Command::new("qlmanage")
         .args(["-t", "-s", "10000", "-o"])
         .arg(&out_dir)
