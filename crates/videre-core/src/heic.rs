@@ -33,6 +33,8 @@ pub fn heic_via_quicklook(path: &str, tag: &str) -> Option<DynamicImage> {
         .args(["-t", "-s", "10000", "-o"])
         .arg(&out_dir)
         .arg(path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .spawn()
         .ok()?;
     let outcome = wait_with_timeout(&mut child, QLMANAGE_TIMEOUT);
