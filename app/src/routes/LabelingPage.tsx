@@ -10,6 +10,8 @@ import { cn } from "@/lib/utils";
 
 const MAX_NAME_LEN = 60;
 const LAYOUT_KEY = "videre_people_layout";
+const SINGLETON_INITIAL_COUNT = 200;
+const SINGLETON_LOAD_MORE_OPTIONS = [100, 200, 500, 1000];
 
 // Trim, collapse internal whitespace, strip control/bidi-spoofing characters,
 // and cap length by code point (not UTF-16 code unit) so a pasted wall of
@@ -287,6 +289,7 @@ export function LabelingPage() {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [creatingFromSelection, setCreatingFromSelection] = useState(false);
   const [selectionLabel, setSelectionLabel] = useState("");
+  const [visibleSingletonCount, setVisibleSingletonCount] = useState(SINGLETON_INITIAL_COUNT);
 
   const toggleLayout = () => {
     const next = layout === "right" ? "top" : "right";
@@ -428,8 +431,8 @@ export function LabelingPage() {
           {data.singletons.length}
         </Badge>
       </h2>
-      <div className="mb-6 grid grid-cols-[repeat(auto-fill,160px)] gap-3">
-        {data.singletons.map((s) => (
+      <div className="mb-3 grid grid-cols-[repeat(auto-fill,160px)] gap-3">
+        {data.singletons.slice(0, visibleSingletonCount).map((s) => (
           <AssignableCard
             key={s.face_id}
             faceIds={[s.face_id]}
@@ -442,6 +445,31 @@ export function LabelingPage() {
           />
         ))}
       </div>
+
+      {visibleSingletonCount < data.singletons.length && (
+        <div className="mb-6 flex flex-wrap items-center gap-2">
+          <span className="text-sm text-muted-foreground">
+            Showing {visibleSingletonCount} of {data.singletons.length}
+          </span>
+          {SINGLETON_LOAD_MORE_OPTIONS.map((n) => (
+            <Button
+              key={n}
+              variant="outline"
+              size="sm"
+              onClick={() => setVisibleSingletonCount((v) => v + n)}
+            >
+              +{n} more
+            </Button>
+          ))}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setVisibleSingletonCount(data.singletons.length)}
+          >
+            Show all
+          </Button>
+        </div>
+      )}
 
       {selected.size > 0 && (
         <div className="fixed bottom-5 left-1/2 z-30 flex -translate-x-1/2 flex-wrap items-center gap-3 rounded-xl bg-blue-600 px-4 py-2.5 text-white shadow-xl">
