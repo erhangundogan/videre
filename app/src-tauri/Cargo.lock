@@ -61,7 +61,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "rusqlite",
@@ -4505,7 +4505,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "videre-api"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "image",
  "kamadak-exif",
@@ -4516,7 +4516,7 @@ dependencies = [
 
 [[package]]
 name = "videre-core"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "half",
