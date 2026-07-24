@@ -327,7 +327,11 @@ Rebuild `PERSON_HTML`. Read `:name` (decode URI), `usePersonDetail(name)`. Show:
 
 **Files:** `app/src/App.tsx`
 
-- [ ] **Step 1: AppShell wrapper** - create `app/src/components/AppShell.tsx` that renders the `@shadcnblocks/application-shell4` block (imported from wherever Task 1 Step 4 placed it) with a minimal sidebar/nav (one item, "Faces", linking to `/`; app title "videre") and React Router's `<Outlet />` in its main content slot. Adapt to the block's actual prop API (nav items array, header slot, children/content slot) as discovered from the generated file. Keep it thin - it only supplies videre's nav + the outlet; the block owns the layout/styling.
+- [ ] **Step 1: Adapt the shell block (edit in place)** - the generated `src/components/application-shell4.tsx` is a self-contained DEMO: it exports `function ApplicationShell4({ className })` (no `children`/nav props), hardcodes `sidebarData` (demo groups Overview/Projects/Team/…), and its `<main>` renders a placeholder `<div className="min-h-[100vh] … bg-muted/50" />` rather than a content slot. So adapt the file directly, do NOT expect a prop API:
+  - Add a `children?: React.ReactNode` prop and replace the placeholder `<div>` inside `<main>` with `{children}`.
+  - Replace `sidebarData` (title, groups, user) with videre's: app title "videre", a single group/item "Faces" linking to `/` (the block uses `<a href>`; switch those to react-router `<Link>`, or keep `href` for hash routes). Remove or simplify the sub-nav row and the demo search/user widgets as desired.
+  - Then create `app/src/components/AppShell.tsx`: `export function AppShell() { return <ApplicationShell4><Outlet /></ApplicationShell4>; }` (`<Outlet/>` from react-router-dom).
+  Keep the block's layout/styling; only its data and content slot change.
 
 - [ ] **Step 2: Route table (layout route)** - replace `app/src/App.tsx` so the shell wraps every page:
 ```tsx
