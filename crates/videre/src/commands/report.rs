@@ -2376,7 +2376,13 @@ fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image::Dy
         Some(crop_face_square(&img, bbox))
     } else {
         // Detection ran on raw pixels; crop first, then correct orientation
-        let img = image::open(path).ok()?;
+        let timeout_path = path.to_string();
+        let img = videre_core::io_timeout::run_with_timeout(
+            videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
+            move || image::open(&timeout_path),
+        )
+        .ok()?
+        .ok()?;
         let cropped = crop_face_square(&img, bbox);
         Some(apply_exif_orientation(cropped, path))
     }
@@ -2484,7 +2490,13 @@ async fn handle_raw_file(
                 .ok()?;
             Some(("image/jpeg", buf))
         } else {
-            let bytes = std::fs::read(&path).ok()?;
+            let timeout_path = path.clone();
+            let bytes = videre_core::io_timeout::run_with_timeout(
+                videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
+                move || std::fs::read(&timeout_path),
+            )
+            .ok()?
+            .ok()?;
             Some((mime_for_ext(&ext), bytes))
         }
     })

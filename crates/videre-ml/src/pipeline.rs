@@ -51,8 +51,13 @@ pub fn run_face_pipeline(
         for (path, hash) in chunk {
             images_processed += 1;
             let img = match load_image(path) {
-                Some(i) => i,
-                None => { progress.tick(); continue; }
+                Ok(i) => i,
+                Err(msg) => {
+                    progress.println(&format!("skipping {path}: {msg}"));
+                    detect_errors += 1;
+                    progress.tick();
+                    continue;
+                }
             };
             let detections = match detector.detect(&img) {
                 Ok(d) => d,
@@ -238,16 +243,30 @@ pub fn run_clustering(
     Ok(Some(ClusteringResult { total_faces: all_faces.len(), clustered_faces, cluster_count }))
 }
 
-fn load_image(path: &str) -> Option<image::DynamicImage> {
+fn load_image(path: &str) -> Result<image::DynamicImage, String> {
     if path.to_lowercase().ends_with(".heic") {
         #[cfg(target_os = "macos")]
         {
-            return videre_core::heic::heic_via_quicklook(path, "faces");
+            return videre_core::heic::heic_via_quicklook(path, "faces").ok_or_else(|| {
+                format!(
+                    "could not read/convert HEIC file {path} (missing, timed out, or unreadable - is its drive connected?)"
+                )
+            });
         }
         #[cfg(not(target_os = "macos"))]
-        return None;
+        return Err(format!("HEIC decoding is only supported on macOS: {path}"));
     }
-    image::open(path).ok()
+    let timeout_path = path.to_string();
+    videre_core::io_timeout::run_with_timeout(videre_core::io_timeout::DEFAULT_IO_TIMEOUT, move || {
+        image::open(&timeout_path)
+    })
+    .map_err(|_| {
+        format!(
+            "timed out reading {path} after {}s (file may be unreachable - is its drive connected?)",
+            videre_core::io_timeout::DEFAULT_IO_TIMEOUT.as_secs()
+        )
+    })
+    .and_then(|r| r.map_err(|e| format!("could not read {path}: {e}")))
 }
 
 #[cfg(test)]
@@ -264,6 +283,12 @@ mod tests {
         assert_eq!(result.write_errors, 0);
         assert_eq!(result.images_processed, 0);
         assert_eq!(result.detect_errors, 0);
+    }
+
+    #[test]
+    fn load_image_missing_file_returns_descriptive_error() {
+        let err = load_image("/no/such/path/does-not-exist.jpg").unwrap_err();
+        assert!(err.contains("/no/such/path/does-not-exist.jpg"), "error should name the path: {err}");
     }
 
     #[test]

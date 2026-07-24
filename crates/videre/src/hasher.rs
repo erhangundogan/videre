@@ -104,7 +104,26 @@ fn extract_exif(path: &Path) -> ExifData {
     result
 }
 
+/// Bounds the whole read+hash+EXIF operation so a disconnected/stale mount
+/// point (which can block `fs::metadata`/`File::open`/`read` indefinitely on
+/// macOS rather than fail fast) turns into a returned error instead of
+/// hanging the scan forever on one file.
 pub fn hash_file(path: &Path) -> io::Result<FileRecord> {
+    let owned = path.to_path_buf();
+    let timeout = videre_core::io_timeout::DEFAULT_IO_TIMEOUT;
+    videre_core::io_timeout::run_with_timeout(timeout, move || hash_file_inner(&owned)).unwrap_or_else(|_| {
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!(
+                "timed out reading {} after {}s (file may be unreachable - is its drive connected?)",
+                path.display(),
+                timeout.as_secs()
+            ),
+        ))
+    })
+}
+
+fn hash_file_inner(path: &Path) -> io::Result<FileRecord> {
     let metadata = fs::metadata(path)?;
     let size_bytes = metadata.len();
     let created_at = metadata.created().ok().map(system_time_to_iso);
