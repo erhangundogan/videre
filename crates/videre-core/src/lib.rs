@@ -4,6 +4,7 @@ pub mod face_cluster;
 pub mod face_db;
 pub mod heic;
 pub mod home;
+pub mod io_timeout;
 pub mod location;
 pub mod person_search;
 pub mod progress;

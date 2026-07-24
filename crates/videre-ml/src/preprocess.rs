@@ -17,7 +17,18 @@ pub fn image_to_tensor(path: &Path, size: usize, device: &Device) -> Result<Tens
     let img = if ext == "heic" {
         decode_heic(path, size)?
     } else {
-        image::open(path).with_context(|| format!("decode {}", path.display()))?
+        let timeout_path = path.to_path_buf();
+        videre_core::io_timeout::run_with_timeout(videre_core::io_timeout::DEFAULT_IO_TIMEOUT, move || {
+            image::open(&timeout_path)
+        })
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "timed out reading {} after {}s (file may be unreachable - is its drive connected?)",
+                path.display(),
+                videre_core::io_timeout::DEFAULT_IO_TIMEOUT.as_secs()
+            )
+        })?
+        .with_context(|| format!("decode {}", path.display()))?
     };
 
     let img = img
@@ -42,23 +53,37 @@ pub fn image_to_tensor(path: &Path, size: usize, device: &Device) -> Result<Tens
 /// tensor is immediately resized square anyway, exact resolution doesn't
 /// matter here as much as getting the orientation right so the embedding
 /// represents the photo as a person actually sees it.
+/// Ceiling for a single `qlmanage` conversion - see `videre_core::heic` for
+/// why this is needed: a disconnected/stale external volume can make
+/// `qlmanage` block indefinitely on macOS rather than fail fast, which
+/// otherwise freezes `videre embed` silently on that one file.
+const QLMANAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
 fn decode_heic(path: &Path, size: usize) -> Result<image::DynamicImage> {
     use std::hash::{Hash, Hasher};
+    use videre_core::io_timeout::{wait_with_timeout, WaitOutcome};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     path.hash(&mut h);
     let out_dir = std::env::temp_dir().join(format!("dupe_embed_ql_{:016x}", h.finish()));
     let _ = std::fs::remove_dir_all(&out_dir);
     std::fs::create_dir_all(&out_dir).context("create qlmanage temp dir")?;
     let target = (size * 2).to_string();
-    let status = std::process::Command::new("qlmanage")
+    let mut child = std::process::Command::new("qlmanage")
         .args(["-t", "-s", &target, "-o"])
         .arg(&out_dir)
         .arg(path)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status()
+        .spawn()
         .context("run qlmanage (HEIC decode requires macOS)")?;
-    anyhow::ensure!(status.success(), "qlmanage failed for {}", path.display());
+    let outcome = wait_with_timeout(&mut child, QLMANAGE_TIMEOUT);
+    anyhow::ensure!(
+        outcome != WaitOutcome::TimedOut,
+        "qlmanage timed out after {}s decoding {} (file may be unreachable - is its drive connected?)",
+        QLMANAGE_TIMEOUT.as_secs(),
+        path.display()
+    );
+    anyhow::ensure!(outcome == WaitOutcome::Success, "qlmanage failed for {}", path.display());
     let file_name = path.file_name().context("path has no file name")?;
     let out_file = out_dir.join(format!("{}.png", file_name.to_string_lossy()));
     let img = image::open(&out_file)

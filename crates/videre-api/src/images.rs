@@ -87,10 +87,33 @@ fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image::Dy
         Some(crop_face_square(&img, bbox))
     } else {
         // Detection ran on raw pixels; crop first, then correct orientation
-        let img = image::open(path).ok()?;
+        let timeout_path = path.to_string();
+        let img = videre_core::io_timeout::run_with_timeout(
+            videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
+            move || image::open(&timeout_path),
+        )
+        .ok()?
+        .ok()?;
         let cropped = crop_face_square(&img, bbox);
         Some(apply_exif_orientation(cropped, path))
     }
+}
+
+/// Bounds a plain (non-HEIC) file read against a stale/disconnected mount
+/// point the same way `videre_core::heic` bounds `qlmanage`, so a single
+/// unreachable file can't hang the caller (an axum request thread, or a
+/// synchronous Tauri command) forever.
+fn read_with_timeout(path: &str) -> std::io::Result<Vec<u8>> {
+    let owned = path.to_string();
+    videre_core::io_timeout::run_with_timeout(videre_core::io_timeout::DEFAULT_IO_TIMEOUT, move || {
+        std::fs::read(&owned)
+    })
+    .unwrap_or_else(|_| {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("timed out reading {path} (file may be unreachable - is its drive connected?)"),
+        ))
+    })
 }
 
 pub fn mime_for_ext(ext: &str) -> &'static str {
@@ -124,7 +147,7 @@ pub fn face_image_bytes(conn: &Connection, face_id: i64) -> Result<Vec<u8>> {
 
     let cache = videre_core::thumb_cache::face_thumb_path(&hash, face_id, FACE_THUMB_SIZE);
     if videre_core::thumb_cache::face_thumb_exists(&hash, face_id, FACE_THUMB_SIZE) {
-        if let Ok(bytes) = std::fs::read(&cache) {
+        if let Ok(bytes) = read_with_timeout(&cache.to_string_lossy()) {
             return Ok(bytes);
         }
     }
@@ -172,7 +195,9 @@ pub fn original_image_bytes(conn: &Connection, face_id: i64) -> Result<(&'static
         .to_lowercase();
 
     if ext == "heic" {
-        if let Ok(bytes) = std::fs::read(videre_core::thumb_cache::original_path(&hash)) {
+        if let Ok(bytes) =
+            read_with_timeout(&videre_core::thumb_cache::original_path(&hash).to_string_lossy())
+        {
             return Ok(("image/jpeg", bytes));
         }
         let img = videre_core::heic::heic_via_quicklook(&file_path, &format!("orig{face_id}"))
@@ -190,7 +215,7 @@ pub fn original_image_bytes(conn: &Connection, face_id: i64) -> Result<(&'static
         }
         Ok(("image/jpeg", buf))
     } else {
-        let bytes = std::fs::read(&file_path).map_err(|_| Error::NotFound)?;
+        let bytes = read_with_timeout(&file_path).map_err(|_| Error::NotFound)?;
         Ok((mime_for_ext(&ext), bytes))
     }
 }
