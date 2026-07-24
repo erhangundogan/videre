@@ -2403,9 +2403,17 @@ async fn handle_face_image(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl axum::response::IntoResponse, StatusCode> {
     let state = state.clone();
+    // Lock only for the cheap single-row lookup, then release it before the
+    // expensive decode/crop/resize/encode work - holding the shared
+    // connection lock across that work serializes every thumbnail request
+    // behind one mutex, which is the actual cause of multi-second-per-thumbnail
+    // rendering in a library with thousands of faces.
     let bytes = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, StatusCode> {
-        let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        videre_api::face_image_bytes(&conn, face_id).map_err(|_| StatusCode::NOT_FOUND)
+        let lookup = {
+            let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            videre_api::face_lookup(&conn, face_id).map_err(|_| StatusCode::NOT_FOUND)?
+        };
+        videre_api::face_bytes_from_lookup(&lookup, face_id).map_err(|_| StatusCode::NOT_FOUND)
     })
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
@@ -2519,8 +2527,11 @@ async fn handle_original_image(
     let state = state.clone();
     let (content_type, bytes) =
         tokio::task::spawn_blocking(move || -> Result<(&'static str, Vec<u8>), StatusCode> {
-            let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            videre_api::original_image_bytes(&conn, face_id).map_err(|_| StatusCode::NOT_FOUND)
+            let lookup = {
+                let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                videre_api::original_lookup(&conn, face_id).map_err(|_| StatusCode::NOT_FOUND)?
+            };
+            videre_api::original_bytes_from_lookup(&lookup, face_id).map_err(|_| StatusCode::NOT_FOUND)
         })
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;

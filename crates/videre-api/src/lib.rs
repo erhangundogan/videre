@@ -13,7 +13,10 @@ pub use faces::{
     assign, cluster_detail, delete_person, dissolve_cluster, faces_list, new_person, person_detail,
     remove_face, rename_person, search_person, set_primary,
 };
-pub use images::{face_image_bytes, mime_for_ext, original_image_bytes};
+pub use images::{
+    face_bytes_from_lookup, face_image_bytes, face_lookup, mime_for_ext, original_bytes_from_lookup,
+    original_image_bytes, original_lookup, FaceLookup, OriginalLookup,
+};
 pub use label::sanitize_person_label;
 pub use types::{
     ClusterData, ClusterDetail, ClusterFaceData, FacesData, PersonData, PersonDetail,

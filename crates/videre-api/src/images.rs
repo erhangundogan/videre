@@ -130,12 +130,21 @@ pub fn mime_for_ext(ext: &str) -> &'static str {
     }
 }
 
-/// JPEG bytes for a single aligned face thumbnail (140px), reading the disk
-/// cache first and converting from the source image (HEIC via QuickLook) on a
-/// miss, writing through to the cache. Returns `Error::NotFound` if the face id
-/// is unknown or the crop cannot be produced. Synchronous: callers that need
-/// async should run this on a blocking thread.
-pub fn face_image_bytes(conn: &Connection, face_id: i64) -> Result<Vec<u8>> {
+/// The single-row query `face_image_bytes` needs before it can do any image
+/// work, split out so a caller holding a shared/locked `Connection` (the
+/// axum server and the Tauri app both serialize on one `Mutex<Connection>`)
+/// can release that lock immediately after this cheap lookup, instead of
+/// holding it for the entire decode/crop/resize/encode/cache-write below -
+/// which otherwise fully serializes every thumbnail request behind the lock,
+/// turning a many-thousand-singleton library into one thumbnail at a time.
+pub struct FaceLookup {
+    pub bbox_json: String,
+    pub file_path: String,
+    pub hash: String,
+}
+
+/// The cheap part of `face_image_bytes`: just the DB row. No image I/O.
+pub fn face_lookup(conn: &Connection, face_id: i64) -> Result<FaceLookup> {
     let (bbox_json, file_path, hash): (String, String, String) = conn
         .query_row(
             "SELECT f.bbox, fh.path, f.hash FROM faces f \
@@ -144,20 +153,26 @@ pub fn face_image_bytes(conn: &Connection, face_id: i64) -> Result<Vec<u8>> {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .map_err(|_| Error::NotFound)?;
+    Ok(FaceLookup { bbox_json, file_path, hash })
+}
 
-    let cache = videre_core::thumb_cache::face_thumb_path(&hash, face_id, FACE_THUMB_SIZE);
-    if videre_core::thumb_cache::face_thumb_exists(&hash, face_id, FACE_THUMB_SIZE) {
+/// The expensive part of `face_image_bytes`: cache check, decode/crop/encode,
+/// write-through. Takes no `Connection`, so it can run without holding the
+/// shared DB lock.
+pub fn face_bytes_from_lookup(lookup: &FaceLookup, face_id: i64) -> Result<Vec<u8>> {
+    let cache = videre_core::thumb_cache::face_thumb_path(&lookup.hash, face_id, FACE_THUMB_SIZE);
+    if videre_core::thumb_cache::face_thumb_exists(&lookup.hash, face_id, FACE_THUMB_SIZE) {
         if let Ok(bytes) = read_with_timeout(&cache.to_string_lossy()) {
             return Ok(bytes);
         }
     }
 
-    let parts: Vec<f32> = bbox_json.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+    let parts: Vec<f32> = lookup.bbox_json.split(',').filter_map(|s| s.trim().parse().ok()).collect();
     if parts.len() != 4 {
         return Err(Error::NotFound);
     }
     let bbox = [parts[0], parts[1], parts[0] + parts[2], parts[1] + parts[3]];
-    let thumb = make_face_thumb(&file_path, bbox, face_id).ok_or(Error::NotFound)?;
+    let thumb = make_face_thumb(&lookup.file_path, bbox, face_id).ok_or(Error::NotFound)?;
     let mut buf = Vec::new();
     thumb
         .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Jpeg)
@@ -174,11 +189,30 @@ pub fn face_image_bytes(conn: &Connection, face_id: i64) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
-/// Bytes for the full original image behind a face (raw for common formats,
-/// QuickLook-converted JPEG for HEIC, with the HEIC result cached). Returns the
-/// MIME type alongside the bytes. `Error::NotFound` if the id is unknown or the
-/// file cannot be read/converted. Synchronous.
-pub fn original_image_bytes(conn: &Connection, face_id: i64) -> Result<(&'static str, Vec<u8>)> {
+/// JPEG bytes for a single aligned face thumbnail (140px), reading the disk
+/// cache first and converting from the source image (HEIC via QuickLook) on a
+/// miss, writing through to the cache. Returns `Error::NotFound` if the face id
+/// is unknown or the crop cannot be produced. Synchronous: callers that need
+/// async should run this on a blocking thread.
+///
+/// Holds `conn` only for the initial lookup (see `face_lookup`); callers that
+/// share `conn` behind a lock across many concurrent requests should call
+/// `face_lookup`/`face_bytes_from_lookup` directly instead, releasing the
+/// lock between the two.
+pub fn face_image_bytes(conn: &Connection, face_id: i64) -> Result<Vec<u8>> {
+    let lookup = face_lookup(conn, face_id)?;
+    face_bytes_from_lookup(&lookup, face_id)
+}
+
+/// The single-row query `original_image_bytes` needs before any image I/O -
+/// see `FaceLookup` for why this split matters for concurrency.
+pub struct OriginalLookup {
+    pub file_path: String,
+    pub hash: String,
+}
+
+/// The cheap part of `original_image_bytes`: just the DB row. No image I/O.
+pub fn original_lookup(conn: &Connection, face_id: i64) -> Result<OriginalLookup> {
     let (file_path, hash): (String, String) = conn
         .query_row(
             "SELECT fh.path, f.hash FROM faces f \
@@ -187,8 +221,18 @@ pub fn original_image_bytes(conn: &Connection, face_id: i64) -> Result<(&'static
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .map_err(|_| Error::NotFound)?;
+    Ok(OriginalLookup { file_path, hash })
+}
 
-    let ext = std::path::Path::new(&file_path)
+/// The expensive part of `original_image_bytes`: read/convert/cache. Takes no
+/// `Connection`, so it can run without holding the shared DB lock.
+pub fn original_bytes_from_lookup(
+    lookup: &OriginalLookup,
+    face_id: i64,
+) -> Result<(&'static str, Vec<u8>)> {
+    let file_path = &lookup.file_path;
+    let hash = &lookup.hash;
+    let ext = std::path::Path::new(file_path)
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
@@ -215,9 +259,23 @@ pub fn original_image_bytes(conn: &Connection, face_id: i64) -> Result<(&'static
         }
         Ok(("image/jpeg", buf))
     } else {
-        let bytes = read_with_timeout(&file_path).map_err(|_| Error::NotFound)?;
+        let bytes = read_with_timeout(file_path).map_err(|_| Error::NotFound)?;
         Ok((mime_for_ext(&ext), bytes))
     }
+}
+
+/// Bytes for the full original image behind a face (raw for common formats,
+/// QuickLook-converted JPEG for HEIC, with the HEIC result cached). Returns the
+/// MIME type alongside the bytes. `Error::NotFound` if the id is unknown or the
+/// file cannot be read/converted. Synchronous.
+///
+/// Holds `conn` only for the initial lookup (see `original_lookup`); callers
+/// that share `conn` behind a lock across many concurrent requests should
+/// call `original_lookup`/`original_bytes_from_lookup` directly instead,
+/// releasing the lock between the two.
+pub fn original_image_bytes(conn: &Connection, face_id: i64) -> Result<(&'static str, Vec<u8>)> {
+    let lookup = original_lookup(conn, face_id)?;
+    original_bytes_from_lookup(&lookup, face_id)
 }
 
 #[cfg(test)]
@@ -231,5 +289,45 @@ mod tests {
         conn.execute_batch("CREATE TABLE file_hashes (hash TEXT PRIMARY KEY, path TEXT);").unwrap();
         assert!(matches!(face_image_bytes(&conn, 999), Err(Error::NotFound)));
         assert!(matches!(original_image_bytes(&conn, 999), Err(Error::NotFound)));
+    }
+
+    #[test]
+    fn face_lookup_unknown_id_is_not_found() {
+        let conn = Connection::open_in_memory().unwrap();
+        videre_core::face_db::create_faces_table(&conn).unwrap();
+        conn.execute_batch("CREATE TABLE file_hashes (hash TEXT PRIMARY KEY, path TEXT);").unwrap();
+        assert!(matches!(face_lookup(&conn, 999), Err(Error::NotFound)));
+    }
+
+    #[test]
+    fn original_lookup_unknown_id_is_not_found() {
+        let conn = Connection::open_in_memory().unwrap();
+        videre_core::face_db::create_faces_table(&conn).unwrap();
+        conn.execute_batch("CREATE TABLE file_hashes (hash TEXT PRIMARY KEY, path TEXT);").unwrap();
+        assert!(matches!(original_lookup(&conn, 999), Err(Error::NotFound)));
+    }
+
+    #[test]
+    fn face_lookup_does_not_touch_the_filesystem() {
+        // Regression test for the thumbnail-rendering serialization bug: the
+        // DB lookup must be a pure query with no image I/O, so callers can
+        // release the connection lock before doing the expensive part.
+        let conn = Connection::open_in_memory().unwrap();
+        videre_core::face_db::create_faces_table(&conn).unwrap();
+        conn.execute_batch("CREATE TABLE file_hashes (hash TEXT PRIMARY KEY, path TEXT);").unwrap();
+        conn.execute(
+            "INSERT INTO file_hashes (hash, path) VALUES ('h1', '/no/such/file.jpg')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO faces (id, hash, bbox, embedding) VALUES (1, 'h1', '0,0,10,10', X'00')",
+            [],
+        )
+        .unwrap();
+        let lookup = face_lookup(&conn, 1).unwrap();
+        assert_eq!(lookup.file_path, "/no/such/file.jpg");
+        assert_eq!(lookup.hash, "h1");
+        assert_eq!(lookup.bbox_json, "0,0,10,10");
     }
 }
