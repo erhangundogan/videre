@@ -7,6 +7,13 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+# Explicitly stand alone (the root Cargo.toml already excludes this crate from
+# the main workspace) - needed so Cargo's upward workspace search stops here
+# instead of crossing into an ancestor directory's workspace, which happens
+# when this crate is checked out somewhere nested inside another Cargo
+# workspace's directory tree (e.g. a worktree under .claude/worktrees/).
+[workspace]
+
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
