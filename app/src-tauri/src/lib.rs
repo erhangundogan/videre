@@ -7,6 +7,7 @@ pub fn run() {
     let db = state::DbState::open().expect("failed to open videre database");
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
         .manage(db)
         .invoke_handler(tauri::generate_handler![
             commands::faces_list,
