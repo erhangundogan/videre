@@ -178,16 +178,35 @@ pass - `run_face_pipeline`'s signature gains a `workers: usize` parameter, so
 wiring a `--workers` flag into `watch` later is a small follow-up, not
 something this spec needs to solve now.
 
-### 3.5 Resumability - one accepted behavior change
+### 3.5 Resumability - correctness is preserved; the "lost work on interrupt" window grows
 
-Today, interrupting `videre faces` (Ctrl-C) loses at most one in-flight image
-(the one being processed when the signal arrives - `mark_scanned` for
-everything before it already happened). With N workers, up to N images can be
-in flight simultaneously, so an interrupt can lose up to N images' progress
-instead of 1. This is a real, minor behavior change worth stating explicitly:
-still small and bounded (not "loses an unbounded amount"), and the tradeoff is
-directly the point of this whole change (N images processed concurrently
-instead of 1).
+**Correctness first, since this matters more than the window size:** every
+`WorkerMsg` is still handled one-at-a-time by a single coordinator thread,
+which performs the exact same "write the faces, and only call `mark_scanned`
+if that write succeeded" sequence used today, per hash, synchronously. No
+hash can ever end up marked scanned without its rows being durably written
+first, regardless of worker count - an interrupt (or a worker panic; see 3.3)
+can never cause a skipped image, a double-processed image, or a corrupted
+write. `select_unscanned` on restart is unchanged and correctly recomputes
+the to-do set from `faces_scanned`.
+
+**The size of the "how much gets re-done after a kill" window does grow,
+and today's baseline is already larger than "one image":** the *current*
+serial pipeline already defers `mark_scanned` for every face-bearing image
+in a chunk until that chunk's single `embed_batch` call resolves (see the
+`for chunk in to_process.chunks(batch)` loop in `pipeline.rs` - only
+zero-face images are marked immediately, inside the per-image loop). So an
+interrupt today can already lose up to `batch` (default 8) images' progress,
+not 1. With `workers` worker threads, each independently doing this same
+chunk-batching on its own partition, the real window becomes up to
+`workers * batch` images - e.g. 64 with the default batch of 8 and 8
+workers, not `workers` alone. This is a real, larger-but-still-bounded
+tradeoff worth documenting precisely (not understating it as "loses at most
+N images"), directly following from processing that many images
+concurrently instead of one chunk at a time. No mitigation (e.g. scaling
+`batch` down as `workers` grows) is planned for this pass - `--limit`
+already gives users a lever to bound total exposure per invocation if
+they want tighter control.
 
 ## 4. Testing
 
