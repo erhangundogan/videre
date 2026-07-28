@@ -39,6 +39,7 @@ import {
   SidebarProvider,
   useSidebar,
 } from "@/components/ui/sidebar";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
 
 function getInitials(name: string) {
@@ -74,13 +75,14 @@ const navPrimary: NavItem[] = [
 
 function NavPrimary({ items }: { items: NavItem[] }) {
   const location = useLocation();
+  const activeIndex = items.findIndex((item) => item.to === location.pathname);
   return (
     <SidebarGroup>
       <SidebarMenu>
-        {items.map((item) =>
+        {items.map((item, index) =>
           item.to ? (
             <SidebarMenuItem key={item.title}>
-              <SidebarMenuButton asChild isActive={location.pathname === item.to} tooltip={item.title}>
+              <SidebarMenuButton asChild isActive={index === activeIndex} tooltip={item.title}>
                 <Link to={item.to}>
                   <item.icon />
                   <span>{item.title}</span>
@@ -239,12 +241,13 @@ function MobileHeader() {
 
 function MobileBottomNav() {
   const location = useLocation();
+  const activeIndex = navPrimary.findIndex((item) => item.to === location.pathname);
   return (
     <nav className="bg-background/95 fixed inset-x-0 bottom-0 z-40 border-t backdrop-blur md:hidden">
       <div className="grid grid-cols-6">
-        {navPrimary.map((item) => {
+        {navPrimary.map((item, index) => {
           const Icon = item.icon;
-          const isActive = item.to != null && location.pathname === item.to;
+          const isActive = index === activeIndex;
           const className = cn(
             "flex flex-col items-center gap-1 py-2 text-xs transition-colors",
             isActive ? "text-foreground" : "text-muted-foreground hover:text-foreground",
@@ -268,25 +271,29 @@ function MobileBottomNav() {
 }
 
 export function ApplicationShell11({ children }: { children: React.ReactNode }) {
+  const isMobile = useIsMobile();
+
   return (
     <div className="w-full [--header-height:3.5rem]">
       <SidebarProvider
         className="flex flex-col"
         style={{ "--sidebar-width-icon": "3rem" } as React.CSSProperties}
       >
-        {/* Desktop layout */}
-        <SiteHeader />
-        <div className="hidden flex-1 pt-[var(--header-height)] md:flex">
-          <AppSidebar />
-          <SidebarInset>{children}</SidebarInset>
-        </div>
-
-        {/* Mobile layout */}
-        <div className="flex flex-col md:hidden">
-          <MobileHeader />
-          <div className="pb-16">{children}</div>
-          <MobileBottomNav />
-        </div>
+        {isMobile ? (
+          <div className="flex flex-col">
+            <MobileHeader />
+            <div className="pb-16">{children}</div>
+            <MobileBottomNav />
+          </div>
+        ) : (
+          <>
+            <SiteHeader />
+            <div className="flex flex-1 pt-[var(--header-height)]">
+              <AppSidebar />
+              <SidebarInset>{children}</SidebarInset>
+            </div>
+          </>
+        )}
       </SidebarProvider>
     </div>
   );
