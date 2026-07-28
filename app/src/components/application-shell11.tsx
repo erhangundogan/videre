@@ -1,13 +1,13 @@
 import {
-  Album,
-  BrushCleaning,
-  Calendar,
+  // Album,
+  // BrushCleaning,
+  // Calendar,
   ChevronDown,
   Home,
   LogOut,
   type LucideIcon,
   Menu,
-  Scan,
+  // Scan,
   ScanFace,
   Search,
 } from "lucide-react";
@@ -66,11 +66,11 @@ type NavItem = {
 
 const navPrimary: NavItem[] = [
   { title: "Home", icon: Home, to: "/" },
-  { title: "Scan", icon: Scan },
-  { title: "Dedupe", icon: BrushCleaning },
-  { title: "Fix Dates", icon: Calendar },
+  // { title: "Scan", icon: Scan },
+  // { title: "Dedupe", icon: BrushCleaning },
+  // { title: "Fix Dates", icon: Calendar },
   { title: "Face Detection", icon: ScanFace, to: "/" },
-  { title: "Smart Photos", icon: Album },
+  // { title: "Smart Photos", icon: Album },
 ];
 
 function NavPrimary({ items }: { items: NavItem[] }) {
@@ -244,7 +244,10 @@ function MobileBottomNav() {
   const activeIndex = navPrimary.findIndex((item) => item.to === location.pathname);
   return (
     <nav className="bg-background/95 fixed inset-x-0 bottom-0 z-40 border-t backdrop-blur md:hidden">
-      <div className="grid grid-cols-6">
+      <div
+        className="grid"
+        style={{ gridTemplateColumns: `repeat(${navPrimary.length}, minmax(0, 1fr))` }}
+      >
         {navPrimary.map((item, index) => {
           const Icon = item.icon;
           const isActive = index === activeIndex;
