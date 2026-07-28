@@ -241,7 +241,7 @@ function MobileBottomNav() {
   const location = useLocation();
   return (
     <nav className="bg-background/95 fixed inset-x-0 bottom-0 z-40 border-t backdrop-blur md:hidden">
-      <div className="grid grid-cols-4">
+      <div className="grid grid-cols-6">
         {navPrimary.map((item) => {
           const Icon = item.icon;
           const isActive = item.to != null && location.pathname === item.to;
@@ -253,12 +253,12 @@ function MobileBottomNav() {
           return item.to ? (
             <Link key={item.title} to={item.to} className={className}>
               <Icon className="size-5" />
-              <span aria-hidden="true">{item.title}</span>
+              <span>{item.title}</span>
             </Link>
           ) : (
             <button key={item.title} type="button" disabled aria-disabled className={className}>
               <Icon className="size-5" />
-              <span aria-hidden="true">{item.title}</span>
+              <span>{item.title}</span>
             </button>
           );
         })}
