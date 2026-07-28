@@ -1202,13 +1202,20 @@ docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md
 for the full design and why this approach (a symmetric worker pool) was
 chosen over a producer/consumer split with separate loader/inference pools.
 
-One behavior change from the single-threaded version: interrupting (Ctrl-C)
-used to lose at most one in-flight image's progress (mark_scanned for
-everything before it had already happened). With multiple workers, up to
-`--workers` images can be in flight simultaneously, so an interrupt can now
-lose up to that many images' progress instead of one - still small and
-bounded, and it's the direct tradeoff of processing that many images
-concurrently instead of one at a time.
+Resumability's correctness is unchanged: workers never touch the database,
+so a hash can never end up marked scanned without its faces being durably
+written first, no matter how many workers are running - restart always
+correctly continues from the true set of completed hashes. What does change
+is how much gets re-done after a kill: even the single-threaded pipeline
+already defers marking a face-bearing image as scanned until its whole
+`batch`-sized chunk's single embed call resolves (only zero-face images are
+marked immediately), so an interrupt today can already cost up to `batch`
+(default 8) images of reprocessing, not 1. With `--workers` workers each
+independently chunk-batching their own partition, that window becomes up to
+`workers * batch` images - e.g. 64 with the defaults and 8 workers. Still
+fully correct on resume, just a larger bounded "wasted work" window than
+before; `--limit` remains the lever for users who want tighter control per
+invocation.
 ```
 
 - [ ] **Step 2: Commit**
