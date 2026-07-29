@@ -51,9 +51,25 @@ pub struct FacesArgs {
     /// oversubscribing keeps cores busy with other workers' CPU-bound
     /// detect/embed work while some workers wait on I/O.
     #[arg(long)] workers: Option<usize>,
+    /// Max concurrent `qlmanage` subprocesses (HEIC decoding), process-wide.
+    /// Default 6 (raised from 3 after real profiling showed HEIC-heavy runs
+    /// leaving CPU idle under `--workers`'s default 2x-cores worker count -
+    /// see docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md).
+    /// Raising this further trades a known-safe default for an untested one:
+    /// QuickLook's thumbnail agent and the source drive's I/O may not
+    /// actually sustain more concurrent conversions, so treat higher values
+    /// as an experiment to re-measure with `--profile`, not a guaranteed win.
+    #[arg(long)] qlmanage_concurrency: Option<usize>,
 }
 
 pub fn run(args: FacesArgs) -> Result<()> {
+    // Must happen before any HEIC file could be converted (the semaphore is a
+    // OnceLock: first use wins for the life of this process). Clamped to at
+    // least 1 - a literal 0 would make every HEIC conversion block forever.
+    if let Some(n) = args.qlmanage_concurrency {
+        videre_core::heic::set_qlmanage_concurrency(n.max(1));
+    }
+
     let db = super::resolve_reader_db(args.db.clone())?;
     if !db.exists() {
         anyhow::bail!("{:?} does not exist", db);

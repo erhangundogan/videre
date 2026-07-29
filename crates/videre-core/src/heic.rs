@@ -10,24 +10,56 @@ use std::time::Duration;
 /// no output; this bounds that to a single conversion's worth of waiting.
 const QLMANAGE_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Max `qlmanage` processes running at once, process-wide. QuickLook's
-/// thumbnail-generation agent is a single shared per-user service, not
-/// something that scales with parallel callers - a UI rendering hundreds of
-/// HEIC thumbnails at once (or the Tauri app and a `videre faces` run both
-/// hitting the same library concurrently) can launch enough simultaneous
-/// `qlmanage` processes to make the agent and the source drive's I/O queue
-/// up, causing conversions that would normally take under a second to
-/// occasionally exceed even `QLMANAGE_TIMEOUT`. Capping concurrency here
-/// keeps every caller (Tauri app, axum server, faces/embed/watch) well
-/// behaved without needing to coordinate with each other.
-const QLMANAGE_MAX_CONCURRENT: usize = 3;
+/// Default max `qlmanage` processes running at once, process-wide, unless
+/// overridden via `set_qlmanage_concurrency` (e.g. `videre faces
+/// --qlmanage-concurrency <n>`). QuickLook's thumbnail-generation agent is a
+/// single shared per-user service, not something that scales with parallel
+/// callers - a UI rendering hundreds of HEIC thumbnails at once (or the
+/// Tauri app and a `videre faces` run both hitting the same library
+/// concurrently) can launch enough simultaneous `qlmanage` processes to make
+/// the agent and the source drive's I/O queue up, causing conversions that
+/// would normally take under a second to occasionally exceed even
+/// `QLMANAGE_TIMEOUT`. Capping concurrency here keeps every caller (Tauri
+/// app, axum server, faces/embed/watch) well behaved without needing to
+/// coordinate with each other. Raised from 3 to 6 on 2026-07-29 after real
+/// A/B measurement of `videre faces`'s parallel pipeline showed HEIC-heavy
+/// runs leaving CPU idle (477% of 1000% on a 10-core machine) - a real
+/// bottleneck candidate given `--workers` now defaults to 2x cores (up to
+/// 20 concurrent workers, all previously queuing on a 3-permit cap).
+const QLMANAGE_MAX_CONCURRENT_DEFAULT: usize = 6;
+
+/// Process-wide override for `QLMANAGE_MAX_CONCURRENT_DEFAULT`, set at most
+/// once per process (first call wins, matching the underlying semaphore's
+/// own `OnceLock` semantics) - see `set_qlmanage_concurrency`.
+static QLMANAGE_CONCURRENCY_OVERRIDE: OnceLock<usize> = OnceLock::new();
+
+/// Overrides the `qlmanage` concurrency cap for the remainder of this
+/// process. Must be called before the first HEIC conversion (i.e. before
+/// anything calls `qlmanage_semaphore()`) to take effect - like the
+/// semaphore itself, this is a `OnceLock`: the first call sets the value,
+/// every later call (including one after the semaphore has already been
+/// created with the default) is a no-op. Intended for CLI flags like
+/// `videre faces --qlmanage-concurrency <n>` to call once at startup.
+pub fn set_qlmanage_concurrency(n: usize) {
+    let _ = QLMANAGE_CONCURRENCY_OVERRIDE.set(n);
+}
+
+/// Pure resolution of the effective concurrency cap, split out from
+/// `qlmanage_semaphore` so the "override if present, else default" logic is
+/// unit-testable without touching the process-wide `OnceLock` singletons.
+fn resolve_qlmanage_concurrency(override_val: Option<usize>) -> usize {
+    override_val.unwrap_or(QLMANAGE_MAX_CONCURRENT_DEFAULT)
+}
 
 /// Shared across every `qlmanage` call site in the codebase (this module's
 /// own `heic_via_quicklook` and `videre-ml`'s separate `decode_heic`), so the
 /// concurrency cap is process-wide rather than per-call-site.
 pub fn qlmanage_semaphore() -> &'static Semaphore {
     static SEM: OnceLock<Semaphore> = OnceLock::new();
-    SEM.get_or_init(|| Semaphore::new(QLMANAGE_MAX_CONCURRENT))
+    SEM.get_or_init(|| {
+        let max = resolve_qlmanage_concurrency(QLMANAGE_CONCURRENCY_OVERRIDE.get().copied());
+        Semaphore::new(max)
+    })
 }
 
 /// Convert a HEIC file to a `DynamicImage` via QuickLook (`qlmanage -t`).
@@ -72,4 +104,28 @@ pub fn heic_via_quicklook(path: &str, tag: &str) -> Option<DynamicImage> {
     let result = if outcome == WaitOutcome::Success { image::open(&out_file).ok() } else { None };
     let _ = std::fs::remove_dir_all(&out_dir);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_qlmanage_concurrency_uses_override_when_present() {
+        assert_eq!(resolve_qlmanage_concurrency(Some(10)), 10);
+    }
+
+    #[test]
+    fn resolve_qlmanage_concurrency_falls_back_to_default_when_absent() {
+        assert_eq!(resolve_qlmanage_concurrency(None), QLMANAGE_MAX_CONCURRENT_DEFAULT);
+    }
+
+    #[test]
+    fn resolve_qlmanage_concurrency_override_of_zero_is_honored_literally() {
+        // Not clamped here - resolve_qlmanage_concurrency is pure plumbing;
+        // Semaphore::new(0) blocking forever is a caller-input-validation
+        // concern (see the --qlmanage-concurrency CLI flag), not this
+        // function's job.
+        assert_eq!(resolve_qlmanage_concurrency(Some(0)), 0);
+    }
 }
