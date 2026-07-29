@@ -37,8 +37,8 @@ impl FaceDetector {
     /// Load a SCRFD ONNX model from `model_path`.
     ///
     /// Uses `Session::builder().commit_from_file()` as per ort 2.0.0-rc.12.
-    pub fn new(model_path: &Path) -> Result<Self> {
-        let session = crate::face_models::build_session(model_path)
+    pub fn new(model_path: &Path, intra_threads: usize) -> Result<Self> {
+        let session = crate::face_models::build_session(model_path, intra_threads)
             .context("load SCRFD ONNX model")?;
         Ok(Self { session })
     }

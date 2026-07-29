@@ -6,17 +6,26 @@ use std::path::PathBuf;
 const REPO_OWNER: &str = "WePrompt";
 const REPO_NAME: &str = "buffalo_l";
 
-/// Builds an ORT `Session` for a face model. ORT runs on CPU with all cores by
-/// default (its intra-op thread pool), which is where face detection/embedding
-/// runs. The macOS CoreML execution provider was measured (2026-07-23) to give
-/// no speedup for these InsightFace models - the SCRFD/ArcFace graphs don't
-/// accelerate on CoreML, and it adds a multi-second per-process model-compile
-/// cost - so it is intentionally not used. The dominant cost of `videre faces`
-/// is SCRFD detection plus per-image loading (HEIC via qlmanage), not something
-/// an ONNX execution provider changes.
-pub fn build_session(model_path: &Path) -> Result<Session> {
+/// Builds an ORT `Session` for a face model. Previously ran with ORT's
+/// default all-core intra-op thread pool; now takes an explicit
+/// `intra_threads` cap since `run_face_pipeline` (pipeline.rs) runs multiple
+/// worker threads concurrently, each with its own session - N sessions x
+/// "every core" would oversubscribe the machine far worse than the old
+/// single-session baseline. Pass a small number (e.g. 2) per worker so N
+/// workers x intra_threads stays near the machine's actual core count. The
+/// macOS CoreML execution provider was measured (2026-07-23) to give no
+/// speedup for these InsightFace models (the SCRFD/ArcFace graphs don't
+/// accelerate on CoreML, and it adds a multi-second per-process
+/// model-compile cost), so it is intentionally not used. The dominant cost
+/// of `videre faces` is SCRFD detection plus per-image loading (HEIC via
+/// qlmanage) and, per the pipeline being fully serial until 2026-07-29, a
+/// lack of concurrency - see
+/// docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md.
+pub fn build_session(model_path: &Path, intra_threads: usize) -> Result<Session> {
     Session::builder()
         .context("create ort SessionBuilder")?
+        .with_intra_threads(intra_threads)
+        .map_err(|e| anyhow::anyhow!("set intra-op thread count: {e}"))?
         .commit_from_file(model_path)
         .context("load ONNX model")
 }
