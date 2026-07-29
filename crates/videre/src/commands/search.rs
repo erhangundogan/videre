@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde::Serialize;
 use videre::types::{ErrorJson, SCHEMA_VERSION};
-use videre_core::{embeddings, vectors};
+use videre_core::{classify as classify_core, embeddings, vectors};
 use videre_ml::{device, model, search};
 use std::path::{Path, PathBuf};
 
@@ -22,6 +22,11 @@ pub struct SearchArgs {
     /// Return paths containing a named person (confirmed faces only)
     #[arg(long, conflicts_with = "query", conflicts_with = "image")]
     person: Option<String>,
+
+    /// Return paths classified as this category - photo/screenshot/document/
+    /// meme/unknown (requires a prior 'videre classify' run)
+    #[arg(long, conflicts_with = "query", conflicts_with = "image", conflicts_with = "person")]
+    category: Option<String>,
 
     /// Number of results
     #[arg(short = 'k', long, default_value_t = 20)]
@@ -108,6 +113,18 @@ pub(crate) fn person_hits(conn: &Connection, name: &str) -> Result<Vec<SearchHit
         .collect())
 }
 
+/// Category query: paths + hash (no score - membership only, not ranked).
+/// Unlike `person_hits`, hash comes along for free from the join query
+/// itself (person search's own helper doesn't return one), so it's
+/// included here.
+pub(crate) fn category_hits(conn: &Connection, category: &str) -> Result<Vec<SearchHitJson>> {
+    let pairs = classify_core::paths_for_category(conn, category)?;
+    Ok(pairs
+        .into_iter()
+        .map(|(path, hash)| SearchHitJson { path, hash: Some(hash), score: None })
+        .collect())
+}
+
 /// Load the embedding corpus, erroring if empty. Called BEFORE any model load
 /// so a db without embeddings fails fast without downloading weights.
 pub(crate) fn load_corpus(conn: &Connection, db: &Path) -> Result<Vec<(String, Vec<f32>)>> {
@@ -152,6 +169,14 @@ fn collect_hits(args: &SearchArgs) -> Result<(QueryJson, Vec<SearchHitJson>)> {
     let db = super::resolve_reader_db(args.db.clone())?;
     let conn = videre_core::db::open_wal(&db)
         .with_context(|| format!("open {}", db.display()))?;
+
+    if let Some(name) = &args.category {
+        let hits = category_hits(&conn, name)?;
+        if hits.is_empty() && !args.json {
+            eprintln!("No files found classified as: {name}");
+        }
+        return Ok((QueryJson { kind: "category", value: name.clone() }, hits));
+    }
 
     if let Some(name) = &args.person {
         let hits = person_hits(&conn, name)?;
@@ -222,5 +247,23 @@ mod tests {
         assert!(!json.contains("hash"));
         assert!(!json.contains("score"));
         assert!(json.contains("\"path\":\"/a.jpg\""));
+    }
+
+    #[test]
+    fn category_hit_includes_hash_but_omits_score() {
+        let doc = SearchJson {
+            schema_version: SCHEMA_VERSION,
+            query: QueryJson { kind: "category", value: "screenshot".to_string() },
+            count: 1,
+            results: vec![SearchHitJson {
+                path: "/a.png".to_string(),
+                hash: Some("abc".to_string()),
+                score: None,
+            }],
+        };
+        let json = serde_json::to_string(&doc).unwrap();
+        assert!(json.contains("\"kind\":\"category\""));
+        assert!(json.contains("\"hash\":\"abc\""));
+        assert!(!json.contains("\"score\""));
     }
 }
