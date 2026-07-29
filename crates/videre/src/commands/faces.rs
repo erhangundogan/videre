@@ -93,9 +93,11 @@ pub fn run(args: FacesArgs) -> Result<()> {
 
     let started = std::time::Instant::now();
     let mut profile_stats = ProfileStats::default();
+    let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     let result = run_face_pipeline(
         &conn, &to_process, args.batch, args.dry_run, args.silent,
         if args.profile { Some(&mut profile_stats) } else { None },
+        workers,
     )?;
 
     // Cluster at the end of a full pass, but skip it on a partial (--limit) run:

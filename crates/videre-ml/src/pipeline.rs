@@ -140,140 +140,185 @@ pub fn run_face_pipeline(
     dry_run: bool,
     silent: bool,
     mut profile: Option<&mut ProfileStats>,
+    workers: usize,
 ) -> Result<FacesRunResult> {
     use crate::{face_align, face_detect, face_embed, face_models};
-    use half::f16;
 
     if to_process.is_empty() {
         return Ok(FacesRunResult { total_faces: 0, write_errors: 0, images_processed: 0, detect_errors: 0 });
     }
 
     let (det_path, rec_path) = face_models::buffalo_l_paths()?;
-    let intra_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-    let mut detector = face_detect::FaceDetector::new(&det_path, intra_threads)?;
-    let mut embedder = face_embed::FaceEmbedder::new(&rec_path, intra_threads)?;
-
     let progress = videre_core::progress::Progress::new(to_process.len() as u64, silent);
 
-    let mut total_faces = 0usize;
-    let mut write_errors = 0usize;
-    let mut images_processed = 0usize;
-    let mut detect_errors = 0usize;
+    let worker_count = workers.max(1);
+    let intra_threads = std::thread::available_parallelism()
+        .map(|n| (n.get() / worker_count).max(1))
+        .unwrap_or(1);
+    let partitions = round_robin_partition(to_process, worker_count);
+    let want_profile = profile.is_some();
 
-    for chunk in to_process.chunks(batch) {
-        struct ChunkEntry {
-            path: String,
-            hash: String,
-            detections: Vec<face_detect::Detection>,
-            n_crops: usize,
-        }
-        let mut chunk_entries: Vec<ChunkEntry> = Vec::new();
-        let mut chunk_crops: Vec<image::RgbImage> = Vec::new();
+    let mut result = FacesRunResult { total_faces: 0, write_errors: 0, images_processed: 0, detect_errors: 0 };
 
-        for (path, hash) in chunk {
-            images_processed += 1;
-            let load_start = std::time::Instant::now();
-            let img = match load_image(path) {
-                Ok(i) => i,
-                Err(msg) => {
-                    progress.println(&format!("skipping {path}: {msg}"));
-                    detect_errors += 1;
-                    progress.tick();
-                    continue;
+    std::thread::scope(|scope| -> Result<()> {
+        let (tx, rx) = std::sync::mpsc::channel::<WorkerMsg>();
+
+        // Spawn one worker per partition, keeping each ScopedJoinHandle (not
+        // discarding it) so its returned ProfileStats - and any Err from
+        // model loading inside the worker - actually reaches the caller.
+        // thread::scope only guarantees threads are joined before the scope
+        // returns; it does not automatically surface their return values.
+        let handles: Vec<std::thread::ScopedJoinHandle<Result<ProfileStats>>> = partitions
+            .iter()
+            .map(|partition| {
+                let tx = tx.clone();
+                let det_path = det_path.clone();
+                let rec_path = rec_path.clone();
+                let progress = &progress;
+                scope.spawn(move || -> Result<ProfileStats> {
+                    let mut local_profile = ProfileStats::default();
+                    let mut detector = face_detect::FaceDetector::new(&det_path, intra_threads)?;
+                    let mut embedder = face_embed::FaceEmbedder::new(&rec_path, intra_threads)?;
+
+                    for chunk in partition.chunks(batch) {
+                        struct ChunkEntry {
+                            hash: String,
+                            detections: Vec<face_detect::Detection>,
+                            n_crops: usize,
+                        }
+                        let mut chunk_entries: Vec<ChunkEntry> = Vec::new();
+                        let mut chunk_crops: Vec<image::RgbImage> = Vec::new();
+
+                        for (path, hash) in chunk {
+                            let load_start = std::time::Instant::now();
+                            let img = match load_image(path) {
+                                Ok(i) => i,
+                                Err(msg) => {
+                                    progress.println(&format!("skipping {path}: {msg}"));
+                                    let _ = tx.send(WorkerMsg::ImageError);
+                                    progress.tick();
+                                    continue;
+                                }
+                            };
+                            if want_profile {
+                                let d = load_start.elapsed();
+                                let is_heic = path.as_bytes().len() >= 5
+                                    && path.as_bytes()[path.len() - 5..].eq_ignore_ascii_case(b".heic");
+                                if is_heic { local_profile.load_heic += d; local_profile.count_heic += 1; }
+                                else { local_profile.load_other += d; local_profile.count_other += 1; }
+                            }
+
+                            let detect_start = std::time::Instant::now();
+                            let detections = match detector.detect(&img) {
+                                Ok(d) => d,
+                                Err(e) => {
+                                    progress.println(&format!("detect failed {path}: {e}"));
+                                    let _ = tx.send(WorkerMsg::ImageError);
+                                    progress.tick();
+                                    continue;
+                                }
+                            };
+                            if want_profile { local_profile.detect += detect_start.elapsed(); }
+
+                            if detections.is_empty() {
+                                let _ = tx.send(WorkerMsg::NoFace { hash: hash.clone() });
+                                progress.tick();
+                                continue;
+                            }
+
+                            let align_start = std::time::Instant::now();
+                            let crops: Vec<image::RgbImage> = detections.iter()
+                                .map(|d| face_align::align_face(&img, &d.landmarks))
+                                .collect();
+                            if want_profile { local_profile.align += align_start.elapsed(); }
+
+                            let n_crops = crops.len();
+                            chunk_crops.extend(crops);
+                            chunk_entries.push(ChunkEntry { hash: hash.clone(), detections, n_crops });
+                            progress.tick();
+                        }
+
+                        if chunk_crops.is_empty() { continue; }
+
+                        let embed_start = std::time::Instant::now();
+                        let all_embeddings = match embedder.embed_batch(&chunk_crops) {
+                            Ok(e) => e,
+                            Err(e) => {
+                                progress.println(&format!("embed_batch failed: {e}"));
+                                let _ = tx.send(WorkerMsg::EmbedBatchError { n: chunk_entries.len() });
+                                continue;
+                            }
+                        };
+                        if want_profile { local_profile.embed += embed_start.elapsed(); }
+
+                        let mut emb_offset = 0;
+                        for entry in &chunk_entries {
+                            let n = entry.n_crops;
+                            let embs = &all_embeddings[emb_offset..emb_offset + n];
+                            emb_offset += n;
+                            let rows: Vec<videre_core::face_db::FaceRow> = entry.detections.iter().zip(embs.iter()).map(|(det, emb)| {
+                                let [x1, y1, x2, y2] = det.bbox;
+                                let bbox = format!("{},{},{},{}", x1 as i32, y1 as i32, (x2 - x1) as i32, (y2 - y1) as i32);
+                                let lm_str: String = det.landmarks.iter()
+                                    .flat_map(|[x, y]| [x.to_string(), y.to_string()])
+                                    .collect::<Vec<_>>().join(",");
+                                let embedding: Vec<u8> = emb.iter()
+                                    .flat_map(|&v| half::f16::from_f32(v).to_le_bytes())
+                                    .collect();
+                                videre_core::face_db::FaceRow {
+                                    hash: entry.hash.clone(), bbox, landmark: Some(lm_str),
+                                    embedding, cluster_id: None, person_label: None, confirmed: 0, is_primary: 0,
+                                }
+                            }).collect();
+                            let _ = tx.send(WorkerMsg::Faces { hash: entry.hash.clone(), rows });
+                        }
+                    }
+                    Ok(local_profile)
+                })
+            })
+            .collect();
+        drop(tx); // coordinator's own handle - workers hold the rest, channel closes once all clones drop
+
+        for msg in rx {
+            apply_worker_msg_counts(&mut result, &msg);
+            match msg {
+                WorkerMsg::Faces { hash, rows } => {
+                    if !dry_run {
+                        let write_start = std::time::Instant::now();
+                        let write_result = videre_core::face_db::replace_faces_for_hash(conn, &hash, &rows);
+                        if let Some(p) = profile.as_deref_mut() { p.db_write += write_start.elapsed(); }
+                        match write_result {
+                            Ok(()) => { let _ = videre_core::face_db::mark_scanned(conn, &hash); }
+                            Err(e) => {
+                                progress.println(&format!("write failed {hash}: {e}"));
+                                result.write_errors += 1;
+                            }
+                        }
+                    }
                 }
-            };
+                WorkerMsg::NoFace { hash } => {
+                    if !dry_run { let _ = videre_core::face_db::mark_scanned(conn, &hash); }
+                }
+                WorkerMsg::ImageError | WorkerMsg::EmbedBatchError { .. } => {}
+            }
+        }
+
+        // Join every worker, propagating both a thread panic and the
+        // worker's own Result<ProfileStats> error, and merge each worker's
+        // timing into the caller's accumulator (if profiling was requested).
+        for handle in handles {
+            let worker_profile = handle
+                .join()
+                .map_err(|_| anyhow::anyhow!("face detection worker thread panicked"))??;
             if let Some(p) = profile.as_deref_mut() {
-                let d = load_start.elapsed();
-                let is_heic = path.as_bytes().len() >= 5 && path.as_bytes()[path.len() - 5..].eq_ignore_ascii_case(b".heic");
-                if is_heic { p.load_heic += d; p.count_heic += 1; } else { p.load_other += d; p.count_other += 1; }
-            }
-            let detect_start = std::time::Instant::now();
-            let detections = match detector.detect(&img) {
-                Ok(d) => d,
-                Err(e) => {
-                    progress.println(&format!("detect failed {path}: {e}"));
-                    detect_errors += 1;
-                    progress.tick();
-                    continue;
-                }
-            };
-            if let Some(p) = profile.as_deref_mut() { p.detect += detect_start.elapsed(); }
-            if detections.is_empty() {
-                // Record the no-face image as scanned so it is never
-                // re-detected on a later (resumed) run.
-                if !dry_run {
-                    let _ = videre_core::face_db::mark_scanned(conn, hash);
-                }
-                progress.tick();
-                continue;
-            }
-
-            let align_start = std::time::Instant::now();
-            let crops: Vec<image::RgbImage> = detections.iter()
-                .map(|d| face_align::align_face(&img, &d.landmarks))
-                .collect();
-            if let Some(p) = profile.as_deref_mut() { p.align += align_start.elapsed(); }
-
-            let n_crops = crops.len();
-            chunk_crops.extend(crops);
-            chunk_entries.push(ChunkEntry { path: path.clone(), hash: hash.clone(), detections, n_crops });
-            progress.tick();
-        }
-
-        if chunk_crops.is_empty() { continue; }
-
-        let embed_start = std::time::Instant::now();
-        let all_embeddings = match embedder.embed_batch(&chunk_crops) {
-            Ok(e) => e,
-            Err(e) => {
-                progress.println(&format!("embed_batch failed: {e}"));
-                detect_errors += chunk_entries.len();
-                continue;
-            }
-        };
-        if let Some(p) = profile.as_deref_mut() { p.embed += embed_start.elapsed(); }
-
-        let mut emb_offset = 0;
-        for entry in &chunk_entries {
-            let n = entry.n_crops;
-            let embs = &all_embeddings[emb_offset..emb_offset + n];
-            emb_offset += n;
-
-            let rows: Vec<videre_core::face_db::FaceRow> = entry.detections.iter().zip(embs.iter()).map(|(det, emb)| {
-                let [x1, y1, x2, y2] = det.bbox;
-                let bbox = format!("{},{},{},{}", x1 as i32, y1 as i32, (x2 - x1) as i32, (y2 - y1) as i32);
-                let lm_str: String = det.landmarks.iter()
-                    .flat_map(|[x, y]| [x.to_string(), y.to_string()])
-                    .collect::<Vec<_>>().join(",");
-                let embedding: Vec<u8> = emb.iter()
-                    .flat_map(|&v| f16::from_f32(v).to_le_bytes())
-                    .collect();
-                videre_core::face_db::FaceRow {
-                    hash: entry.hash.clone(), bbox, landmark: Some(lm_str),
-                    embedding, cluster_id: None, person_label: None, confirmed: 0, is_primary: 0,
-                }
-            }).collect();
-
-            total_faces += rows.len();
-            if !dry_run {
-                let write_start = std::time::Instant::now();
-                let write_result = videre_core::face_db::replace_faces_for_hash(conn, &entry.hash, &rows);
-                if let Some(p) = profile.as_deref_mut() { p.db_write += write_start.elapsed(); }
-                if let Err(e) = write_result {
-                    progress.println(&format!("write failed {}: {e}", entry.path));
-                    write_errors += 1;
-                } else {
-                    // Mark scanned only after the faces are durably written, so
-                    // an interrupt before this point re-processes the hash.
-                    let _ = videre_core::face_db::mark_scanned(conn, &entry.hash);
-                }
+                p.merge(worker_profile);
             }
         }
-    }
+        Ok(())
+    })?;
 
     progress.finish();
-
-    Ok(FacesRunResult { total_faces, write_errors, images_processed, detect_errors })
+    Ok(result)
 }
 
 pub struct ClusteringResult {
@@ -479,7 +524,7 @@ mod tests {
     fn run_face_pipeline_on_empty_input_is_a_noop() {
         let conn = Connection::open_in_memory().unwrap();
         face_db::create_faces_table(&conn).unwrap();
-        let result = run_face_pipeline(&conn, &[], 8, false, true, None).unwrap();
+        let result = run_face_pipeline(&conn, &[], 8, false, true, None, 4).unwrap();
         assert_eq!(result.total_faces, 0);
         assert_eq!(result.write_errors, 0);
         assert_eq!(result.images_processed, 0);

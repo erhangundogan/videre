@@ -8,22 +8,19 @@ const REPO_NAME: &str = "buffalo_l";
 
 /// Builds an ORT `Session` for a face model. Previously ran with ORT's
 /// default all-core intra-op thread pool; now takes an explicit
-/// `intra_threads` cap (see below) since `run_face_pipeline` runs multiple
-/// worker threads concurrently, each with its own session - the macOS
-/// CoreML execution provider was measured (2026-07-23) to give no speedup
-/// for these InsightFace models (the SCRFD/ArcFace graphs don't accelerate
-/// on CoreML, and it adds a multi-second per-process model-compile cost), so
-/// it is intentionally not used. The dominant cost of `videre faces` is
-/// SCRFD detection plus per-image loading (HEIC via qlmanage) and, per the
-/// pipeline being fully serial until 2026-07-29, a lack of concurrency - see
+/// `intra_threads` cap since `run_face_pipeline` (pipeline.rs) runs multiple
+/// worker threads concurrently, each with its own session - N sessions x
+/// "every core" would oversubscribe the machine far worse than the old
+/// single-session baseline. Pass a small number (e.g. 2) per worker so N
+/// workers x intra_threads stays near the machine's actual core count. The
+/// macOS CoreML execution provider was measured (2026-07-23) to give no
+/// speedup for these InsightFace models (the SCRFD/ArcFace graphs don't
+/// accelerate on CoreML, and it adds a multi-second per-process
+/// model-compile cost), so it is intentionally not used. The dominant cost
+/// of `videre faces` is SCRFD detection plus per-image loading (HEIC via
+/// qlmanage) and, per the pipeline being fully serial until 2026-07-29, a
+/// lack of concurrency - see
 /// docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md.
-///
-/// When `run_face_pipeline` runs N workers concurrently (see pipeline.rs),
-/// each worker's session must NOT default to using every core - N sessions
-/// x "every core" oversubscribes the machine far worse than the
-/// single-session baseline this comment used to describe. Pass a small
-/// number (e.g. 2) per worker so N workers x intra_threads stays near the
-/// machine's actual core count.
 pub fn build_session(model_path: &Path, intra_threads: usize) -> Result<Session> {
     Session::builder()
         .context("create ort SessionBuilder")?
