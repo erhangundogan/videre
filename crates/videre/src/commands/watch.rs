@@ -154,7 +154,8 @@ fn run_faces_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> 
         .collect();
 
     if !to_process.is_empty() {
-        let result = run_face_pipeline(conn, &to_process, 8, false, args.silent, None)?;
+        let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let result = run_face_pipeline(conn, &to_process, 8, false, args.silent, None, workers)?;
         if !args.silent {
             eprintln!(
                 "videre watch: faces stage processed {} new hash(es), {} face(s)",
