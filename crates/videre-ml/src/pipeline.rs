@@ -63,6 +63,23 @@ pub fn format_profile_report(stats: &ProfileStats) -> String {
     s
 }
 
+/// Splits `items` into `workers` partitions round-robin (item at index `i`
+/// goes to partition `i % workers`), not contiguous chunks - this spreads
+/// any clustering in the input order (e.g. a run of HEIC files from one
+/// photo-import session sitting contiguously) evenly across workers instead
+/// of letting one worker inherit a disproportionately slow subset. Panics if
+/// `workers` is 0 (a caller bug, not a runtime condition to handle
+/// gracefully - `--workers` is validated to be at least 1 before this is
+/// called).
+pub fn round_robin_partition<T: Clone>(items: &[T], workers: usize) -> Vec<Vec<T>> {
+    assert!(workers > 0, "round_robin_partition requires at least 1 worker");
+    let mut parts: Vec<Vec<T>> = vec![Vec::new(); workers];
+    for (i, item) in items.iter().enumerate() {
+        parts[i % workers].push(item.clone());
+    }
+    parts
+}
+
 pub struct FacesRunResult {
     pub total_faces: usize,
     pub write_errors: usize,
@@ -492,5 +509,51 @@ mod tests {
         assert!(map[&6].is_some(), "distinctive faces must still cluster");
         assert_eq!(map[&6], map[&7], "distinctive identity stays together");
         assert_eq!(map[&7], map[&8], "distinctive identity stays together");
+    }
+
+    #[test]
+    fn round_robin_partition_covers_every_item_exactly_once() {
+        let items: Vec<i32> = (0..10).collect();
+        let parts = round_robin_partition(&items, 3);
+        assert_eq!(parts.len(), 3);
+        let mut seen: Vec<i32> = parts.iter().flatten().copied().collect();
+        seen.sort();
+        assert_eq!(seen, (0..10).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn round_robin_partition_assigns_by_index_modulo_worker_count() {
+        let items: Vec<i32> = (0..6).collect();
+        let parts = round_robin_partition(&items, 3);
+        assert_eq!(parts[0], vec![0, 3]);
+        assert_eq!(parts[1], vec![1, 4]);
+        assert_eq!(parts[2], vec![2, 5]);
+    }
+
+    #[test]
+    fn round_robin_partition_more_workers_than_items_leaves_some_empty() {
+        let items: Vec<i32> = vec![10, 20];
+        let parts = round_robin_partition(&items, 5);
+        assert_eq!(parts.len(), 5);
+        assert_eq!(parts[0], vec![10]);
+        assert_eq!(parts[1], vec![20]);
+        assert!(parts[2].is_empty());
+        assert!(parts[3].is_empty());
+        assert!(parts[4].is_empty());
+    }
+
+    #[test]
+    fn round_robin_partition_empty_items_returns_empty_partitions() {
+        let items: Vec<i32> = vec![];
+        let parts = round_robin_partition(&items, 4);
+        assert_eq!(parts.len(), 4);
+        assert!(parts.iter().all(|p: &Vec<i32>| p.is_empty()));
+    }
+
+    #[test]
+    #[should_panic]
+    fn round_robin_partition_zero_workers_panics() {
+        let items: Vec<i32> = vec![1, 2, 3];
+        round_robin_partition(&items, 0);
     }
 }
