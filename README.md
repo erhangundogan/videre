@@ -302,9 +302,14 @@ videre faces --min-cluster-size <n>       # minimum faces per cluster (default: 
 videre faces --merge-sim <f32>            # centroid-merge similarity threshold (default: 0.35; 1 disables)
 videre faces --min-face-size <px>         # min face bbox side (px) to cluster (default: 80; 0 disables)
 videre faces --max-generic-sim <f32>      # distinctiveness gate (default: 0.4; 1 disables)
+videre faces --workers <n>                # worker threads for detection/embedding (default: 2x available core count)
+videre faces --profile                    # print per-stage timing (load/detect/align/embed/db_write) after the run
+videre faces --qlmanage-concurrency <n>   # max concurrent qlmanage (HEIC decode) subprocesses, process-wide (default: 6)
 ```
 
-Face detection uses InsightFace buffalo_l (SCRFD-10GF detector + ArcFace w600k_r50 embedder) via ONNX Runtime. Model weights are downloaded automatically on first run and cached in `~/.cache/ort/`. HEIC images are converted via `qlmanage`, matching the rest of the pipeline (see Platform notes). Detection runs on multiple worker threads by default (see `videre faces --help` for `--workers`/`--profile`/`--qlmanage-concurrency` if you want to tune this).
+Face detection uses InsightFace buffalo_l (SCRFD-10GF detector + ArcFace w600k_r50 embedder) via ONNX Runtime. Model weights are downloaded automatically on first run and cached in `~/.cache/ort/`. HEIC images are converted via `qlmanage`, matching the rest of the pipeline (see Platform notes).
+
+Detection runs on multiple worker threads by default (`--workers`, 2x your machine's core count), each with its own ONNX sessions, processing a round-robin-assigned slice of the work so one worker doesn't inherit a disproportionately HEIC-heavy (slower) subset. A real measurement on a 10-core machine found this gives a ~3.23x wall-clock speedup over running single-threaded. HEIC decoding is further bounded independently of `--workers` by a process-wide cap on concurrent `qlmanage` subprocesses (`--qlmanage-concurrency`, default 6, raised from an earlier default of 3) - QuickLook's thumbnail agent doesn't scale with parallel callers, so this keeps it well-behaved rather than queuing up. Use `--profile` to see real per-stage timing for your own library if you want to tune either value.
 
 Clustering is two-stage: average-linkage agglomeration (`--eps`) followed by a centroid-merge pass (`--merge-sim`) that reunites one person's photos when pose/lighting spread them across several clusters. Before clustering, a two-signal quality gate holds low-quality faces out of the automatic grouping: faces smaller than `--min-face-size` pixels, and faces whose embedding is too close to the population-average face (`--max-generic-sim`) because they are occluded (sunglasses/masks), non-frontal, blurry, or false detections. Such faces embed into near-generic vectors that would otherwise pile into one large mixed cluster.
 
