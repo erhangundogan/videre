@@ -31,6 +31,8 @@ enum Command {
     Search(commands::search::SearchArgs),
     /// Detect, embed, and cluster faces; enables person search
     Faces(commands::faces::FacesArgs),
+    /// Classify images as photo/screenshot/document/meme (zero-shot, reuses embeddings)
+    Classify(commands::classify::ClassifyArgs),
     /// Background loop keeping scan/faces/HEIC-cache/location data fresh
     Watch(commands::watch::WatchArgs),
     /// Show or edit videre's config and default paths (~/.videre)
@@ -51,6 +53,7 @@ fn main() {
         Command::Embed(args) => commands::embed::run(args),
         Command::Search(args) => commands::search::run(args),
         Command::Faces(args) => commands::faces::run(args),
+        Command::Classify(args) => commands::classify::run(args),
         Command::Watch(args) => commands::watch::run(args),
         Command::Config(args) => commands::config::run(args),
         Command::Mcp(args) => commands::mcp::run(args),
