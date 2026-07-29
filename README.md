@@ -23,8 +23,9 @@ Everything runs over a single shared SQLite database.
 | `videre fix-dates` | Set each file's mtime to its EXIF shoot date |
 | `videre prune` | Remove stale rows, sync metadata, clean orphan embeddings |
 | `videre embed` | Compute SigLIP embeddings for every image in the database |
-| `videre search` | Search images by text description, example image, or person name |
+| `videre search` | Search images by text description, example image, person name, or category |
 | `videre faces` | Detect, embed, and cluster faces; enables person search |
+| `videre classify` | Classify images as photo/screenshot/document/meme (zero-shot, reuses embeddings) |
 | `videre watch` | Background loop that keeps scan/faces/HEIC-cache/location data fresh |
 | `videre config` | Show or edit videre's config and default paths (`~/.videre`) |
 | `videre mcp` | Serve read-only MCP tools for LLM agents over stdio |
@@ -94,25 +95,29 @@ videre embed
 videre search "golden gate bridge at sunset"
 videre search --image reference.jpg
 
-# 9. Detect, embed, and cluster faces for person search
+# 9. Classify images as photo/screenshot/document/meme, then find screenshots
+videre classify
+videre search --category screenshot
+
+# 10. Detect, embed, and cluster faces for person search
 videre faces
 
-# 10. Label faces in the browser UI, then save and close
+# 11. Label faces in the browser UI, then save and close
 videre report --faces
 
-# 11. Find all photos of a named person
+# 12. Find all photos of a named person
 videre search --person "Alice"
 
-# 12. Browse the full collection with in-page similarity search
+# 13. Browse the full collection with in-page similarity search
 videre report --all
 
-# 13. Browse a Year/Month/Day drill-down gallery (static HTML, same as --all)
+# 14. Browse a Year/Month/Day drill-down gallery (static HTML, same as --all)
 videre report --by-date
 
-# 14. Live report with labeled-face and location metadata in the lightbox
+# 15. Live report with labeled-face and location metadata in the lightbox
 videre report --show-faces
 
-# 15. Keep everything fresh in the background (run alongside step 14, same db)
+# 16. Keep everything fresh in the background (run alongside step 15, same db)
 videre watch ~/Photos
 ```
 
@@ -123,6 +128,7 @@ videre scan --output-sqlite ~/photos.db ~/Photos
 videre dedupe --db ~/photos.db
 videre report --db ~/photos.db
 videre search --db ~/photos.db "golden gate bridge at sunset"
+videre classify --db ~/photos.db
 videre watch --output-sqlite ~/photos.db ~/Photos
 ```
 
@@ -328,6 +334,35 @@ videre search --person "Alice"            # find all photos of Alice
 
 ---
 
+## videre classify
+
+Classifies every embedded image as `photo`, `screenshot`, `document`, or
+`meme` using zero-shot classification against the SigLIP embeddings
+`videre embed` already computed - no new model, no re-reading image files.
+Requires a prior `videre embed` run.
+
+```bash
+videre classify                     # classify all embedded-but-unclassified hashes, default db
+videre classify --db <path>         # explicit db
+videre classify --reprocess         # re-classify everything, including already-classified hashes
+videre classify --silent            # suppress per-image progress
+videre classify --margin <f32>      # min similarity gap to accept a category, else "unknown" (default: 0.05)
+```
+
+Each image's stored embedding is scored against 4 fixed text prompts (one
+per category) via cosine similarity; the best match wins unless the top two
+scores are too close together, in which case the image is stored as
+`unknown` rather than a low-confidence guess. Resumable like `videre embed`/
+`videre faces`: re-running only classifies hashes that don't have a
+classification yet, unless `--reprocess`.
+
+```bash
+videre search --category screenshot          # print paths of all screenshots
+videre search --category document --json     # same, JSON output
+```
+
+---
+
 ## videre watch
 
 A background loop that keeps your database warm: rescans for new photos, detects faces on them, pre-converts HEIC thumbnails, and resolves GPS coordinates to place names - all on a timer, so `videre report --show-faces` never has to do this work on the fly. It's a simple foreground loop, not a daemon: run it in its own terminal or tmux pane, watch its progress on stderr, and stop it with Ctrl-C.
@@ -381,7 +416,7 @@ In dry-run mode, the orphan embedding count is a lower bound: it reflects only p
 
 ## videre embed and videre search
 
-`videre embed` computes SigLIP embeddings (google/siglip-so400m-patch14-384, 1152-dim f16) for every image in the database and stores them keyed by content hash. Re-running only processes images not yet embedded. `.mov`, `.mp4`, and `.dng` files are skipped.
+`videre embed` computes SigLIP embeddings (google/siglip-so400m-patch14-384, 1152-dim f16) for every image in the database and stores them keyed by content hash. Re-running only processes images not yet embedded. `.mov`, `.mp4`, and `.dng` files are skipped. `videre classify` (see above) reuses these embeddings for zero-shot photo/screenshot/document/meme classification, so it's worth running `videre embed` even if you don't need text/image search.
 
 ```bash
 videre embed                        # embed all unprocessed images in the default db
@@ -406,6 +441,7 @@ videre search --person "Alice"                      # find all photos of Alice (
 | `--db <path>` | SQLite database with embeddings (default: resolved from `~/.videre`) |
 | `--image <path>` | Search by example image instead of a text query (mutually exclusive with a text query) |
 | `--person <name>` | Return paths containing a named person - confirmed faces only (mutually exclusive with a text query or `--image`) |
+| `--category <name>` | Filter by classified category: `photo`/`screenshot`/`document`/`meme`/`unknown` (mutually exclusive with a text query, `--image`, or `--person`; requires a prior `videre classify` run) |
 | `-k, --top-k <n>` | Number of results (default: 20) |
 | `--scores` | Prepend the cosine score to each output line |
 | `--json` | Emit a single JSON object on stdout instead of text |
@@ -532,9 +568,16 @@ CREATE TABLE IF NOT EXISTS faces_scanned (
     hash        TEXT PRIMARY KEY,
     scanned_at  TEXT DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS classifications (
+    hash          TEXT PRIMARY KEY,
+    category      TEXT NOT NULL,
+    confidence    REAL NOT NULL,
+    classified_at TEXT NOT NULL
+);
 ```
 
-Re-scanning upserts existing rows by `path`. `phash` is only written with `--similar`. EXIF fields (`exif_date`, `gps_lat`, `gps_lon`, `width`, `height`) are written for jpg/jpeg/tiff/heic/dng files; null for all others. `location_name` is added by an idempotent migration on `videre report` startup and is not written by `videre scan` itself - it's populated lazily, one coordinate at a time, when `videre report --show-faces` (or `videre watch --location`) resolves and caches a reverse-geocoded location name. `faces_scanned` records every hash `videre faces` has processed, including images with zero detected faces (which leave no `faces` row) - this is what makes detection resumable.
+Re-scanning upserts existing rows by `path`. `phash` is only written with `--similar`. EXIF fields (`exif_date`, `gps_lat`, `gps_lon`, `width`, `height`) are written for jpg/jpeg/tiff/heic/dng files; null for all others. `location_name` is added by an idempotent migration on `videre report` startup and is not written by `videre scan` itself - it's populated lazily, one coordinate at a time, when `videre report --show-faces` (or `videre watch --location`) resolves and caches a reverse-geocoded location name. `faces_scanned` records every hash `videre faces` has processed, including images with zero detected faces (which leave no `faces` row) - this is what makes detection resumable. `classifications` is populated by `videre classify` (zero-shot, reuses `embeddings` - no new model or image decoding) and queried via `videre search --category <name>`.
 
 Every command opens the database in SQLite's WAL journal mode, so `videre watch` and `videre report --show-faces` can safely read and write the same database file at the same time.
 
