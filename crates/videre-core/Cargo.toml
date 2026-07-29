@@ -1,6 +1,6 @@
 [package]
 name = "videre-core"
-version = "0.5.4"
+version = "0.7.0"
 edition = "2021"
 
 [dependencies]
