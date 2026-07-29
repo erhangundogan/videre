@@ -87,7 +87,7 @@ pub fn run(args: FacesArgs) -> Result<()> {
     }
 
     let started = std::time::Instant::now();
-    let result = run_face_pipeline(&conn, &to_process, args.batch, args.dry_run, args.silent)?;
+    let result = run_face_pipeline(&conn, &to_process, args.batch, args.dry_run, args.silent, None)?;
 
     // Cluster at the end of a full pass, but skip it on a partial (--limit) run:
     // clustering is an O(n^2) whole-library step and re-running it after every
