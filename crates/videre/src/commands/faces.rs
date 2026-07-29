@@ -40,6 +40,17 @@ pub struct FacesArgs {
     /// tool, not part of the normal summary - see
     /// docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md.
     #[arg(long)] profile: bool,
+    /// Number of worker threads for face detection/embedding (each with its
+    /// own ONNX sessions, intra-op-thread-capped so they don't collectively
+    /// oversubscribe the machine). Defaults to 2x available core count - real
+    /// profiling data (docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md,
+    /// and see the architecture memory) showed HEIC file loading (via a
+    /// qlmanage subprocess) averages ~52x longer than non-HEIC loading and
+    /// dominates the whole per-image cost, so a flat 1:1 worker:core mapping
+    /// leaves CPU idle while many workers sit blocked on that subprocess -
+    /// oversubscribing keeps cores busy with other workers' CPU-bound
+    /// detect/embed work while some workers wait on I/O.
+    #[arg(long)] workers: Option<usize>,
 }
 
 pub fn run(args: FacesArgs) -> Result<()> {
@@ -93,7 +104,10 @@ pub fn run(args: FacesArgs) -> Result<()> {
 
     let started = std::time::Instant::now();
     let mut profile_stats = ProfileStats::default();
-    let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let workers = args.workers.unwrap_or_else(|| {
+        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        cores * 2
+    });
     let result = run_face_pipeline(
         &conn, &to_process, args.batch, args.dry_run, args.silent,
         if args.profile { Some(&mut profile_stats) } else { None },
