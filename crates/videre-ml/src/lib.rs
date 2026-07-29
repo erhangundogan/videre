@@ -1,3 +1,4 @@
+pub mod classify;
 pub mod device;
 pub mod face_align;
 pub mod face_detect;
