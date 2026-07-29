@@ -87,6 +87,47 @@ pub struct FacesRunResult {
     pub detect_errors: usize,
 }
 
+/// One worker thread's report of a single image's (or, for
+/// `EmbedBatchError`, a whole failed chunk's) outcome, sent to the
+/// coordinator thread over an `mpsc` channel. The coordinator is the only
+/// thing that touches the database (see Task 6) - `Faces` carries everything
+/// needed to call `replace_faces_for_hash` there. Per-image error messages
+/// (`skipping ...`, `detect failed ...`) are printed by the worker itself via
+/// the shared, thread-safe `Progress::println` (see
+/// `videre_core::progress::Progress`'s doc comment) - `ImageError`/
+/// `EmbedBatchError` carry counts only, not message text, since the text was
+/// already printed at the point of failure.
+pub enum WorkerMsg {
+    NoFace { hash: String },
+    Faces { hash: String, rows: Vec<videre_core::face_db::FaceRow> },
+    ImageError,
+    EmbedBatchError { n: usize },
+}
+
+/// Updates `result`'s counters for one `WorkerMsg` - the part of handling a
+/// message that's pure bookkeeping, independent of the (impure) DB write a
+/// `Faces` message also triggers on the coordinator. Extracted so this
+/// bookkeeping is unit-testable without a real `Connection`.
+pub fn apply_worker_msg_counts(result: &mut FacesRunResult, msg: &WorkerMsg) {
+    match msg {
+        WorkerMsg::NoFace { .. } => {
+            result.images_processed += 1;
+        }
+        WorkerMsg::Faces { rows, .. } => {
+            result.images_processed += 1;
+            result.total_faces += rows.len();
+        }
+        WorkerMsg::ImageError => {
+            result.images_processed += 1;
+            result.detect_errors += 1;
+        }
+        WorkerMsg::EmbedBatchError { n } => {
+            result.images_processed += n;
+            result.detect_errors += n;
+        }
+    }
+}
+
 /// Detects, embeds, and writes faces for the given (path, hash) pairs -
 /// callers are responsible for deciding which hashes need processing (e.g.
 /// "not already in the faces table" for incremental use, or "everything"
@@ -555,5 +596,52 @@ mod tests {
     fn round_robin_partition_zero_workers_panics() {
         let items: Vec<i32> = vec![1, 2, 3];
         round_robin_partition(&items, 0);
+    }
+
+    fn sample_face_row(hash: &str) -> videre_core::face_db::FaceRow {
+        videre_core::face_db::FaceRow {
+            hash: hash.to_string(),
+            bbox: "0,0,10,10".to_string(),
+            landmark: None,
+            embedding: vec![0u8; 1024],
+            cluster_id: None,
+            person_label: None,
+            confirmed: 0,
+            is_primary: 0,
+        }
+    }
+
+    #[test]
+    fn apply_worker_msg_no_face_increments_images_processed_only() {
+        let mut result = FacesRunResult { total_faces: 0, write_errors: 0, images_processed: 0, detect_errors: 0 };
+        apply_worker_msg_counts(&mut result, &WorkerMsg::NoFace { hash: "h1".into() });
+        assert_eq!(result.images_processed, 1);
+        assert_eq!(result.total_faces, 0);
+        assert_eq!(result.detect_errors, 0);
+    }
+
+    #[test]
+    fn apply_worker_msg_faces_increments_processed_and_total_faces() {
+        let mut result = FacesRunResult { total_faces: 0, write_errors: 0, images_processed: 0, detect_errors: 0 };
+        let rows = vec![sample_face_row("h1"), sample_face_row("h1")];
+        apply_worker_msg_counts(&mut result, &WorkerMsg::Faces { hash: "h1".into(), rows });
+        assert_eq!(result.images_processed, 1);
+        assert_eq!(result.total_faces, 2);
+    }
+
+    #[test]
+    fn apply_worker_msg_image_error_increments_processed_and_detect_errors() {
+        let mut result = FacesRunResult { total_faces: 0, write_errors: 0, images_processed: 0, detect_errors: 0 };
+        apply_worker_msg_counts(&mut result, &WorkerMsg::ImageError);
+        assert_eq!(result.images_processed, 1);
+        assert_eq!(result.detect_errors, 1);
+    }
+
+    #[test]
+    fn apply_worker_msg_embed_batch_error_increments_processed_and_detect_errors_by_n() {
+        let mut result = FacesRunResult { total_faces: 0, write_errors: 0, images_processed: 0, detect_errors: 0 };
+        apply_worker_msg_counts(&mut result, &WorkerMsg::EmbedBatchError { n: 5 });
+        assert_eq!(result.images_processed, 5);
+        assert_eq!(result.detect_errors, 5);
     }
 }
