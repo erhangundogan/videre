@@ -1,6 +1,6 @@
 use anyhow::Result;
 use videre_core::face_db;
-use videre_ml::pipeline::{run_clustering, run_face_pipeline, ClusteringResult, FacesRunResult};
+use videre_ml::pipeline::{format_profile_report, run_clustering, run_face_pipeline, ClusteringResult, FacesRunResult, ProfileStats};
 use std::path::PathBuf;
 
 #[derive(clap::Args)]
@@ -35,6 +35,22 @@ pub struct FacesArgs {
     /// the population-average face (occluded/profile/blurry/false detections) are held
     /// out of clustering. Lower = stricter. 1 disables. Default 0.4.
     #[arg(long, default_value = "0.4")] max_generic_sim: f32,
+    /// Print per-stage timing (load/detect/align/embed/db_write, load split
+    /// HEIC vs. other) averaged per image, after the run finishes. A tuning
+    /// tool, not part of the normal summary - see
+    /// docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md.
+    #[arg(long)] profile: bool,
+    /// Number of worker threads for face detection/embedding (each with its
+    /// own ONNX sessions, intra-op-thread-capped so they don't collectively
+    /// oversubscribe the machine). Defaults to 2x available core count - real
+    /// profiling data (docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md,
+    /// and see the architecture memory) showed HEIC file loading (via a
+    /// qlmanage subprocess) averages ~52x longer than non-HEIC loading and
+    /// dominates the whole per-image cost, so a flat 1:1 worker:core mapping
+    /// leaves CPU idle while many workers sit blocked on that subprocess -
+    /// oversubscribing keeps cores busy with other workers' CPU-bound
+    /// detect/embed work while some workers wait on I/O.
+    #[arg(long)] workers: Option<usize>,
 }
 
 pub fn run(args: FacesArgs) -> Result<()> {
@@ -87,7 +103,16 @@ pub fn run(args: FacesArgs) -> Result<()> {
     }
 
     let started = std::time::Instant::now();
-    let result = run_face_pipeline(&conn, &to_process, args.batch, args.dry_run, args.silent)?;
+    let mut profile_stats = ProfileStats::default();
+    let workers = args.workers.unwrap_or_else(|| {
+        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        cores * 2
+    });
+    let result = run_face_pipeline(
+        &conn, &to_process, args.batch, args.dry_run, args.silent,
+        if args.profile { Some(&mut profile_stats) } else { None },
+        workers,
+    )?;
 
     // Cluster at the end of a full pass, but skip it on a partial (--limit) run:
     // clustering is an O(n^2) whole-library step and re-running it after every
@@ -107,6 +132,10 @@ pub fn run(args: FacesArgs) -> Result<()> {
                 "partial run (--limit): {remaining} image(s) scanned so far; rerun to continue, then 'videre faces --recluster' to cluster"
             );
         }
+    }
+
+    if args.profile {
+        eprintln!("{}", format_profile_report(&profile_stats));
     }
 
     if result.write_errors > 0 || result.detect_errors > 0 {
