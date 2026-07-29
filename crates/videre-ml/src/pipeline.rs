@@ -149,8 +149,9 @@ pub fn run_face_pipeline(
     }
 
     let (det_path, rec_path) = face_models::buffalo_l_paths()?;
-    let mut detector = face_detect::FaceDetector::new(&det_path)?;
-    let mut embedder = face_embed::FaceEmbedder::new(&rec_path)?;
+    let intra_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let mut detector = face_detect::FaceDetector::new(&det_path, intra_threads)?;
+    let mut embedder = face_embed::FaceEmbedder::new(&rec_path, intra_threads)?;
 
     let progress = videre_core::progress::Progress::new(to_process.len() as u64, silent);
 
