@@ -570,7 +570,7 @@ CREATE TABLE IF NOT EXISTS faces_scanned (
 );
 
 CREATE TABLE IF NOT EXISTS classifications (
-    hash          TEXT PRIMARY KEY,
+    hash          TEXT PRIMARY KEY NOT NULL,
     category      TEXT NOT NULL,
     confidence    REAL NOT NULL,
     classified_at TEXT NOT NULL
