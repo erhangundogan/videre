@@ -197,7 +197,7 @@ videre scan [OPTIONS] [directory]   # directory optional when 'path' is set in v
 videre scan ~/Photos                                          # populate the default db
 videre scan --silent ~/Photos                                 # quiet mode
 videre scan ~/Photos --output                                 # write JSONL to ~/.videre/hashes.jsonl
-videre scan --output-sqlite ~/photos.db ~/Photos               # write to an explicit db instead
+videre scan --output-sqlite ~/photos.db ~/Photos              # write to an explicit db instead
 videre scan --similar --output-sqlite ~/photos.db ~/Photos    # also compute perceptual hashes
 ```
 
@@ -226,8 +226,8 @@ videre dedupe                                                 # preview removals
 videre dedupe | xargs trash                                   # delete immediately
 videre dedupe --silent > to_delete.txt                        # save list for later
 videre scan --output ~/Photos                                 # write JSONL to ~/.videre/hashes.jsonl
-videre scan --output-sqlite ~/photos.db ~/Photos               # scan to an explicit db
-videre dedupe --db ~/photos.db --similar                       # explicit db, include visual duplicates
+videre scan --output-sqlite ~/photos.db ~/Photos              # scan to an explicit db
+videre dedupe --db ~/photos.db --similar                      # explicit db, include visual duplicates
 ```
 
 Visual duplicates use [dHash](http://www.hackerfactor.com/blog/index.php?/archives/529-Kind-of-Like-That.html): images are resized to 9x8 grayscale, adjacent pixel pairs produce a 64-bit fingerprint, and pairs with Hamming distance <= 10 are grouped as similar. Visual groups are logged to stderr only - review with `videre report` before deleting.
@@ -386,7 +386,8 @@ In dry-run mode, the orphan embedding count is a lower bound: it reflects only p
 ```bash
 videre embed                        # embed all unprocessed images in the default db
 videre embed --db <path>            # explicit db
-videre embed --batch 64             # larger batch size (default: 32)
+videre embed --batch 64             # larger inference batch size (default: 32)
+videre embed --chunk 1000           # rows written per transaction / resume granularity (default: 500)
 videre embed --silent               # suppress per-image output
 ```
 
@@ -397,11 +398,16 @@ videre search "sunset on beach"                     # text query, default db
 videre search --db <path> "sunset on beach"         # explicit db
 videre search --image query.jpg                     # find images similar to an example
 videre search "birthday cake" -k 10 --scores        # top 10 with cosine scores
-videre search --person "Alice"                       # find all photos of Alice (requires videre faces)
+videre search --person "Alice"                      # find all photos of Alice (requires videre faces)
 ```
 
 | Flag | Description |
 |------|-------------|
+| `--db <path>` | SQLite database with embeddings (default: resolved from `~/.videre`) |
+| `--image <path>` | Search by example image instead of a text query (mutually exclusive with a text query) |
+| `--person <name>` | Return paths containing a named person - confirmed faces only (mutually exclusive with a text query or `--image`) |
+| `-k, --top-k <n>` | Number of results (default: 20) |
+| `--scores` | Prepend the cosine score to each output line |
 | `--json` | Emit a single JSON object on stdout instead of text |
 
 `--scores` is a no-op under `--json`: the score is always included in each result.
@@ -521,9 +527,14 @@ CREATE TABLE IF NOT EXISTS faces (
     confirmed     INTEGER DEFAULT 0,
     is_primary    INTEGER DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS faces_scanned (
+    hash        TEXT PRIMARY KEY,
+    scanned_at  TEXT DEFAULT (datetime('now'))
+);
 ```
 
-Re-scanning upserts existing rows by `path`. `phash` is only written with `--similar`. EXIF fields (`exif_date`, `gps_lat`, `gps_lon`, `width`, `height`) are written for jpg/jpeg/tiff/heic/dng files; null for all others. `location_name` is added by an idempotent migration on `videre report` startup and is not written by `videre scan` itself - it's populated lazily, one coordinate at a time, when `videre report --show-faces` (or `videre watch --location`) resolves and caches a reverse-geocoded location name.
+Re-scanning upserts existing rows by `path`. `phash` is only written with `--similar`. EXIF fields (`exif_date`, `gps_lat`, `gps_lon`, `width`, `height`) are written for jpg/jpeg/tiff/heic/dng files; null for all others. `location_name` is added by an idempotent migration on `videre report` startup and is not written by `videre scan` itself - it's populated lazily, one coordinate at a time, when `videre report --show-faces` (or `videre watch --location`) resolves and caches a reverse-geocoded location name. `faces_scanned` records every hash `videre faces` has processed, including images with zero detected faces (which leave no `faces` row) - this is what makes detection resumable.
 
 Every command opens the database in SQLite's WAL journal mode, so `videre watch` and `videre report --show-faces` can safely read and write the same database file at the same time.
 
@@ -553,4 +564,4 @@ jq -s 'group_by(.hash)|map(select(length>1))|map(.[0].size_bytes*(length-1))|add
 
 ## License
 
-MIT
+Apache License 2.0 - see [LICENSE](LICENSE).
