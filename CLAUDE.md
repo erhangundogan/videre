@@ -4,16 +4,17 @@ A fast Rust CLI tool for managing a local media library: duplicate detection, se
 
 ## What it does
 
-`videre` is a single binary with eleven subcommands. `videre scan` scans a directory
+`videre` is a single binary with twelve subcommands. `videre scan` scans a directory
 recursively, hashes every image file (BLAKE3), and writes the results into the database
 (or JSONL with `--output`). `videre dedupe` reads that database and writes REMOVE
 candidates to stdout one per line: ready to pipe into `trash` or `rm`. Bare `videre scan
 <dir>` writes SQLite to the resolved default database (see `~/.videre` below); JSONL
 output requires `--output`. `videre report` reads the SQLite database and generates an
 HTML review page (or serves a live web UI). The remaining subcommands (`fix-dates`,
-`prune`, `embed`, `search`, `faces`, `watch`) operate on the same SQLite database to fix
-timestamps, sync metadata, compute semantic embeddings, run text/image/person search,
-and detect/label faces. `videre config` shows or edits the resolved paths and
+`prune`, `embed`, `search`, `faces`, `classify`, `watch`) operate on the same SQLite
+database to fix timestamps, sync metadata, compute semantic embeddings, run
+text/image/person/category search, detect/label faces, and classify images as
+photo/screenshot/document/meme. `videre config` shows or edits the resolved paths and
 `~/.videre/config.toml` settings. `videre mcp` serves read-only search/find_duplicates/
 stats tools over stdio for LLM agents.
 
@@ -94,7 +95,7 @@ cargo build --release
 
 Every subcommand shares a home directory at `~/.videre` (override with the `VIDERE_HOME` env var), created lazily by writers (`scan`, `watch`, `config set`) - readers never create it. It holds `hashes.db` (default SQLite database), `hashes.jsonl` (default JSONL output, only written when `--output` is used bare), and `config.toml` (optional overrides, currently just `default_db`).
 
-Database resolution order for every subcommand: explicit path (`--db` on the eight readers - `report`, `fix-dates`, `prune`, `embed`, `search`, `faces`, `mcp`, `dedupe`; `--output-sqlite` on the two writers - `scan`, `watch`) > `default_db` in `config.toml` > `~/.videre/hashes.db`. Readers never create a database; if the resolved path doesn't exist they print `no database found at <path>; run 'videre scan <dir>' first` and exit 1 (arrives as the JSON error object under `search --json`).
+Database resolution order for every subcommand: explicit path (`--db` on the nine readers - `report`, `fix-dates`, `prune`, `embed`, `search`, `faces`, `classify`, `mcp`, `dedupe`; `--output-sqlite` on the two writers - `scan`, `watch`) > `default_db` in `config.toml` > `~/.videre/hashes.db`. Readers never create a database; if the resolved path doesn't exist they print `no database found at <path>; run 'videre scan <dir>' first` and exit 1 (arrives as the JSON error object under `search --json`).
 
 `videre config` shows the resolved home dir, `config.toml` path, the `db` and `path` settings (labeled by their settable keys, with a set-command hint when unset), resolved db, and jsonl path. `videre config set db <path>` writes an absolute path to `config.toml` as `default_db`; `videre config set path <dir>` writes `default_path`, which `videre scan` and `videre watch` use when their directory positional is omitted (no built-in fallback: without it, the directory is required). Both setters preserve any other keys already present; `videre config unset db|path` removes a key. `videre scan <dir>` also adopts `<dir>` as `default_path` automatically the first time it is run with no `default_path` already set (a one-time convenience for the common case of a single photo library); it prints a one-line stderr note when it does (suppressed by `--silent`), and never overwrites an already-configured `default_path` on later runs.
 
@@ -105,7 +106,7 @@ crates/
   videre/
     Cargo.toml
     src/main.rs
-    src/commands/{mod.rs,dedupe.rs,report.rs,scan.rs,fix_dates.rs,prune.rs,embed.rs,search.rs,faces.rs,watch.rs,config.rs,mcp.rs}
+    src/commands/{mod.rs,dedupe.rs,report.rs,scan.rs,fix_dates.rs,prune.rs,embed.rs,search.rs,faces.rs,classify.rs,watch.rs,config.rs,mcp.rs}
     src/{lib.rs,scanner.rs,hasher.rs,output.rs,sqlite_output.rs,types.rs}
     tests/{integration.rs,report.rs,prune.rs,watch.rs,faces_pipeline.rs,faces_server.rs,person_search.rs,mcp.rs,scan.rs,config.rs,fixtures/}
   videre-core/
@@ -113,6 +114,7 @@ crates/
     src/lib.rs
     src/vectors.rs
     src/embeddings.rs
+    src/classify.rs
     src/face_db.rs
     src/face_cluster.rs
     src/person_search.rs
@@ -125,7 +127,7 @@ crates/
   videre-ml/
     Cargo.toml (lib-only, no binaries)
     src/lib.rs
-    src/{device.rs,model.rs,preprocess.rs,search.rs,pipeline.rs}
+    src/{device.rs,model.rs,preprocess.rs,search.rs,pipeline.rs,classify.rs}
     src/{face_models.rs,face_detect.rs,face_align.rs,face_embed.rs}
   videre-api/
     Cargo.toml (lib-only, no binaries)
@@ -196,6 +198,13 @@ CREATE TABLE IF NOT EXISTS faces (
     confirmed     INTEGER DEFAULT 0,
     is_primary    INTEGER DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS classifications (
+    hash          TEXT PRIMARY KEY,
+    category      TEXT NOT NULL,
+    confidence    REAL NOT NULL,
+    classified_at TEXT NOT NULL
+);
 ```
 
 Re-scanning the same folder with the same SQLite file upserts (overwrites) existing rows via `INSERT OR REPLACE`. `phash` is stored as signed `INTEGER` (cast from `u64`).
@@ -203,6 +212,8 @@ Re-scanning the same folder with the same SQLite file upserts (overwrites) exist
 `faces` rows are keyed by `id` (auto-increment). `hash` links to `file_hashes`. `bbox` and `landmark` are JSON strings. `embedding` is a raw f16 BLOB (512-dim ArcFace, 1024 bytes). `cluster_id` is assigned by the two-stage clustering (average-linkage, then a centroid-merge pass); `person_label` and `confirmed` are set via `videre report --faces`.
 
 A companion `faces_scanned` table (`hash TEXT PRIMARY KEY, scanned_at TEXT`) records every hash that face detection has processed, **including images where zero faces were found** (which produce no `faces` row). This is what makes `videre faces` resumable - the skip set is "already scanned", so no-face images are detected once rather than every run. Created by `create_faces_table` alongside `faces`; written per hash as detection proceeds.
+
+`classifications` is populated by `videre classify` (zero-shot photo/screenshot/document/meme classification, scoring `embeddings` rows already computed by `videre embed` against 4 fixed text prompts via cosine similarity - no new model, no image re-decoding) and queried via `videre search --category <name>`. Rows below the configurable `--margin` similarity gap between the best and second-best category are stored as `category = "unknown"` rather than a low-confidence guess.
 
 `location_name` is a nullable TEXT column added by an idempotent `ALTER TABLE file_hashes ADD COLUMN location_name TEXT` migration (run on every `videre report` startup; harmless if the column already exists) - it is not populated by the initial `videre scan`. It is populated lazily, one GPS coordinate at a time, by the `/api/location` endpoint when `--show-faces` is used: the first lightbox view of a photo at a given `(gps_lat, gps_lon)` triggers a reverse-geocode lookup, and the result is cached back into this column so later lookups for the same coordinate are free.
 
@@ -336,6 +347,30 @@ CREATE TABLE embeddings (
     embedded_at TEXT NOT NULL
 );
 ```
+
+## videre classify
+
+`videre classify` (optionally `--db <db>`) classifies every embedded hash as `photo`,
+`screenshot`, `document`, or `meme` via zero-shot classification: each stored embedding
+is scored by cosine similarity against 4 fixed text prompts (`crates/videre-ml/src/classify.rs`'s
+`CATEGORY_PROMPTS`), embedded once via the same SigLIP text tower `videre search` uses.
+No new model, no image re-decoding - this runs entirely over vectors `videre embed`
+already computed. Resumable: re-running only classifies hashes not yet in
+`classifications`, unless `--reprocess`. `--margin` (default 0.05) is the min similarity
+gap between the best and second-best category to accept a result; below that, the row
+is stored as `unknown` rather than a low-confidence guess.
+
+```
+videre classify                     # classify all embedded-but-unclassified hashes, default db
+videre classify --db <path>         # explicit db
+videre classify --reprocess         # re-classify everything, including already-classified hashes
+videre classify --silent            # suppress per-image progress
+videre classify --margin <f32>      # min similarity gap to accept a category (default: 0.05)
+```
+
+`videre search --category <name>` queries the `classifications` table for rows matching
+`category` and prints matching image paths (or, under `--json`, a `results` array with
+`path`+`hash` per entry - no `score`, since this is set membership, not a ranked query).
 
 ## videre faces
 
@@ -541,3 +576,4 @@ all share one version number, separate from the `crates/*` version).
 - `docs/superpowers/specs/2026-07-17-faces-ui-fixes-design.md` - face-labeling web UI fixes (name sort, sidebar toggle, singleton multi-select, Set Default photo)
 - `docs/superpowers/specs/2026-07-23-desktop-app-design.md` - Tauri v2 + React/shadcn desktop app (videre-api facade, Tauri scaffold, faces labeling UI)
 - `docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md` - `videre faces` profiling instrumentation + multi-worker pipeline parallelization (`--workers`/`--profile` flags)
+- `docs/superpowers/specs/2026-07-29-screenshot-document-classification-design.md` - zero-shot photo/screenshot/document/meme classification reusing `videre embed` embeddings; `videre classify` subcommand + `videre search --category`
