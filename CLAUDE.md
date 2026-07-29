@@ -76,6 +76,8 @@ cargo build --release
 ./target/release/videre faces                                            # detect, embed, and cluster faces
 ./target/release/videre report --faces                                   # label faces in browser UI (localhost:7878)
 ./target/release/videre search --person "Alice"                          # find photos of Alice
+./target/release/videre classify                                         # classify images as photo/screenshot/document/meme
+./target/release/videre search --category screenshot                     # find images classified as screenshots
 ./target/release/videre report --by-date                                 # static Year/Month/Day drill-down gallery
 ./target/release/videre report --show-faces                              # live report with face/location lightbox metadata
 ./target/release/videre watch ~/Photos                                   # background: scan + faces + HEIC cache + location, looping, default db
@@ -200,7 +202,7 @@ CREATE TABLE IF NOT EXISTS faces (
 );
 
 CREATE TABLE IF NOT EXISTS classifications (
-    hash          TEXT PRIMARY KEY,
+    hash          TEXT PRIMARY KEY NOT NULL,
     category      TEXT NOT NULL,
     confidence    REAL NOT NULL,
     classified_at TEXT NOT NULL
@@ -328,7 +330,8 @@ is still available from the scan).
 paths to stdout (all duplicate paths per matched hash). `-k` top-k (default 20),
 `--scores` prepends cosine score. Brute-force exact scan; no ANN index at this scale.
 `videre search ... --json` emits a single JSON document (`schema_version`, `query`,
-`count`, `results` with per-path `hash`/`score`; `--person` hits carry `path` only)
+`count`, `results` with per-path `hash`/`score`; `--person` hits carry `path` only;
+`--category` hits carry `path`+`hash` but no `score`, since it's set membership, not a ranked query)
 instead of the printed paths above; `--scores` is a no-op under `--json` since the
 score is always included.
 
@@ -485,7 +488,7 @@ Thumbnails land in `~/.cache/videre/thumbnails/`, keyed by content hash rather t
 
 ## videre mcp
 
-Serves three read-only tools over stdio (line-delimited JSON-RPC, the standard MCP client transport) using the official `rmcp` SDK: `search` (text/person/image, same modes as `videre search`), `find_duplicates` (keep/remove groups, plus review-only similar clusters via `include_similar`), and `stats` (library summary, no params).
+Serves three read-only tools over stdio (line-delimited JSON-RPC, the standard MCP client transport) using the official `rmcp` SDK: `search` (text/person/image - a subset of `videre search`'s modes; `--category` is CLI-only, not exposed here), `find_duplicates` (keep/remove groups, plus review-only similar clusters via `include_similar`), and `stats` (library summary, no params).
 
 ```bash
 videre mcp                # default db
