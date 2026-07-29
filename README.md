@@ -286,12 +286,15 @@ In static mode, HEIC files show a "HEIC" placeholder by default; `--heic` embeds
 
 Detects faces in every image in the database, embeds each face with ArcFace, and clusters faces across images into identity groups. Run this after `videre embed` (or independently) to enable person search.
 
+This can be a **long-running process** - detection time scales with how many images are in your library, not a fixed cost. Non-HEIC images process in well under a second each, but HEIC files decode through a `qlmanage` subprocess that can take several seconds per file, so a library with a substantial HEIC share can take anywhere from minutes to hours depending on size. It's fully **resumable**: every processed image (including ones where no face was found) is recorded as scanned, so interrupting with Ctrl-C and re-running later continues exactly where it left off rather than starting over. Use `--limit <n>` to deliberately process the library in bounded chunks instead of one long run.
+
 ```bash
 videre faces                              # process new hashes only (resumable), default db
 videre faces --db <path>                  # explicit db
 videre faces --reprocess                  # re-detect and re-embed all hashes
 videre faces --recluster                  # skip detection; re-run clustering only
 videre faces --dry-run                    # detect and embed but do not write to db
+videre faces --limit <n>                  # process at most N not-yet-scanned images, then stop
 videre faces --batch <n>                  # images per ONNX batch (default: 8)
 videre faces --silent                     # suppress per-image progress
 videre faces --eps <f32>                  # average-linkage cosine-distance radius (default: 0.6)
@@ -301,7 +304,7 @@ videre faces --min-face-size <px>         # min face bbox side (px) to cluster (
 videre faces --max-generic-sim <f32>      # distinctiveness gate (default: 0.4; 1 disables)
 ```
 
-Face detection uses InsightFace buffalo_l (SCRFD-10GF detector + ArcFace w600k_r50 embedder) via ONNX Runtime. Model weights are downloaded automatically on first run and cached in `~/.cache/ort/`. HEIC images are converted via `qlmanage`, matching the rest of the pipeline (see Platform notes).
+Face detection uses InsightFace buffalo_l (SCRFD-10GF detector + ArcFace w600k_r50 embedder) via ONNX Runtime. Model weights are downloaded automatically on first run and cached in `~/.cache/ort/`. HEIC images are converted via `qlmanage`, matching the rest of the pipeline (see Platform notes). Detection runs on multiple worker threads by default (see `videre faces --help` for `--workers`/`--profile`/`--qlmanage-concurrency` if you want to tune this).
 
 Clustering is two-stage: average-linkage agglomeration (`--eps`) followed by a centroid-merge pass (`--merge-sim`) that reunites one person's photos when pose/lighting spread them across several clusters. Before clustering, a two-signal quality gate holds low-quality faces out of the automatic grouping: faces smaller than `--min-face-size` pixels, and faces whose embedding is too close to the population-average face (`--max-generic-sim`) because they are occluded (sunglasses/masks), non-frontal, blurry, or false detections. Such faces embed into near-generic vectors that would otherwise pile into one large mixed cluster.
 
