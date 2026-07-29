@@ -1,6 +1,6 @@
 use anyhow::Result;
 use videre_core::face_db;
-use videre_ml::pipeline::{run_clustering, run_face_pipeline, ClusteringResult, FacesRunResult};
+use videre_ml::pipeline::{format_profile_report, run_clustering, run_face_pipeline, ClusteringResult, FacesRunResult, ProfileStats};
 use std::path::PathBuf;
 
 #[derive(clap::Args)]
@@ -35,6 +35,11 @@ pub struct FacesArgs {
     /// the population-average face (occluded/profile/blurry/false detections) are held
     /// out of clustering. Lower = stricter. 1 disables. Default 0.4.
     #[arg(long, default_value = "0.4")] max_generic_sim: f32,
+    /// Print per-stage timing (load/detect/align/embed/db_write, load split
+    /// HEIC vs. other) averaged per image, after the run finishes. A tuning
+    /// tool, not part of the normal summary - see
+    /// docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md.
+    #[arg(long)] profile: bool,
 }
 
 pub fn run(args: FacesArgs) -> Result<()> {
@@ -87,7 +92,11 @@ pub fn run(args: FacesArgs) -> Result<()> {
     }
 
     let started = std::time::Instant::now();
-    let result = run_face_pipeline(&conn, &to_process, args.batch, args.dry_run, args.silent, None)?;
+    let mut profile_stats = ProfileStats::default();
+    let result = run_face_pipeline(
+        &conn, &to_process, args.batch, args.dry_run, args.silent,
+        if args.profile { Some(&mut profile_stats) } else { None },
+    )?;
 
     // Cluster at the end of a full pass, but skip it on a partial (--limit) run:
     // clustering is an O(n^2) whole-library step and re-running it after every
@@ -107,6 +116,10 @@ pub fn run(args: FacesArgs) -> Result<()> {
                 "partial run (--limit): {remaining} image(s) scanned so far; rerun to continue, then 'videre faces --recluster' to cluster"
             );
         }
+    }
+
+    if args.profile {
+        eprintln!("{}", format_profile_report(&profile_stats));
     }
 
     if result.write_errors > 0 || result.detect_errors > 0 {
