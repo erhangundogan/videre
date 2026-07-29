@@ -539,3 +539,4 @@ all share one version number, separate from the `crates/*` version).
 - `docs/superpowers/specs/2026-07-16-faces-progress-ui-design.md` - `videre faces` progress output
 - `docs/superpowers/specs/2026-07-17-faces-ui-fixes-design.md` - face-labeling web UI fixes (name sort, sidebar toggle, singleton multi-select, Set Default photo)
 - `docs/superpowers/specs/2026-07-23-desktop-app-design.md` - Tauri v2 + React/shadcn desktop app (videre-api facade, Tauri scaffold, faces labeling UI)
+- `docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md` - `videre faces` profiling instrumentation + multi-worker pipeline parallelization (`--workers`/`--profile` flags)
