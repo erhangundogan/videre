@@ -164,7 +164,7 @@ fn run_faces_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> 
             );
         }
     }
-    let clustering = run_clustering(conn, 0.6, 3, videre_core::face_cluster::DEFAULT_MERGE_SIM, videre_core::face_cluster::DEFAULT_MIN_FACE_PX, videre_core::face_cluster::DEFAULT_MAX_GENERIC_SIM)?;
+    let clustering = run_clustering(conn, 0.6, 3, videre_core::face_cluster::DEFAULT_MERGE_SIM, videre_core::face_cluster::DEFAULT_MIN_FACE_PX, videre_core::face_cluster::DEFAULT_MAX_GENERIC_SIM, args.silent)?;
     if !args.silent {
         eprintln!("videre watch: {}", format_clustering_only_summary(clustering, 0.6));
     }

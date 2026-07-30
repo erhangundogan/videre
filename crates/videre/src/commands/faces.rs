@@ -110,7 +110,7 @@ pub fn run(args: FacesArgs) -> Result<()> {
         }
         // Skip detection; jump straight to clustering
         if !args.dry_run {
-            let clustering = run_clustering(&conn, args.eps, args.min_cluster_size, args.merge_sim, args.min_face_size, args.max_generic_sim)?;
+            let clustering = run_clustering(&conn, args.eps, args.min_cluster_size, args.merge_sim, args.min_face_size, args.max_generic_sim, args.silent)?;
             if !args.silent {
                 eprintln!("{}", format_clustering_only_summary(clustering, args.eps));
             }
@@ -135,7 +135,7 @@ pub fn run(args: FacesArgs) -> Result<()> {
     // small chunk is wasted work. On a limited run, tell the user to cluster once
     // they've finished scanning.
     let clustering = if !args.dry_run && args.limit.is_none() {
-        run_clustering(&conn, args.eps, args.min_cluster_size, args.merge_sim, args.min_face_size, args.max_generic_sim)?
+        run_clustering(&conn, args.eps, args.min_cluster_size, args.merge_sim, args.min_face_size, args.max_generic_sim, args.silent)?
     } else {
         None
     };

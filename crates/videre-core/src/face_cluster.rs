@@ -62,34 +62,69 @@ pub fn average_linkage_cosine(
     points: &[(i64, Vec<f32>)],
     eps: f32,
     min_samples: usize,
+    silent: bool,
 ) -> Vec<(i64, Option<i64>)> {
     let n = points.len();
     if n == 0 { return Vec::new(); }
-    let clusters = agglomerate_average(points, eps);
+    let clusters = agglomerate_average(points, eps, silent);
     label_clusters(points, &clusters, min_samples)
 }
 
 /// Average-linkage agglomeration with no `min_samples` filtering: returns the
 /// member index-lists of every resulting cluster, every point included. Shared
 /// by [`average_linkage_cosine`] and [`cluster_faces`].
-fn agglomerate_average(points: &[(i64, Vec<f32>)], eps: f32) -> Vec<Vec<usize>> {
+fn agglomerate_average(points: &[(i64, Vec<f32>)], eps: f32, silent: bool) -> Vec<Vec<usize>> {
     let n = points.len();
 
     // dist[i][j] = current average-linkage distance between cluster i and
     // cluster j (starts as plain pairwise cosine distance between points).
-    let mut dist: Vec<Vec<f32>> = (0..n)
-        .map(|i| (0..n).map(|j| cosine_dist(&points[i].1, &points[j].1)).collect())
-        .collect();
+    //
+    // Built in the SAME pass as the initial heap population below (not two
+    // separate O(n^2) passes), and only the upper triangle is computed
+    // (cosine distance is symmetric, so this also halves the actual
+    // cosine_dist calls versus computing both (i,j) and (j,i) independently).
+    //
+    // The initial heap is seeded with ONLY pairs already within `eps` - not
+    // every pair. This is safe, not just faster: a pair whose current
+    // distance exceeds `eps` can still later become eps-eligible once one of
+    // its clusters absorbs a closer neighbor (average-linkage distance is a
+    // weighted average, so it can decrease after a merge) - but the merge
+    // loop below already recomputes and re-pushes `dist[i][k]` for every
+    // alive `k` whenever `i` or `j` merges, using the dense `dist` matrix
+    // directly (not the heap), regardless of whether that pair was ever in
+    // the heap to begin with. So any pair that becomes relevant later still
+    // gets pushed at the moment it becomes relevant - see
+    // `one_bad_pair_does_not_block_an_otherwise_strong_merge` below, which
+    // specifically exercises a pair that starts outside `eps` and must still
+    // merge in. What this DOES avoid is permanently wasting memory holding a
+    // heap entry for every one of the `n*(n-1)/2` pairs regardless of
+    // relevance - for a real library where most face pairs belong to
+    // different people (cosine distance well above `eps`), this is the
+    // difference between a heap sized to the number of eps-eligible pairs
+    // and one sized to ALL pairs. At n=58,555 (a real observed face count),
+    // the old unconditional `BinaryHeap::with_capacity(n*(n-1)/2)` alone
+    // requested ~41GB up front - more than many machines have - and the
+    // dense `dist` matrix a further ~13.7GB, before any actual clustering
+    // work happened; this was silent (no progress output at all) and looked
+    // indistinguishable from a hang.
+    let mut dist: Vec<Vec<f32>> = vec![vec![0.0f32; n]; n];
+    let mut heap: BinaryHeap<HeapEntry> = BinaryHeap::new();
+    let progress = crate::progress::Progress::new(n as u64, silent);
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let d = cosine_dist(&points[i].1, &points[j].1);
+            dist[i][j] = d;
+            dist[j][i] = d;
+            if d <= eps {
+                heap.push(HeapEntry { dist: d, i, j });
+            }
+        }
+        progress.tick();
+    }
+    progress.finish();
 
     let mut members: Vec<Vec<usize>> = (0..n).map(|i| vec![i]).collect();
     let mut alive = vec![true; n];
-
-    let mut heap: BinaryHeap<HeapEntry> = BinaryHeap::with_capacity(n * (n.saturating_sub(1)) / 2);
-    for (i, di) in dist.iter().enumerate() {
-        for (j, &d) in di.iter().enumerate().skip(i + 1) {
-            heap.push(HeapEntry { dist: d, i, j });
-        }
-    }
 
     while let Some(HeapEntry { dist: d, i, j }) = heap.pop() {
         if !alive[i] || !alive[j] { continue; }
@@ -232,10 +267,11 @@ pub fn cluster_faces(
     eps: f32,
     min_samples: usize,
     merge_sim: f32,
+    silent: bool,
 ) -> Vec<(i64, Option<i64>)> {
     let n = points.len();
     if n == 0 { return Vec::new(); }
-    let clusters = agglomerate_average(points, eps);
+    let clusters = agglomerate_average(points, eps, silent);
 
     // Only real clusters (>= min_samples) take part in the centroid-merge.
     // Two reasons, both important:
@@ -270,7 +306,7 @@ mod tests {
         let v1 = l2(vec![1.0f32, 0.01, 0.0]);
         let v2 = l2(vec![1.0f32, 0.02, 0.0]);
         let v3 = l2(vec![0.0f32, 1.0, 0.0]);
-        let result = average_linkage_cosine(&[(1, v1), (2, v2), (3, v3)], 0.1, 2);
+        let result = average_linkage_cosine(&[(1, v1), (2, v2), (3, v3)], 0.1, 2, true);
         let map: std::collections::HashMap<_, _> = result.into_iter().collect();
         assert_eq!(map[&1], map[&2], "close vectors must share cluster");
         assert_eq!(map[&3], None, "distant vector must be outlier");
@@ -279,7 +315,7 @@ mod tests {
     #[test]
     fn identical_vectors_cluster_together() {
         let v = l2(vec![1.0f32, 0.0, 0.0]);
-        let result = average_linkage_cosine(&[(1, v.clone()), (2, v.clone()), (3, v)], 0.05, 2);
+        let result = average_linkage_cosine(&[(1, v.clone()), (2, v.clone()), (3, v)], 0.05, 2, true);
         let ids: Vec<_> = result.iter().map(|(_, c)| *c).collect();
         assert!(ids.iter().all(|c| c.is_some()), "all must be clustered");
         assert_eq!(ids[0], ids[1]);
@@ -289,13 +325,13 @@ mod tests {
     #[test]
     fn all_noise_when_min_samples_too_high() {
         let v = l2(vec![1.0f32, 0.0]);
-        let result = average_linkage_cosine(&[(1, v.clone()), (2, v)], 0.05, 10);
+        let result = average_linkage_cosine(&[(1, v.clone()), (2, v)], 0.05, 10, true);
         assert!(result.iter().all(|(_, c)| c.is_none()));
     }
 
     #[test]
     fn empty_input_returns_empty() {
-        let result = average_linkage_cosine(&[], 0.4, 2);
+        let result = average_linkage_cosine(&[], 0.4, 2, true);
         assert!(result.is_empty());
     }
 
@@ -316,7 +352,7 @@ mod tests {
                 (i as i64, vec![rad.cos(), rad.sin()])
             })
             .collect();
-        let result = average_linkage_cosine(&points, 0.6, 2);
+        let result = average_linkage_cosine(&points, 0.6, 2, true);
         let map: std::collections::HashMap<_, _> = result.into_iter().collect();
         let cluster_ids: std::collections::HashSet<_> =
             map.values().filter_map(|c| *c).collect();
@@ -347,7 +383,7 @@ mod tests {
             (4, deg(20.0)), (5, deg(20.0)),
             (6, deg(70.0)),
         ];
-        let result = average_linkage_cosine(&points, 0.6, 2);
+        let result = average_linkage_cosine(&points, 0.6, 2, true);
         let map: std::collections::HashMap<_, _> = result.into_iter().collect();
         assert!(map[&1].is_some(), "the core group must still cluster");
         assert_eq!(map[&1], map[&6], "the odd-angle photo must join the same person's cluster");
@@ -359,7 +395,7 @@ mod tests {
         let a2 = l2(vec![0.99f32, 0.01, 0.0]);
         let b1 = l2(vec![0.0f32, 1.0, 0.0]);
         let b2 = l2(vec![0.0f32, 0.99, 0.01]);
-        let result = average_linkage_cosine(&[(1, a1), (2, a2), (3, b1), (4, b2)], 0.1, 2);
+        let result = average_linkage_cosine(&[(1, a1), (2, a2), (3, b1), (4, b2)], 0.1, 2, true);
         let map: std::collections::HashMap<_, _> = result.into_iter().collect();
         assert_ne!(map[&1], map[&3]);
         assert_eq!(map[&1], map[&2]);
@@ -389,7 +425,7 @@ mod tests {
     fn average_linkage_alone_splits_the_two_subclusters() {
         // Guard on the premise of the next test: without the centroid-merge
         // pass, these six faces of one person land in (at least) two clusters.
-        let result = average_linkage_cosine(&same_identity_two_subclusters(), 0.3, 1);
+        let result = average_linkage_cosine(&same_identity_two_subclusters(), 0.3, 1, true);
         let clusters: std::collections::HashSet<_> =
             result.iter().filter_map(|(_, c)| *c).collect();
         assert!(clusters.len() >= 2, "premise: average-linkage should split them, got {clusters:?}");
@@ -397,7 +433,7 @@ mod tests {
 
     #[test]
     fn centroid_merge_reunites_one_persons_fragmented_subclusters() {
-        let result = cluster_faces(&same_identity_two_subclusters(), 0.3, 1, 0.4);
+        let result = cluster_faces(&same_identity_two_subclusters(), 0.3, 1, 0.4, true);
         let map: std::collections::HashMap<_, _> = result.into_iter().collect();
         let c1 = map[&1];
         assert!(c1.is_some(), "faces must be clustered, not left as noise");
@@ -418,7 +454,7 @@ mod tests {
         pts.push((7, l2(vec![-1.0, 0.0, 0.0, 0.15, 0.0, 0.0])));
         pts.push((8, l2(vec![-1.0, 0.0, 0.0, 0.0, 0.15, 0.0])));
         pts.push((9, l2(vec![-1.0, 0.0, 0.0, 0.0, 0.0, 0.15])));
-        let result = cluster_faces(&pts, 0.3, 1, 0.4);
+        let result = cluster_faces(&pts, 0.3, 1, 0.4, true);
         let map: std::collections::HashMap<_, _> = result.into_iter().collect();
         assert_eq!(map[&1], map[&2], "cluster A stays together");
         assert_eq!(map[&7], map[&8], "cluster C stays together");
@@ -431,7 +467,7 @@ mod tests {
         // still a size-1 cluster and must fall out as noise under min_samples=2.
         let mut pts = same_identity_two_subclusters();
         pts.push((99, l2(vec![0.0, 0.0, 0.0, 0.0, 1.0, 0.0])));
-        let result = cluster_faces(&pts, 0.3, 2, 0.4);
+        let result = cluster_faces(&pts, 0.3, 2, 0.4, true);
         let map: std::collections::HashMap<_, _> = result.into_iter().collect();
         assert_eq!(map[&99], None, "isolated singleton must remain noise");
     }

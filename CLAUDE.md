@@ -450,6 +450,24 @@ default reunites fragments with a safe margin. Only established clusters take pa
 merge, never lone singletons - a single bad crop can sit within `--merge-sim` of a
 different person's centroid, whereas a whole cluster's averaged centroid cannot.
 
+Clustering runs after every full (non-`--limit`, non-`--dry-run`) `videre faces`
+invocation, and every `videre watch --faces` cycle, with no progress output of its own
+before 2026-07-29 - on a real library with tens of thousands of faces this looked
+identical to a hang (the detection progress bar clears, then nothing prints until the
+whole pass finishes). The average-linkage stage is O(n^2) in the number of faces that
+pass the quality gate: it now prints `Clustering N face(s) (eps=X)...` and ticks a
+progress bar over the O(n^2) pairwise-distance stage, so a long clustering pass is
+visibly progressing rather than silent. The initial candidate-merge heap is now seeded
+only with pairs already within `--eps` (not every one of the `n*(n-1)/2` pairs
+unconditionally) - correctness-preserving, since a pair currently outside `--eps` that
+later becomes eligible via a merge is still picked up by the existing distance-update
+step, which reads the dense distance matrix directly rather than the heap (see
+`one_bad_pair_does_not_block_an_otherwise_strong_merge` in `face_cluster.rs`, which
+specifically exercises this). Before this fix, the heap's unconditional
+`with_capacity(n*(n-1)/2)` preallocation alone could demand tens of GB on a real
+library (~41GB at n=58,555, more than many machines have) before any clustering work
+began; it now scales with the number of eps-eligible pairs instead.
+
 `videre report --faces` starts an `axum` web server on `localhost:7878` serving a face-labeling UI:
 - **People** (blue), **Unassigned Clusters** (green), **Singletons** (orange) sections, each color-coded consistently across cards, badges, and titles
 - Drag a cluster/singleton card's handle onto a person card to assign it, or click "New Person" to create one

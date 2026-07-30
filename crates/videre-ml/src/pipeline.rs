@@ -353,6 +353,7 @@ pub fn cluster_with_quality_gate(
     merge_sim: f32,
     min_face_px: f32,
     max_generic_sim: f32,
+    silent: bool,
 ) -> Vec<(i64, Option<i64>)> {
     let global_mean = normalized_mean(faces.iter().map(|(_, e, _)| e));
 
@@ -368,8 +369,16 @@ pub fn cluster_with_quality_gate(
             quality.push((*id, emb.clone()));
         }
     }
+    // The average-linkage pass below is O(n^2) - never silent about starting
+    // it, even under --silent's per-image progress suppression, since a
+    // large library's clustering pass can itself take real time with no
+    // other visible output in between (this was previously silent end-to-end,
+    // which looked identical to a hang once the face count grew large).
+    if !silent {
+        eprintln!("Clustering {} face(s) (eps={eps:.2})...", quality.len());
+    }
     let mut assignments =
-        videre_core::face_cluster::cluster_faces(&quality, eps, min_cluster_size, merge_sim);
+        videre_core::face_cluster::cluster_faces(&quality, eps, min_cluster_size, merge_sim, silent);
     assignments.extend(low_quality_ids.into_iter().map(|id| (id, None)));
     assignments
 }
@@ -407,13 +416,14 @@ pub fn run_clustering(
     merge_sim: f32,
     min_face_px: f32,
     max_generic_sim: f32,
+    silent: bool,
 ) -> Result<Option<ClusteringResult>> {
     let all_faces = videre_core::face_db::load_faces_for_clustering(conn)?;
     if all_faces.is_empty() {
         return Ok(None);
     }
     let assignments = cluster_with_quality_gate(
-        &all_faces, eps, min_cluster_size, merge_sim, min_face_px, max_generic_sim,
+        &all_faces, eps, min_cluster_size, merge_sim, min_face_px, max_generic_sim, silent,
     );
     videre_core::face_db::update_cluster_assignments(conn, &assignments)?;
     let clustered_faces = assignments.iter().filter(|(_, c)| c.is_some()).count();
@@ -541,7 +551,7 @@ mod tests {
     fn run_clustering_on_empty_db_does_not_error() {
         let conn = Connection::open_in_memory().unwrap();
         face_db::create_faces_table(&conn).unwrap();
-        let result = run_clustering(&conn, 0.6, 3, 0.35, 50.0, 0.4).unwrap();
+        let result = run_clustering(&conn, 0.6, 3, 0.35, 50.0, 0.4, true).unwrap();
         assert!(result.is_none());
     }
 
@@ -564,7 +574,7 @@ mod tests {
             (7, a(), 20.0), (8, a(), 15.0), // tiny, would otherwise join A
         ];
         // max_generic_sim = 1.0 disables the distinctiveness gate for this test.
-        let result = cluster_with_quality_gate(&faces, 0.3, 3, 1.0, 50.0, 1.0);
+        let result = cluster_with_quality_gate(&faces, 0.3, 3, 1.0, 50.0, 1.0, true);
         let map: std::collections::HashMap<_, _> = result.into_iter().collect();
         assert_eq!(map[&7], None, "tiny face must be gated out of clustering");
         assert_eq!(map[&8], None, "tiny face must be gated out of clustering");
@@ -588,7 +598,7 @@ mod tests {
             (6, dist(0.01), 300.0), (7, dist(0.02), 300.0), (8, dist(0.03), 300.0),
         ];
         // size gate off (min_face_px=0), distinctiveness gate at 0.6.
-        let result = cluster_with_quality_gate(&faces, 0.3, 3, 1.0, 0.0, 0.6);
+        let result = cluster_with_quality_gate(&faces, 0.3, 3, 1.0, 0.0, 0.6, true);
         let map: std::collections::HashMap<_, _> = result.into_iter().collect();
         for id in 1..=5 {
             assert_eq!(map[&id], None, "generic (near-average) large face {id} must be gated out");
