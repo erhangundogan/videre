@@ -65,6 +65,25 @@ pub fn run(mut args: WatchArgs) -> Result<()> {
         }
     };
 
+    // Ensure the db file exists before deriving a lock path from it (locks
+    // are canonicalized-path sidecars, which requires the target to already
+    // exist) - matches how `scan`'s SQLite branch opens a connection before
+    // tracking, for the same reason. Only do this when the file is actually
+    // missing (first-ever run): opening a second connection to a db another
+    // `videre watch` process already has open can itself error ("database is
+    // locked") before our own lock check ever runs, which would wrongly look
+    // like a crash instead of the clean "already running" refusal below.
+    if !db.exists() {
+        drop(db::open_wal(&db)?);
+    }
+
+    // Held for the entire life of this process - releases automatically
+    // (even on kill) when the process exits, same mechanism as every other
+    // command's lock. No pipeline_runs row: watch has no "finished" moment
+    // during normal operation, only "currently running or not".
+    let _watch_lock = videre_core::pipeline_runs::acquire_lock(&db, "watch")
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
     loop {
         if !args.silent {
             eprintln!("videre watch: cycle starting ({})", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
