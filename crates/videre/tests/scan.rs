@@ -419,6 +419,36 @@ fn json_error_object_for_missing_directory() {
 }
 
 #[test]
+fn sqlite_scan_records_a_pipeline_run() {
+    let scan_dir = tempdir().unwrap();
+    let out_dir = tempdir().unwrap();
+    let db_path = out_dir.path().join("hashes.db");
+
+    fs::write(scan_dir.path().join("a.jpg"), b"content").unwrap();
+
+    let status = Command::new(videre_bin())
+        .arg("scan")
+        .arg("--silent")
+        .arg("--output-sqlite")
+        .arg(&db_path)
+        .arg(scan_dir.path())
+        .status()
+        .expect("failed to run videre");
+    assert!(status.success());
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let (status, duration_ms): (String, Option<i64>) = conn
+        .query_row(
+            "SELECT status, duration_ms FROM pipeline_runs WHERE command = 'scan'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(status, "success");
+    assert!(duration_ms.is_some());
+}
+
+#[test]
 fn json_mode_reports_scan_shape_and_adopts_default_path() {
     let scan_dir = tempdir().unwrap();
     let home = tempdir().unwrap();

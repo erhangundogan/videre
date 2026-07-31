@@ -65,6 +65,25 @@ pub fn run(mut args: WatchArgs) -> Result<()> {
         }
     };
 
+    // Ensure the db file exists before deriving a lock path from it (locks
+    // are canonicalized-path sidecars, which requires the target to already
+    // exist) - matches how `scan`'s SQLite branch opens a connection before
+    // tracking, for the same reason. Only do this when the file is actually
+    // missing (first-ever run): opening a second connection to a db another
+    // `videre watch` process already has open can itself error ("database is
+    // locked") before our own lock check ever runs, which would wrongly look
+    // like a crash instead of the clean "already running" refusal below.
+    if !db.exists() {
+        drop(db::open_wal(&db)?);
+    }
+
+    // Held for the entire life of this process - releases automatically
+    // (even on kill) when the process exits, same mechanism as every other
+    // command's lock. No pipeline_runs row: watch has no "finished" moment
+    // during normal operation, only "currently running or not".
+    let _watch_lock = videre_core::pipeline_runs::acquire_lock(&db, "watch")
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
     loop {
         if !args.silent {
             eprintln!("videre watch: cycle starting ({})", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
@@ -138,37 +157,41 @@ fn dedup_paths_by_hash(conn: &rusqlite::Connection, where_clause: &str) -> Resul
 }
 
 fn run_faces_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> {
-    let all_paths = dedup_paths_by_hash(
-        conn,
-        "ext IN ('jpg','jpeg','png','gif','webp','bmp','tiff','heic')",
-    )?;
-    // Skip already-scanned hashes (marker includes no-face images), unioned with
-    // hashes that already have faces for pre-marker migration - same resumable
-    // skip set as `videre faces`.
-    let mut skip_hashes: std::collections::HashSet<String> =
-        face_db::scanned_hashes(conn)?.into_iter().collect();
-    skip_hashes.extend(face_db::hashes_with_faces(conn)?);
-    let to_process: Vec<(String, String)> = all_paths
-        .into_iter()
-        .filter(|(_, hash)| !skip_hashes.contains(hash))
-        .collect();
+    let db_path = conn.path().map(std::path::PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("faces stage requires a file-backed database"))?;
+    videre_core::pipeline_runs::track(conn, &db_path, "faces", || {
+        let all_paths = dedup_paths_by_hash(
+            conn,
+            "ext IN ('jpg','jpeg','png','gif','webp','bmp','tiff','heic')",
+        )?;
+        // Skip already-scanned hashes (marker includes no-face images), unioned with
+        // hashes that already have faces for pre-marker migration - same resumable
+        // skip set as `videre faces`.
+        let mut skip_hashes: std::collections::HashSet<String> =
+            face_db::scanned_hashes(conn)?.into_iter().collect();
+        skip_hashes.extend(face_db::hashes_with_faces(conn)?);
+        let to_process: Vec<(String, String)> = all_paths
+            .into_iter()
+            .filter(|(_, hash)| !skip_hashes.contains(hash))
+            .collect();
 
-    if !to_process.is_empty() {
-        let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-        let result = run_face_pipeline(conn, &to_process, 8, false, args.silent, None, workers)?;
-        if !args.silent {
-            eprintln!(
-                "videre watch: faces stage processed {} new hash(es), {} face(s)",
-                to_process.len(),
-                result.total_faces
-            );
+        if !to_process.is_empty() {
+            let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+            let result = run_face_pipeline(conn, &to_process, 8, false, args.silent, None, workers)?;
+            if !args.silent {
+                eprintln!(
+                    "videre watch: faces stage processed {} new hash(es), {} face(s)",
+                    to_process.len(),
+                    result.total_faces
+                );
+            }
         }
-    }
-    let clustering = run_clustering(conn, 0.6, 3, videre_core::face_cluster::DEFAULT_MERGE_SIM, videre_core::face_cluster::DEFAULT_MIN_FACE_PX, videre_core::face_cluster::DEFAULT_MAX_GENERIC_SIM, args.silent)?;
-    if !args.silent {
-        eprintln!("videre watch: {}", format_clustering_only_summary(clustering, 0.6));
-    }
-    Ok(())
+        let clustering = run_clustering(conn, 0.6, 3, videre_core::face_cluster::DEFAULT_MERGE_SIM, videre_core::face_cluster::DEFAULT_MIN_FACE_PX, videre_core::face_cluster::DEFAULT_MAX_GENERIC_SIM, args.silent)?;
+        if !args.silent {
+            eprintln!("videre watch: {}", format_clustering_only_summary(clustering, 0.6));
+        }
+        Ok(())
+    })
 }
 
 /// Writes `img` as a JPEG to `tmp_path`, then atomically renames it to
@@ -268,16 +291,19 @@ fn run_location_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<(
 }
 
 fn run_scan_stage(args: &WatchArgs, directory: &std::path::Path, db: &std::path::Path) -> Result<()> {
-    let paths = scanner::scan(directory);
-    let records: Vec<types::FileRecord> = paths
-        .par_iter()
-        .filter_map(|path| hasher::hash_file(path).ok())
-        .collect();
-    sqlite_output::write_records(&records, db)?;
-    if !args.silent {
-        eprintln!("videre watch: scan stage wrote {} record(s)", records.len());
-    }
-    Ok(())
+    let conn = db::open_wal(db)?;
+    videre_core::pipeline_runs::track(&conn, db, "scan", || {
+        let paths = scanner::scan(directory);
+        let records: Vec<types::FileRecord> = paths
+            .par_iter()
+            .filter_map(|path| hasher::hash_file(path).ok())
+            .collect();
+        sqlite_output::write_records(&records, db)?;
+        if !args.silent {
+            eprintln!("videre watch: scan stage wrote {} record(s)", records.len());
+        }
+        Ok(())
+    })
 }
 
 #[cfg(test)]

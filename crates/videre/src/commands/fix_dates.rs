@@ -30,6 +30,21 @@ pub fn run(args: FixDatesArgs) -> anyhow::Result<()> {
 
     let conn = videre_core::db::open_wal(&db).expect("failed to open database");
 
+    let errors = videre_core::pipeline_runs::track(&conn, &db, "fix-dates", || {
+        run_fix_dates(&args, &conn)
+    })?;
+
+    if errors > 0 {
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+/// The actual fix-dates work, wrapped by `track()` above. Returns the error
+/// count so the caller can decide the exit code after tracking has already
+/// finalized the run.
+fn run_fix_dates(args: &FixDatesArgs, conn: &rusqlite::Connection) -> anyhow::Result<usize> {
     let mut stmt = conn
         .prepare(
             "SELECT path, exif_date FROM file_hashes \
@@ -109,9 +124,5 @@ pub fn run(args: FixDatesArgs) -> anyhow::Result<()> {
         );
     }
 
-    if errors > 0 {
-        std::process::exit(1);
-    }
-
-    Ok(())
+    Ok(errors)
 }

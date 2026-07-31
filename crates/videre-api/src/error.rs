@@ -11,11 +11,20 @@ pub enum Error {
     Invalid,
     /// Underlying database failure.
     Db(rusqlite::Error),
+    /// Any other failure surfaced as a plain message (e.g. from videre-core
+    /// functions that return anyhow::Error, like pipeline_runs).
+    Other(String),
 }
 
 impl From<rusqlite::Error> for Error {
     fn from(e: rusqlite::Error) -> Self {
         Error::Db(e)
+    }
+}
+
+impl From<anyhow::Error> for Error {
+    fn from(e: anyhow::Error) -> Self {
+        Error::Other(e.to_string())
     }
 }
 
@@ -26,6 +35,7 @@ impl std::fmt::Display for Error {
             Error::Conflict => write!(f, "conflict"),
             Error::Invalid => write!(f, "invalid input"),
             Error::Db(e) => write!(f, "database error: {e}"),
+            Error::Other(msg) => write!(f, "{msg}"),
         }
     }
 }
