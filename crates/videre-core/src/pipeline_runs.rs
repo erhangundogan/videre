@@ -118,6 +118,34 @@ pub fn is_locked(db_path: &Path, command: &str) -> Result<bool> {
     }
 }
 
+/// Wraps `f` with pipeline-run bookkeeping: refuses to start if `command` is
+/// already running against `db_path`, records a `running` row before calling
+/// `f`, then records `success`/`failed` (with `f`'s error message, if any)
+/// once `f` returns - all before this function itself returns. Every
+/// `std::process::exit` call site this design touches happens strictly after
+/// its wrapped operation already returned a `Result` (see the design doc's
+/// "key design insight"), so this finalization is never skipped by an exit
+/// call - only an actual crash mid-`f()` skips it, which is exactly what the
+/// lock-based `crashed` detection in `read_all` is for.
+pub fn track<T>(
+    conn: &Connection,
+    db_path: &Path,
+    command: &str,
+    f: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    ensure_pipeline_runs_table(conn)?;
+    let _lock = acquire_lock(db_path, command)?;
+    start_run(conn, command)?;
+    let started = std::time::Instant::now();
+    let result = f();
+    let duration_ms = started.elapsed().as_millis() as i64;
+    match &result {
+        Ok(_) => finish_run(conn, command, "success", duration_ms, None)?,
+        Err(e) => finish_run(conn, command, "failed", duration_ms, Some(&e.to_string()))?,
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,5 +240,55 @@ mod tests {
 
         let second = acquire_lock(db_path, "scan");
         assert!(second.is_ok(), "lock must be available again once the guard is dropped");
+    }
+
+    #[test]
+    fn track_records_success_and_returns_the_value() {
+        let conn = test_db();
+        let db_file = tempfile::NamedTempFile::new().unwrap();
+
+        let result = track(&conn, db_file.path(), "embed", || Ok(42)).unwrap();
+        assert_eq!(result, 42);
+
+        let status: String = conn
+            .query_row("SELECT status FROM pipeline_runs WHERE command = 'embed'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "success");
+    }
+
+    #[test]
+    fn track_records_failure_with_the_error_message() {
+        let conn = test_db();
+        let db_file = tempfile::NamedTempFile::new().unwrap();
+
+        let result: Result<()> = track(&conn, db_file.path(), "classify", || {
+            Err(anyhow::anyhow!("something broke"))
+        });
+        assert!(result.is_err());
+
+        let (status, summary): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, summary FROM pipeline_runs WHERE command = 'classify'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "failed");
+        assert_eq!(summary.as_deref(), Some("something broke"));
+    }
+
+    #[test]
+    fn track_refuses_when_already_locked() {
+        let conn = test_db();
+        let db_file = tempfile::NamedTempFile::new().unwrap();
+
+        let _held = acquire_lock(db_file.path(), "scan").unwrap();
+        let result: Result<()> = track(&conn, db_file.path(), "scan", || Ok(()));
+        assert!(result.is_err(), "track must refuse to run while the lock is already held");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pipeline_runs WHERE command = 'scan'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
     }
 }
