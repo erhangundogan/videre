@@ -3,7 +3,7 @@
 //! reuses embeddings `videre embed` already computed - see
 //! docs/superpowers/specs/2026-07-29-screenshot-document-classification-design.md.
 
-use rusqlite::{Connection, OptionalExtension, Result, params};
+use rusqlite::{Connection, Result, params};
 
 pub fn ensure_classifications_table(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -40,23 +40,27 @@ pub fn pending_hashes(conn: &Connection, model_id: &str) -> Result<Vec<String>> 
 /// same video exclusion applied so the two paths can't drift apart. A hash
 /// with no matching `file_hashes` row (nothing known about its extension) is
 /// kept, not excluded - only a *confirmed* video extension is filtered out.
+/// Loads the full hash->ext mapping in one query rather than one query per
+/// hash, since callers can pass every embedded hash in the library (tens of
+/// thousands) - see `pending_hashes` above for the equivalent single-query
+/// exclusion used when the caller list comes from `embeddings` directly
+/// rather than being pre-built like it is here.
 pub fn exclude_video_hashes(conn: &Connection, hashes: &[String]) -> Result<Vec<String>> {
-    let mut result = Vec::with_capacity(hashes.len());
-    for hash in hashes {
-        let ext: Option<String> = conn
-            .query_row(
-                "SELECT lower(ext) FROM file_hashes WHERE hash = ?1 LIMIT 1",
-                params![hash],
-                |row| row.get(0),
-            )
-            .optional()?
-            .flatten();
-        let is_video = ext.as_deref().is_some_and(crate::embeddings::is_video_ext);
-        if !is_video {
-            result.push(hash.clone());
-        }
-    }
-    Ok(result)
+    let mut stmt =
+        conn.prepare("SELECT hash, lower(ext) FROM file_hashes WHERE ext IS NOT NULL")?;
+    let ext_by_hash: std::collections::HashMap<String, String> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+
+    Ok(hashes
+        .iter()
+        .filter(|hash| {
+            !ext_by_hash
+                .get(*hash)
+                .is_some_and(|ext| crate::embeddings::is_video_ext(ext))
+        })
+        .cloned()
+        .collect())
 }
 
 /// Upsert a batch of (hash, category, confidence) rows inside one transaction.
