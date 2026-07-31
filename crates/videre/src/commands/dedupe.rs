@@ -39,21 +39,33 @@ pub fn run(args: DedupeArgs) -> anyhow::Result<()> {
 }
 
 fn run_text(args: DedupeArgs) -> anyhow::Result<()> {
-    let db = match super::resolve_reader_db_must_exist(args.db) {
+    let db = match super::resolve_reader_db_must_exist(args.db.clone()) {
         Ok(db) => db,
         Err(e) => {
             eprintln!("Error: {e:#}");
             process::exit(1);
         }
     };
-
-    let records = match videre::sqlite_output::load_records(&db) {
-        Ok(r) => r,
+    let conn = match videre_core::db::open_wal(&db) {
+        Ok(c) => c,
         Err(e) => {
-            eprintln!("Error reading {:?}: {}", db, e);
+            eprintln!("Error opening {:?}: {}", db, e);
             process::exit(1);
         }
     };
+
+    let result = videre_core::pipeline_runs::track(&conn, &db, "dedupe", || run_dedupe_text(&args, &db));
+    if let Err(e) = result {
+        eprintln!("Error: {e:#}");
+        process::exit(1);
+    }
+    Ok(())
+}
+
+/// The actual dedupe-reporting work, wrapped by `track()` above.
+fn run_dedupe_text(args: &DedupeArgs, db: &std::path::Path) -> anyhow::Result<()> {
+    let records = videre::sqlite_output::load_records(db)
+        .map_err(|e| anyhow::anyhow!("reading {:?}: {}", db, e))?;
 
     let groups = videre::output::find_duplicate_groups(&records);
     if !args.silent {
@@ -84,5 +96,8 @@ fn run_text(args: DedupeArgs) -> anyhow::Result<()> {
 
 fn run_json(args: &DedupeArgs) -> anyhow::Result<videre::types::FindDuplicatesJson> {
     let db = super::resolve_reader_db_must_exist(args.db.clone())?;
-    super::build_find_duplicates(&db, args.similar)
+    let conn = videre_core::db::open_wal(&db)?;
+    videre_core::pipeline_runs::track(&conn, &db, "dedupe", || {
+        super::build_find_duplicates(&db, args.similar)
+    })
 }

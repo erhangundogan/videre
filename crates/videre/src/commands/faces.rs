@@ -118,6 +118,30 @@ pub fn run(args: FacesArgs) -> Result<()> {
         return Ok(());
     }
 
+    if let Err(e) = videre_core::pipeline_runs::install_sigint_handler(&db, "faces") {
+        eprintln!("Warning: could not install interrupt handler: {e:#}");
+    }
+    let outcome = videre_core::pipeline_runs::track(&conn, &db, "faces", || {
+        run_detection_and_clustering(&args, &conn, &to_process)
+    })?;
+
+    if outcome.write_errors > 0 || outcome.detect_errors > 0 {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+struct FacesOutcome {
+    write_errors: usize,
+    detect_errors: usize,
+}
+
+/// The detection-plus-clustering work, wrapped by `track()` above.
+fn run_detection_and_clustering(
+    args: &FacesArgs,
+    conn: &rusqlite::Connection,
+    to_process: &[(String, String)],
+) -> Result<FacesOutcome> {
     let started = std::time::Instant::now();
     let mut profile_stats = ProfileStats::default();
     let workers = args.workers.unwrap_or_else(|| {
@@ -125,7 +149,7 @@ pub fn run(args: FacesArgs) -> Result<()> {
         cores * 2
     });
     let result = run_face_pipeline(
-        &conn, &to_process, args.batch, args.dry_run, args.silent,
+        conn, to_process, args.batch, args.dry_run, args.silent,
         if args.profile { Some(&mut profile_stats) } else { None },
         workers,
     )?;
@@ -135,7 +159,7 @@ pub fn run(args: FacesArgs) -> Result<()> {
     // small chunk is wasted work. On a limited run, tell the user to cluster once
     // they've finished scanning.
     let clustering = if !args.dry_run && args.limit.is_none() {
-        run_clustering(&conn, args.eps, args.min_cluster_size, args.merge_sim, args.min_face_size, args.max_generic_sim, args.silent)?
+        run_clustering(conn, args.eps, args.min_cluster_size, args.merge_sim, args.min_face_size, args.max_generic_sim, args.silent)?
     } else {
         None
     };
@@ -143,7 +167,7 @@ pub fn run(args: FacesArgs) -> Result<()> {
     if !args.silent {
         eprintln!("{}", format_summary(&result, clustering, args.eps, started.elapsed()));
         if args.limit.is_some() && !args.dry_run {
-            let remaining = face_db::scanned_hashes(&conn)?.len();
+            let remaining = face_db::scanned_hashes(conn)?.len();
             eprintln!(
                 "partial run (--limit): {remaining} image(s) scanned so far; rerun to continue, then 'videre faces --recluster' to cluster"
             );
@@ -154,10 +178,7 @@ pub fn run(args: FacesArgs) -> Result<()> {
         eprintln!("{}", format_profile_report(&profile_stats));
     }
 
-    if result.write_errors > 0 || result.detect_errors > 0 {
-        std::process::exit(1);
-    }
-    Ok(())
+    Ok(FacesOutcome { write_errors: result.write_errors, detect_errors: result.detect_errors })
 }
 
 /// Assembles the single consolidated summary line printed after both
