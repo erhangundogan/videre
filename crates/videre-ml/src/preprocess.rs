@@ -16,6 +16,8 @@ pub fn image_to_tensor(path: &Path, size: usize, device: &Device) -> Result<Tens
 
     let img = if ext == "heic" {
         decode_via_quicklook(path, size, "embed-heic")?
+    } else if ext == "mov" || ext == "mp4" {
+        decode_via_quicklook(path, size, "embed-video")?
     } else {
         let timeout_path = path.to_path_buf();
         videre_core::io_timeout::run_with_timeout(videre_core::io_timeout::DEFAULT_IO_TIMEOUT, move || {
@@ -129,5 +131,23 @@ mod tests {
     fn preprocess_missing_file_is_err_not_panic() {
         let r = image_to_tensor(std::path::Path::new("/nonexistent.jpg"), 384, &Device::Cpu);
         assert!(r.is_err());
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn preprocess_extracts_a_frame_from_a_real_mp4() {
+        let t = image_to_tensor(
+            std::path::Path::new("tests/fixtures/red_1s.mp4"),
+            384,
+            &Device::Cpu,
+        )
+        .unwrap();
+        assert_eq!(t.dims(), &[3, 384, 384]);
+        // The fixture is a solid red frame; SigLIP normalization maps [0,1] to
+        // [-1,1], so the R channel of the extracted frame should be ~1.0 - same
+        // assertion shape as the existing red_2x2.png test above.
+        let flat: Vec<f32> = t.flatten_all().unwrap().to_vec1().unwrap();
+        assert!(flat.iter().all(|v| *v >= -1.001 && *v <= 1.001));
+        assert!((flat[0] - 1.0).abs() < 0.1); // video compression allows more slack than a lossless PNG
     }
 }
