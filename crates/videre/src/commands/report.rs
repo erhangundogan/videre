@@ -2017,6 +2017,7 @@ fn api_status(e: videre_api::Error) -> StatusCode {
         videre_api::Error::Conflict => StatusCode::CONFLICT,
         videre_api::Error::Invalid => StatusCode::BAD_REQUEST,
         videre_api::Error::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        videre_api::Error::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 

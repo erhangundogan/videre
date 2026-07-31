@@ -4961,10 +4961,12 @@ dependencies = [
 name = "videre-api"
 version = "0.9.2"
 dependencies = [
+ "anyhow",
  "image",
  "kamadak-exif",
  "rusqlite",
  "serde",
+ "tempfile",
  "videre-core",
 ]
 

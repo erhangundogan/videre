@@ -6,6 +6,7 @@ mod error;
 mod faces;
 mod images;
 mod label;
+mod pipeline_status;
 mod stats;
 mod types;
 
@@ -19,6 +20,7 @@ pub use images::{
     original_image_bytes, original_lookup, FaceLookup, OriginalLookup,
 };
 pub use label::sanitize_person_label;
+pub use pipeline_status::{pipeline_status, PipelineRunStatus};
 pub use stats::{library_stats, LibraryStats};
 pub use types::{
     ClusterData, ClusterDetail, ClusterFaceData, FacesData, PersonData, PersonDetail,
