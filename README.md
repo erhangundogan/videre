@@ -2,13 +2,15 @@
 
 A local-first media management CLI, offering:
 
-- file scanning
+- file scanning (photos and videos)
 - duplicate elimination
 - comprehensive HTML reports
 - EXIF-based date fixing
-- semantic embedding
-- image search
+- semantic embedding and search, for images and video (single-frame)
+- zero-shot classification (photo/screenshot/document/meme)
 - face detection, clustering, and search
+- a background watch loop that keeps everything fresh automatically
+- library stats and pipeline run status
 - agentic access via an MCP server
 
 Everything runs over a single shared SQLite database.
