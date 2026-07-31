@@ -22,6 +22,7 @@ pub fn run() {
             commands::set_primary,
             commands::rename_person,
             commands::library_stats,
+            commands::pipeline_status,
         ])
         .register_asynchronous_uri_scheme_protocol("videre-face", protocols::face)
         .register_asynchronous_uri_scheme_protocol("videre-original", protocols::original)
