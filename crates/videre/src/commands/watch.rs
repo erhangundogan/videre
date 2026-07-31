@@ -221,7 +221,13 @@ fn run_heic_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> {
         std::fs::create_dir_all(videre_core::thumb_cache::cache_dir()).ok();
         // Convert once, then downscale the same in-memory image for each
         // missing size (largest first) instead of re-running QuickLook per size.
-        match videre_core::heic::heic_via_quicklook(&path, "watch") {
+        // Some(1600): this cache never serves anything above 1200px, and this
+        // decode is immediately downscaled to 1200/240 below either way -
+        // requesting a smaller qlmanage render (with modest headroom over
+        // the largest cached size) avoids decoding/resizing/PNG-encoding
+        // pixels that get thrown away moments later. See the safety note on
+        // heic_via_quicklook for why this is NOT safe at other call sites.
+        match videre_core::heic::heic_via_quicklook(&path, "watch", Some(1600)) {
             Some(img) => {
                 for size in [1200u32, 240] {
                     let need = if size == 240 { need_240 } else { need_1200 };
