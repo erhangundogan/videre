@@ -159,8 +159,19 @@ fn run_text(args: ScanArgs) -> anyhow::Result<()> {
             process::exit(1);
         }
         Ok(OutputTarget::Sqlite(db_path)) => {
-            if let Err(e) = sqlite_output::write_records(&records, &db_path) {
-                eprintln!("Error writing to {:?}: {}", db_path, e);
+            let conn = match videre_core::db::open_wal(&db_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Error opening {:?}: {}", db_path, e);
+                    process::exit(1);
+                }
+            };
+            let write_result = videre_core::pipeline_runs::track(&conn, &db_path, "scan", || {
+                sqlite_output::write_records(&records, &db_path)
+                    .map_err(|e| anyhow::anyhow!("writing to {:?}: {}", db_path, e))
+            });
+            if let Err(e) = write_result {
+                eprintln!("Error: {e:#}");
                 process::exit(1);
             }
             if !args.silent {
@@ -197,8 +208,12 @@ fn run_json(args: &ScanArgs) -> anyhow::Result<ScanJson> {
 
     let output = match output_target(args)? {
         OutputTarget::Sqlite(db_path) => {
-            sqlite_output::write_records(&records, &db_path)
-                .map_err(|e| anyhow::anyhow!("writing to {:?}: {}", db_path, e))?;
+            let conn = videre_core::db::open_wal(&db_path)
+                .map_err(|e| anyhow::anyhow!("opening {:?}: {}", db_path, e))?;
+            videre_core::pipeline_runs::track(&conn, &db_path, "scan", || {
+                sqlite_output::write_records(&records, &db_path)
+                    .map_err(|e| anyhow::anyhow!("writing to {:?}: {}", db_path, e))
+            })?;
             if !args.silent {
                 eprintln!("{}", format_write_summary(records.len(), skipped, &format!("{:?}", db_path)));
             }
