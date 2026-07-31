@@ -65,6 +65,59 @@ pub fn finish_run(
     Ok(())
 }
 
+/// Holds an open, flock'd file for as long as it's alive. Dropping it closes
+/// the file, which releases the flock - the OS does the same thing
+/// automatically if the process dies without ever dropping this (SIGKILL,
+/// power loss), so there is no correctness dependency on Drop actually
+/// running; it's just the tidy path.
+pub struct LockGuard(#[allow(dead_code)] File);
+
+fn lock_path_for(db_path: &Path, command: &str) -> Result<PathBuf> {
+    let canonical = db_path
+        .canonicalize()
+        .with_context(|| format!("canonicalize {}", db_path.display()))?;
+    Ok(PathBuf::from(format!("{}.{command}.lock", canonical.display())))
+}
+
+/// Acquires an exclusive, non-blocking advisory lock scoped to this exact
+/// database file and command. Fails immediately (refusing the run, per the
+/// concurrency decision in the design doc) if another live process already
+/// holds it - never blocks waiting for it to free up.
+pub fn acquire_lock(db_path: &Path, command: &str) -> Result<LockGuard> {
+    use fs2::FileExt;
+    let lock_path = lock_path_for(db_path, command)?;
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("open lock file {}", lock_path.display()))?;
+    file.try_lock_exclusive()
+        .map_err(|_| anyhow::anyhow!("{command} is already running against {}", db_path.display()))?;
+    Ok(LockGuard(file))
+}
+
+/// True if another live process currently holds `command`'s lock for
+/// `db_path`. Never blocks: probes with a non-blocking try-lock and releases
+/// immediately if it succeeds, so this is safe to call from a read path.
+pub fn is_locked(db_path: &Path, command: &str) -> Result<bool> {
+    use fs2::FileExt;
+    let lock_path = lock_path_for(db_path, command)?;
+    if !lock_path.exists() {
+        return Ok(false);
+    }
+    let file = OpenOptions::new()
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("open lock file {}", lock_path.display()))?;
+    match file.try_lock_exclusive() {
+        Ok(()) => {
+            FileExt::unlock(&file).ok();
+            Ok(false)
+        }
+        Err(_) => Ok(true),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +179,38 @@ mod tests {
 
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM pipeline_runs", [], |r| r.get(0)).unwrap();
         assert_eq!(count, 1, "upsert, not a second row");
+    }
+
+    #[test]
+    fn acquire_lock_refuses_a_second_concurrent_acquisition() {
+        let db_file = tempfile::NamedTempFile::new().unwrap();
+        let db_path = db_file.path();
+
+        let _first = acquire_lock(db_path, "faces").unwrap();
+        let second = acquire_lock(db_path, "faces");
+        assert!(second.is_err(), "a second concurrent lock on the same command must be refused");
+    }
+
+    #[test]
+    fn acquire_lock_allows_different_commands_concurrently() {
+        let db_file = tempfile::NamedTempFile::new().unwrap();
+        let db_path = db_file.path();
+
+        let _faces_lock = acquire_lock(db_path, "faces").unwrap();
+        let embed_lock = acquire_lock(db_path, "embed");
+        assert!(embed_lock.is_ok(), "different commands must not contend for the same lock");
+    }
+
+    #[test]
+    fn acquire_lock_is_available_again_after_release() {
+        let db_file = tempfile::NamedTempFile::new().unwrap();
+        let db_path = db_file.path();
+
+        {
+            let _lock = acquire_lock(db_path, "scan").unwrap();
+        } // dropped here, releasing the flock
+
+        let second = acquire_lock(db_path, "scan");
+        assert!(second.is_ok(), "lock must be available again once the guard is dropped");
     }
 }
