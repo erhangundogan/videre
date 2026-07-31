@@ -16,6 +16,17 @@ pub struct LibraryStats {
     pub duplicate_group_count: i64,
     pub duplicate_file_count: i64,
     pub wasted_bytes: i64,
+    pub faces_detected: i64,
+    pub people_named: i64,
+}
+
+fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [name],
+        |r| r.get(0),
+    )?;
+    Ok(count > 0)
 }
 
 const PHOTO_EXTS: &str = "'jpg','jpeg','png','gif','webp','bmp','tiff','heic','dng'";
@@ -56,6 +67,19 @@ pub fn compute(conn: &Connection) -> Result<LibraryStats> {
         |r| r.get(0),
     )?;
 
+    let (faces_detected, people_named) = if table_exists(conn, "faces")? {
+        let faces_detected: i64 = conn.query_row("SELECT COUNT(*) FROM faces", [], |r| r.get(0))?;
+        let people_named: i64 = conn.query_row(
+            "SELECT COUNT(DISTINCT person_label) FROM faces \
+             WHERE confirmed = 1 AND person_label IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )?;
+        (faces_detected, people_named)
+    } else {
+        (0, 0)
+    };
+
     Ok(LibraryStats {
         total_files,
         total_size_bytes,
@@ -64,6 +88,8 @@ pub fn compute(conn: &Connection) -> Result<LibraryStats> {
         duplicate_group_count,
         duplicate_file_count,
         wasted_bytes,
+        faces_detected,
+        people_named,
     })
 }
 
@@ -151,5 +177,54 @@ mod tests {
         assert_eq!(stats.duplicate_group_count, 0);
         assert_eq!(stats.duplicate_file_count, 0);
         assert_eq!(stats.wasted_bytes, 0);
+    }
+
+    #[test]
+    fn compute_counts_faces_and_named_people() {
+        let conn = test_db();
+        conn.execute_batch(
+            "CREATE TABLE faces (
+                id            INTEGER PRIMARY KEY,
+                hash          TEXT NOT NULL,
+                bbox          TEXT NOT NULL,
+                landmark      TEXT,
+                embedding     BLOB NOT NULL,
+                cluster_id    INTEGER,
+                person_label  TEXT,
+                confirmed     INTEGER DEFAULT 0,
+                is_primary    INTEGER DEFAULT 0
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
+             VALUES (1, 'h1', '[]', X'00', 'Alice', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
+             VALUES (2, 'h1', '[]', X'00', 'Alice', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
+             VALUES (3, 'h2', '[]', X'00', NULL, 0)",
+            [],
+        )
+        .unwrap();
+
+        let stats = compute(&conn).unwrap();
+        assert_eq!(stats.faces_detected, 3);
+        assert_eq!(stats.people_named, 1); // distinct confirmed person_label
+    }
+
+    #[test]
+    fn compute_without_faces_table_returns_zero_not_error() {
+        let conn = test_db(); // no faces table created
+        let stats = compute(&conn).unwrap();
+        assert_eq!(stats.faces_detected, 0);
+        assert_eq!(stats.people_named, 0);
     }
 }
