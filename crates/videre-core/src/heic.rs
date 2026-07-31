@@ -74,7 +74,24 @@ pub fn qlmanage_semaphore() -> &'static Semaphore {
 /// `tag` disambiguates concurrent/repeated conversions of the same path for
 /// different purposes (e.g. a 240px thumbnail vs a 1200px lightbox version)
 /// so their temp-directory names don't collide.
-pub fn heic_via_quicklook(path: &str, tag: &str) -> Option<DynamicImage> {
+///
+/// `max_size` caps `qlmanage -s`'s longest-side render size. `qlmanage -s`
+/// only ever caps, never upscales, so `None` (rendered as `10000`, comfortably
+/// above any real photo's native resolution) means "give me the native/full
+/// resolution" - the only safe choice for callers whose output pixels must
+/// stay in the same coordinate space as something already stored (face
+/// detection bboxes, face-thumbnail crops) or that need true full quality
+/// (serving the original image). `Some(n)` is only safe for callers that
+/// immediately downscale the result themselves anyway (report.rs's
+/// b64/`/api/raw` thumbnails, `watch --heic`'s cache) - for them, requesting
+/// a smaller render up front avoids qlmanage decoding/resizing/PNG-encoding
+/// pixels that get thrown away moments later. Do NOT pass `Some` for the
+/// face-detection or face-thumbnail-crop call sites: detection's bbox
+/// coordinates are stored in terms of whatever image size detection ran on
+/// (see `face_detect.rs`), so shrinking that decode would silently corrupt
+/// every later full-res thumbnail crop and the `--min-face-size` quality
+/// gate, which measures bbox size in that same (assumed-full-res) space.
+pub fn heic_via_quicklook(path: &str, tag: &str, max_size: Option<u32>) -> Option<DynamicImage> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
@@ -84,8 +101,9 @@ pub fn heic_via_quicklook(path: &str, tag: &str) -> Option<DynamicImage> {
     let _ = std::fs::remove_dir_all(&out_dir);
     std::fs::create_dir_all(&out_dir).ok()?;
     let _permit = qlmanage_semaphore().acquire();
+    let size_arg = max_size.unwrap_or(10000).to_string();
     let mut child = std::process::Command::new("qlmanage")
-        .args(["-t", "-s", "10000", "-o"])
+        .args(["-t", "-s", &size_arg, "-o"])
         .arg(&out_dir)
         .arg(path)
         .stdout(std::process::Stdio::null())

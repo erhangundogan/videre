@@ -159,7 +159,12 @@ fn base64_encode(data: &[u8]) -> String {
 /// unrotated for HEIC files where the iPhone camera encoded rotation via the
 /// HEIF `irot` transform box rather than a classic EXIF Orientation tag.
 fn heic_to_b64(path: &str, max_px: u32) -> Option<String> {
-    let img = videre_core::heic::heic_via_quicklook(path, &format!("b64_{max_px}"))?;
+    // Some(max_px): the caller already downscales to max_px below, so
+    // requesting a decode already capped at that size avoids wasted
+    // decode/resize/PNG-encode work - see the safety note on
+    // heic_via_quicklook for why this is only safe when the result is
+    // downscaled by the caller anyway.
+    let img = videre_core::heic::heic_via_quicklook(path, &format!("b64_{max_px}"), Some(max_px))?;
     let img = if img.width() > max_px || img.height() > max_px {
         img.resize(max_px, max_px, image::imageops::FilterType::Triangle)
     } else {
@@ -2370,7 +2375,12 @@ async fn handle_raw_file(
     let size = q.size;
     let (content_type, bytes) = tokio::task::spawn_blocking(move || -> Option<(&'static str, Vec<u8>)> {
         if ext == "heic" {
-            let img = videre_core::heic::heic_via_quicklook(&path, &format!("raw{}", size.unwrap_or(0)))?;
+            // `size` doubles as the qlmanage render cap: when Some, this
+            // caller downscales to it below anyway; when None, the caller
+            // wants the true original (no downscale applied), which is
+            // exactly heic_via_quicklook(..., None)'s full-resolution
+            // behavior too - see its safety note.
+            let img = videre_core::heic::heic_via_quicklook(&path, &format!("raw{}", size.unwrap_or(0)), size)?;
             let img = match size {
                 Some(max_px) if img.width() > max_px || img.height() > max_px => {
                     img.resize(max_px, max_px, image::imageops::FilterType::Triangle)

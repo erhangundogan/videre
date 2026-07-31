@@ -439,7 +439,10 @@ fn load_image(path: &str) -> Result<image::DynamicImage, String> {
     if path.to_lowercase().ends_with(".heic") {
         #[cfg(target_os = "macos")]
         {
-            return videre_core::heic::heic_via_quicklook(path, "faces").ok_or_else(|| {
+            // None: detection bboxes are stored relative to this decode's own
+            // dimensions, so it must stay at full resolution - see the
+            // safety note on heic_via_quicklook.
+            return videre_core::heic::heic_via_quicklook(path, "faces", None).ok_or_else(|| {
                 format!(
                     "could not read/convert HEIC file {path} (missing, timed out, or unreadable - is its drive connected?)"
                 )

@@ -88,7 +88,9 @@ pub fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image
         .unwrap_or("")
         .to_lowercase();
     if ext == "heic" {
-        let img = videre_core::heic::heic_via_quicklook(path, &format!("thumb{face_id}"))?;
+        // None: bbox is stored relative to a full-res decode - see the
+        // safety note on heic_via_quicklook.
+        let img = videre_core::heic::heic_via_quicklook(path, &format!("thumb{face_id}"), None)?;
         Some(crop_face_square(&img, bbox))
     } else {
         // Detection ran on raw pixels; crop first, then correct orientation
@@ -249,7 +251,9 @@ pub fn original_bytes_from_lookup(
         {
             return Ok(("image/jpeg", bytes));
         }
-        let img = videre_core::heic::heic_via_quicklook(&file_path, &format!("orig{face_id}"))
+        // None: this serves the true original image, so it must stay at
+        // full resolution.
+        let img = videre_core::heic::heic_via_quicklook(&file_path, &format!("orig{face_id}"), None)
             .ok_or(Error::NotFound)?;
         let mut buf = Vec::new();
         img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Jpeg)
