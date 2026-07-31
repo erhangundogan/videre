@@ -17,11 +17,18 @@ pub fn ensure_classifications_table(conn: &Connection) -> Result<()> {
 }
 
 /// Hashes that have an embedding under `model_id` but no classification yet.
+/// Excludes video hashes (`.mov`/`.mp4`) - none of the four zero-shot
+/// categories (photo/screenshot/document/meme) fit a video frame well, so
+/// videos are never classified, per the video-embedding design's decision.
 pub fn pending_hashes(conn: &Connection, model_id: &str) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT hash FROM embeddings
          WHERE model_id = ?1
            AND NOT EXISTS (SELECT 1 FROM classifications c WHERE c.hash = embeddings.hash)
+           AND NOT EXISTS (
+               SELECT 1 FROM file_hashes fh
+               WHERE fh.hash = embeddings.hash AND lower(fh.ext) IN ('mov', 'mp4')
+           )
          ORDER BY hash",
     )?;
     let rows = stmt.query_map(params![model_id], |row| row.get(0))?;
@@ -66,7 +73,8 @@ mod tests {
         conn.execute_batch(
             "CREATE TABLE file_hashes (
                 path TEXT PRIMARY KEY,
-                hash TEXT NOT NULL
+                hash TEXT NOT NULL,
+                ext  TEXT
             );
             CREATE TABLE embeddings (
                 hash        TEXT PRIMARY KEY,
@@ -82,8 +90,16 @@ mod tests {
 
     fn insert_file(conn: &Connection, path: &str, hash: &str) {
         conn.execute(
-            "INSERT INTO file_hashes (path, hash) VALUES (?1, ?2)",
+            "INSERT INTO file_hashes (path, hash, ext) VALUES (?1, ?2, 'jpg')",
             rusqlite::params![path, hash],
+        )
+        .unwrap();
+    }
+
+    fn insert_file_with_ext(conn: &Connection, path: &str, hash: &str, ext: &str) {
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, ext) VALUES (?1, ?2, ?3)",
+            rusqlite::params![path, hash, ext],
         )
         .unwrap();
     }
@@ -95,6 +111,20 @@ mod tests {
             rusqlite::params![hash, model_id],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn pending_hashes_excludes_video_extensions() {
+        let conn = test_db();
+        insert_file_with_ext(&conn, "/a/1.jpg", "h1", "jpg");
+        insert_file_with_ext(&conn, "/a/clip.mp4", "h2", "mp4");
+        insert_file_with_ext(&conn, "/a/clip.mov", "h3", "mov");
+        insert_embedding(&conn, "h1", "m");
+        insert_embedding(&conn, "h2", "m");
+        insert_embedding(&conn, "h3", "m");
+
+        let pending = pending_hashes(&conn, "m").unwrap();
+        assert_eq!(pending, vec!["h1".to_string()]);
     }
 
     #[test]
