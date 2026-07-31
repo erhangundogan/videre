@@ -42,6 +42,13 @@ pub fn original_exists(hash: &str) -> bool {
     original_path(hash).exists()
 }
 
+/// Scratch path for writing a full-res original before it's atomically
+/// renamed into place at `original_path` - mirrors `thumb_tmp_path`'s
+/// same-filesystem-atomic-rename pattern and process-id disambiguation.
+pub fn original_tmp_path(hash: &str) -> PathBuf {
+    cache_dir().join(format!("{hash}_original.tmp{}", std::process::id()))
+}
+
 /// Path to a scratch file for writing a thumbnail before it's atomically
 /// renamed into place at `thumb_path`. Lives in the same directory as the
 /// final file so the rename is same-filesystem (and thus atomic on POSIX).
@@ -132,6 +139,14 @@ mod tests {
     #[test]
     fn original_exists_false_for_missing_file() {
         assert!(!original_exists("nonexistent-hash-xyz"));
+    }
+
+    #[test]
+    fn original_tmp_path_differs_from_final_path_and_is_keyed_by_hash() {
+        let tmp = original_tmp_path("abc123");
+        let final_path = original_path("abc123");
+        assert_ne!(tmp, final_path);
+        assert!(tmp.to_string_lossy().contains("abc123_original.tmp"));
     }
 
     #[test]

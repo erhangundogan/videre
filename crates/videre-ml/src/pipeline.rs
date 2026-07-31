@@ -191,7 +191,7 @@ pub fn run_face_pipeline(
 
                         for (path, hash) in chunk {
                             let load_start = std::time::Instant::now();
-                            let img = match load_image(path) {
+                            let img = match load_image(path, hash) {
                                 Ok(i) => i,
                                 Err(msg) => {
                                     progress.println(&format!("skipping {path}: {msg}"));
@@ -435,13 +435,33 @@ pub fn run_clustering(
     Ok(Some(ClusteringResult { total_faces: all_faces.len(), clustered_faces, cluster_count }))
 }
 
-fn load_image(path: &str) -> Result<image::DynamicImage, String> {
+fn load_image(path: &str, hash: &str) -> Result<image::DynamicImage, String> {
     if path.to_lowercase().ends_with(".heic") {
         #[cfg(target_os = "macos")]
         {
-            // None: detection bboxes are stored relative to this decode's own
-            // dimensions, so it must stay at full resolution - see the
-            // safety note on heic_via_quicklook.
+            // `videre watch --heic` may have already cached a full-resolution
+            // decode for this hash (`thumb_cache::original_path`) - reuse it
+            // instead of paying for a second qlmanage subprocess. Detection's
+            // bbox coordinates are stored relative to whatever image
+            // detection ran on, so this cached JPEG must be a full-res
+            // decode too (which `watch --heic` guarantees - see
+            // `run_heic_stage`), not one of the smaller 240/1200px
+            // thumbnails. Falls back to a fresh full-res qlmanage decode
+            // (None) when the cache hasn't been populated for this hash yet,
+            // so detection works correctly even if `watch --heic` never ran.
+            let cached_path = videre_core::thumb_cache::original_path(hash);
+            if cached_path.exists() {
+                let timeout_path = cached_path.clone();
+                let result = videre_core::io_timeout::run_with_timeout(
+                    videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
+                    move || image::open(&timeout_path),
+                );
+                if let Ok(Ok(img)) = result {
+                    return Ok(img);
+                }
+                // Cached file missing/corrupt/timed out: fall through to a
+                // fresh decode rather than failing outright.
+            }
             return videre_core::heic::heic_via_quicklook(path, "faces", None).ok_or_else(|| {
                 format!(
                     "could not read/convert HEIC file {path} (missing, timed out, or unreadable - is its drive connected?)"
@@ -449,7 +469,7 @@ fn load_image(path: &str) -> Result<image::DynamicImage, String> {
             });
         }
         #[cfg(not(target_os = "macos"))]
-        return Err(format!("HEIC decoding is only supported on macOS: {path}"));
+        return Err(format!("HEIC decoding is only supported on macOS: {path} (hash {hash})"));
     }
     let timeout_path = path.to_string();
     videre_core::io_timeout::run_with_timeout(videre_core::io_timeout::DEFAULT_IO_TIMEOUT, move || {
@@ -546,8 +566,27 @@ mod tests {
 
     #[test]
     fn load_image_missing_file_returns_descriptive_error() {
-        let err = load_image("/no/such/path/does-not-exist.jpg").unwrap_err();
+        let err = load_image("/no/such/path/does-not-exist.jpg", "irrelevant-hash").unwrap_err();
         assert!(err.contains("/no/such/path/does-not-exist.jpg"), "error should name the path: {err}");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn load_image_reuses_cached_original_for_heic_hash_instead_of_decoding() {
+        let hash = format!("test-pipeline-cache-hash-{}", std::process::id());
+        let cache_path = videre_core::thumb_cache::original_path(&hash);
+        std::fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+        let img = image::RgbImage::from_pixel(2, 2, image::Rgb([255, 0, 0]));
+        image::DynamicImage::ImageRgb8(img).save(&cache_path).unwrap();
+
+        // The .heic path below does not exist and is never real HEIC - if
+        // load_image fell through to a fresh qlmanage decode instead of
+        // using the cache, this would fail rather than return the cached
+        // 2x2 image.
+        let result = load_image("/nonexistent/should-not-be-read.heic", &hash).unwrap();
+        assert_eq!((result.width(), result.height()), (2, 2));
+
+        let _ = std::fs::remove_file(&cache_path);
     }
 
     #[test]
