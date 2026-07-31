@@ -215,20 +215,36 @@ fn run_heic_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> {
     for (path, hash) in heic_paths {
         let need_240 = !videre_core::thumb_cache::thumb_exists(&hash, 240);
         let need_1200 = !videre_core::thumb_cache::thumb_exists(&hash, 1200);
-        if !need_240 && !need_1200 {
+        // Also feeds `videre faces`'s detection cache (see `load_image` in
+        // videre-ml's pipeline.rs) - a full-res original cached here means
+        // detection can skip its own qlmanage decode entirely for this hash.
+        let need_original = !videre_core::thumb_cache::original_exists(&hash);
+        if !need_240 && !need_1200 && !need_original {
             continue;
         }
         std::fs::create_dir_all(videre_core::thumb_cache::cache_dir()).ok();
         // Convert once, then downscale the same in-memory image for each
-        // missing size (largest first) instead of re-running QuickLook per size.
-        // Some(1600): this cache never serves anything above 1200px, and this
-        // decode is immediately downscaled to 1200/240 below either way -
-        // requesting a smaller qlmanage render (with modest headroom over
-        // the largest cached size) avoids decoding/resizing/PNG-encoding
-        // pixels that get thrown away moments later. See the safety note on
-        // heic_via_quicklook for why this is NOT safe at other call sites.
-        match videre_core::heic::heic_via_quicklook(&path, "watch", Some(1600)) {
+        // missing size (largest first) instead of re-running QuickLook per
+        // size. None (full resolution), not Some(n): the same decode also
+        // seeds the `original_path` cache below, which detection's bbox
+        // coordinates depend on being full resolution - see the safety note
+        // on heic_via_quicklook. This means this call site does NOT get
+        // lever-2a's render-size-cap treatment other watch-adjacent callers
+        // do; the two levers are in tension here and full-res wins because
+        // avoiding a second full qlmanage decode during `videre faces` is
+        // the bigger saving of the two.
+        match videre_core::heic::heic_via_quicklook(&path, "watch", None) {
             Some(img) => {
+                if need_original {
+                    let tmp_path = videre_core::thumb_cache::original_tmp_path(&hash);
+                    let final_path = videre_core::thumb_cache::original_path(&hash);
+                    if publish_thumb(&img, &tmp_path, &final_path) {
+                        converted += 1;
+                    } else {
+                        failed += 1;
+                        let _ = std::fs::remove_file(&tmp_path);
+                    }
+                }
                 for size in [1200u32, 240] {
                     let need = if size == 240 { need_240 } else { need_1200 };
                     if !need {
@@ -254,6 +270,9 @@ fn run_heic_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> {
                     failed += 1;
                 }
                 if need_1200 {
+                    failed += 1;
+                }
+                if need_original {
                     failed += 1;
                 }
             }
