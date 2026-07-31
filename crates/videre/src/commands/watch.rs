@@ -29,6 +29,14 @@ pub struct WatchArgs {
     /// Pre-resolve reverse-geocoded location names each cycle
     #[arg(long)]
     location: bool,
+    /// Sync stale rows/cache and clean orphans each cycle (same cleanup as
+    /// `videre prune`). Opt-in only - unlike the other three stages, this is
+    /// NOT included when no stage flags are passed, so existing `videre
+    /// watch` invocations keep their current behavior unchanged. Never
+    /// deletes real files, only stale db rows and cache entries for files
+    /// already gone from disk.
+    #[arg(long)]
+    prune: bool,
 
     /// Seconds between cycles
     #[arg(long, default_value = "300")]
@@ -43,9 +51,14 @@ pub fn run(mut args: WatchArgs) -> Result<()> {
     if !directory.exists() {
         anyhow::bail!("{:?} does not exist", directory);
     }
-    // If no stage flags were passed, run all four - the common case is
-    // "just keep everything up to date", not memorizing four flags.
-    if !(args.scan || args.faces || args.heic || args.location) {
+    // If NO stage flag at all was passed (including --prune), run the
+    // original all-four default - the common case is "just keep everything
+    // up to date", not memorizing four flags. But if the user passed
+    // --prune explicitly (alone or combined), that's an explicit stage
+    // selection: don't also silently default scan/faces/heic/location on,
+    // or a lightweight "just prune" cron cycle would unexpectedly also pay
+    // for face detection and network geocoding.
+    if !(args.scan || args.faces || args.heic || args.location || args.prune) {
         args.scan = true;
         args.faces = true;
         args.heic = true;
@@ -107,8 +120,8 @@ fn run_cycle(args: &WatchArgs, directory: &std::path::Path, db: &std::path::Path
             eprintln!("videre watch: scan stage error: {e}");
         }
     }
-    if args.faces || args.heic || args.location {
-        // These three stages all read file_hashes; open once and reuse.
+    if args.faces || args.heic || args.location || args.prune {
+        // These stages all read file_hashes; open once and reuse.
         let conn = db::open_wal(db)?;
         if !file_hashes_table_exists(&conn)? {
             if !args.silent {
@@ -129,6 +142,26 @@ fn run_cycle(args: &WatchArgs, directory: &std::path::Path, db: &std::path::Path
         if args.location {
             run_location_stage(args, &conn)?;
         }
+        if args.prune {
+            if let Err(e) = run_prune_stage(args, &conn, db) {
+                eprintln!("videre watch: prune stage error: {e}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Runs the same cleanup as `videre prune` (stale-row removal, modified_at
+/// sync, orphan embeddings/cache cleanup) against the already-open
+/// connection, tracked in `pipeline_runs` under "prune" exactly like a
+/// standalone `videre prune` invocation would be.
+fn run_prune_stage(args: &WatchArgs, conn: &rusqlite::Connection, db_path: &std::path::Path) -> Result<()> {
+    let prune_args = super::prune::PruneArgs::for_watch_stage(args.silent);
+    let errors = videre_core::pipeline_runs::track(conn, db_path, "prune", || {
+        super::prune::run_prune(&prune_args, conn)
+    })?;
+    if !args.silent && errors > 0 {
+        eprintln!("videre watch: prune stage finished with {errors} error(s)");
     }
     Ok(())
 }
