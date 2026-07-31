@@ -343,32 +343,13 @@ fn group_to_json(
 }
 
 fn query_stats(conn: &Connection) -> Stats {
-    let total_files: i64 = conn
-        .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
-        .unwrap_or(0);
-    let duplicate_groups: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM \
-             (SELECT hash FROM file_hashes GROUP BY hash HAVING COUNT(*) > 1)",
-            [], |r| r.get(0),
-        )
-        .unwrap_or(0);
-    let duplicate_files: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM file_hashes \
-             WHERE hash IN (SELECT hash FROM file_hashes GROUP BY hash HAVING COUNT(*) > 1)",
-            [], |r| r.get(0),
-        )
-        .unwrap_or(0);
-    let wasted_bytes: i64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(size_bytes * (cnt - 1)), 0) FROM \
-             (SELECT hash, size_bytes, COUNT(*) as cnt \
-              FROM file_hashes GROUP BY hash HAVING cnt > 1)",
-            [], |r| r.get(0),
-        )
-        .unwrap_or(0);
-    Stats { total_files, duplicate_groups, duplicate_files, wasted_bytes }
+    let s = videre_core::library_stats::compute(conn).unwrap_or_default();
+    Stats {
+        total_files: s.total_files,
+        duplicate_groups: s.duplicate_group_count,
+        duplicate_files: s.duplicate_file_count,
+        wasted_bytes: s.wasted_bytes,
+    }
 }
 
 fn query_groups(conn: &Connection) -> Vec<Vec<FileRow>> {
