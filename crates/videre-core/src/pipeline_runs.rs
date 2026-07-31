@@ -146,6 +146,54 @@ pub fn track<T>(
     result
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PipelineRunStatus {
+    pub command: String,
+    pub last_run_at: Option<String>,
+    /// "running" | "success" | "failed" | "interrupted" | "crashed" | None if never run.
+    /// "crashed" is computed here, never a stored value - see the design doc.
+    pub status: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub currently_running: bool,
+}
+
+pub fn read_all(conn: &Connection, db_path: &Path) -> Result<Vec<PipelineRunStatus>> {
+    ensure_pipeline_runs_table(conn)?;
+    let mut out = Vec::with_capacity(TRACKED_COMMANDS.len());
+    for command in TRACKED_COMMANDS {
+        let row: Option<(String, Option<i64>, String)> = conn
+            .query_row(
+                "SELECT started_at, duration_ms, status FROM pipeline_runs WHERE command = ?1",
+                params![command],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+
+        let currently_running = is_locked(db_path, command)?;
+
+        let (last_run_at, status, duration_ms) = match row {
+            None => (None, None, None),
+            Some((started_at, duration_ms, stored_status)) => {
+                let status = if stored_status == "running" && !currently_running {
+                    "crashed".to_string()
+                } else {
+                    stored_status
+                };
+                (Some(started_at), Some(status), duration_ms)
+            }
+        };
+
+        out.push(PipelineRunStatus {
+            command: command.to_string(),
+            last_run_at,
+            status,
+            duration_ms,
+            currently_running,
+        });
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,5 +338,63 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM pipeline_runs WHERE command = 'scan'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn read_all_reports_none_for_a_never_run_command() {
+        let conn = test_db();
+        let db_file = tempfile::NamedTempFile::new().unwrap();
+
+        let statuses = read_all(&conn, db_file.path()).unwrap();
+        let embed = statuses.iter().find(|s| s.command == "embed").unwrap();
+        assert_eq!(embed.last_run_at, None);
+        assert_eq!(embed.status, None);
+        assert!(!embed.currently_running);
+    }
+
+    #[test]
+    fn read_all_reports_success_after_a_completed_run() {
+        let conn = test_db();
+        let db_file = tempfile::NamedTempFile::new().unwrap();
+
+        track(&conn, db_file.path(), "embed", || Ok(())).unwrap();
+
+        let statuses = read_all(&conn, db_file.path()).unwrap();
+        let embed = statuses.iter().find(|s| s.command == "embed").unwrap();
+        assert_eq!(embed.status.as_deref(), Some("success"));
+        assert!(embed.last_run_at.is_some());
+        assert!(!embed.currently_running);
+    }
+
+    #[test]
+    fn read_all_reports_currently_running_while_locked() {
+        let conn = test_db();
+        let db_file = tempfile::NamedTempFile::new().unwrap();
+
+        start_run(&conn, "faces").unwrap();
+        let _held = acquire_lock(db_file.path(), "faces").unwrap();
+
+        let statuses = read_all(&conn, db_file.path()).unwrap();
+        let faces = statuses.iter().find(|s| s.command == "faces").unwrap();
+        assert_eq!(faces.status.as_deref(), Some("running"));
+        assert!(faces.currently_running);
+    }
+
+    #[test]
+    fn read_all_reports_crashed_when_running_but_not_locked() {
+        let conn = test_db();
+        let db_file = tempfile::NamedTempFile::new().unwrap();
+
+        start_run(&conn, "faces").unwrap();
+
+        let statuses = read_all(&conn, db_file.path()).unwrap();
+        let faces = statuses.iter().find(|s| s.command == "faces").unwrap();
+        assert_eq!(faces.status.as_deref(), Some("crashed"));
+        assert!(!faces.currently_running);
+
+        let stored_status: String = conn
+            .query_row("SELECT status FROM pipeline_runs WHERE command = 'faces'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored_status, "running", "read_all must not write back the crashed label");
     }
 }
