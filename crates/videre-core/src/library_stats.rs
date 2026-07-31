@@ -20,14 +20,7 @@ pub struct LibraryStats {
     pub people_named: i64,
 }
 
-fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
-        [name],
-        |r| r.get(0),
-    )?;
-    Ok(count > 0)
-}
+use crate::db::table_exists;
 
 const PHOTO_EXTS: &str = "'jpg','jpeg','png','gif','webp','bmp','tiff','heic','dng'";
 const VIDEO_EXTS: &str = "'mov','mp4'";

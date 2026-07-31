@@ -7,7 +7,6 @@ use rmcp::{
     tool, tool_handler, tool_router,
     transport::stdio,
 };
-use rusqlite::Connection;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -92,20 +91,11 @@ struct DateRange {
     max: String,
 }
 
-fn table_exists(conn: &Connection, name: &str) -> anyhow::Result<bool> {
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
-        [name],
-        |r| r.get(0),
-    )?;
-    Ok(count > 0)
-}
-
 fn build_stats(db: &std::path::Path) -> anyhow::Result<StatsJson> {
     let conn = videre_core::db::open_wal(db)?;
 
     let (total_files, total_size_bytes, unique_hashes, files_with_gps, exif_date_range) =
-        if table_exists(&conn, "file_hashes")? {
+        if videre_core::db::table_exists(&conn, "file_hashes")? {
             let (files, size, hashes, gps): (i64, i64, i64, i64) = conn.query_row(
                 "SELECT COUNT(*), COALESCE(SUM(size_bytes), 0), COUNT(DISTINCT hash),
                         COUNT(CASE WHEN gps_lat IS NOT NULL AND gps_lon IS NOT NULL THEN 1 END)
@@ -127,13 +117,13 @@ fn build_stats(db: &std::path::Path) -> anyhow::Result<StatsJson> {
             (0, 0, 0, 0, None)
         };
 
-    let embedded_count: u64 = if table_exists(&conn, "embeddings")? {
+    let embedded_count: u64 = if videre_core::db::table_exists(&conn, "embeddings")? {
         conn.query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get::<_, i64>(0))? as u64
     } else {
         0
     };
 
-    let (faces_count, people) = if table_exists(&conn, "faces")? {
+    let (faces_count, people) = if videre_core::db::table_exists(&conn, "faces")? {
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM faces", [], |r| r.get(0))?;
         let mut stmt = conn.prepare(
             "SELECT DISTINCT person_label FROM faces
