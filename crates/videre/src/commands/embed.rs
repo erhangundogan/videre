@@ -27,9 +27,15 @@ pub fn run(args: EmbedArgs) -> Result<()> {
     let db = super::resolve_reader_db(args.db.clone())?;
     let conn = videre_core::db::open_wal(&db)
         .with_context(|| format!("open {}", db.display()))?;
-    embeddings::ensure_embeddings_table(&conn)?;
 
-    let pending = embeddings::pending_images(&conn, model::MODEL_ID)?;
+    videre_core::pipeline_runs::track(&conn, &db, "embed", || run_embed(&args, &conn))
+}
+
+/// The actual embedding work, wrapped by `track()` above.
+fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection) -> Result<()> {
+    embeddings::ensure_embeddings_table(conn)?;
+
+    let pending = embeddings::pending_images(conn, model::MODEL_ID)?;
     if pending.is_empty() {
         if !args.silent {
             eprintln!("Nothing to embed: all hashes already have embeddings.");
@@ -79,7 +85,7 @@ pub fn run(args: EmbedArgs) -> Result<()> {
             }
         }
 
-        embeddings::insert_embeddings(&conn, model::MODEL_ID, &rows)?;
+        embeddings::insert_embeddings(conn, model::MODEL_ID, &rows)?;
         done += rows.len();
         progress.tick_by(chunk.len() as u64);
     }
