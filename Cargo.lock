@@ -4959,7 +4959,7 @@ dependencies = [
 
 [[package]]
 name = "videre-api"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "anyhow",
  "image",
@@ -4972,7 +4972,7 @@ dependencies = [
 
 [[package]]
 name = "videre-core"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "anyhow",
  "chrono",
