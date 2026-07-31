@@ -6,6 +6,7 @@ mod error;
 mod faces;
 mod images;
 mod label;
+mod stats;
 mod types;
 
 pub use error::{Error, Result};
@@ -18,6 +19,7 @@ pub use images::{
     original_image_bytes, original_lookup, FaceLookup, OriginalLookup,
 };
 pub use label::sanitize_person_label;
+pub use stats::{library_stats, LibraryStats};
 pub use types::{
     ClusterData, ClusterDetail, ClusterFaceData, FacesData, PersonData, PersonDetail,
     PersonFaceData, SingletonData,
