@@ -42,7 +42,7 @@ pub fn compute(conn: &Connection) -> Result<LibraryStats> {
     let total_size_bytes: i64 =
         conn.query_row("SELECT COALESCE(SUM(size_bytes), 0) FROM file_hashes", [], |r| r.get(0))?;
     let total_photos: i64 = conn.query_row(
-        &format!("SELECT COUNT(*) FROM file_hashes WHERE ext IN ({PHOTO_EXTS})"),
+        &format!("SELECT COUNT(*) FROM file_hashes WHERE lower(ext) IN ({PHOTO_EXTS})"),
         [],
         |r| r.get(0),
     )?;

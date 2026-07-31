@@ -362,8 +362,13 @@ Shared-hash safety: if two paths share the same hash and one file is deleted, th
 L2-normalized f16 BLOB) into an `embeddings` table keyed by content hash. Resumable:
 re-running processes only missing hashes. `--batch` (default 32), `--chunk` (rows per
 transaction, default 500), `--silent`. HEIC via `qlmanage` (see videre report HEIC note
-above); DNG, mov, and mp4 skipped (the `image` crate has no DNG decoder; EXIF metadata
-is still available from the scan).
+above); `.mov`/`.mp4` are embedded too, via one representative frame extracted the same
+way (`qlmanage -t`, macOS only) rather than decoding the full video - a single-frame,
+not-motion-aware embedding, so video search quality is weaker than photo search (see
+`docs/superpowers/TECH_DEBT.md` for the open follow-ups on this). Video hashes are
+excluded from `videre classify` (none of its four categories fit a video frame). DNG is
+still skipped (the `image` crate has no DNG decoder; EXIF metadata is still available
+from the scan).
 
 `videre search "query"` or `videre search --image photo.jpg` (optionally `--db <db>`) prints matching
 paths to stdout (all duplicate paths per matched hash). `-k` top-k (default 20),
