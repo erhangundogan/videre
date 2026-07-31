@@ -303,7 +303,7 @@ videre faces --profile                    # print per-stage timing (load/detect/
 videre faces --qlmanage-concurrency <n>   # max concurrent qlmanage (HEIC decode) subprocesses, process-wide (default: 6)
 ```
 
-Face detection uses InsightFace buffalo_l (SCRFD-10GF detector + ArcFace w600k_r50 embedder) via ONNX Runtime. Model weights are downloaded automatically on first run and cached in `~/.cache/ort/`. HEIC images are converted via `qlmanage`, matching the rest of the pipeline (see Platform notes).
+Face detection uses InsightFace buffalo_l (SCRFD-10GF detector + ArcFace w600k_r50 embedder) via ONNX Runtime. Model weights are downloaded automatically on first run and cached in `~/.cache/ort/`. HEIC images are converted via `qlmanage`, matching the rest of the pipeline (see Platform notes) - unless a full-resolution decode is already cached at `~/.cache/videre/thumbnails/<hash>_original.jpg` (written by `videre watch --heic`), in which case that cached JPEG is read directly instead of paying for another `qlmanage` subprocess (~108ms vs. ~7.6s per file in one real measurement). Falls back to a fresh live decode when the cache hasn't been populated yet, so detection works correctly even if `watch --heic` has never run.
 
 Detection runs on multiple worker threads by default (`--workers`, 2x your machine's core count), each with its own ONNX sessions, processing a round-robin-assigned slice of the work so one worker doesn't inherit a disproportionately HEIC-heavy (slower) subset. A real measurement on a 10-core machine found this gives a ~3.23x wall-clock speedup over running single-threaded. HEIC decoding is further bounded independently of `--workers` by a process-wide cap on concurrent `qlmanage` subprocesses (`--qlmanage-concurrency`, default 6, raised from an earlier default of 3) - QuickLook's thumbnail agent doesn't scale with parallel callers, so this keeps it well-behaved rather than queuing up. Use `--profile` to see real per-stage timing for your own library if you want to tune either value.
 
@@ -370,14 +370,14 @@ videre watch --output-sqlite ~/photos.db ~/Photos                 # explicit db 
 | `--output-sqlite <path>` | Database to populate; defaults to the resolved db (see [The ~/.videre home directory](#the-videre-home-directory)) if omitted |
 | `--scan` | Rescan the directory and update `file_hashes` (same as running `videre scan`) |
 | `--faces` | Detect, embed, and cluster faces on any images not yet processed |
-| `--heic` | Pre-convert and cache HEIC thumbnails (240px and 1200px) per photo |
+| `--heic` | Pre-convert and cache HEIC thumbnails (240px and 1200px) per photo, plus a full-resolution original `videre faces` reuses to skip its own conversion |
 | `--location` | Reverse-geocode any GPS coordinates not yet resolved to a place name |
 | `--interval <seconds>` | Time between cycles (default: 300) |
 | `--silent` | Suppress per-cycle progress output |
 
 Pass none of the four stage flags and all four run every cycle - that's the intended default for "just keep my library up to date." Pass any subset to run only those stages.
 
-Cached HEIC thumbnails land in `~/.cache/videre/thumbnails/`, keyed by the photo's content hash so the same file is never converted twice even across different databases. On first run, if the pre-rename cache at `~/.cache/dupe/thumbnails/` still exists and the new one doesn't, it's migrated automatically (a plain rename, so it's atomic and a no-op on error, since the cache regenerates lazily anyway). `videre report --show-faces` checks the cache before falling back to a live conversion, so running `videre watch --heic` in the background makes browsing HEIC-heavy libraries noticeably snappier.
+Cached HEIC thumbnails (and a full-resolution original) land in `~/.cache/videre/thumbnails/`, keyed by the photo's content hash so the same file is never converted twice even across different databases. On first run, if the pre-rename cache at `~/.cache/dupe/thumbnails/` still exists and the new one doesn't, it's migrated automatically (a plain rename, so it's atomic and a no-op on error, since the cache regenerates lazily anyway). `videre report --show-faces` checks the cache before falling back to a live conversion, and `videre faces` reuses the same full-resolution original for detection, so running `videre watch --heic` in the background makes both browsing and face detection on HEIC-heavy libraries noticeably faster. This cache has no size cap or expiry - only `videre prune`'s orphan cleanup (deleting entries for hashes no longer in the database) reclaims space, so it grows in proportion to your HEIC library size over time.
 
 `videre watch` and `videre report --show-faces` are safe to run at the same time against the same database file - both open it in SQLite's WAL mode, which allows concurrent readers and a writer without lock errors.
 
@@ -399,14 +399,15 @@ What it does in a single pass:
 - **Removes stale rows**: deletes `file_hashes` rows for files that no longer exist on disk (e.g. duplicates that were trashed)
 - **Syncs modified_at**: refreshes the `modified_at` column for surviving files from the current filesystem mtime - picks up changes made by `videre fix-dates` or any other tool
 - **Cleans orphan embeddings**: deletes rows from `embeddings` whose hash has no remaining `file_hashes` entry
+- **Cleans orphan cache files**: deletes `~/.cache/videre/thumbnails/` entries (240/1200px thumbnails, face crops, full-res originals) whose hash has no remaining `file_hashes` entry - the only bound on that cache's otherwise-unlimited growth; in-flight `.tmp*` writes from a concurrently running `videre watch` are never touched
 
-In dry-run mode, the orphan embedding count is a lower bound: it reflects only pre-existing orphans, not ones that would be created by the would-be row removals.
+In dry-run mode, the orphan embedding and cache-file counts are lower bounds: they reflect only pre-existing orphans, not ones that would be created by the would-be row removals.
 
 ---
 
 ## videre embed and videre search
 
-`videre embed` computes SigLIP embeddings (google/siglip-so400m-patch14-384, 1152-dim f16) for every image in the database and stores them keyed by content hash. Re-running only processes images not yet embedded. `.mov`, `.mp4`, and `.dng` files are skipped. `videre classify` (see above) reuses these embeddings for zero-shot photo/screenshot/document/meme classification, so it's worth running `videre embed` even if you don't need text/image search.
+`videre embed` computes SigLIP embeddings (google/siglip-so400m-patch14-384, 1152-dim f16) for every image in the database and stores them keyed by content hash. Re-running only processes images not yet embedded. `.mov`/`.mp4` are embedded too, via one representative frame extracted the same way as HEIC (`qlmanage -t`, macOS only) rather than decoding the full video - a cheap, single-frame, not-motion-aware embedding, so video search quality is weaker than photo search. Video hashes are excluded from `videre classify` (none of its four categories fit a video frame). `.dng` is still skipped (the `image` crate has no DNG decoder). `videre classify` (see above) reuses these embeddings for zero-shot photo/screenshot/document/meme classification, so it's worth running `videre embed` even if you don't need text/image search.
 
 ```bash
 videre embed                        # embed all unprocessed images in the default db
@@ -447,11 +448,14 @@ On macOS, inference uses Metal (Apple Silicon GPU). On Linux, CPU only - embeddi
 Sets each file's `modified_at` timestamp to its EXIF shoot date, so Finder, sort-by-date views, and backup tools see the correct original capture time.
 
 ```bash
-videre fix-dates --dry-run       # preview without changing anything, default db
+videre fix-dates --dry-run       # preview without changing anything, default db (never prompts)
 videre fix-dates --db <path>     # explicit db
-videre fix-dates                 # apply
-videre fix-dates --silent        # apply without per-file output
+videre fix-dates                 # prompts for confirmation, then applies
+videre fix-dates --yes           # skip the confirmation prompt (also: -y)
+videre fix-dates --silent        # apply without per-file output (confirmation prompt is unaffected)
 ```
+
+Before mutating anything, it prints the count of files that will be touched and asks `[y/N]` on stderr; anything other than `y`/`yes` (including EOF, e.g. stdin piped from `/dev/null`) aborts with no changes and exit code 0. `--yes`/`-y` skips the prompt for scripted/non-interactive use.
 
 Only files with `exif_date` in the database are touched. EXIF time is treated as local system time. Only `mtime` is updated (`created_at` / birth time is not changed). Files that no longer exist on disk are silently skipped and reported in the summary.
 

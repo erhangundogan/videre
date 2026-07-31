@@ -136,7 +136,7 @@ crates/
     src/main.rs
     src/commands/{mod.rs,dedupe.rs,report.rs,scan.rs,fix_dates.rs,prune.rs,embed.rs,search.rs,faces.rs,classify.rs,watch.rs,config.rs,mcp.rs,stats.rs}
     src/{lib.rs,scanner.rs,hasher.rs,output.rs,sqlite_output.rs,types.rs}
-    tests/{integration.rs,report.rs,prune.rs,watch.rs,faces_pipeline.rs,faces_server.rs,person_search.rs,mcp.rs,scan.rs,config.rs,fixtures/}
+    tests/{integration.rs,report.rs,prune.rs,watch.rs,faces_pipeline.rs,faces_server.rs,person_search.rs,mcp.rs,scan.rs,config.rs,embed.rs,fix_dates.rs,stats.rs,fixtures/}
   videre-core/
     Cargo.toml
     src/lib.rs
@@ -154,6 +154,8 @@ crates/
     src/progress.rs
     src/library_stats.rs
     src/pipeline_runs.rs
+    src/io_timeout.rs
+    src/semaphore.rs
   videre-ml/
     Cargo.toml (lib-only, no binaries)
     src/lib.rs
