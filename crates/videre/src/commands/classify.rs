@@ -27,17 +27,23 @@ pub fn run(args: ClassifyArgs) -> Result<()> {
     let db = super::resolve_reader_db(args.db.clone())?;
     let conn = videre_core::db::open_wal(&db)
         .with_context(|| format!("open {}", db.display()))?;
-    classify_core::ensure_classifications_table(&conn)?;
+
+    videre_core::pipeline_runs::track(&conn, &db, "classify", || run_classify(&args, &conn))
+}
+
+/// The actual classification work, wrapped by `track()` above.
+fn run_classify(args: &ClassifyArgs, conn: &rusqlite::Connection) -> Result<()> {
+    classify_core::ensure_classifications_table(conn)?;
 
     // Loaded once and looked up by hash below rather than holding the whole
     // corpus twice - hashes.len() can be in the tens of thousands.
     let all_embeddings: std::collections::HashMap<String, Vec<u8>> =
-        embeddings::load_embeddings(&conn, model::MODEL_ID)?.into_iter().collect();
+        embeddings::load_embeddings(conn, model::MODEL_ID)?.into_iter().collect();
 
     let hashes: Vec<String> = if args.reprocess {
         all_embeddings.keys().cloned().collect()
     } else {
-        classify_core::pending_hashes(&conn, model::MODEL_ID)?
+        classify_core::pending_hashes(conn, model::MODEL_ID)?
     };
 
     if hashes.is_empty() {
@@ -78,7 +84,7 @@ pub fn run(args: ClassifyArgs) -> Result<()> {
     }
     progress.finish();
 
-    classify_core::insert_classifications(&conn, &rows)?;
+    classify_core::insert_classifications(conn, &rows)?;
 
     if !args.silent {
         eprintln!("{}", format_summary(rows.len(), started.elapsed()));
