@@ -7,8 +7,14 @@ use rusqlite::{Connection, Result, params};
 /// a per-file decode error on other platforms - same pattern already
 /// accepted for `.heic`) - see
 /// docs/superpowers/specs/2026-07-31-video-embedding-design.md.
+///
+/// `.dng` is deliberately NOT included: the `image` crate has no DNG decoder,
+/// so including it here would make `videre embed` query DNG hashes as
+/// pending and fail to decode every single one, forever, on every run -
+/// scanning/EXIF extraction for `.dng` still work fine elsewhere (see
+/// `scanner.rs`/`hasher.rs`), only embedding is unsupported.
 pub const EMBEDDABLE_EXTS: &[&str] = &[
-    "jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "heic", "dng", "mov", "mp4",
+    "jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "heic", "mov", "mp4",
 ];
 
 /// True if `ext` (any case) is a video extension handled by single-frame
@@ -153,6 +159,17 @@ mod tests {
         assert!(pending.iter().any(|p| p.hash == "h1"));
         assert!(pending.iter().any(|p| p.hash == "h2"));
         assert!(pending.iter().any(|p| p.hash == "h3"));
+    }
+
+    #[test]
+    fn pending_images_excludes_dng_since_it_cannot_be_decoded() {
+        let conn = test_db();
+        insert_file(&conn, "/a/1.jpg", "h1", "jpg");
+        insert_file(&conn, "/a/raw.dng", "h2", "dng");
+
+        let pending = pending_images(&conn, "test-model").unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].hash, "h1");
     }
 
     #[test]
