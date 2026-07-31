@@ -3,7 +3,7 @@
 //! reuses embeddings `videre embed` already computed - see
 //! docs/superpowers/specs/2026-07-29-screenshot-document-classification-design.md.
 
-use rusqlite::{Connection, Result, params};
+use rusqlite::{Connection, OptionalExtension, Result, params};
 
 pub fn ensure_classifications_table(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -33,6 +33,30 @@ pub fn pending_hashes(conn: &Connection, model_id: &str) -> Result<Vec<String>> 
     )?;
     let rows = stmt.query_map(params![model_id], |row| row.get(0))?;
     rows.collect()
+}
+
+/// Filters `hashes` down to non-video ones, for callers (like `--reprocess`)
+/// that build their hash list independently of `pending_hashes` and need the
+/// same video exclusion applied so the two paths can't drift apart. A hash
+/// with no matching `file_hashes` row (nothing known about its extension) is
+/// kept, not excluded - only a *confirmed* video extension is filtered out.
+pub fn exclude_video_hashes(conn: &Connection, hashes: &[String]) -> Result<Vec<String>> {
+    let mut result = Vec::with_capacity(hashes.len());
+    for hash in hashes {
+        let ext: Option<String> = conn
+            .query_row(
+                "SELECT lower(ext) FROM file_hashes WHERE hash = ?1 LIMIT 1",
+                params![hash],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        let is_video = ext.as_deref().is_some_and(crate::embeddings::is_video_ext);
+        if !is_video {
+            result.push(hash.clone());
+        }
+    }
+    Ok(result)
 }
 
 /// Upsert a batch of (hash, category, confidence) rows inside one transaction.
@@ -125,6 +149,29 @@ mod tests {
 
         let pending = pending_hashes(&conn, "m").unwrap();
         assert_eq!(pending, vec!["h1".to_string()]);
+    }
+
+    #[test]
+    fn exclude_video_hashes_filters_out_mov_and_mp4() {
+        let conn = test_db();
+        insert_file_with_ext(&conn, "/a/1.jpg", "h1", "jpg");
+        insert_file_with_ext(&conn, "/a/clip.mp4", "h2", "mp4");
+        insert_file_with_ext(&conn, "/a/clip.mov", "h3", "mov");
+
+        let all = vec!["h1".to_string(), "h2".to_string(), "h3".to_string()];
+        let filtered = exclude_video_hashes(&conn, &all).unwrap();
+        assert_eq!(filtered, vec!["h1".to_string()]);
+    }
+
+    #[test]
+    fn exclude_video_hashes_keeps_hashes_with_no_file_hashes_row() {
+        // A hash present in `embeddings` but with no matching `file_hashes` row
+        // (e.g. the file was pruned) has no ext to check - keep it rather than
+        // silently dropping it, since it isn't known to be a video.
+        let conn = test_db();
+        let all = vec!["orphan-hash".to_string()];
+        let filtered = exclude_video_hashes(&conn, &all).unwrap();
+        assert_eq!(filtered, vec!["orphan-hash".to_string()]);
     }
 
     #[test]
