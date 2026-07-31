@@ -6,7 +6,6 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use videre_api::{ClusterDetail, FacesData, PersonDetail};
@@ -172,12 +171,12 @@ fn heic_to_b64(path: &str, max_px: u32) -> Option<String> {
     Some(base64_encode(&buf))
 }
 
-/// Crops a face thumbnail (via the existing make_face_thumb) and encodes it
+/// Crops a face thumbnail (via videre_api::make_face_thumb) and encodes it
 /// as a base64 JPEG data URI, mirroring heic_to_b64()'s pattern - for use in
 /// the server-mode report where thumbnails must be embedded inline rather
 /// than served as raw bytes (that's what handle_face_image does instead).
 fn face_thumb_b64(path: &str, bbox: [f32; 4], face_id: i64) -> Option<String> {
-    let thumb = make_face_thumb(path, bbox, face_id)?;
+    let thumb = videre_api::make_face_thumb(path, bbox, face_id)?;
     let mut buf = Vec::new();
     thumb
         .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Jpeg)
@@ -2271,103 +2270,6 @@ async fn handle_person_page(State(state): State<Arc<AppState>>) -> axum::respons
         if state.serve_faces_ui { "true" } else { "false" },
     );
     axum::response::Html(html)
-}
-
-fn read_exif_orientation(path: &str) -> u16 {
-    let Ok(f) = std::fs::File::open(path) else { return 1 };
-    let Ok(exif_data) = exif::Reader::new().read_from_container(&mut BufReader::new(f)) else {
-        return 1;
-    };
-    exif_data
-        .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
-        .and_then(|field| {
-            if let exif::Value::Short(ref v) = field.value {
-                v.first().copied()
-            } else {
-                None
-            }
-        })
-        .unwrap_or(1)
-}
-
-/// Rotate/flip `img` to match its EXIF orientation (read from `path`).
-fn apply_exif_orientation(img: image::DynamicImage, path: &str) -> image::DynamicImage {
-    let ext = std::path::Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    if !matches!(ext.as_str(), "jpg" | "jpeg" | "tiff" | "dng") {
-        return img;
-    }
-    match read_exif_orientation(path) {
-        2 => img.fliph(),
-        3 => img.rotate180(),
-        4 => img.flipv(),
-        5 => img.rotate90().fliph(),
-        6 => img.rotate90(),
-        7 => img.rotate270().fliph(),
-        8 => img.rotate270(),
-        _ => img,
-    }
-}
-
-/// Square crop centered on bbox [x1,y1,x2,y2] with 25% padding, then resize to 140x140.
-fn crop_face_square(img: &image::DynamicImage, bbox: [f32; 4]) -> image::DynamicImage {
-    let w = img.width() as f32;
-    let h = img.height() as f32;
-    let bw = bbox[2] - bbox[0];
-    let bh = bbox[3] - bbox[1];
-    let pad = (bw.max(bh) * 0.25).max(4.0);
-    let half = bw.max(bh) * 0.5 + pad;
-    let cx = (bbox[0] + bbox[2]) * 0.5;
-    let cy = (bbox[1] + bbox[3]) * 0.5;
-    let x1 = (cx - half).max(0.0) as u32;
-    let y1 = (cy - half).max(0.0) as u32;
-    let x2 = (cx + half).min(w) as u32;
-    let y2 = (cy + half).min(h) as u32;
-    let side = (x2 - x1).min(y2 - y1).max(1);
-    img.crop_imm(x1, y1, side, side)
-        .resize_exact(140, 140, image::imageops::FilterType::Triangle)
-}
-
-/// Load, crop, and orientation-correct a face thumbnail.
-///
-/// bbox coordinates are stored in terms of the *full-size* decoded image
-/// (videre faces rescales detections back to original width/height before
-/// writing to the DB), so the thumbnail must be cropped from an image of
-/// the same dimensions used at detection time.
-///
-/// For HEIC: videre faces converts via QuickLook (see
-/// `videre_core::heic::heic_via_quicklook`), which already applies correct
-/// rotation, so no separate orientation step is needed. For JPEG/PNG/etc:
-/// detection ran on raw pixels; apply EXIF orientation after crop.
-///
-/// NOTE: this helper is still used directly by `face_thumb_b64` (server-mode
-/// inline report embedding), so it - and the three helpers above it - could
-/// not be removed as part of the videre-api delegation; only
-/// `handle_face_image`/`handle_original_image` were rewritten to delegate.
-fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image::DynamicImage> {
-    let ext = std::path::Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    if ext == "heic" {
-        let img = videre_core::heic::heic_via_quicklook(path, &format!("thumb{face_id}"))?;
-        Some(crop_face_square(&img, bbox))
-    } else {
-        // Detection ran on raw pixels; crop first, then correct orientation
-        let timeout_path = path.to_string();
-        let img = videre_core::io_timeout::run_with_timeout(
-            videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
-            move || image::open(&timeout_path),
-        )
-        .ok()?
-        .ok()?;
-        let cropped = crop_face_square(&img, bbox);
-        Some(apply_exif_orientation(cropped, path))
-    }
 }
 
 async fn handle_person_api(
