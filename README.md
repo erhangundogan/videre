@@ -61,6 +61,12 @@ cargo build --release
 
 The single binary lands at `./target/release/videre`.
 
+A `Makefile` wraps the common commands - run `make` (or `make help`) to list
+them: `make build`/`make build-dev`, `make test`, `make fmt`/`make lint`,
+`make coverage`/`make coverage-html`, `make install` (installs to
+`~/.cargo/bin` via `cargo install`), and `make app-install`/`make
+app-dev`/`make app-build` for the desktop app in `app/`.
+
 ## Quickstart
 
 All commands below use the default database at `~/.videre/hashes.db`, created automatically
