@@ -244,7 +244,7 @@ Re-scanning the same folder with the same SQLite file upserts (overwrites) exist
 
 A companion `faces_scanned` table (`hash TEXT PRIMARY KEY, scanned_at TEXT`) records every hash that face detection has processed, **including images where zero faces were found** (which produce no `faces` row). This is what makes `videre faces` resumable - the skip set is "already scanned", so no-face images are detected once rather than every run. Created by `create_faces_table` alongside `faces`; written per hash as detection proceeds.
 
-`pipeline_runs` holds one row per tracked command (`scan`, `faces`, `embed`, `classify`, `dedupe`, `fix-dates` - `command` is the primary key, upserted on every run, not an append-only log). `status` is `running`/`success`/`failed`/`interrupted` as stored; a `crashed` status is never written to this column - it's computed only when reading (a `running` row whose per-db-per-command `flock` sidecar lock, `<db path>.<command>.lock`, isn't currently held by a live process is reported as `crashed` at read time). `videre watch` itself takes the same kind of lock (`<db>.watch.lock`) for liveness but has no row here, since it has no "finished" moment during normal operation. See `videre stats` below for how this is surfaced.
+`pipeline_runs` holds one row per tracked command (`scan`, `faces`, `embed`, `classify`, `dedupe`, `fix-dates`, `prune` - `command` is the primary key, upserted on every run, not an append-only log). `status` is `running`/`success`/`failed`/`interrupted` as stored; a `crashed` status is never written to this column - it's computed only when reading (a `running` row whose per-db-per-command `flock` sidecar lock, `<db path>.<command>.lock`, isn't currently held by a live process is reported as `crashed` at read time). `videre watch` itself takes the same kind of lock (`<db>.watch.lock`) for liveness but has no row here, since it has no "finished" moment during normal operation. See `videre stats` below for how this is surfaced.
 
 `classifications` is populated by `videre classify` (zero-shot photo/screenshot/document/meme classification, scoring `embeddings` rows already computed by `videre embed` against 4 fixed text prompts via cosine similarity - no new model, no image re-decoding) and queried via `videre search --category <name>`. Rows below the configurable `--margin` similarity gap between the best and second-best category are stored as `category = "unknown"` rather than a low-confidence guess.
 
@@ -350,6 +350,8 @@ In a single pass:
 - Deletes `~/.cache/videre/thumbnails/` cache files (240/1200px thumbnails, face crops, full-res originals) whose hash has no remaining `file_hashes` entry (orphan cleanup) - this is the only bound on that cache's otherwise-unlimited growth (see the `videre faces`/`videre watch` HEIC-caching notes above); `.tmp*` scratch files from an in-flight write are never touched
 
 Shared-hash safety (applies to both embeddings and cache files): if two paths share the same hash and one file is deleted, the embedding/cache entry is only removed if no `file_hashes` row for that hash survives. Dry-run orphan counts are a lower bound (pre-existing orphans only; does not account for orphans created by the would-be deletions). Exits with code 1 if any row update or cache-file removal fails.
+
+`videre prune`'s runs are tracked in `pipeline_runs` (added 2026-08-01), visible via `videre stats`.
 
 ## videre embed / videre search
 
@@ -587,8 +589,8 @@ videre stats --json         # single JSON object instead of text
 
 Text mode prints library totals (files/size, photo/video split, duplicate
 groups/files/wasted space, faces detected/people named), then one line per
-tracked command (`scan`, `faces`, `embed`, `classify`, `dedupe`, `fix-dates`)
-showing its last-run timestamp, status, and duration - `never run` /
+tracked command (`scan`, `faces`, `embed`, `classify`, `dedupe`, `fix-dates`,
+`prune`) showing its last-run timestamp, status, and duration - `never run` /
 `-` for a command that hasn't executed against this db yet, and `(running
 now)` appended when its lock is currently held by a live process. Uses
 `resolve_reader_db_must_exist` like `dedupe`/`mcp` (not `resolve_reader_db`
@@ -598,8 +600,11 @@ cleanly rather than silently creating an empty database.
 `--json` emits `{"schema_version": 1, "library": {...}, "pipelines": [...]}`,
 directly reusing `videre-core`'s `LibraryStats` and `PipelineRunStatus` serde
 types rather than redeclaring their fields - the `pipelines` array always has
-exactly six entries in a fixed command order, with `status`/`last_run_at`/
-`duration_ms` all `null` for a command that has never run.
+exactly seven entries (`videre_core::pipeline_runs::TRACKED_COMMANDS`) in a
+fixed command order, with `status`/`last_run_at`/`duration_ms` all `null` for
+a command that has never run. `report`, `search`, `mcp`, and `config` are
+deliberately not tracked here - see `TRACKED_COMMANDS`'s doc comment for why
+each was left out.
 
 Per-item errors within a run (a few unreadable files, one corrupted image) do
 not mark a `pipeline_runs` row `failed` - only an unhandled exception during

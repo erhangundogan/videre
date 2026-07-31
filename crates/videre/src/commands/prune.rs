@@ -47,6 +47,19 @@ pub fn run(args: PruneArgs) -> anyhow::Result<()> {
 
     let conn = videre_core::db::open_wal(&db).expect("failed to open database");
 
+    let errors = videre_core::pipeline_runs::track(&conn, &db, "prune", || run_prune(&args, &conn))?;
+
+    if errors > 0 {
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+/// The actual prune work, wrapped by `track()` above. Returns the error
+/// count so the caller can decide the exit code after tracking has already
+/// finalized the run.
+fn run_prune(args: &PruneArgs, conn: &Connection) -> anyhow::Result<usize> {
     let paths: Vec<String> = {
         let mut stmt = conn
             .prepare("SELECT path FROM file_hashes ORDER BY path")
@@ -111,7 +124,7 @@ pub fn run(args: PruneArgs) -> anyhow::Result<()> {
     // Remove orphan embeddings: hashes with no remaining file_hashes row.
     // In dry-run mode the file_hashes rows were not deleted yet, so the count
     // reflects only pre-existing orphans and is a lower bound.
-    let orphans = if embeddings_table_exists(&conn) {
+    let orphans = if embeddings_table_exists(conn) {
         if args.dry_run {
             conn.query_row(
                 "SELECT COUNT(*) FROM embeddings \
@@ -185,9 +198,5 @@ pub fn run(args: PruneArgs) -> anyhow::Result<()> {
         );
     }
 
-    if errors > 0 {
-        std::process::exit(1);
-    }
-
-    Ok(())
+    Ok(errors)
 }

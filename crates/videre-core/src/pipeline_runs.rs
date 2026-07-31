@@ -11,12 +11,22 @@ use serde::Serialize;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
-/// The six commands tracked in this pass. `videre watch` itself is
-/// deliberately not in this list - it has no "finished" moment during normal
-/// operation, so it gets its own liveness lock (see `watch_lock_path`) but no
-/// `pipeline_runs` row.
-pub const TRACKED_COMMANDS: [&str; 6] =
-    ["scan", "faces", "embed", "classify", "dedupe", "fix-dates"];
+/// The seven commands tracked so far. Extended with `prune` on 2026-08-01
+/// (was originally six - see the design doc referenced above) - it's a
+/// clean fit for the same one-shot start/finish model the other six use.
+/// `report`, `search`, `mcp`, and `config` were deliberately left out of
+/// this extension: `report --faces`/`--show-faces` and `mcp` are long-running
+/// servers with no natural "finished" moment (the same reason `videre watch`
+/// itself is excluded - see below), `search` is an interactive per-query
+/// command rather than a library-processing pipeline stage, and `config` is
+/// a trivial instant read/write with nothing meaningful to time. Revisit only
+/// if a real driver for tracking one of those emerges - see TECH_DEBT.md.
+///
+/// `videre watch` itself is deliberately not in this list - it has no
+/// "finished" moment during normal operation, so it gets its own liveness
+/// lock (see `watch_lock_path`) but no `pipeline_runs` row.
+pub const TRACKED_COMMANDS: [&str; 7] =
+    ["scan", "faces", "embed", "classify", "dedupe", "fix-dates", "prune"];
 
 pub fn ensure_pipeline_runs_table(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
