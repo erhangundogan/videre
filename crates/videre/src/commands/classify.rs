@@ -41,7 +41,8 @@ fn run_classify(args: &ClassifyArgs, conn: &rusqlite::Connection) -> Result<()> 
         embeddings::load_embeddings(conn, model::MODEL_ID)?.into_iter().collect();
 
     let hashes: Vec<String> = if args.reprocess {
-        all_embeddings.keys().cloned().collect()
+        let all: Vec<String> = all_embeddings.keys().cloned().collect();
+        classify_core::exclude_video_hashes(conn, &all)?
     } else {
         classify_core::pending_hashes(conn, model::MODEL_ID)?
     };
