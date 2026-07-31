@@ -69,6 +69,14 @@ pub fn image_to_tensor(path: &Path, size: usize, device: &Device) -> Result<Tens
 /// why this is needed: a disconnected/stale external volume can make
 /// `qlmanage` block indefinitely on macOS rather than fail fast, which
 /// otherwise freezes `videre embed` silently on that one file.
+///
+/// Confirmed well-tuned for video specifically (2026-08-01): timed raw
+/// `qlmanage -t` poster-frame extraction directly against the 5 largest real
+/// video files in a real library (2.3-5.7GB, `.mov`/`.mp4`) - all completed
+/// in 0.22-0.36s. Video extraction only seeks to one point and decodes a
+/// single frame, so unlike HEIC's full-image decode, wall time doesn't scale
+/// with file size/duration - this 20s ceiling has ~50-90x headroom even for
+/// the largest real files measured, not just typical ones.
 const QLMANAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 fn decode_via_quicklook(path: &Path, size: usize, tag: &str) -> Result<image::DynamicImage> {
