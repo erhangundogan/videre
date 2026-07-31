@@ -11,6 +11,7 @@ indicatif = "0.17"
 reverse_geocoder = "4"
 rusqlite = { version = "0.32", features = ["bundled"] }
 toml = { version = "0.8", features = ["preserve_order"] }
+serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 tempfile = "3"
