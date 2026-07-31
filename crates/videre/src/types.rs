@@ -92,6 +92,15 @@ pub struct ScanJson {
     pub output: ScanOutputJson,
 }
 
+/// Top-level document for `stats --json`. Reuses videre-core's/videre-api's
+/// own serde types directly rather than re-declaring their fields here.
+#[derive(Debug, Serialize)]
+pub struct StatsJson {
+    pub schema_version: u32,
+    pub library: videre_core::library_stats::LibraryStats,
+    pub pipelines: Vec<videre_core::pipeline_runs::PipelineRunStatus>,
+}
+
 /// Error document: in --json mode stdout always carries exactly one valid JSON
 /// object, so runtime failures are emitted as this instead of leaving stdout empty.
 #[derive(Debug, Serialize)]
