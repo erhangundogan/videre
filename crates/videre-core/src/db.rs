@@ -14,10 +14,35 @@ pub fn open_wal(path: &Path) -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
+/// Whether `name` exists as a table in `conn` - used by every reader that
+/// queries an optional table (`faces`, `embeddings`, `classifications`) added
+/// after `file_hashes` and not guaranteed present in an older db.
+pub fn table_exists(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [name],
+        |r| r.get(0),
+    )?;
+    Ok(count > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn table_exists_true_for_existing_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE widgets (id INTEGER);").unwrap();
+        assert!(table_exists(&conn, "widgets").unwrap());
+    }
+
+    #[test]
+    fn table_exists_false_for_missing_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert!(!table_exists(&conn, "widgets").unwrap());
+    }
 
     #[test]
     fn open_wal_sets_journal_mode() {
