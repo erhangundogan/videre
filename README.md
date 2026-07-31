@@ -35,22 +35,6 @@ Everything runs over a single shared SQLite database.
 
 `.jpg` `.jpeg` `.png` `.gif` `.webp` `.bmp` `.tiff` `.mov` `.heic` `.mp4` `.dng`
 
-## Desktop app
-
-`app/` is a separate Tauri v2 + React desktop app that reuses the same Rust
-core directly (no CLI process in between). It currently covers the faces
-labeling workflow at feature parity with `videre report --faces`, as the
-first step toward replacing the browser-based labeling UI with a native app.
-
-```bash
-cd app
-npm install
-npm run tauri dev   # launch against the default ~/.videre/hashes.db
-```
-
-It's versioned independently of the CLI (`app/package.json`) and requires a
-database already populated by `videre scan` / `videre faces`.
-
 ## Install
 
 ```bash
@@ -63,9 +47,8 @@ The single binary lands at `./target/release/videre`.
 
 A `Makefile` wraps the common commands - run `make` (or `make help`) to list
 them: `make build`/`make build-dev`, `make test`, `make fmt`/`make lint`,
-`make coverage`/`make coverage-html`, `make install` (installs to
-`~/.cargo/bin` via `cargo install`), and `make app-install`/`make
-app-dev`/`make app-build` for the desktop app in `app/`.
+`make coverage`/`make coverage-html`, and `make install` (installs to
+`~/.cargo/bin` via `cargo install`).
 
 ## Quickstart
 

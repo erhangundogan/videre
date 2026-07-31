@@ -51,15 +51,3 @@ install: ## Install the videre binary to ~/.cargo/bin via cargo install
 .PHONY: clean
 clean: ## Remove build artifacts (cargo clean)
 	cargo clean
-
-.PHONY: app-install
-app-install: ## Install desktop app JS dependencies (npm install)
-	cd app && npm install
-
-.PHONY: app-dev
-app-dev: ## Launch the desktop app in dev mode against the default db
-	cd app && npm run tauri dev
-
-.PHONY: app-build
-app-build: ## Typecheck + production frontend bundle for the desktop app
-	cd app && npm run build

@@ -2,8 +2,12 @@
 .DS_Store
 verify_exif.rs
 
-# Local-only MCP server config (shadcn component fetching for the app)
+# Local-only MCP server config (shadcn component fetching)
 .mcp.json
+
+# Desktop app moved to its own private repo (videre-desktop) - kept locally
+# here until migrated, no longer tracked in this repo going forward.
+/app
 
 # Design specs and implementation plans: local-only working documents going
 # forward (existing committed specs/plans stay tracked as historical record).
