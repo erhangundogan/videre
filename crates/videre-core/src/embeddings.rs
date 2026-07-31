@@ -11,6 +11,13 @@ pub const EMBEDDABLE_EXTS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "heic", "dng", "mov", "mp4",
 ];
 
+/// True if `ext` (any case) is a video extension handled by single-frame
+/// QuickLook extraction. Shared by every "is this a video" check in
+/// videre-core so the extension list can't drift between call sites.
+pub fn is_video_ext(ext: &str) -> bool {
+    matches!(ext.to_lowercase().as_str(), "mov" | "mp4")
+}
+
 /// Model id used by dupe-embed / dupe-search / dupe-report. Single source of
 /// truth so the report binary can query embeddings without depending on dupe-ml.
 pub const DEFAULT_MODEL_ID: &str = "google/siglip-so400m-patch14-384";
@@ -213,5 +220,14 @@ mod tests {
     #[test]
     fn default_model_id_is_the_siglip_checkpoint() {
         assert_eq!(DEFAULT_MODEL_ID, "google/siglip-so400m-patch14-384");
+    }
+
+    #[test]
+    fn is_video_ext_matches_mov_and_mp4_case_insensitively() {
+        assert!(is_video_ext("mov"));
+        assert!(is_video_ext("MP4"));
+        assert!(is_video_ext("Mov"));
+        assert!(!is_video_ext("jpg"));
+        assert!(!is_video_ext(""));
     }
 }
