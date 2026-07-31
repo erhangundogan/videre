@@ -4,3 +4,10 @@ verify_exif.rs
 
 # Local-only MCP server config (shadcn component fetching for the app)
 .mcp.json
+
+# Design specs and implementation plans: local-only working documents going
+# forward (existing committed specs/plans stay tracked as historical record).
+docs/superpowers/
+
+# Brainstorming skill's visual-companion mockups/state
+.superpowers/
