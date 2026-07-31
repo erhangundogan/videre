@@ -2,9 +2,13 @@
 
 use rusqlite::{Connection, Result, params};
 
-/// Extensions the embedding pipeline can decode. Video is out of scope in v1.
+/// Extensions the embedding pipeline can decode. `.mov`/`.mp4` are handled by
+/// extracting one representative frame via QuickLook (macOS only, degrades to
+/// a per-file decode error on other platforms - same pattern already
+/// accepted for `.heic`) - see
+/// docs/superpowers/specs/2026-07-31-video-embedding-design.md.
 pub const EMBEDDABLE_EXTS: &[&str] = &[
-    "jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "heic", "dng",
+    "jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "heic", "dng", "mov", "mp4",
 ];
 
 /// Model id used by dupe-embed / dupe-search / dupe-report. Single source of
@@ -129,17 +133,19 @@ mod tests {
     }
 
     #[test]
-    fn pending_images_dedupes_by_hash_and_filters_ext() {
+    fn pending_images_dedupes_by_hash_and_includes_video() {
         let conn = test_db();
         insert_file(&conn, "/a/1.jpg", "h1", "jpg");
         insert_file(&conn, "/b/1-copy.jpg", "h1", "jpg"); // same hash, second path
         insert_file(&conn, "/a/2.png", "h2", "png");
-        insert_file(&conn, "/a/clip.mp4", "h3", "mp4");   // unsupported for embedding
+        insert_file(&conn, "/a/clip.mp4", "h3", "mp4");   // now embeddable
+        insert_file(&conn, "/a/other.xyz", "h4", "xyz");  // still unsupported
 
         let pending = pending_images(&conn, "test-model").unwrap();
-        assert_eq!(pending.len(), 2); // h1 once, h2 once, h3 excluded
+        assert_eq!(pending.len(), 3); // h1 once, h2 once, h3 (video) included, h4 excluded
         assert!(pending.iter().any(|p| p.hash == "h1"));
         assert!(pending.iter().any(|p| p.hash == "h2"));
+        assert!(pending.iter().any(|p| p.hash == "h3"));
     }
 
     #[test]
