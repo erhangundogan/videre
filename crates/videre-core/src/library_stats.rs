@@ -13,6 +13,9 @@ pub struct LibraryStats {
     pub total_size_bytes: i64,
     pub total_photos: i64,
     pub total_videos: i64,
+    pub duplicate_group_count: i64,
+    pub duplicate_file_count: i64,
+    pub wasted_bytes: i64,
 }
 
 const PHOTO_EXTS: &str = "'jpg','jpeg','png','gif','webp','bmp','tiff','heic','dng'";
@@ -33,7 +36,35 @@ pub fn compute(conn: &Connection) -> Result<LibraryStats> {
         |r| r.get(0),
     )?;
 
-    Ok(LibraryStats { total_files, total_size_bytes, total_photos, total_videos })
+    let duplicate_group_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM \
+         (SELECT hash FROM file_hashes GROUP BY hash HAVING COUNT(*) > 1)",
+        [],
+        |r| r.get(0),
+    )?;
+    let duplicate_file_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM file_hashes \
+         WHERE hash IN (SELECT hash FROM file_hashes GROUP BY hash HAVING COUNT(*) > 1)",
+        [],
+        |r| r.get(0),
+    )?;
+    let wasted_bytes: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(size_bytes * (cnt - 1)), 0) FROM \
+         (SELECT hash, size_bytes, COUNT(*) as cnt \
+          FROM file_hashes GROUP BY hash HAVING cnt > 1)",
+        [],
+        |r| r.get(0),
+    )?;
+
+    Ok(LibraryStats {
+        total_files,
+        total_size_bytes,
+        total_photos,
+        total_videos,
+        duplicate_group_count,
+        duplicate_file_count,
+        wasted_bytes,
+    })
 }
 
 #[cfg(test)]
@@ -94,5 +125,31 @@ mod tests {
         assert_eq!(stats.total_photos, 2);
         assert_eq!(stats.total_videos, 2);
         assert_eq!(stats.total_files, 5); // unrecognized ext still counts toward total_files
+    }
+
+    #[test]
+    fn compute_counts_duplicate_groups_and_wasted_bytes() {
+        let conn = test_db();
+        insert_file(&conn, "/a/1.jpg", "dup-hash", 1000, "jpg");
+        insert_file(&conn, "/b/1-copy.jpg", "dup-hash", 1000, "jpg");
+        insert_file(&conn, "/a/2.jpg", "dup-hash", 1000, "jpg");
+        insert_file(&conn, "/a/3.jpg", "unique-hash", 500, "jpg");
+
+        let stats = compute(&conn).unwrap();
+        assert_eq!(stats.duplicate_group_count, 1);
+        assert_eq!(stats.duplicate_file_count, 3); // all 3 members of the dup group
+        assert_eq!(stats.wasted_bytes, 2000); // (3 - 1) * 1000
+    }
+
+    #[test]
+    fn compute_with_no_duplicates_reports_zero() {
+        let conn = test_db();
+        insert_file(&conn, "/a/1.jpg", "h1", 500, "jpg");
+        insert_file(&conn, "/a/2.jpg", "h2", 500, "jpg");
+
+        let stats = compute(&conn).unwrap();
+        assert_eq!(stats.duplicate_group_count, 0);
+        assert_eq!(stats.duplicate_file_count, 0);
+        assert_eq!(stats.wasted_bytes, 0);
     }
 }
