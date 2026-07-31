@@ -6,6 +6,7 @@ pub mod face_db;
 pub mod heic;
 pub mod home;
 pub mod io_timeout;
+pub mod library_stats;
 pub mod semaphore;
 pub mod location;
 pub mod person_search;
