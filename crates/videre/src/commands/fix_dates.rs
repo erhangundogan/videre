@@ -14,6 +14,23 @@ pub struct FixDatesArgs {
     /// Suppress per-file output (errors are always shown)
     #[arg(long)]
     silent: bool,
+
+    /// Skip the confirmation prompt and proceed immediately
+    #[arg(short = 'y', long = "yes")]
+    yes: bool,
+}
+
+/// Prompts on stderr and reads a yes/no answer from stdin. Any input other
+/// than "y"/"yes" (case-insensitive) is treated as "no", including EOF (e.g.
+/// stdin piped from /dev/null in a non-interactive context) - the safe
+/// default for a prompt gating a file mutation.
+fn confirm(prompt: &str) -> anyhow::Result<bool> {
+    use std::io::Write;
+    eprint!("{prompt} [y/N] ");
+    std::io::stderr().flush()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    Ok(matches!(input.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 
 pub fn run(args: FixDatesArgs) -> anyhow::Result<()> {
@@ -60,6 +77,17 @@ fn run_fix_dates(args: &FixDatesArgs, conn: &rusqlite::Connection) -> anyhow::Re
         .collect();
 
     let total = rows.len();
+
+    if !args.dry_run && total > 0 && !args.yes {
+        let proceed = confirm(&format!(
+            "This will set the modified time on {total} file(s) from their exif_date. Continue?"
+        ))?;
+        if !proceed {
+            eprintln!("Aborted; no files modified.");
+            return Ok(0);
+        }
+    }
+
     let mut changed = 0usize;
     let mut skipped = 0usize;
     let mut errors = 0usize;

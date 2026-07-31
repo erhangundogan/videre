@@ -327,16 +327,18 @@ in `videre report` - all of them shell out to `qlmanage`, not `sips`, for this r
 Reads `file_hashes` from a SQLite database and sets `modified_at` on each file to its `exif_date`. Only files with `exif_date` present are touched. Operates on all such files (KEEP and REMOVE alike: REMOVE files will be deleted afterward anyway).
 
 ```bash
-videre fix-dates                 # default db; apply: set mtime = exif_date for all files with EXIF
+videre fix-dates                 # default db; prompts for confirmation, then sets mtime = exif_date for all files with EXIF
 videre fix-dates --db <db>       # explicit db
-videre fix-dates --dry-run       # preview without modifying anything
-videre fix-dates --silent        # suppress per-file output (errors always shown)
+videre fix-dates --dry-run       # preview without modifying anything (never prompts)
+videre fix-dates --yes           # skip the confirmation prompt (also: -y)
+videre fix-dates --silent        # suppress per-file output (errors always shown; confirmation prompt is unaffected)
 ```
 
 - `exif_date` is camera-local time with no timezone; treated as local system time when computing the UNIX timestamp
 - Only `modified_at` is set (`created_at` / birth time requires a macOS-only syscall and is not supported)
 - Files that no longer exist on disk (e.g. trashed duplicates still in the DB) are silently skipped and reported in the summary as "no longer on disk (skipped)"
 - Exits with code 1 if any file could not be updated (missing files are not counted as errors)
+- Before mutating anything, prints the count of files that will be touched and asks `[y/N]` on stderr; anything other than `y`/`yes` (including EOF, e.g. stdin piped from `/dev/null`) aborts with no changes and exit code 0. `--yes`/`-y` skips the prompt for scripted/non-interactive use. `--dry-run` never prompts, since it makes no changes regardless. The prompt is skipped entirely when there are zero files to update.
 
 ## videre prune
 
