@@ -217,6 +217,26 @@ mod tests {
     }
 
     #[test]
+    fn preprocess_swaps_rgb_to_bgr_and_normalizes() {
+        // A solid red 4x4 source image should decode to R=255,G=0,B=0 per
+        // pixel; SCRFD expects BGR channel order and (pixel - 127.5) / 128.0
+        // normalization, so channel 0 (B) should be the "low" normalized value
+        // and channel 2 (R) should be the "high" one.
+        let mut img = image::RgbImage::new(4, 4);
+        for p in img.pixels_mut() {
+            *p = image::Rgb([255, 0, 0]);
+        }
+        let tensor = preprocess(&image::DynamicImage::ImageRgb8(img));
+        assert_eq!(tensor.shape(), &[1, 3, INPUT_SIZE as usize, INPUT_SIZE as usize]);
+        let b = tensor[[0, 0, 0, 0]];
+        let g = tensor[[0, 1, 0, 0]];
+        let r = tensor[[0, 2, 0, 0]];
+        assert!((b - (-127.5 / 128.0)).abs() < 1e-4, "B channel: {b}");
+        assert!((g - (-127.5 / 128.0)).abs() < 1e-4, "G channel: {g}");
+        assert!((r - (127.5 / 128.0)).abs() < 1e-4, "R channel: {r}");
+    }
+
+    #[test]
     fn nms_keeps_non_overlapping() {
         let d1 = Detection { bbox: [0.0, 0.0, 5.0, 5.0], score: 0.9, landmarks: [[0.0; 2]; 5] };
         let d2 = Detection {

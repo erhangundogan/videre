@@ -47,3 +47,16 @@ pub fn buffalo_l_paths() -> Result<(PathBuf, PathBuf)> {
         .context("download w600k_r50.onnx")?;
     Ok((det, rec))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_session_errors_on_nonexistent_model_path() {
+        // Fails at commit_from_file (file doesn't exist) - no network or real
+        // model weights needed, so this is a fast, deterministic error-path test.
+        let result = build_session(Path::new("/nonexistent/model.onnx"), 1);
+        assert!(result.is_err());
+    }
+}
