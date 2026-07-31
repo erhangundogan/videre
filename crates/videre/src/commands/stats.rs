@@ -1,4 +1,5 @@
 use videre::types::{ErrorJson, StatsJson, SCHEMA_VERSION};
+use videre_core::pipeline_runs::PipelineRunStatus;
 use std::path::PathBuf;
 use std::process;
 
@@ -11,6 +12,23 @@ pub struct StatsArgs {
     /// Emit a single JSON object on stdout instead of human-readable text
     #[arg(long)]
     json: bool,
+
+    /// Exit non-zero if any tracked command's last run is "failed" or
+    /// "crashed" (a running row whose lock is no longer held by a live
+    /// process). Output is unchanged either way - this only adds an exit
+    /// code, so `videre stats --check` composes with cron/launchd's own
+    /// failure handling without needing to parse text or JSON output.
+    #[arg(long)]
+    check: bool,
+}
+
+/// True if any tracked command's last recorded run needs attention.
+/// "interrupted" (a clean Ctrl-C) is deliberately not included - that's an
+/// intentional stop, not a failure.
+fn has_problem(pipelines: &[PipelineRunStatus]) -> bool {
+    pipelines
+        .iter()
+        .any(|p| matches!(p.status.as_deref(), Some("failed") | Some("crashed")))
 }
 
 pub fn run(args: StatsArgs) -> anyhow::Result<()> {
@@ -18,6 +36,9 @@ pub fn run(args: StatsArgs) -> anyhow::Result<()> {
         match run_json(&args) {
             Ok(doc) => {
                 println!("{}", serde_json::to_string(&doc)?);
+                if args.check && has_problem(&doc.pipelines) {
+                    process::exit(1);
+                }
                 Ok(())
             }
             Err(e) => {
@@ -72,6 +93,9 @@ fn run_text(args: &StatsArgs) -> anyhow::Result<()> {
             "  {:10} {:12} last_run={:<20} duration={:<8}{}",
             p.command, status, last_run, duration, running_note
         );
+    }
+    if args.check && has_problem(&pipelines) {
+        process::exit(1);
     }
     Ok(())
 }

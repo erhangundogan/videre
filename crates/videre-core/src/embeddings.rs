@@ -95,7 +95,19 @@ pub fn insert_embeddings(
     tx.commit()
 }
 
+/// Returns an empty vec (rather than a raw SQLite error) when the
+/// `embeddings` table doesn't exist yet - a db that's been scanned but never
+/// embedded has no such table, and callers rely on "empty" to mean "run
+/// videre embed first" (see `videre search`'s `load_corpus`).
 pub fn load_embeddings(conn: &Connection, model_id: &str) -> Result<Vec<(String, Vec<u8>)>> {
+    let table_exists: bool = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='embeddings'",
+        [],
+        |r| r.get::<_, i64>(0),
+    )? > 0;
+    if !table_exists {
+        return Ok(Vec::new());
+    }
     let mut stmt =
         conn.prepare("SELECT hash, embedding FROM embeddings WHERE model_id = ?1")?;
     let rows = stmt.query_map(params![model_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
