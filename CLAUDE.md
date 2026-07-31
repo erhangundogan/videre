@@ -136,7 +136,7 @@ crates/
     src/main.rs
     src/commands/{mod.rs,dedupe.rs,report.rs,scan.rs,fix_dates.rs,prune.rs,embed.rs,search.rs,faces.rs,classify.rs,watch.rs,config.rs,mcp.rs,stats.rs}
     src/{lib.rs,scanner.rs,hasher.rs,output.rs,sqlite_output.rs,types.rs}
-    tests/{integration.rs,report.rs,prune.rs,watch.rs,faces_pipeline.rs,faces_server.rs,faces_resumability.rs,person_search.rs,mcp.rs,scan.rs,config.rs,embed.rs,fix_dates.rs,stats.rs,fixtures/}
+    tests/{integration.rs,report.rs,prune.rs,watch.rs,faces_pipeline.rs,faces_server.rs,faces_resumability.rs,person_search.rs,mcp.rs,scan.rs,config.rs,embed.rs,fix_dates.rs,stats.rs,search.rs,fixtures/}
   videre-core/
     Cargo.toml
     src/lib.rs
@@ -528,19 +528,21 @@ began; it now scales with the number of eps-eligible pairs instead.
 Long-running background process that keeps the pipeline populated so `videre report --show-faces` (or any other reader) always sees fresh data, without anyone manually re-running `videre scan`, `videre faces`, or waiting on lazy HEIC/location conversions. No server, no UI: it loops in the foreground, logging progress to stderr, until killed with Ctrl-C.
 
 ```bash
-videre watch [directory]                                             # default db; all four stages, every 300s; directory optional when 'path' is set in videre config
+videre watch [directory]                                             # default db; original four stages, every 300s; directory optional when 'path' is set in videre config
 videre watch <directory> --scan --faces                              # only these stages
 videre watch <directory> --interval 60                                # custom cycle interval (seconds)
 videre watch <directory> --silent                                    # suppress per-cycle stderr output
 videre watch --output-sqlite <db> <directory>                        # explicit db instead of the default
+videre watch <directory> --prune                                     # opt-in: also reclaim stale rows/cache each cycle
 ```
 
-Four independent stages, selected with `--scan` / `--faces` / `--heic` / `--location`. If none of the four flags are passed, all four run (the common case is "just keep everything up to date", not memorizing four flags):
+Five independent stages, selected with `--scan` / `--faces` / `--heic` / `--location` / `--prune`. If none of `--scan`/`--faces`/`--heic`/`--location` are passed, all four of those run (the common case is "just keep everything up to date", not memorizing four flags) - `--prune` is the exception, opt-in only, and never defaults on even when no stage flags are passed at all (added 2026-08-01; kept out of the default set so existing `videre watch` invocations don't change behavior):
 
 - `--scan`: re-runs the same scan/hash/EXIF pipeline as `videre scan`, upserting `file_hashes` for the given directory
 - `--faces`: incremental face detection - queries hashes not yet in the `faces` table, runs detection/embedding/clustering only on those, then re-runs the two-stage clustering (average-linkage + centroid-merge, with the same size + distinctiveness quality gate) over all existing embeddings (same defaults as `videre faces`: `eps` 0.6, `min-cluster-size` 3, `merge-sim` 0.35, `min-face-size` 80, `max-generic-sim` 0.4)
 - `--heic`: pre-converts and caches HEIC thumbnails (240px and 1200px) for every HEIC file's content hash, skipping hashes already cached; one full-resolution `qlmanage` conversion per hash, downscaled in memory for each missing size rather than re-converting per size. That same full-resolution decode is also cached as `<hash>_original.jpg` (skipped if already present) - `videre faces` reads this cache instead of running its own `qlmanage` decode when detecting faces on a HEIC file, so running `--heic` ahead of (or alongside) `videre faces`/`--faces` avoids a second full decode per HEIC file. Real measurement: ~108ms to read the cache vs. ~7.6s for a live decode. This full-res cache has a real disk cost at library scale (tens of GB for a HEIC-heavy library) not yet gated behind any size limit or flag.
 - `--location`: reverse-geocodes every distinct `(gps_lat, gps_lon)` pair with `location_name IS NULL` and writes the result back to `file_hashes`, the same lookup `--show-faces`'s `/api/location` endpoint performs on demand
+- `--prune`: runs the same cleanup as `videre prune` (stale `file_hashes` row removal, `modified_at` sync, orphan embedding/cache cleanup) against the already-open connection, via `PruneArgs::for_watch_stage` and the shared `run_prune` helper - never deletes real files, only stale db rows and cache entries for files already gone from disk. Its runs are tracked in `pipeline_runs` under `"prune"`, same as a standalone `videre prune` invocation.
 
 `--interval <seconds>` (default 300) is the sleep between cycles; each cycle runs the selected stages once, logs a per-stage summary to stderr (unless `--silent`), then sleeps. There's no daemonization or systemd unit - run it in a terminal, tmux/screen pane, or your own process supervisor, and stop it with Ctrl-C.
 
@@ -585,6 +587,7 @@ window into `videre-core`'s `library_stats` and `pipeline_runs` modules.
 videre stats                # default db
 videre stats --db <path>    # explicit db
 videre stats --json         # single JSON object instead of text
+videre stats --check        # exit nonzero if any tracked command last failed or crashed
 ```
 
 Text mode prints library totals (files/size, photo/video split, duplicate
@@ -605,6 +608,13 @@ fixed command order, with `status`/`last_run_at`/`duration_ms` all `null` for
 a command that has never run. `report`, `search`, `mcp`, and `config` are
 deliberately not tracked here - see `TRACKED_COMMANDS`'s doc comment for why
 each was left out.
+
+`--check` (added 2026-08-01) doesn't change either output format - it only
+adds an exit code, via `has_problem()` checking whether any tracked command's
+last recorded status is `"failed"` or `"crashed"` (a clean `"interrupted"`
+Ctrl-C is deliberately not treated as a problem). Composes with both text and
+`--json` mode, so `videre stats --check` (or `--json --check`) can drive
+cron/launchd failure handling without parsing either output.
 
 Per-item errors within a run (a few unreadable files, one corrupted image) do
 not mark a `pipeline_runs` row `failed` - only an unhandled exception during

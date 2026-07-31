@@ -11,11 +11,21 @@ pub struct PruneArgs {
 
     /// Preview changes without modifying the database
     #[arg(long)]
-    dry_run: bool,
+    pub(crate) dry_run: bool,
 
     /// Suppress per-file output (errors are always shown)
     #[arg(long)]
-    silent: bool,
+    pub(crate) silent: bool,
+}
+
+impl PruneArgs {
+    /// Constructs args for an in-process prune pass against an already-open
+    /// connection (used by `videre watch --prune`) - `db`/`dry_run` aren't
+    /// meaningful there since the caller already has a connection and always
+    /// wants the real (non-preview) pass, so only `silent` is exposed.
+    pub(crate) fn for_watch_stage(silent: bool) -> Self {
+        Self { db: None, dry_run: false, silent }
+    }
 }
 
 fn system_time_to_iso(t: SystemTime) -> String {
@@ -58,8 +68,10 @@ pub fn run(args: PruneArgs) -> anyhow::Result<()> {
 
 /// The actual prune work, wrapped by `track()` above. Returns the error
 /// count so the caller can decide the exit code after tracking has already
-/// finalized the run.
-fn run_prune(args: &PruneArgs, conn: &Connection) -> anyhow::Result<usize> {
+/// finalized the run. `pub(crate)` so `videre watch --prune` can reuse it
+/// directly against its own already-open connection instead of duplicating
+/// the orphan-cleanup logic.
+pub(crate) fn run_prune(args: &PruneArgs, conn: &Connection) -> anyhow::Result<usize> {
     let paths: Vec<String> = {
         let mut stmt = conn
             .prepare("SELECT path FROM file_hashes ORDER BY path")

@@ -107,6 +107,69 @@ fn stats_tracks_prune_runs() {
 }
 
 #[test]
+fn stats_check_exits_zero_when_nothing_failed_or_crashed() {
+    let scan_dir = tempdir().unwrap();
+    let out_dir = tempdir().unwrap();
+    let db_path = out_dir.path().join("hashes.db");
+
+    fs::write(scan_dir.path().join("a.jpg"), b"content").unwrap();
+
+    Command::new(videre_bin())
+        .arg("scan").arg("--silent").arg("--output-sqlite").arg(&db_path).arg(scan_dir.path())
+        .status().expect("failed to run videre scan");
+
+    // Both text and --json modes should compose with --check.
+    let text = Command::new(videre_bin())
+        .arg("stats").arg("--db").arg(&db_path).arg("--check")
+        .status().expect("failed to run videre stats --check");
+    assert!(text.success(), "no tracked command has failed/crashed, so --check must exit 0");
+
+    let json = Command::new(videre_bin())
+        .arg("stats").arg("--db").arg(&db_path).arg("--json").arg("--check")
+        .status().expect("failed to run videre stats --json --check");
+    assert!(json.success());
+}
+
+#[test]
+fn stats_check_exits_nonzero_when_a_command_failed() {
+    let scan_dir = tempdir().unwrap();
+    let out_dir = tempdir().unwrap();
+    let db_path = out_dir.path().join("hashes.db");
+
+    fs::write(scan_dir.path().join("a.jpg"), b"content").unwrap();
+
+    Command::new(videre_bin())
+        .arg("scan").arg("--silent").arg("--output-sqlite").arg(&db_path).arg(scan_dir.path())
+        .status().expect("failed to run videre scan");
+
+    // Simulate a prior failed run by writing directly into pipeline_runs -
+    // exercising the CLI's own failure path for every tracked command would
+    // be its own large test; this isolates --check's exit-code contract.
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute(
+        "INSERT OR REPLACE INTO pipeline_runs (command, started_at, finished_at, status, duration_ms, summary)
+         VALUES ('faces', '2026-01-01 00:00:00', '2026-01-01 00:00:01', 'failed', 1000, 'boom')",
+        [],
+    ).unwrap();
+    drop(conn);
+
+    let out = Command::new(videre_bin())
+        .arg("stats").arg("--db").arg(&db_path).arg("--check")
+        .output().expect("failed to run videre stats --check");
+    assert!(!out.status.success(), "a failed command must make --check exit non-zero");
+    // Output is unchanged by --check - normal stats text is still printed.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("faces"), "{stdout}");
+
+    let json_out = Command::new(videre_bin())
+        .arg("stats").arg("--db").arg(&db_path).arg("--json").arg("--check")
+        .output().expect("failed to run videre stats --json --check");
+    assert!(!json_out.status.success());
+    let doc: serde_json::Value = serde_json::from_slice(&json_out.stdout).unwrap();
+    assert_eq!(doc["schema_version"], 1, "--json output must still be valid, unaffected by --check");
+}
+
+#[test]
 fn stats_errors_cleanly_on_missing_db_without_creating_one() {
     let home = tempdir().unwrap();
     let db_path = home.path().join("does-not-exist.db");

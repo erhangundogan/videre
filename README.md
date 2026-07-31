@@ -365,6 +365,7 @@ videre watch ~/Photos --interval 60                               # check every 
 videre watch ~/Photos --scan --faces                              # only rescan and detect faces
 videre watch ~/Photos --silent                                    # quiet mode
 videre watch --output-sqlite ~/photos.db ~/Photos                 # explicit db instead of the default
+videre watch ~/Photos --prune                                     # opt-in: also reclaim stale rows/cache each cycle
 ```
 
 | Flag | Description |
@@ -374,10 +375,11 @@ videre watch --output-sqlite ~/photos.db ~/Photos                 # explicit db 
 | `--faces` | Detect, embed, and cluster faces on any images not yet processed |
 | `--heic` | Pre-convert and cache HEIC thumbnails (240px and 1200px) per photo, plus a full-resolution original `videre faces` reuses to skip its own conversion |
 | `--location` | Reverse-geocode any GPS coordinates not yet resolved to a place name |
+| `--prune` | Sync stale rows/cache and clean orphans each cycle (same cleanup as `videre prune`); never deletes real files, only stale db rows and cache entries for files already gone from disk |
 | `--interval <seconds>` | Time between cycles (default: 300) |
 | `--silent` | Suppress per-cycle progress output |
 
-Pass none of the four stage flags and all four run every cycle - that's the intended default for "just keep my library up to date." Pass any subset to run only those stages.
+Pass none of the stage flags and the original four (`--scan`/`--faces`/`--heic`/`--location`) run every cycle - that's the intended default for "just keep my library up to date." `--prune` is opt-in only and never runs unless passed explicitly, so existing `videre watch` invocations keep their current behavior unchanged. Pass any subset to run only those stages.
 
 Cached HEIC thumbnails (and a full-resolution original) land in `~/.cache/videre/thumbnails/`, keyed by the photo's content hash so the same file is never converted twice even across different databases. On first run, if the pre-rename cache at `~/.cache/dupe/thumbnails/` still exists and the new one doesn't, it's migrated automatically (a plain rename, so it's atomic and a no-op on error, since the cache regenerates lazily anyway). `videre report --show-faces` checks the cache before falling back to a live conversion, and `videre faces` reuses the same full-resolution original for detection, so running `videre watch --heic` in the background makes both browsing and face detection on HEIC-heavy libraries noticeably faster. This cache has no size cap or expiry - only `videre prune`'s orphan cleanup (deleting entries for hashes no longer in the database) reclaims space, so it grows in proportion to your HEIC library size over time.
 
@@ -520,12 +522,15 @@ time, status, and duration.
 videre stats                # default db
 videre stats --db <path>    # explicit db
 videre stats --json         # single JSON object instead of text
+videre stats --check        # exit nonzero if any tracked command last failed or crashed
 ```
 
 A command that has never run shows `never run` / `-`; one currently in
 progress is marked `(running now)`. `--json` emits
 `{"schema_version": 1, "library": {...}, "pipelines": [...]}`, with
 `pipelines` always containing exactly seven entries in a fixed order (`scan`/`faces`/`embed`/`classify`/`dedupe`/`fix-dates`/`prune`; `report`/`search`/`mcp`/`config` are deliberately not tracked - see CLAUDE.md for why).
+
+`--check` doesn't change the printed output (text or `--json`) at all - it only adds an exit code, so cron/launchd can act on a failed pipeline without parsing either output format. Exits nonzero if any tracked command's last recorded run is `failed` or `crashed`; a clean `interrupted` (Ctrl-C) is not treated as a problem.
 
 Per-item errors within a run (a few unreadable files, one corrupted image)
 don't mark a row `failed` - only a hard crash does, so `fix-dates`/`faces` can

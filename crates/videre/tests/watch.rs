@@ -136,7 +136,10 @@ fn location_stage_populates_location_name_for_gps_rows() {
         .arg("--silent")
         .spawn()
         .expect("failed to spawn videre watch");
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    // Real reverse-geocode lookup + network under whatever contention the
+    // rest of this file's tests add running in parallel - a bit more
+    // headroom than the other stage tests' fixed sleep.
+    std::thread::sleep(std::time::Duration::from_millis(3000));
     child.kill().ok();
     child.wait().ok();
 
@@ -145,6 +148,68 @@ fn location_stage_populates_location_name_for_gps_rows() {
         .query_row("SELECT location_name FROM file_hashes WHERE hash = 'hparis'", [], |r| r.get(0))
         .unwrap();
     assert!(name.is_some(), "expected the location stage to have resolved and cached a name");
+}
+
+#[test]
+fn prune_stage_removes_stale_rows() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("test.db");
+    let conn = Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL, ext TEXT,
+             size_bytes INTEGER, created_at TEXT, modified_at TEXT, phash INTEGER,
+             exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER);
+         INSERT INTO file_hashes (path, hash, ext) VALUES ('/tmp/does-not-exist.jpg', 'hgone', 'jpg');",
+    ).unwrap();
+    drop(conn);
+
+    let mut child = Command::new(videre_bin()).arg("watch")
+        .arg(dir.path())
+        .arg("--output-sqlite").arg(&db)
+        .arg("--prune")
+        .arg("--interval").arg("3600")
+        .arg("--silent")
+        .spawn()
+        .expect("failed to spawn videre watch");
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    child.kill().ok();
+    child.wait().ok();
+
+    let conn = Connection::open(&db).unwrap();
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0)).unwrap();
+    assert_eq!(count, 0, "the --prune stage should have removed the row for a file that no longer exists");
+}
+
+#[test]
+fn default_stages_do_not_include_prune() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("test.db");
+    let conn = Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL, ext TEXT,
+             size_bytes INTEGER, created_at TEXT, modified_at TEXT, phash INTEGER,
+             exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER);
+         INSERT INTO file_hashes (path, hash, ext) VALUES ('/tmp/does-not-exist.jpg', 'hgone', 'jpg');",
+    ).unwrap();
+    drop(conn);
+
+    // No stage flags at all: scan/faces/heic/location default on, but prune
+    // must stay opt-in only so existing `videre watch` invocations keep
+    // their current behavior unchanged.
+    let mut child = Command::new(videre_bin()).arg("watch")
+        .arg(dir.path())
+        .arg("--output-sqlite").arg(&db)
+        .arg("--interval").arg("3600")
+        .arg("--silent")
+        .spawn()
+        .expect("failed to spawn videre watch");
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    child.kill().ok();
+    child.wait().ok();
+
+    let conn = Connection::open(&db).unwrap();
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0)).unwrap();
+    assert_eq!(count, 1, "prune must not run unless --prune is passed explicitly");
 }
 
 #[test]
