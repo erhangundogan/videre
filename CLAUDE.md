@@ -91,6 +91,30 @@ cargo build --release
 ./target/release/videre stats                                            # library totals + pipeline run status, default db
 ```
 
+## Test coverage
+
+`cargo-llvm-cov` (installed via `cargo install cargo-llvm-cov`, plus the
+`llvm-tools-preview` rustup component) measures unit-test line/region/function
+coverage across the workspace. It must be invoked through the rustup-managed
+toolchain explicitly, not plain `cargo llvm-cov` - this machine's default
+`cargo`/`rustc` on `PATH` are a separate Homebrew Rust install (no rustup
+component support), while `llvm-tools-preview` only installs into a
+rustup-managed toolchain; mixing the two would pair an LLVM-22 rustc with
+LLVM-21 coverage tools and produce incompatible profile data.
+
+```bash
+rustup run stable-aarch64-apple-darwin cargo llvm-cov --workspace --summary-only   # per-file table
+rustup run stable-aarch64-apple-darwin cargo llvm-cov --workspace --html           # HTML report at target/llvm-cov/html/index.html
+```
+
+Coverage only reflects code exercised by unit tests (`#[cfg(test)]` modules)
+running in-process - integration tests under `crates/*/tests/` that spawn
+`videre_bin()` as a child process (most CLI subcommand tests) are NOT
+instrumented, so command modules like `fix_dates.rs`/`classify.rs`/`watch.rs`
+show artificially low numbers here despite being covered by those integration
+tests; read the per-file table as "unit-test coverage only", not overall test
+coverage.
+
 ## Supported file types
 
 `.jpg` `.jpeg` `.png` `.gif` `.webp` `.bmp` `.tiff` `.mov` `.heic` `.mp4` `.dng`
