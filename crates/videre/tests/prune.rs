@@ -108,9 +108,16 @@ fn missing_default_db_prints_friendly_error() {
     assert!(stderr.contains("videre scan"), "{stderr}");
 }
 
+/// Runs `videre prune` with `HOME` pinned to `db`'s own tempdir. Critical for
+/// safety, not just isolation: prune now deletes orphaned
+/// `~/.cache/videre/thumbnails/` entries relative to whatever db it's given,
+/// and every fixture db here has only 2-3 rows - without this override, a
+/// non-dry-run test would see the REAL cache's thousands of real thumbnails
+/// as "orphaned" (absent from the tiny fixture db) and delete them all.
 fn run_prune(db: &std::path::Path, dry_run: bool) {
+    let home = db.parent().expect("db must have a parent dir");
     let mut cmd = Command::new(prune_bin());
-    cmd.arg("prune").arg("--db").arg(db).arg("--silent");
+    cmd.arg("prune").arg("--db").arg(db).arg("--silent").env("HOME", home);
     if dry_run {
         cmd.arg("--dry-run");
     }
@@ -188,4 +195,59 @@ fn preserves_embedding_when_hash_shared_with_surviving_file() {
     assert!(!row_exists(&db, &dir.path().join("gone.jpg").to_str().unwrap().to_string()));
     assert!(embedding_exists(&db, "haaa"), "shared-hash embedding must not be pruned");
     let _ = a;
+}
+
+/// A real BLAKE3-length (64 hex char) hash, distinct per `seed`, so tests
+/// can build cache filenames `hash_from_cache_filename` will actually parse
+/// (unlike the short synthetic hashes - "haaa" etc. - used elsewhere in this
+/// file for db-only fixtures).
+fn cache_test_hash(seed: char) -> String {
+    seed.to_string().repeat(64)
+}
+
+#[test]
+fn removes_orphan_cache_files_after_pruning() {
+    let dir = tempdir().unwrap();
+    let (db, _, _, _) = fixture_db(dir.path());
+    let live_hash = cache_test_hash('1');
+    let orphan_hash = cache_test_hash('9'); // no file_hashes row for this one
+
+    // Give one of fixture_db's real rows this exact hash so it counts as "live".
+    let conn = Connection::open(&db).unwrap();
+    conn.execute("UPDATE file_hashes SET hash = ?1 WHERE path LIKE '%a.jpg'", rusqlite::params![live_hash])
+        .unwrap();
+    drop(conn);
+
+    let cache_dir = dir.path().join(".cache").join("videre").join("thumbnails");
+    std::fs::create_dir_all(&cache_dir).unwrap();
+    let live_thumb = cache_dir.join(format!("{live_hash}_240.jpg"));
+    let orphan_thumb = cache_dir.join(format!("{orphan_hash}_240.jpg"));
+    let orphan_original = cache_dir.join(format!("{orphan_hash}_original.jpg"));
+    let orphan_tmp = cache_dir.join(format!("{orphan_hash}_original.tmp1234"));
+    for f in [&live_thumb, &orphan_thumb, &orphan_original, &orphan_tmp] {
+        std::fs::write(f, b"x").unwrap();
+    }
+
+    run_prune(&db, false);
+
+    assert!(live_thumb.exists(), "cache entry for a surviving hash must be kept");
+    assert!(!orphan_thumb.exists(), "cache entry for a hash with no file_hashes row must be removed");
+    assert!(!orphan_original.exists(), "original-cache entry for an orphaned hash must be removed too");
+    assert!(orphan_tmp.exists(), "in-flight .tmp files must never be touched by prune");
+}
+
+#[test]
+fn dry_run_does_not_remove_orphan_cache_files() {
+    let dir = tempdir().unwrap();
+    let (db, _, _, _) = fixture_db(dir.path());
+    let orphan_hash = cache_test_hash('9');
+
+    let cache_dir = dir.path().join(".cache").join("videre").join("thumbnails");
+    std::fs::create_dir_all(&cache_dir).unwrap();
+    let orphan_thumb = cache_dir.join(format!("{orphan_hash}_240.jpg"));
+    std::fs::write(&orphan_thumb, b"x").unwrap();
+
+    run_prune(&db, true);
+
+    assert!(orphan_thumb.exists(), "dry-run must not delete any cache file");
 }

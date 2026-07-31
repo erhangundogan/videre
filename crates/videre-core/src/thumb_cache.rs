@@ -42,6 +42,38 @@ pub fn original_exists(hash: &str) -> bool {
     original_path(hash).exists()
 }
 
+/// Length of a BLAKE3 hex digest (32 bytes -> 64 hex chars) - every
+/// content-hash-keyed cache filename starts with exactly this many hex
+/// chars, followed by `_` and a purpose-specific suffix
+/// (`_240.jpg`, `_face3_140.jpg`, `_original.jpg`, `_original.tmp1234`, ...).
+const HASH_HEX_LEN: usize = 64;
+
+/// Extracts the leading content hash from a cache filename (the `.jpg`
+/// files this module writes - `thumb_path`, `face_thumb_path`,
+/// `original_path`), or `None` if `filename` doesn't match that shape.
+/// Used by `videre prune` to find cache entries whose hash no longer has a
+/// surviving `file_hashes` row, without hardcoding every suffix pattern this
+/// module can produce. Deliberately does NOT match `.tmp*` scratch files
+/// (see `thumb_tmp_path`/`original_tmp_path`) - those may be actively being
+/// written by a concurrently running `videre watch`, and reusing this same
+/// hash-existence check against them could delete an in-flight write for a
+/// hash that is still perfectly valid.
+pub fn hash_from_cache_filename(filename: &str) -> Option<&str> {
+    if !filename.ends_with(".jpg") {
+        return None;
+    }
+    let bytes = filename.as_bytes();
+    if bytes.len() <= HASH_HEX_LEN || bytes[HASH_HEX_LEN] != b'_' {
+        return None;
+    }
+    let hash = &filename[..HASH_HEX_LEN];
+    if hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Some(hash)
+    } else {
+        None
+    }
+}
+
 /// Scratch path for writing a full-res original before it's atomically
 /// renamed into place at `original_path` - mirrors `thumb_tmp_path`'s
 /// same-filesystem-atomic-rename pattern and process-id disambiguation.
@@ -147,6 +179,50 @@ mod tests {
         let final_path = original_path("abc123");
         assert_ne!(tmp, final_path);
         assert!(tmp.to_string_lossy().contains("abc123_original.tmp"));
+    }
+
+    fn test_hash(seed: &str) -> String {
+        seed.repeat((HASH_HEX_LEN / seed.len()) + 1)[..HASH_HEX_LEN].to_string()
+    }
+
+    #[test]
+    fn hash_from_cache_filename_parses_thumb_path() {
+        let h1 = test_hash("0123456789abcdef");
+        assert_eq!(hash_from_cache_filename(&format!("{h1}_240.jpg")), Some(h1.as_str()));
+        assert_eq!(hash_from_cache_filename(&format!("{h1}_1200.jpg")), Some(h1.as_str()));
+    }
+
+    #[test]
+    fn hash_from_cache_filename_parses_face_thumb_path() {
+        let h1 = test_hash("0123456789abcdef");
+        assert_eq!(hash_from_cache_filename(&format!("{h1}_face3_140.jpg")), Some(h1.as_str()));
+    }
+
+    #[test]
+    fn hash_from_cache_filename_parses_original_path() {
+        let h1 = test_hash("0123456789abcdef");
+        assert_eq!(hash_from_cache_filename(&format!("{h1}_original.jpg")), Some(h1.as_str()));
+    }
+
+    #[test]
+    fn hash_from_cache_filename_distinguishes_different_hashes() {
+        let h2 = test_hash("fedcba9876543210");
+        assert_eq!(hash_from_cache_filename(&format!("{h2}_240.jpg")), Some(h2.as_str()));
+    }
+
+    #[test]
+    fn hash_from_cache_filename_rejects_tmp_files() {
+        let h1 = test_hash("0123456789abcdef");
+        assert_eq!(hash_from_cache_filename(&format!("{h1}_original.tmp1234")), None);
+        assert_eq!(hash_from_cache_filename(&format!("{h1}_240.tmp5678")), None);
+    }
+
+    #[test]
+    fn hash_from_cache_filename_rejects_too_short_or_malformed_names() {
+        assert_eq!(hash_from_cache_filename("short_240.jpg"), None);
+        assert_eq!(hash_from_cache_filename(".DS_Store"), None);
+        let non_hex_64 = "g".repeat(HASH_HEX_LEN);
+        assert_eq!(hash_from_cache_filename(&format!("{non_hex_64}_240.jpg")), None);
     }
 
     #[test]

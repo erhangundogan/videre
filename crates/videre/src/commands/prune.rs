@@ -132,6 +132,40 @@ pub fn run(args: PruneArgs) -> anyhow::Result<()> {
         0
     };
 
+    // Remove orphan thumbnail-cache files: any videre_core::thumb_cache entry
+    // (240/1200px thumbnail, face crop, or full-res original) whose content
+    // hash has no remaining file_hashes row. Same "shared-hash safety" as the
+    // embeddings cleanup above - a hash survives here as long as any path
+    // still references it, even if this specific path was just removed.
+    // Dry-run count is a lower bound for the same reason as above (rows not
+    // actually deleted yet). Skips `.tmp*` scratch files unconditionally (see
+    // `hash_from_cache_filename`'s doc comment) so an in-flight write from a
+    // concurrently running `videre watch` is never touched.
+    let mut cache_orphans = 0usize;
+    if let Ok(entries) = std::fs::read_dir(videre_core::thumb_cache::cache_dir()) {
+        let live_hashes: std::collections::HashSet<String> = {
+            let mut stmt = conn.prepare("SELECT DISTINCT hash FROM file_hashes").expect("failed to prepare");
+            stmt.query_map([], |r| r.get(0))
+                .expect("failed to execute")
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let Some(file_name) = entry.file_name().to_str().map(str::to_string) else { continue };
+            let Some(hash) = videre_core::thumb_cache::hash_from_cache_filename(&file_name) else { continue };
+            if live_hashes.contains(hash) {
+                continue;
+            }
+            if args.dry_run {
+                cache_orphans += 1;
+            } else if std::fs::remove_file(entry.path()).is_ok() {
+                cache_orphans += 1;
+            } else {
+                errors += 1;
+            }
+        }
+    }
+
     if !args.silent {
         let action = if args.dry_run { "would be" } else { "were" };
         let orphan_note = if orphans > 0 {
@@ -140,8 +174,14 @@ pub fn run(args: PruneArgs) -> anyhow::Result<()> {
         } else {
             String::new()
         };
+        let cache_note = if cache_orphans > 0 {
+            let qualifier = if args.dry_run { " (lower bound; actual may be higher after removals)" } else { "" };
+            format!(", {cache_orphans} orphan cache file(s) {action} pruned{qualifier}")
+        } else {
+            String::new()
+        };
         eprintln!(
-            "{total} row(s) checked: {removed} {action} removed, {synced} {action} synced, {errors} error(s){orphan_note}."
+            "{total} row(s) checked: {removed} {action} removed, {synced} {action} synced, {errors} error(s){orphan_note}{cache_note}."
         );
     }
 

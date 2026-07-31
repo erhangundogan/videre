@@ -345,8 +345,9 @@ In a single pass:
 - Deletes `file_hashes` rows for files no longer on disk
 - Refreshes `modified_at` for surviving files from their current filesystem mtime
 - Deletes `embeddings` rows whose hash has no remaining `file_hashes` entry (orphan cleanup)
+- Deletes `~/.cache/videre/thumbnails/` cache files (240/1200px thumbnails, face crops, full-res originals) whose hash has no remaining `file_hashes` entry (orphan cleanup) - this is the only bound on that cache's otherwise-unlimited growth (see the `videre faces`/`videre watch` HEIC-caching notes above); `.tmp*` scratch files from an in-flight write are never touched
 
-Shared-hash safety: if two paths share the same hash and one file is deleted, the embedding is only removed if no `file_hashes` row for that hash survives. Dry-run orphan count is a lower bound (pre-existing orphans only; does not account for orphans created by the would-be deletions). Exits with code 1 if any row update fails.
+Shared-hash safety (applies to both embeddings and cache files): if two paths share the same hash and one file is deleted, the embedding/cache entry is only removed if no `file_hashes` row for that hash survives. Dry-run orphan counts are a lower bound (pre-existing orphans only; does not account for orphans created by the would-be deletions). Exits with code 1 if any row update or cache-file removal fails.
 
 ## videre embed / videre search
 
