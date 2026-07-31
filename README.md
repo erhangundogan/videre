@@ -29,6 +29,7 @@ Everything runs over a single shared SQLite database.
 | `videre watch` | Background loop that keeps scan/faces/HEIC-cache/location data fresh |
 | `videre config` | Show or edit videre's config and default paths (`~/.videre`) |
 | `videre mcp` | Serve read-only MCP tools for LLM agents over stdio |
+| `videre stats` | Show library totals and per-command pipeline run status |
 
 ## Supported file types
 
@@ -510,6 +511,33 @@ Add `"--db", "/path/to/other.db"` to `args` to serve a non-default library.
 
 ---
 
+## videre stats
+
+Prints library totals and per-command pipeline run status in one shot: total
+files/size, photo/video split, duplicate groups/files/wasted space, faces
+detected/people named, then a line per tracked command (`scan`, `faces`,
+`embed`, `classify`, `dedupe`, `fix-dates`) showing its last-run time, status,
+and duration.
+
+```bash
+videre stats                # default db
+videre stats --db <path>    # explicit db
+videre stats --json         # single JSON object instead of text
+```
+
+A command that has never run shows `never run` / `-`; one currently in
+progress is marked `(running now)`. `--json` emits
+`{"schema_version": 1, "library": {...}, "pipelines": [...]}`, with
+`pipelines` always containing exactly six entries in a fixed order.
+
+Per-item errors within a run (a few unreadable files, one corrupted image)
+don't mark a row `failed` - only a hard crash does, so `fix-dates`/`faces` can
+exit nonzero on real per-file problems while still recording `status:
+"success"`. Requires an existing database - an explicit `--db` to a
+nonexistent path fails cleanly rather than creating an empty one.
+
+---
+
 ## Platform notes
 
 | | macOS | Linux |
@@ -575,9 +603,18 @@ CREATE TABLE IF NOT EXISTS classifications (
     confidence    REAL NOT NULL,
     classified_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+    command      TEXT PRIMARY KEY,
+    started_at   TEXT NOT NULL,
+    finished_at  TEXT,
+    status       TEXT NOT NULL,
+    duration_ms  INTEGER,
+    summary      TEXT
+);
 ```
 
-Re-scanning upserts existing rows by `path`. `phash` is only written with `--similar`. EXIF fields (`exif_date`, `gps_lat`, `gps_lon`, `width`, `height`) are written for jpg/jpeg/tiff/heic/dng files; null for all others. `location_name` is added by an idempotent migration on `videre report` startup and is not written by `videre scan` itself - it's populated lazily, one coordinate at a time, when `videre report --show-faces` (or `videre watch --location`) resolves and caches a reverse-geocoded location name. `faces_scanned` records every hash `videre faces` has processed, including images with zero detected faces (which leave no `faces` row) - this is what makes detection resumable. `classifications` is populated by `videre classify` (zero-shot, reuses `embeddings` - no new model or image decoding) and queried via `videre search --category <name>`.
+Re-scanning upserts existing rows by `path`. `phash` is only written with `--similar`. EXIF fields (`exif_date`, `gps_lat`, `gps_lon`, `width`, `height`) are written for jpg/jpeg/tiff/heic/dng files; null for all others. `location_name` is added by an idempotent migration on `videre report` startup and is not written by `videre scan` itself - it's populated lazily, one coordinate at a time, when `videre report --show-faces` (or `videre watch --location`) resolves and caches a reverse-geocoded location name. `faces_scanned` records every hash `videre faces` has processed, including images with zero detected faces (which leave no `faces` row) - this is what makes detection resumable. `classifications` is populated by `videre classify` (zero-shot, reuses `embeddings` - no new model or image decoding) and queried via `videre search --category <name>`. `pipeline_runs` holds one upserted row per tracked command (`scan`/`faces`/`embed`/`classify`/`dedupe`/`fix-dates`) with its last run's status and duration; a `crashed` status is never stored, only computed when `videre stats` reads a `running` row whose lock is no longer held by a live process.
 
 Every command opens the database in SQLite's WAL journal mode, so `videre watch` and `videre report --show-faces` can safely read and write the same database file at the same time.
 
