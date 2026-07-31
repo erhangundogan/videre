@@ -409,7 +409,9 @@ In dry-run mode, the orphan embedding and cache-file counts are lower bounds: th
 
 ## videre embed and videre search
 
-`videre embed` computes SigLIP embeddings (google/siglip-so400m-patch14-384, 1152-dim f16) for every image in the database and stores them keyed by content hash. Re-running only processes images not yet embedded. `.mov`/`.mp4` are embedded too, via one representative frame extracted the same way as HEIC (`qlmanage -t`, macOS only) rather than decoding the full video - a cheap, single-frame, not-motion-aware embedding, so video search quality is weaker than photo search. Video hashes are excluded from `videre classify` (none of its four categories fit a video frame). `.dng` is still skipped (the `image` crate has no DNG decoder). `videre classify` (see above) reuses these embeddings for zero-shot photo/screenshot/document/meme classification, so it's worth running `videre embed` even if you don't need text/image search.
+`videre embed` computes SigLIP embeddings (google/siglip-so400m-patch14-384, 1152-dim f16) for every image in the database and stores them keyed by content hash. Re-running only processes images not yet embedded. `.mov`/`.mp4` are embedded too, via one representative frame extracted the same way as HEIC (`qlmanage -t`, macOS only) rather than decoding the full video - a cheap, single-frame, not-motion-aware embedding, so video search quality is weaker than photo search. Video hashes are excluded from `videre classify` (none of its four categories fit a video frame). `.dng` is still skipped (the `image` crate has no DNG decoder) - excluded from the
+pending-images query up front, so it's never queried and attempted-then-failed on
+every run. `videre classify` (see above) reuses these embeddings for zero-shot photo/screenshot/document/meme classification, so it's worth running `videre embed` even if you don't need text/image search.
 
 ```bash
 videre embed                        # embed all unprocessed images in the default db

@@ -362,8 +362,11 @@ way (`qlmanage -t`, macOS only) rather than decoding the full video - a single-f
 not-motion-aware embedding, so video search quality is weaker than photo search (see
 `docs/superpowers/TECH_DEBT.md` for the open follow-ups on this). Video hashes are
 excluded from `videre classify` (none of its four categories fit a video frame). DNG is
-still skipped (the `image` crate has no DNG decoder; EXIF metadata is still available
-from the scan).
+still skipped (the `image` crate has no DNG decoder) - excluded from `EMBEDDABLE_EXTS`
+up front (fixed 2026-08-01; previously it was queried as pending and failed to decode
+every single run), so a library with DNG files no longer wastes a decode attempt on
+each of them every time `videre embed` runs. EXIF metadata is still available for DNG
+files from the scan, independent of embedding support.
 
 `videre search "query"` or `videre search --image photo.jpg` (optionally `--db <db>`) prints matching
 paths to stdout (all duplicate paths per matched hash). `-k` top-k (default 20),
