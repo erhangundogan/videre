@@ -1,0 +1,9 @@
+red_1s.mp4 was generated with:
+
+ffmpeg -f lavfi -i color=c=red:s=64x64:d=1 -c:v libx264 -pix_fmt yuv420p -movflags +faststart red_1s.mp4
+
+A 1-second, 64x64, solid-red H.264 video used by the real-mp4 preprocessing
+test (preprocess_extracts_a_frame_from_a_real_mp4). ffmpeg is not a project
+dependency - it was only used once, locally, to produce this committed
+fixture. Regenerate with the command above if the fixture ever needs to
+change (different size, duration, or encoding).

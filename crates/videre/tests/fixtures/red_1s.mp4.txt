@@ -1,0 +1,9 @@
+red_1s.mp4 was generated with:
+
+ffmpeg -f lavfi -i color=c=red:s=64x64:d=1 -c:v libx264 -pix_fmt yuv420p -movflags +faststart red_1s.mp4
+
+A 1-second, 64x64, solid-red H.264 video used by the end-to-end scan+embed
+integration test (embed_produces_an_embeddings_row_for_a_real_video). ffmpeg
+is not a project dependency - it was only used once, locally, to produce
+this committed fixture. Regenerate with the command above if the fixture
+ever needs to change (different size, duration, or encoding).
