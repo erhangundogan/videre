@@ -1,7 +1,7 @@
 //! Decode an image file into a SigLIP input tensor: resize to NxN,
 //! scale to [0,1], normalize with mean 0.5 / std 0.5 per channel -> [-1,1].
 //! HEIC is converted via QuickLook (macOS), matching dupe-report and
-//! dupe-faces - see `decode_heic` for why `sips` alone isn't used.
+//! dupe-faces - see `decode_via_quicklook` for why `sips` alone isn't used.
 
 use anyhow::{Context, Result};
 use candle_core::{DType, Device, Tensor};
@@ -15,7 +15,7 @@ pub fn image_to_tensor(path: &Path, size: usize, device: &Device) -> Result<Tens
         .unwrap_or_default();
 
     let img = if ext == "heic" {
-        decode_heic(path, size)?
+        decode_via_quicklook(path, size, "embed-heic")?
     } else {
         let timeout_path = path.to_path_buf();
         videre_core::io_timeout::run_with_timeout(videre_core::io_timeout::DEFAULT_IO_TIMEOUT, move || {
@@ -44,7 +44,11 @@ pub fn image_to_tensor(path: &Path, size: usize, device: &Device) -> Result<Tens
     Ok(t)
 }
 
-/// Convert a HEIC file to a `DynamicImage` via QuickLook (`qlmanage -t`).
+/// Convert an image/video file to a `DynamicImage` via QuickLook (`qlmanage -t`).
+/// Used for HEIC (see the orientation note below) and, since this generalization,
+/// for `.mov`/`.mp4` - QuickLook already generates a poster-frame thumbnail for
+/// video files the same way it does for HEIC, so this is one shared mechanism
+/// for both rather than a second implementation.
 ///
 /// `sips -s format jpeg` copies the raw sensor-buffer pixels unrotated for
 /// HEIC files where the iPhone camera encoded rotation via the HEIF `irot`
@@ -53,17 +57,24 @@ pub fn image_to_tensor(path: &Path, size: usize, device: &Device) -> Result<Tens
 /// tensor is immediately resized square anyway, exact resolution doesn't
 /// matter here as much as getting the orientation right so the embedding
 /// represents the photo as a person actually sees it.
+///
+/// `tag` disambiguates temp-directory names between call sites (mirrors
+/// `videre_core::heic::heic_via_quicklook`'s existing `tag` parameter) so a
+/// HEIC conversion and a video conversion of files that happen to hash the
+/// same never collide.
+///
 /// Ceiling for a single `qlmanage` conversion - see `videre_core::heic` for
 /// why this is needed: a disconnected/stale external volume can make
 /// `qlmanage` block indefinitely on macOS rather than fail fast, which
 /// otherwise freezes `videre embed` silently on that one file.
 const QLMANAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
-fn decode_heic(path: &Path, size: usize) -> Result<image::DynamicImage> {
+fn decode_via_quicklook(path: &Path, size: usize, tag: &str) -> Result<image::DynamicImage> {
     use std::hash::{Hash, Hasher};
     use videre_core::io_timeout::{wait_with_timeout, WaitOutcome};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     path.hash(&mut h);
+    tag.hash(&mut h);
     let out_dir = std::env::temp_dir().join(format!("dupe_embed_ql_{:016x}", h.finish()));
     let _ = std::fs::remove_dir_all(&out_dir);
     std::fs::create_dir_all(&out_dir).context("create qlmanage temp dir")?;
@@ -76,7 +87,7 @@ fn decode_heic(path: &Path, size: usize) -> Result<image::DynamicImage> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .context("run qlmanage (HEIC decode requires macOS)")?;
+        .context("run qlmanage (requires macOS)")?;
     let outcome = wait_with_timeout(&mut child, QLMANAGE_TIMEOUT);
     anyhow::ensure!(
         outcome != WaitOutcome::TimedOut,
