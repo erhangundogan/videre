@@ -16,8 +16,8 @@ pub use faces::{
     remove_face, rename_person, search_person, set_primary,
 };
 pub use images::{
-    face_bytes_from_lookup, face_image_bytes, face_lookup, mime_for_ext, original_bytes_from_lookup,
-    original_image_bytes, original_lookup, FaceLookup, OriginalLookup,
+    face_bytes_from_lookup, face_image_bytes, face_lookup, make_face_thumb, mime_for_ext,
+    original_bytes_from_lookup, original_image_bytes, original_lookup, FaceLookup, OriginalLookup,
 };
 pub use label::sanitize_person_label;
 pub use pipeline_status::{pipeline_status, PipelineRunStatus};

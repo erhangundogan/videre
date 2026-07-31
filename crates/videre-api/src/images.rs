@@ -76,7 +76,12 @@ fn crop_face_square(img: &image::DynamicImage, bbox: [f32; 4]) -> image::Dynamic
 /// `videre_core::heic::heic_via_quicklook`), which already applies correct
 /// rotation, so no separate orientation step is needed. For JPEG/PNG/etc:
 /// detection ran on raw pixels; apply EXIF orientation after crop.
-fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image::DynamicImage> {
+///
+/// `pub` (unlike the three helpers above it): `videre report`'s static-report
+/// base64 thumbnail path (`face_thumb_b64` in `report.rs`) also needs this
+/// exact crop+orientation logic, so it calls through here instead of keeping
+/// its own duplicate copy.
+pub fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image::DynamicImage> {
     let ext = std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
