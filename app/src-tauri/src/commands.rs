@@ -1,6 +1,6 @@
 use crate::state::DbState;
 use tauri::State;
-use videre_api::{ClusterDetail, FacesData, LibraryStats, PersonDetail};
+use videre_api::{ClusterDetail, FacesData, LibraryStats, PersonDetail, PipelineRunStatus};
 
 fn err(e: videre_api::Error) -> String {
     e.to_string()
@@ -80,4 +80,11 @@ pub fn rename_person(
 pub fn library_stats(db: State<DbState>) -> Result<LibraryStats, String> {
     let conn = db.0.lock().map_err(|_| "db lock poisoned".to_string())?;
     videre_api::library_stats(&conn).map_err(err)
+}
+
+#[tauri::command]
+pub fn pipeline_status(db: State<DbState>) -> Result<Vec<PipelineRunStatus>, String> {
+    let conn = db.0.lock().map_err(|_| "db lock poisoned".to_string())?;
+    let db_path = videre_core::home::resolve_db(None).map_err(|e| e.to_string())?;
+    videre_api::pipeline_status(&conn, &db_path).map_err(err)
 }
