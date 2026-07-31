@@ -163,19 +163,9 @@ crates/
     Cargo.toml (lib-only, no binaries)
     src/lib.rs
     src/{error.rs,types.rs,label.rs,faces.rs,images.rs,stats.rs,pipeline_status.rs}
-app/                                  # Tauri v2 + React desktop app (see 'videre desktop app' below)
-  package.json, tsconfig.json, vite.config.ts, tailwind.config.js, components.json
-  src/
-    main.tsx, App.tsx, index.css
-    lib/{client.ts,ClientProvider.tsx,models.ts,queries.ts,utils.ts}
-    components/{AppShell.tsx,FaceImage.tsx,application-shell4.tsx,ui/*}
-    routes/{LabelingPage.tsx,ClusterPage.tsx,PersonPage.tsx}
-  src-tauri/
-    Cargo.toml
-    src/{main.rs,lib.rs,commands.rs,protocols.rs,state.rs}
 ```
 
-The `videre` crate builds a single `[[bin]]` (`videre`, from `src/main.rs`) plus a lib target (`src/lib.rs`) exposing `scanner`, `hasher`, `output`, `sqlite_output`, and `types` to both the binary and the integration tests under `tests/`. `main.rs` dispatches to one module per subcommand under `src/commands/`. `videre-core` holds shared SQLite/db/cache/search helpers used by both `videre` and `videre-ml`. `videre-ml` is lib-only: all inference logic lives there, but every user-facing entry point is a subcommand in `videre`. `videre-api` is a lib-only facade over faces-labeling operations (list/assign/rename/dissolve/etc. plus face image bytes), called by both the axum `--faces`/`--show-faces` server in `videre` and the Tauri commands in `app/src-tauri`, so the two frontends never duplicate that logic. `app/` is a separate Tauri v2 + React/TypeScript desktop app with its own `package.json`/`Cargo.toml` versioning (see 'videre desktop app' below); it is not part of the Cargo workspace's user-facing binary but its `src-tauri` crate depends on `videre-core` and `videre-api` directly.
+The `videre` crate builds a single `[[bin]]` (`videre`, from `src/main.rs`) plus a lib target (`src/lib.rs`) exposing `scanner`, `hasher`, `output`, `sqlite_output`, and `types` to both the binary and the integration tests under `tests/`. `main.rs` dispatches to one module per subcommand under `src/commands/`. `videre-core` holds shared SQLite/db/cache/search helpers used by both `videre` and `videre-ml`. `videre-ml` is lib-only: all inference logic lives there, but every user-facing entry point is a subcommand in `videre`. `videre-api` is a lib-only facade over faces-labeling operations (list/assign/rename/dissolve/etc. plus face image bytes), called by the axum `--faces`/`--show-faces` server in `videre`; it's deliberately UI-agnostic so an external, separately-versioned UI client can depend on it directly without carrying any CLI/axum-specific logic along (see `architecture-multiplatform-ui` memory) - the closed-source `videre-desktop` app is one such consumer, but lives in its own private repo, not here.
 
 ## Key crates
 
@@ -581,9 +571,7 @@ Client configuration:
 ## videre stats
 
 Prints library totals and per-command pipeline run status in one shot - a CLI
-window into `videre-core`'s `library_stats` and `pipeline_runs` modules (the
-same ones the Tauri desktop app's `library_stats`/`pipeline_status` commands
-call).
+window into `videre-core`'s `library_stats` and `pipeline_runs` modules.
 
 ```bash
 videre stats                # default db
@@ -614,48 +602,13 @@ dates, detection failures) while still recording `status: "success"`, since
 `track()` only observes the operation's returned `Result`, and both commands
 return `Ok` with an error count rather than propagating those as `Err`.
 
-## videre desktop app
+## UI / desktop app
 
-A separate Tauri v2 + React/TypeScript desktop app lives in `app/`, reusing the
-same Rust core (`videre-core`, `videre-api`) instead of talking to the CLI over
-a process boundary. It currently covers one vertical slice - the faces
-labeling workflow - at feature parity with `videre report --faces`, as a
-first step toward replacing the "local axum server + browser" interaction
-model with a real desktop app (and, later, a reusable base for a web/on-prem
-management dashboard - see memory `architecture-multiplatform-ui`).
-
-```bash
-cd app
-npm install                 # first time only
-npm run tauri dev           # launch the desktop app against the default db
-npm run build                # typecheck + production frontend bundle only (no app launch)
-```
-
-- `src-tauri/src/state.rs`: `DbState` opens one shared `rusqlite::Connection` at
-  startup using the same default-db resolution as every CLI reader (`videre_core::home::resolve_db`);
-  the resolved db must already exist (same "no database found..." error as `videre mcp`).
-- `src-tauri/src/commands.rs`: one `#[tauri::command]` per `videre-api` operation
-  (`faces_list`, `cluster_detail`, `person_detail`, `search_person`, `assign`,
-  `new_person`, `remove_face`, `dissolve_cluster`, `delete_person`, `set_primary`,
-  `rename_person`) - thin wrappers that lock `DbState` and delegate straight to
-  `videre-api`, so labeling logic is never reimplemented in the app.
-- `src-tauri/src/protocols.rs`: two custom async URI-scheme protocols,
-  `videre-face://<id>` and `videre-original://<id>`, registered in `src-tauri/src/lib.rs`
-  and allowed by the app's CSP - the desktop equivalent of the axum server's
-  `/api/face/{id}` and `/api/original-image/{id}` routes, since a Tauri webview
-  can't load arbitrary `file://` paths as `<img>` sources either.
-- `src/lib/client.ts`: a `VidereClient` TypeScript interface with a `TauriClient`
-  implementation (thin `invoke()` wrappers, snake_case arg keys matching the Rust
-  command signatures) - the swappable-data-layer seam intended for a future
-  `HttpClient` when the same UI targets a web/on-prem backend instead of Tauri.
-- `src/routes/`: `LabelingPage` (people/clusters/singletons, drag-assign, multi-select),
-  `ClusterPage` (assign/remove/dissolve a cluster), `PersonPage` (set-default/rename/delete/remove)
-  - the React equivalents of `videre report --faces`'s three page types.
-- `src/components/application-shell4.tsx`: a shadcnblocks dashboard-shell block,
-  edited in place (not prop-driven - see `feedback-ui-component-sources` memory)
-  to wrap the three routes above with a single "Faces" nav entry.
-
-`app/` is excluded from the root Cargo workspace (see `Cargo.toml`'s
-`exclude = ["app/src-tauri"]`) and versioned independently of the CLI
-(`app/package.json`, `app/src-tauri/Cargo.toml`, `app/src-tauri/tauri.conf.json`
-all share one version number, separate from the `crates/*` version).
+There is no desktop or web UI in this repository. The only user-facing UI is
+`videre report`'s HTML output (static reports and `--faces`/`--show-faces`
+server mode) - see the `videre report` section above. A closed-source desktop
+app (`videre-desktop`) and a closed-source web app (`videre-web`) exist as
+separate private repositories, both consuming `videre-core`/`videre-api`
+directly as external dependencies rather than duplicating any of this
+project's logic. `videre-core`/`videre-api` are kept deliberately UI-agnostic
+for exactly this reason - see `architecture-multiplatform-ui` memory.

@@ -1,4 +1,3 @@
 [workspace]
 resolver = "2"
 members = ["crates/videre", "crates/videre-api", "crates/videre-core", "crates/videre-ml"]
-exclude = ["app/src-tauri"]
