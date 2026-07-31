@@ -32,6 +32,11 @@ fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
 const PHOTO_EXTS: &str = "'jpg','jpeg','png','gif','webp','bmp','tiff','heic','dng'";
 const VIDEO_EXTS: &str = "'mov','mp4'";
 
+// `VIDEO_EXTS`'s values must stay in sync with
+// `crate::embeddings::is_video_ext` (the shared "is this a video" check).
+// The SQL below uses `lower(ext)` so this list stays case-insensitive,
+// matching that helper.
+
 pub fn compute(conn: &Connection) -> Result<LibraryStats> {
     let total_files: i64 = conn.query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))?;
     let total_size_bytes: i64 =
@@ -42,7 +47,7 @@ pub fn compute(conn: &Connection) -> Result<LibraryStats> {
         |r| r.get(0),
     )?;
     let total_videos: i64 = conn.query_row(
-        &format!("SELECT COUNT(*) FROM file_hashes WHERE ext IN ({VIDEO_EXTS})"),
+        &format!("SELECT COUNT(*) FROM file_hashes WHERE lower(ext) IN ({VIDEO_EXTS})"),
         [],
         |r| r.get(0),
     )?;
@@ -151,6 +156,17 @@ mod tests {
         assert_eq!(stats.total_photos, 2);
         assert_eq!(stats.total_videos, 2);
         assert_eq!(stats.total_files, 5); // unrecognized ext still counts toward total_files
+    }
+
+    #[test]
+    fn compute_counts_video_exts_case_insensitively() {
+        let conn = test_db();
+        insert_file(&conn, "/a/1.MOV", "h1", 100, "MOV");
+        insert_file(&conn, "/a/2.Mp4", "h2", 100, "Mp4");
+        insert_file(&conn, "/a/3.mov", "h3", 100, "mov");
+
+        let stats = compute(&conn).unwrap();
+        assert_eq!(stats.total_videos, 3); // uppercase/mixed-case exts still count as video
     }
 
     #[test]
