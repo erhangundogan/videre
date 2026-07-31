@@ -156,19 +156,14 @@ fn load_safetensor_paths(repo: &Repo) -> Result<Vec<PathBuf>> {
     }
 }
 
-/// Parse `model.safetensors.index.json` and download each unique shard.
-fn load_sharded_safetensors(repo: &Repo) -> Result<Vec<PathBuf>> {
-    let index_path = repo
-        .download_file()
-        .filename("model.safetensors.index.json")
-        .send()
-        .context("fetch model.safetensors.index.json")?;
-    let index_str =
-        std::fs::read_to_string(&index_path).context("read safetensors index")?;
-
+/// Parse `model.safetensors.index.json`'s `weight_map` into a deduped,
+/// deterministically-sorted list of shard filenames. Pure JSON parsing, split
+/// out from `load_sharded_safetensors` specifically so it's unit-testable
+/// without a real HF Hub repo.
+fn shard_names_from_index(index_str: &str) -> Result<Vec<String>> {
     // The index JSON has shape: { "weight_map": { "tensor_name": "shard_file", ... } }
     let index: serde_json::Value =
-        serde_json::from_str(&index_str).context("parse safetensors index")?;
+        serde_json::from_str(index_str).context("parse safetensors index")?;
     let weight_map = index
         .get("weight_map")
         .and_then(|v| v.as_object())
@@ -187,6 +182,19 @@ fn load_sharded_safetensors(repo: &Repo) -> Result<Vec<PathBuf>> {
         }
     }
     shards.sort(); // deterministic order
+    Ok(shards)
+}
+
+/// Parse `model.safetensors.index.json` and download each unique shard.
+fn load_sharded_safetensors(repo: &Repo) -> Result<Vec<PathBuf>> {
+    let index_path = repo
+        .download_file()
+        .filename("model.safetensors.index.json")
+        .send()
+        .context("fetch model.safetensors.index.json")?;
+    let index_str =
+        std::fs::read_to_string(&index_path).context("read safetensors index")?;
+    let shards = shard_names_from_index(&index_str)?;
 
     let mut paths = Vec::with_capacity(shards.len());
     for shard in &shards {
@@ -198,6 +206,39 @@ fn load_sharded_safetensors(repo: &Repo) -> Result<Vec<PathBuf>> {
         paths.push(p);
     }
     Ok(paths)
+}
+
+#[cfg(test)]
+mod index_parsing_tests {
+    use super::shard_names_from_index;
+
+    #[test]
+    fn shard_names_from_index_dedupes_and_sorts() {
+        let index = r#"{
+            "weight_map": {
+                "layer1.weight": "model-00002-of-00002.safetensors",
+                "layer2.weight": "model-00001-of-00002.safetensors",
+                "layer3.weight": "model-00002-of-00002.safetensors"
+            }
+        }"#;
+        let shards = shard_names_from_index(index).unwrap();
+        assert_eq!(
+            shards,
+            vec!["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"]
+        );
+    }
+
+    #[test]
+    fn shard_names_from_index_errors_without_weight_map() {
+        let result = shard_names_from_index(r#"{"not_weight_map": {}}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn shard_names_from_index_errors_on_malformed_json() {
+        let result = shard_names_from_index("not json");
+        assert!(result.is_err());
+    }
 }
 
 // ---------------------------------------------------------------------------
