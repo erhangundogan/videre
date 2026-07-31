@@ -43,4 +43,19 @@ fn embed_produces_an_embeddings_row_for_a_real_video() {
         .query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0))
         .unwrap();
     assert_eq!(count, 1, "the video's content hash should have an embeddings row");
+
+    // Sanity-check the embedding itself, not just that a row exists - this is
+    // the sole integration-level proof this feature works, so it's worth
+    // catching an empty/garbage/wrong-dimension blob slipping through the
+    // video decode path specifically. 1152-dim f16 = 2304 bytes (SigLIP
+    // so400m/14-384's embedding size, see videre_core::embeddings::DEFAULT_MODEL_ID).
+    let (model_id, blob_len): (String, i64) = conn
+        .query_row(
+            "SELECT model_id, LENGTH(embedding) FROM embeddings LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(model_id, "google/siglip-so400m-patch14-384");
+    assert_eq!(blob_len, 2304, "expected a 1152-dim f16 embedding, got {blob_len} bytes");
 }
