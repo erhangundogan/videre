@@ -39,6 +39,8 @@ enum Command {
     Config(commands::config::ConfigArgs),
     /// Serve read-only MCP tools (search, find_duplicates, stats) over stdio for LLM agents
     Mcp(commands::mcp::McpArgs),
+    /// Show library totals and per-command pipeline run status
+    Stats(commands::stats::StatsArgs),
 }
 
 fn main() {
@@ -57,6 +59,7 @@ fn main() {
         Command::Watch(args) => commands::watch::run(args),
         Command::Config(args) => commands::config::run(args),
         Command::Mcp(args) => commands::mcp::run(args),
+        Command::Stats(args) => commands::stats::run(args),
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");

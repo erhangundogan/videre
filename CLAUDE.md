@@ -4,7 +4,7 @@ A fast Rust CLI tool for managing a local media library: duplicate detection, se
 
 ## What it does
 
-`videre` is a single binary with twelve subcommands. `videre scan` scans a directory
+`videre` is a single binary with thirteen subcommands. `videre scan` scans a directory
 recursively, hashes every image file (BLAKE3), and writes the results into the database
 (or JSONL with `--output`). `videre dedupe` reads that database and writes REMOVE
 candidates to stdout one per line: ready to pipe into `trash` or `rm`. Bare `videre scan
@@ -16,7 +16,8 @@ database to fix timestamps, sync metadata, compute semantic embeddings, run
 text/image/person/category search, detect/label faces, and classify images as
 photo/screenshot/document/meme. `videre config` shows or edits the resolved paths and
 `~/.videre/config.toml` settings. `videre mcp` serves read-only search/find_duplicates/
-stats tools over stdio for LLM agents.
+stats tools over stdio for LLM agents. `videre stats` prints library totals and
+per-command pipeline run status (last run, success/failed/crashed, duration) in one shot.
 
 Note: `docs/superpowers/` design specs and implementation plans predate the videre rename and refer to the old `dupe-*` binary names historically; they are not rewritten here.
 
@@ -87,6 +88,7 @@ cargo build --release
 ./target/release/videre config set path ~/Photos                         # persist a default directory for dedupe/watch
 ./target/release/videre mcp                                              # serve MCP tools over stdio, default db
 ./target/release/videre mcp --db ~/photos.db                             # same, against an explicit db
+./target/release/videre stats                                            # library totals + pipeline run status, default db
 ```
 
 ## Supported file types
@@ -108,7 +110,7 @@ crates/
   videre/
     Cargo.toml
     src/main.rs
-    src/commands/{mod.rs,dedupe.rs,report.rs,scan.rs,fix_dates.rs,prune.rs,embed.rs,search.rs,faces.rs,classify.rs,watch.rs,config.rs,mcp.rs}
+    src/commands/{mod.rs,dedupe.rs,report.rs,scan.rs,fix_dates.rs,prune.rs,embed.rs,search.rs,faces.rs,classify.rs,watch.rs,config.rs,mcp.rs,stats.rs}
     src/{lib.rs,scanner.rs,hasher.rs,output.rs,sqlite_output.rs,types.rs}
     tests/{integration.rs,report.rs,prune.rs,watch.rs,faces_pipeline.rs,faces_server.rs,person_search.rs,mcp.rs,scan.rs,config.rs,fixtures/}
   videre-core/
@@ -126,6 +128,8 @@ crates/
     src/thumb_cache.rs
     src/home.rs
     src/progress.rs
+    src/library_stats.rs
+    src/pipeline_runs.rs
   videre-ml/
     Cargo.toml (lib-only, no binaries)
     src/lib.rs
@@ -134,7 +138,7 @@ crates/
   videre-api/
     Cargo.toml (lib-only, no binaries)
     src/lib.rs
-    src/{error.rs,types.rs,label.rs,faces.rs,images.rs}
+    src/{error.rs,types.rs,label.rs,faces.rs,images.rs,stats.rs,pipeline_status.rs}
 app/                                  # Tauri v2 + React desktop app (see 'videre desktop app' below)
   package.json, tsconfig.json, vite.config.ts, tailwind.config.js, components.json
   src/
@@ -207,6 +211,15 @@ CREATE TABLE IF NOT EXISTS classifications (
     confidence    REAL NOT NULL,
     classified_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+    command      TEXT PRIMARY KEY,
+    started_at   TEXT NOT NULL,
+    finished_at  TEXT,
+    status       TEXT NOT NULL,
+    duration_ms  INTEGER,
+    summary      TEXT
+);
 ```
 
 Re-scanning the same folder with the same SQLite file upserts (overwrites) existing rows via `INSERT OR REPLACE`. `phash` is stored as signed `INTEGER` (cast from `u64`).
@@ -214,6 +227,8 @@ Re-scanning the same folder with the same SQLite file upserts (overwrites) exist
 `faces` rows are keyed by `id` (auto-increment). `hash` links to `file_hashes`. `bbox` and `landmark` are JSON strings. `embedding` is a raw f16 BLOB (512-dim ArcFace, 1024 bytes). `cluster_id` is assigned by the two-stage clustering (average-linkage, then a centroid-merge pass); `person_label` and `confirmed` are set via `videre report --faces`.
 
 A companion `faces_scanned` table (`hash TEXT PRIMARY KEY, scanned_at TEXT`) records every hash that face detection has processed, **including images where zero faces were found** (which produce no `faces` row). This is what makes `videre faces` resumable - the skip set is "already scanned", so no-face images are detected once rather than every run. Created by `create_faces_table` alongside `faces`; written per hash as detection proceeds.
+
+`pipeline_runs` holds one row per tracked command (`scan`, `faces`, `embed`, `classify`, `dedupe`, `fix-dates` - `command` is the primary key, upserted on every run, not an append-only log). `status` is `running`/`success`/`failed`/`interrupted` as stored; a `crashed` status is never written to this column - it's computed only when reading (a `running` row whose per-db-per-command `flock` sidecar lock, `<db path>.<command>.lock`, isn't currently held by a live process is reported as `crashed` at read time). `videre watch` itself takes the same kind of lock (`<db>.watch.lock`) for liveness but has no row here, since it has no "finished" moment during normal operation. See `videre stats` below for how this is surfaced.
 
 `classifications` is populated by `videre classify` (zero-shot photo/screenshot/document/meme classification, scoring `embeddings` rows already computed by `videre embed` against 4 fixed text prompts via cosine similarity - no new model, no image re-decoding) and queried via `videre search --category <name>`. Rows below the configurable `--margin` similarity gap between the best and second-best category are stored as `category = "unknown"` rather than a low-confidence guess.
 
@@ -531,6 +546,42 @@ Client configuration:
   }
 }
 ```
+
+## videre stats
+
+Prints library totals and per-command pipeline run status in one shot - a CLI
+window into `videre-core`'s `library_stats` and `pipeline_runs` modules (the
+same ones the Tauri desktop app's `library_stats`/`pipeline_status` commands
+call).
+
+```bash
+videre stats                # default db
+videre stats --db <path>    # explicit db
+videre stats --json         # single JSON object instead of text
+```
+
+Text mode prints library totals (files/size, photo/video split, duplicate
+groups/files/wasted space, faces detected/people named), then one line per
+tracked command (`scan`, `faces`, `embed`, `classify`, `dedupe`, `fix-dates`)
+showing its last-run timestamp, status, and duration - `never run` /
+`-` for a command that hasn't executed against this db yet, and `(running
+now)` appended when its lock is currently held by a live process. Uses
+`resolve_reader_db_must_exist` like `dedupe`/`mcp` (not `resolve_reader_db`
+like `embed`/`classify`), so an explicit `--db` to a nonexistent path fails
+cleanly rather than silently creating an empty database.
+
+`--json` emits `{"schema_version": 1, "library": {...}, "pipelines": [...]}`,
+directly reusing `videre-core`'s `LibraryStats` and `PipelineRunStatus` serde
+types rather than redeclaring their fields - the `pipelines` array always has
+exactly six entries in a fixed command order, with `status`/`last_run_at`/
+`duration_ms` all `null` for a command that has never run.
+
+Per-item errors within a run (a few unreadable files, one corrupted image) do
+not mark a `pipeline_runs` row `failed` - only an unhandled exception during
+the run does. `fix-dates`/`faces` can legitimately exit nonzero (bad EXIF
+dates, detection failures) while still recording `status: "success"`, since
+`track()` only observes the operation's returned `Result`, and both commands
+return `Ok` with an error count rather than propagating those as `Err`.
 
 ## videre desktop app
 

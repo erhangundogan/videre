@@ -9,6 +9,7 @@ pub mod prune;
 pub mod report;
 pub mod scan;
 pub mod search;
+pub mod stats;
 pub mod watch;
 
 /// Reader-side db resolution. Explicit paths keep their command's existing

@@ -194,7 +194,7 @@ fn parse_bbox(bbox: &str) -> Option<[f32; 4]> {
     Some([parts[0], parts[1], parts[0] + parts[2], parts[1] + parts[3]])
 }
 
-fn format_bytes(bytes: i64) -> String {
+pub(crate) fn format_bytes(bytes: i64) -> String {
     if bytes >= 1_073_741_824 {
         format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
     } else if bytes >= 1_048_576 {
