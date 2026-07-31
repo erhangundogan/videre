@@ -577,24 +577,3 @@ npm run build                # typecheck + production frontend bundle only (no a
 `exclude = ["app/src-tauri"]`) and versioned independently of the CLI
 (`app/package.json`, `app/src-tauri/Cargo.toml`, `app/src-tauri/tauri.conf.json`
 all share one version number, separate from the `crates/*` version).
-
-## Design specs
-
-- `docs/superpowers/specs/2026-06-09-dupe-design.md` - core dedupe tool
-- `docs/superpowers/specs/2026-06-10-exif-extraction-design.md` - EXIF metadata extraction
-- `docs/superpowers/specs/2026-07-08-image-search-design.md` - semantic image search (dupe-embed, dupe-search; SigLIP + candle/Metal; Cargo workspace restructure)
-- `docs/superpowers/specs/2026-07-09-report-search-design.md` - in-page similarity search in `dupe-report --all`
-- `docs/superpowers/specs/2026-07-10-dupe-faces-design.md` - face detection, embedding, clustering, and labeling UI
-- `docs/superpowers/specs/2026-07-12-date-grouping-design.md` - `--by-date` gallery and `--show-faces` lightbox metadata
-- `docs/superpowers/specs/2026-07-13-dupe-watch-design.md` - background pipeline populator
-- `docs/superpowers/specs/2026-07-14-home-dir-defaults-design.md` - `~/.videre` home directory, `config.toml`, db resolution order
-- `docs/superpowers/specs/2026-07-14-json-output-design.md` - `--json` output mode across subcommands
-- `docs/superpowers/specs/2026-07-14-mcp-server-design.md` - `videre mcp` stdio server
-- `docs/superpowers/specs/2026-07-16-scan-dedupe-split-design.md` - splitting scan/dedupe into separate subcommands
-- `docs/superpowers/specs/2026-07-16-scan-progress-ui-design.md` - `videre scan` progress output
-- `docs/superpowers/specs/2026-07-16-embed-progress-ui-design.md` - `videre embed` progress output
-- `docs/superpowers/specs/2026-07-16-faces-progress-ui-design.md` - `videre faces` progress output
-- `docs/superpowers/specs/2026-07-17-faces-ui-fixes-design.md` - face-labeling web UI fixes (name sort, sidebar toggle, singleton multi-select, Set Default photo)
-- `docs/superpowers/specs/2026-07-23-desktop-app-design.md` - Tauri v2 + React/shadcn desktop app (videre-api facade, Tauri scaffold, faces labeling UI)
-- `docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md` - `videre faces` profiling instrumentation + multi-worker pipeline parallelization (`--workers`/`--profile` flags)
-- `docs/superpowers/specs/2026-07-29-screenshot-document-classification-design.md` - zero-shot photo/screenshot/document/meme classification reusing `videre embed` embeddings; `videre classify` subcommand + `videre search --category`
