@@ -15,12 +15,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pipeline_status_reports_all_six_tracked_commands_never_run() {
+    fn pipeline_status_reports_all_tracked_commands_never_run() {
         let conn = Connection::open_in_memory().unwrap();
         let db_file = tempfile::NamedTempFile::new().unwrap();
 
         let statuses = pipeline_status(&conn, db_file.path()).unwrap();
-        assert_eq!(statuses.len(), 6);
+        assert_eq!(statuses.len(), videre_core::pipeline_runs::TRACKED_COMMANDS.len());
         assert!(statuses.iter().all(|s| s.status.is_none()));
     }
 }
