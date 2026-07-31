@@ -118,6 +118,9 @@ pub fn run(args: FacesArgs) -> Result<()> {
         return Ok(());
     }
 
+    if let Err(e) = videre_core::pipeline_runs::install_sigint_handler(&db, "faces") {
+        eprintln!("Warning: could not install interrupt handler: {e:#}");
+    }
     let outcome = videre_core::pipeline_runs::track(&conn, &db, "faces", || {
         run_detection_and_clustering(&args, &conn, &to_process)
     })?;
