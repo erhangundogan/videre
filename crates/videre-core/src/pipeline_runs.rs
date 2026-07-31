@@ -146,6 +146,40 @@ pub fn track<T>(
     result
 }
 
+/// Installs a SIGINT handler that marks `command`'s row `interrupted` (using
+/// its already-recorded `started_at` to compute duration) and exits 130, the
+/// standard SIGINT exit code. Call this once, after `track()`'s `start_run`
+/// has already written the `running` row for `command` - the handler opens
+/// its own fresh connection since the main thread's `Connection` isn't
+/// safely shareable across the handler boundary. Best-effort: any error
+/// inside the handler is swallowed (there's no useful way to report it once
+/// the process is already exiting on a signal).
+pub fn install_sigint_handler(db_path: &Path, command: &'static str) -> Result<()> {
+    let db_path = db_path.to_path_buf();
+    ctrlc::set_handler(move || {
+        if let Ok(conn) = Connection::open(&db_path) {
+            let started_at: Option<String> = conn
+                .query_row(
+                    "SELECT started_at FROM pipeline_runs WHERE command = ?1",
+                    params![command],
+                    |r| r.get(0),
+                )
+                .optional()
+                .ok()
+                .flatten();
+            let duration_ms = started_at
+                .and_then(|s| chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S").ok())
+                .map(|started| {
+                    (chrono::Utc::now().naive_utc() - started).num_milliseconds().max(0)
+                })
+                .unwrap_or(0);
+            let _ = finish_run(&conn, command, "interrupted", duration_ms, None);
+        }
+        std::process::exit(130);
+    })
+    .context("installing SIGINT handler")
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PipelineRunStatus {
     pub command: String,
@@ -396,5 +430,16 @@ mod tests {
             .query_row("SELECT status FROM pipeline_runs WHERE command = 'faces'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(stored_status, "running", "read_all must not write back the crashed label");
+    }
+
+    #[test]
+    fn install_sigint_handler_does_not_error_when_called_once() {
+        let db_file = tempfile::NamedTempFile::new().unwrap();
+        // Only one handler can be installed per process for the life of the
+        // test binary; this just confirms the call itself succeeds.
+        // (ctrlc::set_handler errors if called twice in the same process,
+        // so this is deliberately the only test that calls it in this suite.)
+        let result = install_sigint_handler(db_file.path(), "scan");
+        assert!(result.is_ok());
     }
 }

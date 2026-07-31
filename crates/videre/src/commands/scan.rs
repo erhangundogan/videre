@@ -166,6 +166,9 @@ fn run_text(args: ScanArgs) -> anyhow::Result<()> {
                     process::exit(1);
                 }
             };
+            if let Err(e) = videre_core::pipeline_runs::install_sigint_handler(&db_path, "scan") {
+                eprintln!("Warning: could not install interrupt handler: {e:#}");
+            }
             let write_result = videre_core::pipeline_runs::track(&conn, &db_path, "scan", || {
                 sqlite_output::write_records(&records, &db_path)
                     .map_err(|e| anyhow::anyhow!("writing to {:?}: {}", db_path, e))
