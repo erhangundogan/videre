@@ -136,7 +136,7 @@ crates/
     src/main.rs
     src/commands/{mod.rs,dedupe.rs,report.rs,scan.rs,fix_dates.rs,prune.rs,embed.rs,search.rs,faces.rs,classify.rs,watch.rs,config.rs,mcp.rs,stats.rs}
     src/{lib.rs,scanner.rs,hasher.rs,output.rs,sqlite_output.rs,types.rs}
-    tests/{integration.rs,report.rs,prune.rs,watch.rs,faces_pipeline.rs,faces_server.rs,faces_resumability.rs,person_search.rs,mcp.rs,scan.rs,config.rs,embed.rs,fix_dates.rs,stats.rs,search.rs,fixtures/}
+    tests/{integration.rs,report.rs,prune.rs,watch.rs,faces_pipeline.rs,faces_server.rs,faces_resumability.rs,person_search.rs,mcp.rs,scan.rs,config.rs,embed.rs,fix_dates.rs,locations.rs,stats.rs,search.rs,fixtures/}
   videre-core/
     Cargo.toml
     src/lib.rs
@@ -189,6 +189,7 @@ The `videre` crate builds a single `[[bin]]` (`videre`, from `src/main.rs`) plus
 - InsightFace buffalo_l: SCRFD-10GF face detector + ArcFace w600k_r50 embedder (ONNX weights, auto-downloaded to `~/.cache/ort/`)
 - `rmcp`: official Rust MCP SDK, stdio server for `videre mcp`
 - `schemars`: JSON-schema generation for MCP tool parameters
+- `ureq`: blocking HTTP client for forward geocoding (`videre search --location`) - no async runtime needed, matching this project's fully-synchronous architecture
 
 ## SQLite schema
 
@@ -236,6 +237,23 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     duration_ms  INTEGER,
     summary      TEXT
 );
+
+CREATE TABLE IF NOT EXISTS location_clusters (
+    id            INTEGER PRIMARY KEY,
+    centroid_lat  REAL NOT NULL,
+    centroid_lon  REAL NOT NULL,
+    name          TEXT,
+    photo_count   INTEGER NOT NULL,
+    radius_km     REAL NOT NULL,
+    created_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS geocode_cache (
+    query       TEXT PRIMARY KEY,
+    lat         REAL NOT NULL,
+    lon         REAL NOT NULL,
+    resolved_at TEXT NOT NULL
+);
 ```
 
 Re-scanning the same folder with the same SQLite file upserts (overwrites) existing rows via `INSERT OR REPLACE`. `phash` is stored as signed `INTEGER` (cast from `u64`).
@@ -248,7 +266,7 @@ A companion `faces_scanned` table (`hash TEXT PRIMARY KEY, scanned_at TEXT`) rec
 
 `classifications` is populated by `videre classify` (zero-shot photo/screenshot/document/meme classification, scoring `embeddings` rows already computed by `videre embed` against 4 fixed text prompts via cosine similarity - no new model, no image re-decoding) and queried via `videre search --category <name>`. Rows below the configurable `--margin` similarity gap between the best and second-best category are stored as `category = "unknown"` rather than a low-confidence guess.
 
-`location_name` is a nullable TEXT column added by an idempotent `ALTER TABLE file_hashes ADD COLUMN location_name TEXT` migration (run on every `videre report` startup; harmless if the column already exists) - it is not populated by the initial `videre scan`. It is populated lazily, one GPS coordinate at a time, by the `/api/location` endpoint when `--show-faces` is used: the first lightbox view of a photo at a given `(gps_lat, gps_lon)` triggers a reverse-geocode lookup, and the result is cached back into this column so later lookups for the same coordinate are free.
+`location_name` is a nullable TEXT column added by an idempotent `ALTER TABLE file_hashes ADD COLUMN location_name TEXT` migration (run on every `videre report` startup; harmless if the column already exists) - it is not populated by the initial `videre scan`. It is populated lazily, one GPS coordinate at a time, by the `/api/location` endpoint when `--show-faces` is used: the first lightbox view of a photo at a given `(gps_lat, gps_lon)` triggers a reverse-geocode lookup, and the result is cached back into this column so later lookups for the same coordinate are free. `file_hashes.location_cluster_id` is added the same way, by `videre locations` (not populated by `videre scan`).
 
 Every subcommand opens the database via `videre_core::db::open_wal`, which switches the connection to SQLite's WAL journal mode (`PRAGMA journal_mode = WAL`). WAL mode persists in the database file itself once set, so `open_wal` is idempotent - safe to call on every connection open, not just the first. This allows one writer plus many concurrent readers without "database is locked" errors, which matters now that `videre watch` can run in the background writing to the same file that a `videre report --show-faces` server has open for reading (and occasional writes, e.g. `/api/location`).
 
@@ -353,6 +371,74 @@ Shared-hash safety (applies to both embeddings and cache files): if two paths sh
 
 `videre prune`'s runs are tracked in `pipeline_runs` (added 2026-08-01), visible via `videre stats`.
 
+## videre locations
+
+Clusters existing GPS coordinates (`file_hashes.gps_lat`/`gps_lon`, already
+extracted by `videre scan`'s EXIF parsing) by geographic proximity, using
+average-linkage agglomerative clustering over haversine (great-circle)
+distance - same *philosophy* as face clustering (repeatedly merge the two
+closest clusters by size-weighted average distance), a separate
+purpose-built implementation in `videre_core::location_cluster` since face
+clustering's cosine-distance/ArcFace-specific implementation doesn't apply.
+Unlike face clustering, there is no quality gate and no held-out
+singletons - every GPS coordinate is valid data, so a single photo taken
+somewhere unique still gets its own one-member cluster.
+
+```bash
+videre locations                  # cluster + persist + print summary, default db, radius=15km
+videre locations --radius 25      # override clustering granularity
+videre locations --json           # single JSON object (mutually exclusive with --geojson)
+videre locations --geojson        # GeoJSON FeatureCollection
+videre locations --db <path>      # explicit db
+videre locations --silent         # suppress the per-run summary
+```
+
+Every run is a **full recompute**: truncates `location_clusters` and clears
+`file_hashes.location_cluster_id`, then reclusters from scratch over every
+distinct `(gps_lat, gps_lon)` pair (rounded to 6 decimals, same unit
+`videre watch`'s location stage uses). There's no expensive detection step
+to make this incremental/resumable (GPS already sits in `file_hashes`), and
+at real-library scale (~5,500 distinct coordinates) a full recompute is
+cheap. Cluster IDs are **not stable across reruns** - only stable within one
+run's output, mirroring the face-clustering precedent (durable state -
+`person_label` - lives on individual face rows, not the numeric cluster ID;
+any future per-cluster customization would presumably follow suit).
+`--radius` (default 15km, "which city was I in" granularity) is the one
+tunable parameter.
+
+Cluster names are resolved via the **existing offline** reverse-geocoder
+(`videre_core::location::location_name`, no network calls) called once per
+cluster centroid (the unweighted mean of its member coordinates) -
+independent of the per-coordinate `location_name` column `videre watch
+--location` populates, so this command doesn't depend on that stage ever
+having run. `photo_count` counts `file_hashes` *rows* (physical files,
+including duplicate paths sharing a hash+coordinate), not distinct hashes or
+coordinates.
+
+Tracked in `pipeline_runs` as an 8th tracked command, `"locations"`
+(`videre_core::pipeline_runs::TRACKED_COMMANDS` grows to 8 entries).
+Resolves its db via `resolve_reader_db` (writes clusters + assigns
+`location_cluster_id`, so it matches `embed`/`classify`/`faces`/`prune`, not
+`dedupe`/`mcp`/`stats`'s must-exist readers).
+
+`--json` emits `{"schema_version": 1, "radius_km": 15.0, "clusters": [...]}`,
+each cluster carrying `id`/`name`/`centroid_lat`/`centroid_lon`/`photo_count`.
+`--geojson` emits a standard `FeatureCollection` of `Point` features -
+`coordinates: [lon, lat]` per the GeoJSON spec's own (reversed from this
+project's usual lat-then-lon) convention - so the output can be dropped
+directly into geojson.io, QGIS, or consumed by the private
+`videre-desktop`/`videre-web` repos for an actual map view later (a live map
+is deliberately not built in this repo - see the design spec's Non-goals
+section for why, including OpenStreetMap's tile-usage-policy objection).
+`--json` and `--geojson` are mutually exclusive (`conflicts_with`, same
+mechanism as `scan`'s `--output`/`--output_sqlite`).
+
+Zero GPS-bearing rows in the library is not an error: prints "0 location
+cluster(s) found" (or an empty `clusters`/`features` array) and exits 0.
+Centroid-as-unweighted-mean is a known, accepted limitation near the
+antimeridian (+/-180 longitude) or poles, not solved for a
+15km-granularity feature.
+
 ## videre embed / videre search
 
 `videre embed` (optionally `--db <db>`) embeds every unique image hash (SigLIP so400m/14-384, 1152-dim,
@@ -380,6 +466,24 @@ instead of the printed paths above; `--scores` is a no-op under `--json` since t
 score is always included.
 
 `videre search --person "Alice"` queries the `faces` table for confirmed rows whose `person_label` matches (case-insensitive prefix) and prints matching image paths. Requires a prior `videre faces` run and labels applied via `videre report --faces`.
+
+`videre search --location "<place>" [--radius <km>]` forward-geocodes an
+arbitrary place name (e.g. "Berlin, Germany" - not limited to places already
+in your library, unlike `videre locations`' persisted clusters) via the
+Nominatim (OpenStreetMap) free public geocoding API - the first network
+call this CLI ever makes - then finds photos within `--radius` km (default
+20) of that point, sorted by distance ascending and truncated to `-k`
+(unlike `--person`/`--category`, which ignore `-k` entirely: `--location` is
+a ranked "k nearest" query, closer in spirit to text/image mode). Results
+are cached locally in a new `geocode_cache` table keyed by the normalized
+query string, so a repeated query never repeats the network call. This
+makes `--location` the one `videre search` mode that writes to the
+database (every other mode stays read-only) and the one mode **not**
+exposed via `videre mcp` (same precedent as `--category`, which
+`videre mcp`'s search tool also excludes). `--json` hits carry
+`path`/`hash`/`distance_km` (no `score` - this isn't a ranked semantic
+match); `--scores` in text mode prepends `distance_km` instead of a cosine
+score for this one mode.
 
 Model weights auto-download from Hugging Face (google/siglip-so400m-patch14-384) on
 first run.
@@ -593,7 +697,7 @@ videre stats --check        # exit nonzero if any tracked command last failed or
 Text mode prints library totals (files/size, photo/video split, duplicate
 groups/files/wasted space, faces detected/people named), then one line per
 tracked command (`scan`, `faces`, `embed`, `classify`, `dedupe`, `fix-dates`,
-`prune`) showing its last-run timestamp, status, and duration - `never run` /
+`prune`, `locations`) showing its last-run timestamp, status, and duration - `never run` /
 `-` for a command that hasn't executed against this db yet, and `(running
 now)` appended when its lock is currently held by a live process. Uses
 `resolve_reader_db_must_exist` like `dedupe`/`mcp` (not `resolve_reader_db`
@@ -603,7 +707,7 @@ cleanly rather than silently creating an empty database.
 `--json` emits `{"schema_version": 1, "library": {...}, "pipelines": [...]}`,
 directly reusing `videre-core`'s `LibraryStats` and `PipelineRunStatus` serde
 types rather than redeclaring their fields - the `pipelines` array always has
-exactly seven entries (`videre_core::pipeline_runs::TRACKED_COMMANDS`) in a
+exactly eight entries (`videre_core::pipeline_runs::TRACKED_COMMANDS`) in a
 fixed command order, with `status`/`last_run_at`/`duration_ms` all `null` for
 a command that has never run. `report`, `search`, `mcp`, and `config` are
 deliberately not tracked here - see `TRACKED_COMMANDS`'s doc comment for why
