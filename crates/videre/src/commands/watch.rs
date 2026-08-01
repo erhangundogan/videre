@@ -180,9 +180,25 @@ fn file_hashes_table_exists(conn: &rusqlite::Connection) -> Result<bool> {
 
 /// Queries (path, hash) pairs from file_hashes matching a SQL WHERE clause,
 /// deduped to one representative path per hash.
-fn dedup_paths_by_hash(conn: &rusqlite::Connection, where_clause: &str) -> Result<Vec<(String, String)>> {
-    let sql = format!("SELECT path, hash FROM file_hashes WHERE {where_clause}");
-    let mut stmt = conn.prepare(&sql)?;
+/// The fixed set of extension filters `dedup_paths_by_hash` supports - a
+/// closed enum rather than a raw `&str` WHERE-clause fragment, so there is no
+/// way for a future caller to pass runtime-built SQL text into the query.
+enum PathExtFilter {
+    /// Every extension `videre faces` detects on: images plus HEIC.
+    Faces,
+    /// HEIC only, for the thumbnail-cache warming stage.
+    HeicOnly,
+}
+
+fn dedup_paths_by_hash(conn: &rusqlite::Connection, filter: PathExtFilter) -> Result<Vec<(String, String)>> {
+    let sql = match filter {
+        PathExtFilter::Faces => {
+            "SELECT path, hash FROM file_hashes \
+             WHERE ext IN ('jpg','jpeg','png','gif','webp','bmp','tiff','heic')"
+        }
+        PathExtFilter::HeicOnly => "SELECT path, hash FROM file_hashes WHERE ext = 'heic'",
+    };
+    let mut stmt = conn.prepare(sql)?;
     let rows: Vec<(String, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut seen = std::collections::HashSet::new();
@@ -193,10 +209,7 @@ fn run_faces_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> 
     let db_path = conn.path().map(std::path::PathBuf::from)
         .ok_or_else(|| anyhow::anyhow!("faces stage requires a file-backed database"))?;
     videre_core::pipeline_runs::track(conn, &db_path, "faces", || {
-        let all_paths = dedup_paths_by_hash(
-            conn,
-            "ext IN ('jpg','jpeg','png','gif','webp','bmp','tiff','heic')",
-        )?;
+        let all_paths = dedup_paths_by_hash(conn, PathExtFilter::Faces)?;
         // Skip already-scanned hashes (marker includes no-face images), unioned with
         // hashes that already have faces for pre-marker migration - same resumable
         // skip set as `videre faces`.
@@ -242,7 +255,7 @@ fn publish_thumb(img: &image::DynamicImage, tmp_path: &std::path::Path, final_pa
 }
 
 fn run_heic_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> {
-    let heic_paths = dedup_paths_by_hash(conn, "ext = 'heic'")?;
+    let heic_paths = dedup_paths_by_hash(conn, PathExtFilter::HeicOnly)?;
     let mut converted = 0usize;
     let mut failed = 0usize;
     for (path, hash) in heic_paths {
