@@ -148,6 +148,7 @@ fn stats_tracks_locations_runs() {
         .arg("--json")
         .output()
         .expect("failed to run videre stats");
+    assert!(out.status.success());
     let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let pipelines = doc["pipelines"].as_array().unwrap();
     let entry = pipelines.iter().find(|p| p["command"] == "locations").unwrap();
