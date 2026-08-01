@@ -167,7 +167,7 @@ crates/
     src/{error.rs,types.rs,label.rs,faces.rs,images.rs,stats.rs,pipeline_status.rs}
 ```
 
-The `videre` crate builds a single `[[bin]]` (`videre`, from `src/main.rs`) plus a lib target (`src/lib.rs`) exposing `scanner`, `hasher`, `output`, `sqlite_output`, and `types` to both the binary and the integration tests under `tests/`. `main.rs` dispatches to one module per subcommand under `src/commands/`. `videre-core` holds shared SQLite/db/cache/search helpers used by both `videre` and `videre-ml`. `videre-ml` is lib-only: all inference logic lives there, but every user-facing entry point is a subcommand in `videre`. `videre-api` is a lib-only facade over faces-labeling operations (list/assign/rename/dissolve/etc. plus face image bytes), called by the axum `--faces`/`--show-faces` server in `videre`; it's deliberately UI-agnostic so an external, separately-versioned UI client can depend on it directly without carrying any CLI/axum-specific logic along (see `architecture-multiplatform-ui` memory) - the closed-source `videre-desktop` app is one such consumer, but lives in its own private repo, not here.
+The `videre` crate builds a single `[[bin]]` (`videre`, from `src/main.rs`) plus a lib target (`src/lib.rs`) exposing `scanner`, `hasher`, `output`, `sqlite_output`, and `types` to both the binary and the integration tests under `tests/`. `main.rs` dispatches to one module per subcommand under `src/commands/`. `videre-core` holds shared SQLite/db/cache/search helpers used by both `videre` and `videre-ml`. `videre-ml` is lib-only: all inference logic lives there, but every user-facing entry point is a subcommand in `videre`. `videre-api` is a lib-only facade over faces-labeling operations (list/assign/rename/dissolve/etc. plus face image bytes), called by the axum `--faces`/`--show-faces` server in `videre`.
 
 ## Key crates
 
@@ -434,10 +434,10 @@ each cluster carrying `id`/`name`/`centroid_lat`/`centroid_lon`/`photo_count`.
 `--geojson` emits a standard `FeatureCollection` of `Point` features -
 `coordinates: [lon, lat]` per the GeoJSON spec's own (reversed from this
 project's usual lat-then-lon) convention - so the output can be dropped
-directly into geojson.io, QGIS, or consumed by the private
-`videre-desktop`/`videre-web` repos for an actual map view later (a live map
-is deliberately not built in this repo - see the design spec's Non-goals
-section for why, including OpenStreetMap's tile-usage-policy objection).
+directly into geojson.io, QGIS, or any other GeoJSON-consuming tool (a live
+map view is deliberately not built in this repo - see the design spec's
+Non-goals section for why, including OpenStreetMap's tile-usage-policy
+objection).
 `--json` and `--geojson` are mutually exclusive (`conflicts_with`, same
 mechanism as `scan`'s `--output`/`--output_sqlite`).
 
@@ -735,13 +735,12 @@ dates, detection failures) while still recording `status: "success"`, since
 `track()` only observes the operation's returned `Result`, and both commands
 return `Ok` with an error count rather than propagating those as `Err`.
 
-## UI / desktop app
+## UI
 
-There is no desktop or web UI in this repository. The only user-facing UI is
-`videre report`'s HTML output (static reports and `--faces`/`--show-faces`
-server mode) - see the `videre report` section above. A closed-source desktop
-app (`videre-desktop`) and a closed-source web app (`videre-web`) exist as
-separate private repositories, both consuming `videre-core`/`videre-api`
-directly as external dependencies rather than duplicating any of this
-project's logic. `videre-core`/`videre-api` are kept deliberately UI-agnostic
-for exactly this reason - see `architecture-multiplatform-ui` memory.
+The user-facing UI in this repository is entirely `videre report`'s HTML
+output - see the `videre report` section above for full detail. Two forms:
+static HTML (`videre report`, `--all`, `--by-date`) that can be opened
+directly as a `file://` page, and a live local server mode (`--faces`,
+`--show-faces`) for the parts that need a backend - in particular the face
+labeling UI (assign/rename/dissolve clusters, tag people) served on
+`localhost:7878`.
