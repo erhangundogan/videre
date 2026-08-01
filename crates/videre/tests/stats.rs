@@ -107,6 +107,54 @@ fn stats_tracks_prune_runs() {
 }
 
 #[test]
+fn stats_tracks_locations_runs() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE file_hashes (
+            path        TEXT PRIMARY KEY,
+            hash        TEXT NOT NULL,
+            size_bytes  INTEGER,
+            created_at  TEXT,
+            modified_at TEXT,
+            ext         TEXT,
+            phash       INTEGER,
+            exif_date   TEXT,
+            gps_lat     REAL,
+            gps_lon     REAL,
+            width       INTEGER,
+            height      INTEGER,
+            location_name TEXT,
+            location_cluster_id INTEGER
+        );",
+    )
+    .unwrap();
+    drop(conn);
+
+    let status = Command::new(videre_bin())
+        .arg("locations")
+        .arg("--db")
+        .arg(&db_path)
+        .arg("--silent")
+        .status()
+        .expect("failed to run videre locations");
+    assert!(status.success());
+
+    let out = Command::new(videre_bin())
+        .arg("stats")
+        .arg("--db")
+        .arg(&db_path)
+        .arg("--json")
+        .output()
+        .expect("failed to run videre stats");
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let pipelines = doc["pipelines"].as_array().unwrap();
+    let entry = pipelines.iter().find(|p| p["command"] == "locations").unwrap();
+    assert_eq!(entry["status"], "success");
+}
+
+#[test]
 fn stats_check_exits_zero_when_nothing_failed_or_crashed() {
     let scan_dir = tempdir().unwrap();
     let out_dir = tempdir().unwrap();
