@@ -3,6 +3,8 @@
 //! `location_clusters` + `file_hashes.location_cluster_id`. See
 //! docs/superpowers/specs/2026-08-01-location-clustering-design.md.
 
+use rusqlite::Connection;
+
 const EARTH_RADIUS_KM: f64 = 6371.0;
 
 /// Great-circle distance between two `(lat, lon)` points (in degrees), in km.
@@ -102,6 +104,38 @@ pub fn cluster_by_distance(points: &[(f64, f64)], radius_km: f64) -> Vec<Vec<usi
     (0..n).filter(|&r| alive[r]).map(|r| std::mem::take(&mut members[r])).collect()
 }
 
+/// Unweighted mean of the given members' `(lat, lon)` coordinates - not
+/// weighted by how many photos each coordinate has (see the spec's
+/// disambiguation of `centroid_lat`/`centroid_lon` vs. `photo_count`).
+pub fn centroid(points: &[(f64, f64)], member_idxs: &[usize]) -> (f64, f64) {
+    let n = member_idxs.len() as f64;
+    let sum_lat: f64 = member_idxs.iter().map(|&i| points[i].0).sum();
+    let sum_lon: f64 = member_idxs.iter().map(|&i| points[i].1).sum();
+    (sum_lat / n, sum_lon / n)
+}
+
+/// Idempotent: creates `location_clusters` if it doesn't already exist.
+pub fn ensure_location_clusters_table(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS location_clusters (
+            id            INTEGER PRIMARY KEY,
+            centroid_lat  REAL NOT NULL,
+            centroid_lon  REAL NOT NULL,
+            name          TEXT,
+            photo_count   INTEGER NOT NULL,
+            radius_km     REAL NOT NULL,
+            created_at    TEXT NOT NULL
+        );",
+    )
+}
+
+/// Idempotent: adds `file_hashes.location_cluster_id` if it doesn't already
+/// exist. Mirrors `location::ensure_location_column`'s pattern - errors
+/// (column already exists) are ignored.
+pub fn ensure_location_cluster_id_column(conn: &Connection) {
+    let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN location_cluster_id INTEGER");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,5 +189,35 @@ mod tests {
         let points = vec![(48.8566, 2.3522), (51.5074, -0.1278)];
         let clusters = cluster_by_distance(&points, 10_000.0);
         assert_eq!(clusters.len(), 1);
+    }
+
+    #[test]
+    fn centroid_is_unweighted_mean() {
+        let points = vec![(0.0, 0.0), (2.0, 4.0)];
+        let (lat, lon) = centroid(&points, &[0, 1]);
+        assert!((lat - 1.0).abs() < 1e-9);
+        assert!((lon - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ensure_location_clusters_table_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_location_clusters_table(&conn).unwrap();
+        ensure_location_clusters_table(&conn).unwrap(); // second call must not error
+    }
+
+    #[test]
+    fn ensure_location_cluster_id_column_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL);",
+        )
+        .unwrap();
+        conn.execute("INSERT INTO file_hashes (path, hash) VALUES ('x', 'h1')", [])
+            .unwrap();
+        ensure_location_cluster_id_column(&conn);
+        ensure_location_cluster_id_column(&conn); // second call must not error
+        conn.execute("UPDATE file_hashes SET location_cluster_id = 1 WHERE path = 'x'", [])
+            .unwrap();
     }
 }
