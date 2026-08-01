@@ -98,8 +98,9 @@ pub fn run(args: SearchArgs) -> Result<()> {
 fn run_text(args: &SearchArgs) -> Result<()> {
     let (_query, hits) = collect_hits(args)?;
     for hit in hits {
-        match hit.score {
-            Some(score) if args.scores => println!("{score:.4}\t{}", hit.path),
+        match (hit.score, hit.distance_km) {
+            (Some(score), _) if args.scores => println!("{score:.4}\t{}", hit.path),
+            (_, Some(distance)) if args.scores => println!("{distance:.2}km\t{}", hit.path),
             _ => println!("{}", hit.path),
         }
     }
@@ -135,6 +136,44 @@ pub(crate) fn category_hits(conn: &Connection, category: &str) -> Result<Vec<Sea
         .into_iter()
         .map(|(path, hash)| SearchHitJson { path, hash: Some(hash), score: None, distance_km: None })
         .collect())
+}
+
+/// Location query: photos within `radius_km` of a forward-geocoded point,
+/// sorted by distance ascending, truncated to `top_k` - this is a ranked
+/// "k nearest" query (unlike `person`/`category`'s unbounded membership
+/// sets), so `top_k` truncation applies here same as text/image mode.
+/// Carries path+hash+distance_km, no score.
+pub(crate) fn location_hits(
+    conn: &Connection,
+    place: &str,
+    radius_km: f64,
+    top_k: usize,
+) -> Result<Vec<SearchHitJson>> {
+    let (center_lat, center_lon) = videre_core::geocode::forward_geocode_cached(conn, place)
+        .with_context(|| format!("could not geocode {place:?}"))?;
+
+    let mut stmt = conn.prepare(
+        "SELECT path, hash, gps_lat, gps_lon FROM file_hashes \
+         WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL",
+    )?;
+    let rows: Vec<(String, String, f64, f64)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut hits: Vec<(f64, SearchHitJson)> = rows
+        .into_iter()
+        .filter_map(|(path, hash, lat, lon)| {
+            let distance = videre_core::location_cluster::haversine_km(center_lat, center_lon, lat, lon);
+            if distance <= radius_km {
+                Some((distance, SearchHitJson { path, hash: Some(hash), score: None, distance_km: Some(distance) }))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    hits.sort_by(|a, b| a.0.total_cmp(&b.0));
+    Ok(hits.into_iter().take(top_k).map(|(_, hit)| hit).collect())
 }
 
 /// Load the embedding corpus, erroring if empty. Called BEFORE any model load
@@ -189,6 +228,15 @@ fn collect_hits(args: &SearchArgs) -> Result<(QueryJson, Vec<SearchHitJson>)> {
             eprintln!("No files found classified as: {name}");
         }
         return Ok((QueryJson { kind: "category", value: name.clone() }, hits));
+    }
+
+    if let Some(place) = &args.location {
+        videre_core::geocode::ensure_geocode_cache_table(&conn)?;
+        let hits = location_hits(&conn, place, args.radius, args.top_k)?;
+        if hits.is_empty() && !args.json {
+            eprintln!("No photos found within {}km of: {place}", args.radius);
+        }
+        return Ok((QueryJson { kind: "location", value: place.clone() }, hits));
     }
 
     if let Some(name) = &args.person {
