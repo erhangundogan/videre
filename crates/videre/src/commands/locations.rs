@@ -92,11 +92,13 @@ fn run_locations_tracked(
 /// every distinct GPS coordinate. Cluster IDs are therefore not stable
 /// across reruns (see the design spec's section 1).
 fn run_locations(args: &LocationsArgs, conn: &Connection) -> Result<Vec<ClusterJson>> {
-    location_cluster::ensure_location_clusters_table(conn)?;
-    location_cluster::ensure_location_cluster_id_column(conn);
+    let tx = conn.unchecked_transaction()?;
+
+    location_cluster::ensure_location_clusters_table(&tx)?;
+    location_cluster::ensure_location_cluster_id_column(&tx);
 
     let coords: Vec<(f64, f64)> = {
-        let mut stmt = conn.prepare(
+        let mut stmt = tx.prepare(
             "SELECT DISTINCT gps_lat, gps_lon FROM file_hashes \
              WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL",
         )?;
@@ -106,13 +108,14 @@ fn run_locations(args: &LocationsArgs, conn: &Connection) -> Result<Vec<ClusterJ
         rows
     };
 
-    conn.execute("DELETE FROM location_clusters", [])?;
-    conn.execute(
+    tx.execute("DELETE FROM location_clusters", [])?;
+    tx.execute(
         "UPDATE file_hashes SET location_cluster_id = NULL WHERE location_cluster_id IS NOT NULL",
         [],
     )?;
 
     if coords.is_empty() {
+        tx.commit()?;
         return Ok(Vec::new());
     }
 
@@ -123,38 +126,35 @@ fn run_locations(args: &LocationsArgs, conn: &Connection) -> Result<Vec<ClusterJ
         let (centroid_lat, centroid_lon) = location_cluster::centroid(&coords, members);
         let name = videre_core::location::location_name(centroid_lat, centroid_lon);
 
-        let mut photo_count = 0i64;
-        for &idx in members {
-            let (lat, lon) = coords[idx];
-            photo_count += conn.query_row(
-                "SELECT COUNT(*) FROM file_hashes \
-                 WHERE ROUND(gps_lat, 6) = ROUND(?1, 6) AND ROUND(gps_lon, 6) = ROUND(?2, 6)",
-                rusqlite::params![lat, lon],
-                |r| r.get::<_, i64>(0),
-            )?;
-        }
-
-        conn.execute(
+        tx.execute(
             "INSERT INTO location_clusters \
              (centroid_lat, centroid_lon, name, photo_count, radius_km, created_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
-            rusqlite::params![centroid_lat, centroid_lon, name, photo_count, args.radius],
+            rusqlite::params![centroid_lat, centroid_lon, name, 0i64, args.radius],
         )?;
-        let id = conn.last_insert_rowid();
+        let id = tx.last_insert_rowid();
 
+        let mut photo_count = 0i64;
         for &idx in members {
             let (lat, lon) = coords[idx];
-            conn.execute(
+            let affected = tx.execute(
                 "UPDATE file_hashes SET location_cluster_id = ?1 \
                  WHERE ROUND(gps_lat, 6) = ROUND(?2, 6) AND ROUND(gps_lon, 6) = ROUND(?3, 6)",
                 rusqlite::params![id, lat, lon],
             )?;
+            photo_count += affected as i64;
         }
+
+        tx.execute(
+            "UPDATE location_clusters SET photo_count = ?1 WHERE id = ?2",
+            rusqlite::params![photo_count, id],
+        )?;
 
         clusters.push(ClusterJson { id, name, centroid_lat, centroid_lon, photo_count });
     }
 
     clusters.sort_by(|a, b| b.photo_count.cmp(&a.photo_count));
+    tx.commit()?;
     Ok(clusters)
 }
 
