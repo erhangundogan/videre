@@ -15,6 +15,18 @@ A local-first media management CLI, offering:
 
 Everything runs over a single shared SQLite database.
 
+## Why videre
+
+Most media managers want to *own* your library: import into their storage, index into a database only they can read, and increasingly nudge you toward their cloud. videre works the other way - it's a lens over a folder you already own. Aside from `fix-dates` optionally correcting a file's mtime, nothing it does ever moves, copies, or re-encodes your files. Point it at a directory, get a SQLite database of what's there, and every other command works from that database. Stop running it and nothing changes about your files.
+
+Three things it's built to do especially well:
+
+- **Duplicate detection you can trust before you delete anything.** `videre dedupe` never deletes on its own - it prints REMOVE candidates for you to pipe into `trash` (or review first in `videre report`'s HTML gallery, KEEP/REMOVE badges and all). Exact BLAKE3 matches plus optional perceptual-hash near-duplicates, always review-first.
+- **Face recognition that clusters for you, not the other way around.** `videre faces` detects, embeds, and automatically clusters faces into identity groups (two-stage average-linkage + centroid-merge, with a quality gate that keeps blurry/occluded/generic faces out of the noise) - so labeling is "name this cluster of 40 photos" instead of tagging one photo at a time.
+- **EXIF-based date repair that fixes the actual files.** `videre fix-dates` sets each file's real mtime from its camera's `DateTimeOriginal`, not just a sort order inside some app's own index - so the fix survives moving the files anywhere else, forever.
+
+And because it's a CLI over a plain SQLite file rather than a server you log into, it's the one media tool an LLM agent can drive directly today - `videre mcp` exposes search, duplicate review, and stats as agent tools with zero new infrastructure.
+
 ## Subcommands
 
 | Subcommand | Purpose |
