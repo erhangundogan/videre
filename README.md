@@ -473,11 +473,13 @@ videre search --location "Berlin, Germany"                               # find 
 | `--image <path>` | Search by example image instead of a text query (mutually exclusive with a text query) |
 | `--person <name>` | Return paths containing a named person - confirmed faces only (mutually exclusive with a text query or `--image`) |
 | `--category <name>` | Filter by classified category: `photo`/`screenshot`/`document`/`meme`/`unknown` (mutually exclusive with a text query, `--image`, or `--person`; requires a prior `videre classify` run) |
+| `--location <place>` | Find photos within `--radius` km of a forward-geocoded place, e.g. `"Berlin, Germany"` (mutually exclusive with a text query, `--image`, `--person`, or `--category`; results sorted by distance and truncated to `-k` like text/image mode) |
+| `--radius <km>` | Search radius around `--location` in km (default: 20; only valid alongside `--location`) |
 | `-k, --top-k <n>` | Number of results (default: 20) |
-| `--scores` | Prepend the cosine score to each output line |
+| `--scores` | Prepend the ranking metric to each output line - cosine score for text/image mode, distance in km for `--location` mode |
 | `--json` | Emit a single JSON object on stdout instead of text |
 
-`--scores` is a no-op under `--json`: the score is always included in each result.
+`--scores` is a no-op under `--json`: the score (or distance, for `--location`) is always included in each result.
 
 On macOS, inference uses Metal (Apple Silicon GPU). On Linux, CPU only - embedding large collections will be significantly slower. CUDA support can be enabled by adding `features = ["cuda"]` to the candle dependencies in `crates/videre-ml/Cargo.toml`.
 
