@@ -36,6 +36,7 @@ And because it's a CLI over a plain SQLite file rather than a server you log int
 | `videre report` | Read the SQLite database, generate an HTML review page (or serve the live report/labeling UI) |
 | `videre fix-dates` | Set each file's mtime to its EXIF shoot date |
 | `videre prune` | Remove stale rows, sync metadata, clean orphan embeddings |
+| `videre locations` | Cluster GPS coordinates by geographic proximity and persist the result |
 | `videre embed` | Compute SigLIP embeddings for every image in the database |
 | `videre search` | Search images by text description, example image, person name, or category |
 | `videre faces` | Detect, embed, and cluster faces; enables person search |
@@ -421,6 +422,26 @@ In dry-run mode, the orphan embedding and cache-file counts are lower bounds: th
 
 ---
 
+## videre locations
+
+Clusters existing GPS coordinates by geographic proximity (average-linkage
+over great-circle distance) and persists the result - a full recompute
+every run, cheap at real-library scale.
+
+```bash
+videre locations                  # cluster + persist + print summary, radius=15km
+videre locations --radius 25      # override clustering granularity (km)
+videre locations --json           # single JSON object
+videre locations --geojson        # GeoJSON FeatureCollection (drop into geojson.io, QGIS, etc.)
+```
+
+Cluster names come from the same offline reverse-geocoder `videre watch
+--location` uses - no network calls, no dependency on that stage having run.
+No map view ships in this repo; `--geojson` is the composable hand-off point
+for that (see CLAUDE.md for the full reasoning).
+
+---
+
 ## videre embed and videre search
 
 `videre embed` computes SigLIP embeddings (google/siglip-so400m-patch14-384, 1152-dim f16) for every image in the database and stores them keyed by content hash. Re-running only processes images not yet embedded. `.mov`/`.mp4` are embedded too, via one representative frame extracted the same way as HEIC (`qlmanage -t`, macOS only) rather than decoding the full video - a cheap, single-frame, not-motion-aware embedding, so video search quality is weaker than photo search. Video hashes are excluded from `videre classify` (none of its four categories fit a video frame). `.dng` is still skipped (the `image` crate has no DNG decoder) - excluded from the
@@ -443,6 +464,7 @@ videre search --db <path> "sunset on beach"         # explicit db
 videre search --image query.jpg                     # find images similar to an example
 videre search "birthday cake" -k 10 --scores        # top 10 with cosine scores
 videre search --person "Alice"                      # find all photos of Alice (requires videre faces)
+videre search --location "Berlin, Germany"                               # find photos near a place (forward-geocoded)
 ```
 
 | Flag | Description |
@@ -540,7 +562,7 @@ videre stats --check        # exit nonzero if any tracked command last failed or
 A command that has never run shows `never run` / `-`; one currently in
 progress is marked `(running now)`. `--json` emits
 `{"schema_version": 1, "library": {...}, "pipelines": [...]}`, with
-`pipelines` always containing exactly seven entries in a fixed order (`scan`/`faces`/`embed`/`classify`/`dedupe`/`fix-dates`/`prune`; `report`/`search`/`mcp`/`config` are deliberately not tracked - see CLAUDE.md for why).
+`pipelines` always containing exactly eight entries in a fixed order (`scan`/`faces`/`embed`/`classify`/`dedupe`/`fix-dates`/`prune`/`locations`; `report`/`search`/`mcp`/`config` are deliberately not tracked - see CLAUDE.md for why).
 
 `--check` doesn't change the printed output (text or `--json`) at all - it only adds an exit code, so cron/launchd can act on a failed pipeline without parsing either output format. Exits nonzero if any tracked command's last recorded run is `failed` or `crashed`; a clean `interrupted` (Ctrl-C) is not treated as a problem.
 
