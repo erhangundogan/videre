@@ -234,6 +234,7 @@ mod tests {
                 path: "/a.jpg".to_string(),
                 hash: Some("abc".to_string()),
                 score: Some(0.5),
+                distance_km: None,
             }],
         };
         let json = serde_json::to_string(&doc).unwrap();
@@ -254,6 +255,7 @@ mod tests {
                 path: "/a.jpg".to_string(),
                 hash: None,
                 score: None,
+                distance_km: None,
             }],
         };
         let json = serde_json::to_string(&doc).unwrap();
@@ -272,6 +274,7 @@ mod tests {
                 path: "/a.png".to_string(),
                 hash: Some("abc".to_string()),
                 score: None,
+                distance_km: None,
             }],
         };
         let json = serde_json::to_string(&doc).unwrap();
