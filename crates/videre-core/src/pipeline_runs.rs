@@ -11,22 +11,25 @@ use serde::Serialize;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
-/// The seven commands tracked so far. Extended with `prune` on 2026-08-01
-/// (was originally six - see the design doc referenced above) - it's a
-/// clean fit for the same one-shot start/finish model the other six use.
-/// `report`, `search`, `mcp`, and `config` were deliberately left out of
-/// this extension: `report --faces`/`--show-faces` and `mcp` are long-running
-/// servers with no natural "finished" moment (the same reason `videre watch`
-/// itself is excluded - see below), `search` is an interactive per-query
-/// command rather than a library-processing pipeline stage, and `config` is
-/// a trivial instant read/write with nothing meaningful to time. Revisit only
+/// The eight commands tracked so far. Extended with `locations` on
+/// 2026-08-01 (was seven after `prune`'s addition earlier the same day) -
+/// it's a clean fit for the same one-shot start/finish model the others
+/// use: `videre locations` is a full-recompute batch pass, not an
+/// interactive per-query command. `report`, `search`, `mcp`, and `config`
+/// remain deliberately excluded: `report --faces`/`--show-faces` and `mcp`
+/// are long-running servers with no natural "finished" moment (the same
+/// reason `videre watch` itself is excluded - see below), `search` is an
+/// interactive per-query command rather than a library-processing pipeline
+/// stage (true even for its new `--location` mode, which is a single query
+/// like any other `search` invocation, not a batch job), and `config` is a
+/// trivial instant read/write with nothing meaningful to time. Revisit only
 /// if a real driver for tracking one of those emerges - see TECH_DEBT.md.
 ///
 /// `videre watch` itself is deliberately not in this list - it has no
 /// "finished" moment during normal operation, so it gets its own liveness
 /// lock (see `watch_lock_path`) but no `pipeline_runs` row.
-pub const TRACKED_COMMANDS: [&str; 7] =
-    ["scan", "faces", "embed", "classify", "dedupe", "fix-dates", "prune"];
+pub const TRACKED_COMMANDS: [&str; 8] =
+    ["scan", "faces", "embed", "classify", "dedupe", "fix-dates", "prune", "locations"];
 
 pub fn ensure_pipeline_runs_table(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
