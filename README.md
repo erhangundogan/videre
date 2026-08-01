@@ -71,63 +71,103 @@ them: `make build`/`make build-dev`, `make test`, `make fmt`/`make lint`,
 All commands below use the default database at `~/.videre/hashes.db`, created automatically
 on first write. Pass `--db <path>` (readers) or `--output-sqlite <path>` (writers) to point
 at a different file instead - see [The ~/.videre home directory](#the-videre-home-directory).
+Start with **Scan** below no matter which workflow you're after; the rest are independent
+of each other and can be run in any order (or skipped) once you've scanned.
+
+### Scan
 
 ```bash
-# 1. Scan - everything written to the default SQLite db
 videre scan ~/Photos
+```
 
-# 2. Preview duplicates - printed to stdout
-# If you don't wanna review duplicates visually then you can start from point 4
+Populates the database - every workflow below reads from it.
+
+### Duplicate cleanup
+
+```bash
+# Preview duplicates - printed to stdout. If you'd rather review visually,
+# skip straight to `videre report` below.
 videre dedupe
 
-# 3. Review - open the HTML report in your browser
+# Review - open the HTML report in your browser
 videre report
 
-# 4. Delete duplicates
+# Delete duplicates
 videre dedupe | xargs trash
 
-# 5. Prune the database: remove stale rows for the files just deleted, sync
-# metadata, clean orphan embeddings - do this before the steps below so they
-# never waste time on rows for files that no longer exist
+# Prune the database: remove stale rows for the files just deleted, sync
+# metadata, clean orphan embeddings - do this before the other workflows so
+# they never waste time on rows for files that no longer exist
 videre prune
 
-# 6. Fix timestamps - set mtime = EXIF shoot date on remaining files
+# Fix timestamps - set mtime = EXIF shoot date on remaining files
 videre fix-dates
+```
 
-# 7. Embed images for semantic search (downloads ~1.8 GB model on first run)
+### Semantic search
+
+```bash
+# Embed images for semantic search (downloads ~1.8 GB model on first run)
 videre embed
 
-# 8. Search by text or example image
+# Search by text or example image
 videre search "golden gate bridge at sunset"
 videre search --image reference.jpg
+```
 
-# 9. Classify images as photo/screenshot/document/meme, then find screenshots
+### Classification (screenshots, documents, memes)
+
+```bash
 videre classify
 videre search --category screenshot
+```
 
-# 10. Detect, embed, and cluster faces for person search
+### Face recognition
+
+```bash
+# Detect, embed, and cluster faces
 videre faces
 
-# 11. Label faces in the browser UI, then save and close
+# Label faces in the browser UI, then save and close
 videre report --faces
 
-# 12. Find all photos of a named person
+# Find all photos of a named person
 videre search --person "Alice"
+```
 
-# 13. Browse the full collection with in-page similarity search
+### Location clustering and search
+
+```bash
+# Cluster GPS coordinates into named places
+videre locations
+
+# Find photos near an arbitrary place, forward-geocoded (no prior `videre locations` run needed)
+videre search --location "Berlin, Germany"
+```
+
+### Browsing the library
+
+```bash
+# Browse the full collection with in-page similarity search
 videre report --all
 
-# 14. Browse a Year/Month/Day drill-down gallery (static HTML, same as --all)
+# Year/Month/Day drill-down gallery (static HTML, same as --all)
 videre report --by-date
 
-# 15. Live report with labeled-face and location metadata in the lightbox
+# Live report with labeled-face and location metadata in the lightbox
 videre report --show-faces
+```
 
-# 16. Keep everything fresh in the background (run alongside step 15, same db)
+### Keeping everything fresh automatically
+
+```bash
+# Run alongside `videre report --show-faces`, same db
 videre watch ~/Photos
 ```
 
-To use an explicit database file instead of the default:
+### Using an explicit database
+
+Any of the workflows above work the same way against an explicit db instead of the default:
 
 ```bash
 videre scan --output-sqlite ~/photos.db ~/Photos
