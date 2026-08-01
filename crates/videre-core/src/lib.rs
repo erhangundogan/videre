@@ -3,6 +3,7 @@ pub mod db;
 pub mod embeddings;
 pub mod face_cluster;
 pub mod face_db;
+pub mod geocode;
 pub mod heic;
 pub mod home;
 pub mod io_timeout;
