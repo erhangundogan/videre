@@ -75,6 +75,9 @@ pub fn forward_geocode_network(query: &str) -> Result<(f64, f64)> {
         .query("q", query)
         .query("format", "jsonv2")
         .query("limit", "1")
+        .config()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .build()
         .call()
         .with_context(|| format!("geocoding request for {query:?} failed"))?
         .body_mut()
