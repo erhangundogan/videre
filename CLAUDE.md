@@ -398,8 +398,16 @@ Every run is a **full recompute**: truncates `location_clusters` and clears
 distinct `(gps_lat, gps_lon)` pair (rounded to 6 decimals, same unit
 `videre watch`'s location stage uses). There's no expensive detection step
 to make this incremental/resumable (GPS already sits in `file_hashes`), and
-at real-library scale (~5,500 distinct coordinates) a full recompute is
-cheap. Cluster IDs are **not stable across reruns** - only stable within one
+the clustering math itself (haversine distances over ~5,500 coordinates) is
+sub-second - but real-library measurement found the per-coordinate
+`file_hashes` UPDATE (one per distinct coordinate, matched via the
+unindexable `ROUND(gps_lat, 6) = ROUND(?, 6)` predicate against the whole
+table) dominates: ~8 minutes on a 70k-file library. The whole recompute runs
+inside one transaction, so it holds the single WAL writer lock for that
+entire window - a concurrent `videre watch` write blocks until it finishes.
+Not fixed yet (see TECH_DEBT.md); tolerable for a manually-invoked command,
+but noted here since "full recompute" reads as cheaper than it measures at
+real scale. Cluster IDs are **not stable across reruns** - only stable within one
 run's output, mirroring the face-clustering precedent (durable state -
 `person_label` - lives on individual face rows, not the numeric cluster ID;
 any future per-cluster customization would presumably follow suit).
