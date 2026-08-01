@@ -148,3 +148,81 @@ fn rerun_replaces_previous_clusters_not_appends() {
         .unwrap();
     assert_eq!(count, 1, "rerunning must replace, not accumulate, clusters");
 }
+
+#[test]
+fn file_hashes_location_cluster_id_is_assigned_and_cleared_on_rerun() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("test.db");
+    let conn = Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL, ext TEXT,
+             gps_lat REAL, gps_lon REAL);
+         INSERT INTO file_hashes (path, hash, ext, gps_lat, gps_lon) VALUES
+             ('/tmp/a.jpg', 'ha', 'jpg', 48.8566, 2.3522),
+             ('/tmp/b.jpg', 'hb', 'jpg', 48.8606, 2.3376);",
+    )
+    .unwrap();
+    drop(conn);
+
+    let status = Command::new(videre_bin())
+        .arg("locations")
+        .arg("--db")
+        .arg(&db)
+        .arg("--radius")
+        .arg("50")
+        .arg("--silent")
+        .status()
+        .expect("failed to run videre locations");
+    assert!(status.success());
+
+    let conn = Connection::open(&db).unwrap();
+    let (cluster_a, cluster_b): (Option<i64>, Option<i64>) = (
+        conn.query_row(
+            "SELECT location_cluster_id FROM file_hashes WHERE path = '/tmp/a.jpg'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap(),
+        conn.query_row(
+            "SELECT location_cluster_id FROM file_hashes WHERE path = '/tmp/b.jpg'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap(),
+    );
+    assert!(cluster_a.is_some(), "expected a.jpg to get a location_cluster_id");
+    assert_eq!(cluster_a, cluster_b, "both nearby photos must land in the same cluster");
+    drop(conn);
+
+    // Remove b's GPS so a rerun reclusters it out of any cluster - the
+    // NULL-clearing step (locations.rs's "clears file_hashes.location_cluster_id")
+    // must actually take effect, not just leave the previous run's value in place.
+    let conn = Connection::open(&db).unwrap();
+    conn.execute("UPDATE file_hashes SET gps_lat = NULL, gps_lon = NULL WHERE path = '/tmp/b.jpg'", [])
+        .unwrap();
+    drop(conn);
+
+    let status = Command::new(videre_bin())
+        .arg("locations")
+        .arg("--db")
+        .arg(&db)
+        .arg("--radius")
+        .arg("50")
+        .arg("--silent")
+        .status()
+        .expect("failed to run videre locations");
+    assert!(status.success());
+
+    let conn = Connection::open(&db).unwrap();
+    let cluster_b_after: Option<i64> = conn
+        .query_row(
+            "SELECT location_cluster_id FROM file_hashes WHERE path = '/tmp/b.jpg'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        cluster_b_after, None,
+        "b.jpg's stale location_cluster_id must be cleared once it no longer has GPS"
+    );
+}
