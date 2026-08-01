@@ -7,6 +7,7 @@ pub mod heic;
 pub mod home;
 pub mod io_timeout;
 pub mod library_stats;
+pub mod location_cluster;
 pub mod pipeline_runs;
 pub mod semaphore;
 pub mod location;
