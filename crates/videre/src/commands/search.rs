@@ -28,6 +28,16 @@ pub struct SearchArgs {
     #[arg(long, conflicts_with = "query", conflicts_with = "image", conflicts_with = "person")]
     category: Option<String>,
 
+    /// Find photos within --radius km of this place, e.g. "Berlin, Germany"
+    /// (forward-geocoded via the free public Nominatim API - the first
+    /// network call this CLI ever makes; results are cached locally)
+    #[arg(long, conflicts_with = "query", conflicts_with = "image", conflicts_with = "person", conflicts_with = "category")]
+    location: Option<String>,
+
+    /// Search radius in km around --location
+    #[arg(long, default_value_t = 20.0, requires = "location")]
+    radius: f64,
+
     /// Number of results
     #[arg(short = 'k', long, default_value_t = 20)]
     top_k: usize,
@@ -62,6 +72,8 @@ pub(crate) struct SearchHitJson {
     pub(crate) hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) score: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) distance_km: Option<f64>,
 }
 
 pub fn run(args: SearchArgs) -> Result<()> {
@@ -109,7 +121,7 @@ pub(crate) fn person_hits(conn: &Connection, name: &str) -> Result<Vec<SearchHit
     let paths = videre_core::person_search::search_by_person(conn, name, None)?;
     Ok(paths
         .into_iter()
-        .map(|path| SearchHitJson { path, hash: None, score: None })
+        .map(|path| SearchHitJson { path, hash: None, score: None, distance_km: None })
         .collect())
 }
 
@@ -121,7 +133,7 @@ pub(crate) fn category_hits(conn: &Connection, category: &str) -> Result<Vec<Sea
     let pairs = classify_core::paths_for_category(conn, category)?;
     Ok(pairs
         .into_iter()
-        .map(|(path, hash)| SearchHitJson { path, hash: Some(hash), score: None })
+        .map(|(path, hash)| SearchHitJson { path, hash: Some(hash), score: None, distance_km: None })
         .collect())
 }
 
@@ -156,6 +168,7 @@ pub(crate) fn ranked_hits(
                 path,
                 hash: Some(hash.clone()),
                 score: Some(score),
+                distance_km: None,
             });
         }
     }
