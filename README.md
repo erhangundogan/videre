@@ -9,6 +9,7 @@ A local-first media management CLI, offering:
 - semantic embedding and search, for images and video (single-frame)
 - zero-shot classification (photo/screenshot/document/meme)
 - face detection, clustering, and search
+- location clustering and geolocation-based search
 - a background watch loop that keeps everything fresh automatically
 - library stats and pipeline run status
 - agentic access via an MCP server
