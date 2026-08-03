@@ -177,7 +177,7 @@ The `videre` crate builds a single `[[bin]]` (`videre`, from `src/main.rs`) plus
 - `walkdir`: recursive traversal
 - `serde_json`: JSONL output
 - `chrono`: date formatting
-- `image`: image decoding and dHash perceptual hashing for `--similar` (implemented inline, no img_hash crate)
+- `image`: image decoding and dHash perceptual hashing for `--similar` (implemented inline, no img_hash crate); the same dHash algorithm also runs against a QuickLook-decoded poster-frame for `.mov`/`.mp4` files, reusing `videre-ml`'s `decode_via_quicklook`
 - `kamadak-exif`: EXIF metadata extraction (always on for jpg/jpeg/tiff/heic/dng)
 - `rusqlite` (bundled): SQLite output for `--output-sqlite` and `videre report`
 - `filetime`: set file `mtime` portably for `videre fix-dates`
@@ -257,7 +257,7 @@ CREATE TABLE IF NOT EXISTS geocode_cache (
 );
 ```
 
-Re-scanning the same folder with the same SQLite file upserts (overwrites) existing rows via `INSERT OR REPLACE`. `phash` is stored as signed `INTEGER` (cast from `u64`).
+Re-scanning the same folder with the same SQLite file upserts (overwrites) existing rows via `INSERT OR REPLACE`. `phash` is stored as signed `INTEGER` (cast from `u64`). For `.mov`/`.mp4` files, `phash` is a dHash of the same QuickLook poster-frame `videre embed` decodes for SigLIP - not a byte-identical/video-content hash, so it only catches videos whose poster-frame looks alike (same-source re-encodes and trims that keep the opening frame; it will not catch a trim that cuts the opening frame, and can rarely group two unrelated static-shot videos - see `docs/superpowers/TECH_DEBT.md` for known follow-ups).
 
 `faces` rows are keyed by `id` (auto-increment). `hash` links to `file_hashes`. `bbox` and `landmark` are JSON strings. `embedding` is a raw f16 BLOB (512-dim ArcFace, 1024 bytes). `cluster_id` is assigned by the two-stage clustering (average-linkage, then a centroid-merge pass); `person_label` and `confirmed` are set via `videre report --faces`.
 
