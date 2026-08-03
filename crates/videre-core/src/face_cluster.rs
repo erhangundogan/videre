@@ -382,11 +382,27 @@ fn merge_by_centroid(
 ) -> Vec<Vec<usize>> {
     let mut centroids: Vec<Vec<f32>> = clusters.iter().map(|c| centroid(points, c)).collect();
 
+    // Cache every pairwise centroid similarity once, instead of rescanning
+    // all C*(C-1)/2 pairs from scratch on every loop iteration (the previous
+    // version cost O(C^3 * dim) total across up to C-1 merge iterations).
+    // After a merge, only the merged cluster's own row/column needs
+    // recomputing - every other pair's similarity is unchanged - bringing
+    // the total to O(C^2 * dim).
+    let c = clusters.len();
+    let mut sim: Vec<Vec<f32>> = vec![vec![0.0f32; c]; c];
+    for i in 0..c {
+        for j in (i + 1)..c {
+            let s = centroids[i].iter().zip(&centroids[j]).map(|(a, b)| a * b).sum::<f32>();
+            sim[i][j] = s;
+            sim[j][i] = s;
+        }
+    }
+
     loop {
         let mut best: Option<(f32, usize, usize)> = None;
         for i in 0..clusters.len() {
             for j in (i + 1)..clusters.len() {
-                let s = centroids[i].iter().zip(&centroids[j]).map(|(a, b)| a * b).sum::<f32>();
+                let s = sim[i][j];
                 if best.is_none_or(|(bs, _, _)| s > bs) {
                     best = Some((s, i, j));
                 }
@@ -396,11 +412,46 @@ fn merge_by_centroid(
         if s < merge_sim { break; }
 
         // Merge j into i, drop j (swap_remove keeps indices tidy), recompute i's centroid.
+        // Note: `best` only ever binds pairs with i < j (from the loop bounds
+        // above), and j <= last (the last valid index), so i < last always -
+        // this is what keeps the centroids[i] and sim[i][k] writes below in
+        // bounds after the swap_remove/pop shrink both collections.
         let moved = std::mem::take(&mut clusters[j]);
         clusters[i].extend(moved);
         clusters.swap_remove(j);
         centroids.swap_remove(j);
         centroids[i] = centroid(points, &clusters[i]);
+
+        // swap_remove moved the former last cluster into slot j (if j wasn't
+        // already last) - mirror that same swap in the similarity matrix so
+        // row/column indices stay consistent with `clusters`/`centroids`.
+        // sim.len() here is still the PRE-merge cluster count (nothing has
+        // popped it yet), so `last` correctly names the element swap_remove
+        // relocated into slot j.
+        let last = sim.len() - 1;
+        if j != last {
+            sim.swap(j, last);
+            for row in sim.iter_mut() {
+                row.swap(j, last);
+            }
+        }
+        sim.pop();
+        for row in sim.iter_mut() {
+            row.pop();
+        }
+
+        // Recompute only cluster i's similarities against every other
+        // surviving cluster (including whatever now sits at slot j, if
+        // anything was relocated there) - everyone else's mutual similarity
+        // is unaffected by i's merge.
+        for k in 0..clusters.len() {
+            if k == i {
+                continue;
+            }
+            let s = centroids[i].iter().zip(&centroids[k]).map(|(a, b)| a * b).sum::<f32>();
+            sim[i][k] = s;
+            sim[k][i] = s;
+        }
     }
 
     clusters
@@ -703,6 +754,54 @@ mod tests {
         for id in 2..=6 {
             assert_eq!(map[&id], c1, "all six same-identity faces must share one cluster");
         }
+    }
+
+    #[test]
+    fn incremental_centroid_merge_matches_full_rescan_reference() {
+        // Reference implementation: identical logic to the OLD merge_by_centroid
+        // (full O(C^2) rescan every iteration), used only in this test to
+        // confirm the incremental version above produces the same result.
+        fn reference_merge_by_centroid(
+            points: &[(i64, Vec<f32>)],
+            mut clusters: Vec<Vec<usize>>,
+            merge_sim: f32,
+        ) -> Vec<Vec<usize>> {
+            let mut centroids: Vec<Vec<f32>> = clusters.iter().map(|c| centroid(points, c)).collect();
+            loop {
+                let mut best: Option<(f32, usize, usize)> = None;
+                for i in 0..clusters.len() {
+                    for j in (i + 1)..clusters.len() {
+                        let s = centroids[i].iter().zip(&centroids[j]).map(|(a, b)| a * b).sum::<f32>();
+                        if best.is_none_or(|(bs, _, _)| s > bs) {
+                            best = Some((s, i, j));
+                        }
+                    }
+                }
+                let Some((s, i, j)) = best else { break };
+                if s < merge_sim { break; }
+                let moved = std::mem::take(&mut clusters[j]);
+                clusters[i].extend(moved);
+                clusters.swap_remove(j);
+                centroids.swap_remove(j);
+                centroids[i] = centroid(points, &clusters[i]);
+            }
+            clusters
+        }
+
+        let points = same_identity_two_subclusters();
+        let initial_clusters: Vec<Vec<usize>> = vec![vec![0, 1, 2], vec![3, 4, 5]];
+
+        let via_incremental = merge_by_centroid(&points, initial_clusters.clone(), 0.4);
+        let via_reference = reference_merge_by_centroid(&points, initial_clusters, 0.4);
+
+        let mut incremental_sorted: Vec<Vec<usize>> =
+            via_incremental.into_iter().map(|mut c| { c.sort(); c }).collect();
+        let mut reference_sorted: Vec<Vec<usize>> =
+            via_reference.into_iter().map(|mut c| { c.sort(); c }).collect();
+        incremental_sorted.sort();
+        reference_sorted.sort();
+
+        assert_eq!(incremental_sorted, reference_sorted);
     }
 
     #[test]
