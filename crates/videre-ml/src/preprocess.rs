@@ -80,6 +80,13 @@ pub fn image_to_tensor(path: &Path, size: usize, device: &Device) -> Result<Tens
 const QLMANAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 pub fn decode_via_quicklook(path: &Path, size: usize, tag: &str) -> Result<image::DynamicImage> {
+    if !cfg!(target_os = "macos") {
+        // Long explanation once per run; short reason per file. Callers already
+        // prefix their own `skip <path>:`, so repeating the full paragraph (and
+        // the path) for every video would bury the signal in a real library.
+        videre_core::heic::warn_quicklook_unavailable_once();
+        anyhow::bail!("needs macOS QuickLook (`qlmanage`)");
+    }
     use std::hash::{Hash, Hasher};
     use videre_core::io_timeout::{wait_with_timeout, WaitOutcome};
     let mut h = std::collections::hash_map::DefaultHasher::new();
