@@ -241,6 +241,63 @@ fn cosine_dist(a: &[f32], b: &[f32]) -> f32 {
     1.0 - a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>()
 }
 
+/// Exact average-linkage distance between two clusters, computed from their
+/// running embedding sums rather than a stored pairwise distance matrix.
+///
+/// For L2-normalized (unit) vectors, cosine similarity is a plain dot
+/// product, and average-linkage cluster distance decomposes exactly:
+///
+/// avg_distance(A, B) = mean over all (a in A, b in B) of (1 - a.b)
+///                     = 1 - mean(a.b)
+///                     = 1 - (sum_A . sum_B) / (|A| * |B|)
+///
+/// by bilinearity of the dot product (the sum of pairwise dot products over
+/// a cartesian product of two sets equals the dot product of the two sets'
+/// sums). This lets cluster distance be computed on demand in O(dim) from
+/// two running sums, instead of maintaining/looking up an O(n^2) matrix -
+/// see docs/superpowers/specs/2026-08-03-face-clustering-performance-design.md.
+fn cluster_dist_from_sums(sum_a: &[f32], sum_b: &[f32], size_a: f32, size_b: f32) -> f32 {
+    let dot: f32 = sum_a.iter().zip(sum_b).map(|(x, y)| x * y).sum();
+    1.0 - dot / (size_a * size_b)
+}
+
+#[cfg(test)]
+mod sums_distance_tests {
+    use super::*;
+
+    #[test]
+    fn singleton_clusters_match_plain_cosine_distance() {
+        // Both vectors here are already unit-length, matching the
+        // precondition cluster_dist_from_sums is documented against
+        // (real ArcFace embeddings are always L2-normalized).
+        let a = vec![1.0f32, 0.0, 0.0];
+        let b = vec![0.6f32, 0.8, 0.0]; // 0.6^2 + 0.8^2 = 1.0, already unit
+        let expected = cosine_dist(&a, &b);
+        let actual = cluster_dist_from_sums(&a, &b, 1.0, 1.0);
+        assert!((actual - expected).abs() < 1e-6, "expected {expected}, got {actual}");
+    }
+
+    #[test]
+    fn merged_cluster_distance_matches_direct_average_over_all_cross_pairs() {
+        // Cluster A = {a1, a2}, cluster B = {b1}, all unit-length. The
+        // sums-based formula for dist(A, B) must equal the direct average of
+        // cosine_dist(a1, b1) and cosine_dist(a2, b1) - the definition of
+        // average-linkage.
+        let a1 = vec![1.0f32, 0.0, 0.0];
+        let a2 = vec![0.6f32, 0.8, 0.0]; // unit-length, close to a1's direction
+        let b1 = vec![0.0f32, 1.0, 0.0];
+
+        let sum_a: Vec<f32> = a1.iter().zip(&a2).map(|(x, y)| x + y).collect();
+        let direct_avg = (cosine_dist(&a1, &b1) + cosine_dist(&a2, &b1)) / 2.0;
+        let via_sums = cluster_dist_from_sums(&sum_a, &b1, 2.0, 1.0);
+
+        assert!(
+            (via_sums - direct_avg).abs() < 1e-6,
+            "sums-based distance {via_sums} must match direct average {direct_avg}"
+        );
+    }
+}
+
 /// Two-stage clustering: average-linkage agglomeration, then a centroid-merge
 /// pass that joins whole clusters whose L2-normalized mean embeddings
 /// ("centroids") are at least `merge_sim` cosine-similar.
