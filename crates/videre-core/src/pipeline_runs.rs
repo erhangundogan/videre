@@ -1,5 +1,6 @@
-//! Per-command pipeline run history and liveness, for the desktop app's home
-//! dashboard. See docs/superpowers/specs/2026-07-31-dashboard-stats-pass-b-design.md
+//! Per-command pipeline run history and liveness, surfaced by `videre stats`
+//! and other dashboard-style callers.
+//! See docs/superpowers/specs/2026-07-31-dashboard-stats-pass-b-design.md
 //! for the full design, and in particular why `track()` below does not rely
 //! on Drop/RAII for the success/failure bookkeeping - only the lock's
 //! release does, and even that is backstopped by the OS releasing `flock` on

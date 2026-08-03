@@ -1,5 +1,6 @@
-//! Image-bytes operations shared by the axum `--faces` server and the Tauri
-//! desktop app: aligned face thumbnails and full original images.
+//! Image-bytes operations shared by every videre-api caller (the axum
+//! `--faces` server in this repo): aligned face thumbnails and full original
+//! images.
 
 use crate::error::{Error, Result};
 use rusqlite::Connection;
@@ -119,8 +120,8 @@ pub fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image
 
 /// Bounds a plain (non-HEIC) file read against a stale/disconnected mount
 /// point the same way `videre_core::heic` bounds `qlmanage`, so a single
-/// unreachable file can't hang the caller (an axum request thread, or a
-/// synchronous Tauri command) forever.
+/// unreachable file can't hang the caller (an axum request thread, or any
+/// other synchronous embedder) forever.
 fn read_with_timeout(path: &str) -> std::io::Result<Vec<u8>> {
     let owned = path.to_string();
     videre_core::io_timeout::run_with_timeout(videre_core::io_timeout::DEFAULT_IO_TIMEOUT, move || {
@@ -150,7 +151,7 @@ pub fn mime_for_ext(ext: &str) -> &'static str {
 
 /// The single-row query `face_image_bytes` needs before it can do any image
 /// work, split out so a caller holding a shared/locked `Connection` (the
-/// axum server and the Tauri app both serialize on one `Mutex<Connection>`)
+/// axum server serializes every request on one `Mutex<Connection>`)
 /// can release that lock immediately after this cheap lookup, instead of
 /// holding it for the entire decode/crop/resize/encode/cache-write below -
 /// which otherwise fully serializes every thumbnail request behind the lock,

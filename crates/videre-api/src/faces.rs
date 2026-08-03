@@ -1,7 +1,6 @@
 //! Facade over videre's faces-labeling read operations. Plain functions over
 //! an open `rusqlite::Connection`, returning serde types and a shared
-//! `Error`. Called by both the axum `--faces` server and the Tauri desktop
-//! app.
+//! `Error`. Called by the axum `--faces` server and any other embedder.
 
 use crate::error::{Error, Result};
 use crate::types::*;

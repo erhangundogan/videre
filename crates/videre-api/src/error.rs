@@ -1,5 +1,5 @@
 /// Errors returned by videre-api operations. Each consumer maps these to its
-/// own convention (axum -> StatusCode, Tauri -> a serializable error).
+/// own convention (axum -> StatusCode, other embedders -> their own error type).
 #[derive(Debug)]
 pub enum Error {
     /// The target row/label does not exist (e.g. rename of an unknown person).
