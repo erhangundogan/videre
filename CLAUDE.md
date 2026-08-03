@@ -125,7 +125,7 @@ coverage.
 
 Every subcommand shares a home directory at `~/.videre` (override with the `VIDERE_HOME` env var), created lazily by writers (`scan`, `watch`, `config set`) - readers never create it. It holds `hashes.db` (default SQLite database), `hashes.jsonl` (default JSONL output, only written when `--output` is used bare), and `config.toml` (optional overrides, currently just `default_db`).
 
-Database resolution order for every subcommand: explicit path (`--db` on the nine readers - `report`, `fix-dates`, `prune`, `embed`, `search`, `faces`, `classify`, `mcp`, `dedupe`; `--output-sqlite` on the two writers - `scan`, `watch`) > `default_db` in `config.toml` > `~/.videre/hashes.db`. Readers never create a database; if the resolved path doesn't exist they print `no database found at <path>; run 'videre scan <dir>' first` and exit 1 (arrives as the JSON error object under `search --json`).
+Database resolution order for every subcommand: explicit path (`--db` on the eleven readers - `report`, `fix-dates`, `prune`, `embed`, `search`, `faces`, `classify`, `mcp`, `dedupe`, `locations`, `stats`; `--output-sqlite` on the two writers - `scan`, `watch`) > `default_db` in `config.toml` > `~/.videre/hashes.db`. Readers never create a database; if the resolved path doesn't exist they print `no database found at <path>; run 'videre scan <dir>' first` and exit 1 (arrives as the JSON error object under `search --json`).
 
 `videre config` shows the resolved home dir, `config.toml` path, the `db` and `path` settings (labeled by their settable keys, with a set-command hint when unset), resolved db, and jsonl path. `videre config set db <path>` writes an absolute path to `config.toml` as `default_db`; `videre config set path <dir>` writes `default_path`, which `videre scan` and `videre watch` use when their directory positional is omitted (no built-in fallback: without it, the directory is required). Both setters preserve any other keys already present; `videre config unset db|path` removes a key. `videre scan <dir>` also adopts `<dir>` as `default_path` automatically the first time it is run with no `default_path` already set (a one-time convenience for the common case of a single photo library); it prints a one-line stderr note when it does (suppressed by `--silent`), and never overwrites an already-configured `default_path` on later runs.
 
@@ -136,7 +136,7 @@ crates/
   videre/
     Cargo.toml
     src/main.rs
-    src/commands/{mod.rs,dedupe.rs,report.rs,scan.rs,fix_dates.rs,prune.rs,embed.rs,search.rs,faces.rs,classify.rs,watch.rs,config.rs,mcp.rs,stats.rs}
+    src/commands/{mod.rs,dedupe.rs,report.rs,scan.rs,fix_dates.rs,prune.rs,embed.rs,search.rs,faces.rs,classify.rs,watch.rs,config.rs,mcp.rs,stats.rs,locations.rs}
     src/{lib.rs,scanner.rs,hasher.rs,output.rs,sqlite_output.rs,types.rs}
     tests/{integration.rs,report.rs,prune.rs,watch.rs,faces_pipeline.rs,faces_server.rs,faces_resumability.rs,person_search.rs,mcp.rs,scan.rs,config.rs,embed.rs,fix_dates.rs,locations.rs,stats.rs,search.rs,fixtures/}
   videre-core/
@@ -151,6 +151,8 @@ crates/
     src/db.rs
     src/heic.rs
     src/location.rs
+    src/location_cluster.rs
+    src/geocode.rs
     src/thumb_cache.rs
     src/home.rs
     src/progress.rs
@@ -210,7 +212,8 @@ CREATE TABLE file_hashes (
     gps_lon     REAL,
     width       INTEGER,
     height      INTEGER,
-    location_name TEXT
+    location_name TEXT,
+    location_cluster_id INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS faces (
@@ -265,7 +268,7 @@ Re-scanning the same folder with the same SQLite file upserts (overwrites) exist
 
 A companion `faces_scanned` table (`hash TEXT PRIMARY KEY, scanned_at TEXT`) records every hash that face detection has processed, **including images where zero faces were found** (which produce no `faces` row). This is what makes `videre faces` resumable - the skip set is "already scanned", so no-face images are detected once rather than every run. Created by `create_faces_table` alongside `faces`; written per hash as detection proceeds.
 
-`pipeline_runs` holds one row per tracked command (`scan`, `faces`, `embed`, `classify`, `dedupe`, `fix-dates`, `prune` - `command` is the primary key, upserted on every run, not an append-only log). `status` is `running`/`success`/`failed`/`interrupted` as stored; a `crashed` status is never written to this column - it's computed only when reading (a `running` row whose per-db-per-command `flock` sidecar lock, `<db path>.<command>.lock`, isn't currently held by a live process is reported as `crashed` at read time). `videre watch` itself takes the same kind of lock (`<db>.watch.lock`) for liveness but has no row here, since it has no "finished" moment during normal operation. See `videre stats` below for how this is surfaced.
+`pipeline_runs` holds one row per tracked command (`scan`, `faces`, `embed`, `classify`, `dedupe`, `fix-dates`, `prune`, `locations` - `command` is the primary key, upserted on every run, not an append-only log). `status` is `running`/`success`/`failed`/`interrupted` as stored; a `crashed` status is never written to this column - it's computed only when reading (a `running` row whose per-db-per-command `flock` sidecar lock, `<db path>.<command>.lock`, isn't currently held by a live process is reported as `crashed` at read time). `videre watch` itself takes the same kind of lock (`<db>.watch.lock`) for liveness but has no row here, since it has no "finished" moment during normal operation. See `videre stats` below for how this is surfaced.
 
 `classifications` is populated by `videre classify` (zero-shot photo/screenshot/document/meme classification, scoring `embeddings` rows already computed by `videre embed` against 4 fixed text prompts via cosine similarity - no new model, no image re-decoding) and queried via `videre search --category <name>`. Rows below the configurable `--margin` similarity gap between the best and second-best category are stored as `category = "unknown"` rather than a low-confidence guess.
 

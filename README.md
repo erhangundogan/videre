@@ -208,7 +208,7 @@ nothing is written just by running a reader.
 **Database resolution order**, used by every subcommand that reads or writes SQLite:
 
 1. An explicit path: `--db <path>` on readers (`report`, `fix-dates`, `prune`, `embed`,
-   `search`, `faces`, `mcp`, `dedupe`), `--output-sqlite <path>` on writers (`scan`, `watch`)
+   `search`, `faces`, `classify`, `mcp`, `dedupe`, `locations`, `stats`), `--output-sqlite <path>` on writers (`scan`, `watch`)
 2. `default_db` in `~/.videre/config.toml`, if set
 3. `~/.videre/hashes.db`
 
@@ -602,8 +602,8 @@ Add `"--db", "/path/to/other.db"` to `args` to serve a non-default library.
 Prints library totals and per-command pipeline run status in one shot: total
 files/size, photo/video split, duplicate groups/files/wasted space, faces
 detected/people named, then a line per tracked command (`scan`, `faces`,
-`embed`, `classify`, `dedupe`, `fix-dates`, `prune`) showing its last-run
-time, status, and duration.
+`embed`, `classify`, `dedupe`, `fix-dates`, `prune`, `locations`) showing its
+last-run time, status, and duration.
 
 ```bash
 videre stats                # default db
@@ -659,7 +659,8 @@ CREATE TABLE file_hashes (
     gps_lon     REAL,
     width       INTEGER,
     height      INTEGER,
-    location_name TEXT
+    location_name TEXT,
+    location_cluster_id INTEGER
 );
 
 CREATE TABLE embeddings (
@@ -701,9 +702,26 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     duration_ms  INTEGER,
     summary      TEXT
 );
+
+CREATE TABLE IF NOT EXISTS location_clusters (
+    id            INTEGER PRIMARY KEY,
+    centroid_lat  REAL NOT NULL,
+    centroid_lon  REAL NOT NULL,
+    name          TEXT,
+    photo_count   INTEGER NOT NULL,
+    radius_km     REAL NOT NULL,
+    created_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS geocode_cache (
+    query       TEXT PRIMARY KEY,
+    lat         REAL NOT NULL,
+    lon         REAL NOT NULL,
+    resolved_at TEXT NOT NULL
+);
 ```
 
-Re-scanning upserts existing rows by `path`. `phash` is only written with `--similar` (for `.mov`/`.mp4` it's a dHash of a decoded poster-frame, not a video-content hash - see [videre dedupe](#videre-dedupe)). EXIF fields (`exif_date`, `gps_lat`, `gps_lon`, `width`, `height`) are written for jpg/jpeg/tiff/heic/dng files; null for all others. `location_name` is added by an idempotent migration on `videre report` startup and is not written by `videre scan` itself - it's populated lazily, one coordinate at a time, when `videre report --show-faces` (or `videre watch --location`) resolves and caches a reverse-geocoded location name. `faces_scanned` records every hash `videre faces` has processed, including images with zero detected faces (which leave no `faces` row) - this is what makes detection resumable. `classifications` is populated by `videre classify` (zero-shot, reuses `embeddings` - no new model or image decoding) and queried via `videre search --category <name>`. `pipeline_runs` holds one upserted row per tracked command (`scan`/`faces`/`embed`/`classify`/`dedupe`/`fix-dates`/`prune`) with its last run's status and duration; a `crashed` status is never stored, only computed when `videre stats` reads a `running` row whose lock is no longer held by a live process.
+Re-scanning upserts existing rows by `path`. `phash` is only written with `--similar` (for `.mov`/`.mp4` it's a dHash of a decoded poster-frame, not a video-content hash - see [videre dedupe](#videre-dedupe)). EXIF fields (`exif_date`, `gps_lat`, `gps_lon`, `width`, `height`) are written for jpg/jpeg/tiff/heic/dng files; null for all others. `location_name` is added by an idempotent migration on `videre report` startup and is not written by `videre scan` itself - it's populated lazily, one coordinate at a time, when `videre report --show-faces` (or `videre watch --location`) resolves and caches a reverse-geocoded location name. `faces_scanned` records every hash `videre faces` has processed, including images with zero detected faces (which leave no `faces` row) - this is what makes detection resumable. `classifications` is populated by `videre classify` (zero-shot, reuses `embeddings` - no new model or image decoding) and queried via `videre search --category <name>`. `pipeline_runs` holds one upserted row per tracked command (`scan`/`faces`/`embed`/`classify`/`dedupe`/`fix-dates`/`prune`/`locations`) with its last run's status and duration; a `crashed` status is never stored, only computed when `videre stats` reads a `running` row whose lock is no longer held by a live process. `location_clusters` and `file_hashes.location_cluster_id` are written by `videre locations` (full recompute every run - not incremental); `geocode_cache` is written by `videre search --location` to avoid repeating the same forward-geocode network call.
 
 Every command opens the database in SQLite's WAL journal mode, so `videre watch` and `videre report --show-faces` can safely read and write the same database file at the same time.
 
