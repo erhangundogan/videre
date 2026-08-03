@@ -79,7 +79,7 @@ pub fn image_to_tensor(path: &Path, size: usize, device: &Device) -> Result<Tens
 /// the largest real files measured, not just typical ones.
 const QLMANAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
-fn decode_via_quicklook(path: &Path, size: usize, tag: &str) -> Result<image::DynamicImage> {
+pub fn decode_via_quicklook(path: &Path, size: usize, tag: &str) -> Result<image::DynamicImage> {
     use std::hash::{Hash, Hasher};
     use videre_core::io_timeout::{wait_with_timeout, WaitOutcome};
     let mut h = std::collections::hash_map::DefaultHasher::new();

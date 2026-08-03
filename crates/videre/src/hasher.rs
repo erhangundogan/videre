@@ -172,7 +172,7 @@ fn hash_file_inner(path: &Path) -> io::Result<FileRecord> {
 
 use image::imageops::{resize, FilterType};
 
-const PHASH_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff"];
+const PHASH_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "mov", "mp4"];
 const EXIF_EXTENSIONS: &[&str] = &["jpg", "jpeg", "tiff", "heic", "dng"];
 
 pub fn compute_dhash(path: &Path) -> Option<u64> {
@@ -185,7 +185,14 @@ pub fn compute_dhash(path: &Path) -> Option<u64> {
         return None;
     }
 
-    let img = image::open(path).ok()?;
+    let img = if ext == "mov" || ext == "mp4" {
+        // Poster-frame dHash: decode the same QuickLook poster-frame `videre embed`
+        // already uses for SigLIP, then run the identical dHash algorithm on it.
+        // 64px is plenty of source resolution since we immediately resize to 9x8.
+        videre_ml::preprocess::decode_via_quicklook(path, 64, "scan-similar-video").ok()?
+    } else {
+        image::open(path).ok()?
+    };
     // dHash: resize to 9x8, compare adjacent pixels in each row → 64 bits
     let small = resize(&img.to_luma8(), 9, 8, FilterType::Lanczos3);
     let mut hash: u64 = 0;
@@ -267,6 +274,31 @@ mod tests {
         let hb = compute_dhash(&path_b);
         assert!(ha.is_some());
         assert_eq!(ha, hb);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn dhash_real_mp4_returns_a_hash() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("clip.mp4");
+        std::fs::copy("tests/fixtures/red_1s.mp4", &path).unwrap();
+        let hash = compute_dhash(&path);
+        assert!(hash.is_some(), "expected a dHash computed from the video's poster-frame");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn dhash_same_mp4_copied_twice_returns_same_hash() {
+        let dir = tempdir().unwrap();
+        let path_a = dir.path().join("a.mp4");
+        let path_b = dir.path().join("b.mp4");
+        std::fs::copy("tests/fixtures/red_1s.mp4", &path_a).unwrap();
+        std::fs::copy("tests/fixtures/red_1s.mp4", &path_b).unwrap();
+
+        let ha = compute_dhash(&path_a);
+        let hb = compute_dhash(&path_b);
+        assert!(ha.is_some());
+        assert_eq!(ha, hb, "identical video content must produce identical poster-frame dHash");
     }
 
     #[test]
