@@ -95,12 +95,23 @@ pub fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image
     } else {
         // Detection ran on raw pixels; crop first, then correct orientation
         let timeout_path = path.to_string();
-        let img = videre_core::io_timeout::run_with_timeout(
+        let img = match videre_core::io_timeout::run_with_timeout(
             videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
             move || image::open(&timeout_path),
-        )
-        .ok()?
-        .ok()?;
+        ) {
+            Ok(Ok(img)) => img,
+            Ok(Err(e)) => {
+                eprintln!("warning: face thumbnail unavailable for {path}: {e}; skipping");
+                return None;
+            }
+            Err(_) => {
+                eprintln!(
+                    "warning: timed out reading {path} for face thumbnail \
+                     (file may be unreachable - is its drive connected?); skipping"
+                );
+                return None;
+            }
+        };
         let cropped = crop_face_square(&img, bbox);
         Some(apply_exif_orientation(cropped, path))
     }
@@ -268,7 +279,10 @@ pub fn original_bytes_from_lookup(
         }
         Ok(("image/jpeg", buf))
     } else {
-        let bytes = read_with_timeout(file_path).map_err(|_| Error::NotFound)?;
+        let bytes = read_with_timeout(file_path).map_err(|e| {
+            eprintln!("warning: original image unavailable for {file_path}: {e}; skipping");
+            Error::NotFound
+        })?;
         Ok((mime_for_ext(&ext), bytes))
     }
 }
