@@ -670,6 +670,23 @@ Everything in the "no" column fails soft, not hard: the file is skipped and a
 single explanatory warning is printed once per run, rather than erroring out
 or failing silently per file.
 
+**Building on ARM64 Linux.** A transitive `gemm-f16` dependency emits FP16
+instructions outside the baseline `aarch64-unknown-linux-gnu` feature set, so
+the build fails with `error: instruction requires: fullfp16` unless the
+feature is enabled. Building from a clone needs no action - the repo's
+`.cargo/config.toml` sets it for that target automatically, which covers
+`cargo build`, `cargo test`, and `make install`. Only `cargo install videre`
+straight from crates.io needs the flag passed by hand, since that reads your
+own `~/.cargo/config.toml` rather than the repo's:
+
+```bash
+RUSTFLAGS="-C target-feature=+fp16" cargo install videre
+```
+
+Watch out for one trap if you are debugging this yourself: `cargo check`
+succeeds on ARM64 Linux even when `cargo build` fails, because `check` never
+runs code generation.
+
 ---
 
 ## Reference

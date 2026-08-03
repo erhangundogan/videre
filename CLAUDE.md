@@ -82,13 +82,19 @@ inside the official `rust:1` Docker image on both architectures.
 
 Two Linux caveats, both measured rather than assumed:
 
-**ARM64 Linux needs `RUSTFLAGS="-C target-feature=+fp16"`.** Without it the
-build fails with 11x `error: instruction requires: fullfp16` from `gemm-f16`
-(a transitive `candle-core` dependency) emitting FP16 instructions outside the
-baseline `aarch64-unknown-linux-gnu` feature set. x86_64 Linux is unaffected
+**ARM64 Linux needs FP16 enabled explicitly.** `gemm-f16` (a transitive
+`candle-core` dependency) emits FP16 instructions outside the baseline
+`aarch64-unknown-linux-gnu` feature set, so the build fails with 11x
+`error: instruction requires: fullfp16`. `.cargo/config.toml` sets
+`-C target-feature=+fp16` for that target, which handles every cargo
+invocation run from inside this repo - `cargo build`, `cargo test`, and `make
+install` (which uses `cargo install --path crates/videre`). It deliberately
+cannot help `cargo install videre` from crates.io: that reads the installing
+user's own `~/.cargo/config.toml`, so the flag must be passed by hand there,
+as documented in README's Install section. x86_64 Linux is unaffected
 (`gemm-f16` takes a different code path there; verified by a full emulated
 amd64 build). **Note the trap: `cargo check --workspace` PASSES on ARM64 Linux
-even though `cargo build` fails**, because `check` never runs codegen - never
+even when `cargo build` fails**, because `check` never runs codegen - never
 treat a green cross-platform `check` as evidence that `cargo install` works.
 
 **HEIC and video are macOS-only,** the one functional gap: HEIC images and

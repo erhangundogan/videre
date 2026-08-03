@@ -6,7 +6,9 @@
 # llvm-tools-preview only installs into a rustup toolchain. Mixing the two
 # pairs mismatched LLVM versions and produces invalid coverage data. See the
 # "Test coverage" section in CLAUDE.md for the full explanation.
-COVERAGE_TOOLCHAIN := stable-aarch64-apple-darwin
+# Overridable so this works off an Apple-Silicon Mac, e.g.
+#   make coverage COVERAGE_TOOLCHAIN=stable-x86_64-unknown-linux-gnu
+COVERAGE_TOOLCHAIN ?= stable-aarch64-apple-darwin
 
 .PHONY: help
 help: ## Show this help
