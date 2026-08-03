@@ -92,15 +92,7 @@ fn agglomerate_average(points: &[(i64, Vec<f32>)], eps: f32, silent: bool) -> Ve
 
     let mut heap: BinaryHeap<HeapEntry> = BinaryHeap::new();
     let progress = crate::progress::Progress::new(n as u64, silent);
-    for i in 0..n {
-        for j in (i + 1)..n {
-            let d = cosine_dist(&points[i].1, &points[j].1);
-            if d <= eps {
-                heap.push(HeapEntry { dist: d, i, j });
-            }
-        }
-        progress.tick();
-    }
+    seed_eps_eligible_pairs_via_gemm(points, eps, &mut heap, &progress);
     progress.finish();
 
     // Unlike the old dense-matrix version, entries are only ever pushed when
