@@ -226,10 +226,25 @@ environment variable). It holds:
   hashes.db      # default SQLite database
   hashes.jsonl   # default JSONL output (only written when --output is used bare)
   config.toml    # optional overrides, e.g. default_db
+  locks/         # flock files marking which command is running against which database
 ```
 
 The directory and its files are created lazily by writers (`scan`, `watch`, `config set`) -
 nothing is written just by running a reader.
+
+`locks/` holds one zero-byte `flock` file per (database, command) pair, named
+`<db name>-<hash>.<command>.lock`. They mark which commands are currently running:
+a second `videre faces` against the same database refuses to start rather than
+corrupting the first one's work, and `videre stats` uses them to tell a genuinely
+running command from one that crashed and left a stale `running` row behind. The
+hash is of the database's full path, so two libraries that happen to share a
+filename (`photos.db` in two different folders) never collide. They are safe to
+delete when nothing is running; videre recreates them as needed.
+
+Locks used to sit next to the database as `<db path>.<command>.lock` sidecars,
+which scattered them across `~/.videre` and any folder holding a `--db` database.
+Older sidecars are cleaned up automatically the next time any videre command runs
+against that database - a running older version's lock is left alone.
 
 **Database resolution order**, used by every subcommand that reads or writes SQLite:
 

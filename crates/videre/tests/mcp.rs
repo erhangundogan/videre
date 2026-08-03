@@ -4,7 +4,30 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use tempfile::tempdir;
 
+/// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.
+/// Spawned `videre` child processes inherit the environment, so their lock
+/// files land there instead of the developer's real `~/.videre/locks` - locks
+/// live under the videre home now rather than beside the database, so without
+/// this every run would leave permanent litter in the real home (test database
+/// names are random, so the files would accumulate rather than be reused).
+///
+/// Called from `videre_bin()` so it covers every spawn site automatically. The
+/// `set_var` runs inside `get_or_init` so it happens exactly once: tests share
+/// a process and run in parallel, and calling `set_var` from several threads
+/// would otherwise race every concurrent `getenv`. Tests that set their own
+/// `VIDERE_HOME` per-command still win, since `.env()` overrides what's
+/// inherited.
+fn isolated_home() {
+    static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("videre-it-home-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create isolated test home");
+        std::env::set_var("VIDERE_HOME", &dir);
+        dir
+    });
+}
 fn videre_bin() -> std::path::PathBuf {
+    isolated_home();
     let mut p = std::env::current_exe().unwrap();
     p.pop(); // deps/
     p.pop(); // debug/

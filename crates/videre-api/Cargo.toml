@@ -11,7 +11,7 @@ categories = ["multimedia::images"]
 [dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
-videre-core = { path = "../videre-core", version = "0.9.15" }
+videre-core = { path = "../videre-core", version = "0.9.16" }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
 kamadak-exif = "0.5"
 anyhow = "1"
