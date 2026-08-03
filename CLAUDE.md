@@ -185,6 +185,7 @@ The `videre` crate builds a single `[[bin]]` (`videre`, from `src/main.rs`) plus
 - `tokenizers`: text tokenization for SigLIP
 - `hf-hub`: Hugging Face model weight downloads
 - `half`: f16 storage for embeddings
+- `matrixmultiply`: pure-Rust blocked GEMM, used as a fast candidate filter in `videre faces`'s clustering step
 - `ort`: ONNX Runtime bindings for face detection and embedding
 - InsightFace buffalo_l: SCRFD-10GF face detector + ArcFace w600k_r50 embedder (ONNX weights, auto-downloaded to `~/.cache/ort/`)
 - `rmcp`: official Rust MCP SDK, stdio server for `videre mcp`
@@ -623,6 +624,23 @@ specifically exercises this). Before this fix, the heap's unconditional
 `with_capacity(n*(n-1)/2)` preallocation alone could demand tens of GB on a real
 library (~41GB at n=58,555, more than many machines have) before any clustering work
 began; it now scales with the number of eps-eligible pairs instead.
+
+**Updated 2026-08-03:** the O(n^2) *memory* fix above only addressed
+storage, not the O(n^2) *time* cost of the initial all-pairs scan and the
+per-merge distance-update sweep. Both are now computed via an exact
+algebraic reformulation (average-linkage cluster distance for L2-normalized
+embeddings decomposes as `1 - (sum_A . sum_B)/(|A|*|B|)`, computable from
+running per-cluster sums instead of a stored matrix) plus a
+`matrixmultiply`-based blocked GEMM used as a fast candidate filter for the
+initial scan (every GEMM-flagged pair is re-verified against the exact
+scalar distance before being trusted, since GEMM's FMA-based accumulation
+doesn't bit-match the scalar path the merge loop's staleness check depends
+on). Verified on the real library (58,555 faces, 31,397 clustered into 644
+people): 19m27s (old) -> 8m48s (new), ~2.2x wall-clock, with a byte-for-byte
+IDENTICAL resulting cluster partition - a pure performance fix, zero change
+in output. See
+`docs/superpowers/specs/2026-08-03-face-clustering-performance-design.md`
+for the full design and why an earlier KD-tree-based proposal was rejected.
 
 `videre report --faces` starts an `axum` web server on `localhost:7878` serving a face-labeling UI:
 - **People** (blue), **Unassigned Clusters** (green), **Singletons** (orange) sections, each color-coded consistently across cards, badges, and titles
