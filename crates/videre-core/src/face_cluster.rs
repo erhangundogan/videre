@@ -149,6 +149,222 @@ fn agglomerate_average(points: &[(i64, Vec<f32>)], eps: f32, silent: bool) -> Ve
     (0..n).filter(|&r| alive[r]).map(|r| std::mem::take(&mut members[r])).collect()
 }
 
+/// Seeds `heap` with every pair `(i, j)`, `i < j`, whose cosine distance is
+/// `<= eps`, using a blocked GEMM (`X . X^T`) as a fast candidate filter
+/// instead of a scalar double loop - same FLOP count as the naive scan, but
+/// computed via a real SIMD/cache-blocked matrix multiply
+/// (`matrixmultiply::sgemm`), which is where the real speedup comes from
+/// (not a reduction in work). GEMM's FMA-based accumulation does not
+/// bit-match `cosine_dist`'s plain summation, so every GEMM-flagged
+/// candidate is re-verified with `cosine_dist` before being pushed - the
+/// heap only ever receives values bit-identical to what a naive scan would
+/// have produced, which the merge loop's exact-equality staleness check
+/// depends on. `SLACK` widens the GEMM filter threshold well beyond the
+/// observed scalar/FMA discrepancy (~1e-6 for normalized 512-dim vectors) so
+/// this filtering step can never itself reject a pair the exact check would
+/// have accepted. Processes `points` in row-blocks of `block_len` rows so
+/// the full n x n similarity matrix is never materialized - peak memory is
+/// one block's worth of GEMM output (`block_len * n * 4` bytes).
+const GEMM_FILTER_SLACK: f32 = 1e-4;
+
+fn seed_eps_eligible_pairs_via_gemm(
+    points: &[(i64, Vec<f32>)],
+    eps: f32,
+    heap: &mut BinaryHeap<HeapEntry>,
+    progress: &crate::progress::Progress,
+) {
+    seed_eps_eligible_pairs_via_gemm_blocked(points, eps, heap, progress, 1024)
+}
+
+fn seed_eps_eligible_pairs_via_gemm_blocked(
+    points: &[(i64, Vec<f32>)],
+    eps: f32,
+    heap: &mut BinaryHeap<HeapEntry>,
+    progress: &crate::progress::Progress,
+    block: usize,
+) {
+    let n = points.len();
+    if n == 0 {
+        return;
+    }
+    let dim = points[0].1.len();
+    debug_assert!(
+        points.iter().all(|(_, v)| v.len() == dim),
+        "all embeddings must share the same dimensionality"
+    );
+
+    // Flatten all embeddings into one contiguous row-major buffer (n rows,
+    // dim cols) - matrixmultiply operates on raw pointers + strides, not
+    // Vec<Vec<f32>>.
+    let mut flat: Vec<f32> = Vec::with_capacity(n * dim);
+    for (_, v) in points {
+        flat.extend_from_slice(v);
+    }
+
+    let mut block_start = 0;
+    while block_start < n {
+        let block_len = block.min(n - block_start);
+        // Output: block_len x n similarity slice (row-major, contiguous).
+        let mut out = vec![0.0f32; block_len * n];
+
+        // SAFETY: `a` points to `block_len` rows of `dim` contiguous f32s
+        // starting at `flat[block_start * dim]`, a valid sub-slice of `flat`
+        // (bounds: block_start + block_len <= n, checked by the while-loop
+        // condition and block.min(n - block_start) above). `b` points to the
+        // same `flat` buffer reinterpreted as a (dim x n) matrix via swapped
+        // strides (rsb=1, csb=dim) - a standard transpose-via-stride trick,
+        // valid because `flat` has exactly `n * dim` elements (guaranteed by
+        // the debug_assert above in debug builds, and by construction from
+        // `points` in release) and every (row, col) pair accessed satisfies
+        // row < dim, col < n. `a` and `b` both alias `flat` (read-only,
+        // which matrixmultiply permits - only `c` aliasing `a`/`b` is
+        // forbidden). `out` is a freshly-allocated `Vec<f32>` of exactly
+        // `block_len * n` elements, does not alias `flat`, and has non-zero
+        // row/col strides (n, 1).
+        unsafe {
+            matrixmultiply::sgemm(
+                block_len, dim, n,
+                1.0,
+                flat.as_ptr().add(block_start * dim), dim as isize, 1,
+                flat.as_ptr(), 1, dim as isize,
+                0.0,
+                out.as_mut_ptr(), n as isize, 1,
+            );
+        }
+
+        for bi in 0..block_len {
+            let i = block_start + bi;
+            for j in (i + 1)..n {
+                let approx_sim = out[bi * n + j];
+                let approx_d = 1.0 - approx_sim;
+                // Fast filter only - reject pairs GEMM confidently places
+                // outside eps, but never trust the GEMM value itself.
+                if approx_d > eps + GEMM_FILTER_SLACK {
+                    continue;
+                }
+                // Authoritative recompute: bit-identical to what the naive
+                // scalar scan would have produced for this pair.
+                let d = cosine_dist(&points[i].1, &points[j].1);
+                if d <= eps {
+                    heap.push(HeapEntry { dist: d, i, j });
+                }
+            }
+            progress.tick();
+        }
+        block_start += block_len;
+    }
+}
+
+#[cfg(test)]
+mod gemm_seeding_tests {
+    use super::*;
+
+    #[test]
+    fn gemm_seeding_matches_naive_scan_exactly_including_distance_values() {
+        // 4 points: two near-identical pairs (dist ~0), two far apart
+        // (dist ~1) - a small enough n to verify against a manually
+        // hand-checked naive scan, not just "runs without panicking".
+        let points: Vec<(i64, Vec<f32>)> = vec![
+            (1, vec![1.0, 0.0, 0.0]),
+            (2, vec![0.99, 0.01, 0.0].iter().map(|x| x / (0.99f32 * 0.99 + 0.01 * 0.01).sqrt()).collect()),
+            (3, vec![0.0, 1.0, 0.0]),
+            (4, vec![0.0, 0.99, 0.01].iter().map(|x| x / (0.99f32 * 0.99 + 0.01 * 0.01).sqrt()).collect()),
+        ];
+        let eps = 0.1;
+
+        let mut gemm_heap: BinaryHeap<HeapEntry> = BinaryHeap::new();
+        let progress = crate::progress::Progress::new(points.len() as u64, true);
+        seed_eps_eligible_pairs_via_gemm(&points, eps, &mut gemm_heap, &progress);
+        progress.finish();
+
+        let mut naive_pairs: Vec<(usize, usize, f32)> = Vec::new();
+        for i in 0..points.len() {
+            for j in (i + 1)..points.len() {
+                let d = cosine_dist(&points[i].1, &points[j].1);
+                if d <= eps {
+                    naive_pairs.push((i, j, d));
+                }
+            }
+        }
+
+        let mut gemm_pairs: Vec<(usize, usize, f32)> =
+            gemm_heap.into_iter().map(|e| (e.i, e.j, e.dist)).collect();
+        gemm_pairs.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+        naive_pairs.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+
+        assert_eq!(gemm_pairs.len(), naive_pairs.len(), "pair count must match");
+        for (gemm, naive) in gemm_pairs.iter().zip(&naive_pairs) {
+            assert_eq!((gemm.0, gemm.1), (naive.0, naive.1), "pair indices must match");
+            assert_eq!(
+                gemm.2.to_bits(),
+                naive.2.to_bits(),
+                "GEMM-filtered distance must be BIT-IDENTICAL to the naive scalar distance, not just approximately equal - \
+                 this is what the merge loop's exact-equality staleness check depends on"
+            );
+        }
+        let pairs_only: Vec<(usize, usize)> = naive_pairs.iter().map(|(i, j, _)| (*i, *j)).collect();
+        assert_eq!(pairs_only, vec![(0, 1), (2, 3)], "sanity: only the two near-identical pairs should qualify");
+    }
+
+    #[test]
+    fn gemm_seeding_handles_multiple_blocks_including_a_partial_trailing_block() {
+        // block=2 over n=5 produces blocks of sizes [2, 2, 1] - a full
+        // block, another full block, and a partial trailing block - the
+        // exact case a hardcoded BLOCK=1024 in production can never
+        // exercise in a fast test. Uses a MIX of near and far points (not
+        // all-identical) so an index-mapping bug (e.g. reading the wrong
+        // row after block_start advances) would surface as a wrong pair
+        // set, not just a wrong count.
+        let points: Vec<(i64, Vec<f32>)> = vec![
+            (1, vec![1.0, 0.0, 0.0]),                    // 0: close to 1
+            (2, vec![0.95, 0.312, 0.0]),                 // 1: close to 0 (already ~unit)
+            (3, vec![0.0, 1.0, 0.0]),                     // 2: close to 3
+            (4, vec![0.0, 0.95, 0.312]),                  // 3: close to 2
+            (5, vec![0.0, 0.0, 1.0]),                     // 4: far from everything
+        ];
+        let eps = 0.1;
+
+        let mut naive_pairs: Vec<(usize, usize)> = Vec::new();
+        for i in 0..points.len() {
+            for j in (i + 1)..points.len() {
+                if cosine_dist(&points[i].1, &points[j].1) <= eps {
+                    naive_pairs.push((i, j));
+                }
+            }
+        }
+        naive_pairs.sort();
+        assert!(!naive_pairs.is_empty(), "fixture must have at least one eps-eligible pair to be a meaningful test");
+
+        let mut heap: BinaryHeap<HeapEntry> = BinaryHeap::new();
+        let progress = crate::progress::Progress::new(points.len() as u64, true);
+        seed_eps_eligible_pairs_via_gemm_blocked(&points, eps, &mut heap, &progress, 2);
+        progress.finish();
+
+        let mut gemm_pairs: Vec<(usize, usize)> = heap.into_iter().map(|e| (e.i, e.j)).collect();
+        gemm_pairs.sort();
+
+        assert_eq!(gemm_pairs, naive_pairs, "blocked GEMM seeding (block=2, partial trailing block) must match the naive scan exactly");
+    }
+
+    #[test]
+    fn gemm_seeding_handles_n_equal_one_and_n_equal_block() {
+        let single: Vec<(i64, Vec<f32>)> = vec![(1, vec![1.0, 0.0, 0.0])];
+        let mut heap: BinaryHeap<HeapEntry> = BinaryHeap::new();
+        let progress = crate::progress::Progress::new(1, true);
+        seed_eps_eligible_pairs_via_gemm_blocked(&single, 0.1, &mut heap, &progress, 2);
+        progress.finish();
+        assert_eq!(heap.len(), 0, "a single point has no pairs");
+
+        let v = vec![1.0f32, 0.0, 0.0];
+        let exact_block: Vec<(i64, Vec<f32>)> = (0..2).map(|i| (i, v.clone())).collect();
+        let mut heap2: BinaryHeap<HeapEntry> = BinaryHeap::new();
+        let progress2 = crate::progress::Progress::new(2, true);
+        seed_eps_eligible_pairs_via_gemm_blocked(&exact_block, 0.01, &mut heap2, &progress2, 2);
+        progress2.finish();
+        assert_eq!(heap2.len(), 1, "n == block must not skip the (only) pair");
+    }
+}
+
 /// L2-normalized mean of the given members' embeddings. A zero-length sum
 /// (antipodal members that cancel) is left un-normalized; its similarity to
 /// anything is 0, which correctly blocks merging.
