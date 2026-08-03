@@ -4,17 +4,17 @@ A fast Rust CLI tool for managing a local media library: duplicate detection, se
 
 ## What it does
 
-`videre` is a single binary with thirteen subcommands. `videre scan` scans a directory
+`videre` is a single binary with fourteen subcommands. `videre scan` scans a directory
 recursively, hashes every image file (BLAKE3), and writes the results into the database
 (or JSONL with `--output`). `videre dedupe` reads that database and writes REMOVE
 candidates to stdout one per line: ready to pipe into `trash` or `rm`. Bare `videre scan
 <dir>` writes SQLite to the resolved default database (see `~/.videre` below); JSONL
 output requires `--output`. `videre report` reads the SQLite database and generates an
 HTML review page (or serves a live web UI). The remaining subcommands (`fix-dates`,
-`prune`, `embed`, `search`, `faces`, `classify`, `watch`) operate on the same SQLite
+`prune`, `embed`, `search`, `faces`, `classify`, `locations`, `watch`) operate on the same SQLite
 database to fix timestamps, sync metadata, compute semantic embeddings, run
-text/image/person/category search, detect/label faces, and classify images as
-photo/screenshot/document/meme. `videre config` shows or edits the resolved paths and
+text/image/person/category/location search, detect/label faces, classify images as
+photo/screenshot/document/meme, and cluster GPS coordinates into named places. `videre config` shows or edits the resolved paths and
 `~/.videre/config.toml` settings. `videre mcp` serves read-only search/find_duplicates/
 stats tools over stdio for LLM agents. `videre stats` prints library totals and
 per-command pipeline run status (last run, success/failed/crashed, duration) in one shot.

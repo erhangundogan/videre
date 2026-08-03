@@ -14,14 +14,14 @@ const QLMANAGE_TIMEOUT: Duration = Duration::from_secs(20);
 /// overridden via `set_qlmanage_concurrency` (e.g. `videre faces
 /// --qlmanage-concurrency <n>`). QuickLook's thumbnail-generation agent is a
 /// single shared per-user service, not something that scales with parallel
-/// callers - a UI rendering hundreds of HEIC thumbnails at once (or the
-/// Tauri app and a `videre faces` run both hitting the same library
-/// concurrently) can launch enough simultaneous `qlmanage` processes to make
+/// callers - a UI rendering hundreds of HEIC thumbnails at once (or two
+/// videre processes both hitting the same library concurrently) can launch
+/// enough simultaneous `qlmanage` processes to make
 /// the agent and the source drive's I/O queue up, causing conversions that
 /// would normally take under a second to occasionally exceed even
-/// `QLMANAGE_TIMEOUT`. Capping concurrency here keeps every caller (Tauri
-/// app, axum server, faces/embed/watch) well behaved without needing to
-/// coordinate with each other. Raised from 3 to 6 on 2026-07-29 after real
+/// `QLMANAGE_TIMEOUT`. Capping concurrency here keeps every caller (axum
+/// server, faces/embed/watch, and any other embedder) well behaved without
+/// needing to coordinate with each other. Raised from 3 to 6 on 2026-07-29 after real
 /// A/B measurement of `videre faces`'s parallel pipeline showed HEIC-heavy
 /// runs leaving CPU idle (477% of 1000% on a 10-core machine) - a real
 /// bottleneck candidate given `--workers` now defaults to 2x cores (up to

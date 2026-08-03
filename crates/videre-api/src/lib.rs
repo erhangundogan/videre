@@ -1,6 +1,7 @@
 //! Facade over videre's faces-labeling operations. Plain functions over an
 //! open `rusqlite::Connection`, returning serde types and a shared `Error`.
-//! Called by both the axum `--faces` server and the Tauri desktop app.
+//! Transport-agnostic on purpose: the axum `--faces` server is the in-repo
+//! caller, but nothing here depends on it.
 
 mod error;
 mod faces;

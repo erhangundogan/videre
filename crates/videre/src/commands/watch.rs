@@ -30,7 +30,7 @@ pub struct WatchArgs {
     #[arg(long)]
     location: bool,
     /// Sync stale rows/cache and clean orphans each cycle (same cleanup as
-    /// `videre prune`). Opt-in only - unlike the other three stages, this is
+    /// `videre prune`). Opt-in only - unlike the other four stages, this is
     /// NOT included when no stage flags are passed, so existing `videre
     /// watch` invocations keep their current behavior unchanged. Never
     /// deletes real files, only stale db rows and cache entries for files
