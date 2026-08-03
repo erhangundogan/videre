@@ -11,7 +11,7 @@
 A local-first media management CLI, offering:
 
 - file scanning (photos and videos)
-- duplicate elimination
+- duplicate elimination, exact and near-duplicate (images and video)
 - comprehensive HTML reports
 - EXIF-based date fixing
 - semantic embedding and search, for images and video (single-frame)
@@ -31,7 +31,7 @@ Most media managers want to *own* your library: import into their storage, index
 Five things it's built to do especially well:
 
 - **Privacy-first, local-only by default.** Every command runs entirely on your machine against your own SQLite database - no account, no cloud upload, no telemetry. The one narrow exception is opt-in and obvious about it: `videre search --location "<place>"` forward-geocodes a place name via a free public API (cached locally, so it's only ever called once per place). Everything else - including `videre locations`' own GPS clustering - never leaves your machine.
-- **Duplicate detection you can trust before you delete anything.** `videre dedupe` never deletes on its own - it prints REMOVE candidates for you to pipe into `trash` (or review first in `videre report`'s HTML gallery, KEEP/REMOVE badges and all). Exact BLAKE3 matches plus optional perceptual-hash near-duplicates, always review-first.
+- **Duplicate detection you can trust before you delete anything.** `videre dedupe` never deletes on its own - it prints REMOVE candidates for you to pipe into `trash` (or review first in `videre report`'s HTML gallery, KEEP/REMOVE badges and all). Exact BLAKE3 matches plus optional perceptual-hash near-duplicates for both images and video (`--similar`), always review-first.
 - **Face recognition that clusters for you, not the other way around.** `videre faces` detects, embeds, and automatically clusters faces into identity groups (two-stage average-linkage + centroid-merge, with a quality gate that keeps blurry/occluded/generic faces out of the noise) - so labeling is "name this cluster of 40 photos" instead of tagging one photo at a time.
 - **EXIF-based date repair that fixes the actual files.** `videre fix-dates` sets each file's real mtime from its camera's `DateTimeOriginal`, not just a sort order inside some app's own index - so the fix survives moving the files anywhere else, forever.
 - **Long-running commands you can kill without a second thought.** `videre embed`, `videre classify`, and `videre faces` all pick up exactly where they left off - each processes only what the database says isn't done yet, committing progress as they go, so Ctrl-C or a closed laptop lid never means starting a multi-hour run over from scratch. `videre scan` and `videre locations` are idempotent the other way: safe to just rerun in full any time, since a rerun always produces the same result as if it were the first run.
