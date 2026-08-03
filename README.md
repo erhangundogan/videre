@@ -64,12 +64,38 @@ And because it's a CLI over a plain SQLite file rather than a server you log int
 ## Install
 
 ```bash
+cargo install videre
+```
+
+On **ARM64 Linux** (Graviton, Ampere, Raspberry Pi) that build fails with
+`error: instruction requires: fullfp16` - a transitive `gemm-f16` dependency
+emits FP16 instructions outside the baseline `aarch64-unknown-linux-gnu`
+feature set. Enable the feature explicitly:
+
+```bash
+RUSTFLAGS="-C target-feature=+fp16" cargo install videre
+```
+
+macOS and x86_64 Linux are unaffected.
+
+Or build from source:
+
+```bash
 git clone git@github.com:erhangundogan/videre.git
 cd videre
 cargo build --release
 ```
 
 The single binary lands at `./target/release/videre`.
+
+**Platform support.** videre is developed on macOS and everything works there.
+It builds and runs on Linux, but HEIC images and video frames are decoded
+through macOS QuickLook (`qlmanage`), which has no equivalent elsewhere - on
+other platforms those files are skipped with one clear warning, and `.heic`,
+`.mov`, and `.mp4` therefore get no thumbnails, no embeddings, no face
+detection, and no near-duplicate `phash`. Scanning, hashing, exact dedupe,
+EXIF date repair, and semantic search over `.jpg`/`.jpeg`/`.png`/`.gif`/
+`.webp`/`.bmp`/`.tiff` are unaffected. See [Platform notes](#platform-notes).
 
 A `Makefile` wraps the common commands - run `make` (or `make help`) to list
 them: `make build`/`make build-dev`, `make test`, `make fmt`/`make lint`,
@@ -636,8 +662,13 @@ nonexistent path fails cleanly rather than creating an empty one.
 | `videre faces` | yes (CPU via ONNX Runtime) | yes (CPU via ONNX Runtime) |
 | `videre watch` | yes | yes (`--heic` unavailable) |
 | HEIC thumbnails/decoding (report, faces, embed, watch) | yes (via `qlmanage`) | no |
-| HEIC scanning and EXIF | yes | yes |
+| Video frame extraction (embed, `--similar` phash) | yes (via `qlmanage`) | no |
+| HEIC/video scanning, hashing, and EXIF | yes | yes |
 | `created_at` field | yes | always null |
+
+Everything in the "no" column fails soft, not hard: the file is skipped and a
+single explanatory warning is printed once per run, rather than erroring out
+or failing silently per file.
 
 ---
 

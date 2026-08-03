@@ -75,6 +75,21 @@ pub fn qlmanage_semaphore() -> &'static Semaphore {
 /// different purposes (e.g. a 240px thumbnail vs a 1200px lightbox version)
 /// so their temp-directory names don't collide.
 ///
+/// Message shared by every QuickLook entry point, so a non-macOS user gets one
+/// clear explanation instead of a stream of opaque per-file decode failures.
+pub const QUICKLOOK_UNAVAILABLE: &str =
+    "HEIC images and video frames are decoded via macOS QuickLook (`qlmanage`), \
+     which has no equivalent on this platform - those files are skipped. \
+     Scanning, dedupe, and search still work for jpg/jpeg/png/gif/webp/bmp/tiff.";
+
+/// Prints `QUICKLOOK_UNAVAILABLE` at most once per process. Called on the
+/// non-macOS path of every QuickLook helper: without it a Linux user just sees
+/// each HEIC/video silently fail to decode, with nothing saying why.
+pub fn warn_quicklook_unavailable_once() {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| eprintln!("warning: {QUICKLOOK_UNAVAILABLE}"));
+}
+
 /// `max_size` caps `qlmanage -s`'s longest-side render size. `qlmanage -s`
 /// only ever caps, never upscales, so `None` (rendered as `10000`, comfortably
 /// above any real photo's native resolution) means "give me the native/full
@@ -92,6 +107,10 @@ pub fn qlmanage_semaphore() -> &'static Semaphore {
 /// every later full-res thumbnail crop and the `--min-face-size` quality
 /// gate, which measures bbox size in that same (assumed-full-res) space.
 pub fn heic_via_quicklook(path: &str, tag: &str, max_size: Option<u32>) -> Option<DynamicImage> {
+    if !cfg!(target_os = "macos") {
+        warn_quicklook_unavailable_once();
+        return None;
+    }
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();

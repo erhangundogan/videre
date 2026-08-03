@@ -59,6 +59,51 @@ With `--json`, stdout is instead one compact JSON object, always (an error objec
 
 Bare `videre scan <dir>` writes SQLite to the resolved default database (no JSONL). JSONL output only happens when `--output` is passed, with or without a value.
 
+## Publishing to crates.io
+
+All four crates publish under flat names (`videre`, `videre-core`, `videre-ml`,
+`videre-api`) - crates.io has no namespaces, so the `videre-` prefix is
+convention only and reserves nothing. Publish order follows the dependency
+graph and each step must land on the registry before the next resolves:
+`videre-core` -> `videre-api` + `videre-ml` -> `videre`. `cargo publish
+--workspace` does this ordering automatically and verifies every crate by
+building it from its own packaged tarball first, so a broken dependent is
+caught before anything irreversible happens.
+
+`crates/videre/Cargo.toml` excludes `tests/fixtures/*` from the package: those
+are ~2.2MB of sample media nothing needs at build or run time, and shipping
+them would more than quadruple the download for `cargo install videre`.
+
+## Platform support
+
+macOS is the development platform and everything works there. The workspace
+also builds and runs on Linux, verified 2026-08-03 by building and running it
+inside the official `rust:1` Docker image on both architectures.
+
+Two Linux caveats, both measured rather than assumed:
+
+**ARM64 Linux needs `RUSTFLAGS="-C target-feature=+fp16"`.** Without it the
+build fails with 11x `error: instruction requires: fullfp16` from `gemm-f16`
+(a transitive `candle-core` dependency) emitting FP16 instructions outside the
+baseline `aarch64-unknown-linux-gnu` feature set. x86_64 Linux is unaffected
+(`gemm-f16` takes a different code path there; verified by a full emulated
+amd64 build). **Note the trap: `cargo check --workspace` PASSES on ARM64 Linux
+even though `cargo build` fails**, because `check` never runs codegen - never
+treat a green cross-platform `check` as evidence that `cargo install` works.
+
+**HEIC and video are macOS-only,** the one functional gap: HEIC images and
+video poster-frames are decoded via macOS QuickLook (`qlmanage`), which has no
+equivalent elsewhere. On non-macOS, both QuickLook entry points
+(`videre_core::heic::heic_via_quicklook` and
+`videre_ml::preprocess::decode_via_quicklook`) fail fast rather than silently:
+they short-circuit on a `cfg!(target_os = "macos")` check and surface
+`videre_core::heic::QUICKLOOK_UNAVAILABLE`, printed at most once per process
+via `warn_quicklook_unavailable_once`. The consequence is that `.heic`/`.mov`/
+`.mp4` get no thumbnails, embeddings, face detection, or `--similar` phash on
+those platforms - they are still scanned, hashed, EXIF-extracted, and exactly
+deduped. The guards use `cfg!()` (a runtime-constant `if`) rather than `#[cfg]`
+so both branches type-check on every platform.
+
 ## Build & run
 
 ```bash
