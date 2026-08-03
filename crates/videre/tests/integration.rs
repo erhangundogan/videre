@@ -103,6 +103,44 @@ fn dedupe_similar_reports_empty_when_no_phash_data() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
+fn dedupe_similar_groups_near_duplicate_videos_by_poster_frame() {
+    let scan_dir = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let db = home.path().join("hashes.db");
+
+    std::fs::copy("tests/fixtures/red_1s.mp4", scan_dir.path().join("a.mp4")).unwrap();
+    std::fs::copy("tests/fixtures/red_1s.mp4", scan_dir.path().join("b.mp4")).unwrap();
+
+    scan_into_db(scan_dir.path(), &db, &["--similar"]);
+
+    let out = Command::new(videre_bin())
+        .arg("dedupe")
+        .arg("--silent")
+        .arg("--db")
+        .arg(&db)
+        .arg("--similar")
+        .arg("--json")
+        .output()
+        .expect("failed to run videre dedupe");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let similar = doc["similar_groups"]
+        .as_array()
+        .expect("similar_groups key must be present with --similar");
+    assert_eq!(
+        similar.len(),
+        1,
+        "expected exactly one similar group for two identical-poster-frame videos: {doc}"
+    );
+    let files = similar[0]["files"]
+        .as_array()
+        .expect("a similar group must carry a files array");
+    assert_eq!(files.len(), 2, "both videos must land in the one similar group: {doc}");
+}
+
+#[test]
 fn json_output_reports_duplicate_groups() {
     let scan_dir = tempdir().unwrap();
     let home = tempdir().unwrap();
