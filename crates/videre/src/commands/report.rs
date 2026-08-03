@@ -2393,12 +2393,23 @@ async fn handle_raw_file(
             Some(("image/jpeg", buf))
         } else {
             let timeout_path = path.clone();
-            let bytes = videre_core::io_timeout::run_with_timeout(
+            let bytes = match videre_core::io_timeout::run_with_timeout(
                 videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
                 move || std::fs::read(&timeout_path),
-            )
-            .ok()?
-            .ok()?;
+            ) {
+                Ok(Ok(bytes)) => bytes,
+                Ok(Err(e)) => {
+                    eprintln!("warning: raw file unavailable for {path}: {e}; skipping");
+                    return None;
+                }
+                Err(_) => {
+                    eprintln!(
+                        "warning: timed out reading {path} \
+                         (file may be unreachable - is its drive connected?); skipping"
+                    );
+                    return None;
+                }
+            };
             Some((mime_for_ext(&ext), bytes))
         }
     })
