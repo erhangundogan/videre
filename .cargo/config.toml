@@ -1,0 +1,21 @@
+# ARM64 Linux needs FP16 arithmetic enabled explicitly.
+#
+# `gemm-f16` (pulled in transitively by `candle-core`) emits ARM `fullfp16`
+# instructions, which are not in the baseline `aarch64-unknown-linux-gnu`
+# target-feature set. Without this flag the build dies with 11x
+# `error: instruction requires: fullfp16`. Measured 2026-08-03 in the official
+# `rust:1` Docker image: fails without it, builds cleanly in ~2.5m with it.
+#
+# Beware: `cargo check` PASSES on ARM64 Linux even without this flag, because
+# `check` never runs codegen. Only a real `cargo build` surfaces the problem.
+#
+# Scope: this file applies to cargo invocations run from inside this repo -
+# `cargo build`, `cargo test`, and `make install` (which uses `cargo install
+# --path crates/videre`). It does NOT apply to `cargo install videre` from
+# crates.io, which reads the installing user's own ~/.cargo/config.toml
+# instead; that path is covered by the note in README's Install section.
+#
+# macOS and x86_64 Linux are unaffected and are deliberately left untouched
+# here - `gemm-f16` takes a different code path on x86_64.
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "target-feature=+fp16"]
