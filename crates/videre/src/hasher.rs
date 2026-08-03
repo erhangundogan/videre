@@ -304,8 +304,16 @@ mod tests {
     #[test]
     fn dhash_unsupported_ext_returns_none() {
         let dir = tempdir().unwrap();
+        let path = dir.path().join("notes.txt");
+        std::fs::write(&path, b"plain text, not a supported extension").unwrap();
+        assert!(compute_dhash(&path).is_none());
+    }
+
+    #[test]
+    fn dhash_garbage_mov_bytes_returns_none_not_panic() {
+        let dir = tempdir().unwrap();
         let path = dir.path().join("video.mov");
-        std::fs::write(&path, b"not an image").unwrap();
+        std::fs::write(&path, b"not a real video").unwrap();
         assert!(compute_dhash(&path).is_none());
     }
 
