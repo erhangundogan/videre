@@ -12,7 +12,7 @@ categories = ["multimedia::images", "science"]
 real-model = []
 
 [dependencies]
-videre-core = { path = "../videre-core", version = "0.9.15" }
+videre-core = { path = "../videre-core", version = "0.9.16" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
 half = "2"

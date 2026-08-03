@@ -86,11 +86,66 @@ pub fn finish_run(
 /// running; it's just the tidy path.
 pub struct LockGuard(#[allow(dead_code)] File);
 
+/// Lock file for one (database, command) pair, under `<videre home>/locks/`.
+///
+/// The name is `<db stem>-<hash of the canonical db path>.<command>.lock`. The
+/// hash is what makes this correct rather than merely tidy: two libraries can
+/// both be named `photos.db` in different directories, and keying on the
+/// basename alone would make them share a lock - silently serializing unrelated
+/// libraries, and making `videre stats` report one as running because the other
+/// is. The readable stem is kept purely so a human listing the directory can
+/// tell which database a lock belongs to.
+///
+/// The canonicalize call also means two paths to the same database (a symlink,
+/// `./photos.db` vs an absolute path) resolve to one lock, which is the
+/// property the old sidecar scheme got for free by living next to the file.
 fn lock_path_for(db_path: &Path, command: &str) -> Result<PathBuf> {
+    use std::hash::{Hash, Hasher};
     let canonical = db_path
         .canonicalize()
         .with_context(|| format!("canonicalize {}", db_path.display()))?;
-    Ok(PathBuf::from(format!("{}.{command}.lock", canonical.display())))
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    canonical.hash(&mut hasher);
+    let stem = canonical
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "db".to_string());
+    Ok(crate::home::locks_dir()?.join(format!(
+        "{stem}-{:016x}.{command}.lock",
+        hasher.finish()
+    )))
+}
+
+/// Deletes every pre-`locks/` sidecar lock (`<db path>.<command>.lock`) left
+/// behind by older versions, so upgrading actually clears the clutter from
+/// `~/.videre` instead of leaving a permanent litter of zero-byte files.
+///
+/// Only removes it when an exclusive `flock` succeeds, which proves no live
+/// process is holding it. An older binary running concurrently would still
+/// hold its sidecar, and we leave that alone - deleting a held lock file
+/// wouldn't release the lock anyway (the `flock` lives on the inode), it would
+/// just let the next process create a fresh file and a second, independent
+/// lock. Entirely best-effort: any failure here is ignored, since this is
+/// housekeeping and must never be able to fail a real run.
+fn remove_legacy_sidecar_locks(db_path: &Path) {
+    use fs2::FileExt;
+    let Ok(canonical) = db_path.canonicalize() else { return };
+    // Sweep every command's sidecar, not just the one being acquired: cleaning
+    // only the current command would leave the rest sitting in the user's
+    // directory until each of those commands happened to run, and something
+    // like `watch` may not run for weeks. One command now clears the lot.
+    for command in TRACKED_COMMANDS.iter().copied().chain(["watch"]) {
+        let legacy = PathBuf::from(format!("{}.{command}.lock", canonical.display()));
+        if !legacy.exists() {
+            continue;
+        }
+        let Ok(file) = OpenOptions::new().write(true).open(&legacy) else { continue };
+        if file.try_lock_exclusive().is_ok() {
+            let _ = fs2::FileExt::unlock(&file);
+            drop(file);
+            let _ = std::fs::remove_file(&legacy);
+        }
+    }
 }
 
 /// Acquires an exclusive, non-blocking advisory lock scoped to this exact
@@ -100,6 +155,11 @@ fn lock_path_for(db_path: &Path, command: &str) -> Result<PathBuf> {
 pub fn acquire_lock(db_path: &Path, command: &str) -> Result<LockGuard> {
     use fs2::FileExt;
     let lock_path = lock_path_for(db_path, command)?;
+    if let Some(dir) = lock_path.parent() {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("create lock directory {}", dir.display()))?;
+    }
+    remove_legacy_sidecar_locks(db_path);
     let file = OpenOptions::new()
         .create(true)
         .write(true)
@@ -246,10 +306,89 @@ pub fn read_all(conn: &Connection, db_path: &Path) -> Result<Vec<PipelineRunStat
 mod tests {
     use super::*;
 
+    /// Points `VIDERE_HOME` at one throwaway directory for the whole test
+    /// binary, so lock files land there instead of the developer's real
+    /// `~/.videre/locks`. Necessary since locks moved out of the database's own
+    /// directory: before that, a temp-file database put its locks in a temp dir
+    /// that cleaned itself up, but now every test would write into the real
+    /// home and leave litter behind forever (test databases have random names,
+    /// so the files would accumulate, never being reused or overwritten).
+    ///
+    /// The `set_var` happens inside `get_or_init` so it runs exactly once even
+    /// though tests share a process and run in parallel - calling `set_var`
+    /// from several threads at once would otherwise be a data race against
+    /// every concurrent `getenv`.
+    fn isolated_home() {
+        static HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        HOME.get_or_init(|| {
+            let dir = std::env::temp_dir()
+                .join(format!("videre-test-home-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).expect("create isolated test home");
+            std::env::set_var("VIDERE_HOME", &dir);
+            dir
+        });
+    }
+
     fn test_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         ensure_pipeline_runs_table(&conn).unwrap();
         conn
+    }
+
+    #[test]
+    fn lock_lives_under_the_videre_home_locks_dir_not_beside_the_database() {
+        isolated_home();
+        let db = tempfile::NamedTempFile::new().unwrap();
+        let path = lock_path_for(db.path(), "scan").unwrap();
+
+        assert_eq!(path.parent().unwrap(), crate::home::locks_dir().unwrap());
+        assert!(
+            path.file_name().unwrap().to_string_lossy().ends_with(".scan.lock"),
+            "unexpected lock file name: {}",
+            path.display()
+        );
+        assert_ne!(
+            path.parent().unwrap(),
+            db.path().parent().unwrap(),
+            "lock must not be a sidecar in the database's own directory anymore"
+        );
+    }
+
+    #[test]
+    fn same_basename_in_different_directories_gets_distinct_locks() {
+        // The reason the lock name carries a hash of the full path rather than
+        // just the stem: two libraries can each be called photos.db. Sharing a
+        // lock between them would serialize unrelated work and make `videre
+        // stats` report one as running because the other is.
+        isolated_home();
+        let a_dir = tempfile::tempdir().unwrap();
+        let b_dir = tempfile::tempdir().unwrap();
+        let a = a_dir.path().join("photos.db");
+        let b = b_dir.path().join("photos.db");
+        std::fs::write(&a, b"").unwrap();
+        std::fs::write(&b, b"").unwrap();
+
+        let a_lock = lock_path_for(&a, "scan").unwrap();
+        let b_lock = lock_path_for(&b, "scan").unwrap();
+        assert_ne!(a_lock, b_lock, "identically-named databases must not share a lock");
+
+        // ...and both still land in the one locks directory.
+        assert_eq!(a_lock.parent(), b_lock.parent());
+    }
+
+    #[test]
+    fn acquiring_a_lock_removes_the_legacy_sidecar_left_by_older_versions() {
+        isolated_home();
+        let db = tempfile::NamedTempFile::new().unwrap();
+        let legacy = PathBuf::from(format!(
+            "{}.scan.lock",
+            db.path().canonicalize().unwrap().display()
+        ));
+        std::fs::write(&legacy, b"").unwrap();
+        assert!(legacy.exists());
+
+        let _guard = acquire_lock(db.path(), "scan").unwrap();
+        assert!(!legacy.exists(), "stale sidecar lock should have been cleaned up");
     }
 
     #[test]
@@ -307,6 +446,7 @@ mod tests {
 
     #[test]
     fn acquire_lock_refuses_a_second_concurrent_acquisition() {
+        isolated_home();
         let db_file = tempfile::NamedTempFile::new().unwrap();
         let db_path = db_file.path();
 
@@ -317,6 +457,7 @@ mod tests {
 
     #[test]
     fn acquire_lock_allows_different_commands_concurrently() {
+        isolated_home();
         let db_file = tempfile::NamedTempFile::new().unwrap();
         let db_path = db_file.path();
 
@@ -327,6 +468,7 @@ mod tests {
 
     #[test]
     fn acquire_lock_is_available_again_after_release() {
+        isolated_home();
         let db_file = tempfile::NamedTempFile::new().unwrap();
         let db_path = db_file.path();
 
@@ -340,6 +482,7 @@ mod tests {
 
     #[test]
     fn track_records_success_and_returns_the_value() {
+        isolated_home();
         let conn = test_db();
         let db_file = tempfile::NamedTempFile::new().unwrap();
 
@@ -354,6 +497,7 @@ mod tests {
 
     #[test]
     fn track_records_failure_with_the_error_message() {
+        isolated_home();
         let conn = test_db();
         let db_file = tempfile::NamedTempFile::new().unwrap();
 
@@ -375,6 +519,7 @@ mod tests {
 
     #[test]
     fn track_refuses_when_already_locked() {
+        isolated_home();
         let conn = test_db();
         let db_file = tempfile::NamedTempFile::new().unwrap();
 
@@ -390,6 +535,7 @@ mod tests {
 
     #[test]
     fn read_all_reports_none_for_a_never_run_command() {
+        isolated_home();
         let conn = test_db();
         let db_file = tempfile::NamedTempFile::new().unwrap();
 
@@ -402,6 +548,7 @@ mod tests {
 
     #[test]
     fn read_all_reports_success_after_a_completed_run() {
+        isolated_home();
         let conn = test_db();
         let db_file = tempfile::NamedTempFile::new().unwrap();
 
@@ -416,6 +563,7 @@ mod tests {
 
     #[test]
     fn read_all_reports_currently_running_while_locked() {
+        isolated_home();
         let conn = test_db();
         let db_file = tempfile::NamedTempFile::new().unwrap();
 
@@ -430,6 +578,7 @@ mod tests {
 
     #[test]
     fn read_all_reports_crashed_when_running_but_not_locked() {
+        isolated_home();
         let conn = test_db();
         let db_file = tempfile::NamedTempFile::new().unwrap();
 
