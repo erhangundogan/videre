@@ -75,46 +75,26 @@ pub fn average_linkage_cosine(
 /// by [`average_linkage_cosine`] and [`cluster_faces`].
 fn agglomerate_average(points: &[(i64, Vec<f32>)], eps: f32, silent: bool) -> Vec<Vec<usize>> {
     let n = points.len();
+    if n == 0 {
+        return Vec::new();
+    }
 
-    // dist[i][j] = current average-linkage distance between cluster i and
-    // cluster j (starts as plain pairwise cosine distance between points).
-    //
-    // Built in the SAME pass as the initial heap population below (not two
-    // separate O(n^2) passes), and only the upper triangle is computed
-    // (cosine distance is symmetric, so this also halves the actual
-    // cosine_dist calls versus computing both (i,j) and (j,i) independently).
-    //
-    // The initial heap is seeded with ONLY pairs already within `eps` - not
-    // every pair. This is safe, not just faster: a pair whose current
-    // distance exceeds `eps` can still later become eps-eligible once one of
-    // its clusters absorbs a closer neighbor (average-linkage distance is a
-    // weighted average, so it can decrease after a merge) - but the merge
-    // loop below already recomputes and re-pushes `dist[i][k]` for every
-    // alive `k` whenever `i` or `j` merges, using the dense `dist` matrix
-    // directly (not the heap), regardless of whether that pair was ever in
-    // the heap to begin with. So any pair that becomes relevant later still
-    // gets pushed at the moment it becomes relevant - see
-    // `one_bad_pair_does_not_block_an_otherwise_strong_merge` below, which
-    // specifically exercises a pair that starts outside `eps` and must still
-    // merge in. What this DOES avoid is permanently wasting memory holding a
-    // heap entry for every one of the `n*(n-1)/2` pairs regardless of
-    // relevance - for a real library where most face pairs belong to
-    // different people (cosine distance well above `eps`), this is the
-    // difference between a heap sized to the number of eps-eligible pairs
-    // and one sized to ALL pairs. At n=58,555 (a real observed face count),
-    // the old unconditional `BinaryHeap::with_capacity(n*(n-1)/2)` alone
-    // requested ~41GB up front - more than many machines have - and the
-    // dense `dist` matrix a further ~13.7GB, before any actual clustering
-    // work happened; this was silent (no progress output at all) and looked
-    // indistinguishable from a hang.
-    let mut dist: Vec<Vec<f32>> = vec![vec![0.0f32; n]; n];
+    // Running per-cluster embedding sum (a singleton's sum is its own
+    // embedding). Replaces the old O(n^2) dense `dist` matrix (~13.7GB at
+    // n=58,555) with O(n * dim) memory (~120MB at that scale) - see
+    // cluster_dist_from_sums's doc comment for the exact identity this
+    // relies on. Any pair's distance is now computed on demand in O(dim)
+    // from two small, cache-resident vectors, instead of looked up in a
+    // multi-gigabyte matrix.
+    let mut sums: Vec<Vec<f32>> = points.iter().map(|(_, v)| v.clone()).collect();
+    let mut members: Vec<Vec<usize>> = (0..n).map(|i| vec![i]).collect();
+    let mut alive = vec![true; n];
+
     let mut heap: BinaryHeap<HeapEntry> = BinaryHeap::new();
     let progress = crate::progress::Progress::new(n as u64, silent);
     for i in 0..n {
         for j in (i + 1)..n {
             let d = cosine_dist(&points[i].1, &points[j].1);
-            dist[i][j] = d;
-            dist[j][i] = d;
             if d <= eps {
                 heap.push(HeapEntry { dist: d, i, j });
             }
@@ -123,26 +103,44 @@ fn agglomerate_average(points: &[(i64, Vec<f32>)], eps: f32, silent: bool) -> Ve
     }
     progress.finish();
 
-    let mut members: Vec<Vec<usize>> = (0..n).map(|i| vec![i]).collect();
-    let mut alive = vec![true; n];
-
+    // Unlike the old dense-matrix version, entries are only ever pushed when
+    // they are actually eps-eligible (both here and in the merge-update loop
+    // below) - so there is no need for a separate "if d > eps { break }"
+    // check: every entry the heap can ever produce already satisfies
+    // d <= eps at push time, and the loop ends naturally once the heap is
+    // exhausted. (This is provably equivalent to the old break: HeapEntry's
+    // Ord is reversed so the heap pops in ascending distance order, and
+    // pushes only ever happen from within this same loop, so the old code's
+    // "break on the first non-stale d > eps" and "never push d > eps in the
+    // first place" both stop merging at the exact same logical point.)
     while let Some(HeapEntry { dist: d, i, j }) = heap.pop() {
-        if !alive[i] || !alive[j] { continue; }
-        if dist[i][j] != d { continue; } // stale: superseded by a fresher push after i or j absorbed another cluster
-        if d > eps { break; }
-
-        // Merge cluster j into cluster i (average linkage: size-weighted mean of the two).
+        if !alive[i] || !alive[j] {
+            continue;
+        }
         let size_i = members[i].len() as f32;
         let size_j = members[j].len() as f32;
+        let current_d = cluster_dist_from_sums(&sums[i], &sums[j], size_i, size_j);
+        if current_d != d {
+            continue; // stale: superseded since push, either i or j has since absorbed another cluster
+        }
+
+        // Merge cluster j into cluster i (average linkage: size-weighted mean of the two).
         let moved = std::mem::take(&mut members[j]);
         members[i].extend(moved);
+        let moved_sum = std::mem::take(&mut sums[j]);
+        for (s, v) in sums[i].iter_mut().zip(&moved_sum) {
+            *s += v;
+        }
         alive[j] = false;
+
+        let new_size_i = members[i].len() as f32;
         for k in 0..n {
-            if k == i || k == j || !alive[k] { continue; }
-            let new_d = (size_i * dist[i][k] + size_j * dist[j][k]) / (size_i + size_j);
-            if new_d != dist[i][k] {
-                dist[i][k] = new_d;
-                dist[k][i] = new_d;
+            if k == i || k == j || !alive[k] {
+                continue;
+            }
+            let size_k = members[k].len() as f32;
+            let new_d = cluster_dist_from_sums(&sums[i], &sums[k], new_size_i, size_k);
+            if new_d <= eps {
                 heap.push(HeapEntry { dist: new_d, i: i.min(k), j: i.max(k) });
             }
         }
