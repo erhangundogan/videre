@@ -526,4 +526,120 @@ mod tests {
         let map: std::collections::HashMap<_, _> = result.into_iter().collect();
         assert_eq!(map[&99], None, "isolated singleton must remain noise");
     }
+
+    #[test]
+    fn agglomerate_average_matches_dense_matrix_reference_on_synthetic_data() {
+        // Byte-for-byte copy of the ORIGINAL (pre-2026-08-03) dense-matrix
+        // agglomerate_average, kept only as a reference oracle for this test.
+        fn reference_agglomerate_average(
+            points: &[(i64, Vec<f32>)],
+            eps: f32,
+        ) -> Vec<Vec<usize>> {
+            let n = points.len();
+            let mut dist: Vec<Vec<f32>> = vec![vec![0.0f32; n]; n];
+            let mut heap: BinaryHeap<HeapEntry> = BinaryHeap::new();
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let d = cosine_dist(&points[i].1, &points[j].1);
+                    dist[i][j] = d;
+                    dist[j][i] = d;
+                    if d <= eps {
+                        heap.push(HeapEntry { dist: d, i, j });
+                    }
+                }
+            }
+            let mut members: Vec<Vec<usize>> = (0..n).map(|i| vec![i]).collect();
+            let mut alive = vec![true; n];
+            while let Some(HeapEntry { dist: d, i, j }) = heap.pop() {
+                if !alive[i] || !alive[j] {
+                    continue;
+                }
+                if dist[i][j] != d {
+                    continue;
+                }
+                if d > eps {
+                    break;
+                }
+                let size_i = members[i].len() as f32;
+                let size_j = members[j].len() as f32;
+                let moved = std::mem::take(&mut members[j]);
+                members[i].extend(moved);
+                alive[j] = false;
+                for k in 0..n {
+                    if k == i || k == j || !alive[k] {
+                        continue;
+                    }
+                    let new_d = (size_i * dist[i][k] + size_j * dist[j][k]) / (size_i + size_j);
+                    if new_d != dist[i][k] {
+                        dist[i][k] = new_d;
+                        dist[k][i] = new_d;
+                        heap.push(HeapEntry { dist: new_d, i: i.min(k), j: i.max(k) });
+                    }
+                }
+            }
+            (0..n).filter(|&r| alive[r]).map(|r| std::mem::take(&mut members[r])).collect()
+        }
+
+        // Deterministic synthetic fixture: a small seeded LCG generates ~300
+        // points in 64 dims, clustered around a handful of random unit
+        // "identity" centers with small per-point noise (mimicking how one
+        // real person's face embeddings cluster around a rough centroid),
+        // then every point is L2-normalized (matching real ArcFace output).
+        fn lcg_next(state: &mut u64) -> f32 {
+            *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((*state >> 33) as f32 / (1u64 << 31) as f32) - 1.0 // roughly in [-1, 1)
+        }
+
+        fn normalize(v: &mut [f32]) {
+            let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm > 1e-12 {
+                for x in v.iter_mut() {
+                    *x /= norm;
+                }
+            }
+        }
+
+        let dim = 64;
+        let num_identities = 8;
+        let points_per_identity = 38; // 8 * 38 = 304 points total
+        let mut state = 0xC0FFEEu64;
+
+        let mut centers: Vec<Vec<f32>> = Vec::new();
+        for _ in 0..num_identities {
+            let mut c: Vec<f32> = (0..dim).map(|_| lcg_next(&mut state)).collect();
+            normalize(&mut c);
+            centers.push(c);
+        }
+
+        let mut points: Vec<(i64, Vec<f32>)> = Vec::new();
+        let mut next_id = 1i64;
+        for center in &centers {
+            for _ in 0..points_per_identity {
+                let mut v: Vec<f32> = center
+                    .iter()
+                    .map(|c| c + 0.15 * lcg_next(&mut state))
+                    .collect();
+                normalize(&mut v);
+                points.push((next_id, v));
+                next_id += 1;
+            }
+        }
+
+        for &eps in &[0.3f32, 0.6f32, 0.9f32] {
+            let via_new = agglomerate_average(&points, eps, true);
+            let via_reference = reference_agglomerate_average(&points, eps);
+
+            let mut new_sorted: Vec<Vec<usize>> =
+                via_new.into_iter().map(|mut c| { c.sort(); c }).collect();
+            let mut reference_sorted: Vec<Vec<usize>> =
+                via_reference.into_iter().map(|mut c| { c.sort(); c }).collect();
+            new_sorted.sort();
+            reference_sorted.sort();
+
+            assert_eq!(
+                new_sorted, reference_sorted,
+                "partition mismatch at eps={eps} between new and reference agglomerate_average"
+            );
+        }
+    }
 }
