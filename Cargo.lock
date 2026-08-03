@@ -5033,6 +5033,7 @@ dependencies = [
  "half",
  "image",
  "indicatif",
+ "matrixmultiply",
  "reverse_geocoder",
  "rusqlite",
  "serde",
