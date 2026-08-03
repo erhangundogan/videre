@@ -36,6 +36,8 @@ Options:
 
 `--output` and `--output-sqlite` cannot be used together: passing both is an error.
 
+`--similar` for `.mov`/`.mp4` files needs macOS (`qlmanage`), the first platform dependency `videre scan` has ever had - every other `scan` code path stays platform-agnostic. On non-macOS, or if `qlmanage` fails for any reason, the file simply gets no `phash` (same graceful-skip behavior as any other undecodable file) rather than a hard error. Existing databases scanned before this feature shipped have `phash = NULL` for every video; re-run `videre scan --similar` to populate it - the feature is purely additive and never invalidates existing rows.
+
 ```
 videre dedupe [OPTIONS]               # reads the database; no directory argument
 
@@ -257,7 +259,7 @@ CREATE TABLE IF NOT EXISTS geocode_cache (
 );
 ```
 
-Re-scanning the same folder with the same SQLite file upserts (overwrites) existing rows via `INSERT OR REPLACE`. `phash` is stored as signed `INTEGER` (cast from `u64`). For `.mov`/`.mp4` files, `phash` is a dHash of the same QuickLook poster-frame `videre embed` decodes for SigLIP - not a byte-identical/video-content hash, so it only catches videos whose poster-frame looks alike (same-source re-encodes and trims that keep the opening frame; it will not catch a trim that cuts the opening frame, and can rarely group two unrelated static-shot videos - see `docs/superpowers/TECH_DEBT.md` for known follow-ups).
+Re-scanning the same folder with the same SQLite file upserts (overwrites) existing rows via `INSERT OR REPLACE`. `phash` is stored as signed `INTEGER` (cast from `u64`). For `.mov`/`.mp4` files, `phash` is a dHash of the same QuickLook poster-frame `videre embed` decodes for SigLIP - not a byte-identical/video-content hash, so it only catches videos whose poster-frame looks alike (same-source re-encodes and trims that keep the opening frame; it will not catch a trim that cuts the opening frame). A flat or near-flat opening frame (a fade-in, a letterboxed dark frame, or any shot QuickLook grabs before it resolves) dHashes to all-zero or near-all-zero bits, same as it would for a flat-colored photo - this is a real, not rare, failure mode for video specifically (a video convention with no photo equivalent), and such videos can group with any other flat-opening video regardless of actual content. Output stays review-only, so the cost is a noisy group in `videre report`, never a wrong deletion - see `docs/superpowers/TECH_DEBT.md` for follow-ups (a size-proximity gate, and true multi-frame fingerprinting).
 
 `faces` rows are keyed by `id` (auto-increment). `hash` links to `file_hashes`. `bbox` and `landmark` are JSON strings. `embedding` is a raw f16 BLOB (512-dim ArcFace, 1024 bytes). `cluster_id` is assigned by the two-stage clustering (average-linkage, then a centroid-merge pass); `person_label` and `confirmed` are set via `videre report --faces`.
 

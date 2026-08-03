@@ -104,13 +104,79 @@ fn dedupe_similar_reports_empty_when_no_phash_data() {
 
 #[test]
 #[cfg(target_os = "macos")]
-fn dedupe_similar_groups_near_duplicate_videos_by_poster_frame() {
+fn dedupe_similar_groups_a_video_and_its_recompressed_variant() {
+    // Real near-duplicate scenario: same source content, different bytes/bitrate
+    // (a genuine re-encode), not byte-identical files. testsrc_1s.mp4 uses a
+    // structured test pattern (gradients + a moving box) rather than a flat
+    // color, so its dHash actually has bits to compare - a flat-color frame's
+    // dHash is degenerately all-zero (no pixel has a "left > right" edge
+    // anywhere), which would make this test pass even for an implementation
+    // that couldn't discriminate content at all. See
+    // tests/fixtures/testsrc_1s.mp4.txt for the measured Hamming distances
+    // that justify this fixture choice.
+    let scan_dir = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let db = home.path().join("hashes.db");
+
+    std::fs::copy("tests/fixtures/testsrc_1s.mp4", scan_dir.path().join("a.mp4")).unwrap();
+    std::fs::copy("tests/fixtures/testsrc_1s_recompressed.mp4", scan_dir.path().join("b.mp4"))
+        .unwrap();
+
+    scan_into_db(scan_dir.path(), &db, &["--similar"]);
+
+    let out = Command::new(videre_bin())
+        .arg("dedupe")
+        .arg("--silent")
+        .arg("--db")
+        .arg(&db)
+        .arg("--similar")
+        .arg("--json")
+        .output()
+        .expect("failed to run videre dedupe");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+
+    // The two files have different BLAKE3 hashes (different bitrate/bytes), so
+    // this must NOT be caught by exact-duplicate detection - only by --similar.
+    let duplicate_groups = doc["duplicate_groups"]
+        .as_array()
+        .expect("duplicate_groups key must always be present");
+    assert!(
+        duplicate_groups.is_empty(),
+        "a recompressed variant must not be a BLAKE3 exact duplicate: {doc}"
+    );
+
+    let similar = doc["similar_groups"]
+        .as_array()
+        .expect("similar_groups key must be present with --similar");
+    assert_eq!(
+        similar.len(),
+        1,
+        "expected exactly one similar group for a video and its recompressed variant: {doc}"
+    );
+    let files = similar[0]["files"]
+        .as_array()
+        .expect("a similar group must carry a files array");
+    assert_eq!(files.len(), 2, "both videos must land in the one similar group: {doc}");
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn dedupe_similar_does_not_group_two_visually_different_videos() {
+    // Negative case for the positive test above: a flat solid-red clip and a
+    // structured test-pattern clip must NOT be grouped as near-duplicates -
+    // their poster-frames are genuinely different (measured Hamming distance
+    // 23, well over the clustering threshold of 10; see
+    // tests/fixtures/testsrc_1s.mp4.txt). Without this test, an
+    // implementation that grouped every video together (e.g. a bug that
+    // always returned the same dHash) would still pass the positive test.
     let scan_dir = tempdir().unwrap();
     let home = tempdir().unwrap();
     let db = home.path().join("hashes.db");
 
     std::fs::copy("tests/fixtures/red_1s.mp4", scan_dir.path().join("a.mp4")).unwrap();
-    std::fs::copy("tests/fixtures/red_1s.mp4", scan_dir.path().join("b.mp4")).unwrap();
+    std::fs::copy("tests/fixtures/testsrc_1s.mp4", scan_dir.path().join("b.mp4")).unwrap();
 
     scan_into_db(scan_dir.path(), &db, &["--similar"]);
 
@@ -129,15 +195,10 @@ fn dedupe_similar_groups_near_duplicate_videos_by_poster_frame() {
     let similar = doc["similar_groups"]
         .as_array()
         .expect("similar_groups key must be present with --similar");
-    assert_eq!(
-        similar.len(),
-        1,
-        "expected exactly one similar group for two identical-poster-frame videos: {doc}"
+    assert!(
+        similar.is_empty(),
+        "a flat-color clip and a structured-pattern clip must not be grouped as similar: {doc}"
     );
-    let files = similar[0]["files"]
-        .as_array()
-        .expect("a similar group must carry a files array");
-    assert_eq!(files.len(), 2, "both videos must land in the one similar group: {doc}");
 }
 
 #[test]
