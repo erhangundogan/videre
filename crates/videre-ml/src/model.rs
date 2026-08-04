@@ -43,6 +43,32 @@ pub struct Embedder {
     model: siglip::Model,
     tokenizer: Tokenizer,
     device: Device,
+    dtype: DType,
+}
+
+/// Inference precision, overridable with `VIDERE_EMBED_DTYPE=f16|f32`.
+///
+/// Opt-in, default `F32` - the precision every existing embedding was computed
+/// at. `f16` measured 2026-08-04 on macOS/Metal: ~11% faster on pure jpg/png,
+/// ~7% on a realistic mix once HEIC/video decode dilutes it, with no memory
+/// saving (6.60GB peak either way - the F32 safetensors are still mmap'd and
+/// converted). Output quality is effectively unchanged: over 190 images the
+/// worst f16-vs-f32 cosine similarity was 0.999794, median 0.99999, which is
+/// within the noise of the f16 *storage* quantization applied to every
+/// embedding anyway (`vectors::to_f16_bytes`).
+///
+/// Left opt-in rather than made default because 7% did not justify perturbing
+/// a library whose embeddings were all computed at F32 - not because mixing is
+/// unsafe, which the cosine numbers above rule out.
+fn configured_dtype() -> DType {
+    match std::env::var("VIDERE_EMBED_DTYPE").as_deref() {
+        Ok("f16") => DType::F16,
+        Ok("f32") | Err(_) => DType::F32,
+        Ok(other) => {
+            eprintln!("warning: unknown VIDERE_EMBED_DTYPE={other:?}; using f32");
+            DType::F32
+        }
+    }
 }
 
 impl Embedder {
@@ -89,13 +115,17 @@ impl Embedder {
             "Loading weights ({:.1} GB; cold first read can take minutes, longer at background priority)...",
             total_bytes as f64 / 1e9
         );
+        let dtype = configured_dtype();
+        if dtype != DType::F32 {
+            eprintln!("Using {dtype:?} inference precision (VIDERE_EMBED_DTYPE).");
+        }
         let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&weight_paths, DType::F32, &device)
+            VarBuilder::from_mmaped_safetensors(&weight_paths, dtype, &device)
                 .context("mmap safetensors")?
         };
 
         let model = siglip::Model::new(&config, vb).context("build siglip model")?;
-        Ok(Self { model, tokenizer, device })
+        Ok(Self { model, tokenizer, device, dtype })
     }
 
     /// Embed a batch of `[3, IMAGE_SIZE, IMAGE_SIZE]` image tensors.
@@ -105,7 +135,10 @@ impl Embedder {
             return Ok(vec![]);
         }
         // Stack into [B, 3, H, W]
-        let batch = Tensor::stack(images, 0).context("stack image batch")?;
+        let batch = Tensor::stack(images, 0)
+            .context("stack image batch")?
+            .to_dtype(self.dtype)
+            .context("cast image batch to model dtype")?;
         let features = self
             .model
             .get_image_features(&batch)
@@ -114,7 +147,7 @@ impl Embedder {
         let b = features.dim(0)?;
         let mut out = Vec::with_capacity(b);
         for i in 0..b {
-            let row: Vec<f32> = features.get(i)?.to_vec1()?;
+            let row: Vec<f32> = features.get(i)?.to_dtype(DType::F32)?.to_vec1()?;
             let mut row = row;
             videre_core::vectors::l2_normalize(&mut row);
             out.push(row);
@@ -144,7 +177,7 @@ impl Embedder {
             .get_text_features(&input_ids)
             .context("text forward pass")?;
         // features: [1, embed_dim]
-        let mut vec: Vec<f32> = features.get(0)?.to_vec1()?;
+        let mut vec: Vec<f32> = features.get(0)?.to_dtype(DType::F32)?.to_vec1()?;
         videre_core::vectors::l2_normalize(&mut vec);
         Ok(vec)
     }
