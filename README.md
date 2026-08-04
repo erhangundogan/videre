@@ -550,7 +550,19 @@ videre embed --silent               # suppress per-image output
 
 **First run downloads ~1.4 GB of model weights from Hugging Face.** Weights are cached in `~/.cache/huggingface/` and reused on every subsequent run. If all images are already embedded, the command exits immediately without loading the model.
 
-**Choosing a different model.** `VIDERE_EMBED_MODEL=<hf model id>` overrides the default. The tested fast option is `google/siglip-base-patch16-224`, which embeds at ~63ms/photo against the default's ~131ms (**7.7x faster than the previous default**), at the cost of seeing each photo at 224px instead of 384px. Embeddings are tagged with the model that made them and vectors from different models aren't comparable, so switching means a one-time full re-embed - `videre embed` tells you before it starts rather than silently redoing your library.
+**Choosing a different model.** `VIDERE_EMBED_MODEL=<hf model id>` overrides the default. Measured on 2,080 real photos (mixed jpeg/heic/png), embedding speed per photo:
+
+| model | per photo | 70k-photo library |
+|-------|-----------|-------------------|
+| `google/siglip2-base-patch16-384` (default) | 131 ms | ~2.6 h |
+| `google/siglip-base-patch16-224` | 63 ms | ~1.2 h |
+| `google/siglip-so400m-patch14-384` (default before 0.9.23) | 479 ms | ~9.4 h |
+
+`siglip-base-patch16-224` is the tested fast option - roughly 2x quicker than the default and 7.7x quicker than the pre-0.9.23 model - at the cost of seeing each photo at 224px rather than 384px, so fine detail (text in images, small objects) is likelier to suffer. `siglip2-so400m-patch14-384` was also tested and is *not* recommended: it measured 623 ms/photo, slower than the model it would replace.
+
+Embeddings are tagged with the model that produced them, and vectors from different models are not comparable, so changing this forces a one-time full re-embed. `videre embed` reports how many embeddings are about to be recomputed before it starts, rather than silently reprocessing a library you thought was finished.
+
+**Inference precision.** `VIDERE_EMBED_DTYPE=f16` runs inference in half precision: ~7-11% faster depending on the file mix, no measurable memory saving, and no meaningful quality change (worst f16-vs-f32 cosine similarity 0.999794 across 190 images - inside the noise of the f16 quantization already applied when embeddings are stored). Opt-in rather than default, because a few percent didn't justify perturbing libraries already embedded at full precision. Unlike the model setting, this does *not* invalidate stored embeddings.
 
 **`--batch` is capped at 96.** Larger values are reduced automatically with a warning. Above a threshold measured between 121 and 127, the batched inference path silently returns incorrect embeddings - no error, no crash, nothing in the output looks wrong. Raising the batch size is therefore not a way to speed up embedding; it only produces a faster wrong answer.
 
@@ -709,6 +721,15 @@ runs code generation.
 ---
 
 ## Reference
+
+### Environment variables
+
+| Variable | Effect |
+|----------|--------|
+| `VIDERE_HOME` | Overrides the `~/.videre` home directory (database, config, JSONL, `locks/`). See [The ~/.videre home directory](#the-videre-home-directory). |
+| `VIDERE_EMBED_MODEL` | Hugging Face model id used by `videre embed` and `videre search`. Default `google/siglip2-base-patch16-384`. **Changing it invalidates every stored embedding** and forces a full re-embed. See [videre embed](#videre-embed-and-videre-search). |
+| `VIDERE_EMBED_DTYPE` | `f16` or `f32` (default). Half-precision inference: a few percent faster, no quality change, does not invalidate stored embeddings. |
+| `RUSTFLAGS` | Only relevant at build time on ARM64 Linux - see [Install](#install). |
 
 ### SQLite schema
 
