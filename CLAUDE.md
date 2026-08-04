@@ -560,6 +560,15 @@ exposed via `videre mcp` (same precedent as `--category`, which
 match); `--scores` in text mode prepends `distance_km` instead of a cosine
 score for this one mode.
 
+`VIDERE_EMBED_DTYPE=f16` switches inference to half precision: measured 2026-08-04 at
+~11% faster on pure jpg/png and ~7% on a realistic HEIC/video mix, with no memory
+saving and no meaningful quality change (worst f16-vs-f32 cosine 0.999794 over 190
+images, well inside the f16 *storage* quantization already applied). Left opt-in
+rather than default because 7% didn't justify perturbing a library embedded at F32.
+Note this is the whole remaining headroom on the inference side: ~370ms/file is the
+so400m forward pass itself, and decode is only ~10% of a run - see
+`docs/superpowers/2026-08-04-embed-batch-corruption-investigation.md`.
+
 Model weights auto-download from Hugging Face (google/siglip-so400m-patch14-384) on
 first run.
 
