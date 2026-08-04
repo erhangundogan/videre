@@ -1,6 +1,6 @@
 [package]
 name = "videre"
-version = "0.9.23"
+version = "0.9.24"
 edition = "2021"
 description = "Local-first media library CLI: duplicate detection, semantic search, face recognition, and EXIF date repair over a single SQLite database"
 license = "Apache-2.0"
