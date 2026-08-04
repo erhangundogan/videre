@@ -8,9 +8,10 @@
 # Local-only MCP server config (shadcn component fetching)
 .mcp.json
 
-# Design specs and implementation plans: local-only working documents going
-# forward (existing committed specs/plans stay tracked as historical record).
-docs/superpowers/
+# All working documents are local-only: design specs, implementation plans,
+# tech-debt notes, and docs/TECHNICAL.md (the deep-detail companion to README,
+# kept out of the repo so the published docs stay approachable).
+docs/
 
 # Brainstorming skill's visual-companion mockups/state
 .superpowers/
