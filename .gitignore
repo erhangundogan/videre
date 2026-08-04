@@ -8,9 +8,9 @@
 # Local-only MCP server config (shadcn component fetching)
 .mcp.json
 
-# All working documents are local-only: design specs, implementation plans,
-# tech-debt notes, and docs/TECHNICAL.md (the deep-detail companion to README,
-# kept out of the repo so the published docs stay approachable).
+# Working documents are local-only: design specs, implementation plans, and
+# tech-debt notes. Published docs are README.md (for users) and CLAUDE.md
+# (technical detail); neither lives here.
 docs/
 
 # Brainstorming skill's visual-companion mockups/state

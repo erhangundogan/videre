@@ -110,6 +110,19 @@ those platforms - they are still scanned, hashed, EXIF-extracted, and exactly
 deduped. The guards use `cfg!()` (a runtime-constant `if`) rather than `#[cfg]`
 so both branches type-check on every platform.
 
+Per-command support matrix:
+
+| | macOS | Linux |
+|-|-------|-------|
+| `dedupe`, `report`, `fix-dates`, `prune`, `locations`, `stats`, `mcp` | yes | yes |
+| `embed`, `search` | yes (Metal GPU) | yes (CPU only) |
+| `faces` | yes (CPU via ONNX Runtime) | yes (CPU via ONNX Runtime) |
+| `watch` | yes | yes (`--heic` stage unavailable) |
+| HEIC decoding (report, faces, embed, watch) | yes (`qlmanage`) | no |
+| Video frame extraction (embed, `--similar` phash) | yes (`qlmanage`) | no |
+| HEIC/video scanning, hashing, EXIF | yes | yes |
+| `created_at` field | yes | always null |
+
 ## Build & run
 
 ```bash
@@ -167,6 +180,22 @@ instrumented, so command modules like `fix_dates.rs`/`classify.rs`/`watch.rs`
 show artificially low numbers here despite being covered by those integration
 tests; read the per-file table as "unit-test coverage only", not overall test
 coverage.
+
+## Poking at the database directly
+
+```bash
+# Duplicate groups with file counts
+sqlite3 ~/.videre/hashes.db "SELECT hash, COUNT(*) n FROM file_hashes GROUP BY hash HAVING n > 1"
+
+# Total wasted space in MB
+sqlite3 ~/.videre/hashes.db "SELECT SUM(size_bytes*(cnt-1))/1048576.0 FROM (SELECT size_bytes, COUNT(*) cnt FROM file_hashes GROUP BY hash HAVING cnt > 1)"
+
+# Which model produced the stored embeddings (and how many are stale after a model change)
+sqlite3 ~/.videre/hashes.db "SELECT model_id, COUNT(*), LENGTH(embedding)/2 AS dims FROM embeddings GROUP BY model_id"
+
+# Filter the JSONL output by extension
+jq 'select(.ext == "heic")' ~/.videre/hashes.jsonl
+```
 
 ## Supported file types
 
@@ -313,7 +342,7 @@ CREATE TABLE IF NOT EXISTS geocode_cache (
 );
 ```
 
-Re-scanning the same folder with the same SQLite file upserts (overwrites) existing rows via `INSERT OR REPLACE`. `phash` is stored as signed `INTEGER` (cast from `u64`). For `.mov`/`.mp4` files, `phash` is a dHash of the same QuickLook poster-frame `videre embed` decodes for SigLIP - not a byte-identical/video-content hash, so it only catches videos whose poster-frame looks alike (same-source re-encodes and trims that keep the opening frame; it will not catch a trim that cuts the opening frame). A flat or near-flat opening frame (a fade-in, a letterboxed dark frame, or any shot QuickLook grabs before it resolves) dHashes to all-zero or near-all-zero bits, same as it would for a flat-colored photo, and such videos would group with any other flat-opening video regardless of content. **Measured on a real 4,323-file library (2026-08-04): zero occurrences** - no `phash` was all-zero or all-ones, and no value repeated more than 3 times across 3,702 hashed files including 819 videos. The concern came from a synthetic solid-color test fixture; real camera video apparently doesn't open on a truly flat frame often enough to matter. Treat it as a theoretical edge case that has not been observed, not an expected failure mode. Output stays review-only regardless, so the cost of any false positive is a noisy group in `videre report`, never a wrong deletion - see `docs/superpowers/TECH_DEBT.md` for follow-ups (a size-proximity gate, and true multi-frame fingerprinting).
+Re-scanning the same folder with the same SQLite file upserts (overwrites) existing rows via `INSERT OR REPLACE`. `phash` is stored as signed `INTEGER` (cast from `u64`). The algorithm is dHash: grayscale, resize to 9x8 (Lanczos3), compare horizontally adjacent pixels into 64 bits. `videre dedupe --similar` groups pairs within Hamming distance 10 by greedy single-linkage clustering; that output is review-only and never reaches stdout, which is what keeps `videre dedupe | xargs trash` safe. HEIC is deliberately absent from `PHASH_EXTENSIONS`, so `.heic` files get no near-duplicate hash at all. For `.mov`/`.mp4` files, `phash` is a dHash of the same QuickLook poster-frame `videre embed` decodes for SigLIP - not a byte-identical/video-content hash, so it only catches videos whose poster-frame looks alike (same-source re-encodes and trims that keep the opening frame; it will not catch a trim that cuts the opening frame). A flat or near-flat opening frame (a fade-in, a letterboxed dark frame, or any shot QuickLook grabs before it resolves) dHashes to all-zero or near-all-zero bits, same as it would for a flat-colored photo, and such videos would group with any other flat-opening video regardless of content. **Measured on a real 4,323-file library (2026-08-04): zero occurrences** - no `phash` was all-zero or all-ones, and no value repeated more than 3 times across 3,702 hashed files including 819 videos. The concern came from a synthetic solid-color test fixture; real camera video apparently doesn't open on a truly flat frame often enough to matter. Treat it as a theoretical edge case that has not been observed, not an expected failure mode. Output stays review-only regardless, so the cost of any false positive is a noisy group in `videre report`, never a wrong deletion - see `docs/superpowers/TECH_DEBT.md` for follow-ups (a size-proximity gate, and true multi-frame fingerprinting).
 
 `faces` rows are keyed by `id` (auto-increment). `hash` links to `file_hashes`. `bbox` and `landmark` are JSON strings. `embedding` is a raw f16 BLOB (512-dim ArcFace, 1024 bytes). `cluster_id` is assigned by the two-stage clustering (average-linkage, then a centroid-merge pass); `person_label` and `confirmed` are set via `videre report --faces`.
 
@@ -571,7 +600,11 @@ Two env overrides, both added while working out how to speed `videre embed` up
   `siglip-base-patch16-224` at 63ms (7.7x, at 224px instead of 384px). A blind
   side-by-side of 14 searches showed no visible advantage for the old default.
   Switching models invalidates every stored embedding, so `videre embed` prints a
-  note first rather than silently redoing the library.
+  note first rather than silently redoing the library. Two candidates were tried
+  and are not worth revisiting: `siglip2-so400m-patch14-384` measured 623ms/photo,
+  *slower* than the model it would have replaced, and
+  `siglip-so400m-patch14-224` cannot be loaded at all - that HF repo ships no
+  `tokenizer.json`, so `Embedder::load` fails.
 - `VIDERE_EMBED_DTYPE=f16` switches inference to half precision: ~11% faster on
   pure jpg/png, ~7% on a realistic mix, no memory saving, no meaningful quality
   change (worst f16-vs-f32 cosine 0.999794 over 190 images, inside the f16
@@ -648,6 +681,8 @@ Uses InsightFace buffalo_l: SCRFD-10GF for detection, 5-point landmark alignment
 Detection is **resumable**. Every processed hash is recorded in a `faces_scanned` table - including images where zero faces were detected, which leave no `faces` row. The skip set for a run is "already scanned" (unioned with "already has faces", so a first run after upgrading doesn't redo prior work), not merely "has a face", so a no-face image is detected exactly once ever rather than re-detected on every run. Faces and the scanned marker are committed per hash as the run proceeds, so an interrupt (Ctrl-C) loses at most the in-flight image and a rerun continues where it left off. `--limit <n>` processes at most N not-yet-scanned images then stops (for chipping away at a large library in bounded chunks); a limited run skips the final clustering step (it is an O(n^2) whole-library pass not worth repeating after every chunk) - run `videre faces --recluster` once scanning is complete.
 
 `videre faces` runs `--workers` worker threads concurrently (default: 2x the machine's available core count - see below for why), each with its own ONNX sessions (intra-op-thread-capped so they don't collectively oversubscribe the machine) processing a round-robin-assigned slice of the work - not contiguous chunks, so one worker doesn't inherit a disproportionately HEIC-heavy (slower) subset. All database writes happen on a single coordinator thread that receives results from workers over a channel; workers never touch the connection directly. The 2x-cores default (rather than a flat 1:1 mapping) comes from real profiling data: HEIC file loading (via a `qlmanage` subprocess) averaged ~52x longer than non-HEIC loading in one measurement, and since that wait is I/O-bound rather than CPU-bound, oversubscribing keeps cores busy with other workers' CPU-bound detect/embed work while some workers are blocked on the subprocess. A real A/B measurement on the full pipeline (not just the profiling estimate) found a ~3.23x wall-clock speedup with default workers vs. `--workers 1` on a 10-core machine. See docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md for the full design and why this approach (a symmetric worker pool) was chosen over a producer/consumer split with separate loader/inference pools. HEIC decoding itself is further capped independently of `--workers`: all `qlmanage` subprocess launches, across every subcommand, share one process-wide semaphore (`videre_core::heic::qlmanage_semaphore`) limiting concurrent conversions - 6 by default, raised from 3 after the 3.23x measurement above showed CPU sitting at only 477% of a possible 1000%, a hint that HEIC-heavy runs were bottlenecked on this cap rather than on cores. That hint was confirmed by a real re-measurement (same 300-image sample, default workers): `--qlmanage-concurrency 3` (the old default) ran in 75.10s at 498% CPU, `--qlmanage-concurrency 6` (the new default) ran in 60.86s at 663% CPU - a further ~1.23x wall-clock improvement on top of the earlier 3.23x, for a combined ~4.48x over the original fully-serial baseline (272.78s -> 60.86s). `videre faces --qlmanage-concurrency <n>` overrides the default for a single run. Measured 2026-07-31 (same 300-image sample/methodology): raising further to 8 or 10 only buys 1.3%/4.4% more wall-clock with diminishing returns (cap=6: 51.59s/728% CPU; cap=10: 49.42s/762% CPU) - CPU still isn't fully saturated even at cap=10, but per-image detect time crept up alongside it, meaning the extra concurrency mostly shifts the bottleneck into CPU contention rather than delivering free parallelism. Default stays 6; `--qlmanage-concurrency 10` remains available as a manual opt-in for a small win, not something worth changing the shipped default for.
+
+**The cap is per-process, not system-wide, and that matters when two videre commands overlap.** Two processes therefore permit up to 12 concurrent `qlmanage` conversions against macOS's single shared per-user QuickLook agent - exactly the pile-up the cap exists to prevent. Measured 2026-08-04 running `videre faces` and `videre embed` simultaneously on a real library: HEIC load averaged **16,339ms** against ~7.6s uncontended, and one file blew past `QLMANAGE_TIMEOUT` (20s) entirely - a file that converted in **0.39s** standalone immediately afterwards, so ~51x degradation rather than ~2x. Impact is bounded: the skipped file was correctly *not* written to `faces_scanned`, so it was retried and self-healed on the next run. It is a throughput and predictability problem, not data loss - but the intended `videre watch` + manual-command workflow makes overlap the normal case, not an edge case. See `docs/superpowers/TECH_DEBT.md` for the options considered (a cross-process token, raising the timeout, or having `watch` yield its budget).
 
 Resumability's correctness is unchanged: workers never touch the database, so a hash can never end up marked scanned without its faces being durably written first, no matter how many workers are running - restart always correctly continues from the true set of completed hashes. What does change is how much gets re-done after a kill: even the single-threaded pipeline already defers marking a face-bearing image as scanned until its whole `batch`-sized chunk's single embed call resolves (only zero-face images are marked immediately), so an interrupt today can already cost up to `batch` (default 8) images of reprocessing, not 1. With `--workers` workers each independently chunk-batching their own partition, that window becomes up to `workers * batch` images - e.g. 160 with the defaults on a 10-core machine (20 workers x 8 batch). Still fully correct on resume, just a larger bounded "wasted work" window than before; `--limit` remains the lever for users who want tighter control per invocation.
 
