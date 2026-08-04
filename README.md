@@ -276,6 +276,15 @@ videre config unset db               # remove default_db, falling back to ~/.vid
 
 ---
 
+## Environment variables
+
+| Variable | Effect |
+|----------|--------|
+| `VIDERE_HOME` | Overrides the `~/.videre` home directory (database, config, JSONL, `locks/`). See [The ~/.videre home directory](#the-videre-home-directory). |
+| `VIDERE_EMBED_MODEL` | Hugging Face model id used by `videre embed` and `videre search`. Default `google/siglip2-base-patch16-384`. **Changing it invalidates every stored embedding** and forces a full re-embed. See [videre embed](#videre-embed-and-videre-search). |
+| `VIDERE_EMBED_DTYPE` | `f16` or `f32` (default). Half-precision inference: a few percent faster, no quality change, does not invalidate stored embeddings. |
+| `RUSTFLAGS` | Only relevant at build time on ARM64 Linux - see [Install](#install). |
+
 ## videre scan
 
 ```
@@ -721,15 +730,6 @@ runs code generation.
 ---
 
 ## Reference
-
-### Environment variables
-
-| Variable | Effect |
-|----------|--------|
-| `VIDERE_HOME` | Overrides the `~/.videre` home directory (database, config, JSONL, `locks/`). See [The ~/.videre home directory](#the-videre-home-directory). |
-| `VIDERE_EMBED_MODEL` | Hugging Face model id used by `videre embed` and `videre search`. Default `google/siglip2-base-patch16-384`. **Changing it invalidates every stored embedding** and forces a full re-embed. See [videre embed](#videre-embed-and-videre-search). |
-| `VIDERE_EMBED_DTYPE` | `f16` or `f32` (default). Half-precision inference: a few percent faster, no quality change, does not invalidate stored embeddings. |
-| `RUSTFLAGS` | Only relevant at build time on ARM64 Linux - see [Install](#install). |
 
 ### SQLite schema
 
