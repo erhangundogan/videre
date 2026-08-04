@@ -17,9 +17,32 @@ A local-first tool for making sense of a folder full of photos and videos.
 - fix wrong file dates from the camera's own EXIF data
 - group photos by where they were taken
 
-Everything runs on your machine, against a single SQLite file. No account, no
-upload, no telemetry. videre never moves, renames, or re-encodes your photos -
-it only reads them. Stop using it and your files are exactly as they were.
+## Why videre
+
+Most photo apps want to *own* your library - import everything into their own
+storage, index it in a database only they can read, then nudge you toward their
+cloud. videre works the other way round: it's a lens over a folder you already
+own. Point it at a directory and you get a single SQLite file describing what's
+there. Stop using it and your photos are exactly as they were.
+
+- **It never touches your photos.** Nothing is moved, renamed, copied, or
+  re-encoded. The one exception is `videre fix-dates`, which you run
+  deliberately, and which only corrects a file's date.
+- **Nothing leaves your machine.** No account, no upload, no telemetry. The one
+  exception is `videre search --location "Berlin"`, which looks a place name up
+  once and remembers it.
+- **It won't delete anything behind your back.** `videre dedupe` prints what
+  *could* go and stops there. You decide - and you can look through the
+  candidates in a browser first.
+- **Naming faces is bulk work, not a chore.** videre groups faces together
+  itself, so you name one group of 40 photos rather than tagging 40 photos.
+- **Long jobs are safe to interrupt.** Preparing search or scanning faces can
+  take hours on a large library. Ctrl-C is fine; rerunning continues from where
+  it stopped.
+
+And because it's an ordinary command-line tool over an ordinary SQLite file, an
+AI assistant can drive it directly - `videre mcp` hands search and duplicate
+review to a model with no server to set up.
 
 ## Install
 
@@ -192,6 +215,11 @@ videre dedupe > to-delete.txt
   `localhost:7878`. Nothing leaves your machine.
 - The only feature that touches the network is `videre search --location`,
   which looks up a place name once and caches the result.
+
+## More detail
+
+Algorithms, tuning constants, benchmark numbers, and the database schema are in
+[CLAUDE.md](CLAUDE.md).
 
 ## License
 
