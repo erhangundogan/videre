@@ -508,7 +508,7 @@ antimeridian (+/-180 longitude) or poles, not solved for a
 
 ## videre embed / videre search
 
-`videre embed` (optionally `--db <db>`) embeds every unique image hash (SigLIP so400m/14-384, 1152-dim,
+`videre embed` (optionally `--db <db>`) embeds every unique image hash (SigLIP siglip2-base/16-384, 768-dim,
 L2-normalized f16 BLOB) into an `embeddings` table keyed by content hash. Resumable:
 re-running processes only missing hashes. `--batch` (default 32, **clamped to
 `videre_ml::model::MAX_SAFE_BATCH` = 96**: above a threshold measured between 121 and
@@ -560,16 +560,29 @@ exposed via `videre mcp` (same precedent as `--category`, which
 match); `--scores` in text mode prepends `distance_km` instead of a cosine
 score for this one mode.
 
-`VIDERE_EMBED_DTYPE=f16` switches inference to half precision: measured 2026-08-04 at
-~11% faster on pure jpg/png and ~7% on a realistic HEIC/video mix, with no memory
-saving and no meaningful quality change (worst f16-vs-f32 cosine 0.999794 over 190
-images, well inside the f16 *storage* quantization already applied). Left opt-in
-rather than default because 7% didn't justify perturbing a library embedded at F32.
-Note this is the whole remaining headroom on the inference side: ~370ms/file is the
-so400m forward pass itself, and decode is only ~10% of a run - see
-`docs/superpowers/2026-08-04-embed-batch-corruption-investigation.md`.
+Two env overrides, both added while working out how to speed `videre embed` up
+(full data in `docs/superpowers/2026-08-04-embed-batch-corruption-investigation.md`):
 
-Model weights auto-download from Hugging Face (google/siglip-so400m-patch14-384) on
+- `VIDERE_EMBED_MODEL=<hf model id>` picks the model. **This is where essentially
+  all the speed turned out to be.** Decode is only ~10% of a run and the forward
+  pass is the rest, so changing the model is the only lever that moves it much:
+  measured on 2,080 real photos, the old `siglip-so400m-patch14-384` default ran
+  at 479ms/photo, the current `siglip2-base-patch16-384` at 131ms (3.6x), and
+  `siglip-base-patch16-224` at 63ms (7.7x, at 224px instead of 384px). A blind
+  side-by-side of 14 searches showed no visible advantage for the old default.
+  Switching models invalidates every stored embedding, so `videre embed` prints a
+  note first rather than silently redoing the library.
+- `VIDERE_EMBED_DTYPE=f16` switches inference to half precision: ~11% faster on
+  pure jpg/png, ~7% on a realistic mix, no memory saving, no meaningful quality
+  change (worst f16-vs-f32 cosine 0.999794 over 190 images, inside the f16
+  *storage* quantization already applied). Opt-in because 7% didn't justify
+  perturbing an existing library.
+
+Two things measured and rejected, recorded so they aren't retried: raising
+`--batch` (silently corrupts - see `MAX_SAFE_BATCH`) and collapsing the
+per-image GPU readback into one transfer (0.988x, no effect).
+
+Model weights auto-download from Hugging Face (google/siglip2-base-patch16-384, ~1.4GB) on
 first run.
 
 Embeddings schema:

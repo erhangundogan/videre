@@ -13,6 +13,32 @@ use tokenizers::Tokenizer;
 pub const MODEL_ID: &str = videre_core::embeddings::DEFAULT_MODEL_ID;
 pub const IMAGE_SIZE: usize = 384;
 
+/// Model actually used, overridable with `VIDERE_EMBED_MODEL=<hf model id>`.
+///
+/// EXPERIMENTAL benchmarking scaffold (2026-08-04) for comparing SigLIP
+/// variants. Embeddings are tagged with this id in the `embeddings` table, so
+/// switching models makes `pending_images` treat the whole library as
+/// unembedded - i.e. changing this means a full re-embed, by design.
+pub fn configured_model_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| std::env::var("VIDERE_EMBED_MODEL").unwrap_or_else(|_| MODEL_ID.to_string()))
+}
+
+/// Input resolution for `configured_model_id()`.
+///
+/// Taken from the trailing `-<size>` in the HF model id (`...-patch14-224` ->
+/// 224) rather than `config.json`, because several published SigLIP configs
+/// omit `vision_config.image_size` and rely on library defaults. Falls back to
+/// `IMAGE_SIZE` when the id has no recognizable suffix.
+pub fn configured_image_size() -> usize {
+    configured_model_id()
+        .rsplit('-')
+        .next()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n >= 64 && *n <= 1024)
+        .unwrap_or(IMAGE_SIZE)
+}
+
 /// Largest number of images `embed_images` may be given in one call.
 ///
 /// Above a threshold measured between 121 and 127 (120 verified clean, 127
@@ -75,10 +101,14 @@ impl Embedder {
     /// Download (or use cached) SigLIP weights and build the embedder.
     pub fn load(device: Device) -> Result<Self> {
         let client = hf_hub::HFClientSync::new().context("init HF Hub client")?;
-        let (owner, name) = MODEL_ID.split_once('/').expect("model id is owner/name");
+        let model_id = configured_model_id();
+        if model_id != MODEL_ID {
+            eprintln!("Using model {model_id} at {}px (VIDERE_EMBED_MODEL).", configured_image_size());
+        }
+        let (owner, name) = model_id.split_once('/').expect("model id is owner/name");
         let repo = client.model(owner, name);
 
-        eprintln!("Loading model {MODEL_ID} (downloads to hf-hub cache on first run)...");
+        eprintln!("Loading model {model_id} (downloads to hf-hub cache on first run)...");
 
         // Config
         let config_path = repo

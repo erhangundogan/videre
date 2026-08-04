@@ -143,7 +143,7 @@ videre fix-dates
 ### Semantic search
 
 ```bash
-# Embed images for semantic search (downloads ~1.8 GB model on first run)
+# Embed images for semantic search (downloads ~1.4 GB model on first run)
 videre embed
 
 # Search by text or example image
@@ -536,7 +536,7 @@ for that (see CLAUDE.md for the full reasoning).
 
 ## videre embed and videre search
 
-`videre embed` computes SigLIP embeddings (google/siglip-so400m-patch14-384, 1152-dim f16) for every image in the database and stores them keyed by content hash. Re-running only processes images not yet embedded. `.mov`/`.mp4` are embedded too, via one representative frame extracted the same way as HEIC (`qlmanage -t`, macOS only) rather than decoding the full video - a cheap, single-frame, not-motion-aware embedding, so video search quality is weaker than photo search. Video hashes are excluded from `videre classify` (none of its four categories fit a video frame). `.dng` is still skipped (the `image` crate has no DNG decoder) - excluded from the
+`videre embed` computes SigLIP embeddings (google/siglip2-base-patch16-384, 768-dim f16) for every image in the database and stores them keyed by content hash. Re-running only processes images not yet embedded. `.mov`/`.mp4` are embedded too, via one representative frame extracted the same way as HEIC (`qlmanage -t`, macOS only) rather than decoding the full video - a cheap, single-frame, not-motion-aware embedding, so video search quality is weaker than photo search. Video hashes are excluded from `videre classify` (none of its four categories fit a video frame). `.dng` is still skipped (the `image` crate has no DNG decoder) - excluded from the
 pending-images query up front, so it's never queried and attempted-then-failed on
 every run. `videre classify` (see above) reuses these embeddings for zero-shot photo/screenshot/document/meme classification, so it's worth running `videre embed` even if you don't need text/image search.
 
@@ -548,7 +548,9 @@ videre embed --chunk 1000           # rows written per transaction / resume gran
 videre embed --silent               # suppress per-image output
 ```
 
-**First run downloads ~1.8 GB of model weights from Hugging Face.** Weights are cached in `~/.cache/huggingface/` and reused on every subsequent run. If all images are already embedded, the command exits immediately without loading the model.
+**First run downloads ~1.4 GB of model weights from Hugging Face.** Weights are cached in `~/.cache/huggingface/` and reused on every subsequent run. If all images are already embedded, the command exits immediately without loading the model.
+
+**Choosing a different model.** `VIDERE_EMBED_MODEL=<hf model id>` overrides the default. The tested fast option is `google/siglip-base-patch16-224`, which embeds at ~63ms/photo against the default's ~131ms (**7.7x faster than the previous default**), at the cost of seeing each photo at 224px instead of 384px. Embeddings are tagged with the model that made them and vectors from different models aren't comparable, so switching means a one-time full re-embed - `videre embed` tells you before it starts rather than silently redoing your library.
 
 **`--batch` is capped at 96.** Larger values are reduced automatically with a warning. Above a threshold measured between 121 and 127, the batched inference path silently returns incorrect embeddings - no error, no crash, nothing in the output looks wrong. Raising the batch size is therefore not a way to speed up embedding; it only produces a faster wrong answer.
 
