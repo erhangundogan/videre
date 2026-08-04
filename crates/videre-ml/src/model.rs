@@ -13,6 +13,27 @@ use tokenizers::Tokenizer;
 pub const MODEL_ID: &str = videre_core::embeddings::DEFAULT_MODEL_ID;
 pub const IMAGE_SIZE: usize = 384;
 
+/// Largest number of images `embed_images` may be given in one call.
+///
+/// Above a threshold measured between 121 and 127 (120 verified clean, 127
+/// verified corrupt), this path silently returns embeddings that do not match
+/// a one-image-at-a-time baseline - no error, no NaN, just wrong vectors.
+/// Every *full* batch at or above the threshold is affected; a trailing
+/// partial batch is always correct, which is what makes the failure so easy to
+/// miss. Measured 2026-08-04 on macOS/Metal with `siglip-so400m-patch14-384`;
+/// full reproduction in
+/// `docs/superpowers/2026-08-04-embed-batch-corruption-investigation.md`.
+///
+/// This lives here rather than in the CLI because it is a property of this
+/// inference path, not of any one caller. Anyone tempted to raise it: checking
+/// output for zero/NaN vectors is NOT sufficient - `--batch 256` yields zero
+/// all-zero vectors and is still fully corrupt. Only a cosine comparison
+/// against a small-batch baseline detects it (see the ignored
+/// `batched_embeddings_match_one_at_a_time` test below). 96 keeps deliberate
+/// headroom below the observed boundary, since the exact threshold may shift
+/// with available unified memory.
+pub const MAX_SAFE_BATCH: usize = 96;
+
 /// Maximum token sequence length for text queries.
 const MAX_TEXT_LEN: usize = 64;
 /// Pad token id for SigLIP (`</s>`, id 1).
@@ -260,5 +281,72 @@ mod tests {
             |a: &[f32], b: &[f32]| -> f32 { a.iter().zip(b).map(|(x, y)| x * y).sum() };
         assert!(dot(&red, &q_red) > dot(&red, &q_dog));
         assert_eq!(red.len(), q_red.len());
+    }
+}
+
+#[cfg(test)]
+mod batch_correctness_tests {
+    use super::*;
+
+    /// Empirical proof that `MAX_SAFE_BATCH` is actually safe: embedding N
+    /// images in one call must match embedding them one at a time.
+    ///
+    /// `#[ignore]`d because it loads the real 3.5GB model and runs
+    /// `MAX_SAFE_BATCH` forward passes (tens of seconds), which is too slow for
+    /// every `cargo test`. The cheap automated guard is
+    /// `safe_batch_maximum_stays_below_the_measured_corruption_threshold` in
+    /// the CLI's embed module; this is the expensive proof to run **whenever
+    /// `MAX_SAFE_BATCH` is changed**, on the machine it is being changed for:
+    ///
+    /// ```text
+    /// cargo test -p videre-ml --release batched_embeddings_match_one_at_a_time -- --ignored --nocapture
+    /// ```
+    ///
+    /// Raise `MAX_SAFE_BATCH` past the real threshold and this fails with
+    /// cosine similarities far below 1.0 - which is exactly the silent
+    /// corruption it exists to catch. Note the failure mode is NOT zeros or
+    /// NaNs (batch 256 produces neither and is still wrong), so comparing
+    /// against the one-at-a-time baseline is the only reliable check.
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn batched_embeddings_match_one_at_a_time() {
+        let embedder = Embedder::load(crate::device::best_device()).unwrap();
+
+        // Distinct inputs, so a bug that returns one vector repeated (or a
+        // shifted/garbage buffer) cannot pass by accident.
+        let n = MAX_SAFE_BATCH;
+        let images: Vec<Tensor> = (0..n)
+            .map(|i| {
+                let v = (i as f32 / n as f32) * 2.0 - 1.0;
+                Tensor::full(v, (3, IMAGE_SIZE, IMAGE_SIZE), &embedder.device).unwrap()
+            })
+            .collect();
+
+        let batched = embedder.embed_images(&images).unwrap();
+        assert_eq!(batched.len(), n, "one embedding per input expected");
+
+        let mut worst = f32::MAX;
+        let mut worst_at = 0usize;
+        for (i, img) in images.iter().enumerate() {
+            let single = embedder.embed_images(std::slice::from_ref(img)).unwrap();
+            let (a, b) = (&batched[i], &single[0]);
+            let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+            let na = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let nb = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+            assert!(na > 0.0 && nb > 0.0, "zero-norm embedding at index {i}");
+            let cos = dot / (na * nb);
+            if cos < worst {
+                worst = cos;
+                worst_at = i;
+            }
+        }
+
+        println!("worst cosine over {n} images: {worst:.6} (index {worst_at})");
+        assert!(
+            worst > 0.99,
+            "batch of {n} disagrees with one-at-a-time embedding (worst cosine {worst:.6} at \
+             index {worst_at}); MAX_SAFE_BATCH is too high for this machine"
+        );
     }
 }

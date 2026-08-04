@@ -4984,7 +4984,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "videre"
-version = "0.9.20"
+version = "0.9.21"
 dependencies = [
  "anyhow",
  "axum",
@@ -5044,7 +5044,7 @@ dependencies = [
 
 [[package]]
 name = "videre-ml"
-version = "0.9.8"
+version = "0.9.9"
 dependencies = [
  "anyhow",
  "candle-core",

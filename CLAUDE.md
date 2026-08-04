@@ -510,7 +510,15 @@ antimeridian (+/-180 longitude) or poles, not solved for a
 
 `videre embed` (optionally `--db <db>`) embeds every unique image hash (SigLIP so400m/14-384, 1152-dim,
 L2-normalized f16 BLOB) into an `embeddings` table keyed by content hash. Resumable:
-re-running processes only missing hashes. `--batch` (default 32), `--chunk` (rows per
+re-running processes only missing hashes. `--batch` (default 32, **clamped to
+`videre_ml::model::MAX_SAFE_BATCH` = 96**: above a threshold measured between 121 and
+127, the batched inference path silently returns embeddings that don't match a
+one-at-a-time baseline - no error, no NaN, just wrong vectors, with only the trailing
+partial batch correct. Values over 96 are reduced with a warning. Do not raise the
+constant without re-running the ignored `batched_embeddings_match_one_at_a_time` test in
+`videre-ml`; checking output for zero/NaN vectors does NOT detect this, since `--batch
+256` produces neither and is still fully corrupt. See
+`docs/superpowers/2026-08-04-embed-batch-corruption-investigation.md`), `--chunk` (rows per
 transaction, default 500), `--silent`. HEIC via `qlmanage` (see videre report HEIC note
 above); `.mov`/`.mp4` are embedded too, via one representative frame extracted the same
 way (`qlmanage -t`, macOS only) rather than decoding the full video - a single-frame,
