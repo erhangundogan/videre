@@ -24,9 +24,28 @@ pub fn is_video_ext(ext: &str) -> bool {
     matches!(ext.to_lowercase().as_str(), "mov" | "mp4")
 }
 
-/// Model id used by dupe-embed / dupe-search / dupe-report. Single source of
-/// truth so the report binary can query embeddings without depending on dupe-ml.
-pub const DEFAULT_MODEL_ID: &str = "google/siglip-so400m-patch14-384";
+/// Model id used by `videre embed` / `search` / `report`. Single source of
+/// truth so the report binary can query embeddings without depending on
+/// videre-ml.
+///
+/// Changed 2026-08-04 from `google/siglip-so400m-patch14-384`. Measured on
+/// 2,080 real photos: this model embeds at 131ms/photo against the old one's
+/// 479ms - **3.6x faster**, taking a full 70k-photo library from ~9.4 hours to
+/// ~2.6 hours - at 768 dimensions instead of 1152. In a blind side-by-side of
+/// 14 searches the old model showed no visible advantage, and this one beat
+/// the same-size/same-resolution previous-generation `siglip-base-patch16-384`
+/// outright.
+///
+/// `VIDERE_EMBED_MODEL` overrides this (see `videre_ml::model`).
+/// `google/siglip-base-patch16-224` is the tested fast option: 63ms/photo,
+/// 7.7x faster, at the cost of seeing each photo at 224px rather than 384px.
+///
+/// **Changing this invalidates every stored embedding**, since `embeddings`
+/// rows are tagged with the model id and `pending_images` filters on it. That
+/// is intentional - vectors from different models are not comparable - but it
+/// means a one-time full re-embed. `videre embed` warns when it sees rows from
+/// a different model rather than silently reprocessing the whole library.
+pub const DEFAULT_MODEL_ID: &str = "google/siglip2-base-patch16-384";
 
 #[derive(Debug, Clone)]
 pub struct PendingImage {
@@ -48,6 +67,30 @@ pub fn ensure_embeddings_table(conn: &Connection) -> Result<()> {
 
 /// Unique hashes that are embeddable but not yet embedded under `model_id`;
 /// one representative path per hash (MIN(path) keeps it deterministic).
+/// Counts stored embeddings that came from a *different* model than
+/// `model_id`, i.e. rows that `pending_images` will treat as unembedded.
+///
+/// Exists so `videre embed` can say "your 70,000 embeddings were made with
+/// another model and are about to be redone" instead of silently spending
+/// hours reprocessing a library the user believed was already done. Returns
+/// `Ok(0)` when the table doesn't exist yet.
+pub fn embeddings_from_other_models(conn: &Connection, model_id: &str) -> Result<(usize, Vec<String>)> {
+    if !crate::db::table_exists(conn, "embeddings")? {
+        return Ok((0, vec![]));
+    }
+    let count: usize = conn.query_row(
+        "SELECT COUNT(*) FROM embeddings WHERE model_id != ?1",
+        [model_id],
+        |r| r.get(0),
+    )?;
+    let mut stmt =
+        conn.prepare("SELECT DISTINCT model_id FROM embeddings WHERE model_id != ?1")?;
+    let ids = stmt
+        .query_map([model_id], |r| r.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((count, ids))
+}
+
 pub fn pending_images(conn: &Connection, model_id: &str) -> Result<Vec<PendingImage>> {
     let placeholders = EMBEDDABLE_EXTS
         .iter()
@@ -247,8 +290,16 @@ mod tests {
     }
 
     #[test]
-    fn default_model_id_is_the_siglip_checkpoint() {
-        assert_eq!(DEFAULT_MODEL_ID, "google/siglip-so400m-patch14-384");
+    fn default_model_id_is_a_siglip_checkpoint() {
+        // Deliberately not pinned to one exact id: the default model has
+        // changed once already (2026-08-04, so400m-384 -> siglip2-base-384 for
+        // a measured 3.6x speedup) and pinning it only made this test fail as
+        // a formality. What actually matters is that it stays a real HF
+        // owner/name SigLIP id, since `Embedder::load` splits on '/' and the
+        // whole embeddings table is keyed by this string.
+        assert!(DEFAULT_MODEL_ID.starts_with("google/"), "{DEFAULT_MODEL_ID}");
+        assert!(DEFAULT_MODEL_ID.contains("siglip"), "{DEFAULT_MODEL_ID}");
+        assert_eq!(DEFAULT_MODEL_ID.matches('/').count(), 1, "{DEFAULT_MODEL_ID}");
     }
 
     #[test]

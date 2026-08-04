@@ -58,7 +58,23 @@ pub(crate) fn clamp_batch(requested: usize) -> usize {
 fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection) -> Result<()> {
     embeddings::ensure_embeddings_table(conn)?;
 
-    let pending = embeddings::pending_images(conn, model::MODEL_ID)?;
+    let model_id = model::configured_model_id();
+
+    // A model change silently invalidates every stored embedding (rows are
+    // tagged with the model id, and `pending_images` filters on it), so an
+    // upgrade would otherwise look like "re-embedding my entire finished
+    // library for no reason". Say so explicitly before doing hours of work.
+    let (stale, other_models) = embeddings::embeddings_from_other_models(conn, model_id)?;
+    if stale > 0 {
+        eprintln!(
+            "note: {stale} existing embedding(s) were made with {} and cannot be compared against \
+             {model_id}, so they will be recomputed and replaced. Embeddings from different \
+             models are not interchangeable; this is a one-time cost per model change.",
+            other_models.join(", ")
+        );
+    }
+
+    let pending = embeddings::pending_images(conn, model_id)?;
     if pending.is_empty() {
         if !args.silent {
             eprintln!("Nothing to embed: all hashes already have embeddings.");
@@ -85,7 +101,7 @@ fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection) -> Result<()> {
             .map(|p| {
                 match preprocess::image_to_tensor(
                     std::path::Path::new(&p.path),
-                    model::IMAGE_SIZE,
+                    model::configured_image_size(),
                     &candle_core::Device::Cpu, // decode on CPU, move to device in batch
                 ) {
                     Ok(t) => Some((p.hash.clone(), t)),
@@ -112,7 +128,7 @@ fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection) -> Result<()> {
             }
         }
 
-        embeddings::insert_embeddings(conn, model::MODEL_ID, &rows)?;
+        embeddings::insert_embeddings(conn, model_id, &rows)?;
         done += rows.len();
         progress.tick_by(chunk.len() as u64);
     }
