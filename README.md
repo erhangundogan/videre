@@ -543,12 +543,14 @@ every run. `videre classify` (see above) reuses these embeddings for zero-shot p
 ```bash
 videre embed                        # embed all unprocessed images in the default db
 videre embed --db <path>            # explicit db
-videre embed --batch 64             # larger inference batch size (default: 32)
+videre embed --batch 64             # larger inference batch size (default: 32, max 96)
 videre embed --chunk 1000           # rows written per transaction / resume granularity (default: 500)
 videre embed --silent               # suppress per-image output
 ```
 
 **First run downloads ~1.8 GB of model weights from Hugging Face.** Weights are cached in `~/.cache/huggingface/` and reused on every subsequent run. If all images are already embedded, the command exits immediately without loading the model.
+
+**`--batch` is capped at 96.** Larger values are reduced automatically with a warning. Above a threshold measured between 121 and 127, the batched inference path silently returns incorrect embeddings - no error, no crash, nothing in the output looks wrong. Raising the batch size is therefore not a way to speed up embedding; it only produces a faster wrong answer.
 
 ```bash
 videre search "sunset on beach"                     # text query, default db

@@ -1,6 +1,6 @@
 [package]
 name = "videre-ml"
-version = "0.9.8"
+version = "0.9.9"
 edition = "2021"
 description = "SigLIP embedding, zero-shot classification, and InsightFace face detection/clustering for the videre media library CLI"
 license = "Apache-2.0"
