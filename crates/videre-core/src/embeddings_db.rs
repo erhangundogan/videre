@@ -210,30 +210,46 @@ pub fn detach(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// The one `VIDERE_HOME` for this test binary, set exactly once.
+///
+/// Shared by every module's tests rather than each setting its own. Tests
+/// share a process and run in parallel, so a per-test `set_var` races every
+/// concurrent `getenv`, and deleting that directory afterwards pulls the home
+/// out from under unrelated tests mid-run. Doing exactly that made two
+/// `pipeline_runs` lock tests fail. Isolation comes from per-test
+/// subdirectories instead, which suffices because `library_dir` keys on the
+/// database's canonical path.
+#[cfg(test)]
+pub(crate) fn test_home() -> &'static Path {
+    static HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("videre-embdb-home-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create isolated test home");
+        std::env::set_var("VIDERE_HOME", &dir);
+        dir
+    })
+}
+
+/// Test-only: a fresh library directory plus an empty database file at
+/// `<test home>/<tag>/<tag>.db`, ready to hand to `attach`.
+#[cfg(test)]
+pub(crate) fn test_library(tag: &str) -> PathBuf {
+    let dir = test_home().join(tag);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let lib = dir.join(format!("{tag}.db"));
+    std::fs::write(&lib, b"").unwrap();
+    lib
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Gives one test its own library directory under a `VIDERE_HOME` that is
-    /// set exactly once for the whole test binary.
-    ///
-    /// `VIDERE_HOME` is deliberately NOT set per test. Tests share a process
-    /// and run in parallel, so a per-test `set_var` races every concurrent
-    /// `getenv`, and deleting that directory afterwards pulls the home out
-    /// from under unrelated tests mid-run. Doing exactly that made two
-    /// `pipeline_runs` lock tests fail. Isolation comes from each test getting
-    /// its own subdirectory and its own database filename instead, which is
-    /// enough because `library_dir` keys on the database's canonical path.
+    /// Gives one test its own directory under the shared per-binary
+    /// `VIDERE_HOME`. See `test_home` for why the home is not set per test.
     fn with_home<T>(tag: &str, f: impl FnOnce(&Path) -> T) -> T {
-        static HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-        let home = HOME.get_or_init(|| {
-            let dir =
-                std::env::temp_dir().join(format!("videre-embdb-home-{}", std::process::id()));
-            std::fs::create_dir_all(&dir).expect("create isolated test home");
-            std::env::set_var("VIDERE_HOME", &dir);
-            dir
-        });
-        let dir = home.join(tag);
+        let dir = test_home().join(tag);
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         f(&dir)
