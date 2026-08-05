@@ -32,6 +32,11 @@ pub struct ReportArgs {
     #[arg(long)]
     all: bool,
 
+    /// Embedding model backing the in-page similarity search under --all
+    /// (default: VIDERE_EMBED_MODEL, else the built-in default).
+    #[arg(long)]
+    model: Option<String>,
+
     /// Start a local face-labeling HTTP server on port 7878
     #[arg(long)]
     faces: bool,
@@ -81,10 +86,10 @@ struct VectorBlock {
 /// base64-encoded f16 buffer. Returns None when the table is missing or empty.
 /// Rows whose blob length disagrees with the first valid row's dimension are
 /// skipped (mirrors search.rs semantics for corrupt rows).
-fn query_vectors(conn: &Connection) -> Option<VectorBlock> {
+fn query_vectors(conn: &Connection, model_id: &str) -> Option<VectorBlock> {
     let table_exists = conn
         .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='embeddings'",
+            "SELECT COUNT(*) FROM emb.sqlite_master WHERE type='table' AND name='embeddings'",
             [],
             |r| r.get::<_, i64>(0),
         )
@@ -95,14 +100,12 @@ fn query_vectors(conn: &Connection) -> Option<VectorBlock> {
     }
     let mut stmt = conn
         .prepare(
-            "SELECT hash, embedding FROM embeddings WHERE model_id = ?1 \
+            "SELECT hash, embedding FROM emb.embeddings WHERE model_id = ?1 \
              AND hash IN (SELECT hash FROM file_hashes) ORDER BY hash",
         )
         .ok()?;
     let rows: Vec<(String, Vec<u8>)> = stmt
-        .query_map([videre_core::embeddings::DEFAULT_MODEL_ID], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })
+        .query_map([model_id], |r| Ok((r.get(0)?, r.get(1)?)))
         .ok()?
         .filter_map(|r| r.ok())
         .collect();
@@ -2073,6 +2076,7 @@ struct AppState {
     conn: Mutex<Connection>,
     shutdown_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     report_all: bool,
+    model_id: String,
     report_by_date: bool,
     report_heic: bool,
     report_heic_original: bool,
@@ -2093,7 +2097,11 @@ async fn handle_report(State(state): State<Arc<AppState>>) -> impl axum::respons
     let all_files = state.report_all.then(|| query_all_files(&conn));
     let keep_files = state.report_by_date.then(|| query_keep_files(&conn));
     let faces_by_hash = videre_core::face_db::labeled_faces_by_hash(&conn).unwrap_or_default();
-    let vectors = if state.report_all { query_vectors(&conn) } else { None };
+    let vectors = if state.report_all {
+        query_vectors(&conn, &state.model_id)
+    } else {
+        None
+    };
     let db_path = conn.path().map(|p| p.to_string()).unwrap_or_default();
     drop(conn);
     let html = generate_html(
@@ -2457,16 +2465,26 @@ struct ServeOptions {
     report_by_date: bool,
     report_heic: bool,
     report_heic_original: bool,
+    model_id: String,
 }
 
 async fn serve_faces_async(db: &Path, opts: ServeOptions) -> Result<(), Box<dyn std::error::Error>> {
     let conn = videre_core::db::open_wal(db)?;
     videre_core::location::ensure_location_column(&conn);
+    // Only --all needs vectors. A missing model database disables the
+    // similarity search with a note rather than failing the whole report,
+    // which works perfectly well without embeddings.
+    if opts.report_all {
+        if let Err(e) = videre_core::embeddings_db::attach(&conn, db, &opts.model_id, false) {
+            eprintln!("note: similarity search disabled ({e})");
+        }
+    }
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let state = Arc::new(AppState {
         conn: Mutex::new(conn),
         shutdown_tx: Mutex::new(Some(shutdown_tx)),
         report_all: opts.report_all,
+        model_id: opts.model_id.clone(),
         report_by_date: opts.report_by_date,
         report_heic: opts.report_heic,
         report_heic_original: opts.report_heic_original,
@@ -2545,6 +2563,7 @@ pub fn run(args: ReportArgs) -> anyhow::Result<()> {
             report_by_date: args.by_date,
             report_heic: args.heic,
             report_heic_original: args.heic_original,
+            model_id: videre_core::embeddings::resolve_model_id(args.model.as_deref()),
         };
         if let Err(e) = serve_faces(&db, opts) {
             eprintln!("Error: {e}");
@@ -2568,7 +2587,16 @@ pub fn run(args: ReportArgs) -> anyhow::Result<()> {
     let all_files = args.all.then(|| query_all_files(&conn));
     let keep_files = args.by_date.then(|| query_keep_files(&conn));
     let vectors = if args.all {
-        let v = query_vectors(&conn);
+        let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref());
+        // A missing model database disables similarity search with a note
+        // rather than failing the report, which works fine without vectors.
+        let v = match videre_core::embeddings_db::attach(&conn, &db, &model_id, false) {
+            Ok(()) => query_vectors(&conn, &model_id),
+            Err(e) => {
+                eprintln!("note: similarity search disabled ({e})");
+                None
+            }
+        };
         if v.is_none() {
             eprintln!("no embeddings found; run videre embed for similarity search");
         }
@@ -2656,6 +2684,7 @@ mod tests {
             conn: Mutex::new(conn),
             shutdown_tx: Mutex::new(None),
             report_all: false,
+            model_id: videre_core::embeddings::DEFAULT_MODEL_ID.to_string(),
             report_by_date: false,
             report_heic: false,
             report_heic_original: false,
@@ -2663,12 +2692,33 @@ mod tests {
         })
     }
 
+    /// Attaches a real per-model database as `emb`, since `query_vectors`
+    /// reads through the attached schema now. Faking it with a plain local
+    /// table would bypass exactly what these tests exist to cover.
+    ///
+    /// `VIDERE_HOME` is set once per test binary, not per test: tests share a
+    /// process and run in parallel, so a per-test `set_var` races every
+    /// concurrent `getenv`. Each call gets a distinct database filename
+    /// instead, which is enough because the layout keys on the database's
+    /// canonical path.
     fn add_embeddings_table(conn: &Connection) {
-        conn.execute_batch(
-            "CREATE TABLE embeddings (
-                hash TEXT PRIMARY KEY, model_id TEXT NOT NULL,
-                embedding BLOB NOT NULL, embedded_at TEXT NOT NULL
-            );",
+        static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let home = HOME.get_or_init(|| {
+            let dir = std::env::temp_dir()
+                .join(format!("videre-report-emb-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            unsafe { std::env::set_var("VIDERE_HOME", &dir) };
+            dir
+        });
+        let i = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let lib = home.join(format!("report-{i}.db"));
+        std::fs::write(&lib, b"").unwrap();
+        videre_core::embeddings_db::attach(
+            conn,
+            &lib,
+            videre_core::embeddings::DEFAULT_MODEL_ID,
+            true,
         )
         .unwrap();
     }
@@ -2684,14 +2734,14 @@ mod tests {
     #[test]
     fn query_vectors_returns_none_without_table() {
         let conn = mem_db();
-        assert!(query_vectors(&conn).is_none());
+        assert!(query_vectors(&conn, videre_core::embeddings::DEFAULT_MODEL_ID).is_none());
     }
 
     #[test]
     fn query_vectors_returns_none_when_empty() {
         let conn = mem_db();
         add_embeddings_table(&conn);
-        assert!(query_vectors(&conn).is_none());
+        assert!(query_vectors(&conn, videre_core::embeddings::DEFAULT_MODEL_ID).is_none());
     }
 
     #[test]
@@ -2706,20 +2756,20 @@ mod tests {
         let two = videre_core::vectors::to_f16_bytes(&[0.0, 1.0]);
         // Insert out of order to prove ORDER BY hash
         conn.execute(
-            "INSERT INTO embeddings VALUES ('bbb', ?1, ?2, 'now')",
+            "INSERT INTO emb.embeddings VALUES ('bbb', ?1, ?2, 'now')",
             rusqlite::params![videre_core::embeddings::DEFAULT_MODEL_ID, two],
         ).unwrap();
         conn.execute(
-            "INSERT INTO embeddings VALUES ('aaa', ?1, ?2, 'now')",
+            "INSERT INTO emb.embeddings VALUES ('aaa', ?1, ?2, 'now')",
             rusqlite::params![videre_core::embeddings::DEFAULT_MODEL_ID, one.clone()],
         ).unwrap();
         // Wrong model id must be excluded
         conn.execute(
-            "INSERT INTO embeddings VALUES ('ccc', 'other-model', ?1, 'now')",
+            "INSERT INTO emb.embeddings VALUES ('ccc', 'other-model', ?1, 'now')",
             rusqlite::params![one],
         ).unwrap();
 
-        let vb = query_vectors(&conn).unwrap();
+        let vb = query_vectors(&conn, videre_core::embeddings::DEFAULT_MODEL_ID).unwrap();
         assert_eq!(vb.hashes, vec!["aaa".to_string(), "bbb".to_string()]);
         assert_eq!(vb.dim, 2);
         // blob = [00 3C 00 00] ++ [00 00 00 3C]
@@ -2736,14 +2786,14 @@ mod tests {
         let good = videre_core::vectors::to_f16_bytes(&[1.0, 0.0]);
         let bad = videre_core::vectors::to_f16_bytes(&[1.0, 0.0, 0.0]); // 3 dims
         conn.execute(
-            "INSERT INTO embeddings VALUES ('aaa', ?1, ?2, 'now')",
+            "INSERT INTO emb.embeddings VALUES ('aaa', ?1, ?2, 'now')",
             rusqlite::params![videre_core::embeddings::DEFAULT_MODEL_ID, good],
         ).unwrap();
         conn.execute(
-            "INSERT INTO embeddings VALUES ('bbb', ?1, ?2, 'now')",
+            "INSERT INTO emb.embeddings VALUES ('bbb', ?1, ?2, 'now')",
             rusqlite::params![videre_core::embeddings::DEFAULT_MODEL_ID, bad],
         ).unwrap();
-        let vb = query_vectors(&conn).unwrap();
+        let vb = query_vectors(&conn, videre_core::embeddings::DEFAULT_MODEL_ID).unwrap();
         assert_eq!(vb.hashes, vec!["aaa".to_string()]);
     }
 
@@ -2758,11 +2808,11 @@ mod tests {
         let v = videre_core::vectors::to_f16_bytes(&[1.0, 0.0]);
         for hash in ["aaa", "orphan"] {
             conn.execute(
-                "INSERT INTO embeddings VALUES (?1, ?2, ?3, 'now')",
+                "INSERT INTO emb.embeddings VALUES (?1, ?2, ?3, 'now')",
                 rusqlite::params![hash, videre_core::embeddings::DEFAULT_MODEL_ID, v.clone()],
             ).unwrap();
         }
-        let vb = query_vectors(&conn).unwrap();
+        let vb = query_vectors(&conn, videre_core::embeddings::DEFAULT_MODEL_ID).unwrap();
         assert_eq!(vb.hashes, vec!["aaa".to_string()]);
     }
 
