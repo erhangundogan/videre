@@ -59,7 +59,7 @@ fn resolve_and_open(args: &StatsArgs) -> anyhow::Result<(std::path::PathBuf, rus
 
 fn run_text(args: &StatsArgs) -> anyhow::Result<()> {
     let (db, conn) = resolve_and_open(args)?;
-    let library = videre_core::library_stats::compute(&conn)?;
+    let library = videre_core::library_stats::compute_full(&conn, &db)?;
     let pipelines = videre_core::pipeline_runs::read_all(&conn, &db)?;
 
     println!(
@@ -79,6 +79,21 @@ fn run_text(args: &StatsArgs) -> anyhow::Result<()> {
         "Faces: {} detected, {} people named",
         library.faces_detected, library.people_named
     );
+    println!();
+    println!("Embeddings:");
+    if library.embeddings.is_empty() {
+        println!("  none; run 'videre embed' to create some");
+    } else {
+        for e in &library.embeddings {
+            println!(
+                "  {:38} {:>8} {:>5}-dim {:>10}",
+                e.model_id,
+                e.count,
+                e.dims,
+                super::report::format_bytes(e.size_bytes),
+            );
+        }
+    }
     println!();
     println!("Pipeline status:");
     for p in &pipelines {
@@ -102,7 +117,7 @@ fn run_text(args: &StatsArgs) -> anyhow::Result<()> {
 
 fn run_json(args: &StatsArgs) -> anyhow::Result<StatsJson> {
     let (db, conn) = resolve_and_open(args)?;
-    let library = videre_core::library_stats::compute(&conn)?;
+    let library = videre_core::library_stats::compute_full(&conn, &db)?;
     let pipelines = videre_core::pipeline_runs::read_all(&conn, &db)?;
     Ok(StatsJson { schema_version: SCHEMA_VERSION, library, pipelines })
 }

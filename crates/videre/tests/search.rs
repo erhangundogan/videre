@@ -64,7 +64,10 @@ fn text_search_errors_with_run_embed_first_when_no_embeddings_exist() {
         .expect("failed to run videre search");
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("run videre embed first"), "{stderr}");
+    // The message now names the model and the exact command to run, rather
+    // than a bare "run videre embed first".
+    assert!(stderr.contains("no embeddings"), "{stderr}");
+    assert!(stderr.contains("videre embed --model"), "{stderr}");
 
     let json_out = Command::new(videre_bin())
         .arg("search")
@@ -77,13 +80,9 @@ fn text_search_errors_with_run_embed_first_when_no_embeddings_exist() {
     assert!(!json_out.status.success());
     let doc: serde_json::Value = serde_json::from_slice(&json_out.stdout)
         .expect("stdout must be one valid JSON error object");
-    assert!(
-        doc["error"]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("run videre embed first"),
-        "{doc}"
-    );
+    let msg = doc["error"]["message"].as_str().unwrap_or_default();
+    assert!(msg.contains("no embeddings"), "{doc}");
+    assert!(msg.contains("videre embed --model"), "{doc}");
 }
 
 #[test]

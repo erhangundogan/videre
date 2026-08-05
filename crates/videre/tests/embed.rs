@@ -62,9 +62,18 @@ fn embed_produces_an_embeddings_row_for_a_real_video() {
         .expect("failed to run videre embed");
     assert!(embed_status.success());
 
+    // Embeddings live in a per-model database under VIDERE_HOME now, not in
+    // the main library file, so open that instead of `db_path`.
     let conn = rusqlite::Connection::open(&db_path).unwrap();
+    videre_core::embeddings_db::attach(
+        &conn,
+        &db_path,
+        videre_core::embeddings::DEFAULT_MODEL_ID,
+        false,
+    )
+    .expect("videre embed should have created the model database");
     let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM emb.embeddings", [], |r| r.get(0))
         .unwrap();
     assert_eq!(count, 1, "the video's content hash should have an embeddings row");
 
@@ -77,7 +86,7 @@ fn embed_produces_an_embeddings_row_for_a_real_video() {
     // "it was this particular model".
     let (model_id, blob_len): (String, i64) = conn
         .query_row(
-            "SELECT model_id, LENGTH(embedding) FROM embeddings LIMIT 1",
+            "SELECT model_id, LENGTH(embedding) FROM emb.embeddings LIMIT 1",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )

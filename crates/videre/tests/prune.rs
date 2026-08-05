@@ -2,7 +2,30 @@ use rusqlite::Connection;
 use std::process::Command;
 use tempfile::tempdir;
 
+/// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.
+///
+/// This file was the one integration-test file without this helper, which was
+/// harmless while prune touched nothing under the videre home. It is not
+/// harmless now: embeddings live at `<VIDERE_HOME>/embeddings/...`, so without
+/// it the test process writes into the developer's real `~/.videre` while the
+/// spawned binary reads an isolated one, and the assertions silently compare
+/// two different places. Observed leaking real directories before this fix.
+///
+/// Set inside `get_or_init` so it happens exactly once: tests share a process
+/// and run in parallel, and a per-test `set_var` would race every concurrent
+/// `getenv`.
+fn isolated_home() {
+    static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("videre-prune-home-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create isolated test home");
+        std::env::set_var("VIDERE_HOME", &dir);
+        dir
+    });
+}
+
 fn prune_bin() -> std::path::PathBuf {
+    isolated_home();
     let mut path = std::env::current_exe().unwrap();
     path.pop(); // deps/
     path.pop(); // debug/
@@ -43,18 +66,15 @@ fn fixture_db(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf,
     (db, a, b, phantom)
 }
 
+/// Writes embeddings into the per-model database for `db`, which is where
+/// they live now, rather than into the main library file.
 fn add_embeddings(db: &std::path::Path, hashes: &[&str]) {
+    isolated_home(); // must precede any embeddings_db call; see its doc comment
     let conn = Connection::open(db).unwrap();
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS embeddings (
-            hash TEXT PRIMARY KEY, model_id TEXT NOT NULL,
-            embedding BLOB NOT NULL, embedded_at TEXT NOT NULL
-        );",
-    )
-    .unwrap();
+    videre_core::embeddings_db::attach(&conn, db, "test-model", true).unwrap();
     for hash in hashes {
         conn.execute(
-            "INSERT OR IGNORE INTO embeddings VALUES (?1, 'test-model', X'0000', 'now')",
+            "INSERT OR IGNORE INTO emb.embeddings VALUES (?1, 'test-model', X'0000', 'now')",
             rusqlite::params![hash],
         )
         .unwrap();
@@ -83,9 +103,11 @@ fn get_modified_at(db: &std::path::Path, path: &str) -> Option<String> {
 }
 
 fn embedding_exists(db: &std::path::Path, hash: &str) -> bool {
+    isolated_home();
     let conn = Connection::open(db).unwrap();
+    videre_core::embeddings_db::attach(&conn, db, "test-model", false).unwrap();
     conn.query_row(
-        "SELECT COUNT(*) FROM embeddings WHERE hash = ?1",
+        "SELECT COUNT(*) FROM emb.embeddings WHERE hash = ?1",
         rusqlite::params![hash],
         |r| r.get::<_, i64>(0),
     )

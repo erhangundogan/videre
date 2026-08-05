@@ -18,6 +18,10 @@ pub struct LibraryStats {
     pub wasted_bytes: i64,
     pub faces_detected: i64,
     pub people_named: i64,
+    /// One entry per model with an embedding database for this library.
+    /// Empty when nothing has been embedded, which is a normal state.
+    #[serde(default)]
+    pub embeddings: Vec<crate::embeddings_db::ModelEmbeddingCount>,
 }
 
 use crate::db::table_exists;
@@ -88,7 +92,19 @@ pub fn compute(conn: &Connection) -> Result<LibraryStats> {
         wasted_bytes,
         faces_detected,
         people_named,
+        embeddings: Vec::new(),
     })
+}
+
+/// `compute`, plus the per-model embedding inventory.
+///
+/// Separate from `compute` because embeddings live outside the connection, in
+/// files addressed by the library's own path. `videre report`'s stats tile
+/// keeps calling `compute` and is unaffected.
+pub fn compute_full(conn: &Connection, db_path: &std::path::Path) -> anyhow::Result<LibraryStats> {
+    let mut stats = compute(conn)?;
+    stats.embeddings = crate::embeddings_db::counts_by_model(db_path)?;
+    Ok(stats)
 }
 
 #[cfg(test)]
