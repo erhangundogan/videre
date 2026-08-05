@@ -90,7 +90,7 @@ fn run_classify(args: &ClassifyArgs, conn: &rusqlite::Connection) -> Result<()> 
     }
     progress.finish();
 
-    classify_core::insert_classifications(conn, &rows)?;
+    classify_core::insert_classifications(conn, &model_id, &rows)?;
 
     if !args.silent {
         eprintln!("{}", format_summary(rows.len(), started.elapsed()));
