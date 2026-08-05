@@ -1,6 +1,7 @@
 pub mod classify;
 pub mod db;
 pub mod embeddings;
+pub mod embeddings_db;
 pub mod face_cluster;
 pub mod face_db;
 pub mod geocode;
