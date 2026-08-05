@@ -36,7 +36,7 @@ Options:
 
 `--output` and `--output-sqlite` cannot be used together: passing both is an error.
 
-`--similar` for `.mov`/`.mp4` files needs macOS (`qlmanage`), the first platform dependency `videre scan` has ever had - every other `scan` code path stays platform-agnostic. On non-macOS, or if `qlmanage` fails for any reason, the file simply gets no `phash` (same graceful-skip behavior as any other undecodable file) rather than a hard error. Existing databases scanned before this feature shipped have `phash = NULL` for every video; re-run `videre scan --similar` to populate it - the feature is purely additive and never invalidates existing rows.
+`--similar` for `.mov`/`.mp4` files needs macOS (`qlmanage`), the first platform dependency `videre scan` has ever had. Every other `scan` code path stays platform-agnostic. On non-macOS, or if `qlmanage` fails for any reason, the file simply gets no `phash` (same graceful-skip behavior as any other undecodable file) rather than a hard error. Existing databases scanned before this feature shipped have `phash = NULL` for every video; re-run `videre scan --similar` to populate it. The feature is purely additive and never invalidates existing rows.
 
 ```
 videre dedupe [OPTIONS]               # reads the database; no directory argument
@@ -62,7 +62,7 @@ Bare `videre scan <dir>` writes SQLite to the resolved default database (no JSON
 ## Publishing to crates.io
 
 All four crates publish under flat names (`videre`, `videre-core`, `videre-ml`,
-`videre-api`) - crates.io has no namespaces, so the `videre-` prefix is
+`videre-api`): crates.io has no namespaces, so the `videre-` prefix is
 convention only and reserves nothing. Publish order follows the dependency
 graph and each step must land on the registry before the next resolves:
 `videre-core` -> `videre-api` + `videre-ml` -> `videre`. `cargo publish
@@ -87,14 +87,14 @@ Two Linux caveats, both measured rather than assumed:
 `aarch64-unknown-linux-gnu` feature set, so the build fails with 11x
 `error: instruction requires: fullfp16`. `.cargo/config.toml` sets
 `-C target-feature=+fp16` for that target, which handles every cargo
-invocation run from inside this repo - `cargo build`, `cargo test`, and `make
+invocation run from inside this repo: `cargo build`, `cargo test`, and `make
 install` (which uses `cargo install --path crates/videre`). It deliberately
 cannot help `cargo install videre` from crates.io: that reads the installing
 user's own `~/.cargo/config.toml`, so the flag must be passed by hand there,
 as documented in README's Install section. x86_64 Linux is unaffected
 (`gemm-f16` takes a different code path there; verified by a full emulated
 amd64 build). **Note the trap: `cargo check --workspace` PASSES on ARM64 Linux
-even when `cargo build` fails**, because `check` never runs codegen - never
+even when `cargo build` fails**, because `check` never runs codegen. Never
 treat a green cross-platform `check` as evidence that `cargo install` works.
 
 **HEIC and video are macOS-only,** the one functional gap: HEIC images and
@@ -106,7 +106,7 @@ they short-circuit on a `cfg!(target_os = "macos")` check and surface
 `videre_core::heic::QUICKLOOK_UNAVAILABLE`, printed at most once per process
 via `warn_quicklook_unavailable_once`. The consequence is that `.heic`/`.mov`/
 `.mp4` get no thumbnails, embeddings, face detection, or `--similar` phash on
-those platforms - they are still scanned, hashed, EXIF-extracted, and exactly
+those platforms. They are still scanned, hashed, EXIF-extracted, and exactly
 deduped. The guards use `cfg!()` (a runtime-constant `if`) rather than `#[cfg]`
 so both branches type-check on every platform.
 
@@ -162,7 +162,7 @@ cargo build --release
 `cargo-llvm-cov` (installed via `cargo install cargo-llvm-cov`, plus the
 `llvm-tools-preview` rustup component) measures unit-test line/region/function
 coverage across the workspace. It must be invoked through the rustup-managed
-toolchain explicitly, not plain `cargo llvm-cov` - this machine's default
+toolchain explicitly, not plain `cargo llvm-cov`. This machine's default
 `cargo`/`rustc` on `PATH` are a separate Homebrew Rust install (no rustup
 component support), while `llvm-tools-preview` only installs into a
 rustup-managed toolchain; mixing the two would pair an LLVM-22 rustc with
@@ -174,7 +174,7 @@ rustup run stable-aarch64-apple-darwin cargo llvm-cov --workspace --html        
 ```
 
 Coverage only reflects code exercised by unit tests (`#[cfg(test)]` modules)
-running in-process - integration tests under `crates/*/tests/` that spawn
+running in-process. Integration tests under `crates/*/tests/` that spawn
 `videre_bin()` as a child process (most CLI subcommand tests) are NOT
 instrumented, so command modules like `fix_dates.rs`/`classify.rs`/`watch.rs`
 show artificially low numbers here despite being covered by those integration
@@ -203,9 +203,9 @@ jq 'select(.ext == "heic")' ~/.videre/hashes.jsonl
 
 ## ~/.videre home directory
 
-Every subcommand shares a home directory at `~/.videre` (override with the `VIDERE_HOME` env var), created lazily by writers (`scan`, `watch`, `config set`) - readers never create it. It holds `hashes.db` (default SQLite database), `hashes.jsonl` (default JSONL output, only written when `--output` is used bare), `config.toml` (optional overrides, currently just `default_db`), and `locks/` (per-database-per-command `flock` files - see the `pipeline_runs` notes below).
+Every subcommand shares a home directory at `~/.videre` (override with the `VIDERE_HOME` env var), created lazily by writers (`scan`, `watch`, `config set`). Readers never create it. It holds `hashes.db` (default SQLite database), `hashes.jsonl` (default JSONL output, only written when `--output` is used bare), `config.toml` (optional overrides, currently just `default_db`), and `locks/` (per-database-per-command `flock` files; see the `pipeline_runs` notes below).
 
-Database resolution order for every subcommand: explicit path (`--db` on the eleven readers - `report`, `fix-dates`, `prune`, `embed`, `search`, `faces`, `classify`, `mcp`, `dedupe`, `locations`, `stats`; `--output-sqlite` on the two writers - `scan`, `watch`) > `default_db` in `config.toml` > `~/.videre/hashes.db`. Readers never create a database; if the resolved path doesn't exist they print `no database found at <path>; run 'videre scan <dir>' first` and exit 1 (arrives as the JSON error object under `search --json`).
+Database resolution order for every subcommand: explicit path (`--db` on the eleven readers: `report`, `fix-dates`, `prune`, `embed`, `search`, `faces`, `classify`, `mcp`, `dedupe`, `locations`, `stats`; `--output-sqlite` on the two writers: `scan`, `watch`) > `default_db` in `config.toml` > `~/.videre/hashes.db`. Readers never create a database; if the resolved path doesn't exist they print `no database found at <path>; run 'videre scan <dir>' first` and exit 1 (arrives as the JSON error object under `search --json`).
 
 `videre config` shows the resolved home dir, `config.toml` path, the `db` and `path` settings (labeled by their settable keys, with a set-command hint when unset), resolved db, and jsonl path. `videre config set db <path>` writes an absolute path to `config.toml` as `default_db`; `videre config set path <dir>` writes `default_path`, which `videre scan` and `videre watch` use when their directory positional is omitted (no built-in fallback: without it, the directory is required). Both setters preserve any other keys already present; `videre config unset db|path` removes a key. `videre scan <dir>` also adopts `<dir>` as `default_path` automatically the first time it is run with no `default_path` already set (a one-time convenience for the common case of a single photo library); it prints a one-line stderr note when it does (suppressed by `--silent`), and never overwrites an already-configured `default_path` on later runs.
 
@@ -274,7 +274,7 @@ The `videre` crate builds a single `[[bin]]` (`videre`, from `src/main.rs`) plus
 - InsightFace buffalo_l: SCRFD-10GF face detector + ArcFace w600k_r50 embedder (ONNX weights, auto-downloaded to `~/.cache/ort/`)
 - `rmcp`: official Rust MCP SDK, stdio server for `videre mcp`
 - `schemars`: JSON-schema generation for MCP tool parameters
-- `ureq`: blocking HTTP client for forward geocoding (`videre search --location`) - no async runtime needed, matching this project's fully-synchronous architecture
+- `ureq`: blocking HTTP client for forward geocoding (`videre search --location`), no async runtime needed, matching this project's fully-synchronous architecture
 
 ## SQLite schema
 
@@ -342,21 +342,21 @@ CREATE TABLE IF NOT EXISTS geocode_cache (
 );
 ```
 
-Re-scanning the same folder with the same SQLite file upserts (overwrites) existing rows via `INSERT OR REPLACE`. `phash` is stored as signed `INTEGER` (cast from `u64`). The algorithm is dHash: grayscale, resize to 9x8 (Lanczos3), compare horizontally adjacent pixels into 64 bits. `videre dedupe --similar` groups pairs within Hamming distance 10 by greedy single-linkage clustering; that output is review-only and never reaches stdout, which is what keeps `videre dedupe | xargs trash` safe. HEIC is deliberately absent from `PHASH_EXTENSIONS`, so `.heic` files get no near-duplicate hash at all. For `.mov`/`.mp4` files, `phash` is a dHash of the same QuickLook poster-frame `videre embed` decodes for SigLIP - not a byte-identical/video-content hash, so it only catches videos whose poster-frame looks alike (same-source re-encodes and trims that keep the opening frame; it will not catch a trim that cuts the opening frame). A flat or near-flat opening frame (a fade-in, a letterboxed dark frame, or any shot QuickLook grabs before it resolves) dHashes to all-zero or near-all-zero bits, same as it would for a flat-colored photo, and such videos would group with any other flat-opening video regardless of content. **Measured on a real 4,323-file library (2026-08-04): zero occurrences** - no `phash` was all-zero or all-ones, and no value repeated more than 3 times across 3,702 hashed files including 819 videos. The concern came from a synthetic solid-color test fixture; real camera video apparently doesn't open on a truly flat frame often enough to matter. Treat it as a theoretical edge case that has not been observed, not an expected failure mode. Output stays review-only regardless, so the cost of any false positive is a noisy group in `videre report`, never a wrong deletion - see `docs/superpowers/TECH_DEBT.md` for follow-ups (a size-proximity gate, and true multi-frame fingerprinting).
+Re-scanning the same folder with the same SQLite file upserts (overwrites) existing rows via `INSERT OR REPLACE`. `phash` is stored as signed `INTEGER` (cast from `u64`). The algorithm is dHash: grayscale, resize to 9x8 (Lanczos3), compare horizontally adjacent pixels into 64 bits. `videre dedupe --similar` groups pairs within Hamming distance 10 by greedy single-linkage clustering; that output is review-only and never reaches stdout, which is what keeps `videre dedupe | xargs trash` safe. HEIC is deliberately absent from `PHASH_EXTENSIONS`, so `.heic` files get no near-duplicate hash at all. For `.mov`/`.mp4` files, `phash` is a dHash of the same QuickLook poster-frame `videre embed` decodes for SigLIP, not a byte-identical/video-content hash, so it only catches videos whose poster-frame looks alike (same-source re-encodes and trims that keep the opening frame; it will not catch a trim that cuts the opening frame). A flat or near-flat opening frame (a fade-in, a letterboxed dark frame, or any shot QuickLook grabs before it resolves) dHashes to all-zero or near-all-zero bits, same as it would for a flat-colored photo, and such videos would group with any other flat-opening video regardless of content. **Measured on a real 4,323-file library (2026-08-04): zero occurrences**. No `phash` was all-zero or all-ones, and no value repeated more than 3 times across 3,702 hashed files including 819 videos. The concern came from a synthetic solid-color test fixture; real camera video apparently doesn't open on a truly flat frame often enough to matter. Treat it as a theoretical edge case that has not been observed, not an expected failure mode. Output stays review-only regardless, so the cost of any false positive is a noisy group in `videre report`, never a wrong deletion. See `docs/superpowers/TECH_DEBT.md` for follow-ups (a size-proximity gate, and true multi-frame fingerprinting).
 
 `faces` rows are keyed by `id` (auto-increment). `hash` links to `file_hashes`. `bbox` and `landmark` are JSON strings. `embedding` is a raw f16 BLOB (512-dim ArcFace, 1024 bytes). `cluster_id` is assigned by the two-stage clustering (average-linkage, then a centroid-merge pass); `person_label` and `confirmed` are set via `videre report --faces`.
 
-A companion `faces_scanned` table (`hash TEXT PRIMARY KEY, scanned_at TEXT`) records every hash that face detection has processed, **including images where zero faces were found** (which produce no `faces` row). This is what makes `videre faces` resumable - the skip set is "already scanned", so no-face images are detected once rather than every run. Created by `create_faces_table` alongside `faces`; written per hash as detection proceeds.
+A companion `faces_scanned` table (`hash TEXT PRIMARY KEY, scanned_at TEXT`) records every hash that face detection has processed, **including images where zero faces were found** (which produce no `faces` row). This is what makes `videre faces` resumable: the skip set is "already scanned", so no-face images are detected once rather than every run. Created by `create_faces_table` alongside `faces`; written per hash as detection proceeds.
 
-`pipeline_runs` holds one row per tracked command (`scan`, `faces`, `embed`, `classify`, `dedupe`, `fix-dates`, `prune`, `locations` - `command` is the primary key, upserted on every run, not an append-only log). `status` is `running`/`success`/`failed`/`interrupted` as stored; a `crashed` status is never written to this column - it's computed only when reading (a `running` row whose per-db-per-command `flock` file isn't currently held by a live process is reported as `crashed` at read time). Those locks live at `<videre home>/locks/<db stem>-<hash of the canonical db path>.<command>.lock` (see `videre_core::home::locks_dir` and `pipeline_runs::lock_path_for`). The hash is load-bearing, not decoration: two libraries can both be named `photos.db` in different directories, and keying on the stem alone would make them share a lock, silently serializing unrelated libraries and making `videre stats` report one as running because the other is. Canonicalizing first also means a symlink and a relative path to the same database resolve to one lock. Locks moved here on 2026-08-03 from `<db path>.<command>.lock` sidecars, which scattered lock files into `~/.videre` and into whatever directory a `--db` database lived in; `acquire_lock` sweeps and deletes those legacy sidecars for all commands (only when it can exclusively `flock` one, proving no live process holds it), so a single command run after upgrading clears them. `videre watch` itself takes the same kind of lock for liveness but has no row here, since it has no "finished" moment during normal operation.
+`pipeline_runs` holds one row per tracked command (`scan`, `faces`, `embed`, `classify`, `dedupe`, `fix-dates`, `prune`, `locations`; `command` is the primary key, upserted on every run, not an append-only log). `status` is `running`/`success`/`failed`/`interrupted` as stored; a `crashed` status is never written to this column. It's computed only when reading (a `running` row whose per-db-per-command `flock` file isn't currently held by a live process is reported as `crashed` at read time). Those locks live at `<videre home>/locks/<db stem>-<hash of the canonical db path>.<command>.lock` (see `videre_core::home::locks_dir` and `pipeline_runs::lock_path_for`). The hash is load-bearing, not decoration: two libraries can both be named `photos.db` in different directories, and keying on the stem alone would make them share a lock, silently serializing unrelated libraries and making `videre stats` report one as running because the other is. Canonicalizing first also means a symlink and a relative path to the same database resolve to one lock. Locks moved here on 2026-08-03 from `<db path>.<command>.lock` sidecars, which scattered lock files into `~/.videre` and into whatever directory a `--db` database lived in; `acquire_lock` sweeps and deletes those legacy sidecars for all commands (only when it can exclusively `flock` one, proving no live process holds it), so a single command run after upgrading clears them. `videre watch` itself takes the same kind of lock for liveness but has no row here, since it has no "finished" moment during normal operation.
 
-Because lock paths now resolve through `VIDERE_HOME` rather than sitting beside the database, any test that touches a lock **must** point `VIDERE_HOME` at a temp directory - otherwise it writes into the developer's real `~/.videre/locks` and leaves permanent litter (test database names are random, so files accumulate rather than being reused). Both `pipeline_runs`' unit tests and every integration-test file that spawns the binary do this via an `isolated_home()` helper called from `videre_bin()`/`bin()`, which sets the env var once per test binary inside a `OnceLock` (tests share a process and run in parallel, so a per-test `set_var` would race every concurrent `getenv`); spawned children inherit it. See `videre stats` below for how this is surfaced.
+Because lock paths now resolve through `VIDERE_HOME` rather than sitting beside the database, any test that touches a lock **must** point `VIDERE_HOME` at a temp directory. Otherwise it writes into the developer's real `~/.videre/locks` and leaves permanent litter (test database names are random, so files accumulate rather than being reused). Both `pipeline_runs`' unit tests and every integration-test file that spawns the binary do this via an `isolated_home()` helper called from `videre_bin()`/`bin()`, which sets the env var once per test binary inside a `OnceLock` (tests share a process and run in parallel, so a per-test `set_var` would race every concurrent `getenv`); spawned children inherit it. See `videre stats` below for how this is surfaced.
 
-`classifications` is populated by `videre classify` (zero-shot photo/screenshot/document/meme classification, scoring `embeddings` rows already computed by `videre embed` against 4 fixed text prompts via cosine similarity - no new model, no image re-decoding) and queried via `videre search --category <name>`. Rows below the configurable `--margin` similarity gap between the best and second-best category are stored as `category = "unknown"` rather than a low-confidence guess.
+`classifications` is populated by `videre classify` (zero-shot photo/screenshot/document/meme classification, scoring `embeddings` rows already computed by `videre embed` against 4 fixed text prompts via cosine similarity, no new model, no image re-decoding) and queried via `videre search --category <name>`. Rows below the configurable `--margin` similarity gap between the best and second-best category are stored as `category = "unknown"` rather than a low-confidence guess.
 
-`location_name` is a nullable TEXT column added by an idempotent `ALTER TABLE file_hashes ADD COLUMN location_name TEXT` migration (run on every `videre report` startup; harmless if the column already exists) - it is not populated by the initial `videre scan`. It is populated lazily, one GPS coordinate at a time, by the `/api/location` endpoint when `--show-faces` is used: the first lightbox view of a photo at a given `(gps_lat, gps_lon)` triggers a reverse-geocode lookup, and the result is cached back into this column so later lookups for the same coordinate are free. `file_hashes.location_cluster_id` is added the same way, by `videre locations` (not populated by `videre scan`).
+`location_name` is a nullable TEXT column added by an idempotent `ALTER TABLE file_hashes ADD COLUMN location_name TEXT` migration (run on every `videre report` startup; harmless if the column already exists). It is not populated by the initial `videre scan`. It is populated lazily, one GPS coordinate at a time, by the `/api/location` endpoint when `--show-faces` is used: the first lightbox view of a photo at a given `(gps_lat, gps_lon)` triggers a reverse-geocode lookup, and the result is cached back into this column so later lookups for the same coordinate are free. `file_hashes.location_cluster_id` is added the same way, by `videre locations` (not populated by `videre scan`).
 
-Every subcommand opens the database via `videre_core::db::open_wal`, which switches the connection to SQLite's WAL journal mode (`PRAGMA journal_mode = WAL`). WAL mode persists in the database file itself once set, so `open_wal` is idempotent - safe to call on every connection open, not just the first. This allows one writer plus many concurrent readers without "database is locked" errors, which matters now that `videre watch` can run in the background writing to the same file that a `videre report --show-faces` server has open for reading (and occasional writes, e.g. `/api/location`).
+Every subcommand opens the database via `videre_core::db::open_wal`, which switches the connection to SQLite's WAL journal mode (`PRAGMA journal_mode = WAL`). WAL mode persists in the database file itself once set, so `open_wal` is idempotent, safe to call on every connection open, not just the first. This allows one writer plus many concurrent readers without "database is locked" errors, which matters now that `videre watch` can run in the background writing to the same file that a `videre report --show-faces` server has open for reading (and occasional writes, e.g. `/api/location`).
 
 ## EXIF fields
 
@@ -390,14 +390,14 @@ videre report --by-date               # static Year/Month/Day drill-down gallery
 videre report --show-faces            # live server: report with labeled-face + location metadata in the lightbox
 ```
 
-`--by-date` is fully static: it writes an HTML file just like the default report or `--all` (same additive model - it can be combined with `--all`/`--heic`/`--heic-original`), grouping KEEP files into a clickable Year > Month > Day hierarchy. No server is involved.
+`--by-date` is fully static: it writes an HTML file just like the default report or `--all` (same additive model, since it can be combined with `--all`/`--heic`/`--heic-original`), grouping KEEP files into a clickable Year > Month > Day hierarchy. No server is involved.
 
-`--show-faces` is different: it switches `videre report` into server mode (the same `axum` server on `localhost:7878` that `--faces` starts), because the lightbox now shows each photo's labeled faces (clicking one navigates to `/person/<name>`) and a reverse-geocoded location name, both of which need a live backend - labeled faces are queried from the `faces` table per request, and location names are resolved on demand via `/api/location` (see the `location_name` column below) rather than baked into a static file. Route split when combining with `--faces`:
+`--show-faces` is different: it switches `videre report` into server mode (the same `axum` server on `localhost:7878` that `--faces` starts), because the lightbox now shows each photo's labeled faces (clicking one navigates to `/person/<name>`) and a reverse-geocoded location name, both of which need a live backend. Labeled faces are queried from the `faces` table per request, and location names are resolved on demand via `/api/location` (see the `location_name` column below) rather than baked into a static file. Route split when combining with `--faces`:
 - `--faces` alone: `/` serves the labeling UI (unchanged, no live report route).
 - `--show-faces` alone: `/` serves the live report (with face/location metadata); no `/faces` route.
 - `--faces --show-faces` together: `/` serves the live report, `/faces` serves the labeling UI.
 
-Thumbnails and the lightbox also switch URL scheme in server mode: browsers refuse to load a `file://` subresource from an `http://`-served page, so `--show-faces` serves image/video bytes through `GET /api/raw?path=<path>` instead (a `LIVE_SERVER` flag baked into the page picks the URL scheme). `/api/raw` only serves paths already present in `file_hashes.path` - it's a deliberate allowlist, not a general file server. Static reports (no `--show-faces`) keep `file://` links, since the report itself is opened via `file://` there.
+Thumbnails and the lightbox also switch URL scheme in server mode: browsers refuse to load a `file://` subresource from an `http://`-served page, so `--show-faces` serves image/video bytes through `GET /api/raw?path=<path>` instead (a `LIVE_SERVER` flag baked into the page picks the URL scheme). `/api/raw` only serves paths already present in `file_hashes.path`. It's a deliberate allowlist, not a general file server. Static reports (no `--show-faces`) keep `file://` links, since the report itself is opened via `file://` there.
 
 Report includes:
 
@@ -407,7 +407,7 @@ Report includes:
 - Per-file: thumbnail preview, KEEP/REMOVE badge, filename, path + copy button, size, created, modified, EXIF date, GPS link, dimensions
 - Image thumbnails via `file://` URL in static mode, or `/api/raw?path=...` in server mode (lazy-loaded, force-loaded on group expand)
 - `.mov` and `.mp4` files shown as `<video>` thumbnail; click opens lightbox with playback controls
-- `.heic` files: in static mode, "HEIC" text by default; `--heic` embeds a 240px JPEG thumbnail; `--heic-original` also embeds a 1200px lightbox version (macOS only, requires `qlmanage`, part of Quick Look/CoreServices). In server mode (`--show-faces`), HEIC always renders automatically - `--heic`/`--heic-original` are ignored there, since thumbnails are converted lazily per request via `/api/raw?path=...&size=N`, checking `videre watch`'s `~/.cache/videre/thumbnails/` cache first before falling back to a live `qlmanage` conversion (eagerly converting every HEIC file before responding made server mode take minutes on a collection with many HEIC files)
+- `.heic` files: in static mode, "HEIC" text by default; `--heic` embeds a 240px JPEG thumbnail; `--heic-original` also embeds a 1200px lightbox version (macOS only, requires `qlmanage`, part of Quick Look/CoreServices). In server mode (`--show-faces`), HEIC always renders automatically, and `--heic`/`--heic-original` are ignored there, since thumbnails are converted lazily per request via `/api/raw?path=...&size=N`, checking `videre watch`'s `~/.cache/videre/thumbnails/` cache first before falling back to a live `qlmanage` conversion (eagerly converting every HEIC file before responding made server mode take minutes on a collection with many HEIC files)
 - Lightbox overlay for full-size image/video viewing; Escape or backdrop click closes
 - `--all`: gallery of files that exist on disk (200-card pages, lazy thumbnails) + "Similar" button per file; click opens a results panel with top-24 cosine matches using inline SigLIP f16 embeddings (requires prior `videre embed` run)
 
@@ -418,7 +418,7 @@ rather than a classic EXIF Orientation tag) come out sideways with plain `sips`
 conversion because it copies the raw sensor-buffer pixels unrotated; `qlmanage`
 applies the same rotation Finder/Preview/Photos do. This affects `videre faces`
 detection, `videre embed`/`videre search` preprocessing, and every HEIC thumbnail path
-in `videre report` - all of them shell out to `qlmanage`, not `sips`, for this reason.
+in `videre report`. All of them shell out to `qlmanage`, not `sips`, for this reason.
 
 ## videre fix-dates
 
@@ -453,7 +453,7 @@ In a single pass:
 - Deletes `file_hashes` rows for files no longer on disk
 - Refreshes `modified_at` for surviving files from their current filesystem mtime
 - Deletes `embeddings` rows whose hash has no remaining `file_hashes` entry (orphan cleanup)
-- Deletes `~/.cache/videre/thumbnails/` cache files (240/1200px thumbnails, face crops, full-res originals) whose hash has no remaining `file_hashes` entry (orphan cleanup) - this is the only bound on that cache's otherwise-unlimited growth (see the `videre faces`/`videre watch` HEIC-caching notes above); `.tmp*` scratch files from an in-flight write are never touched
+- Deletes `~/.cache/videre/thumbnails/` cache files (240/1200px thumbnails, face crops, full-res originals) whose hash has no remaining `file_hashes` entry (orphan cleanup). This is the only bound on that cache's otherwise-unlimited growth (see the `videre faces`/`videre watch` HEIC-caching notes above); `.tmp*` scratch files from an in-flight write are never touched
 
 Shared-hash safety (applies to both embeddings and cache files): if two paths share the same hash and one file is deleted, the embedding/cache entry is only removed if no `file_hashes` row for that hash survives. Dry-run orphan counts are a lower bound (pre-existing orphans only; does not account for orphans created by the would-be deletions). Exits with code 1 if any row update or cache-file removal fails.
 
@@ -464,12 +464,12 @@ Shared-hash safety (applies to both embeddings and cache files): if two paths sh
 Clusters existing GPS coordinates (`file_hashes.gps_lat`/`gps_lon`, already
 extracted by `videre scan`'s EXIF parsing) by geographic proximity, using
 average-linkage agglomerative clustering over haversine (great-circle)
-distance - same *philosophy* as face clustering (repeatedly merge the two
+distance, the same *philosophy* as face clustering (repeatedly merge the two
 closest clusters by size-weighted average distance), a separate
 purpose-built implementation in `videre_core::location_cluster` since face
 clustering's cosine-distance/ArcFace-specific implementation doesn't apply.
 Unlike face clustering, there is no quality gate and no held-out
-singletons - every GPS coordinate is valid data, so a single photo taken
+singletons. Every GPS coordinate is valid data, so a single photo taken
 somewhere unique still gets its own one-member cluster.
 
 ```bash
@@ -487,17 +487,17 @@ distinct `(gps_lat, gps_lon)` pair (rounded to 6 decimals, same unit
 `videre watch`'s location stage uses). There's no expensive detection step
 to make this incremental/resumable (GPS already sits in `file_hashes`), and
 the clustering math itself (haversine distances over ~5,500 coordinates) is
-sub-second - but real-library measurement found the per-coordinate
+sub-second, but real-library measurement found the per-coordinate
 `file_hashes` UPDATE (one per distinct coordinate, matched via the
 unindexable `ROUND(gps_lat, 6) = ROUND(?, 6)` predicate against the whole
 table) dominates: ~8 minutes on a 70k-file library. The whole recompute runs
 inside one transaction, so it holds the single WAL writer lock for that
-entire window - a concurrent `videre watch` write blocks until it finishes.
+entire window, so a concurrent `videre watch` write blocks until it finishes.
 Not fixed yet (see TECH_DEBT.md); tolerable for a manually-invoked command,
 but noted here since "full recompute" reads as cheaper than it measures at
-real scale. Cluster IDs are **not stable across reruns** - only stable within one
-run's output, mirroring the face-clustering precedent (durable state -
-`person_label` - lives on individual face rows, not the numeric cluster ID;
+real scale. Cluster IDs are **not stable across reruns**, only stable within one
+run's output, mirroring the face-clustering precedent (durable state,
+`person_label`, lives on individual face rows, not the numeric cluster ID;
 any future per-cluster customization would presumably follow suit).
 `--radius` (default 15km, "which city was I in" granularity) is the one
 tunable parameter.
@@ -521,9 +521,9 @@ Resolves its db via `resolve_reader_db` (writes clusters + assigns
 each cluster carrying `id`/`name`/`centroid_lat`/`centroid_lon`/`photo_count`.
 `--geojson` emits a standard `FeatureCollection` of `Point` features -
 `coordinates: [lon, lat]` per the GeoJSON spec's own (reversed from this
-project's usual lat-then-lon) convention - so the output can be dropped
+project's usual lat-then-lon) convention, so the output can be dropped
 directly into geojson.io, QGIS, or any other GeoJSON-consuming tool (a live
-map view is deliberately not built in this repo - see the design spec's
+map view is deliberately not built in this repo; see the design spec's
 Non-goals section for why, including OpenStreetMap's tile-usage-policy
 objection).
 `--json` and `--geojson` are mutually exclusive (`conflicts_with`, same
@@ -542,7 +542,7 @@ L2-normalized f16 BLOB) into an `embeddings` table keyed by content hash. Resuma
 re-running processes only missing hashes. `--batch` (default 32, **clamped to
 `videre_ml::model::MAX_SAFE_BATCH` = 96**: above a threshold measured between 121 and
 127, the batched inference path silently returns embeddings that don't match a
-one-at-a-time baseline - no error, no NaN, just wrong vectors, with only the trailing
+one-at-a-time baseline: no error, no NaN, just wrong vectors, with only the trailing
 partial batch correct. Values over 96 are reduced with a warning. Do not raise the
 constant without re-running the ignored `batched_embeddings_match_one_at_a_time` test in
 `videre-ml`; checking output for zero/NaN vectors does NOT detect this, since `--batch
@@ -550,11 +550,11 @@ constant without re-running the ignored `batched_embeddings_match_one_at_a_time`
 `docs/superpowers/2026-08-04-embed-batch-corruption-investigation.md`), `--chunk` (rows per
 transaction, default 500), `--silent`. HEIC via `qlmanage` (see videre report HEIC note
 above); `.mov`/`.mp4` are embedded too, via one representative frame extracted the same
-way (`qlmanage -t`, macOS only) rather than decoding the full video - a single-frame,
+way (`qlmanage -t`, macOS only) rather than decoding the full video, a single-frame,
 not-motion-aware embedding, so video search quality is weaker than photo search (see
 `docs/superpowers/TECH_DEBT.md` for the open follow-ups on this). Video hashes are
 excluded from `videre classify` (none of its four categories fit a video frame). DNG is
-still skipped (the `image` crate has no DNG decoder) - excluded from `EMBEDDABLE_EXTS`
+still skipped (the `image` crate has no DNG decoder), excluded from `EMBEDDABLE_EXTS`
 up front (fixed 2026-08-01; previously it was queried as pending and failed to decode
 every single run), so a library with DNG files no longer wastes a decode attempt on
 each of them every time `videre embed` runs. EXIF metadata is still available for DNG
@@ -572,10 +572,10 @@ score is always included.
 `videre search --person "Alice"` queries the `faces` table for confirmed rows whose `person_label` matches (case-insensitive prefix) and prints matching image paths. Requires a prior `videre faces` run and labels applied via `videre report --faces`.
 
 `videre search --location "<place>" [--radius <km>]` forward-geocodes an
-arbitrary place name (e.g. "Berlin, Germany" - not limited to places already
+arbitrary place name (e.g. "Berlin, Germany", not limited to places already
 in your library, unlike `videre locations`' persisted clusters) via the
-Nominatim (OpenStreetMap) free public geocoding API - the first network
-call this CLI ever makes - then finds photos within `--radius` km (default
+Nominatim (OpenStreetMap) free public geocoding API, the first network
+call this CLI ever makes. It then finds photos within `--radius` km (default
 20) of that point, sorted by distance ascending and truncated to `-k`
 (unlike `--person`/`--category`, which ignore `-k` entirely: `--location` is
 a ranked "k nearest" query, closer in spirit to text/image mode). Results
@@ -585,7 +585,7 @@ makes `--location` the one `videre search` mode that writes to the
 database (every other mode stays read-only) and the one mode **not**
 exposed via `videre mcp` (same precedent as `--category`, which
 `videre mcp`'s search tool also excludes). `--json` hits carry
-`path`/`hash`/`distance_km` (no `score` - this isn't a ranked semantic
+`path`/`hash`/`distance_km` (no `score`, since this isn't a ranked semantic
 match); `--scores` in text mode prepends `distance_km` instead of a cosine
 score for this one mode.
 
@@ -603,7 +603,7 @@ Two env overrides, both added while working out how to speed `videre embed` up
   note first rather than silently redoing the library. Two candidates were tried
   and are not worth revisiting: `siglip2-so400m-patch14-384` measured 623ms/photo,
   *slower* than the model it would have replaced, and
-  `siglip-so400m-patch14-224` cannot be loaded at all - that HF repo ships no
+  `siglip-so400m-patch14-224` cannot be loaded at all: that HF repo ships no
   `tokenizer.json`, so `Embedder::load` fails.
 - `VIDERE_EMBED_DTYPE=f16` switches inference to half precision: ~11% faster on
   pure jpg/png, ~7% on a realistic mix, no memory saving, no meaningful quality
@@ -612,7 +612,7 @@ Two env overrides, both added while working out how to speed `videre embed` up
   perturbing an existing library.
 
 Two things measured and rejected, recorded so they aren't retried: raising
-`--batch` (silently corrupts - see `MAX_SAFE_BATCH`) and collapsing the
+`--batch` (silently corrupts; see `MAX_SAFE_BATCH`) and collapsing the
 per-image GPU readback into one transfer (0.988x, no effect).
 
 Model weights auto-download from Hugging Face (google/siglip2-base-patch16-384, ~1.4GB) on
@@ -635,7 +635,7 @@ CREATE TABLE embeddings (
 `screenshot`, `document`, or `meme` via zero-shot classification: each stored embedding
 is scored by cosine similarity against 4 fixed text prompts (`crates/videre-ml/src/classify.rs`'s
 `CATEGORY_PROMPTS`), embedded once via the same SigLIP text tower `videre search` uses.
-No new model, no image re-decoding - this runs entirely over vectors `videre embed`
+No new model, no image re-decoding. This runs entirely over vectors `videre embed`
 already computed. Resumable: re-running only classifies hashes not yet in
 `classifications`, unless `--reprocess`. `--margin` (default 0.05) is the min similarity
 gap between the best and second-best category to accept a result; below that, the row
@@ -651,7 +651,7 @@ videre classify --margin <f32>      # min similarity gap to accept a category (d
 
 `videre search --category <name>` queries the `classifications` table for rows matching
 `category` and prints matching image paths (or, under `--json`, a `results` array with
-`path`+`hash` per entry - no `score`, since this is set membership, not a ranked query).
+`path`+`hash` per entry, with no `score`, since this is set membership, not a ranked query).
 
 ## videre faces
 
@@ -676,19 +676,19 @@ videre faces --profile                  # print per-stage timing (load/detect/al
 videre faces --qlmanage-concurrency <n> # max concurrent qlmanage (HEIC decode) subprocesses, process-wide (default: 6)
 ```
 
-Uses InsightFace buffalo_l: SCRFD-10GF for detection, 5-point landmark alignment, ArcFace w600k_r50 for 512-dim L2-normalized embeddings. Weights are downloaded from `hf-hub` on first run. ONNX Runtime (`ort`) runs inference on CPU (an explicit per-worker intra-op thread cap - see the concurrency note below; the macOS CoreML execution provider was measured to give no speedup for these models and is not used). HEIC images are converted via `qlmanage` (see videre report HEIC note above) before detection - unless a cached full-resolution decode already exists at `~/.cache/videre/thumbnails/<hash>_original.jpg` (written by `videre watch --heic`, or lazily by `videre report --show-faces`'s original-image endpoint), in which case that cached JPEG is read directly instead of paying for another `qlmanage` subprocess. Detection's bbox coordinates are stored relative to whatever image detection ran on, so this cache must be full resolution (not the 240/1200px thumbnail sizes) - `videre watch --heic` decodes at full resolution specifically to feed both this cache and its own thumbnails from one decode. Real measurement on a real library: ~108ms per cached HEIC load vs. ~7.6s for a live decode - roughly 70x faster once the cache is warm; a single-pixel bbox rounding difference (JPEG recompression noise) was observed in 1 of 20 checked coordinates against live-decode ground truth, not a correctness issue. Falls back to a fresh live decode when the cache hasn't been populated for a hash yet, so detection works correctly even if `videre watch --heic` has never run.
+Uses InsightFace buffalo_l: SCRFD-10GF for detection, 5-point landmark alignment, ArcFace w600k_r50 for 512-dim L2-normalized embeddings. Weights are downloaded from `hf-hub` on first run. ONNX Runtime (`ort`) runs inference on CPU (an explicit per-worker intra-op thread cap; see the concurrency note below; the macOS CoreML execution provider was measured to give no speedup for these models and is not used). HEIC images are converted via `qlmanage` (see videre report HEIC note above) before detection, unless a cached full-resolution decode already exists at `~/.cache/videre/thumbnails/<hash>_original.jpg` (written by `videre watch --heic`, or lazily by `videre report --show-faces`'s original-image endpoint), in which case that cached JPEG is read directly instead of paying for another `qlmanage` subprocess. Detection's bbox coordinates are stored relative to whatever image detection ran on, so this cache must be full resolution (not the 240/1200px thumbnail sizes), and `videre watch --heic` decodes at full resolution specifically to feed both this cache and its own thumbnails from one decode. Real measurement on a real library: ~108ms per cached HEIC load vs. ~7.6s for a live decode, roughly 70x faster once the cache is warm; a single-pixel bbox rounding difference (JPEG recompression noise) was observed in 1 of 20 checked coordinates against live-decode ground truth, not a correctness issue. Falls back to a fresh live decode when the cache hasn't been populated for a hash yet, so detection works correctly even if `videre watch --heic` has never run.
 
-Detection is **resumable**. Every processed hash is recorded in a `faces_scanned` table - including images where zero faces were detected, which leave no `faces` row. The skip set for a run is "already scanned" (unioned with "already has faces", so a first run after upgrading doesn't redo prior work), not merely "has a face", so a no-face image is detected exactly once ever rather than re-detected on every run. Faces and the scanned marker are committed per hash as the run proceeds, so an interrupt (Ctrl-C) loses at most the in-flight image and a rerun continues where it left off. `--limit <n>` processes at most N not-yet-scanned images then stops (for chipping away at a large library in bounded chunks); a limited run skips the final clustering step (it is an O(n^2) whole-library pass not worth repeating after every chunk) - run `videre faces --recluster` once scanning is complete.
+Detection is **resumable**. Every processed hash is recorded in a `faces_scanned` table, including images where zero faces were detected, which leave no `faces` row. The skip set for a run is "already scanned" (unioned with "already has faces", so a first run after upgrading doesn't redo prior work), not merely "has a face", so a no-face image is detected exactly once ever rather than re-detected on every run. Faces and the scanned marker are committed per hash as the run proceeds, so an interrupt (Ctrl-C) loses at most the in-flight image and a rerun continues where it left off. `--limit <n>` processes at most N not-yet-scanned images then stops (for chipping away at a large library in bounded chunks); a limited run skips the final clustering step (it is an O(n^2) whole-library pass not worth repeating after every chunk). Run `videre faces --recluster` once scanning is complete.
 
-`videre faces` runs `--workers` worker threads concurrently (default: 2x the machine's available core count - see below for why), each with its own ONNX sessions (intra-op-thread-capped so they don't collectively oversubscribe the machine) processing a round-robin-assigned slice of the work - not contiguous chunks, so one worker doesn't inherit a disproportionately HEIC-heavy (slower) subset. All database writes happen on a single coordinator thread that receives results from workers over a channel; workers never touch the connection directly. The 2x-cores default (rather than a flat 1:1 mapping) comes from real profiling data: HEIC file loading (via a `qlmanage` subprocess) averaged ~52x longer than non-HEIC loading in one measurement, and since that wait is I/O-bound rather than CPU-bound, oversubscribing keeps cores busy with other workers' CPU-bound detect/embed work while some workers are blocked on the subprocess. A real A/B measurement on the full pipeline (not just the profiling estimate) found a ~3.23x wall-clock speedup with default workers vs. `--workers 1` on a 10-core machine. See docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md for the full design and why this approach (a symmetric worker pool) was chosen over a producer/consumer split with separate loader/inference pools. HEIC decoding itself is further capped independently of `--workers`: all `qlmanage` subprocess launches, across every subcommand, share one process-wide semaphore (`videre_core::heic::qlmanage_semaphore`) limiting concurrent conversions - 6 by default, raised from 3 after the 3.23x measurement above showed CPU sitting at only 477% of a possible 1000%, a hint that HEIC-heavy runs were bottlenecked on this cap rather than on cores. That hint was confirmed by a real re-measurement (same 300-image sample, default workers): `--qlmanage-concurrency 3` (the old default) ran in 75.10s at 498% CPU, `--qlmanage-concurrency 6` (the new default) ran in 60.86s at 663% CPU - a further ~1.23x wall-clock improvement on top of the earlier 3.23x, for a combined ~4.48x over the original fully-serial baseline (272.78s -> 60.86s). `videre faces --qlmanage-concurrency <n>` overrides the default for a single run. Measured 2026-07-31 (same 300-image sample/methodology): raising further to 8 or 10 only buys 1.3%/4.4% more wall-clock with diminishing returns (cap=6: 51.59s/728% CPU; cap=10: 49.42s/762% CPU) - CPU still isn't fully saturated even at cap=10, but per-image detect time crept up alongside it, meaning the extra concurrency mostly shifts the bottleneck into CPU contention rather than delivering free parallelism. Default stays 6; `--qlmanage-concurrency 10` remains available as a manual opt-in for a small win, not something worth changing the shipped default for.
+`videre faces` runs `--workers` worker threads concurrently (default: 2x the machine's available core count; see below for why), each with its own ONNX sessions (intra-op-thread-capped so they don't collectively oversubscribe the machine) processing a round-robin-assigned slice of the work, not contiguous chunks, so one worker doesn't inherit a disproportionately HEIC-heavy (slower) subset. All database writes happen on a single coordinator thread that receives results from workers over a channel; workers never touch the connection directly. The 2x-cores default (rather than a flat 1:1 mapping) comes from real profiling data: HEIC file loading (via a `qlmanage` subprocess) averaged ~52x longer than non-HEIC loading in one measurement, and since that wait is I/O-bound rather than CPU-bound, oversubscribing keeps cores busy with other workers' CPU-bound detect/embed work while some workers are blocked on the subprocess. A real A/B measurement on the full pipeline (not just the profiling estimate) found a ~3.23x wall-clock speedup with default workers vs. `--workers 1` on a 10-core machine. See docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md for the full design and why this approach (a symmetric worker pool) was chosen over a producer/consumer split with separate loader/inference pools. HEIC decoding itself is further capped independently of `--workers`: all `qlmanage` subprocess launches, across every subcommand, share one process-wide semaphore (`videre_core::heic::qlmanage_semaphore`) limiting concurrent conversions, 6 by default, raised from 3 after the 3.23x measurement above showed CPU sitting at only 477% of a possible 1000%, a hint that HEIC-heavy runs were bottlenecked on this cap rather than on cores. That hint was confirmed by a real re-measurement (same 300-image sample, default workers): `--qlmanage-concurrency 3` (the old default) ran in 75.10s at 498% CPU, `--qlmanage-concurrency 6` (the new default) ran in 60.86s at 663% CPU, a further ~1.23x wall-clock improvement on top of the earlier 3.23x, for a combined ~4.48x over the original fully-serial baseline (272.78s -> 60.86s). `videre faces --qlmanage-concurrency <n>` overrides the default for a single run. Measured 2026-07-31 (same 300-image sample/methodology): raising further to 8 or 10 only buys 1.3%/4.4% more wall-clock with diminishing returns (cap=6: 51.59s/728% CPU; cap=10: 49.42s/762% CPU). CPU still isn't fully saturated even at cap=10, but per-image detect time crept up alongside it, meaning the extra concurrency mostly shifts the bottleneck into CPU contention rather than delivering free parallelism. Default stays 6; `--qlmanage-concurrency 10` remains available as a manual opt-in for a small win, not something worth changing the shipped default for.
 
-**The cap is per-process, not system-wide, and that matters when two videre commands overlap.** Two processes therefore permit up to 12 concurrent `qlmanage` conversions against macOS's single shared per-user QuickLook agent - exactly the pile-up the cap exists to prevent. Measured 2026-08-04 running `videre faces` and `videre embed` simultaneously on a real library: HEIC load averaged **16,339ms** against ~7.6s uncontended, and one file blew past `QLMANAGE_TIMEOUT` (20s) entirely - a file that converted in **0.39s** standalone immediately afterwards, so ~51x degradation rather than ~2x. Impact is bounded: the skipped file was correctly *not* written to `faces_scanned`, so it was retried and self-healed on the next run. It is a throughput and predictability problem, not data loss - but the intended `videre watch` + manual-command workflow makes overlap the normal case, not an edge case. See `docs/superpowers/TECH_DEBT.md` for the options considered (a cross-process token, raising the timeout, or having `watch` yield its budget).
+**The cap is per-process, not system-wide, and that matters when two videre commands overlap.** Two processes therefore permit up to 12 concurrent `qlmanage` conversions against macOS's single shared per-user QuickLook agent, exactly the pile-up the cap exists to prevent. Measured 2026-08-04 running `videre faces` and `videre embed` simultaneously on a real library: HEIC load averaged **16,339ms** against ~7.6s uncontended, and one file blew past `QLMANAGE_TIMEOUT` (20s) entirely, a file that converted in **0.39s** standalone immediately afterwards, so ~51x degradation rather than ~2x. Impact is bounded: the skipped file was correctly *not* written to `faces_scanned`, so it was retried and self-healed on the next run. It is a throughput and predictability problem, not data loss. But the intended `videre watch` + manual-command workflow makes overlap the normal case, not an edge case. See `docs/superpowers/TECH_DEBT.md` for the options considered (a cross-process token, raising the timeout, or having `watch` yield its budget).
 
-Resumability's correctness is unchanged: workers never touch the database, so a hash can never end up marked scanned without its faces being durably written first, no matter how many workers are running - restart always correctly continues from the true set of completed hashes. What does change is how much gets re-done after a kill: even the single-threaded pipeline already defers marking a face-bearing image as scanned until its whole `batch`-sized chunk's single embed call resolves (only zero-face images are marked immediately), so an interrupt today can already cost up to `batch` (default 8) images of reprocessing, not 1. With `--workers` workers each independently chunk-batching their own partition, that window becomes up to `workers * batch` images - e.g. 160 with the defaults on a 10-core machine (20 workers x 8 batch). Still fully correct on resume, just a larger bounded "wasted work" window than before; `--limit` remains the lever for users who want tighter control per invocation.
+Resumability's correctness is unchanged: workers never touch the database, so a hash can never end up marked scanned without its faces being durably written first, no matter how many workers are running. Restart always correctly continues from the true set of completed hashes. What does change is how much gets re-done after a kill: even the single-threaded pipeline already defers marking a face-bearing image as scanned until its whole `batch`-sized chunk's single embed call resolves (only zero-face images are marked immediately), so an interrupt today can already cost up to `batch` (default 8) images of reprocessing, not 1. With `--workers` workers each independently chunk-batching their own partition, that window becomes up to `workers * batch` images, e.g. 160 with the defaults on a 10-core machine (20 workers x 8 batch). Still fully correct on resume, just a larger bounded "wasted work" window than before; `--limit` remains the lever for users who want tighter control per invocation.
 
 Faces below `--min-cluster-size` are left as unassigned singletons rather than forming
 a small cluster. `--recluster` re-runs clustering with new `--eps`/`--min-cluster-size`/`--merge-sim`/`--min-face-size`
-values without re-detecting or re-embedding - useful for tuning cluster tightness
+values without re-detecting or re-embedding, useful for tuning cluster tightness
 after an initial `videre faces` run.
 
 Before clustering, a two-signal quality gate holds low-quality faces out of clustering
@@ -727,19 +727,19 @@ mean embeddings are at least `--merge-sim` cosine-similar. Deciding on centroids
 than raw pairs cancels per-face spread: on real data, confirmed *different* people never
 exceed ~0.29 centroid similarity while one person's fragments run 0.37-0.76, so the 0.35
 default reunites fragments with a safe margin. Only established clusters take part in the
-merge, never lone singletons - a single bad crop can sit within `--merge-sim` of a
+merge, never lone singletons. A single bad crop can sit within `--merge-sim` of a
 different person's centroid, whereas a whole cluster's averaged centroid cannot.
 
 Clustering runs after every full (non-`--limit`, non-`--dry-run`) `videre faces`
 invocation, and every `videre watch --faces` cycle, with no progress output of its own
-before 2026-07-29 - on a real library with tens of thousands of faces this looked
+before 2026-07-29. On a real library with tens of thousands of faces this looked
 identical to a hang (the detection progress bar clears, then nothing prints until the
 whole pass finishes). The average-linkage stage is O(n^2) in the number of faces that
 pass the quality gate: it now prints `Clustering N face(s) (eps=X)...` and ticks a
 progress bar over the O(n^2) pairwise-distance stage, so a long clustering pass is
 visibly progressing rather than silent. The initial candidate-merge heap is now seeded
 only with pairs already within `--eps` (not every one of the `n*(n-1)/2` pairs
-unconditionally) - correctness-preserving, since a pair currently outside `--eps` that
+unconditionally), correctness-preserving, since a pair currently outside `--eps` that
 later becomes eligible via a merge is still picked up by the existing distance-update
 step, which reads the dense distance matrix directly rather than the heap (see
 `one_bad_pair_does_not_block_an_otherwise_strong_merge` in `face_cluster.rs`, which
@@ -760,7 +760,7 @@ scalar distance before being trusted, since GEMM's FMA-based accumulation
 doesn't bit-match the scalar path the merge loop's staleness check depends
 on). Verified on the real library (58,555 faces, 31,397 clustered into 644
 people): 19m27s (old) -> 8m48s (new), ~2.2x wall-clock, with a byte-for-byte
-IDENTICAL resulting cluster partition - a pure performance fix, zero change
+IDENTICAL resulting cluster partition, a pure performance fix, zero change
 in output. See
 `docs/superpowers/specs/2026-08-03-face-clustering-performance-design.md`
 for the full design and why an earlier KD-tree-based proposal was rejected.
@@ -771,7 +771,7 @@ for the full design and why an earlier KD-tree-based proposal was rejected.
 - Each unassigned cluster/singleton card links to a detail page (`/cluster/{id}` or via the card thumbnail) showing every face at full size with per-face remove/assign
 - "Dissolve cluster" on the cluster detail page ungroups a wrongly-merged cluster back into singletons (faces are not deleted)
 - Each person links to `/person/{name}`, listing their confirmed faces with per-face remove
-- Click any face thumbnail to open the full-resolution original photo via `/api/original-image/{id}` (a live server request, not a `file://` link - browsers block navigating from `http://` to `file://` for security)
+- Click any face thumbnail to open the full-resolution original photo via `/api/original-image/{id}` (a live server request, not a `file://` link, since browsers block navigating from `http://` to `file://` for security)
 - Labels are written back to `faces.person_label` and `faces.confirmed`; close the browser tab or press Ctrl-C (or use the "Save & Close" button, which calls `/api/quit`) to stop the server
 
 `videre search --person "Alice"` queries the `faces` table for confirmed rows with the given label and prints the paths of all matching images.
@@ -789,30 +789,30 @@ videre watch --output-sqlite <db> <directory>                        # explicit 
 videre watch <directory> --prune                                     # opt-in: also reclaim stale rows/cache each cycle
 ```
 
-Five independent stages, selected with `--scan` / `--faces` / `--heic` / `--location` / `--prune`. If none of `--scan`/`--faces`/`--heic`/`--location` are passed, all four of those run (the common case is "just keep everything up to date", not memorizing four flags) - `--prune` is the exception, opt-in only, and never defaults on even when no stage flags are passed at all (added 2026-08-01; kept out of the default set so existing `videre watch` invocations don't change behavior):
+Five independent stages, selected with `--scan` / `--faces` / `--heic` / `--location` / `--prune`. If none of `--scan`/`--faces`/`--heic`/`--location` are passed, all four of those run (the common case is "just keep everything up to date", not memorizing four flags). `--prune` is the exception, opt-in only, and never defaults on even when no stage flags are passed at all (added 2026-08-01; kept out of the default set so existing `videre watch` invocations don't change behavior):
 
 - `--scan`: re-runs the same scan/hash/EXIF pipeline as `videre scan`, upserting `file_hashes` for the given directory
-- `--faces`: incremental face detection - queries hashes not yet in the `faces` table, runs detection/embedding/clustering only on those, then re-runs the two-stage clustering (average-linkage + centroid-merge, with the same size + distinctiveness quality gate) over all existing embeddings (same defaults as `videre faces`: `eps` 0.6, `min-cluster-size` 3, `merge-sim` 0.35, `min-face-size` 80, `max-generic-sim` 0.4)
-- `--heic`: pre-converts and caches HEIC thumbnails (240px and 1200px) for every HEIC file's content hash, skipping hashes already cached; one full-resolution `qlmanage` conversion per hash, downscaled in memory for each missing size rather than re-converting per size. That same full-resolution decode is also cached as `<hash>_original.jpg` (skipped if already present) - `videre faces` reads this cache instead of running its own `qlmanage` decode when detecting faces on a HEIC file, so running `--heic` ahead of (or alongside) `videre faces`/`--faces` avoids a second full decode per HEIC file. Real measurement: ~108ms to read the cache vs. ~7.6s for a live decode. This full-res cache has a real disk cost at library scale (tens of GB for a HEIC-heavy library) not yet gated behind any size limit or flag.
+- `--faces`: incremental face detection, which queries hashes not yet in the `faces` table, runs detection/embedding/clustering only on those, then re-runs the two-stage clustering (average-linkage + centroid-merge, with the same size + distinctiveness quality gate) over all existing embeddings (same defaults as `videre faces`: `eps` 0.6, `min-cluster-size` 3, `merge-sim` 0.35, `min-face-size` 80, `max-generic-sim` 0.4)
+- `--heic`: pre-converts and caches HEIC thumbnails (240px and 1200px) for every HEIC file's content hash, skipping hashes already cached; one full-resolution `qlmanage` conversion per hash, downscaled in memory for each missing size rather than re-converting per size. That same full-resolution decode is also cached as `<hash>_original.jpg` (skipped if already present), and `videre faces` reads this cache instead of running its own `qlmanage` decode when detecting faces on a HEIC file, so running `--heic` ahead of (or alongside) `videre faces`/`--faces` avoids a second full decode per HEIC file. Real measurement: ~108ms to read the cache vs. ~7.6s for a live decode. This full-res cache has a real disk cost at library scale (tens of GB for a HEIC-heavy library) not yet gated behind any size limit or flag.
 - `--location`: reverse-geocodes every distinct `(gps_lat, gps_lon)` pair with `location_name IS NULL` and writes the result back to `file_hashes`, the same lookup `--show-faces`'s `/api/location` endpoint performs on demand
-- `--prune`: runs the same cleanup as `videre prune` (stale `file_hashes` row removal, `modified_at` sync, orphan embedding/cache cleanup) against the already-open connection, via `PruneArgs::for_watch_stage` and the shared `run_prune` helper - never deletes real files, only stale db rows and cache entries for files already gone from disk. Its runs are tracked in `pipeline_runs` under `"prune"`, same as a standalone `videre prune` invocation.
+- `--prune`: runs the same cleanup as `videre prune` (stale `file_hashes` row removal, `modified_at` sync, orphan embedding/cache cleanup) against the already-open connection, via `PruneArgs::for_watch_stage` and the shared `run_prune` helper, and never deletes real files, only stale db rows and cache entries for files already gone from disk. Its runs are tracked in `pipeline_runs` under `"prune"`, same as a standalone `videre prune` invocation.
 
-`--interval <seconds>` (default 300) is the sleep between cycles; each cycle runs the selected stages once, logs a per-stage summary to stderr (unless `--silent`), then sleeps. There's no daemonization or systemd unit - run it in a terminal, tmux/screen pane, or your own process supervisor, and stop it with Ctrl-C.
+`--interval <seconds>` (default 300) is the sleep between cycles; each cycle runs the selected stages once, logs a per-stage summary to stderr (unless `--silent`), then sleeps. There's no daemonization or systemd unit. Run it in a terminal, tmux/screen pane, or your own process supervisor, and stop it with Ctrl-C.
 
-Thumbnails land in `~/.cache/videre/thumbnails/`, keyed by content hash rather than file path (`<hash>_240.jpg`, `<hash>_1200.jpg`) - mirrors the project's existing `~/.cache/ort/` convention for cached model weights, and means the same photo scanned into a different database only needs converting once. On first run of any `videre` subcommand, if the pre-rename cache at `~/.cache/dupe/thumbnails/` still exists and `~/.cache/videre/thumbnails/` doesn't, it's migrated automatically (a plain directory rename, atomic on the same filesystem, and a no-op on any error since the cache regenerates lazily). `videre report`'s `/api/raw?path=...&size=N` endpoint (server mode, `--show-faces`) checks this cache first for HEIC requests and serves the cached JPEG directly if present, falling back to a live `qlmanage` conversion otherwise - so running `videre watch --heic` alongside `videre report --show-faces` eliminates the per-request HEIC conversion cost for anything already warmed.
+Thumbnails land in `~/.cache/videre/thumbnails/`, keyed by content hash rather than file path (`<hash>_240.jpg`, `<hash>_1200.jpg`), mirroring the project's existing `~/.cache/ort/` convention for cached model weights, and means the same photo scanned into a different database only needs converting once. On first run of any `videre` subcommand, if the pre-rename cache at `~/.cache/dupe/thumbnails/` still exists and `~/.cache/videre/thumbnails/` doesn't, it's migrated automatically (a plain directory rename, atomic on the same filesystem, and a no-op on any error since the cache regenerates lazily). `videre report`'s `/api/raw?path=...&size=N` endpoint (server mode, `--show-faces`) checks this cache first for HEIC requests and serves the cached JPEG directly if present, falling back to a live `qlmanage` conversion otherwise, so running `videre watch --heic` alongside `videre report --show-faces` eliminates the per-request HEIC conversion cost for anything already warmed.
 
 `videre watch` and `videre report --show-faces` are designed to run concurrently against the same SQLite file (see the WAL-mode note in the SQLite schema section above).
 
 ## videre mcp
 
-Serves three read-only tools over stdio (line-delimited JSON-RPC, the standard MCP client transport) using the official `rmcp` SDK: `search` (text/person/image - a subset of `videre search`'s modes; `--category` is CLI-only, not exposed here), `find_duplicates` (keep/remove groups, plus review-only similar clusters via `include_similar`), and `stats` (library summary, no params).
+Serves three read-only tools over stdio (line-delimited JSON-RPC, the standard MCP client transport) using the official `rmcp` SDK: `search` (text/person/image, a subset of `videre search`'s modes; `--category` is CLI-only, not exposed here), `find_duplicates` (keep/remove groups, plus review-only similar clusters via `include_similar`), and `stats` (library summary, no params).
 
 ```bash
 videre mcp                # default db
 videre mcp --db <path>    # explicit db
 ```
 
-Database resolution is identical to every other reader (`--db` > `default_db` in `config.toml` > `~/.videre/hashes.db`), but `mcp` binds the resolved path once at startup for the life of the process rather than per-invocation, so the resolved db must already exist - even an explicit `--db` to a nonexistent path fails at startup with `no database found at <path>; run 'videre scan <dir>' first` on stderr, nothing on stdout, exit 1.
+Database resolution is identical to every other reader (`--db` > `default_db` in `config.toml` > `~/.videre/hashes.db`), but `mcp` binds the resolved path once at startup for the life of the process rather than per-invocation, so the resolved db must already exist. Even an explicit `--db` to a nonexistent path fails at startup with `no database found at <path>; run 'videre scan <dir>' first` on stderr, nothing on stdout, exit 1.
 
 Once serving, a failing tool call returns `isError: true` with the rendered anyhow error chain as the result text; the server itself stays alive and keeps serving subsequent calls. All three tools' result documents share `"schema_version": 1` with the CLI's `--json` output and reuse the same shapes (`duplicate_groups`/`keep`/`remove`, `similar_groups`, `results` with `hash`/`score`, omitted for person hits).
 
@@ -833,7 +833,7 @@ Client configuration:
 
 ## videre stats
 
-Prints library totals and per-command pipeline run status in one shot - a CLI
+Prints library totals and per-command pipeline run status in one shot, a CLI
 window into `videre-core`'s `library_stats` and `pipeline_runs` modules.
 
 ```bash
@@ -846,8 +846,8 @@ videre stats --check        # exit nonzero if any tracked command last failed or
 Text mode prints library totals (files/size, photo/video split, duplicate
 groups/files/wasted space, faces detected/people named), then one line per
 tracked command (`scan`, `faces`, `embed`, `classify`, `dedupe`, `fix-dates`,
-`prune`, `locations`) showing its last-run timestamp, status, and duration - `never run` /
-`-` for a command that hasn't executed against this db yet, and `(running
+`prune`, `locations`) showing its last-run timestamp, status, and duration. `never run` /
+`-` marks a command that hasn't executed against this db yet, and `(running
 now)` appended when its lock is currently held by a live process. Uses
 `resolve_reader_db_must_exist` like `dedupe`/`mcp` (not `resolve_reader_db`
 like `embed`/`classify`), so an explicit `--db` to a nonexistent path fails
@@ -855,14 +855,14 @@ cleanly rather than silently creating an empty database.
 
 `--json` emits `{"schema_version": 1, "library": {...}, "pipelines": [...]}`,
 directly reusing `videre-core`'s `LibraryStats` and `PipelineRunStatus` serde
-types rather than redeclaring their fields - the `pipelines` array always has
+types rather than redeclaring their fields. The `pipelines` array always has
 exactly eight entries (`videre_core::pipeline_runs::TRACKED_COMMANDS`) in a
 fixed command order, with `status`/`last_run_at`/`duration_ms` all `null` for
 a command that has never run. `report`, `search`, `mcp`, and `config` are
-deliberately not tracked here - see `TRACKED_COMMANDS`'s doc comment for why
+deliberately not tracked here; see `TRACKED_COMMANDS`'s doc comment for why
 each was left out.
 
-`--check` (added 2026-08-01) doesn't change either output format - it only
+`--check` (added 2026-08-01) doesn't change either output format. It only
 adds an exit code, via `has_problem()` checking whether any tracked command's
 last recorded status is `"failed"` or `"crashed"` (a clean `"interrupted"`
 Ctrl-C is deliberately not treated as a problem). Composes with both text and
@@ -870,7 +870,7 @@ Ctrl-C is deliberately not treated as a problem). Composes with both text and
 cron/launchd failure handling without parsing either output.
 
 Per-item errors within a run (a few unreadable files, one corrupted image) do
-not mark a `pipeline_runs` row `failed` - only an unhandled exception during
+not mark a `pipeline_runs` row `failed`. Only an unhandled exception during
 the run does. `fix-dates`/`faces` can legitimately exit nonzero (bad EXIF
 dates, detection failures) while still recording `status: "success"`, since
 `track()` only observes the operation's returned `Result`, and both commands
@@ -879,9 +879,9 @@ return `Ok` with an error count rather than propagating those as `Err`.
 ## UI
 
 The user-facing UI in this repository is entirely `videre report`'s HTML
-output - see the `videre report` section above for full detail. Two forms:
+output; see the `videre report` section above for full detail. Two forms:
 static HTML (`videre report`, `--all`, `--by-date`) that can be opened
 directly as a `file://` page, and a live local server mode (`--faces`,
-`--show-faces`) for the parts that need a backend - in particular the face
+`--show-faces`) for the parts that need a backend, in particular the face
 labeling UI (assign/rename/dissolve clusters, tag people) served on
 `localhost:7878`.
