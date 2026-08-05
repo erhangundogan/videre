@@ -32,7 +32,7 @@ chrono = { version = "0.4", features = ["serde"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
 kamadak-exif = "0.5"
 filetime = "0.2"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 videre-core = { path = "../videre-core", version = "0.9.18" }
 videre-ml = { path = "../videre-ml", version = "0.9.12" }
 videre-api = { path = "../videre-api", version = "0.9.10" }
@@ -44,7 +44,7 @@ schemars = "1"
 
 [dev-dependencies]
 tempfile = "3"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 serde_json = "1"
 videre-core = { path = "../videre-core", version = "0.9.18" }
 

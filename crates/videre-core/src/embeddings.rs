@@ -76,11 +76,14 @@ pub fn embeddings_from_other_models(conn: &Connection, model_id: &str) -> Result
     if !crate::db::table_exists(conn, "embeddings")? {
         return Ok((0, vec![]));
     }
-    let count: usize = conn.query_row(
+    // rusqlite 0.40 dropped the `FromSql` impl for `usize`; read the count as
+    // the i64 SQLite actually returns and narrow afterwards.
+    let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM embeddings WHERE model_id != ?1",
         [model_id],
         |r| r.get(0),
     )?;
+    let count = count.max(0) as usize;
     let mut stmt =
         conn.prepare("SELECT DISTINCT model_id FROM embeddings WHERE model_id != ?1")?;
     let ids = stmt
