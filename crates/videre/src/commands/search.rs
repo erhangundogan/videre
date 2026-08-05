@@ -131,7 +131,11 @@ pub(crate) fn person_hits(conn: &Connection, name: &str) -> Result<Vec<SearchHit
 /// itself (person search's own helper doesn't return one), so it's
 /// included here.
 pub(crate) fn category_hits(conn: &Connection, category: &str) -> Result<Vec<SearchHitJson>> {
-    let pairs = classify_core::paths_for_category(conn, category)?;
+    let pairs = classify_core::paths_for_category(
+        conn,
+        &videre_core::embeddings::resolve_model_id(None),
+        category,
+    )?;
     Ok(pairs
         .into_iter()
         .map(|(path, hash)| SearchHitJson { path, hash: Some(hash), score: None, distance_km: None })
