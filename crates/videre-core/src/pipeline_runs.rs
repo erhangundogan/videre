@@ -13,8 +13,8 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// The eight commands tracked so far. Extended with `locations` on
-/// 2026-08-01 (was seven after `prune`'s addition earlier the same day) -
-/// it's a clean fit for the same one-shot start/finish model the others
+/// 2026-08-01 (was seven after `prune`'s addition earlier the same day).
+/// It's a clean fit for the same one-shot start/finish model the others
 /// use: `videre locations` is a full-recompute batch pass, not an
 /// interactive per-query command. `report`, `search`, `mcp`, and `config`
 /// remain deliberately excluded: `report --faces`/`--show-faces` and `mcp`

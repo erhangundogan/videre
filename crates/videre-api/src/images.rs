@@ -153,7 +153,7 @@ pub fn mime_for_ext(ext: &str) -> &'static str {
 /// work, split out so a caller holding a shared/locked `Connection` (the
 /// axum server serializes every request on one `Mutex<Connection>`)
 /// can release that lock immediately after this cheap lookup, instead of
-/// holding it for the entire decode/crop/resize/encode/cache-write below -
+/// holding it for the entire decode/crop/resize/encode/cache-write below,
 /// which otherwise fully serializes every thumbnail request behind the lock,
 /// turning a many-thousand-singleton library into one thumbnail at a time.
 pub struct FaceLookup {
@@ -223,8 +223,8 @@ pub fn face_image_bytes(conn: &Connection, face_id: i64) -> Result<Vec<u8>> {
     face_bytes_from_lookup(&lookup, face_id)
 }
 
-/// The single-row query `original_image_bytes` needs before any image I/O -
-/// see `FaceLookup` for why this split matters for concurrency.
+/// The single-row query `original_image_bytes` needs before any image I/O.
+/// See `FaceLookup` for why this split matters for concurrency.
 pub struct OriginalLookup {
     pub file_path: String,
     pub hash: String,

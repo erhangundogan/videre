@@ -504,7 +504,7 @@ tunable parameter.
 
 Cluster names are resolved via the **existing offline** reverse-geocoder
 (`videre_core::location::location_name`, no network calls) called once per
-cluster centroid (the unweighted mean of its member coordinates) -
+cluster centroid (the unweighted mean of its member coordinates),
 independent of the per-coordinate `location_name` column `videre watch
 --location` populates, so this command doesn't depend on that stage ever
 having run. `photo_count` counts `file_hashes` *rows* (physical files,
@@ -519,7 +519,7 @@ Resolves its db via `resolve_reader_db` (writes clusters + assigns
 
 `--json` emits `{"schema_version": 1, "radius_km": 15.0, "clusters": [...]}`,
 each cluster carrying `id`/`name`/`centroid_lat`/`centroid_lon`/`photo_count`.
-`--geojson` emits a standard `FeatureCollection` of `Point` features -
+`--geojson` emits a standard `FeatureCollection` of `Point` features, with
 `coordinates: [lon, lat]` per the GeoJSON spec's own (reversed from this
 project's usual lat-then-lon) convention, so the output can be dropped
 directly into geojson.io, QGIS, or any other GeoJSON-consuming tool (a live

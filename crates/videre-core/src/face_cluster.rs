@@ -413,8 +413,8 @@ fn merge_by_centroid(
 
         // Merge j into i, drop j (swap_remove keeps indices tidy), recompute i's centroid.
         // Note: `best` only ever binds pairs with i < j (from the loop bounds
-        // above), and j <= last (the last valid index), so i < last always -
-        // this is what keeps the centroids[i] and sim[i][k] writes below in
+        // above), and j <= last (the last valid index), so i < last always.
+        // This is what keeps the centroids[i] and sim[i][k] writes below in
         // bounds after the swap_remove/pop shrink both collections.
         let moved = std::mem::take(&mut clusters[j]);
         clusters[i].extend(moved);
@@ -511,8 +511,8 @@ fn cosine_dist(a: &[f32], b: &[f32]) -> f32 {
 /// by bilinearity of the dot product (the sum of pairwise dot products over
 /// a cartesian product of two sets equals the dot product of the two sets'
 /// sums). This lets cluster distance be computed on demand in O(dim) from
-/// two running sums, instead of maintaining/looking up an O(n^2) matrix -
-/// see docs/superpowers/specs/2026-08-03-face-clustering-performance-design.md.
+/// two running sums, instead of maintaining/looking up an O(n^2) matrix.
+/// See docs/superpowers/specs/2026-08-03-face-clustering-performance-design.md.
 fn cluster_dist_from_sums(sum_a: &[f32], sum_b: &[f32], size_a: f32, size_b: f32) -> f32 {
     let dot: f32 = sum_a.iter().zip(sum_b).map(|(x, y)| x * y).sum();
     1.0 - dot / (size_a * size_b)
@@ -571,7 +571,7 @@ mod sums_distance_tests {
 /// sub-clusters sit at 0.37-0.76, so a `merge_sim` around 0.35 reunites a
 /// person's fragments without risking merging two different people.
 ///
-/// This only ever operates on cluster grouping (the returned cluster ids) -
+/// This only ever operates on cluster grouping (the returned cluster ids);
 /// it never inspects or writes human labels. `min_samples` is applied *after*
 /// the merge, so small fragments that join a larger cluster are kept.
 ///

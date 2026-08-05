@@ -122,7 +122,7 @@ mod tests {
     #[test]
     fn silent_mode_println_still_prints() {
         // println() must not panic in silent mode; it always writes to
-        // stderr regardless of `silent` (verified by not panicking here -
+        // stderr regardless of `silent` (verified by not panicking here;
         // capturing stderr output itself is not practical in a unit test).
         let p = Progress::new(5, true);
         p.println("an error message");

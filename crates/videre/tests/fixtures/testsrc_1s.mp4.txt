@@ -4,7 +4,7 @@ ffmpeg -f lavfi -i testsrc2=s=64x64:d=1 -c:v libx264 -pix_fmt yuv420p -movflags 
 
 testsrc_1s_recompressed.mp4 was generated from the same lavfi source at a
 different quality setting (crf 35 instead of the default), to simulate a
-real re-encode - same visual content, different bytes/bitrate:
+real re-encode with the same visual content but different bytes/bitrate:
 
 ffmpeg -f lavfi -i testsrc2=s=64x64:d=1 -c:v libx264 -crf 35 -pix_fmt yuv420p -movflags +faststart testsrc_1s_recompressed.mp4
 
@@ -16,10 +16,10 @@ bits since a flat frame has no left>right pixel transitions anywhere),
 actually discriminates: measured Hamming distance between `testsrc_1s.mp4`
 and `red_1s.mp4`'s dHash is 23 (correctly judged NOT similar, threshold 10),
 while the distance between `testsrc_1s.mp4` and its own recompressed
-variant is 2 (correctly judged similar despite different bytes/bitrate -
+variant is 2 (correctly judged similar despite different bytes/bitrate;
 this is the actual near-duplicate scenario the feature targets: same
 source, different encoding).
 
-ffmpeg is not a project dependency - it was only used once, locally, to
+ffmpeg is not a project dependency. It was only used once, locally, to
 produce these two committed fixtures. Regenerate with the commands above if
 either fixture ever needs to change.

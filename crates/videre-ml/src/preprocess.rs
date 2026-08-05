@@ -47,7 +47,7 @@ pub fn image_to_tensor(path: &Path, size: usize, device: &Device) -> Result<Tens
 }
 
 /// Convert an image/video file to a `DynamicImage` via QuickLook (`qlmanage -t`).
-/// Used for HEIC (see the orientation note below) and for `.mov`/`.mp4` -
+/// Used for HEIC (see the orientation note below) and for `.mov`/`.mp4`.
 /// QuickLook already generates a poster-frame thumbnail for video files the
 /// same way it does for HEIC, so this is one shared mechanism for both
 /// rather than a second implementation.

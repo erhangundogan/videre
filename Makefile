@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 
 # cargo-llvm-cov must run through the rustup-managed toolchain, not the
-# default `cargo` on PATH - this machine's default cargo/rustc are a separate
+# default `cargo` on PATH. This machine's default cargo/rustc are a separate
 # Homebrew Rust install with no rustup component support, while
 # llvm-tools-preview only installs into a rustup toolchain. Mixing the two
 # pairs mismatched LLVM versions and produces invalid coverage data. See the

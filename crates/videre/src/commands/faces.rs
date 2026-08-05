@@ -47,14 +47,14 @@ pub struct FacesArgs {
     /// and see the architecture memory) showed HEIC file loading (via a
     /// qlmanage subprocess) averages ~52x longer than non-HEIC loading and
     /// dominates the whole per-image cost, so a flat 1:1 worker:core mapping
-    /// leaves CPU idle while many workers sit blocked on that subprocess -
+    /// leaves CPU idle while many workers sit blocked on that subprocess,
     /// oversubscribing keeps cores busy with other workers' CPU-bound
     /// detect/embed work while some workers wait on I/O.
     #[arg(long)] workers: Option<usize>,
     /// Max concurrent `qlmanage` subprocesses (HEIC decoding), process-wide.
     /// Default 6 (raised from 3 after real profiling showed HEIC-heavy runs
-    /// leaving CPU idle under `--workers`'s default 2x-cores worker count -
-    /// see docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md).
+    /// leaving CPU idle under `--workers`'s default 2x-cores worker count.
+    /// See docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md).
     /// Raising this further trades a known-safe default for an untested one:
     /// QuickLook's thumbnail agent and the source drive's I/O may not
     /// actually sustain more concurrent conversions, so treat higher values
