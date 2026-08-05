@@ -29,14 +29,27 @@ pub struct McpArgs {
 pub fn run(args: McpArgs) -> Result<()> {
     let db = super::resolve_reader_db_must_exist(args.db)?;
     let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref());
-    // Verified at startup rather than on the first tool call: the server is
-    // long-lived, and a typo should not surface minutes later as an error
-    // inside an agent's search result.
-    {
+    // Probed at startup so a typo in --model is visible immediately rather
+    // than minutes later inside an agent's search result, but NOT fatal:
+    // find_duplicates and stats do not touch embeddings, and refusing to
+    // start would make this command useless on a library that has been
+    // scanned but never embedded, which is a perfectly normal state. The
+    // search tool re-checks per call and returns a clear tool-level error.
+    let embeddings_ready = {
         let probe = videre_core::db::open_wal(&db)?;
-        videre_core::embeddings_db::attach(&probe, &db, &model_id, false)?;
-    }
-    eprintln!("videre mcp: serving {} (model {model_id})", db.display());
+        match videre_core::embeddings_db::attach(&probe, &db, &model_id, false) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("videre mcp: search unavailable ({e})");
+                false
+            }
+        }
+    };
+    eprintln!(
+        "videre mcp: serving {} (model {model_id}{})",
+        db.display(),
+        if embeddings_ready { "" } else { ", no embeddings" }
+    );
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async move {

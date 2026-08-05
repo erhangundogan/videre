@@ -158,7 +158,7 @@ fn run_cycle(args: &WatchArgs, directory: &std::path::Path, db: &std::path::Path
 fn run_prune_stage(args: &WatchArgs, conn: &rusqlite::Connection, db_path: &std::path::Path) -> Result<()> {
     let prune_args = super::prune::PruneArgs::for_watch_stage(args.silent);
     let errors = videre_core::pipeline_runs::track(conn, db_path, "prune", || {
-        super::prune::run_prune(&prune_args, conn)
+        super::prune::run_prune(&prune_args, conn, db_path)
     })?;
     if !args.silent && errors > 0 {
         eprintln!("videre watch: prune stage finished with {errors} error(s)");

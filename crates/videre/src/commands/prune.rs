@@ -33,15 +33,6 @@ fn system_time_to_iso(t: SystemTime) -> String {
     dt.to_rfc3339()
 }
 
-fn embeddings_table_exists(conn: &Connection) -> bool {
-    conn.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='embeddings'",
-        [],
-        |r| r.get::<_, i64>(0),
-    )
-    .unwrap_or(0)
-        > 0
-}
 
 pub fn run(args: PruneArgs) -> anyhow::Result<()> {
     let db = super::resolve_reader_db(args.db.clone())?;
@@ -57,7 +48,7 @@ pub fn run(args: PruneArgs) -> anyhow::Result<()> {
 
     let conn = videre_core::db::open_wal(&db).expect("failed to open database");
 
-    let errors = videre_core::pipeline_runs::track(&conn, &db, "prune", || run_prune(&args, &conn))?;
+    let errors = videre_core::pipeline_runs::track(&conn, &db, "prune", || run_prune(&args, &conn, &db))?;
 
     if errors > 0 {
         std::process::exit(1);
@@ -71,7 +62,11 @@ pub fn run(args: PruneArgs) -> anyhow::Result<()> {
 /// finalized the run. `pub(crate)` so `videre watch --prune` can reuse it
 /// directly against its own already-open connection instead of duplicating
 /// the orphan-cleanup logic.
-pub(crate) fn run_prune(args: &PruneArgs, conn: &Connection) -> anyhow::Result<usize> {
+pub(crate) fn run_prune(
+    args: &PruneArgs,
+    conn: &Connection,
+    db: &std::path::Path,
+) -> anyhow::Result<usize> {
     let paths: Vec<String> = {
         let mut stmt = conn
             .prepare("SELECT path FROM file_hashes ORDER BY path")
@@ -133,13 +128,22 @@ pub(crate) fn run_prune(args: &PruneArgs, conn: &Connection) -> anyhow::Result<u
         }
     }
 
-    // Remove orphan embeddings: hashes with no remaining file_hashes row.
-    // In dry-run mode the file_hashes rows were not deleted yet, so the count
-    // reflects only pre-existing orphans and is a lower bound.
-    let orphans = if embeddings_table_exists(conn) {
-        if args.dry_run {
+    // Remove orphan embeddings from every model database, not just one.
+    // Each model is attached, swept, and detached in turn rather than joined
+    // in a single statement: SQLite gives no atomic commit across attached
+    // databases in WAL mode, so batching buys nothing, and a per-model count
+    // is more useful output anyway.
+    //
+    // In dry-run mode the file_hashes rows were not deleted yet, so counts
+    // reflect only pre-existing orphans and are a lower bound.
+    let mut orphans = 0usize;
+    for model_id in videre_core::embeddings_db::list_models(db).unwrap_or_default() {
+        if videre_core::embeddings_db::attach(conn, db, &model_id, false).is_err() {
+            continue;
+        }
+        let removed = if args.dry_run {
             conn.query_row(
-                "SELECT COUNT(*) FROM embeddings \
+                "SELECT COUNT(*) FROM emb.embeddings \
                  WHERE hash NOT IN (SELECT hash FROM file_hashes)",
                 [],
                 // rusqlite 0.40 dropped `FromSql for usize`; SQLite returns
@@ -150,15 +154,18 @@ pub(crate) fn run_prune(args: &PruneArgs, conn: &Connection) -> anyhow::Result<u
             .unwrap_or(0)
         } else {
             conn.execute(
-                "DELETE FROM embeddings \
+                "DELETE FROM emb.embeddings \
                  WHERE hash NOT IN (SELECT hash FROM file_hashes)",
                 [],
             )
             .unwrap_or(0)
+        };
+        let _ = videre_core::embeddings_db::detach(conn);
+        if !args.silent && removed > 0 {
+            eprintln!("removed {removed} orphan embedding(s) ({model_id})");
         }
-    } else {
-        0
-    };
+        orphans += removed;
+    }
 
     // Remove orphan thumbnail-cache files: any videre_core::thumb_cache entry
     // (240/1200px thumbnail, face crop, or full-res original) whose content

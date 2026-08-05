@@ -300,7 +300,13 @@ fn search_text_without_embeddings_is_tool_error_and_server_survives() {
     let resp = client.call_tool(6, "search", json!({"query": "beach"}));
     assert_eq!(resp["result"]["isError"], true, "full response: {resp}");
     let text = resp["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(text.contains("no embeddings found"), "{text}");
+    // The message now names the model and where its database was expected,
+    // rather than a bare "no embeddings found".
+    assert!(text.contains("no embeddings"), "{text}");
+    assert!(
+        text.contains(videre_core::embeddings::DEFAULT_MODEL_ID),
+        "the error should name the model it looked for: {text}"
+    );
 
     // the failure must not kill the server: a follow-up call still works
     let resp2 = client.call_tool(7, "stats", json!({}));

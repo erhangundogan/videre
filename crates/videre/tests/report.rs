@@ -2,7 +2,26 @@ use rusqlite::Connection;
 use std::process::Command;
 use tempfile::tempdir;
 
+/// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.
+///
+/// Required now that embeddings live at `<VIDERE_HOME>/embeddings/...`:
+/// without it the test process writes into the developer's real `~/.videre`
+/// while the spawned binary reads an isolated one, so the assertions compare
+/// two different places and real directories accumulate. Set inside
+/// `get_or_init` so it happens exactly once, since tests share a process and
+/// run in parallel.
+fn isolated_home() {
+    static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("videre-report-home-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create isolated test home");
+        std::env::set_var("VIDERE_HOME", &dir);
+        dir
+    });
+}
+
 fn report_bin() -> std::path::PathBuf {
+    isolated_home();
     let mut path = std::env::current_exe().unwrap();
     path.pop(); // deps/
     path.pop(); // debug/
@@ -52,22 +71,25 @@ fn fixture_db(
         .unwrap();
     }
     if with_embeddings {
-        conn.execute_batch(
-            "CREATE TABLE embeddings (
-                hash TEXT PRIMARY KEY, model_id TEXT NOT NULL,
-                embedding BLOB NOT NULL, embedded_at TEXT NOT NULL
-            );",
+        // Into the per-model database, which is where report reads from now.
+        isolated_home();
+        videre_core::embeddings_db::attach(
+            &conn,
+            &db,
+            videre_core::embeddings::DEFAULT_MODEL_ID,
+            true,
         )
         .unwrap();
         let v1 = videre_core::vectors::to_f16_bytes(&[1.0, 0.0]);
         let v2 = videre_core::vectors::to_f16_bytes(&[0.0, 1.0]);
         for (hash, v) in [("hdup", v1), ("hsing", v2)] {
             conn.execute(
-                "INSERT INTO embeddings VALUES (?1, ?2, ?3, 'now')",
+                "INSERT INTO emb.embeddings VALUES (?1, ?2, ?3, 'now')",
                 rusqlite::params![hash, videre_core::embeddings::DEFAULT_MODEL_ID, v],
             )
             .unwrap();
         }
+        videre_core::embeddings_db::detach(&conn).unwrap();
     }
     (db, files)
 }
