@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 /// Directory holding pre-converted HEIC thumbnails, keyed by content hash
-/// rather than file path - the same photo scanned into different databases
+/// rather than file path, the same photo scanned into different databases
 /// only needs converting once. Mirrors this project's existing
 /// `~/.cache/ort/` convention for cached model weights.
 pub fn cache_dir() -> PathBuf {
@@ -20,7 +20,7 @@ pub fn thumb_exists(hash: &str, size: u32) -> bool {
 }
 
 /// Cache path for a single face crop. Distinct from `thumb_path` because
-/// many faces can share one source `hash` - the face id disambiguates.
+/// many faces can share one source `hash`, the face id disambiguates.
 pub fn face_thumb_path(hash: &str, face_id: i64, size: u32) -> PathBuf {
     cache_dir().join(format!("{hash}_face{face_id}_{size}.jpg"))
 }
@@ -31,7 +31,7 @@ pub fn face_thumb_exists(hash: &str, face_id: i64, size: u32) -> bool {
 }
 
 /// Cache path for a full-resolution HEIC-converted original. One per hash
-/// (not per face - the original photo is the same regardless of which face
+/// (not per face, the original photo is the same regardless of which face
 /// on it was clicked).
 pub fn original_path(hash: &str) -> PathBuf {
     cache_dir().join(format!("{hash}_original.jpg"))
@@ -42,19 +42,19 @@ pub fn original_exists(hash: &str) -> bool {
     original_path(hash).exists()
 }
 
-/// Length of a BLAKE3 hex digest (32 bytes -> 64 hex chars) - every
+/// Length of a BLAKE3 hex digest (32 bytes -> 64 hex chars), every
 /// content-hash-keyed cache filename starts with exactly this many hex
 /// chars, followed by `_` and a purpose-specific suffix
 /// (`_240.jpg`, `_face3_140.jpg`, `_original.jpg`, `_original.tmp1234`, ...).
 const HASH_HEX_LEN: usize = 64;
 
 /// Extracts the leading content hash from a cache filename (the `.jpg`
-/// files this module writes - `thumb_path`, `face_thumb_path`,
+/// files this module writes, `thumb_path`, `face_thumb_path`,
 /// `original_path`), or `None` if `filename` doesn't match that shape.
 /// Used by `videre prune` to find cache entries whose hash no longer has a
 /// surviving `file_hashes` row, without hardcoding every suffix pattern this
 /// module can produce. Deliberately does NOT match `.tmp*` scratch files
-/// (see `thumb_tmp_path`/`original_tmp_path`) - those may be actively being
+/// (see `thumb_tmp_path`/`original_tmp_path`), those may be actively being
 /// written by a concurrently running `videre watch`, and reusing this same
 /// hash-existence check against them could delete an in-flight write for a
 /// hash that is still perfectly valid.
@@ -75,7 +75,7 @@ pub fn hash_from_cache_filename(filename: &str) -> Option<&str> {
 }
 
 /// Scratch path for writing a full-res original before it's atomically
-/// renamed into place at `original_path` - mirrors `thumb_tmp_path`'s
+/// renamed into place at `original_path`, mirrors `thumb_tmp_path`'s
 /// same-filesystem-atomic-rename pattern and process-id disambiguation.
 pub fn original_tmp_path(hash: &str) -> PathBuf {
     cache_dir().join(format!("{hash}_original.tmp{}", std::process::id()))

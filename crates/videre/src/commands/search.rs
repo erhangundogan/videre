@@ -23,13 +23,13 @@ pub struct SearchArgs {
     #[arg(long, conflicts_with = "query", conflicts_with = "image")]
     person: Option<String>,
 
-    /// Return paths classified as this category - photo/screenshot/document/
+    /// Return paths classified as this category: photo/screenshot/document/
     /// meme/unknown (requires a prior 'videre classify' run)
     #[arg(long, conflicts_with = "query", conflicts_with = "image", conflicts_with = "person")]
     category: Option<String>,
 
     /// Find photos within --radius km of this place, e.g. "Berlin, Germany"
-    /// (forward-geocoded via the free public Nominatim API - the first
+    /// (forward-geocoded via the free public Nominatim API, the first
     /// network call this CLI ever makes; results are cached locally)
     #[arg(long, conflicts_with = "query", conflicts_with = "image", conflicts_with = "person", conflicts_with = "category")]
     location: Option<String>,
@@ -126,7 +126,7 @@ pub(crate) fn person_hits(conn: &Connection, name: &str) -> Result<Vec<SearchHit
         .collect())
 }
 
-/// Category query: paths + hash (no score - membership only, not ranked).
+/// Category query: paths + hash (no score, membership only, not ranked).
 /// Unlike `person_hits`, hash comes along for free from the join query
 /// itself (person search's own helper doesn't return one), so it's
 /// included here.
@@ -139,7 +139,7 @@ pub(crate) fn category_hits(conn: &Connection, category: &str) -> Result<Vec<Sea
 }
 
 /// Location query: photos within `radius_km` of a forward-geocoded point,
-/// sorted by distance ascending, truncated to `top_k` - this is a ranked
+/// sorted by distance ascending, truncated to `top_k`, this is a ranked
 /// "k nearest" query (unlike `person`/`category`'s unbounded membership
 /// sets), so `top_k` truncation applies here same as text/image mode.
 /// Carries path+hash+distance_km, no score.

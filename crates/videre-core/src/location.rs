@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 
 /// Idempotent migration: adds `file_hashes.location_name` if it doesn't
 /// already exist. Mirrors the `ALTER TABLE faces ADD COLUMN is_primary`
-/// pattern in face_db.rs - errors (column already exists) are ignored.
+/// pattern in face_db.rs, errors (column already exists) are ignored.
 pub fn ensure_location_column(conn: &Connection) {
     let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN location_name TEXT");
 }
@@ -21,7 +21,7 @@ static GEOCODER: OnceLock<ReverseGeocoder> = OnceLock::new();
 /// should call this once and reuse the reference rather than calling
 /// `location_name` per coordinate, since `location_name` itself goes through
 /// this same cached instance but still incurs a function-call/lookup
-/// pattern per site - using `geocoder()` directly makes the "build once"
+/// pattern per site, using `geocoder()` directly makes the "build once"
 /// intent explicit at bulk call sites.
 pub fn geocoder() -> &'static ReverseGeocoder {
     GEOCODER.get_or_init(ReverseGeocoder::new)
@@ -30,11 +30,11 @@ pub fn geocoder() -> &'static ReverseGeocoder {
 /// Reverse-geocodes (lat, lon) to a human-readable "City, Country" string
 /// using an offline GeoNames-derived dataset (no network calls). Always
 /// returns Some(..) since the bundled dataset covers the whole globe with a
-/// nearest-city match - there's always some nearest record.
+/// nearest-city match, there's always some nearest record.
 ///
 /// Uses a process-wide cached `ReverseGeocoder` (see `geocoder()`), so
-/// repeated calls - whether from a single on-demand lookup or a loop over
-/// many coordinates - only pay the dataset-parsing/KD-tree-build cost once.
+/// repeated calls, whether from a single on-demand lookup or a loop over
+/// many coordinates, only pay the dataset-parsing/KD-tree-build cost once.
 pub fn location_name(lat: f64, lon: f64) -> Option<String> {
     let result = geocoder().search((lat, lon));
     let record = &result.record;

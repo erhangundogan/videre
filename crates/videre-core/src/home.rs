@@ -20,13 +20,13 @@ pub fn default_jsonl() -> Result<PathBuf> {
 /// Directory holding `flock` sidecar lock files: `<home>/locks`.
 ///
 /// Locks used to sit next to the database as `<db path>.<command>.lock`, which
-/// scattered them into whatever directory the database lived in - cluttering
+/// scattered them into whatever directory the database lived in, cluttering
 /// `~/.videre` for the default database, and the user's own folders for any
 /// `--db` elsewhere. Collecting them here keeps that state in one place.
 ///
 /// Only the path is computed; creating the directory is the caller's job, so
 /// readers (`videre stats` probing liveness) never bring videre's home into
-/// existence just by looking - same lazily-created-by-writers rule the rest of
+/// existence just by looking, same lazily-created-by-writers rule the rest of
 /// the home directory follows.
 pub fn locks_dir() -> Result<PathBuf> {
     Ok(videre_home()?.join("locks"))

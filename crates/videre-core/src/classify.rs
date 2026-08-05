@@ -1,6 +1,6 @@
 //! Classifications table: one row per unique content hash (photo/screenshot/
 //! document/meme/unknown), keyed to embeddings.hash. Zero-shot classification
-//! reuses embeddings `videre embed` already computed - see
+//! reuses embeddings `videre embed` already computed. See
 //! docs/superpowers/specs/2026-07-29-screenshot-document-classification-design.md.
 
 use rusqlite::{Connection, Result, params};
@@ -17,7 +17,7 @@ pub fn ensure_classifications_table(conn: &Connection) -> Result<()> {
 }
 
 /// Hashes that have an embedding under `model_id` but no classification yet.
-/// Excludes video hashes (`.mov`/`.mp4`) - none of the four zero-shot
+/// Excludes video hashes (`.mov`/`.mp4`), none of the four zero-shot
 /// categories (photo/screenshot/document/meme) fit a video frame well, so
 /// videos are never classified, per the video-embedding design's decision.
 pub fn pending_hashes(conn: &Connection, model_id: &str) -> Result<Vec<String>> {
@@ -39,10 +39,10 @@ pub fn pending_hashes(conn: &Connection, model_id: &str) -> Result<Vec<String>> 
 /// that build their hash list independently of `pending_hashes` and need the
 /// same video exclusion applied so the two paths can't drift apart. A hash
 /// with no matching `file_hashes` row (nothing known about its extension) is
-/// kept, not excluded - only a *confirmed* video extension is filtered out.
+/// kept, not excluded, only a *confirmed* video extension is filtered out.
 /// Loads the full hash->ext mapping in one query rather than one query per
 /// hash, since callers can pass every embedded hash in the library (tens of
-/// thousands) - see `pending_hashes` above for the equivalent single-query
+/// thousands). See `pending_hashes` above for the equivalent single-query
 /// exclusion used when the caller list comes from `embeddings` directly
 /// rather than being pre-built like it is here.
 pub fn exclude_video_hashes(conn: &Connection, hashes: &[String]) -> Result<Vec<String>> {
@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn exclude_video_hashes_keeps_hashes_with_no_file_hashes_row() {
         // A hash present in `embeddings` but with no matching `file_hashes` row
-        // (e.g. the file was pruned) has no ext to check - keep it rather than
+        // (e.g. the file was pruned) has no ext to check. Keep it rather than
         // silently dropping it, since it isn't known to be a video.
         let conn = test_db();
         let all = vec!["orphan-hash".to_string()];

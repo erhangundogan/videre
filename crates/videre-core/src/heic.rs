@@ -14,7 +14,7 @@ const QLMANAGE_TIMEOUT: Duration = Duration::from_secs(20);
 /// overridden via `set_qlmanage_concurrency` (e.g. `videre faces
 /// --qlmanage-concurrency <n>`). QuickLook's thumbnail-generation agent is a
 /// single shared per-user service, not something that scales with parallel
-/// callers - a UI rendering hundreds of HEIC thumbnails at once (or two
+/// callers, a UI rendering hundreds of HEIC thumbnails at once (or two
 /// videre processes both hitting the same library concurrently) can launch
 /// enough simultaneous `qlmanage` processes to make
 /// the agent and the source drive's I/O queue up, causing conversions that
@@ -23,19 +23,19 @@ const QLMANAGE_TIMEOUT: Duration = Duration::from_secs(20);
 /// server, faces/embed/watch, and any other embedder) well behaved without
 /// needing to coordinate with each other. Raised from 3 to 6 on 2026-07-29 after real
 /// A/B measurement of `videre faces`'s parallel pipeline showed HEIC-heavy
-/// runs leaving CPU idle (477% of 1000% on a 10-core machine) - a real
+/// runs leaving CPU idle (477% of 1000% on a 10-core machine), a real
 /// bottleneck candidate given `--workers` now defaults to 2x cores (up to
 /// 20 concurrent workers, all previously queuing on a 3-permit cap).
 const QLMANAGE_MAX_CONCURRENT_DEFAULT: usize = 6;
 
 /// Process-wide override for `QLMANAGE_MAX_CONCURRENT_DEFAULT`, set at most
 /// once per process (first call wins, matching the underlying semaphore's
-/// own `OnceLock` semantics) - see `set_qlmanage_concurrency`.
+/// own `OnceLock` semantics). See `set_qlmanage_concurrency`.
 static QLMANAGE_CONCURRENCY_OVERRIDE: OnceLock<usize> = OnceLock::new();
 
 /// Overrides the `qlmanage` concurrency cap for the remainder of this
 /// process. Must be called before the first HEIC conversion (i.e. before
-/// anything calls `qlmanage_semaphore()`) to take effect - like the
+/// anything calls `qlmanage_semaphore()`) to take effect, like the
 /// semaphore itself, this is a `OnceLock`: the first call sets the value,
 /// every later call (including one after the semaphore has already been
 /// created with the default) is a no-op. Intended for CLI flags like
@@ -66,7 +66,7 @@ pub fn qlmanage_semaphore() -> &'static Semaphore {
 ///
 /// `sips -s format jpeg` copies the raw sensor-buffer pixels unrotated for
 /// HEIC files where the camera encoded rotation via the HEIF `irot`
-/// transform box rather than a classic EXIF Orientation tag - the same
+/// transform box rather than a classic EXIF Orientation tag, the same
 /// rotation Finder/Preview/Photos apply via QuickLook. Using `sips` would
 /// produce sideways images (or, for dupe-faces, detect faces and compute
 /// bounding boxes against the wrongly oriented image).
@@ -93,12 +93,12 @@ pub fn warn_quicklook_unavailable_once() {
 /// `max_size` caps `qlmanage -s`'s longest-side render size. `qlmanage -s`
 /// only ever caps, never upscales, so `None` (rendered as `10000`, comfortably
 /// above any real photo's native resolution) means "give me the native/full
-/// resolution" - the only safe choice for callers whose output pixels must
+/// resolution", the only safe choice for callers whose output pixels must
 /// stay in the same coordinate space as something already stored (face
 /// detection bboxes, face-thumbnail crops) or that need true full quality
 /// (serving the original image). `Some(n)` is only safe for callers that
 /// immediately downscale the result themselves anyway (report.rs's
-/// b64/`/api/raw` thumbnails, `watch --heic`'s cache) - for them, requesting
+/// b64/`/api/raw` thumbnails, `watch --heic`'s cache), for them, requesting
 /// a smaller render up front avoids qlmanage decoding/resizing/PNG-encoding
 /// pixels that get thrown away moments later. Do NOT pass `Some` for the
 /// face-detection or face-thumbnail-crop call sites: detection's bbox
@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn resolve_qlmanage_concurrency_override_of_zero_is_honored_literally() {
-        // Not clamped here - resolve_qlmanage_concurrency is pure plumbing;
+        // Not clamped here, resolve_qlmanage_concurrency is pure plumbing;
         // Semaphore::new(0) blocking forever is a caller-input-validation
         // concern (see the --qlmanage-concurrency CLI flag), not this
         // function's job.

@@ -4,7 +4,7 @@ use tempfile::tempdir;
 
 /// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.
 /// Spawned `videre` child processes inherit the environment, so their lock
-/// files land there instead of the developer's real `~/.videre/locks` - locks
+/// files land there instead of the developer's real `~/.videre/locks`, locks
 /// live under the videre home now rather than beside the database, so without
 /// this every run would leave permanent litter in the real home (test database
 /// names are random, so the files would accumulate rather than be reused).
@@ -119,7 +119,7 @@ fn heic_stage_writes_no_cache_file_for_non_heic_hashes() {
 #[test]
 fn faces_stage_against_fresh_database_does_not_crash_or_hang() {
     let dir = tempdir().unwrap();
-    // No db file exists yet, and no --scan flag either - simulates a user
+    // No db file exists yet, and no --scan flag either, simulates a user
     // running `videre watch --faces` before any `videre scan`/`videre watch --scan`
     // run has ever created file_hashes.
     let db = dir.path().join("fresh.db");
@@ -160,7 +160,7 @@ fn location_stage_populates_location_name_for_gps_rows() {
         .spawn()
         .expect("failed to spawn videre watch");
     // Real reverse-geocode lookup + network under whatever contention the
-    // rest of this file's tests add running in parallel - a bit more
+    // rest of this file's tests add running in parallel, a bit more
     // headroom than the other stage tests' fixed sleep.
     std::thread::sleep(std::time::Duration::from_millis(3000));
     child.kill().ok();

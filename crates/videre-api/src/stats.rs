@@ -1,7 +1,7 @@
 //! Facade over videre-core's library-wide aggregate stats. Thin wrapper so
 //! callers go through one shared `Error`/`Result` type like every other
 //! videre-api operation. (`videre mcp` may adopt this later, once its own
-//! JSON contract question is resolved - see the Pass A design doc.)
+//! JSON contract question is resolved. See the Pass A design doc.)
 
 use crate::error::Result;
 use rusqlite::Connection;

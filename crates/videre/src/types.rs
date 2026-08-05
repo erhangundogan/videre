@@ -83,7 +83,7 @@ pub struct ScanOutputJson {
 }
 
 /// Top-level document for `scan --json`. Describes the scan itself (files
-/// processed, where they were written), not duplicate data - that is
+/// processed, where they were written), not duplicate data, that is
 /// `dedupe`'s job, not scan's.
 #[derive(Debug, Serialize)]
 pub struct ScanJson {

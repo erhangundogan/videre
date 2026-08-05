@@ -104,7 +104,7 @@ pub fn cluster_by_distance(points: &[(f64, f64)], radius_km: f64) -> Vec<Vec<usi
     (0..n).filter(|&r| alive[r]).map(|r| std::mem::take(&mut members[r])).collect()
 }
 
-/// Unweighted mean of the given members' `(lat, lon)` coordinates - not
+/// Unweighted mean of the given members' `(lat, lon)` coordinates, not
 /// weighted by how many photos each coordinate has (see the spec's
 /// disambiguation of `centroid_lat`/`centroid_lon` vs. `photo_count`).
 pub fn centroid(points: &[(f64, f64)], member_idxs: &[usize]) -> (f64, f64) {
@@ -130,7 +130,7 @@ pub fn ensure_location_clusters_table(conn: &Connection) -> rusqlite::Result<()>
 }
 
 /// Idempotent: adds `file_hashes.location_cluster_id` if it doesn't already
-/// exist. Mirrors `location::ensure_location_column`'s pattern - errors
+/// exist. Mirrors `location::ensure_location_column`'s pattern, errors
 /// (column already exists) are ignored.
 pub fn ensure_location_cluster_id_column(conn: &Connection) {
     let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN location_cluster_id INTEGER");

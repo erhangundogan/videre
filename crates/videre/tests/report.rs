@@ -219,7 +219,7 @@ fn by_date_keepfiles_excludes_remove_side_duplicates() {
         .expect("KEEPFILES array not closed");
     let keepfiles_json = &html[start..end];
     // Exactly one of the two hdup paths should appear (the KEEP side),
-    // plus the singleton and the video - three KEEPFILES entries total.
+    // plus the singleton and the video, three KEEPFILES entries total.
     let a_present = keepfiles_json.contains(files[0].to_str().unwrap());
     let b_present = keepfiles_json.contains(files[1].to_str().unwrap());
     assert_ne!(a_present, b_present, "exactly one duplicate-group path should be KEEP");

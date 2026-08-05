@@ -18,7 +18,7 @@ pub const IMAGE_SIZE: usize = 384;
 /// EXPERIMENTAL benchmarking scaffold (2026-08-04) for comparing SigLIP
 /// variants. Embeddings are tagged with this id in the `embeddings` table, so
 /// switching models makes `pending_images` treat the whole library as
-/// unembedded - i.e. changing this means a full re-embed, by design.
+/// unembedded, i.e. changing this means a full re-embed, by design.
 pub fn configured_model_id() -> &'static str {
     static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     ID.get_or_init(|| std::env::var("VIDERE_EMBED_MODEL").unwrap_or_else(|_| MODEL_ID.to_string()))
@@ -43,7 +43,7 @@ pub fn configured_image_size() -> usize {
 ///
 /// Above a threshold measured between 121 and 127 (120 verified clean, 127
 /// verified corrupt), this path silently returns embeddings that do not match
-/// a one-image-at-a-time baseline - no error, no NaN, just wrong vectors.
+/// a one-image-at-a-time baseline, no error, no NaN, just wrong vectors.
 /// Every *full* batch at or above the threshold is affected; a trailing
 /// partial batch is always correct, which is what makes the failure so easy to
 /// miss. Measured 2026-08-04 on macOS/Metal with `siglip-so400m-patch14-384`;
@@ -52,7 +52,7 @@ pub fn configured_image_size() -> usize {
 ///
 /// This lives here rather than in the CLI because it is a property of this
 /// inference path, not of any one caller. Anyone tempted to raise it: checking
-/// output for zero/NaN vectors is NOT sufficient - `--batch 256` yields zero
+/// output for zero/NaN vectors is NOT sufficient, `--batch 256` yields zero
 /// all-zero vectors and is still fully corrupt. Only a cosine comparison
 /// against a small-batch baseline detects it (see the ignored
 /// `batched_embeddings_match_one_at_a_time` test below). 96 keeps deliberate
@@ -74,17 +74,17 @@ pub struct Embedder {
 
 /// Inference precision, overridable with `VIDERE_EMBED_DTYPE=f16|f32`.
 ///
-/// Opt-in, default `F32` - the precision every existing embedding was computed
+/// Opt-in, default `F32`, the precision every existing embedding was computed
 /// at. `f16` measured 2026-08-04 on macOS/Metal: ~11% faster on pure jpg/png,
 /// ~7% on a realistic mix once HEIC/video decode dilutes it, with no memory
-/// saving (6.60GB peak either way - the F32 safetensors are still mmap'd and
+/// saving (6.60GB peak either way, the F32 safetensors are still mmap'd and
 /// converted). Output quality is effectively unchanged: over 190 images the
 /// worst f16-vs-f32 cosine similarity was 0.999794, median 0.99999, which is
 /// within the noise of the f16 *storage* quantization applied to every
 /// embedding anyway (`vectors::to_f16_bytes`).
 ///
 /// Left opt-in rather than made default because 7% did not justify perturbing
-/// a library whose embeddings were all computed at F32 - not because mixing is
+/// a library whose embeddings were all computed at F32, not because mixing is
 /// unsafe, which the cosine numbers above rule out.
 fn configured_dtype() -> DType {
     match std::env::var("VIDERE_EMBED_DTYPE").as_deref() {
@@ -130,11 +130,11 @@ impl Embedder {
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| anyhow::anyhow!("load tokenizer: {e}"))?;
 
-        // Weights - try single file first, then sharded index
+        // Weights, try single file first, then sharded index
         let weight_paths = load_safetensor_paths(&repo)?;
         // Paging a multi-GB mmap in from disk can take minutes when the file
         // is cold and the process runs at background QoS (nohup/launchd/cron),
-        // where macOS throttles disk I/O hard - print the size so a slow load
+        // where macOS throttles disk I/O hard, print the size so a slow load
         // is distinguishable from a hang.
         let total_bytes: u64 = weight_paths
             .iter()
@@ -366,7 +366,7 @@ mod batch_correctness_tests {
     /// ```
     ///
     /// Raise `MAX_SAFE_BATCH` past the real threshold and this fails with
-    /// cosine similarities far below 1.0 - which is exactly the silent
+    /// cosine similarities far below 1.0, which is exactly the silent
     /// corruption it exists to catch. Note the failure mode is NOT zeros or
     /// NaNs (batch 256 produces neither and is still wrong), so comparing
     /// against the one-at-a-time baseline is the only reliable check.

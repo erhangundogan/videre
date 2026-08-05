@@ -22,7 +22,7 @@ pub struct FixDatesArgs {
 
 /// Prompts on stderr and reads a yes/no answer from stdin. Any input other
 /// than "y"/"yes" (case-insensitive) is treated as "no", including EOF (e.g.
-/// stdin piped from /dev/null in a non-interactive context) - the safe
+/// stdin piped from /dev/null in a non-interactive context), the safe
 /// default for a prompt gating a file mutation.
 fn confirm(prompt: &str) -> anyhow::Result<bool> {
     use std::io::Write;

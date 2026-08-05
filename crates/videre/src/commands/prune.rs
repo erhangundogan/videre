@@ -20,7 +20,7 @@ pub struct PruneArgs {
 
 impl PruneArgs {
     /// Constructs args for an in-process prune pass against an already-open
-    /// connection (used by `videre watch --prune`) - `db`/`dry_run` aren't
+    /// connection (used by `videre watch --prune`), `db`/`dry_run` aren't
     /// meaningful there since the caller already has a connection and always
     /// wants the real (non-preview) pass, so only `silent` is exposed.
     pub(crate) fn for_watch_stage(silent: bool) -> Self {
@@ -160,7 +160,7 @@ pub(crate) fn run_prune(args: &PruneArgs, conn: &Connection) -> anyhow::Result<u
     // Remove orphan thumbnail-cache files: any videre_core::thumb_cache entry
     // (240/1200px thumbnail, face crop, or full-res original) whose content
     // hash has no remaining file_hashes row. Same "shared-hash safety" as the
-    // embeddings cleanup above - a hash survives here as long as any path
+    // embeddings cleanup above, a hash survives here as long as any path
     // still references it, even if this specific path was just removed.
     // Dry-run count is a lower bound for the same reason as above (rows not
     // actually deleted yet). Skips `.tmp*` scratch files unconditionally (see

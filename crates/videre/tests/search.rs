@@ -4,7 +4,7 @@ use tempfile::tempdir;
 
 /// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.
 /// Spawned `videre` child processes inherit the environment, so their lock
-/// files land there instead of the developer's real `~/.videre/locks` - locks
+/// files land there instead of the developer's real `~/.videre/locks`, locks
 /// live under the videre home now rather than beside the database, so without
 /// this every run would leave permanent litter in the real home (test database
 /// names are random, so the files would accumulate rather than be reused).
@@ -152,7 +152,7 @@ fn location_search_excludes_photos_outside_radius() {
         .expect("failed to run videre scan");
 
     let conn = rusqlite::Connection::open(&db_path).unwrap();
-    // Tokyo - far from Paris.
+    // Tokyo, far from Paris.
     conn.execute(
         "UPDATE file_hashes SET gps_lat = 35.6762, gps_lon = 139.6503 WHERE path LIKE '%a.jpg'",
         [],

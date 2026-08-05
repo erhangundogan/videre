@@ -5,7 +5,7 @@ use std::sync::{Condvar, Mutex};
 /// QuickLook's thumbnail-generation agent is a shared per-user service that
 /// doesn't parallelize well, so letting many callers (e.g. a UI rendering
 /// hundreds of HEIC thumbnails at once) spawn `qlmanage` unbounded causes the
-/// agent - and the source drive's I/O - to queue up and occasionally exceed
+/// agent, and the source drive's I/O, to queue up and occasionally exceed
 /// even a generous per-call timeout.
 pub struct Semaphore {
     state: Mutex<usize>,

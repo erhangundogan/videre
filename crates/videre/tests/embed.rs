@@ -4,7 +4,7 @@ use tempfile::tempdir;
 
 /// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.
 /// Spawned `videre` child processes inherit the environment, so their lock
-/// files land there instead of the developer's real `~/.videre/locks` - locks
+/// files land there instead of the developer's real `~/.videre/locks`, locks
 /// live under the videre home now rather than beside the database, so without
 /// this every run would leave permanent litter in the real home (test database
 /// names are random, so the files would accumulate rather than be reused).
@@ -68,7 +68,7 @@ fn embed_produces_an_embeddings_row_for_a_real_video() {
         .unwrap();
     assert_eq!(count, 1, "the video's content hash should have an embeddings row");
 
-    // Sanity-check the embedding itself, not just that a row exists - this is
+    // Sanity-check the embedding itself, not just that a row exists, this is
     // the sole integration-level proof this feature works, so it's worth
     // catching an empty/garbage/wrong-dimension blob slipping through the
     // video decode path specifically. Asserted against DEFAULT_MODEL_ID rather

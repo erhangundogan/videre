@@ -6,7 +6,7 @@ use rusqlite::Connection;
 /// divides by the relevant count to report per-image averages. Load time is
 /// tracked separately for HEIC (goes through a `qlmanage` subprocess) vs.
 /// everything else, since that's the one stage known to differ sharply by
-/// file type - see `docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md`.
+/// file type. See `docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md`.
 #[derive(Debug, Default, Clone)]
 pub struct ProfileStats {
     pub load_heic: std::time::Duration,
@@ -64,12 +64,12 @@ pub fn format_profile_report(stats: &ProfileStats) -> String {
 }
 
 /// Splits `items` into `workers` partitions round-robin (item at index `i`
-/// goes to partition `i % workers`), not contiguous chunks - this spreads
+/// goes to partition `i % workers`), not contiguous chunks, this spreads
 /// any clustering in the input order (e.g. a run of HEIC files from one
 /// photo-import session sitting contiguously) evenly across workers instead
 /// of letting one worker inherit a disproportionately slow subset. Panics if
 /// `workers` is 0 (a caller bug, not a runtime condition to handle
-/// gracefully - `--workers` is validated to be at least 1 before this is
+/// gracefully, `--workers` is validated to be at least 1 before this is
 /// called).
 pub fn round_robin_partition<T: Clone>(items: &[T], workers: usize) -> Vec<Vec<T>> {
     assert!(workers > 0, "round_robin_partition requires at least 1 worker");
@@ -90,11 +90,11 @@ pub struct FacesRunResult {
 /// One worker thread's report of a single image's (or, for
 /// `EmbedBatchError`, a whole failed chunk's) outcome, sent to the
 /// coordinator thread over an `mpsc` channel. The coordinator is the only
-/// thing that touches the database (see Task 6) - `Faces` carries everything
+/// thing that touches the database (see Task 6), `Faces` carries everything
 /// needed to call `replace_faces_for_hash` there. Per-image error messages
 /// (`skipping ...`, `detect failed ...`) are printed by the worker itself via
 /// the shared, thread-safe `Progress::println` (see
-/// `videre_core::progress::Progress`'s doc comment) - `ImageError`/
+/// `videre_core::progress::Progress`'s doc comment), `ImageError`/
 /// `EmbedBatchError` carry counts only, not message text, since the text was
 /// already printed at the point of failure.
 pub enum WorkerMsg {
@@ -104,7 +104,7 @@ pub enum WorkerMsg {
     EmbedBatchError { n: usize },
 }
 
-/// Updates `result`'s counters for one `WorkerMsg` - the part of handling a
+/// Updates `result`'s counters for one `WorkerMsg`, the part of handling a
 /// message that's pure bookkeeping, independent of the (impure) DB write a
 /// `Faces` message also triggers on the coordinator. Extracted so this
 /// bookkeeping is unit-testable without a real `Connection`.
@@ -164,8 +164,8 @@ pub fn run_face_pipeline(
         let (tx, rx) = std::sync::mpsc::channel::<WorkerMsg>();
 
         // Spawn one worker per partition, keeping each ScopedJoinHandle (not
-        // discarding it) so its returned ProfileStats - and any Err from
-        // model loading inside the worker - actually reaches the caller.
+        // discarding it) so its returned ProfileStats, and any Err from
+        // model loading inside the worker, actually reaches the caller.
         // thread::scope only guarantees threads are joined before the scope
         // returns; it does not automatically surface their return values.
         let handles: Vec<std::thread::ScopedJoinHandle<Result<ProfileStats>>> = partitions
@@ -369,7 +369,7 @@ pub fn cluster_with_quality_gate(
             quality.push((*id, emb.clone()));
         }
     }
-    // The average-linkage pass below is O(n^2) - never silent about starting
+    // The average-linkage pass below is O(n^2), never silent about starting
     // it, even under --silent's per-image progress suppression, since a
     // large library's clustering pass can itself take real time with no
     // other visible output in between (this was previously silent end-to-end,
@@ -405,7 +405,7 @@ fn cosine_sim(a: &[f32], b: &[f32]) -> f32 {
 
 /// Re-runs two-stage clustering (average-linkage, then a centroid-merge pass
 /// that reunites one person's fragmented sub-clusters) over every face
-/// embedding currently in the database - safe to call whether or not
+/// embedding currently in the database, safe to call whether or not
 /// run_face_pipeline found anything new, since re-clustering is idempotent.
 /// Returns `None` when there are no faces in the database to cluster; callers
 /// decide whether/how to report that.
@@ -440,11 +440,11 @@ fn load_image(path: &str, hash: &str) -> Result<image::DynamicImage, String> {
         #[cfg(target_os = "macos")]
         {
             // `videre watch --heic` may have already cached a full-resolution
-            // decode for this hash (`thumb_cache::original_path`) - reuse it
+            // decode for this hash (`thumb_cache::original_path`), reuse it
             // instead of paying for a second qlmanage subprocess. Detection's
             // bbox coordinates are stored relative to whatever image
             // detection ran on, so this cached JPEG must be a full-res
-            // decode too (which `watch --heic` guarantees - see
+            // decode too (which `watch --heic` guarantees. See
             // `run_heic_stage`), not one of the smaller 240/1200px
             // thumbnails. Falls back to a fresh full-res qlmanage decode
             // (None) when the cache hasn't been populated for this hash yet,
@@ -579,7 +579,7 @@ mod tests {
         let img = image::RgbImage::from_pixel(2, 2, image::Rgb([255, 0, 0]));
         image::DynamicImage::ImageRgb8(img).save(&cache_path).unwrap();
 
-        // The .heic path below does not exist and is never real HEIC - if
+        // The .heic path below does not exist and is never real HEIC, if
         // load_image fell through to a fresh qlmanage decode instead of
         // using the cache, this would fail rather than return the cached
         // 2x2 image.

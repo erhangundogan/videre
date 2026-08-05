@@ -80,8 +80,8 @@ fn preprocess(img: &DynamicImage) -> Array4<f32> {
 ///
 /// For stride S, grid = 640/S, n = grid^2 * 2 (2 anchors per cell).
 /// - score: [1, n, 1]
-/// - bbox:  [1, n, 4]  — offsets in stride units from the anchor centre
-/// - kps:   [1, n, 10] — 5-point landmark offsets in stride units
+/// - bbox:  [1, n, 4]  offsets in stride units from the anchor centre
+/// - kps:   [1, n, 10] 5-point landmark offsets in stride units
 fn postprocess(
     outputs: &ort::session::SessionOutputs<'_>,
     orig_w: u32,
