@@ -163,6 +163,45 @@ pub fn list_models(db_path: &Path) -> Result<Vec<String>> {
     Ok(models)
 }
 
+/// One model's embedding inventory, for `videre stats`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ModelEmbeddingCount {
+    pub model_id: String,
+    pub count: i64,
+    /// Vector dimensions, derived from stored blob length rather than a
+    /// hardcoded per-model table, so an unfamiliar model still reports
+    /// honestly. 0 when the database holds no rows yet.
+    pub dims: i64,
+    pub size_bytes: i64,
+}
+
+/// Row count, dimensions, and file size for every model in this library.
+pub fn counts_by_model(db_path: &Path) -> Result<Vec<ModelEmbeddingCount>> {
+    let mut out = Vec::new();
+    for model_id in list_models(db_path)? {
+        let path = self::db_path(db_path, &model_id)?;
+        let size_bytes = std::fs::metadata(&path).map(|m| m.len() as i64).unwrap_or(0);
+        let conn = Connection::open(&path).with_context(|| format!("open {}", path.display()))?;
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0))
+            .unwrap_or(0);
+        let dims: i64 = conn
+            .query_row(
+                "SELECT LENGTH(embedding) / 2 FROM embeddings LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        out.push(ModelEmbeddingCount {
+            model_id,
+            count,
+            dims,
+            size_bytes,
+        });
+    }
+    Ok(out)
+}
+
 /// DETACH the model database. Needed before attaching a different model on
 /// the same connection, since the alias may bind only one file at a time.
 pub fn detach(conn: &Connection) -> Result<()> {
@@ -394,6 +433,84 @@ mod tests {
             detach(&conn).unwrap();
             attach(&conn, &lib, "google/siglip-base-patch16-224", true).unwrap();
             detach(&conn).unwrap();
+        });
+    }
+
+    #[test]
+    fn list_models_returns_sorted_ids_and_ignores_unrelated_files() {
+        with_home("list", |home| {
+            let lib = touch_db(home, "hashes.db");
+            let conn = Connection::open_in_memory().unwrap();
+            for m in [
+                "google/siglip2-base-patch16-384",
+                "google/siglip-base-patch16-224",
+            ] {
+                attach(&conn, &lib, m, true).unwrap();
+                detach(&conn).unwrap();
+            }
+            // WAL sidecars and stray files must not be mistaken for models.
+            let dir = library_dir(&lib).unwrap();
+            std::fs::write(dir.join("notes.txt"), b"x").unwrap();
+
+            let models = list_models(&lib).unwrap();
+            assert_eq!(
+                models,
+                vec![
+                    "google/siglip-base-patch16-224".to_string(),
+                    "google/siglip2-base-patch16-384".to_string(),
+                ]
+            );
+        });
+    }
+
+    #[test]
+    fn list_models_on_a_library_with_no_embeddings_is_empty_not_an_error() {
+        with_home("listempty", |home| {
+            let lib = touch_db(home, "hashes.db");
+            assert!(list_models(&lib).unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn counts_by_model_reports_rows_dims_and_size() {
+        with_home("counts", |home| {
+            let lib = touch_db(home, "hashes.db");
+            let model = "google/siglip2-base-patch16-384";
+            let conn = Connection::open_in_memory().unwrap();
+            attach(&conn, &lib, model, true).unwrap();
+            // 768 dims f16 = 1536 bytes
+            conn.execute(
+                "INSERT INTO emb.embeddings (hash, model_id, embedding, embedded_at)
+                 VALUES ('h1', ?1, zeroblob(1536), 'now')",
+                [model],
+            )
+            .unwrap();
+            detach(&conn).unwrap();
+
+            let counts = counts_by_model(&lib).unwrap();
+            assert_eq!(counts.len(), 1);
+            assert_eq!(counts[0].model_id, model);
+            assert_eq!(counts[0].count, 1);
+            assert_eq!(
+                counts[0].dims, 768,
+                "dims derive from blob length, not a table"
+            );
+            assert!(counts[0].size_bytes > 0);
+        });
+    }
+
+    #[test]
+    fn counts_by_model_reports_zero_dims_for_an_empty_model_database() {
+        with_home("countsempty", |home| {
+            let lib = touch_db(home, "hashes.db");
+            let conn = Connection::open_in_memory().unwrap();
+            attach(&conn, &lib, "google/siglip2-base-patch16-384", true).unwrap();
+            detach(&conn).unwrap();
+
+            let counts = counts_by_model(&lib).unwrap();
+            assert_eq!(counts.len(), 1);
+            assert_eq!(counts[0].count, 0);
+            assert_eq!(counts[0].dims, 0);
         });
     }
 
