@@ -9,6 +9,7 @@
 //! docs/superpowers/specs/2026-08-05-multi-model-embeddings-split-design.md.
 
 use anyhow::{Context, Result};
+use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 
 /// Schema alias the model database is attached under.
@@ -63,6 +64,111 @@ pub fn library_dir(db_path: &Path) -> Result<PathBuf> {
 /// nothing.
 pub fn db_path(db_path: &Path, model_id: &str) -> Result<PathBuf> {
     Ok(library_dir(db_path)?.join(format!("{}.{DB_EXT}", model_slug(model_id))))
+}
+
+/// Page size for model databases, overriding SQLite's 4096 default.
+///
+/// Measured 2026-08-05 over 20,000 synthetic rows, extrapolated to 70,587:
+///
+/// | page_size | 1152-dim | 768-dim |
+/// |-----------|----------|---------|
+/// | 4096      | 282 MB   | 143 MB  |
+/// | 8192      | 189 MB   | 143 MB  |
+/// | 16384     | 189 MB   | 128 MB  |
+/// | 32768     | 175 MB   | 122 MB  |
+///
+/// 8192 recovers a third of a 1152-dimension model's footprint but does
+/// nothing at all for 768-dimension models, which is where future data goes.
+/// 16384 is the first size that improves both. 32768 buys a further 5% at the
+/// cost of reading 32KB to touch one vector.
+pub const PAGE_SIZE: i64 = 16384;
+
+/// Initialise a new model database at `path`: page size, WAL, schema.
+///
+/// Done on a standalone connection, before any ATTACH, because `page_size`
+/// only takes effect on an empty database and must be set before
+/// `journal_mode = WAL` and before any table exists. Setting it later is
+/// silently ignored and needs a full VACUUM to apply.
+fn init_model_db(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let conn = Connection::open(path).with_context(|| format!("create {}", path.display()))?;
+    conn.pragma_update(None, "page_size", PAGE_SIZE)
+        .context("set page_size")?;
+    conn.pragma_update(None, "journal_mode", "WAL")
+        .context("set journal_mode")?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS embeddings (
+            hash        TEXT PRIMARY KEY NOT NULL,
+            model_id    TEXT NOT NULL,
+            embedding   BLOB NOT NULL,
+            embedded_at TEXT NOT NULL
+        );",
+    )
+    .with_context(|| format!("create embeddings table in {}", path.display()))?;
+    Ok(())
+}
+
+/// ATTACH the model database for `(db_path, model_id)` as `emb`.
+///
+/// With `create`, a missing file is initialised first; this is reached only
+/// from `videre embed`. Without, a missing file is an error naming the models
+/// that do exist, so the user is never left guessing why search is empty.
+pub fn attach(conn: &Connection, db_path: &Path, model_id: &str, create: bool) -> Result<()> {
+    let path = self::db_path(db_path, model_id)?;
+    if !path.exists() {
+        if !create {
+            let available = list_models(db_path).unwrap_or_default();
+            let available = if available.is_empty() {
+                "(none)".to_string()
+            } else {
+                available.join(", ")
+            };
+            anyhow::bail!(
+                "no embeddings for {model_id} in this library\n  \
+                 expected: {}\n  available: {available}\n  \
+                 run: videre embed --model {model_id}",
+                path.display()
+            );
+        }
+        init_model_db(&path)?;
+    }
+    conn.execute(
+        &format!("ATTACH DATABASE ?1 AS {ATTACH_ALIAS}"),
+        [path.to_string_lossy().as_ref()],
+    )
+    .with_context(|| format!("attach {}", path.display()))?;
+    Ok(())
+}
+
+/// Model ids with an existing database for this library, sorted.
+///
+/// A missing directory is an empty list, not an error: a library that has
+/// never been embedded is a normal state, not a fault.
+pub fn list_models(db_path: &Path) -> Result<Vec<String>> {
+    let dir = library_dir(db_path)?;
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e).with_context(|| format!("read {}", dir.display())),
+    };
+    let mut models: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == DB_EXT))
+        .filter_map(|p| p.file_stem().map(|s| model_from_slug(&s.to_string_lossy())))
+        .collect();
+    models.sort();
+    Ok(models)
+}
+
+/// DETACH the model database. Needed before attaching a different model on
+/// the same connection, since the alias may bind only one file at a time.
+pub fn detach(conn: &Connection) -> Result<()> {
+    conn.execute(&format!("DETACH DATABASE {ATTACH_ALIAS}"), [])
+        .context("detach embeddings database")?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -154,6 +260,140 @@ mod tests {
             let p = db_path(&lib, "google/siglip2-base-patch16-384").unwrap();
             assert_eq!(p.file_name().unwrap(), "google--siglip2-base-patch16-384.db");
             assert_eq!(p.parent().unwrap(), library_dir(&lib).unwrap());
+        });
+    }
+
+    #[test]
+    fn attach_with_create_makes_a_database_with_the_chosen_page_size() {
+        with_home("create", |home| {
+            let lib = touch_db(home, "hashes.db");
+            let conn = Connection::open_in_memory().unwrap();
+            attach(&conn, &lib, "google/siglip2-base-patch16-384", true).unwrap();
+
+            // Read the pragma back rather than assuming the write took: a
+            // page_size set after the file has content is silently ignored.
+            let ps: i64 = conn
+                .query_row("PRAGMA emb.page_size", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(ps, PAGE_SIZE);
+        });
+    }
+
+    #[test]
+    fn attach_with_create_is_idempotent_and_preserves_rows() {
+        with_home("idem", |home| {
+            let lib = touch_db(home, "hashes.db");
+            let model = "google/siglip2-base-patch16-384";
+
+            let c1 = Connection::open_in_memory().unwrap();
+            attach(&c1, &lib, model, true).unwrap();
+            c1.execute(
+                "INSERT INTO emb.embeddings (hash, model_id, embedding, embedded_at)
+                 VALUES ('h1', ?1, X'0102', '2026-08-05T00:00:00')",
+                [model],
+            )
+            .unwrap();
+            detach(&c1).unwrap();
+            drop(c1);
+
+            let c2 = Connection::open_in_memory().unwrap();
+            attach(&c2, &lib, model, true).unwrap();
+            let n: i64 = c2
+                .query_row("SELECT COUNT(*) FROM emb.embeddings", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 1, "re-attaching must not clobber existing rows");
+        });
+    }
+
+    #[test]
+    fn attach_without_create_errors_and_names_available_models() {
+        with_home("missing", |home| {
+            let lib = touch_db(home, "hashes.db");
+            let conn = Connection::open_in_memory().unwrap();
+            attach(&conn, &lib, "google/siglip2-base-patch16-384", true).unwrap();
+            detach(&conn).unwrap();
+
+            let err = attach(&conn, &lib, "google/siglip-base-patch16-224", false).unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("no embeddings for google/siglip-base-patch16-224"),
+                "{msg}"
+            );
+            assert!(
+                msg.contains("google/siglip2-base-patch16-384"),
+                "error must list what IS available: {msg}"
+            );
+            assert!(msg.contains("videre embed --model"), "{msg}");
+        });
+    }
+
+    #[test]
+    fn two_models_do_not_see_each_others_rows() {
+        with_home("isolate", |home| {
+            let lib = touch_db(home, "hashes.db");
+            let a = "google/siglip2-base-patch16-384";
+            let b = "google/siglip-base-patch16-224";
+
+            let conn = Connection::open_in_memory().unwrap();
+            attach(&conn, &lib, a, true).unwrap();
+            conn.execute(
+                "INSERT INTO emb.embeddings (hash, model_id, embedding, embedded_at)
+                 VALUES ('h1', ?1, X'0102', 'now')",
+                [a],
+            )
+            .unwrap();
+            detach(&conn).unwrap();
+
+            attach(&conn, &lib, b, true).unwrap();
+            let n: i64 = conn
+                .query_row("SELECT COUNT(*) FROM emb.embeddings", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0, "model b must not see model a's rows");
+        });
+    }
+
+    #[test]
+    fn attached_table_is_visible_through_emb_sqlite_master() {
+        // Regression guard. `sqlite_master` is per-database: the unqualified
+        // form returns 0 once the table is attached, and every caller treats
+        // 0 as "not embedded yet" rather than as an error, so the failure is
+        // silent. This test fails against the unqualified query.
+        with_home("master", |home| {
+            let lib = touch_db(home, "hashes.db");
+            let conn = Connection::open_in_memory().unwrap();
+            attach(&conn, &lib, "google/siglip2-base-patch16-384", true).unwrap();
+
+            let found: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM emb.sqlite_master
+                     WHERE type='table' AND name='embeddings'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(found, 1);
+
+            let unqualified: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master
+                     WHERE type='table' AND name='embeddings'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(unqualified, 0, "documents exactly why emb. is required");
+        });
+    }
+
+    #[test]
+    fn detach_allows_attaching_a_different_model_on_the_same_connection() {
+        with_home("reattach", |home| {
+            let lib = touch_db(home, "hashes.db");
+            let conn = Connection::open_in_memory().unwrap();
+            attach(&conn, &lib, "google/siglip2-base-patch16-384", true).unwrap();
+            detach(&conn).unwrap();
+            attach(&conn, &lib, "google/siglip-base-patch16-224", true).unwrap();
+            detach(&conn).unwrap();
         });
     }
 
