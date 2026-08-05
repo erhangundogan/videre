@@ -40,11 +40,12 @@ pub fn is_video_ext(ext: &str) -> bool {
 /// `google/siglip-base-patch16-224` is the tested fast option: 63ms/photo,
 /// 7.7x faster, at the cost of seeing each photo at 224px rather than 384px.
 ///
-/// **Changing this invalidates every stored embedding**, since `embeddings`
-/// rows are tagged with the model id and `pending_images` filters on it. That
-/// is intentional, vectors from different models are not comparable, but it
-/// means a one-time full re-embed. `videre embed` warns when it sees rows from
-/// a different model rather than silently reprocessing the whole library.
+/// Changing this no longer invalidates anything: each model owns a separate
+/// database under `~/.videre/embeddings/` (see `crate::embeddings_db`), so
+/// switching leaves the previous model's vectors intact and queryable via
+/// `--model`. It does mean the new model starts from zero and needs its own
+/// full `videre embed` run, since vectors from different models are not
+/// comparable.
 pub const DEFAULT_MODEL_ID: &str = "google/siglip2-base-patch16-384";
 
 /// The model this invocation uses: `--model` > `VIDERE_EMBED_MODEL` > default.
@@ -67,43 +68,17 @@ pub struct PendingImage {
     pub path: String,
 }
 
-pub fn ensure_embeddings_table(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS embeddings (
-            hash        TEXT PRIMARY KEY NOT NULL,
-            model_id    TEXT NOT NULL,
-            embedding   BLOB NOT NULL,
-            embedded_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_file_hashes_hash ON file_hashes(hash);",
-    )
-}
-
-/// Counts stored embeddings that came from a *different* model than
-/// `model_id`, i.e. rows that `pending_images` will treat as unembedded.
+/// Create the index the embedding joins depend on.
 ///
-/// Exists so `videre embed` can say "your 70,000 embeddings were made with
-/// another model and are about to be redone" instead of silently spending
-/// hours reprocessing a library the user believed was already done. Returns
-/// `Ok(0)` when the table doesn't exist yet.
-pub fn embeddings_from_other_models(conn: &Connection, model_id: &str) -> Result<(usize, Vec<String>)> {
-    if !crate::db::table_exists(conn, "embeddings")? {
-        return Ok((0, vec![]));
-    }
-    // rusqlite 0.40 dropped the `FromSql` impl for `usize`; read the count as
-    // the i64 SQLite actually returns and narrow afterwards.
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM embeddings WHERE model_id != ?1",
-        [model_id],
-        |r| r.get(0),
-    )?;
-    let count = count.max(0) as usize;
-    let mut stmt =
-        conn.prepare("SELECT DISTINCT model_id FROM embeddings WHERE model_id != ?1")?;
-    let ids = stmt
-        .query_map([model_id], |r| r.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok((count, ids))
+/// Only the index: the `embeddings` table itself now lives in a per-model
+/// database created by `embeddings_db::attach`. This index belongs to
+/// `file_hashes` and stays in the main database, where the joins actually
+/// run; moving it along with the table would be a silent performance
+/// regression on every one of them.
+pub fn ensure_embeddings_index(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_file_hashes_hash ON file_hashes(hash);",
+    )
 }
 
 /// Unique hashes that are embeddable but not yet embedded under `model_id`;
@@ -118,7 +93,7 @@ pub fn pending_images(conn: &Connection, model_id: &str) -> Result<Vec<PendingIm
     let sql = format!(
         "SELECT hash, MIN(path) FROM file_hashes
          WHERE lower(ext) IN ({placeholders})
-           AND NOT EXISTS (SELECT 1 FROM embeddings e
+           AND NOT EXISTS (SELECT 1 FROM emb.embeddings e
                            WHERE e.hash = file_hashes.hash AND e.model_id = ?{model_param})
          GROUP BY hash
          ORDER BY hash"
@@ -145,7 +120,7 @@ pub fn insert_embeddings(
     let tx = conn.unchecked_transaction()?;
     {
         let mut stmt = tx.prepare(
-            "INSERT OR REPLACE INTO embeddings (hash, model_id, embedding, embedded_at)
+            "INSERT OR REPLACE INTO emb.embeddings (hash, model_id, embedding, embedded_at)
              VALUES (?1, ?2, ?3, datetime('now'))",
         )?;
         for (hash, blob) in items {
@@ -161,7 +136,7 @@ pub fn insert_embeddings(
 /// videre embed first" (see `videre search`'s `load_corpus`).
 pub fn load_embeddings(conn: &Connection, model_id: &str) -> Result<Vec<(String, Vec<u8>)>> {
     let table_exists: bool = conn.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='embeddings'",
+        "SELECT COUNT(*) FROM emb.sqlite_master WHERE type='table' AND name='embeddings'",
         [],
         |r| r.get::<_, i64>(0),
     )? > 0;
@@ -169,7 +144,7 @@ pub fn load_embeddings(conn: &Connection, model_id: &str) -> Result<Vec<(String,
         return Ok(Vec::new());
     }
     let mut stmt =
-        conn.prepare("SELECT hash, embedding FROM embeddings WHERE model_id = ?1")?;
+        conn.prepare("SELECT hash, embedding FROM emb.embeddings WHERE model_id = ?1")?;
     let rows = stmt.query_map(params![model_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
     rows.collect()
 }
@@ -186,7 +161,12 @@ mod tests {
     use super::*;
     use rusqlite::Connection;
 
-    fn test_db() -> Connection {
+    /// A main database with `file_hashes`, plus a real attached model
+    /// database. In-memory main with an on-disk `emb` mirrors production: the
+    /// split is the thing under test, so faking it with a plain local table
+    /// would test nothing and would hide the `sqlite_master` trap entirely.
+    fn test_db_attached(tag: &str) -> Connection {
+        let lib = crate::embeddings_db::test_library(tag);
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE file_hashes (
@@ -205,7 +185,8 @@ mod tests {
             );",
         )
         .unwrap();
-        ensure_embeddings_table(&conn).unwrap();
+        ensure_embeddings_index(&conn).unwrap();
+        crate::embeddings_db::attach(&conn, &lib, "test-model", true).unwrap();
         conn
     }
 
@@ -219,7 +200,7 @@ mod tests {
 
     #[test]
     fn pending_images_dedupes_by_hash_and_includes_video() {
-        let conn = test_db();
+        let conn = test_db_attached("emb_dedupe");
         insert_file(&conn, "/a/1.jpg", "h1", "jpg");
         insert_file(&conn, "/b/1-copy.jpg", "h1", "jpg"); // same hash, second path
         insert_file(&conn, "/a/2.png", "h2", "png");
@@ -235,7 +216,7 @@ mod tests {
 
     #[test]
     fn pending_images_excludes_dng_since_it_cannot_be_decoded() {
-        let conn = test_db();
+        let conn = test_db_attached("emb_dng");
         insert_file(&conn, "/a/1.jpg", "h1", "jpg");
         insert_file(&conn, "/a/raw.dng", "h2", "dng");
 
@@ -246,7 +227,7 @@ mod tests {
 
     #[test]
     fn pending_images_excludes_already_embedded() {
-        let conn = test_db();
+        let conn = test_db_attached("emb_already");
         insert_file(&conn, "/a/1.jpg", "h1", "jpg");
         insert_file(&conn, "/a/2.jpg", "h2", "jpg");
         insert_embeddings(&conn, "test-model", &[("h1".to_string(), vec![0u8; 4])]).unwrap();
@@ -258,7 +239,7 @@ mod tests {
 
     #[test]
     fn pending_images_is_model_aware() {
-        let conn = test_db();
+        let conn = test_db_attached("emb_modelaware");
         insert_file(&conn, "/a/1.jpg", "h1", "jpg");
         insert_embeddings(&conn, "a", &[("h1".to_string(), vec![0u8; 4])]).unwrap();
 
@@ -273,14 +254,14 @@ mod tests {
 
     #[test]
     fn insert_embeddings_empty_slice_succeeds() {
-        let conn = test_db();
+        let conn = test_db_attached("emb_empty");
         insert_embeddings(&conn, "test-model", &[]).unwrap();
         assert!(load_embeddings(&conn, "test-model").unwrap().is_empty());
     }
 
     #[test]
     fn insert_and_load_round_trip() {
-        let conn = test_db();
+        let conn = test_db_attached("emb_roundtrip");
         insert_embeddings(
             &conn,
             "test-model",
@@ -298,8 +279,37 @@ mod tests {
     }
 
     #[test]
+    fn load_embeddings_finds_the_table_in_the_attached_database() {
+        // Guards the sqlite_master trap: that view is per-database, so the
+        // unqualified probe returns 0 for an attached table, and
+        // load_embeddings reads 0 as "nothing embedded yet". The failure is
+        // silent, so only a test like this catches it.
+        let conn = test_db_attached("emb_attachedprobe");
+        insert_embeddings(&conn, "test-model", &[("h1".to_string(), vec![1u8, 2])]).unwrap();
+
+        let rows = load_embeddings(&conn, "test-model").unwrap();
+        assert_eq!(rows.len(), 1, "must read through emb., not main");
+    }
+
+    #[test]
+    fn ensure_embeddings_index_creates_the_index_in_the_main_database() {
+        // The index belongs to file_hashes and must stay in main; moving it
+        // with the table would silently regress every join.
+        let conn = test_db_attached("emb_indexmain");
+        let found: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM main.sqlite_master
+                 WHERE type='index' AND name='idx_file_hashes_hash'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(found, 1);
+    }
+
+    #[test]
     fn paths_for_hash_returns_all_duplicates() {
-        let conn = test_db();
+        let conn = test_db_attached("emb_paths");
         insert_file(&conn, "/a/1.jpg", "h1", "jpg");
         insert_file(&conn, "/b/1-copy.jpg", "h1", "jpg");
         let paths = paths_for_hash(&conn, "h1").unwrap();

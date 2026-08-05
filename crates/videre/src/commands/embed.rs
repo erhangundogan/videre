@@ -56,23 +56,9 @@ pub(crate) fn clamp_batch(requested: usize) -> usize {
 
 /// The actual embedding work, wrapped by `track()` above.
 fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection) -> Result<()> {
-    embeddings::ensure_embeddings_table(conn)?;
+    embeddings::ensure_embeddings_index(conn)?;
 
     let model_id = videre_core::embeddings::resolve_model_id(None);
-
-    // A model change silently invalidates every stored embedding (rows are
-    // tagged with the model id, and `pending_images` filters on it), so an
-    // upgrade would otherwise look like "re-embedding my entire finished
-    // library for no reason". Say so explicitly before doing hours of work.
-    let (stale, other_models) = embeddings::embeddings_from_other_models(conn, &model_id)?;
-    if stale > 0 {
-        eprintln!(
-            "note: {stale} existing embedding(s) were made with {} and cannot be compared against \
-             {model_id}, so they will be recomputed and replaced. Embeddings from different \
-             models are not interchangeable; this is a one-time cost per model change.",
-            other_models.join(", ")
-        );
-    }
 
     let pending = embeddings::pending_images(conn, &model_id)?;
     if pending.is_empty() {
