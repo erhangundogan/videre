@@ -18,15 +18,29 @@ pub struct McpArgs {
     /// SQLite database (default: resolved from ~/.videre; see 'videre config')
     #[arg(long)]
     db: Option<PathBuf>,
+
+    /// Embedding model to serve searches from (default: VIDERE_EMBED_MODEL,
+    /// else the built-in default). Bound once at startup, like --db, so a
+    /// bad value fails before the server accepts a single call.
+    #[arg(long)]
+    model: Option<String>,
 }
 
 pub fn run(args: McpArgs) -> Result<()> {
     let db = super::resolve_reader_db_must_exist(args.db)?;
-    eprintln!("videre mcp: serving {}", db.display());
+    let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref());
+    // Verified at startup rather than on the first tool call: the server is
+    // long-lived, and a typo should not surface minutes later as an error
+    // inside an agent's search result.
+    {
+        let probe = videre_core::db::open_wal(&db)?;
+        videre_core::embeddings_db::attach(&probe, &db, &model_id, false)?;
+    }
+    eprintln!("videre mcp: serving {} (model {model_id})", db.display());
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async move {
-        let service = VidereServer::new(db).serve(stdio()).await?;
+        let service = VidereServer::new(db, model_id).serve(stdio()).await?;
         service.waiting().await?;
         Ok(())
     })
@@ -35,14 +49,16 @@ pub fn run(args: McpArgs) -> Result<()> {
 #[derive(Clone)]
 struct VidereServer {
     db: PathBuf,
+    model_id: String,
     embedder: Arc<std::sync::Mutex<Option<videre_ml::model::Embedder>>>,
     tool_router: ToolRouter<Self>,
 }
 
 impl VidereServer {
-    fn new(db: PathBuf) -> Self {
+    fn new(db: PathBuf, model_id: String) -> Self {
         Self {
             db,
+            model_id,
             embedder: Arc::new(std::sync::Mutex::new(None)),
             tool_router: Self::tool_router(),
         }
@@ -117,11 +133,13 @@ fn build_stats(db: &std::path::Path) -> anyhow::Result<StatsJson> {
             (0, 0, 0, 0, None)
         };
 
-    let embedded_count: u64 = if videre_core::db::table_exists(&conn, "embeddings")? {
-        conn.query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get::<_, i64>(0))? as u64
-    } else {
-        0
-    };
+    // Per model, not a bare COUNT(*). With the table now living in a
+    // per-model database, an unfiltered count would either miss it entirely
+    // or, once several models exist, double-count hashes embedded by more
+    // than one of them.
+    let embedded_count: u64 = videre_core::embeddings_db::counts_by_model(db)
+        .map(|counts| counts.iter().map(|c| c.count.max(0) as u64).sum())
+        .unwrap_or(0);
 
     let (faces_count, people) = if videre_core::db::table_exists(&conn, "faces")? {
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM faces", [], |r| r.get(0))?;
@@ -177,6 +195,7 @@ struct SearchParams {
 
 fn build_search(
     db: &std::path::Path,
+    model_id: &str,
     embedder_cell: &std::sync::Mutex<Option<videre_ml::model::Embedder>>,
     params: &SearchParams,
 ) -> anyhow::Result<crate::commands::search::SearchJson> {
@@ -196,6 +215,9 @@ fn build_search(
     );
 
     let conn = videre_core::db::open_wal(db)?;
+    if params.person.is_none() {
+        videre_core::embeddings_db::attach(&conn, db, model_id, false)?;
+    }
     let top_k = params.top_k.unwrap_or(20);
 
     let (query, results) = if let Some(name) = &params.person {
@@ -203,7 +225,7 @@ fn build_search(
         (QueryJson { kind: "person", value: name.clone() }, hits)
     } else {
         // Corpus first (fails fast without embeddings, before any model load).
-        let corpus = search_cmd::load_corpus(&conn, db)?;
+        let corpus = search_cmd::load_corpus(&conn, db, model_id)?;
 
         let (query_vec, query) = {
             let mut guard = embedder_cell
@@ -212,7 +234,7 @@ fn build_search(
             if guard.is_none() {
                 *guard = Some(videre_ml::model::Embedder::load(
                     videre_ml::device::best_device(),
-                    &videre_core::embeddings::resolve_model_id(None),
+                    model_id,
                 )?);
             }
             let embedder = guard.as_ref().expect("just initialized");
@@ -285,8 +307,9 @@ impl VidereServer {
         Parameters(params): Parameters<SearchParams>,
     ) -> Result<CallToolResult, McpError> {
         let db = self.db.clone();
+        let model_id = self.model_id.clone();
         let embedder = self.embedder.clone();
-        match blocking(move || build_search(&db, &embedder, &params)).await? {
+        match blocking(move || build_search(&db, &model_id, &embedder, &params)).await? {
             Ok(doc) => json_result(&doc),
             Err(e) => Ok(tool_error(&e)),
         }

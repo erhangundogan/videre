@@ -12,6 +12,12 @@ pub struct SearchArgs {
     #[arg(long)]
     db: Option<PathBuf>,
 
+    /// Embedding model to search against (default: VIDERE_EMBED_MODEL, else
+    /// the built-in default). Must already have been embedded; run
+    /// 'videre stats' to see which models this library has.
+    #[arg(long)]
+    model: Option<String>,
+
     /// Text query, e.g. "sunset on beach" (omit when using --image)
     query: Option<String>,
 
@@ -130,12 +136,8 @@ pub(crate) fn person_hits(conn: &Connection, name: &str) -> Result<Vec<SearchHit
 /// Unlike `person_hits`, hash comes along for free from the join query
 /// itself (person search's own helper doesn't return one), so it's
 /// included here.
-pub(crate) fn category_hits(conn: &Connection, category: &str) -> Result<Vec<SearchHitJson>> {
-    let pairs = classify_core::paths_for_category(
-        conn,
-        &videre_core::embeddings::resolve_model_id(None),
-        category,
-    )?;
+pub(crate) fn category_hits(conn: &Connection, model_id: &str, category: &str) -> Result<Vec<SearchHitJson>> {
+    let pairs = classify_core::paths_for_category(conn, model_id, category)?;
     Ok(pairs
         .into_iter()
         .map(|(path, hash)| SearchHitJson { path, hash: Some(hash), score: None, distance_km: None })
@@ -182,13 +184,16 @@ pub(crate) fn location_hits(
 
 /// Load the embedding corpus, erroring if empty. Called BEFORE any model load
 /// so a db without embeddings fails fast without downloading weights.
-pub(crate) fn load_corpus(conn: &Connection, db: &Path) -> Result<Vec<(String, Vec<f32>)>> {
-    let corpus_raw = embeddings::load_embeddings(conn, &videre_core::embeddings::resolve_model_id(None))?;
+pub(crate) fn load_corpus(
+    conn: &Connection,
+    db: &Path,
+    model_id: &str,
+) -> Result<Vec<(String, Vec<f32>)>> {
+    let corpus_raw = embeddings::load_embeddings(conn, model_id)?;
     anyhow::ensure!(
         !corpus_raw.is_empty(),
-        "no embeddings found in {} for model {}; run videre embed first",
+        "no embeddings found in {} for model {model_id}; run videre embed --model {model_id} first",
         db.display(),
-        videre_core::embeddings::resolve_model_id(None)
     );
     Ok(corpus_raw
         .into_iter()
@@ -226,8 +231,22 @@ fn collect_hits(args: &SearchArgs) -> Result<(QueryJson, Vec<SearchHitJson>)> {
     let conn = videre_core::db::open_wal(&db)
         .with_context(|| format!("open {}", db.display()))?;
 
+    let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref());
+
+    // --person and --location never touch embeddings, so they must not
+    // require a model database to exist; attaching for them would turn a
+    // working person search into a hard error on an unembedded library.
+    let needs_embeddings = args.person.is_none() && args.location.is_none();
+    if needs_embeddings {
+        // create: false. A reader must never bring an empty model database
+        // into existence, or "no results" would silently replace a clear
+        // error naming the models that do exist.
+        videre_core::embeddings_db::attach(&conn, &db, &model_id, false)?;
+        videre_core::embeddings::warn_legacy_embeddings_once(&conn);
+    }
+
     if let Some(name) = &args.category {
-        let hits = category_hits(&conn, name)?;
+        let hits = category_hits(&conn, &model_id, name)?;
         if hits.is_empty() && !args.json {
             eprintln!("No files found classified as: {name}");
         }
@@ -253,9 +272,9 @@ fn collect_hits(args: &SearchArgs) -> Result<(QueryJson, Vec<SearchHitJson>)> {
         return Ok((QueryJson { kind: "person", value: name.clone() }, hits));
     }
 
-    let corpus = load_corpus(&conn, &db)?;
+    let corpus = load_corpus(&conn, &db, &model_id)?;
 
-    let embedder = model::Embedder::load(device::best_device(), &videre_core::embeddings::resolve_model_id(None))?;
+    let embedder = model::Embedder::load(device::best_device(), &model_id)?;
     let (query_vec, query) = match (&args.query, &args.image) {
         (Some(text), None) => (
             embedder.embed_text(text)?,
