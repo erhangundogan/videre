@@ -11,7 +11,7 @@
 A local-first tool for making sense of a folder full of photos and videos.
 
 - find and remove duplicates (identical *and* near-identical)
-- search your photos by describing them - "sunset over water", "my red car"
+- search your photos by describing them, like "sunset over water" or "my red car"
 - recognise faces and search by person
 - browse everything in a generated HTML gallery
 - fix wrong file dates from the camera's own EXIF data
@@ -19,8 +19,8 @@ A local-first tool for making sense of a folder full of photos and videos.
 
 ## Why videre
 
-Most photo apps want to *own* your library - import everything into their own
-storage, index it in a database only they can read, then nudge you toward their
+Most photo apps want to *own* your library. They import everything into their
+own storage, index it in a database only they can read, then nudge you toward their
 cloud. videre works the other way round: it's a lens over a folder you already
 own. Point it at a directory and you get a single SQLite file describing what's
 there. Stop using it and your photos are exactly as they were.
@@ -32,7 +32,7 @@ there. Stop using it and your photos are exactly as they were.
   exception is `videre search --location "Berlin"`, which looks a place name up
   once and remembers it.
 - **It won't delete anything behind your back.** `videre dedupe` prints what
-  *could* go and stops there. You decide - and you can look through the
+  *could* go and stops there. You decide, and you can look through the
   candidates in a browser first.
 - **Naming faces is bulk work, not a chore.** videre groups faces together
   itself, so you name one group of 40 photos rather than tagging 40 photos.
@@ -41,7 +41,7 @@ there. Stop using it and your photos are exactly as they were.
   it stopped.
 
 And because it's an ordinary command-line tool over an ordinary SQLite file, an
-AI assistant can drive it directly - `videre mcp` hands search and duplicate
+AI assistant can drive it directly. `videre mcp` hands search and duplicate
 review to a model with no server to set up.
 
 ## Install
@@ -90,7 +90,7 @@ videre dedupe | xargs trash   # delete them
 videre prune                  # tidy the database afterwards
 ```
 
-`videre dedupe` never deletes anything itself - it prints a list for you to
+`videre dedupe` never deletes anything itself. It prints a list for you to
 check. Add `--similar` to also flag photos and videos that merely *look* alike;
 those are reported for review only, never included in the delete list.
 
@@ -103,7 +103,7 @@ videre search --image reference.jpg       # find photos like this one
 ```
 
 The first `videre embed` downloads about 1.4 GB of model data and takes a while
-on a big library. You can stop it at any point and rerun later - it picks up
+on a big library. You can stop it at any point and rerun later, and it picks up
 where it left off.
 
 ### Find people
@@ -165,14 +165,14 @@ videre scan ~/Photos --silent                     # no progress output
 videre scan ~/Photos --json                       # print one JSON summary object instead
 ```
 
-Re-running is safe and idempotent - existing entries are updated in place.
+Re-running is safe and idempotent, since existing entries are updated in place.
 `--output` and `--output-sqlite` cannot be combined. A bare `--output` must come
 *after* the folder, or it swallows the folder as its value.
 
 ### videre dedupe
 
 Finds duplicates already recorded in the database. Prints one path per line to
-stdout - and nothing else - so it pipes cleanly.
+stdout, and nothing else, so it pipes cleanly.
 
 ```bash
 videre dedupe                          # list removable copies (one path per line)
@@ -237,7 +237,7 @@ videre embed --chunk 1000              # rows saved per transaction (default 500
 videre embed --silent                  # no per-image progress
 ```
 
-Safe to Ctrl-C - rerunning continues where it stopped. Raising `--batch` is not
+Safe to Ctrl-C, since rerunning continues where it stopped. Raising `--batch` is not
 a way to make this faster; values above 96 are capped automatically.
 
 ### videre faces
@@ -255,7 +255,7 @@ videre faces --profile                 # print per-stage timing when finished
 videre faces --silent                  # no per-image progress
 videre faces --db ~/photos.db          # use a specific database
 
-# Tuning - only worth touching if grouping looks wrong
+# Tuning: only worth touching if grouping looks wrong
 videre faces --eps 0.6                 # how alike faces must be to group (default 0.6)
 videre faces --min-cluster-size 3      # fewest faces that can form a group (default 3)
 videre faces --merge-sim 0.35          # how readily two groups merge (default 0.35)
@@ -396,7 +396,7 @@ videre config                      # show what's currently set
 | Variable | Effect |
 |----------|--------|
 | `VIDERE_HOME` | Use a different home directory instead of `~/.videre` |
-| `VIDERE_EMBED_MODEL` | Use a different search model. `google/siglip-base-patch16-224` is about twice as fast, at some cost to accuracy on fine detail. **Changing this means re-running `videre embed` over your whole library** - videre warns you before it starts. |
+| `VIDERE_EMBED_MODEL` | Use a different search model. `google/siglip-base-patch16-224` is about twice as fast, at some cost to accuracy on fine detail. **Changing this means re-running `videre embed` over your whole library.** videre warns you before it starts. |
 | `VIDERE_EMBED_DTYPE` | `f16` for slightly faster search preparation. Does not affect existing data. |
 
 ## Working with other tools
@@ -421,7 +421,7 @@ videre dedupe > to-delete.txt
 
 ## Good to know
 
-- Long jobs (`embed`, `faces`, `classify`) are resumable - Ctrl-C is safe, and
+- Long jobs (`embed`, `faces`, `classify`) are resumable. Ctrl-C is safe, and
   rerunning continues where it stopped.
 - Two different videre commands can run at once against the same database.
   Running the *same* command twice is refused rather than allowed to corrupt
@@ -438,4 +438,4 @@ Algorithms, tuning constants, benchmark numbers, and the database schema are in
 
 ## License
 
-Apache License 2.0 - see [LICENSE](LICENSE).
+Apache License 2.0. See [LICENSE](LICENSE).
