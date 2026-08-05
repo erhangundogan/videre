@@ -11,7 +11,7 @@ pub struct LocationsArgs {
     #[arg(long)]
     db: Option<PathBuf>,
 
-    /// Clustering radius in km - how close two coordinates must be to join
+    /// Clustering radius in km, how close two coordinates must be to join
     /// the same location cluster. Default 15 ("which city was I in"
     /// granularity).
     #[arg(long, default_value_t = 15.0)]

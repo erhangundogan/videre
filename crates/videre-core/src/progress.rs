@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Reports progress for a batch of N items as an in-place bar (brew/docker/
 /// npm style) when stderr is a terminal, or periodic plain-text lines when
-/// it isn't (piped to a file, CI log) - so a long run never looks hung in a
+/// it isn't (piped to a file, CI log), so a long run never looks hung in a
 /// log file, without per-item spam either way. `silent` suppresses the bar
 /// and periodic lines entirely, but NOT error output (see `println`) or the
 /// caller's own decision about whether to print a final summary.
@@ -57,7 +57,7 @@ impl Progress {
 
     /// Advance by one item. Safe to call concurrently from multiple threads
     /// (e.g. from inside a `rayon` `.par_iter()` closure) via a shared
-    /// `&Progress` - no external synchronization needed.
+    /// `&Progress`, no external synchronization needed.
     pub fn tick(&self) {
         self.tick_by(1);
     }
@@ -84,7 +84,7 @@ impl Progress {
     }
 
     /// Print a line that survives an active progress bar without corrupting
-    /// its rendering. Always prints, regardless of `silent` - matches the
+    /// its rendering. Always prints, regardless of `silent`, matches the
     /// existing unconditional behavior of per-image error messages
     /// (`detect failed ...`, `embed_batch failed ...`, `write failed ...`),
     /// which must stay visible even under --silent since they indicate data
@@ -97,7 +97,7 @@ impl Progress {
     }
 
     /// Clears the bar (if any) so the final summary prints cleanly below it
-    /// rather than being overwritten. Does not print anything itself - the
+    /// rather than being overwritten. Does not print anything itself, the
     /// caller assembles and prints its own summary line(s).
     pub fn finish(self) {
         if let Mode::Bar(bar) = self.mode {

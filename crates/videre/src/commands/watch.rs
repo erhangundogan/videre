@@ -30,7 +30,7 @@ pub struct WatchArgs {
     #[arg(long)]
     location: bool,
     /// Sync stale rows/cache and clean orphans each cycle (same cleanup as
-    /// `videre prune`). Opt-in only - unlike the other four stages, this is
+    /// `videre prune`). Opt-in only, unlike the other four stages, this is
     /// NOT included when no stage flags are passed, so existing `videre
     /// watch` invocations keep their current behavior unchanged. Never
     /// deletes real files, only stale db rows and cache entries for files
@@ -52,7 +52,7 @@ pub fn run(mut args: WatchArgs) -> Result<()> {
         anyhow::bail!("{:?} does not exist", directory);
     }
     // If NO stage flag at all was passed (including --prune), run the
-    // original all-four default - the common case is "just keep everything
+    // original all-four default, the common case is "just keep everything
     // up to date", not memorizing four flags. But if the user passed
     // --prune explicitly (alone or combined), that's an explicit stage
     // selection: don't also silently default scan/faces/heic/location on,
@@ -80,7 +80,7 @@ pub fn run(mut args: WatchArgs) -> Result<()> {
 
     // Ensure the db file exists before deriving a lock path from it (locks
     // are canonicalized-path sidecars, which requires the target to already
-    // exist) - matches how `scan`'s SQLite branch opens a connection before
+    // exist), matches how `scan`'s SQLite branch opens a connection before
     // tracking, for the same reason. Only do this when the file is actually
     // missing (first-ever run): opening a second connection to a db another
     // `videre watch` process already has open can itself error ("database is
@@ -90,7 +90,7 @@ pub fn run(mut args: WatchArgs) -> Result<()> {
         drop(db::open_wal(&db)?);
     }
 
-    // Held for the entire life of this process - releases automatically
+    // Held for the entire life of this process, releases automatically
     // (even on kill) when the process exits, same mechanism as every other
     // command's lock. No pipeline_runs row: watch has no "finished" moment
     // during normal operation, only "currently running or not".
@@ -115,7 +115,7 @@ fn run_cycle(args: &WatchArgs, directory: &std::path::Path, db: &std::path::Path
     if args.scan {
         // A scan failure this cycle doesn't invalidate file_hashes rows from
         // previous cycles, so don't let it block the faces/heic/location
-        // block below - just log and move on.
+        // block below, just log and move on.
         if let Err(e) = run_scan_stage(args, directory, db) {
             eprintln!("videre watch: scan stage error: {e}");
         }
@@ -180,7 +180,7 @@ fn file_hashes_table_exists(conn: &rusqlite::Connection) -> Result<bool> {
 
 /// Queries (path, hash) pairs from file_hashes matching a SQL WHERE clause,
 /// deduped to one representative path per hash.
-/// The fixed set of extension filters `dedup_paths_by_hash` supports - a
+/// The fixed set of extension filters `dedup_paths_by_hash` supports, a
 /// closed enum rather than a raw `&str` WHERE-clause fragment, so there is no
 /// way for a future caller to pass runtime-built SQL text into the query.
 enum PathExtFilter {
@@ -211,7 +211,7 @@ fn run_faces_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> 
     videre_core::pipeline_runs::track(conn, &db_path, "faces", || {
         let all_paths = dedup_paths_by_hash(conn, PathExtFilter::Faces)?;
         // Skip already-scanned hashes (marker includes no-face images), unioned with
-        // hashes that already have faces for pre-marker migration - same resumable
+        // hashes that already have faces for pre-marker migration, same resumable
         // skip set as `videre faces`.
         let mut skip_hashes: std::collections::HashSet<String> =
             face_db::scanned_hashes(conn)?.into_iter().collect();
@@ -262,7 +262,7 @@ fn run_heic_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> {
         let need_240 = !videre_core::thumb_cache::thumb_exists(&hash, 240);
         let need_1200 = !videre_core::thumb_cache::thumb_exists(&hash, 1200);
         // Also feeds `videre faces`'s detection cache (see `load_image` in
-        // videre-ml's pipeline.rs) - a full-res original cached here means
+        // videre-ml's pipeline.rs), a full-res original cached here means
         // detection can skip its own qlmanage decode entirely for this hash.
         let need_original = !videre_core::thumb_cache::original_exists(&hash);
         if !need_240 && !need_1200 && !need_original {
@@ -273,7 +273,7 @@ fn run_heic_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> {
         // missing size (largest first) instead of re-running QuickLook per
         // size. None (full resolution), not Some(n): the same decode also
         // seeds the `original_path` cache below, which detection's bbox
-        // coordinates depend on being full resolution - see the safety note
+        // coordinates depend on being full resolution. See the safety note
         // on heic_via_quicklook. This means this call site does NOT get
         // lever-2a's render-size-cap treatment other watch-adjacent callers
         // do; the two levers are in tension here and full-res wins because

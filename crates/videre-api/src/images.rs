@@ -89,7 +89,7 @@ pub fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image
         .unwrap_or("")
         .to_lowercase();
     if ext == "heic" {
-        // None: bbox is stored relative to a full-res decode - see the
+        // None: bbox is stored relative to a full-res decode. See the
         // safety note on heic_via_quicklook.
         let img = videre_core::heic::heic_via_quicklook(path, &format!("thumb{face_id}"), None)?;
         Some(crop_face_square(&img, bbox))

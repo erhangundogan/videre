@@ -35,13 +35,13 @@ pub const DEFAULT_MAX_GENERIC_SIM: f32 = 0.40;
 ///   other (thousands of unrelated faces merged into one cluster).
 /// - Complete-linkage (the max pairwise distance) refuses to ever merge two
 ///   groups if a *single* pair is far apart, even when every other pair
-///   overwhelmingly agrees - in practice this fractures one person's photos
+///   overwhelmingly agrees, in practice this fractures one person's photos
 ///   into dozens of separate clusters because of a handful of odd-angle or
 ///   blurry face crops that happen to embed poorly.
 ///
 /// Averaging is far more robust to that kind of single-pair noise while
 /// still requiring broad agreement across most pairs, not just one lucky
-/// bridge - real measurements on this project's data show confirmed
+/// bridge, real measurements on this project's data show confirmed
 /// different people average well under 0.2 cosine similarity even in the
 /// worst case, while a real person's separate clusters commonly average
 /// 0.5-0.7, so an eps of 0.6 cosine distance (0.4 similarity) sits safely in
@@ -53,7 +53,7 @@ pub const DEFAULT_MAX_GENERIC_SIM: f32 = 0.40;
 /// Uses a lazily-invalidated min-heap of candidate merges (classic
 /// nearest-neighbor agglomerative clustering) rather than rescanning every
 /// active pair on every merge, so this runs in O(n^2 log n) instead of
-/// O(n^3) - `videre watch` re-runs this every cycle over every embedding in
+/// O(n^3), `videre watch` re-runs this every cycle over every embedding in
 /// the database, so the naive cubic scan becomes a real bottleneck once the
 /// face count reaches a few thousand.
 ///
@@ -81,7 +81,7 @@ fn agglomerate_average(points: &[(i64, Vec<f32>)], eps: f32, silent: bool) -> Ve
 
     // Running per-cluster embedding sum (a singleton's sum is its own
     // embedding). Replaces the old O(n^2) dense `dist` matrix (~13.7GB at
-    // n=58,555) with O(n * dim) memory (~120MB at that scale) - see
+    // n=58,555) with O(n * dim) memory (~120MB at that scale). See
     // cluster_dist_from_sums's doc comment for the exact identity this
     // relies on. Any pair's distance is now computed on demand in O(dim)
     // from two small, cache-resident vectors, instead of looked up in a
@@ -97,7 +97,7 @@ fn agglomerate_average(points: &[(i64, Vec<f32>)], eps: f32, silent: bool) -> Ve
 
     // Unlike the old dense-matrix version, entries are only ever pushed when
     // they are actually eps-eligible (both here and in the merge-update loop
-    // below) - so there is no need for a separate "if d > eps { break }"
+    // below), so there is no need for a separate "if d > eps { break }"
     // check: every entry the heap can ever produce already satisfies
     // d <= eps at push time, and the loop ends naturally once the heap is
     // exhausted. (This is provably equivalent to the old break: HeapEntry's
@@ -143,19 +143,19 @@ fn agglomerate_average(points: &[(i64, Vec<f32>)], eps: f32, silent: bool) -> Ve
 
 /// Seeds `heap` with every pair `(i, j)`, `i < j`, whose cosine distance is
 /// `<= eps`, using a blocked GEMM (`X . X^T`) as a fast candidate filter
-/// instead of a scalar double loop - same FLOP count as the naive scan, but
+/// instead of a scalar double loop, same FLOP count as the naive scan, but
 /// computed via a real SIMD/cache-blocked matrix multiply
 /// (`matrixmultiply::sgemm`), which is where the real speedup comes from
 /// (not a reduction in work). GEMM's FMA-based accumulation does not
 /// bit-match `cosine_dist`'s plain summation, so every GEMM-flagged
-/// candidate is re-verified with `cosine_dist` before being pushed - the
+/// candidate is re-verified with `cosine_dist` before being pushed, the
 /// heap only ever receives values bit-identical to what a naive scan would
 /// have produced, which the merge loop's exact-equality staleness check
 /// depends on. `SLACK` widens the GEMM filter threshold well beyond the
 /// observed scalar/FMA discrepancy (~1e-6 for normalized 512-dim vectors) so
 /// this filtering step can never itself reject a pair the exact check would
 /// have accepted. Processes `points` in row-blocks of `block_len` rows so
-/// the full n x n similarity matrix is never materialized - peak memory is
+/// the full n x n similarity matrix is never materialized, peak memory is
 /// one block's worth of GEMM output (`block_len * n * 4` bytes).
 const GEMM_FILTER_SLACK: f32 = 1e-4;
 
@@ -186,7 +186,7 @@ fn seed_eps_eligible_pairs_via_gemm_blocked(
     );
 
     // Flatten all embeddings into one contiguous row-major buffer (n rows,
-    // dim cols) - matrixmultiply operates on raw pointers + strides, not
+    // dim cols), matrixmultiply operates on raw pointers + strides, not
     // Vec<Vec<f32>>.
     let mut flat: Vec<f32> = Vec::with_capacity(n * dim);
     for (_, v) in points {
@@ -204,12 +204,12 @@ fn seed_eps_eligible_pairs_via_gemm_blocked(
         // (bounds: block_start + block_len <= n, checked by the while-loop
         // condition and block.min(n - block_start) above). `b` points to the
         // same `flat` buffer reinterpreted as a (dim x n) matrix via swapped
-        // strides (rsb=1, csb=dim) - a standard transpose-via-stride trick,
+        // strides (rsb=1, csb=dim), a standard transpose-via-stride trick,
         // valid because `flat` has exactly `n * dim` elements (guaranteed by
         // the debug_assert above in debug builds, and by construction from
         // `points` in release) and every (row, col) pair accessed satisfies
         // row < dim, col < n. `a` and `b` both alias `flat` (read-only,
-        // which matrixmultiply permits - only `c` aliasing `a`/`b` is
+        // which matrixmultiply permits, only `c` aliasing `a`/`b` is
         // forbidden). `out` is a freshly-allocated `Vec<f32>` of exactly
         // `block_len * n` elements, does not alias `flat`, and has non-zero
         // row/col strides (n, 1).
@@ -229,7 +229,7 @@ fn seed_eps_eligible_pairs_via_gemm_blocked(
             for j in (i + 1)..n {
                 let approx_sim = out[bi * n + j];
                 let approx_d = 1.0 - approx_sim;
-                // Fast filter only - reject pairs GEMM confidently places
+                // Fast filter only, reject pairs GEMM confidently places
                 // outside eps, but never trust the GEMM value itself.
                 if approx_d > eps + GEMM_FILTER_SLACK {
                     continue;
@@ -254,7 +254,7 @@ mod gemm_seeding_tests {
     #[test]
     fn gemm_seeding_matches_naive_scan_exactly_including_distance_values() {
         // 4 points: two near-identical pairs (dist ~0), two far apart
-        // (dist ~1) - a small enough n to verify against a manually
+        // (dist ~1), a small enough n to verify against a manually
         // hand-checked naive scan, not just "runs without panicking".
         let points: Vec<(i64, Vec<f32>)> = vec![
             (1, vec![1.0, 0.0, 0.0]),
@@ -300,8 +300,8 @@ mod gemm_seeding_tests {
 
     #[test]
     fn gemm_seeding_handles_multiple_blocks_including_a_partial_trailing_block() {
-        // block=2 over n=5 produces blocks of sizes [2, 2, 1] - a full
-        // block, another full block, and a partial trailing block - the
+        // block=2 over n=5 produces blocks of sizes [2, 2, 1], a full
+        // block, another full block, and a partial trailing block, the
         // exact case a hardcoded BLOCK=1024 in production can never
         // exercise in a fast test. Uses a MIX of near and far points (not
         // all-identical) so an index-mapping bug (e.g. reading the wrong
@@ -386,7 +386,7 @@ fn merge_by_centroid(
     // all C*(C-1)/2 pairs from scratch on every loop iteration (the previous
     // version cost O(C^3 * dim) total across up to C-1 merge iterations).
     // After a merge, only the merged cluster's own row/column needs
-    // recomputing - every other pair's similarity is unchanged - bringing
+    // recomputing, every other pair's similarity is unchanged, bringing
     // the total to O(C^2 * dim).
     let c = clusters.len();
     let mut sim: Vec<Vec<f32>> = vec![vec![0.0f32; c]; c];
@@ -423,7 +423,7 @@ fn merge_by_centroid(
         centroids[i] = centroid(points, &clusters[i]);
 
         // swap_remove moved the former last cluster into slot j (if j wasn't
-        // already last) - mirror that same swap in the similarity matrix so
+        // already last), mirror that same swap in the similarity matrix so
         // row/column indices stay consistent with `clusters`/`centroids`.
         // sim.len() here is still the PRE-merge cluster count (nothing has
         // popped it yet), so `last` correctly names the element swap_remove
@@ -442,7 +442,7 @@ fn merge_by_centroid(
 
         // Recompute only cluster i's similarities against every other
         // surviving cluster (including whatever now sits at slot j, if
-        // anything was relocated there) - everyone else's mutual similarity
+        // anything was relocated there), everyone else's mutual similarity
         // is unaffected by i's merge.
         for k in 0..clusters.len() {
             if k == i {
@@ -504,9 +504,9 @@ fn cosine_dist(a: &[f32], b: &[f32]) -> f32 {
 /// For L2-normalized (unit) vectors, cosine similarity is a plain dot
 /// product, and average-linkage cluster distance decomposes exactly:
 ///
-/// avg_distance(A, B) = mean over all (a in A, b in B) of (1 - a.b)
-///                     = 1 - mean(a.b)
-///                     = 1 - (sum_A . sum_B) / (|A| * |B|)
+/// avg_distance(A, B) = mean over all (a in A, b in B) of (1, a.b)
+///                     = 1, mean(a.b)
+///                     = 1, (sum_A . sum_B) / (|A| * |B|)
 ///
 /// by bilinearity of the dot product (the sum of pairwise dot products over
 /// a cartesian product of two sets equals the dot product of the two sets'
@@ -538,7 +538,7 @@ mod sums_distance_tests {
     fn merged_cluster_distance_matches_direct_average_over_all_cross_pairs() {
         // Cluster A = {a1, a2}, cluster B = {b1}, all unit-length. The
         // sums-based formula for dist(A, B) must equal the direct average of
-        // cosine_dist(a1, b1) and cosine_dist(a2, b1) - the definition of
+        // cosine_dist(a1, b1) and cosine_dist(a2, b1), the definition of
         // average-linkage.
         let a1 = vec![1.0f32, 0.0, 0.0];
         let a2 = vec![0.6f32, 0.8, 0.0]; // unit-length, close to a1's direction
@@ -568,7 +568,7 @@ mod sums_distance_tests {
 /// cancels that per-face spread, and the centroid-to-centroid signal is far
 /// cleaner: on this project's real data, confirmed *different* people never
 /// exceed ~0.29 centroid similarity, while a real person's fragmented
-/// sub-clusters sit at 0.37-0.76 - so a `merge_sim` around 0.35 reunites a
+/// sub-clusters sit at 0.37-0.76, so a `merge_sim` around 0.35 reunites a
 /// person's fragments without risking merging two different people.
 ///
 /// This only ever operates on cluster grouping (the returned cluster ids) -
@@ -589,7 +589,7 @@ pub fn cluster_faces(
 
     // Only real clusters (>= min_samples) take part in the centroid-merge.
     // Two reasons, both important:
-    //   * Correctness: a lone face is a noisy identity signal - a single bad
+    //   * Correctness: a lone face is a noisy identity signal, a single bad
     //     crop can sit within merge_sim of a *different* person's centroid,
     //     whereas a whole cluster's averaged centroid cannot. Merging only
     //     established clusters keeps the pass from mis-attaching stray faces.
@@ -688,7 +688,7 @@ mod tests {
         // across all 5 existing members (0.538) is comfortably within eps.
         // Complete-linkage (whichever single worst pair) would refuse to
         // ever merge `o` in, no matter how large/confident the surrounding
-        // cluster gets - that's the real-world bug where a person's photos
+        // cluster gets, that's the real-world bug where a person's photos
         // fracture into dozens of separate clusters because of a handful of
         // odd-angle or blurry faces.
         let deg = |d: f32| { let r = d.to_radians(); vec![r.cos(), r.sin()] };
@@ -721,7 +721,7 @@ mod tests {
     // 3-5). Every within-sub-cluster pair is nearly identical (shares the
     // sub-cluster axis) while every cross pair only shares the identity axis,
     // so average-linkage sees the cross distance as too large and leaves them
-    // split - but the two centroids both collapse to ~(identity+sub) and are
+    // split, but the two centroids both collapse to ~(identity+sub) and are
     // 0.5 cosine-similar, which is exactly the "one person fragmented into
     // several clusters" case the centroid-merge pass is built to reunite.
     fn same_identity_two_subclusters() -> Vec<(i64, Vec<f32>)> {
@@ -809,7 +809,7 @@ mod tests {
         // Cluster A (dims 0+1) and cluster C (negative dim 0) have centroids
         // pointing in opposite directions on the identity axis: centroid
         // similarity is negative, far below merge_sim, so they must NOT merge
-        // even though the merge pass is active - guarding against a return to
+        // even though the merge pass is active, guarding against a return to
         // the mega-blob failure.
         let mut pts = same_identity_two_subclusters();
         pts.truncate(3); // just cluster A (identity axis 0, sub axis 1)

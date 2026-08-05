@@ -4,7 +4,7 @@ use tempfile::tempdir;
 
 /// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.
 /// Spawned `videre` child processes inherit the environment, so their lock
-/// files land there instead of the developer's real `~/.videre/locks` - locks
+/// files land there instead of the developer's real `~/.videre/locks`, locks
 /// live under the videre home now rather than beside the database, so without
 /// this every run would leave permanent litter in the real home (test database
 /// names are random, so the files would accumulate rather than be reused).
@@ -230,7 +230,7 @@ fn stats_check_exits_nonzero_when_a_command_failed() {
         .arg("stats").arg("--db").arg(&db_path).arg("--check")
         .output().expect("failed to run videre stats --check");
     assert!(!out.status.success(), "a failed command must make --check exit non-zero");
-    // Output is unchanged by --check - normal stats text is still printed.
+    // Output is unchanged by --check, normal stats text is still printed.
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("faces"), "{stdout}");
 

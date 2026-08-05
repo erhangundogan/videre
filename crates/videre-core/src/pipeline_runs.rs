@@ -2,7 +2,7 @@
 //! and other dashboard-style callers.
 //! See docs/superpowers/specs/2026-07-31-dashboard-stats-pass-b-design.md
 //! for the full design, and in particular why `track()` below does not rely
-//! on Drop/RAII for the success/failure bookkeeping - only the lock's
+//! on Drop/RAII for the success/failure bookkeeping, only the lock's
 //! release does, and even that is backstopped by the OS releasing `flock` on
 //! any process death.
 
@@ -19,14 +19,14 @@ use std::path::{Path, PathBuf};
 /// interactive per-query command. `report`, `search`, `mcp`, and `config`
 /// remain deliberately excluded: `report --faces`/`--show-faces` and `mcp`
 /// are long-running servers with no natural "finished" moment (the same
-/// reason `videre watch` itself is excluded - see below), `search` is an
+/// reason `videre watch` itself is excluded. See below), `search` is an
 /// interactive per-query command rather than a library-processing pipeline
 /// stage (true even for its new `--location` mode, which is a single query
 /// like any other `search` invocation, not a batch job), and `config` is a
 /// trivial instant read/write with nothing meaningful to time. Revisit only
-/// if a real driver for tracking one of those emerges - see TECH_DEBT.md.
+/// if a real driver for tracking one of those emerges. See TECH_DEBT.md.
 ///
-/// `videre watch` itself is deliberately not in this list - it has no
+/// `videre watch` itself is deliberately not in this list, it has no
 /// "finished" moment during normal operation, so it gets its own liveness
 /// lock (see `watch_lock_path`) but no `pipeline_runs` row.
 pub const TRACKED_COMMANDS: [&str; 8] =
@@ -80,7 +80,7 @@ pub fn finish_run(
 }
 
 /// Holds an open, flock'd file for as long as it's alive. Dropping it closes
-/// the file, which releases the flock - the OS does the same thing
+/// the file, which releases the flock, the OS does the same thing
 /// automatically if the process dies without ever dropping this (SIGKILL,
 /// power loss), so there is no correctness dependency on Drop actually
 /// running; it's just the tidy path.
@@ -91,7 +91,7 @@ pub struct LockGuard(#[allow(dead_code)] File);
 /// The name is `<db stem>-<hash of the canonical db path>.<command>.lock`. The
 /// hash is what makes this correct rather than merely tidy: two libraries can
 /// both be named `photos.db` in different directories, and keying on the
-/// basename alone would make them share a lock - silently serializing unrelated
+/// basename alone would make them share a lock, silently serializing unrelated
 /// libraries, and making `videre stats` report one as running because the other
 /// is. The readable stem is kept purely so a human listing the directory can
 /// tell which database a lock belongs to.
@@ -122,7 +122,7 @@ fn lock_path_for(db_path: &Path, command: &str) -> Result<PathBuf> {
 ///
 /// Only removes it when an exclusive `flock` succeeds, which proves no live
 /// process is holding it. An older binary running concurrently would still
-/// hold its sidecar, and we leave that alone - deleting a held lock file
+/// hold its sidecar, and we leave that alone, deleting a held lock file
 /// wouldn't release the lock anyway (the `flock` lives on the inode), it would
 /// just let the next process create a fresh file and a second, independent
 /// lock. Entirely best-effort: any failure here is ignored, since this is
@@ -151,7 +151,7 @@ fn remove_legacy_sidecar_locks(db_path: &Path) {
 /// Acquires an exclusive, non-blocking advisory lock scoped to this exact
 /// database file and command. Fails immediately (refusing the run, per the
 /// concurrency decision in the design doc) if another live process already
-/// holds it - never blocks waiting for it to free up.
+/// holds it, never blocks waiting for it to free up.
 pub fn acquire_lock(db_path: &Path, command: &str) -> Result<LockGuard> {
     use fs2::FileExt;
     let lock_path = lock_path_for(db_path, command)?;
@@ -195,11 +195,11 @@ pub fn is_locked(db_path: &Path, command: &str) -> Result<bool> {
 /// Wraps `f` with pipeline-run bookkeeping: refuses to start if `command` is
 /// already running against `db_path`, records a `running` row before calling
 /// `f`, then records `success`/`failed` (with `f`'s error message, if any)
-/// once `f` returns - all before this function itself returns. Every
+/// once `f` returns, all before this function itself returns. Every
 /// `std::process::exit` call site this design touches happens strictly after
 /// its wrapped operation already returned a `Result` (see the design doc's
 /// "key design insight"), so this finalization is never skipped by an exit
-/// call - only an actual crash mid-`f()` skips it, which is exactly what the
+/// call, only an actual crash mid-`f()` skips it, which is exactly what the
 /// lock-based `crashed` detection in `read_all` is for.
 pub fn track<T>(
     conn: &Connection,
@@ -223,7 +223,7 @@ pub fn track<T>(
 /// Installs a SIGINT handler that marks `command`'s row `interrupted` (using
 /// its already-recorded `started_at` to compute duration) and exits 130, the
 /// standard SIGINT exit code. Call this once, after `track()`'s `start_run`
-/// has already written the `running` row for `command` - the handler opens
+/// has already written the `running` row for `command`, the handler opens
 /// its own fresh connection since the main thread's `Connection` isn't
 /// safely shareable across the handler boundary. Best-effort: any error
 /// inside the handler is swallowed (there's no useful way to report it once
@@ -259,7 +259,7 @@ pub struct PipelineRunStatus {
     pub command: String,
     pub last_run_at: Option<String>,
     /// "running" | "success" | "failed" | "interrupted" | "crashed" | None if never run.
-    /// "crashed" is computed here, never a stored value - see the design doc.
+    /// "crashed" is computed here, never a stored value. See the design doc.
     pub status: Option<String>,
     pub duration_ms: Option<i64>,
     pub currently_running: bool,
@@ -315,7 +315,7 @@ mod tests {
     /// so the files would accumulate, never being reused or overwritten).
     ///
     /// The `set_var` happens inside `get_or_init` so it runs exactly once even
-    /// though tests share a process and run in parallel - calling `set_var`
+    /// though tests share a process and run in parallel, calling `set_var`
     /// from several threads at once would otherwise be a data race against
     /// every concurrent `getenv`.
     fn isolated_home() {

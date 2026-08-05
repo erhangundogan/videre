@@ -15,7 +15,7 @@ pub struct StatsArgs {
 
     /// Exit non-zero if any tracked command's last run is "failed" or
     /// "crashed" (a running row whose lock is no longer held by a live
-    /// process). Output is unchanged either way - this only adds an exit
+    /// process). Output is unchanged either way, this only adds an exit
     /// code, so `videre stats --check` composes with cron/launchd's own
     /// failure handling without needing to parse text or JSON output.
     #[arg(long)]
@@ -23,7 +23,7 @@ pub struct StatsArgs {
 }
 
 /// True if any tracked command's last recorded run needs attention.
-/// "interrupted" (a clean Ctrl-C) is deliberately not included - that's an
+/// "interrupted" (a clean Ctrl-C) is deliberately not included, that's an
 /// intentional stop, not a failure.
 fn has_problem(pipelines: &[PipelineRunStatus]) -> bool {
     pipelines

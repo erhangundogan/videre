@@ -64,7 +64,7 @@ fn show_faces_alone_is_accepted_by_cli_parser() {
     // Smoke test: dupe-report should not error out on flag parsing when
     // --show-faces is passed (it will still try to bind port 7878 and
     // block, so this test only checks the process starts without an
-    // immediate clap parse error - full server behavior is verified
+    // immediate clap parse error, full server behavior is verified
     // manually per Task 11).
     let dir = tempdir().unwrap();
     let db = make_db_with_faces(dir.path());
@@ -85,7 +85,7 @@ fn show_faces_alone_is_accepted_by_cli_parser() {
 #[test]
 fn thumb_cache_hit_avoids_qlmanage_conversion() {
     // Seed a fake cached thumbnail file directly, then confirm handle_raw_file's
-    // cache-check path would find it - since handle_raw_file itself needs a
+    // cache-check path would find it, since handle_raw_file itself needs a
     // running server + real HEIC file to test end-to-end, this instead verifies
     // the shared videre_core::thumb_cache helpers dupe-report will call.
     let hash = "test-cache-hit-hash";

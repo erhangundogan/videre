@@ -161,7 +161,7 @@ fn base64_encode(data: &[u8]) -> String {
 fn heic_to_b64(path: &str, max_px: u32) -> Option<String> {
     // Some(max_px): the caller already downscales to max_px below, so
     // requesting a decode already capped at that size avoids wasted
-    // decode/resize/PNG-encode work - see the safety note on
+    // decode/resize/PNG-encode work. See the safety note on
     // heic_via_quicklook for why this is only safe when the result is
     // downscaled by the caller anyway.
     let img = videre_core::heic::heic_via_quicklook(path, &format!("b64_{max_px}"), Some(max_px))?;
@@ -177,7 +177,7 @@ fn heic_to_b64(path: &str, max_px: u32) -> Option<String> {
 }
 
 /// Crops a face thumbnail (via videre_api::make_face_thumb) and encodes it
-/// as a base64 JPEG data URI, mirroring heic_to_b64()'s pattern - for use in
+/// as a base64 JPEG data URI, mirroring heic_to_b64()'s pattern, for use in
 /// the server-mode report where thumbnails must be embedded inline rather
 /// than served as raw bytes (that's what handle_face_image does instead).
 fn face_thumb_b64(path: &str, bbox: [f32; 4], face_id: i64) -> Option<String> {
@@ -472,7 +472,7 @@ fn generate_html(
     let now = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
 
     // In server mode, HEIC thumbnails are converted lazily per-request via
-    // /api/raw (see handle_raw_file) instead of eagerly here - eagerly
+    // /api/raw (see handle_raw_file) instead of eagerly here, eagerly
     // converting every HEIC file with QuickLook before returning any
     // response made server mode take minutes on a collection with many
     // HEIC files. Static mode keeps the eager --heic/--heic-original
@@ -608,7 +608,7 @@ fn generate_html(
         ".date-card .date-card-label{padding:8px;font-size:13px;font-weight:600}\n",
         ".date-card .date-card-count{padding:0 8px 8px;font-size:11px;color:#71717a}\n",
         // Shimmer placeholder for HEIC thumbnails while /api/raw converts
-        // them lazily (server mode) - cleared via onload once the image
+        // them lazily (server mode), cleared via onload once the image
         // paints, so the animation never runs behind a loaded image.
         "img.heic-loading{display:block;width:100%;aspect-ratio:1;object-fit:cover;",
         "background:linear-gradient(90deg,#e4e4e7 25%,#f4f4f5 37%,#e4e4e7 63%);",
@@ -633,7 +633,7 @@ fn generate_html(
         None => String::new(),
     };
     // The three duplicate-related tiles are only useful when there's
-    // something to report - an all-zero "Duplicate groups / Duplicate files
+    // something to report, an all-zero "Duplicate groups / Duplicate files
     // / Wasted space" row is noise on a collection with no duplicates,
     // especially alongside --by-date/--all.
     let dupe_stats = if groups.is_empty() {
@@ -686,7 +686,7 @@ fn generate_html(
             stats.duplicate_groups,
         ));
 
-        // Empty groups container — JS fills it
+        // Empty groups container, JS fills it
         out.push_str("<div class=\"groups\" id=\"groups-container\"></div>\n");
         out.push_str("<div class=\"more-wrap\"><button id=\"more-btn\" onclick=\"showMore()\"></button></div>\n");
     }
@@ -1063,7 +1063,7 @@ function buildDayGallery(day){
     '<a onclick="buildYearView()">'+dateState.year+'</a> &gt; '+
     '<a onclick="buildMonthView(\''+dateState.year+'\')">'+dateState.month+'</a> &gt; '+day;
 }
-// Event delegation: toggle, lightbox, copy — one listener for all dynamic content
+// Event delegation: toggle, lightbox, copy. One listener for all dynamic content
 document.addEventListener('click',function(e){
   var lb=e.target.closest('[data-lb-url]');
   if(lb){e.preventDefault();e.stopPropagation();openLb(lb.dataset.lbUrl,lb.dataset.lbType||'image',lb.dataset.lbMeta);return;}
@@ -1357,7 +1357,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       const grid = document.getElementById('people-grid');
       document.getElementById('people-count').textContent = people.length;
       // Sort by name (case-insensitive) so cards keep a stable position while
-      // you drag clusters onto them - count-sort reshuffled them mid-assign.
+      // you drag clusters onto them, count-sort reshuffled them mid-assign.
       const sorted = [...people].sort((a, b) =>
         a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
       grid.innerHTML = sorted.map(p => {
@@ -1408,7 +1408,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       // Singletons carry a selection id: clicking the thumbnail toggles
       // multi-select. The click target is scoped to the thumbnail ("select
       // zone") rather than the whole card so the drag handle and the New
-      // Person controls - which live outside it - never toggle selection
+      // Person controls, which live outside it, never toggle selection
       // (they mutate the card, which would break a whole-card click guard).
       // Clusters (selFaceId undefined) are unaffected.
       const selectable = selFaceId != null;
@@ -1901,7 +1901,7 @@ const PERSON_HTML: &str = r##"<!DOCTYPE html>
     }
 
     // Trim, collapse internal whitespace, strip control/bidi-spoofing
-    // characters, and cap length by code point - mirrors the sanitization in
+    // characters, and cap length by code point, mirrors the sanitization in
     // FACES_HTML/CLUSTER_HTML.
     function sanitizeName(raw) {
       const filtered = Array.from(raw).filter(function(ch) {
@@ -2129,7 +2129,7 @@ async fn handle_location(
     let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     // `q.lat`/`q.lon` arrive rounded to 6 decimal places (the precision
     // `file_to_json_with_faces` bakes into `meta.location` client-side), but
-    // `file_hashes.gps_lat`/`gps_lon` are stored at full EXIF precision - an
+    // `file_hashes.gps_lat`/`gps_lon` are stored at full EXIF precision, an
     // exact float comparison would never match, silently breaking the cache
     // on every real coordinate. Round the stored value to the same precision
     // before comparing, both when reading and when writing back the cache.
@@ -2293,7 +2293,7 @@ async fn handle_face_image(
 ) -> Result<impl axum::response::IntoResponse, StatusCode> {
     let state = state.clone();
     // Lock only for the cheap single-row lookup, then release it before the
-    // expensive decode/crop/resize/encode work - holding the shared
+    // expensive decode/crop/resize/encode work, holding the shared
     // connection lock across that work serializes every thumbnail request
     // behind one mutex, which is the actual cause of multi-second-per-thumbnail
     // rendering in a library with thousands of faces.
@@ -2316,7 +2316,7 @@ fn mime_for_ext(ext: &str) -> &'static str {
 #[derive(Deserialize)]
 struct RawFileQuery {
     path: String,
-    /// Optional max width/height in pixels - only meaningful for HEIC
+    /// Optional max width/height in pixels, only meaningful for HEIC
     /// (which always needs QuickLook conversion) so the caller can request a
     /// small thumbnail (240px in the grid) or a larger version (1200px in
     /// the lightbox) without paying to decode/re-encode a huge image for a
@@ -2324,17 +2324,17 @@ struct RawFileQuery {
     size: Option<u32>,
 }
 
-/// Streams a file already recorded in `file_hashes.path` over HTTP - added
+/// Streams a file already recorded in `file_hashes.path` over HTTP, added
 /// so the live report (server mode, --show-faces) can point thumbnail
 /// `<img>`/`<video>` tags and the lightbox at an http:// URL instead of
 /// `file://`, which browsers refuse to load as a subresource of an
 /// http://-served page. Only paths that exist as a `file_hashes.path` value
-/// are served - this is a deliberate allowlist, not a general file server,
+/// are served, this is a deliberate allowlist, not a general file server,
 /// so a client can't request arbitrary paths off the filesystem.
 ///
 /// HEIC is converted to JPEG on demand via QuickLook (same
 /// `videre_core::heic::heic_via_quicklook` helper used elsewhere), one file per request,
-/// lazily as the browser requests each thumbnail/lightbox image - NOT
+/// lazily as the browser requests each thumbnail/lightbox image, NOT
 /// eagerly for the whole report up front, which is what made server mode
 /// unusably slow on a collection with many HEIC files before this endpoint
 /// existed (`generate_html` used to call `heic_to_b64` synchronously for
@@ -2361,7 +2361,7 @@ async fn handle_raw_file(
         .to_lowercase();
 
     // videre watch's `--heic` stage may have already pre-converted and cached
-    // a thumbnail for this file's content hash at this exact size - serve
+    // a thumbnail for this file's content hash at this exact size, serve
     // that directly instead of paying for a live qlmanage conversion.
     if ext == "heic" {
         if let Some(size) = q.size {
@@ -2379,7 +2379,7 @@ async fn handle_raw_file(
             // caller downscales to it below anyway; when None, the caller
             // wants the true original (no downscale applied), which is
             // exactly heic_via_quicklook(..., None)'s full-resolution
-            // behavior too - see its safety note.
+            // behavior too. See its safety note.
             let img = videre_core::heic::heic_via_quicklook(&path, &format!("raw{}", size.unwrap_or(0)), size)?;
             let img = match size {
                 Some(max_px) if img.width() > max_px || img.height() > max_px => {
@@ -2423,7 +2423,7 @@ async fn handle_raw_file(
 ///
 /// Browsers refuse to navigate from an http:// page to a file:// URL for
 /// security reasons ("Not allowed to load local resource"), so the
-/// original can't be linked to directly - it has to be read and served
+/// original can't be linked to directly, it has to be read and served
 /// over HTTP like everything else.
 async fn handle_original_image(
     axum::extract::Path(face_id): axum::extract::Path<i64>,
@@ -2792,7 +2792,7 @@ mod tests {
         };
         let faces = vec![(1i64, "Alice".to_string(), "0,0,10,10".to_string())];
         // make_face_thumb will return None (file doesn't exist), so faces_json
-        // ends up empty - this test instead verifies the no-crash path and
+        // ends up empty, this test instead verifies the no-crash path and
         // that meta.faces is present in the output shape.
         let json = file_to_json_with_faces(&f, false, false, &faces);
         assert!(json.contains("\"meta\":"), "{json}");
@@ -3015,7 +3015,7 @@ mod tests {
         std::fs::write(&cache_path, b"fake-cached-jpeg-bytes").unwrap();
 
         // The source file path doesn't exist, so a live-conversion attempt
-        // would fail (NOT_FOUND) - success here proves the cache was used
+        // would fail (NOT_FOUND), success here proves the cache was used
         // instead of trying to convert the (nonexistent) source file.
         let result = handle_original_image(axum::extract::Path(9002), State(state.clone())).await;
         assert!(result.is_ok(), "must serve from cache instead of failing to convert a nonexistent source file");

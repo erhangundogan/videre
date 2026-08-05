@@ -1,6 +1,6 @@
 //! Zero-shot classification of already-computed image embeddings against a
 //! fixed set of category prompts, reusing the SigLIP text tower `videre
-//! embed`/`videre search` already use - no new model, no re-embedding images.
+//! embed`/`videre search` already use, with no new model and no re-embedding.
 //! See docs/superpowers/specs/2026-07-29-screenshot-document-classification-design.md.
 
 /// Category name used when no prompt's similarity clearly wins.
@@ -18,14 +18,14 @@ pub const CATEGORY_PROMPTS: &[(&str, &str)] = &[
 
 /// Picks the winning category from per-prompt similarity scores, or
 /// `UNKNOWN_CATEGORY` if the top two scores are not clearly separated (the
-/// gap must be strictly greater than `margin` to accept the top pick - a
+/// gap must be strictly greater than `margin` to accept the top pick, a
 /// gap exactly equal to `margin` falls back to unknown).
 ///
 /// Category names are `&'static str` (always `CATEGORY_PROMPTS` entries or
 /// `UNKNOWN_CATEGORY`), not tied to `scores`'s borrow, so callers can hold
 /// the returned category across loop iterations without lifetime issues.
 ///
-/// Panics if `scores` is empty - callers always pass one score per
+/// Panics if `scores` is empty, callers always pass one score per
 /// `CATEGORY_PROMPTS` entry, which is never empty.
 pub fn classify_from_scores(scores: &[(&'static str, f32)], margin: f32) -> (&'static str, f32) {
     assert!(!scores.is_empty(), "classify_from_scores requires at least one score");

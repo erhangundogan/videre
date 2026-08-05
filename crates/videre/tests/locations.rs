@@ -4,7 +4,7 @@ use tempfile::tempdir;
 
 /// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.
 /// Spawned `videre` child processes inherit the environment, so their lock
-/// files land there instead of the developer's real `~/.videre/locks` - locks
+/// files land there instead of the developer's real `~/.videre/locks`, locks
 /// live under the videre home now rather than beside the database, so without
 /// this every run would leave permanent litter in the real home (test database
 /// names are random, so the files would accumulate rather than be reused).
@@ -218,7 +218,7 @@ fn file_hashes_location_cluster_id_is_assigned_and_cleared_on_rerun() {
     assert_eq!(cluster_a, cluster_b, "both nearby photos must land in the same cluster");
     drop(conn);
 
-    // Remove b's GPS so a rerun reclusters it out of any cluster - the
+    // Remove b's GPS so a rerun reclusters it out of any cluster, the
     // NULL-clearing step (locations.rs's "clears file_hashes.location_cluster_id")
     // must actually take effect, not just leave the previous run's value in place.
     let conn = Connection::open(&db).unwrap();

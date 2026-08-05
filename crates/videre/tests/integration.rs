@@ -3,7 +3,7 @@ use tempfile::tempdir;
 
 /// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.
 /// Spawned `videre` child processes inherit the environment, so their lock
-/// files land there instead of the developer's real `~/.videre/locks` - locks
+/// files land there instead of the developer's real `~/.videre/locks`, locks
 /// live under the videre home now rather than beside the database, so without
 /// this every run would leave permanent litter in the real home (test database
 /// names are random, so the files would accumulate rather than be reused).
@@ -132,7 +132,7 @@ fn dedupe_similar_groups_a_video_and_its_recompressed_variant() {
     // Real near-duplicate scenario: same source content, different bytes/bitrate
     // (a genuine re-encode), not byte-identical files. testsrc_1s.mp4 uses a
     // structured test pattern (gradients + a moving box) rather than a flat
-    // color, so its dHash actually has bits to compare - a flat-color frame's
+    // color, so its dHash actually has bits to compare, a flat-color frame's
     // dHash is degenerately all-zero (no pixel has a "left > right" edge
     // anywhere), which would make this test pass even for an implementation
     // that couldn't discriminate content at all. See
@@ -162,7 +162,7 @@ fn dedupe_similar_groups_a_video_and_its_recompressed_variant() {
     let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
 
     // The two files have different BLAKE3 hashes (different bitrate/bytes), so
-    // this must NOT be caught by exact-duplicate detection - only by --similar.
+    // this must NOT be caught by exact-duplicate detection, only by --similar.
     let duplicate_groups = doc["duplicate_groups"]
         .as_array()
         .expect("duplicate_groups key must always be present");

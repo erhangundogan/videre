@@ -10,7 +10,7 @@ use tempfile::tempdir;
 
 /// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.
 /// Spawned `videre` child processes inherit the environment, so their lock
-/// files land there instead of the developer's real `~/.videre/locks` - locks
+/// files land there instead of the developer's real `~/.videre/locks`, locks
 /// live under the videre home now rather than beside the database, so without
 /// this every run would leave permanent litter in the real home (test database
 /// names are random, so the files would accumulate rather than be reused).
@@ -145,7 +145,7 @@ fn kill_mid_run_then_resume_processes_every_image_exactly_once() {
     assert_eq!(final_count as usize, N, "every image must end up scanned exactly once after resuming");
 
     // faces_scanned.hash is a PRIMARY KEY, so duplicate-processing would have
-    // already failed the INSERT rather than silently double-counting - this
+    // already failed the INSERT rather than silently double-counting, this
     // is an explicit belt-and-suspenders check of that invariant.
     let conn = Connection::open(&db).unwrap();
     let distinct: i64 = conn.query_row("SELECT COUNT(DISTINCT hash) FROM faces_scanned", [], |r| r.get(0)).unwrap();

@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
 /// Idempotent: creates `geocode_cache` if it doesn't already exist.
-/// `resolved_at` is descriptive only in this version - no expiry/refresh
+/// `resolved_at` is descriptive only in this version, no expiry/refresh
 /// logic is implemented; a cache hit is always used regardless of age (a
 /// place name's coordinates essentially never change).
 pub fn ensure_geocode_cache_table(conn: &Connection) -> rusqlite::Result<()> {
@@ -53,7 +53,7 @@ pub fn forward_geocode_cached(conn: &Connection, query: &str) -> Result<(f64, f6
 }
 
 /// Calls the Nominatim (OpenStreetMap) free public geocoding API. Not
-/// covered by automated tests (a real network call) - verified manually
+/// covered by automated tests (a real network call), verified manually
 /// during implementation and via the `#[ignore]`d test below, same
 /// treatment as this project's other real-network/model-download paths
 /// (e.g. SigLIP/ArcFace weight downloads).

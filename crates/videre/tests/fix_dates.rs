@@ -5,7 +5,7 @@ use tempfile::tempdir;
 
 /// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.
 /// Spawned `videre` child processes inherit the environment, so their lock
-/// files land there instead of the developer's real `~/.videre/locks` - locks
+/// files land there instead of the developer's real `~/.videre/locks`, locks
 /// live under the videre home now rather than beside the database, so without
 /// this every run would leave permanent litter in the real home (test database
 /// names are random, so the files would accumulate rather than be reused).
@@ -105,7 +105,7 @@ fn yes_flag_skips_the_prompt_entirely() {
     let dir = tempdir().unwrap();
     let (db, file) = fixture_db(dir.path());
 
-    // No stdin provided at all - if the prompt were shown, this would hang
+    // No stdin provided at all, if the prompt were shown, this would hang
     // (read_line would block); --yes must bypass it.
     let out = run_fix_dates(&db, &["--yes"], None);
     assert!(out.status.success());
@@ -118,7 +118,7 @@ fn dry_run_never_prompts() {
     let (db, file) = fixture_db(dir.path());
     let before = mtime_year(&file);
 
-    // No stdin provided - dry-run must not block on a prompt either.
+    // No stdin provided, dry-run must not block on a prompt either.
     let out = run_fix_dates(&db, &["--dry-run"], None);
     assert!(out.status.success());
     assert_eq!(mtime_year(&file), before, "dry-run must not modify the file");

@@ -1,12 +1,12 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-/// Opens a SQLite connection and switches it to WAL journal mode - allows
+/// Opens a SQLite connection and switches it to WAL journal mode, allows
 /// one writer plus many concurrent readers without "database is locked"
 /// errors, which matters once videre watch (writing in the background) and a
 /// running videre report --show-faces server (reading/writing) hold separate
 /// connections to the same file at the same time. WAL mode persists in the
-/// database file itself once set, so this is idempotent - safe to call on
+/// database file itself once set, so this is idempotent, safe to call on
 /// every connection open, not just the first.
 pub fn open_wal(path: &Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
@@ -14,7 +14,7 @@ pub fn open_wal(path: &Path) -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
-/// Whether `name` exists as a table in `conn` - used by every reader that
+/// Whether `name` exists as a table in `conn`, used by every reader that
 /// queries an optional table (`faces`, `embeddings`, `classifications`) added
 /// after `file_hashes` and not guaranteed present in an older db.
 pub fn table_exists(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
@@ -60,7 +60,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("test.db");
         open_wal(&db_path).unwrap();
-        // Second open on the same file must not error - WAL mode already
+        // Second open on the same file must not error, WAL mode already
         // persisted from the first open.
         let conn = open_wal(&db_path).unwrap();
         let mode: String = conn

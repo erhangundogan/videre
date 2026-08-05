@@ -28,7 +28,7 @@ pub struct FacesArgs {
     #[arg(long, default_value = "80")] min_face_size: f32,
     /// Process at most N not-yet-scanned images this run, then stop. Resumable: each
     /// run records what it scanned (including images with no faces) and a rerun
-    /// continues where it left off. Clustering is skipped on a limited run - run
+    /// continues where it left off. Clustering is skipped on a limited run. Run
     /// `videre faces --recluster` when you're done scanning.
     #[arg(long)] limit: Option<usize>,
     /// Distinctiveness gate: faces whose embedding is more than this cosine-similar to
@@ -37,12 +37,12 @@ pub struct FacesArgs {
     #[arg(long, default_value = "0.4")] max_generic_sim: f32,
     /// Print per-stage timing (load/detect/align/embed/db_write, load split
     /// HEIC vs. other) averaged per image, after the run finishes. A tuning
-    /// tool, not part of the normal summary - see
+    /// tool, not part of the normal summary. See
     /// docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md.
     #[arg(long)] profile: bool,
     /// Number of worker threads for face detection/embedding (each with its
     /// own ONNX sessions, intra-op-thread-capped so they don't collectively
-    /// oversubscribe the machine). Defaults to 2x available core count - real
+    /// oversubscribe the machine). Defaults to 2x available core count, real
     /// profiling data (docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md,
     /// and see the architecture memory) showed HEIC file loading (via a
     /// qlmanage subprocess) averages ~52x longer than non-HEIC loading and
@@ -65,7 +65,7 @@ pub struct FacesArgs {
 pub fn run(args: FacesArgs) -> Result<()> {
     // Must happen before any HEIC file could be converted (the semaphore is a
     // OnceLock: first use wins for the life of this process). Clamped to at
-    // least 1 - a literal 0 would make every HEIC conversion block forever.
+    // least 1, a literal 0 would make every HEIC conversion block forever.
     if let Some(n) = args.qlmanage_concurrency {
         videre_core::heic::set_qlmanage_concurrency(n.max(1));
     }
@@ -184,7 +184,7 @@ fn run_detection_and_clustering(
 /// Assembles the single consolidated summary line printed after both
 /// detection and clustering finish. `pub(crate)` since `watch.rs`'s faces
 /// stage does not call this one (it has no per-run elapsed-time figure to
-/// report - see `format_clustering_only_summary` for its equivalent), but
+/// report. See `format_clustering_only_summary` for its equivalent), but
 /// keeping visibility consistent with its sibling function below.
 pub(crate) fn format_summary(
     result: &FacesRunResult,
@@ -212,7 +212,7 @@ pub(crate) fn format_summary(
 
 /// Assembles the summary line for the `--recluster` (and "nothing new to
 /// process, but recluster anyway") path, where no detection ran this
-/// invocation - so there is no image count or elapsed-time figure to report.
+/// invocation, so there is no image count or elapsed-time figure to report.
 /// `pub(crate)` since `watch.rs`'s faces stage also calls this.
 pub(crate) fn format_clustering_only_summary(clustering: Option<ClusteringResult>, eps: f32) -> String {
     match clustering {

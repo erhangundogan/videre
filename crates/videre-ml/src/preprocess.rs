@@ -1,7 +1,7 @@
 //! Decode an image file into a SigLIP input tensor: resize to NxN,
 //! scale to [0,1], normalize with mean 0.5 / std 0.5 per channel -> [-1,1].
 //! HEIC is converted via QuickLook (macOS), matching dupe-report and
-//! dupe-faces - see `decode_via_quicklook` for why `sips` alone isn't used.
+//! dupe-faces. See `decode_via_quicklook` for why `sips` alone isn't used.
 
 use anyhow::{Context, Result};
 use candle_core::{DType, Device, Tensor};
@@ -54,7 +54,7 @@ pub fn image_to_tensor(path: &Path, size: usize, device: &Device) -> Result<Tens
 ///
 /// `sips -s format jpeg` copies the raw sensor-buffer pixels unrotated for
 /// HEIC files where the iPhone camera encoded rotation via the HEIF `irot`
-/// transform box rather than a classic EXIF Orientation tag - the same
+/// transform box rather than a classic EXIF Orientation tag, the same
 /// rotation Finder/Preview/Photos apply via QuickLook. Since the resulting
 /// tensor is immediately resized square anyway, exact resolution doesn't
 /// matter here as much as getting the orientation right so the embedding
@@ -65,17 +65,17 @@ pub fn image_to_tensor(path: &Path, size: usize, device: &Device) -> Result<Tens
 /// HEIC conversion and a video conversion of files that happen to hash the
 /// same never collide.
 ///
-/// Ceiling for a single `qlmanage` conversion - see `videre_core::heic` for
+/// Ceiling for a single `qlmanage` conversion. See `videre_core::heic` for
 /// why this is needed: a disconnected/stale external volume can make
 /// `qlmanage` block indefinitely on macOS rather than fail fast, which
 /// otherwise freezes `videre embed` silently on that one file.
 ///
 /// Confirmed well-tuned for video specifically (2026-08-01): timed raw
 /// `qlmanage -t` poster-frame extraction directly against the 5 largest real
-/// video files in a real library (2.3-5.7GB, `.mov`/`.mp4`) - all completed
+/// video files in a real library (2.3-5.7GB, `.mov`/`.mp4`), all completed
 /// in 0.22-0.36s. Video extraction only seeks to one point and decodes a
 /// single frame, so unlike HEIC's full-image decode, wall time doesn't scale
-/// with file size/duration - this 20s ceiling has ~50-90x headroom even for
+/// with file size/duration, this 20s ceiling has ~50-90x headroom even for
 /// the largest real files measured, not just typical ones.
 const QLMANAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -158,7 +158,7 @@ mod tests {
         .unwrap();
         assert_eq!(t.dims(), &[3, 384, 384]);
         // The fixture is a solid red frame; SigLIP normalization maps [0,1] to
-        // [-1,1], so the R channel of the extracted frame should be ~1.0 - same
+        // [-1,1], so the R channel of the extracted frame should be ~1.0, same
         // assertion shape as the existing red_2x2.png test above.
         let flat: Vec<f32> = t.flatten_all().unwrap().to_vec1().unwrap();
         assert!(flat.iter().all(|v| *v >= -1.001 && *v <= 1.001));

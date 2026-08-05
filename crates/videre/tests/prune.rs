@@ -111,7 +111,7 @@ fn missing_default_db_prints_friendly_error() {
 /// Runs `videre prune` with `HOME` pinned to `db`'s own tempdir. Critical for
 /// safety, not just isolation: prune now deletes orphaned
 /// `~/.cache/videre/thumbnails/` entries relative to whatever db it's given,
-/// and every fixture db here has only 2-3 rows - without this override, a
+/// and every fixture db here has only 2-3 rows, without this override, a
 /// non-dry-run test would see the REAL cache's thousands of real thumbnails
 /// as "orphaned" (absent from the tiny fixture db) and delete them all.
 fn run_prune(db: &std::path::Path, dry_run: bool) {
@@ -199,7 +199,7 @@ fn preserves_embedding_when_hash_shared_with_surviving_file() {
 
 /// A real BLAKE3-length (64 hex char) hash, distinct per `seed`, so tests
 /// can build cache filenames `hash_from_cache_filename` will actually parse
-/// (unlike the short synthetic hashes - "haaa" etc. - used elsewhere in this
+/// (unlike the short synthetic hashes, "haaa" etc., used elsewhere in this
 /// file for db-only fixtures).
 fn cache_test_hash(seed: char) -> String {
     seed.to_string().repeat(64)

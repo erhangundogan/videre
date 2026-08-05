@@ -180,7 +180,7 @@ pub type LabeledFacesByHash = HashMap<String, Vec<LabeledFace>>;
 
 /// Returns, for every hash that has at least one confirmed+labeled face, the
 /// list of (face_id, person_label, bbox) for that hash. One batched query
-/// covering every hash, not one query per file - safe to call once per
+/// covering every hash, not one query per file, safe to call once per
 /// report generation without N+1 overhead.
 pub fn labeled_faces_by_hash(conn: &Connection) -> rusqlite::Result<LabeledFacesByHash> {
     let mut stmt = conn.prepare(
@@ -291,7 +291,7 @@ mod tests {
         // must still be recorded as scanned so it is not re-processed.
         mark_scanned(&conn, "noface").unwrap();
         assert_eq!(scanned_hashes(&conn).unwrap(), vec!["noface".to_string()]);
-        // hashes_with_faces stays empty - the marker is independent of faces.
+        // hashes_with_faces stays empty, the marker is independent of faces.
         assert!(hashes_with_faces(&conn).unwrap().is_empty());
     }
 

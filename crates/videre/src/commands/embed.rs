@@ -143,7 +143,7 @@ fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection) -> Result<()> {
 
 /// Assembles the single consolidated summary line printed after embedding
 /// finishes. Not `pub(crate)` (unlike `videre faces`'s equivalent
-/// `format_summary`): nothing outside this file calls it - `videre embed`
+/// `format_summary`): nothing outside this file calls it, `videre embed`
 /// has no `videre watch` stage equivalent that shares this logic.
 fn format_summary(done: usize, failed: usize, elapsed: std::time::Duration) -> String {
     if failed > 0 {

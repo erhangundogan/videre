@@ -4,8 +4,8 @@ use rusqlite::{Connection, Result, params};
 
 /// Extensions the embedding pipeline can decode. `.mov`/`.mp4` are handled by
 /// extracting one representative frame via QuickLook (macOS only, degrades to
-/// a per-file decode error on other platforms - same pattern already
-/// accepted for `.heic`) - see
+/// a per-file decode error on other platforms, same pattern already
+/// accepted for `.heic`). See
 /// docs/superpowers/specs/2026-07-31-video-embedding-design.md.
 ///
 /// `.dng` is deliberately NOT included: the `image` crate has no DNG decoder,
@@ -30,8 +30,8 @@ pub fn is_video_ext(ext: &str) -> bool {
 ///
 /// Changed 2026-08-04 from `google/siglip-so400m-patch14-384`. Measured on
 /// 2,080 real photos: this model embeds at 131ms/photo against the old one's
-/// 479ms - **3.6x faster**, taking a full 70k-photo library from ~9.4 hours to
-/// ~2.6 hours - at 768 dimensions instead of 1152. In a blind side-by-side of
+/// 479ms, **3.6x faster**, taking a full 70k-photo library from ~9.4 hours to
+/// ~2.6 hours, at 768 dimensions instead of 1152. In a blind side-by-side of
 /// 14 searches the old model showed no visible advantage, and this one beat
 /// the same-size/same-resolution previous-generation `siglip-base-patch16-384`
 /// outright.
@@ -42,7 +42,7 @@ pub fn is_video_ext(ext: &str) -> bool {
 ///
 /// **Changing this invalidates every stored embedding**, since `embeddings`
 /// rows are tagged with the model id and `pending_images` filters on it. That
-/// is intentional - vectors from different models are not comparable - but it
+/// is intentional, vectors from different models are not comparable, but it
 /// means a one-time full re-embed. `videre embed` warns when it sees rows from
 /// a different model rather than silently reprocessing the whole library.
 pub const DEFAULT_MODEL_ID: &str = "google/siglip2-base-patch16-384";
@@ -65,8 +65,6 @@ pub fn ensure_embeddings_table(conn: &Connection) -> Result<()> {
     )
 }
 
-/// Unique hashes that are embeddable but not yet embedded under `model_id`;
-/// one representative path per hash (MIN(path) keeps it deterministic).
 /// Counts stored embeddings that came from a *different* model than
 /// `model_id`, i.e. rows that `pending_images` will treat as unembedded.
 ///
@@ -91,6 +89,8 @@ pub fn embeddings_from_other_models(conn: &Connection, model_id: &str) -> Result
     Ok((count, ids))
 }
 
+/// Unique hashes that are embeddable but not yet embedded under `model_id`;
+/// one representative path per hash (MIN(path) keeps it deterministic).
 pub fn pending_images(conn: &Connection, model_id: &str) -> Result<Vec<PendingImage>> {
     let placeholders = EMBEDDABLE_EXTS
         .iter()
@@ -139,7 +139,7 @@ pub fn insert_embeddings(
 }
 
 /// Returns an empty vec (rather than a raw SQLite error) when the
-/// `embeddings` table doesn't exist yet - a db that's been scanned but never
+/// `embeddings` table doesn't exist yet, a db that's been scanned but never
 /// embedded has no such table, and callers rely on "empty" to mean "run
 /// videre embed first" (see `videre search`'s `load_corpus`).
 pub fn load_embeddings(conn: &Connection, model_id: &str) -> Result<Vec<(String, Vec<u8>)>> {

@@ -36,7 +36,7 @@ fn run_classify(args: &ClassifyArgs, conn: &rusqlite::Connection) -> Result<()> 
     classify_core::ensure_classifications_table(conn)?;
 
     // Loaded once and looked up by hash below rather than holding the whole
-    // corpus twice - hashes.len() can be in the tens of thousands.
+    // corpus twice, hashes.len() can be in the tens of thousands.
     let all_embeddings: std::collections::HashMap<String, Vec<u8>> =
         embeddings::load_embeddings(conn, model::MODEL_ID)?.into_iter().collect();
 
