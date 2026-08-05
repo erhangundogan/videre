@@ -13,25 +13,19 @@ use tokenizers::Tokenizer;
 pub const MODEL_ID: &str = videre_core::embeddings::DEFAULT_MODEL_ID;
 pub const IMAGE_SIZE: usize = 384;
 
-/// Model actually used, overridable with `VIDERE_EMBED_MODEL=<hf model id>`.
-///
-/// EXPERIMENTAL benchmarking scaffold (2026-08-04) for comparing SigLIP
-/// variants. Embeddings are tagged with this id in the `embeddings` table, so
-/// switching models makes `pending_images` treat the whole library as
-/// unembedded, i.e. changing this means a full re-embed, by design.
-pub fn configured_model_id() -> &'static str {
-    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    ID.get_or_init(|| std::env::var("VIDERE_EMBED_MODEL").unwrap_or_else(|_| MODEL_ID.to_string()))
-}
-
-/// Input resolution for `configured_model_id()`.
+/// Input resolution for `model_id`.
 ///
 /// Taken from the trailing `-<size>` in the HF model id (`...-patch14-224` ->
 /// 224) rather than `config.json`, because several published SigLIP configs
 /// omit `vision_config.image_size` and rely on library defaults. Falls back to
 /// `IMAGE_SIZE` when the id has no recognizable suffix.
-pub fn configured_image_size() -> usize {
-    configured_model_id()
+///
+/// Takes the id as an argument rather than reading a process-global: the
+/// caller resolves it once via `videre_core::embeddings::resolve_model_id`,
+/// so the weights loaded and the database written can never disagree about
+/// which model is in play.
+pub fn image_size_for(model_id: &str) -> usize {
+    model_id
         .rsplit('-')
         .next()
         .and_then(|s| s.parse::<usize>().ok())
@@ -99,11 +93,14 @@ fn configured_dtype() -> DType {
 
 impl Embedder {
     /// Download (or use cached) SigLIP weights and build the embedder.
-    pub fn load(device: Device) -> Result<Self> {
+    ///
+    /// `model_id` is resolved by the caller via
+    /// `videre_core::embeddings::resolve_model_id`, so the weights loaded here
+    /// always match the database the caller will read or write.
+    pub fn load(device: Device, model_id: &str) -> Result<Self> {
         let client = hf_hub::HFClientSync::new().context("init HF Hub client")?;
-        let model_id = configured_model_id();
         if model_id != MODEL_ID {
-            eprintln!("Using model {model_id} at {}px (VIDERE_EMBED_MODEL).", configured_image_size());
+            eprintln!("Using model {model_id} at {}px.", image_size_for(model_id));
         }
         let (owner, name) = model_id.split_once('/').expect("model id is owner/name");
         let repo = client.model(owner, name);
@@ -331,11 +328,24 @@ mod index_parsing_tests {
 
 #[cfg(all(test, feature = "real-model"))]
 mod tests {
+    #[test]
+    fn image_size_for_reads_the_trailing_suffix() {
+        assert_eq!(image_size_for("google/siglip2-base-patch16-384"), 384);
+        assert_eq!(image_size_for("google/siglip-base-patch16-224"), 224);
+        assert_eq!(image_size_for("google/siglip-so400m-patch14-384"), 384);
+    }
+
+    #[test]
+    fn image_size_for_falls_back_when_there_is_no_recognizable_suffix() {
+        assert_eq!(image_size_for("owner/no-size-here"), IMAGE_SIZE);
+        assert_eq!(image_size_for("owner/model-99999"), IMAGE_SIZE);
+    }
+
     use super::*;
 
     #[test]
     fn text_and_image_towers_agree_on_semantics() {
-        let e = Embedder::load(crate::device::best_device()).unwrap();
+        let e = Embedder::load(crate::device::best_device(), MODEL_ID).unwrap();
         let red =
             embed_image_file(&e, std::path::Path::new("tests/fixtures/red_2x2.png")).unwrap();
         let q_red = e.embed_text("a solid red square").unwrap();
@@ -374,7 +384,7 @@ mod batch_correctness_tests {
     #[ignore]
     #[cfg(target_os = "macos")]
     fn batched_embeddings_match_one_at_a_time() {
-        let embedder = Embedder::load(crate::device::best_device()).unwrap();
+        let embedder = Embedder::load(crate::device::best_device(), MODEL_ID).unwrap();
 
         // Distinct inputs, so a bug that returns one vector repeated (or a
         // shifted/garbage buffer) cannot pass by accident.

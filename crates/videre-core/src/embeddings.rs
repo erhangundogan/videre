@@ -47,6 +47,20 @@ pub fn is_video_ext(ext: &str) -> bool {
 /// a different model rather than silently reprocessing the whole library.
 pub const DEFAULT_MODEL_ID: &str = "google/siglip2-base-patch16-384";
 
+/// The model this invocation uses: `--model` > `VIDERE_EMBED_MODEL` > default.
+///
+/// Resolved once per command and passed explicitly to both the database layer
+/// and the weight loader. The id previously came from a process-global
+/// `OnceLock` in videre-ml that only consulted the environment, which made it
+/// impossible to guarantee that a `--model` flag and the loaded weights
+/// referred to the same checkpoint.
+pub fn resolve_model_id(explicit: Option<&str>) -> String {
+    if let Some(id) = explicit {
+        return id.to_string();
+    }
+    std::env::var("VIDERE_EMBED_MODEL").unwrap_or_else(|_| DEFAULT_MODEL_ID.to_string())
+}
+
 #[derive(Debug, Clone)]
 pub struct PendingImage {
     pub hash: String,
@@ -303,6 +317,19 @@ mod tests {
         assert!(DEFAULT_MODEL_ID.starts_with("google/"), "{DEFAULT_MODEL_ID}");
         assert!(DEFAULT_MODEL_ID.contains("siglip"), "{DEFAULT_MODEL_ID}");
         assert_eq!(DEFAULT_MODEL_ID.matches('/').count(), 1, "{DEFAULT_MODEL_ID}");
+    }
+
+    #[test]
+    fn resolve_model_id_prefers_the_explicit_argument() {
+        assert_eq!(resolve_model_id(Some("owner/explicit")), "owner/explicit");
+    }
+
+    #[test]
+    fn resolve_model_id_falls_back_to_the_default() {
+        // With no explicit argument and no env override, the compiled default.
+        if std::env::var("VIDERE_EMBED_MODEL").is_err() {
+            assert_eq!(resolve_model_id(None), DEFAULT_MODEL_ID);
+        }
     }
 
     #[test]

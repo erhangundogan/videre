@@ -179,12 +179,12 @@ pub(crate) fn location_hits(
 /// Load the embedding corpus, erroring if empty. Called BEFORE any model load
 /// so a db without embeddings fails fast without downloading weights.
 pub(crate) fn load_corpus(conn: &Connection, db: &Path) -> Result<Vec<(String, Vec<f32>)>> {
-    let corpus_raw = embeddings::load_embeddings(conn, model::configured_model_id())?;
+    let corpus_raw = embeddings::load_embeddings(conn, &videre_core::embeddings::resolve_model_id(None))?;
     anyhow::ensure!(
         !corpus_raw.is_empty(),
         "no embeddings found in {} for model {}; run videre embed first",
         db.display(),
-        model::configured_model_id()
+        videre_core::embeddings::resolve_model_id(None)
     );
     Ok(corpus_raw
         .into_iter()
@@ -251,7 +251,7 @@ fn collect_hits(args: &SearchArgs) -> Result<(QueryJson, Vec<SearchHitJson>)> {
 
     let corpus = load_corpus(&conn, &db)?;
 
-    let embedder = model::Embedder::load(device::best_device())?;
+    let embedder = model::Embedder::load(device::best_device(), &videre_core::embeddings::resolve_model_id(None))?;
     let (query_vec, query) = match (&args.query, &args.image) {
         (Some(text), None) => (
             embedder.embed_text(text)?,

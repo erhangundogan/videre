@@ -58,13 +58,13 @@ pub(crate) fn clamp_batch(requested: usize) -> usize {
 fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection) -> Result<()> {
     embeddings::ensure_embeddings_table(conn)?;
 
-    let model_id = model::configured_model_id();
+    let model_id = videre_core::embeddings::resolve_model_id(None);
 
     // A model change silently invalidates every stored embedding (rows are
     // tagged with the model id, and `pending_images` filters on it), so an
     // upgrade would otherwise look like "re-embedding my entire finished
     // library for no reason". Say so explicitly before doing hours of work.
-    let (stale, other_models) = embeddings::embeddings_from_other_models(conn, model_id)?;
+    let (stale, other_models) = embeddings::embeddings_from_other_models(conn, &model_id)?;
     if stale > 0 {
         eprintln!(
             "note: {stale} existing embedding(s) were made with {} and cannot be compared against \
@@ -74,7 +74,7 @@ fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection) -> Result<()> {
         );
     }
 
-    let pending = embeddings::pending_images(conn, model_id)?;
+    let pending = embeddings::pending_images(conn, &model_id)?;
     if pending.is_empty() {
         if !args.silent {
             eprintln!("Nothing to embed: all hashes already have embeddings.");
@@ -88,7 +88,7 @@ fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection) -> Result<()> {
 
     let started = std::time::Instant::now();
     let dev = device::best_device();
-    let embedder = model::Embedder::load(dev.clone())?;
+    let embedder = model::Embedder::load(dev.clone(), &model_id)?;
 
     let progress = videre_core::progress::Progress::new(pending.len() as u64, args.silent);
 
@@ -101,7 +101,7 @@ fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection) -> Result<()> {
             .map(|p| {
                 match preprocess::image_to_tensor(
                     std::path::Path::new(&p.path),
-                    model::configured_image_size(),
+                    model::image_size_for(&model_id),
                     &candle_core::Device::Cpu, // decode on CPU, move to device in batch
                 ) {
                     Ok(t) => Some((p.hash.clone(), t)),
@@ -128,7 +128,7 @@ fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection) -> Result<()> {
             }
         }
 
-        embeddings::insert_embeddings(conn, model_id, &rows)?;
+        embeddings::insert_embeddings(conn, &model_id, &rows)?;
         done += rows.len();
         progress.tick_by(chunk.len() as u64);
     }

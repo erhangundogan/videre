@@ -212,6 +212,7 @@ fn build_search(
             if guard.is_none() {
                 *guard = Some(videre_ml::model::Embedder::load(
                     videre_ml::device::best_device(),
+                    &videre_core::embeddings::resolve_model_id(None),
                 )?);
             }
             let embedder = guard.as_ref().expect("just initialized");
