@@ -35,16 +35,21 @@ pub fn run(args: ClassifyArgs) -> Result<()> {
 fn run_classify(args: &ClassifyArgs, conn: &rusqlite::Connection) -> Result<()> {
     classify_core::ensure_classifications_table(conn)?;
 
+    // Resolved rather than the compiled-in `model::MODEL_ID` constant this
+    // used to read: with VIDERE_EMBED_MODEL set, classify was scoring against
+    // the default model's embeddings while embed wrote another model's.
+    let model_id = videre_core::embeddings::resolve_model_id(None);
+
     // Loaded once and looked up by hash below rather than holding the whole
     // corpus twice, hashes.len() can be in the tens of thousands.
     let all_embeddings: std::collections::HashMap<String, Vec<u8>> =
-        embeddings::load_embeddings(conn, model::MODEL_ID)?.into_iter().collect();
+        embeddings::load_embeddings(conn, &model_id)?.into_iter().collect();
 
     let hashes: Vec<String> = if args.reprocess {
         let all: Vec<String> = all_embeddings.keys().cloned().collect();
         classify_core::exclude_video_hashes(conn, &all)?
     } else {
-        classify_core::pending_hashes(conn, model::MODEL_ID)?
+        classify_core::pending_hashes(conn, &model_id)?
     };
 
     if hashes.is_empty() {
@@ -55,7 +60,7 @@ fn run_classify(args: &ClassifyArgs, conn: &rusqlite::Connection) -> Result<()> 
     }
 
     let started = std::time::Instant::now();
-    let embedder = model::Embedder::load(device::best_device())?;
+    let embedder = model::Embedder::load(device::best_device(), &model_id)?;
 
     // Embed each category prompt once; reused for every image below.
     let prompt_vecs: Vec<(&'static str, Vec<f32>)> = classify_ml::CATEGORY_PROMPTS

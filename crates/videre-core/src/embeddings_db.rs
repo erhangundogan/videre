@@ -214,19 +214,29 @@ pub fn detach(conn: &Connection) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// Points VIDERE_HOME at a temp dir for the duration of one test.
-    /// Tests share a process, so this uses a mutex rather than bare set_var.
+    /// Gives one test its own library directory under a `VIDERE_HOME` that is
+    /// set exactly once for the whole test binary.
+    ///
+    /// `VIDERE_HOME` is deliberately NOT set per test. Tests share a process
+    /// and run in parallel, so a per-test `set_var` races every concurrent
+    /// `getenv`, and deleting that directory afterwards pulls the home out
+    /// from under unrelated tests mid-run. Doing exactly that made two
+    /// `pipeline_runs` lock tests fail. Isolation comes from each test getting
+    /// its own subdirectory and its own database filename instead, which is
+    /// enough because `library_dir` keys on the database's canonical path.
     fn with_home<T>(tag: &str, f: impl FnOnce(&Path) -> T) -> T {
-        use std::sync::Mutex;
-        static LOCK: Mutex<()> = Mutex::new(());
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = std::env::temp_dir().join(format!("videre_embdb_{}_{}", tag, std::process::id()));
+        static HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        let home = HOME.get_or_init(|| {
+            let dir =
+                std::env::temp_dir().join(format!("videre-embdb-home-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).expect("create isolated test home");
+            std::env::set_var("VIDERE_HOME", &dir);
+            dir
+        });
+        let dir = home.join(tag);
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("VIDERE_HOME", &dir);
-        let out = f(&dir);
-        let _ = std::fs::remove_dir_all(&dir);
-        out
+        f(&dir)
     }
 
     fn touch_db(dir: &Path, name: &str) -> PathBuf {
