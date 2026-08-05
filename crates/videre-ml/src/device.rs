@@ -18,7 +18,7 @@ mod tests {
     #[test]
     fn best_device_never_panics_and_returns_a_device() {
         // Result is hardware-dependent (Metal on capable macOS, Cpu otherwise),
-        // so this just asserts the call completes and yields a usable Device -
+        // so this just asserts the call completes and yields a usable Device,
         // matching the "never fails" contract in the doc comment above.
         let device = best_device();
         assert!(device.is_cpu() || !device.is_cpu());

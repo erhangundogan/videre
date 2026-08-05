@@ -6,7 +6,7 @@
 /// Category name used when no prompt's similarity clearly wins.
 pub const UNKNOWN_CATEGORY: &str = "unknown";
 
-/// (category name, zero-shot prompt caption). Not exposed as a CLI flag -
+/// (category name, zero-shot prompt caption). Not exposed as a CLI flag;
 /// tune here if real-world results look off. SigLIP embeds full descriptive
 /// captions better than bare single-word labels.
 pub const CATEGORY_PROMPTS: &[(&str, &str)] = &[

@@ -40,7 +40,7 @@ fn bin() -> std::path::PathBuf {
 
 /// Populates `db` with `n` `file_hashes` rows, each a distinct fake hash
 /// pointing at its own copy of the real `sample_with_exif.jpg` fixture (real
-/// JPEG bytes, so detection genuinely decodes and runs SCRFD on each one -
+/// JPEG bytes, so detection genuinely decodes and runs SCRFD on each one,
 /// not a synthetic/corrupt file). Distinct hashes (not derived from content)
 /// so each row is a genuinely separate unit of resumable work, mirroring how
 /// other fixtures in this file set already fabricate hashes directly rather

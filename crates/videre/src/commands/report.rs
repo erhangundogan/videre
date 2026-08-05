@@ -665,8 +665,8 @@ fn generate_html(
         embedded_stat = embedded_stat,
     ));
 
-    // Toolbar + groups list: skip entirely when there's nothing to review -
-    // an empty "0 groups" toolbar with working Expand/Collapse/Sort controls
+    // Toolbar + groups list: skip entirely when there's nothing to review.
+    // An empty "0 groups" toolbar with working Expand/Collapse/Sort controls
     // is just noise, especially alongside --by-date/--all which have their
     // own reason to exist regardless of duplicate count.
     if !groups.is_empty() {
@@ -1392,7 +1392,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
         if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)) return false;
         if (cp === 0x200B) return false;
         if (cp === 0x200E || cp === 0x200F) return false;
-        // 0x200C (ZWNJ) and 0x200D (ZWJ) are intentionally allowed -
+        // 0x200C (ZWNJ) and 0x200D (ZWJ) are intentionally allowed,
         // required for Persian/Indic text and emoji ZWJ sequences.
         if (cp >= 0x202A && cp <= 0x202E) return false;
         if (cp >= 0x2060 && cp <= 0x2069) return false;
@@ -1697,7 +1697,7 @@ const CLUSTER_HTML: &str = r##"<!DOCTYPE html>
         if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)) return false;
         if (cp === 0x200B) return false;
         if (cp === 0x200E || cp === 0x200F) return false;
-        // 0x200C (ZWNJ) and 0x200D (ZWJ) are intentionally allowed -
+        // 0x200C (ZWNJ) and 0x200D (ZWJ) are intentionally allowed,
         // required for Persian/Indic text and emoji ZWJ sequences.
         if (cp >= 0x202A && cp <= 0x202E) return false;
         if (cp >= 0x2060 && cp <= 0x2069) return false;

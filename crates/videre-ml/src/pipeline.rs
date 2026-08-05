@@ -20,7 +20,7 @@ pub struct ProfileStats {
 }
 
 impl ProfileStats {
-    /// Merges another worker's (or the coordinator's) stats into this one -
+    /// Merges another worker's (or the coordinator's) stats into this one,
     /// used once the pipeline is multi-threaded (Task 6) to combine each
     /// worker's local accumulator plus the coordinator's own db_write timing
     /// into a single report at the end of the run.
@@ -128,7 +128,7 @@ pub fn apply_worker_msg_counts(result: &mut FacesRunResult, msg: &WorkerMsg) {
     }
 }
 
-/// Detects, embeds, and writes faces for the given (path, hash) pairs -
+/// Detects, embeds, and writes faces for the given (path, hash) pairs;
 /// callers are responsible for deciding which hashes need processing (e.g.
 /// "not already in the faces table" for incremental use, or "everything"
 /// for --reprocess). Chunks work by `batch` images per embedding call, same

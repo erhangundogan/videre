@@ -215,8 +215,8 @@ fn stats_check_exits_nonzero_when_a_command_failed() {
         .arg("scan").arg("--silent").arg("--output-sqlite").arg(&db_path).arg(scan_dir.path())
         .status().expect("failed to run videre scan");
 
-    // Simulate a prior failed run by writing directly into pipeline_runs -
-    // exercising the CLI's own failure path for every tracked command would
+    // Simulate a prior failed run by writing directly into pipeline_runs.
+    // Exercising the CLI's own failure path for every tracked command would
     // be its own large test; this isolates --check's exit-code contract.
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     conn.execute(

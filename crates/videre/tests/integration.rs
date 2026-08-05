@@ -189,8 +189,8 @@ fn dedupe_similar_groups_a_video_and_its_recompressed_variant() {
 #[cfg(target_os = "macos")]
 fn dedupe_similar_does_not_group_two_visually_different_videos() {
     // Negative case for the positive test above: a flat solid-red clip and a
-    // structured test-pattern clip must NOT be grouped as near-duplicates -
-    // their poster-frames are genuinely different (measured Hamming distance
+    // structured test-pattern clip must NOT be grouped as near-duplicates.
+    // Their poster-frames are genuinely different (measured Hamming distance
     // 23, well over the clustering threshold of 10; see
     // tests/fixtures/testsrc_1s.mp4.txt). Without this test, an
     // implementation that grouped every video together (e.g. a bug that

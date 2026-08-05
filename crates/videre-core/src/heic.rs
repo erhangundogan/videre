@@ -167,7 +167,7 @@ mod tests {
     }
 
     // heic_via_quicklook itself is not unit tested: qlmanage does not fail
-    // fast on a nonexistent path, it hangs until QLMANAGE_TIMEOUT (20s) -
+    // fast on a nonexistent path, it hangs until QLMANAGE_TIMEOUT (20s),
     // exactly the slow-path this module's own timeout mechanism exists to
     // bound. A test exercising it would tax every future test run by 20
     // seconds for one marginal coverage line; not a worthwhile trade. This
