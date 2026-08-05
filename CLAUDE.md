@@ -203,7 +203,7 @@ jq 'select(.ext == "heic")' ~/.videre/hashes.jsonl
 
 ## ~/.videre home directory
 
-Every subcommand shares a home directory at `~/.videre` (override with the `VIDERE_HOME` env var), created lazily by writers (`scan`, `watch`, `config set`). Readers never create it. It holds `hashes.db` (default SQLite database), `hashes.jsonl` (default JSONL output, only written when `--output` is used bare), `config.toml` (optional overrides, currently just `default_db`), and `locks/` (per-database-per-command `flock` files; see the `pipeline_runs` notes below).
+Every subcommand shares a home directory at `~/.videre` (override with the `VIDERE_HOME` env var), created lazily by writers (`scan`, `watch`, `config set`). Readers never create it. It holds `hashes.db` (default SQLite database), `hashes.jsonl` (default JSONL output, only written when `--output` is used bare), `config.toml` (optional overrides, currently just `default_db`), `locks/` (per-database-per-command `flock` files; see the `pipeline_runs` notes below), and `embeddings/` (per-model embedding databases; see below).
 
 Database resolution order for every subcommand: explicit path (`--db` on the eleven readers: `report`, `fix-dates`, `prune`, `embed`, `search`, `faces`, `classify`, `mcp`, `dedupe`, `locations`, `stats`; `--output-sqlite` on the two writers: `scan`, `watch`) > `default_db` in `config.toml` > `~/.videre/hashes.db`. Readers never create a database; if the resolved path doesn't exist they print `no database found at <path>; run 'videre scan <dir>' first` and exit 1 (arrives as the JSON error object under `search --json`).
 
@@ -309,10 +309,12 @@ CREATE TABLE IF NOT EXISTS faces (
 );
 
 CREATE TABLE IF NOT EXISTS classifications (
-    hash          TEXT PRIMARY KEY NOT NULL,
+    model_id      TEXT NOT NULL,
+    hash          TEXT NOT NULL,
     category      TEXT NOT NULL,
     confidence    REAL NOT NULL,
-    classified_at TEXT NOT NULL
+    classified_at TEXT NOT NULL,
+    PRIMARY KEY (model_id, hash)
 );
 
 CREATE TABLE IF NOT EXISTS pipeline_runs (
@@ -452,7 +454,7 @@ videre prune --silent        # apply without per-file output
 In a single pass:
 - Deletes `file_hashes` rows for files no longer on disk
 - Refreshes `modified_at` for surviving files from their current filesystem mtime
-- Deletes `embeddings` rows whose hash has no remaining `file_hashes` entry (orphan cleanup)
+- Deletes orphan embedding rows whose hash has no remaining `file_hashes` entry, across **every** model database for that library, attaching and detaching each in turn and reporting a count per model
 - Deletes `~/.cache/videre/thumbnails/` cache files (240/1200px thumbnails, face crops, full-res originals) whose hash has no remaining `file_hashes` entry (orphan cleanup). This is the only bound on that cache's otherwise-unlimited growth (see the `videre faces`/`videre watch` HEIC-caching notes above); `.tmp*` scratch files from an in-flight write are never touched
 
 Shared-hash safety (applies to both embeddings and cache files): if two paths share the same hash and one file is deleted, the embedding/cache entry is only removed if no `file_hashes` row for that hash survives. Dry-run orphan counts are a lower bound (pre-existing orphans only; does not account for orphans created by the would-be deletions). Exits with code 1 if any row update or cache-file removal fails.
@@ -618,16 +620,91 @@ per-image GPU readback into one transfer (0.988x, no effect).
 Model weights auto-download from Hugging Face (google/siglip2-base-patch16-384, ~1.4GB) on
 first run.
 
-Embeddings schema:
+### Where embeddings live
+
+Embeddings are **not** in the main database. Each (library, model) pair gets its
+own SQLite file:
+
+```
+~/.videre/embeddings/<db stem>-<hash16>/<owner>--<model>.db
+```
+
+for example `~/.videre/embeddings/hashes-3f9a1c04e7b25d68/google--siglip2-base-patch16-384.db`.
+The model segment replaces `/` with `--`, matching the Hugging Face cache
+convention. The library segment reuses `pipeline_runs::lock_path_for`'s scheme:
+the canonical path's file stem plus 16 hex digits of a hash of that path. The
+hash is load-bearing, not decoration, for the same reason it is there: two
+libraries can both be named `photos.db` in different directories, and keying on
+the stem alone would silently merge their embeddings. Canonicalizing first also
+collapses a symlink and a relative path to one directory.
+
+Why per library rather than one global file per model, given that content
+hashes would allow sharing: `videre prune` cannot see another library's
+`file_hashes`, so a global layout would let one library's orphan sweep delete
+vectors another library still needs. The thumbnail cache has the same latent
+flaw and it does not matter there, because a thumbnail regenerates in
+milliseconds; an embedding costs hours.
+
+`videre_core::embeddings_db` is the only module that knows this layout. It
+attaches the chosen model's file to the main connection under the alias `emb`,
+so every query reads `emb.embeddings`. Two consequences worth knowing:
+
+- **`sqlite_master` is per database.** A probe for the table must say
+  `emb.sqlite_master`; the unqualified form returns 0 and every caller reads 0
+  as "nothing embedded yet", so getting this wrong makes search return no
+  results and report success.
+- **No atomic commit across attached databases in WAL mode.** No transaction may
+  write to both `main` and `emb` and depend on both landing. Nothing here needs
+  that, but do not merge the two for tidiness.
+
+Files are created with `page_size = 16384` rather than SQLite's 4096 default,
+set on the empty file before WAL and before any table exists, since SQLite
+silently ignores it afterwards and needs a full `VACUUM` to apply. Measured
+2026-08-05 over 20,000 synthetic rows extrapolated to 70,587: at 4096 a
+1152-dimension model takes 282MB and a 768-dimension one 143MB; at 16384 they
+take 189MB and 128MB. 8192 was the first proposal and helps only the
+1152-dimension case.
+
+Schema inside each model database:
 
 ```sql
 CREATE TABLE embeddings (
-    hash        TEXT PRIMARY KEY,
+    hash        TEXT PRIMARY KEY NOT NULL,
     model_id    TEXT NOT NULL,
     embedding   BLOB NOT NULL,
     embedded_at TEXT NOT NULL
 );
 ```
+
+`model_id` is redundant with the filename but retained: it makes a stray file
+self-describing and lets every `WHERE model_id = ?1` clause work unchanged.
+
+### Choosing a model
+
+`embed`, `search`, `classify`, `report`, and `mcp` all take `--model <id>`,
+resolved as `--model` > `VIDERE_EMBED_MODEL` > `DEFAULT_MODEL_ID`. The resolved
+id is computed once per invocation and handed to both the database layer and
+the weight loader, so the vectors written can never come from a different
+checkpoint than the file they are written into.
+
+`videre embed` is the only command that creates a model database. Readers error
+instead, naming the models that do exist, so a typo produces a clear message
+rather than an empty result set. `report` is the exception: a missing model
+disables its in-page similarity search with a note rather than failing a report
+that works fine without vectors, and `mcp` warns but still serves, since
+`find_duplicates` and `stats` never touch embeddings.
+
+Switching models no longer invalidates anything. The previous model's vectors
+stay intact and queryable via `--model`; the new one simply starts from zero.
+
+### Upgrading from before the split
+
+Embeddings written by 0.9.x sit in an `embeddings` table in the main database.
+`load_embeddings` still reads them when the model database has nothing for that
+model, so an existing library keeps working untouched instead of silently
+returning zero hits. The attached database always wins, so a re-embed is never
+shadowed by a stale copy. This fallback is removed in 0.11.0; see
+`LEGACY_FALLBACK_REMOVE_IN` in `videre-core/src/embeddings.rs`.
 
 ## videre classify
 
@@ -644,6 +721,7 @@ is stored as `unknown` rather than a low-confidence guess.
 ```
 videre classify                     # classify all embedded-but-unclassified hashes, default db
 videre classify --db <path>         # explicit db
+videre classify --model <id>        # classify a specific model's vectors (default: resolved model)
 videre classify --reprocess         # re-classify everything, including already-classified hashes
 videre classify --silent            # suppress per-image progress
 videre classify --margin <f32>      # min similarity gap to accept a category (default: 0.05)
@@ -845,7 +923,10 @@ videre stats --check        # exit nonzero if any tracked command last failed or
 
 Text mode prints library totals (files/size, photo/video split, duplicate
 groups/files/wasted space, faces detected/people named), then one line per
-tracked command (`scan`, `faces`, `embed`, `classify`, `dedupe`, `fix-dates`,
+embedding model present for this library (id, row count, dimensions, file
+size, with dimensions derived from the stored blob length rather than a
+hardcoded table so an unfamiliar model still reports honestly), then one line
+per tracked command (`scan`, `faces`, `embed`, `classify`, `dedupe`, `fix-dates`,
 `prune`, `locations`) showing its last-run timestamp, status, and duration. `never run` /
 `-` marks a command that hasn't executed against this db yet, and `(running
 now)` appended when its lock is currently held by a live process. Uses
@@ -855,7 +936,8 @@ cleanly rather than silently creating an empty database.
 
 `--json` emits `{"schema_version": 1, "library": {...}, "pipelines": [...]}`,
 directly reusing `videre-core`'s `LibraryStats` and `PipelineRunStatus` serde
-types rather than redeclaring their fields. The `pipelines` array always has
+types rather than redeclaring their fields. `library.embeddings` is an array
+with one entry per model; it is additive, so `schema_version` stays 1. The `pipelines` array always has
 exactly eight entries (`videre_core::pipeline_runs::TRACKED_COMMANDS`) in a
 fixed command order, with `status`/`last_run_at`/`duration_ms` all `null` for
 a command that has never run. `report`, `search`, `mcp`, and `config` are

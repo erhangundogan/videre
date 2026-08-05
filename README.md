@@ -200,6 +200,7 @@ videre report --heic-original          # ...plus full-size versions for the ligh
 videre report --faces                  # face-naming UI at http://localhost:7878
 videre report --show-faces             # live page showing names and places in the lightbox
 videre report --db ~/photos.db         # use a specific database
+videre report --all --model <model-id> # use a specific model for in-page similarity
 ```
 
 `--faces` and `--show-faces` start a local server instead of writing a file.
@@ -218,6 +219,7 @@ videre search "a dog" --scores             # show how well each result matched
 videre search "a dog" --json               # print one JSON object instead
 videre search --location "Rome" --radius 5 # tighter radius in km (default 20)
 videre search "a dog" --db ~/photos.db     # use a specific database
+videre search "a dog" --model <model-id>   # search a specific model's data
 ```
 
 Text and image search need `videre embed` first; `--person` needs `videre
@@ -232,6 +234,7 @@ and resumable.
 ```bash
 videre embed                           # process everything not done yet
 videre embed --db ~/photos.db          # use a specific database
+videre embed --model <model-id>        # prepare with a specific model, kept separately
 videre embed --batch 64                # images per inference batch (default 32, max 96)
 videre embed --chunk 1000              # rows saved per transaction (default 500)
 videre embed --silent                  # no per-image progress
@@ -396,8 +399,28 @@ videre config                      # show what's currently set
 | Variable | Effect |
 |----------|--------|
 | `VIDERE_HOME` | Use a different home directory instead of `~/.videre` |
-| `VIDERE_EMBED_MODEL` | Use a different search model. `google/siglip-base-patch16-224` is about twice as fast, at some cost to accuracy on fine detail. **Changing this means re-running `videre embed` over your whole library.** videre warns you before it starts. |
+| `VIDERE_EMBED_MODEL` | Use a different search model by default. `google/siglip-base-patch16-224` is about twice as fast, at some cost to accuracy on fine detail. The `--model` flag overrides this per command. |
 | `VIDERE_EMBED_DTYPE` | `f16` for slightly faster search preparation. Does not affect existing data. |
+
+## Using more than one search model
+
+Each model keeps its own data, under `~/.videre/embeddings/`, so they never
+overwrite each other and you can compare them on the same library:
+
+```bash
+videre embed                                                  # the default model
+videre embed --model google/siglip-base-patch16-224           # a second, faster one
+videre stats                                                  # see what each has
+videre search "sunset" --model google/siglip-base-patch16-224 # search a specific one
+```
+
+Preparing a second model does not disturb the first. Asking for a model you
+have not prepared yet gives you an error listing the ones you do have, rather
+than silently returning nothing.
+
+If you used videre before version 0.10, your existing data still works with no
+action needed. Run `videre embed` when convenient to move it to the new
+location.
 
 ## Working with other tools
 
