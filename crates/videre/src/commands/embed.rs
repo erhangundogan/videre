@@ -10,6 +10,12 @@ pub struct EmbedArgs {
     #[arg(long)]
     db: Option<PathBuf>,
 
+    /// Embedding model to use (default: VIDERE_EMBED_MODEL, else the
+    /// built-in default). Each model gets its own database under
+    /// ~/.videre/embeddings/, so models never overwrite each other.
+    #[arg(long)]
+    model: Option<String>,
+
     /// Inference batch size (clamped to videre_ml::model::MAX_SAFE_BATCH)
     #[arg(long, default_value_t = 32)]
     batch: usize,
@@ -28,7 +34,16 @@ pub fn run(args: EmbedArgs) -> Result<()> {
     let conn = videre_core::db::open_wal(&db)
         .with_context(|| format!("open {}", db.display()))?;
 
-    videre_core::pipeline_runs::track(&conn, &db, "embed", || run_embed(&args, &conn))
+    let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref());
+    // create: true here and nowhere else. embed is the only command allowed
+    // to bring a model database into existence; every reader errors instead,
+    // so a typo in --model never silently produces an empty library.
+    videre_core::embeddings_db::attach(&conn, &db, &model_id, true)?;
+    videre_core::embeddings::warn_legacy_embeddings_once(&conn);
+
+    videre_core::pipeline_runs::track(&conn, &db, "embed", || {
+        run_embed(&args, &conn, &model_id)
+    })
 }
 
 /// Clamps `--batch` into the range known to produce correct embeddings, and
@@ -55,12 +70,10 @@ pub(crate) fn clamp_batch(requested: usize) -> usize {
 }
 
 /// The actual embedding work, wrapped by `track()` above.
-fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection) -> Result<()> {
+fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection, model_id: &str) -> Result<()> {
     embeddings::ensure_embeddings_index(conn)?;
 
-    let model_id = videre_core::embeddings::resolve_model_id(None);
-
-    let pending = embeddings::pending_images(conn, &model_id)?;
+    let pending = embeddings::pending_images(conn, model_id)?;
     if pending.is_empty() {
         if !args.silent {
             eprintln!("Nothing to embed: all hashes already have embeddings.");
@@ -74,7 +87,7 @@ fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection) -> Result<()> {
 
     let started = std::time::Instant::now();
     let dev = device::best_device();
-    let embedder = model::Embedder::load(dev.clone(), &model_id)?;
+    let embedder = model::Embedder::load(dev.clone(), model_id)?;
 
     let progress = videre_core::progress::Progress::new(pending.len() as u64, args.silent);
 
@@ -87,7 +100,7 @@ fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection) -> Result<()> {
             .map(|p| {
                 match preprocess::image_to_tensor(
                     std::path::Path::new(&p.path),
-                    model::image_size_for(&model_id),
+                    model::image_size_for(model_id),
                     &candle_core::Device::Cpu, // decode on CPU, move to device in batch
                 ) {
                     Ok(t) => Some((p.hash.clone(), t)),
@@ -114,7 +127,7 @@ fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection) -> Result<()> {
             }
         }
 
-        embeddings::insert_embeddings(conn, &model_id, &rows)?;
+        embeddings::insert_embeddings(conn, model_id, &rows)?;
         done += rows.len();
         progress.tick_by(chunk.len() as u64);
     }
