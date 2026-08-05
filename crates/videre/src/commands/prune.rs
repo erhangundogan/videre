@@ -142,8 +142,11 @@ pub(crate) fn run_prune(args: &PruneArgs, conn: &Connection) -> anyhow::Result<u
                 "SELECT COUNT(*) FROM embeddings \
                  WHERE hash NOT IN (SELECT hash FROM file_hashes)",
                 [],
-                |r| r.get::<_, usize>(0),
+                // rusqlite 0.40 dropped `FromSql for usize`; SQLite returns
+                // i64, and the sibling branch (`conn.execute`) yields usize.
+                |r| r.get::<_, i64>(0),
             )
+            .map(|n| n.max(0) as usize)
             .unwrap_or(0)
         } else {
             conn.execute(

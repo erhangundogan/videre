@@ -14,7 +14,7 @@ half = "2"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
 indicatif = "0.17"
 reverse_geocoder = "4"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 toml = { version = "0.8", features = ["preserve_order"] }
 serde = { version = "1", features = ["derive"] }
 fs2 = "0.4"
