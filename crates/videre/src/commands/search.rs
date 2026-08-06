@@ -241,7 +241,7 @@ fn collect_hits(args: &SearchArgs) -> Result<(QueryJson, Vec<SearchHitJson>)> {
         // create: false. A reader must never bring an empty model database
         // into existence, or "no results" would silently replace a clear
         // error naming the models that do exist.
-        videre_core::embeddings_db::attach(&conn, &db, &model_id, false)?;
+        videre_core::embeddings_db::attach_for_read(&conn, &db, &model_id)?;
         videre_core::embeddings::warn_legacy_embeddings_once(&conn);
     }
 
