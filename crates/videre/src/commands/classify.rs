@@ -35,7 +35,7 @@ pub fn run(args: ClassifyArgs) -> Result<()> {
         .with_context(|| format!("open {}", db.display()))?;
 
     let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref());
-    videre_core::embeddings_db::attach(&conn, &db, &model_id, false)?;
+    videre_core::embeddings_db::attach_for_read(&conn, &db, &model_id)?;
     videre_core::embeddings::warn_legacy_embeddings_once(&conn);
 
     videre_core::pipeline_runs::track(&conn, &db, "classify", || {

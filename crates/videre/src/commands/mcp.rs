@@ -37,7 +37,7 @@ pub fn run(args: McpArgs) -> Result<()> {
     // search tool re-checks per call and returns a clear tool-level error.
     let embeddings_ready = {
         let probe = videre_core::db::open_wal(&db)?;
-        match videre_core::embeddings_db::attach(&probe, &db, &model_id, false) {
+        match videre_core::embeddings_db::attach_for_read(&probe, &db, &model_id) {
             Ok(()) => true,
             Err(e) => {
                 eprintln!("videre mcp: search unavailable ({e})");
@@ -229,7 +229,7 @@ fn build_search(
 
     let conn = videre_core::db::open_wal(db)?;
     if params.person.is_none() {
-        videre_core::embeddings_db::attach(&conn, db, model_id, false)?;
+        videre_core::embeddings_db::attach_for_read(&conn, db, model_id)?;
     }
     let top_k = params.top_k.unwrap_or(20);
 

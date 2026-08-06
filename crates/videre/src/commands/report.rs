@@ -2475,7 +2475,7 @@ async fn serve_faces_async(db: &Path, opts: ServeOptions) -> Result<(), Box<dyn 
     // similarity search with a note rather than failing the whole report,
     // which works perfectly well without embeddings.
     if opts.report_all {
-        if let Err(e) = videre_core::embeddings_db::attach(&conn, db, &opts.model_id, false) {
+        if let Err(e) = videre_core::embeddings_db::attach_for_read(&conn, db, &opts.model_id) {
             eprintln!("note: similarity search disabled ({e})");
         }
     }
@@ -2590,7 +2590,7 @@ pub fn run(args: ReportArgs) -> anyhow::Result<()> {
         let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref());
         // A missing model database disables similarity search with a note
         // rather than failing the report, which works fine without vectors.
-        let v = match videre_core::embeddings_db::attach(&conn, &db, &model_id, false) {
+        let v = match videre_core::embeddings_db::attach_for_read(&conn, &db, &model_id) {
             Ok(()) => query_vectors(&conn, &model_id),
             Err(e) => {
                 eprintln!("note: similarity search disabled ({e})");
