@@ -442,13 +442,54 @@ videre dedupe > to-delete.txt
 }
 ```
 
+## Cautions
+
+Most of videre is read-only. These are the parts that are not, plus the
+situations that surprise people.
+
+**`videre dedupe` prints files to delete.** Its output is the REMOVE side of
+each duplicate group, so `videre dedupe | xargs trash` deletes those files
+immediately. Look before you pipe: run `videre report` first and review the
+KEEP/REMOVE badges, or send the list to a file and read it. Near-duplicate
+groups from `--similar` are deliberately kept out of this output, because they
+are for review by eye, not for automatic deletion.
+
+**Keep your photos connected when running `prune` or `watch --prune`.** Both
+delete database rows for files they cannot find on disk. If your library lives
+on an external drive and that drive is unplugged, every file looks missing and
+you lose the whole index. Your photos are untouched, but faces, names, and
+locations are stored against those rows and go with them. Rebuilding means a
+full rescan plus rerunning `faces`, `embed`, and `classify`.
+
+**`videre fix-dates` rewrites file timestamps on disk.** It sets each file's
+modification time from its EXIF date. That is a real change to your files and
+there is no undo. It asks for confirmation first, and `--dry-run` shows you
+exactly what it would do.
+
+**Do not run two heavy commands at the same time.** `embed`, `faces`, and
+`watch` all convert HEIC and video through macOS QuickLook, and they each limit
+themselves to a few conversions at a time. That limit is per command, not
+system-wide, so two at once can overwhelm QuickLook: measured on a real
+library, a single file took over 16 seconds against about 7.6 seconds normally,
+and one exceeded the timeout entirely. Nothing is lost, since skipped files are
+simply retried next run, but it is much slower than doing one thing at a time.
+
+**Disk use grows quietly.** Each search model keeps its own data, roughly 130MB
+to 190MB per model for a 70,000 photo library, and the HEIC thumbnail cache can
+reach tens of GB. Only `videre prune` reclaims any of it, and nothing warns you
+first. `videre stats` shows what each model is using.
+
+**`videre scan` remembers the first folder you give it** as your default, so
+later commands can be run without repeating it. It says so when it happens, and
+`videre config set path` changes it.
+
 ## Good to know
 
 - Long jobs (`embed`, `faces`, `classify`) are resumable. Ctrl-C is safe, and
   rerunning continues where it stopped.
 - Two different videre commands can run at once against the same database.
   Running the *same* command twice is refused rather than allowed to corrupt
-  anything.
+  anything. See Cautions above on running two heavy jobs together.
 - `videre report --faces` and `--show-faces` start a local web server on
   `localhost:7878`. Nothing leaves your machine.
 - The only feature that touches the network is `videre search --location`,
