@@ -33,7 +33,7 @@ pub struct ReportArgs {
     all: bool,
 
     /// Embedding model backing the in-page similarity search under --all
-    /// (default: VIDERE_EMBED_MODEL, else the built-in default).
+    /// (default: 'videre config set model', else the built-in default).
     #[arg(long)]
     model: Option<String>,
 
@@ -2563,7 +2563,7 @@ pub fn run(args: ReportArgs) -> anyhow::Result<()> {
             report_by_date: args.by_date,
             report_heic: args.heic,
             report_heic_original: args.heic_original,
-            model_id: videre_core::embeddings::resolve_model_id(args.model.as_deref()),
+            model_id: videre_core::embeddings::resolve_model_id(args.model.as_deref())?,
         };
         if let Err(e) = serve_faces(&db, opts) {
             eprintln!("Error: {e}");
@@ -2587,7 +2587,7 @@ pub fn run(args: ReportArgs) -> anyhow::Result<()> {
     let all_files = args.all.then(|| query_all_files(&conn));
     let keep_files = args.by_date.then(|| query_keep_files(&conn));
     let vectors = if args.all {
-        let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref());
+        let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref())?;
         // A missing model database disables similarity search with a note
         // rather than failing the report, which works fine without vectors.
         let v = match videre_core::embeddings_db::attach_for_read(&conn, &db, &model_id) {

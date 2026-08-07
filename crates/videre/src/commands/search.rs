@@ -12,7 +12,7 @@ pub struct SearchArgs {
     #[arg(long)]
     db: Option<PathBuf>,
 
-    /// Embedding model to search against (default: VIDERE_EMBED_MODEL, else
+    /// Embedding model to search against (default: 'videre config set model', else
     /// the built-in default). Must already have been embedded; run
     /// 'videre stats' to see which models this library has.
     #[arg(long)]
@@ -231,7 +231,7 @@ fn collect_hits(args: &SearchArgs) -> Result<(QueryJson, Vec<SearchHitJson>)> {
     let conn = videre_core::db::open_wal(&db)
         .with_context(|| format!("open {}", db.display()))?;
 
-    let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref());
+    let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref())?;
 
     // --person and --location never touch embeddings, so they must not
     // require a model database to exist; attaching for them would turn a

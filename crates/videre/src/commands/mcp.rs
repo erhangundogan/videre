@@ -19,7 +19,7 @@ pub struct McpArgs {
     #[arg(long)]
     db: Option<PathBuf>,
 
-    /// Embedding model to serve searches from (default: VIDERE_EMBED_MODEL,
+    /// Embedding model to serve searches from (default: 'videre config set model',
     /// else the built-in default). Bound once at startup, like --db, so a
     /// bad value fails before the server accepts a single call.
     #[arg(long)]
@@ -28,7 +28,7 @@ pub struct McpArgs {
 
 pub fn run(args: McpArgs) -> Result<()> {
     let db = super::resolve_reader_db_must_exist(args.db)?;
-    let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref());
+    let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref())?;
     // Probed at startup so a typo in --model is visible immediately rather
     // than minutes later inside an agent's search result, but NOT fatal:
     // find_duplicates and stats do not touch embeddings, and refusing to
