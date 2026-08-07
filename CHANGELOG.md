@@ -15,6 +15,8 @@ version number and are released together.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-07
+
 ### Added
 
 - `--model <id>` on `embed`, `search`, `classify`, `report`, and `mcp`, so
@@ -49,10 +51,23 @@ version number and are released together.
 
 ### Upgrading
 
-**Existing libraries keep working with no action required.** Embeddings still
-in your main database are read as before, so search behaves exactly as it did.
-Run `videre embed` when convenient to move them to the new location. This
-fallback is removed in 0.11.0.
+**If you embedded on 0.9.23 or later, run one command before searching:**
+
+```bash
+videre config set model google/siglip2-base-patch16-384
+```
+
+Embeddings still in your main database are read as before, but only for the
+model that produced them, and the default model changed in this release. Your
+existing vectors are tagged `siglip2-base-patch16-384`, so without that setting
+a search asks for `siglip-base-patch16-224` and finds nothing. `videre search`
+tells you so rather than returning an empty result quietly.
+
+Alternatively, run `videre embed` to build the new default's vectors, which
+takes roughly an hour for 70,000 photos. Either way, nothing is lost or
+overwritten: models keep separate data.
+
+The read fallback for pre-0.10 embeddings is removed in 0.11.0.
 
 If you depend on these crates as libraries rather than using the CLI, note that
 `videre-core`'s `ensure_embeddings_table` is gone, `insert_classifications` and
@@ -153,7 +168,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.9.29...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/erhangundogan/videre/compare/v0.9.29...v0.10.0
 [0.9.29]: https://github.com/erhangundogan/videre/compare/v0.9.28...v0.9.29
 [0.9.28]: https://github.com/erhangundogan/videre/compare/v0.9.27...v0.9.28
 [0.9.27]: https://github.com/erhangundogan/videre/compare/v0.9.26...v0.9.27
