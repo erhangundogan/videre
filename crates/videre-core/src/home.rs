@@ -36,6 +36,9 @@ pub fn locks_dir() -> Result<PathBuf> {
 pub struct Config {
     pub default_db: Option<PathBuf>,
     pub default_path: Option<PathBuf>,
+    /// Embedding model id, e.g. `google/siglip-base-patch16-224`. A plain
+    /// string, not a path: it must never be absolutized.
+    pub default_model: Option<String>,
 }
 
 /// Path of the config file inside a given home dir: <home>/config.toml.
@@ -47,6 +50,21 @@ fn path_key(table: &toml::Table, file: &Path, key: &str) -> Result<Option<PathBu
     match table.get(key) {
         None => Ok(None),
         Some(toml::Value::String(s)) => Ok(Some(PathBuf::from(s))),
+        Some(other) => bail!(
+            "malformed config {}: {} must be a string, got {}",
+            file.display(),
+            key,
+            other.type_str()
+        ),
+    }
+}
+
+/// Read a string-valued key. Separate from `path_key` because a model id is
+/// not a path and must survive verbatim.
+fn string_key(table: &toml::Table, file: &Path, key: &str) -> Result<Option<String>> {
+    match table.get(key) {
+        None => Ok(None),
+        Some(toml::Value::String(s)) => Ok(Some(s.clone())),
         Some(other) => bail!(
             "malformed config {}: {} must be a string, got {}",
             file.display(),
@@ -71,6 +89,7 @@ pub fn load_config(home: &Path) -> Result<Config> {
     Ok(Config {
         default_db: path_key(&table, &path, "default_db")?,
         default_path: path_key(&table, &path, "default_path")?,
+        default_model: string_key(&table, &path, "default_model")?,
     })
 }
 
@@ -241,6 +260,31 @@ mod tests {
         assert!(dir.ends_with("photos"));
         unset_default_path(&home).unwrap();
         assert_eq!(load_config(&home).unwrap().default_path, None);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn default_model_is_read_as_a_plain_string() {
+        let home = tmp_home("model_read");
+        std::fs::write(
+            config_path(&home),
+            "default_model = \"google/siglip-base-patch16-224\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            load_config(&home).unwrap().default_model,
+            Some("google/siglip-base-patch16-224".to_string())
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_non_string_default_model_is_a_hard_error() {
+        // Same treatment as the path keys: silent fallback would mask a typo.
+        let home = tmp_home("model_badtype");
+        std::fs::write(config_path(&home), "default_model = 42\n").unwrap();
+        let err = load_config(&home).unwrap_err();
+        assert!(format!("{err:#}").contains("must be a string"), "{err:#}");
         let _ = std::fs::remove_dir_all(&home);
     }
 
