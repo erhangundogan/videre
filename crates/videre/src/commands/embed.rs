@@ -10,7 +10,7 @@ pub struct EmbedArgs {
     #[arg(long)]
     db: Option<PathBuf>,
 
-    /// Embedding model to use (default: VIDERE_EMBED_MODEL, else the
+    /// Embedding model to use (default: 'videre config set model', else the
     /// built-in default). Each model gets its own database under
     /// ~/.videre/embeddings/, so models never overwrite each other.
     #[arg(long)]
@@ -34,7 +34,7 @@ pub fn run(args: EmbedArgs) -> Result<()> {
     let conn = videre_core::db::open_wal(&db)
         .with_context(|| format!("open {}", db.display()))?;
 
-    let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref());
+    let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref())?;
     // create: true here and nowhere else. embed is the only command allowed
     // to bring a model database into existence; every reader errors instead,
     // so a typo in --model never silently produces an empty library.

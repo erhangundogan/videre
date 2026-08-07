@@ -19,7 +19,7 @@ pub struct ClassifyArgs {
     margin: f32,
 
     /// Embedding model whose vectors to classify (default:
-    /// VIDERE_EMBED_MODEL, else the built-in default). Classifications are
+    /// 'videre config set model', else the built-in default). Classifications are
     /// stored per model, so two models classify independently.
     #[arg(long)]
     model: Option<String>,
@@ -34,7 +34,7 @@ pub fn run(args: ClassifyArgs) -> Result<()> {
     let conn = videre_core::db::open_wal(&db)
         .with_context(|| format!("open {}", db.display()))?;
 
-    let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref());
+    let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref())?;
     videre_core::embeddings_db::attach_for_read(&conn, &db, &model_id)?;
     videre_core::embeddings::warn_legacy_embeddings_once(&conn);
 

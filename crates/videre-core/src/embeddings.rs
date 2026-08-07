@@ -24,42 +24,59 @@ pub fn is_video_ext(ext: &str) -> bool {
     matches!(ext.to_lowercase().as_str(), "mov" | "mp4")
 }
 
-/// Model id used by `videre embed` / `search` / `report`. Single source of
-/// truth so the report binary can query embeddings without depending on
-/// videre-ml.
+/// Model id used by `videre embed` / `search` / `report` when neither
+/// `--model` nor `config.toml` names one. Single source of truth so the report
+/// binary can query embeddings without depending on videre-ml.
 ///
-/// Changed 2026-08-04 from `google/siglip-so400m-patch14-384`. Measured on
-/// 2,080 real photos: this model embeds at 131ms/photo against the old one's
-/// 479ms, **3.6x faster**, taking a full 70k-photo library from ~9.4 hours to
-/// ~2.6 hours, at 768 dimensions instead of 1152. In a blind side-by-side of
-/// 14 searches the old model showed no visible advantage, and this one beat
-/// the same-size/same-resolution previous-generation `siglip-base-patch16-384`
-/// outright.
+/// Changed 2026-08-06 from `google/siglip2-base-patch16-384`. Measured on a
+/// real 70,587 photo library: 63ms per photo against 131ms, taking a full
+/// re-embed from roughly 2.6 hours to 1.2. All three candidate models were
+/// embedded in full and compared side by side on real photos; every one
+/// returned correct results, and pairwise agreement rose from 33% at k=6 to
+/// about 68% at k=200, showing they draw from the same pool of correct answers
+/// and differ mainly in ordering. With quality indistinguishable by
+/// inspection, speed decides.
 ///
-/// `VIDERE_EMBED_MODEL` overrides this (see `videre_ml::model`).
-/// `google/siglip-base-patch16-224` is the tested fast option: 63ms/photo,
-/// 7.7x faster, at the cost of seeing each photo at 224px rather than 384px.
+/// It sees each photo at 224px rather than 384px, which is where the speed
+/// comes from and the first place to look if fine-detail queries disappoint.
 ///
-/// Changing this no longer invalidates anything: each model owns a separate
-/// database under `~/.videre/embeddings/` (see `crate::embeddings_db`), so
-/// switching leaves the previous model's vectors intact and queryable via
-/// `--model`. It does mean the new model starts from zero and needs its own
-/// full `videre embed` run, since vectors from different models are not
-/// comparable.
-pub const DEFAULT_MODEL_ID: &str = "google/siglip2-base-patch16-384";
+/// Changing this invalidates nothing: each model owns a separate database
+/// under `~/.videre/embeddings/` (see `crate::embeddings_db`), so switching
+/// leaves previous vectors intact and queryable via `--model`. The new model
+/// simply starts from zero and needs its own `videre embed` run.
+pub const DEFAULT_MODEL_ID: &str = "google/siglip-base-patch16-224";
 
-/// The model this invocation uses: `--model` > `VIDERE_EMBED_MODEL` > default.
+/// The model to use, given an explicit home: `--model` > `config.toml` > the
+/// built-in default.
 ///
-/// Resolved once per command and passed explicitly to both the database layer
-/// and the weight loader. The id previously came from a process-global
-/// `OnceLock` in videre-ml that only consulted the environment, which made it
-/// impossible to guarantee that a `--model` flag and the loaded weights
-/// referred to the same checkpoint.
-pub fn resolve_model_id(explicit: Option<&str>) -> String {
+/// Split from `resolve_model_id` the same way `home::resolve_db_in` is split
+/// from `home::resolve_db`, so tests can pass a home directly instead of
+/// mutating `VIDERE_HOME`. Tests share a process and run in parallel, so a
+/// per-test `set_var` races every concurrent `getenv`.
+///
+/// Note the return type is `anyhow::Result`, not this module's `Result`, which
+/// is `rusqlite::Result`. It returns a Result at all so a malformed
+/// `config.toml` stays a hard error; silently falling back to the default
+/// would mask a typo in the one file the user edits by hand.
+pub fn resolve_model_id_in(
+    home: &std::path::Path,
+    explicit: Option<&str>,
+) -> anyhow::Result<String> {
     if let Some(id) = explicit {
-        return id.to_string();
+        return Ok(id.to_string());
     }
-    std::env::var("VIDERE_EMBED_MODEL").unwrap_or_else(|_| DEFAULT_MODEL_ID.to_string())
+    Ok(crate::home::load_config(home)?
+        .default_model
+        .unwrap_or_else(|| DEFAULT_MODEL_ID.to_string()))
+}
+
+/// `resolve_model_id_in` against the resolved videre home.
+///
+/// `VIDERE_EMBED_MODEL` was removed rather than demoted. Two ways to set one
+/// thing is confusing, and an export made months ago silently outranking the
+/// config file is a bad failure mode. `--model` covers the one-off case.
+pub fn resolve_model_id(explicit: Option<&str>) -> anyhow::Result<String> {
+    resolve_model_id_in(&crate::home::videre_home()?, explicit)
 }
 
 #[derive(Debug, Clone)]
@@ -469,17 +486,58 @@ mod tests {
         assert_eq!(DEFAULT_MODEL_ID.matches('/').count(), 1, "{DEFAULT_MODEL_ID}");
     }
 
-    #[test]
-    fn resolve_model_id_prefers_the_explicit_argument() {
-        assert_eq!(resolve_model_id(Some("owner/explicit")), "owner/explicit");
+    fn cfg_home(tag: &str, toml_text: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("videre_rmi_{}_{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        if !toml_text.is_empty() {
+            std::fs::write(dir.join("config.toml"), toml_text).unwrap();
+        }
+        dir
     }
 
     #[test]
-    fn resolve_model_id_falls_back_to_the_default() {
-        // With no explicit argument and no env override, the compiled default.
-        if std::env::var("VIDERE_EMBED_MODEL").is_err() {
-            assert_eq!(resolve_model_id(None), DEFAULT_MODEL_ID);
-        }
+    fn resolve_model_id_prefers_the_explicit_argument() {
+        let home = cfg_home("explicit", "default_model = \"owner/from-config\"\n");
+        assert_eq!(
+            resolve_model_id_in(&home, Some("owner/explicit")).unwrap(),
+            "owner/explicit"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn resolve_model_id_uses_config_when_there_is_no_flag() {
+        let home = cfg_home("fromconfig", "default_model = \"owner/from-config\"\n");
+        assert_eq!(resolve_model_id_in(&home, None).unwrap(), "owner/from-config");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn resolve_model_id_falls_back_to_the_builtin_default() {
+        let home = cfg_home("builtin", "");
+        assert_eq!(resolve_model_id_in(&home, None).unwrap(), DEFAULT_MODEL_ID);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn videre_embed_model_env_var_has_no_effect() {
+        // The env var is gone. Written to fail against the old implementation,
+        // since deleting a branch is exactly the change that gets half-done.
+        // Safe to set: after this change nothing reads it.
+        let home = cfg_home("noenv", "");
+        std::env::set_var("VIDERE_EMBED_MODEL", "owner/should-be-ignored");
+        let got = resolve_model_id_in(&home, None).unwrap();
+        std::env::remove_var("VIDERE_EMBED_MODEL");
+        assert_eq!(got, DEFAULT_MODEL_ID, "VIDERE_EMBED_MODEL must be ignored");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_malformed_config_is_an_error_not_a_silent_default() {
+        let home = cfg_home("malformed", "not = = toml\n");
+        assert!(resolve_model_id_in(&home, None).is_err());
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
