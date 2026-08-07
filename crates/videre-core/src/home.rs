@@ -109,12 +109,9 @@ pub fn resolve_db(explicit: Option<&Path>) -> Result<PathBuf> {
     }
 }
 
-/// Write one path-valued key (absolutized) into <home>/config.toml, creating
-/// the home dir. Unknown keys already in the file are preserved. The target
-/// need not exist yet (you may set it before the first scan).
-fn set_path_key(home: &Path, key: &str, value: &Path) -> Result<()> {
-    let abs = std::path::absolute(value)
-        .with_context(|| format!("cannot absolutize {}", value.display()))?;
+/// Write one string-valued key into <home>/config.toml, creating the home
+/// dir. Unknown keys already in the file are preserved.
+fn set_string_key(home: &Path, key: &str, value: String) -> Result<()> {
     std::fs::create_dir_all(home).with_context(|| format!("create {}", home.display()))?;
     let path = config_path(home);
     let mut table: toml::Table = match std::fs::read_to_string(&path) {
@@ -124,13 +121,18 @@ fn set_path_key(home: &Path, key: &str, value: &Path) -> Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
         Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
     };
-    table.insert(
-        key.to_string(),
-        toml::Value::String(abs.to_string_lossy().into_owned()),
-    );
+    table.insert(key.to_string(), toml::Value::String(value));
     std::fs::write(&path, toml::to_string_pretty(&table)?)
         .with_context(|| format!("write {}", path.display()))?;
     Ok(())
+}
+
+/// Write one path-valued key, absolutized. The target need not exist yet (you
+/// may set it before the first scan).
+fn set_path_key(home: &Path, key: &str, value: &Path) -> Result<()> {
+    let abs = std::path::absolute(value)
+        .with_context(|| format!("cannot absolutize {}", value.display()))?;
+    set_string_key(home, key, abs.to_string_lossy().into_owned())
 }
 
 /// Remove one key from <home>/config.toml. Missing file or key is a no-op.
@@ -165,6 +167,20 @@ pub fn set_default_path(home: &Path, dir: &Path) -> Result<()> {
 
 pub fn unset_default_path(home: &Path) -> Result<()> {
     unset_key(home, "default_path")
+}
+
+pub fn set_default_model(home: &Path, model_id: &str) -> Result<()> {
+    set_string_key(home, "default_model", model_id.to_string())
+}
+
+pub fn unset_default_model(home: &Path) -> Result<()> {
+    unset_key(home, "default_model")
+}
+
+/// The configured default embedding model, if any. None means the built-in
+/// default applies (see `videre_core::embeddings::DEFAULT_MODEL_ID`).
+pub fn default_model() -> Result<Option<String>> {
+    Ok(load_config(&videre_home()?)?.default_model)
 }
 
 /// The configured default scan/watch directory, if any (config `path` key,
@@ -260,6 +276,47 @@ mod tests {
         assert!(dir.ends_with("photos"));
         unset_default_path(&home).unwrap();
         assert_eq!(load_config(&home).unwrap().default_path, None);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn default_model_round_trips_verbatim_without_absolutizing() {
+        // The regression that reusing set_path_key would cause: a model id
+        // contains a slash, so absolutize() turns it into a filesystem path.
+        let home = tmp_home("model_roundtrip");
+        set_default_model(&home, "google/siglip-base-patch16-224").unwrap();
+        assert_eq!(
+            load_config(&home).unwrap().default_model,
+            Some("google/siglip-base-patch16-224".to_string())
+        );
+        let text = std::fs::read_to_string(config_path(&home)).unwrap();
+        assert!(
+            !text.contains("/Users") && !text.contains("//"),
+            "model id must be stored verbatim, got: {text}"
+        );
+        unset_default_model(&home).unwrap();
+        assert_eq!(load_config(&home).unwrap().default_model, None);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn all_three_keys_coexist_independently() {
+        let home = tmp_home("three_keys");
+        set_default_db(&home, Path::new("/tmp/a.db")).unwrap();
+        set_default_path(&home, Path::new("/tmp/photos")).unwrap();
+        set_default_model(&home, "owner/model-224").unwrap();
+
+        let c = load_config(&home).unwrap();
+        assert_eq!(c.default_db, Some(PathBuf::from("/tmp/a.db")));
+        assert_eq!(c.default_path, Some(PathBuf::from("/tmp/photos")));
+        assert_eq!(c.default_model, Some("owner/model-224".to_string()));
+
+        // Unsetting one must not disturb the others.
+        unset_default_model(&home).unwrap();
+        let c = load_config(&home).unwrap();
+        assert_eq!(c.default_db, Some(PathBuf::from("/tmp/a.db")));
+        assert_eq!(c.default_path, Some(PathBuf::from("/tmp/photos")));
+        assert_eq!(c.default_model, None);
         let _ = std::fs::remove_dir_all(&home);
     }
 
