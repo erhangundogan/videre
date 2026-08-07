@@ -134,3 +134,94 @@ fn config_set_and_unset_path_roundtrip() {
         .unwrap();
     assert!(String::from_utf8_lossy(&show2.stdout).contains("resolved path: (not set)"));
 }
+
+#[test]
+fn set_model_persists_and_is_shown() {
+    let home = tempdir().unwrap();
+    let out = Command::new(videre_bin())
+        .env("VIDERE_HOME", home.path())
+        .args(["config", "set", "model", "google/siglip-base-patch16-224"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    let text = std::fs::read_to_string(home.path().join("config.toml")).unwrap();
+    assert!(
+        text.contains("default_model = \"google/siglip-base-patch16-224\""),
+        "stored verbatim, not absolutized: {text}"
+    );
+
+    let shown = Command::new(videre_bin())
+        .env("VIDERE_HOME", home.path())
+        .args(["config"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&shown.stdout);
+    assert!(stdout.contains("model:"), "{stdout}");
+    assert!(stdout.contains("google/siglip-base-patch16-224"), "{stdout}");
+    assert!(stdout.contains("[from config.toml]"), "{stdout}");
+}
+
+#[test]
+fn set_model_rejects_an_id_without_an_owner() {
+    // Embedder::load does split_once('/').expect(...), so an id with no slash
+    // panics at load time. Rejecting it here makes that unreachable.
+    let home = tempdir().unwrap();
+    let out = Command::new(videre_bin())
+        .env("VIDERE_HOME", home.path())
+        .args(["config", "set", "model", "siglip-base-patch16-224"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "must reject a bare model name");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("owner/name"), "{stderr}");
+    assert!(
+        !home.path().join("config.toml").exists(),
+        "a rejected value must not be written"
+    );
+}
+
+#[test]
+fn config_shows_the_builtin_default_when_model_is_unset() {
+    let home = tempdir().unwrap();
+    let out = Command::new(videre_bin())
+        .env("VIDERE_HOME", home.path())
+        .args(["config"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(videre_core::embeddings::DEFAULT_MODEL_ID),
+        "{stdout}"
+    );
+    assert!(stdout.contains("videre config set model"), "{stdout}");
+}
+
+#[test]
+fn unset_model_removes_the_key_and_leaves_others_alone() {
+    let home = tempdir().unwrap();
+    for args in [
+        vec!["config", "set", "db", "/tmp/x.db"],
+        vec!["config", "set", "model", "owner/model-224"],
+    ] {
+        let out = Command::new(videre_bin())
+            .env("VIDERE_HOME", home.path())
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+    }
+    let out = Command::new(videre_bin())
+        .env("VIDERE_HOME", home.path())
+        .args(["config", "unset", "model"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+
+    let text = std::fs::read_to_string(home.path().join("config.toml")).unwrap();
+    assert!(!text.contains("default_model"), "{text}");
+    assert!(
+        text.contains("default_db"),
+        "unsetting one key must not drop another: {text}"
+    );
+}
