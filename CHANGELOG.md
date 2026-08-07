@@ -19,14 +19,22 @@ version number and are released together.
 
 - `--model <id>` on `embed`, `search`, `classify`, `report`, and `mcp`, so
   several embedding models can be used against one library and compared.
-  Resolution order is `--model`, then `VIDERE_EMBED_MODEL`, then the built-in
-  default.
+  Resolution order is `--model`, then `default_model` in `config.toml`, then
+  the built-in default.
+- `videre config set model <id>` persists a default embedding model, alongside
+  the existing `db` and `path` keys.
 - `videre stats` reports embeddings per model: count, dimensions, and file
   size. The `--json` output gains a matching `embeddings` array; existing
   fields are unchanged and `schema_version` stays `1`.
 
 ### Changed
 
+- **The default search model is now `google/siglip-base-patch16-224`**, about
+  twice as fast as the previous default. Each model keeps its own data, so this
+  leaves any existing model's vectors intact and reachable with `--model`.
+- **`VIDERE_EMBED_MODEL` has been removed.** Use `videre config set model <id>`
+  for a lasting default or `--model <id>` for one command. Configuration
+  belongs in `config.toml`, not the environment.
 - **Embeddings moved out of the main database** into one SQLite file per model
   per library, under `~/.videre/embeddings/`. Vectors were roughly three
   quarters of a real 427 MB library, and a single shared table allowed only one
@@ -48,7 +56,9 @@ fallback is removed in 0.11.0.
 
 If you depend on these crates as libraries rather than using the CLI, note that
 `videre-core`'s `ensure_embeddings_table` is gone, `insert_classifications` and
-`paths_for_category` take a `model_id`, and `videre-ml`'s `Embedder::load`
+`paths_for_category` take a `model_id`, `resolve_model_id` returns
+`anyhow::Result<String>` rather than `String` so a malformed `config.toml` is
+an error rather than a silent fallback, and `videre-ml`'s `Embedder::load`
 takes the model id explicitly instead of reading it from the environment.
 
 ## [0.9.29] - 2026-08-05

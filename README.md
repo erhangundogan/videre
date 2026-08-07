@@ -355,7 +355,9 @@ videre stats --db ~/photos.db          # use a specific database
 videre config                          # show where everything resolves to
 videre config set db ~/photos.db       # use this database by default
 videre config set path ~/Photos        # scan this folder when none is given
+videre config set model google/siglip-base-patch16-224   # default search model
 videre config unset db                 # go back to the default database
+videre config unset model              # go back to the built-in search model
 videre config unset path               # require a folder argument again
 ```
 
@@ -399,8 +401,10 @@ videre config                      # show what's currently set
 | Variable | Effect |
 |----------|--------|
 | `VIDERE_HOME` | Use a different home directory instead of `~/.videre` |
-| `VIDERE_EMBED_MODEL` | Use a different search model by default. `google/siglip-base-patch16-224` is about twice as fast, at some cost to accuracy on fine detail. The `--model` flag overrides this per command. |
 | `VIDERE_EMBED_DTYPE` | `f16` for slightly faster search preparation. Does not affect existing data. |
+
+Model choice is not an environment variable. Use `videre config set model <id>`
+for a lasting default, or `--model <id>` for a single command.
 
 ## Using more than one search model
 
@@ -408,10 +412,11 @@ Each model keeps its own data, under `~/.videre/embeddings/`, so they never
 overwrite each other and you can compare them on the same library:
 
 ```bash
-videre embed                                                  # the default model
-videre embed --model google/siglip-base-patch16-224           # a second, faster one
-videre stats                                                  # see what each has
-videre search "sunset" --model google/siglip-base-patch16-224 # search a specific one
+videre embed                                                   # the default model
+videre embed --model google/siglip2-base-patch16-384           # a second, slower but larger one
+videre stats                                                   # see what each has
+videre search "sunset" --model google/siglip2-base-patch16-384 # search a specific one
+videre config set model google/siglip2-base-patch16-384        # make it the default
 ```
 
 Preparing a second model does not disturb the first. Asking for a model you
