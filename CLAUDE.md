@@ -591,22 +591,13 @@ exposed via `videre mcp` (same precedent as `--category`, which
 match); `--scores` in text mode prepends `distance_km` instead of a cosine
 score for this one mode.
 
-Two env overrides, both added while working out how to speed `videre embed` up
-(full data in `docs/superpowers/2026-08-04-embed-batch-corruption-investigation.md`):
+Model choice lives in `config.toml` (`videre config set model <id>`), not an
+environment variable; see "Choosing a model" below. The measurements that drove
+the current default are recorded there and in
+`docs/superpowers/2026-08-04-embed-batch-corruption-investigation.md`.
 
-- `VIDERE_EMBED_MODEL=<hf model id>` picks the model. **This is where essentially
-  all the speed turned out to be.** Decode is only ~10% of a run and the forward
-  pass is the rest, so changing the model is the only lever that moves it much:
-  measured on 2,080 real photos, the old `siglip-so400m-patch14-384` default ran
-  at 479ms/photo, the current `siglip2-base-patch16-384` at 131ms (3.6x), and
-  `siglip-base-patch16-224` at 63ms (7.7x, at 224px instead of 384px). A blind
-  side-by-side of 14 searches showed no visible advantage for the old default.
-  Switching models invalidates every stored embedding, so `videre embed` prints a
-  note first rather than silently redoing the library. Two candidates were tried
-  and are not worth revisiting: `siglip2-so400m-patch14-384` measured 623ms/photo,
-  *slower* than the model it would have replaced, and
-  `siglip-so400m-patch14-224` cannot be loaded at all: that HF repo ships no
-  `tokenizer.json`, so `Embedder::load` fails.
+One env override remains:
+
 - `VIDERE_EMBED_DTYPE=f16` switches inference to half precision: ~11% faster on
   pure jpg/png, ~7% on a realistic mix, no memory saving, no meaningful quality
   change (worst f16-vs-f32 cosine 0.999794 over 190 images, inside the f16
@@ -682,7 +673,9 @@ self-describing and lets every `WHERE model_id = ?1` clause work unchanged.
 ### Choosing a model
 
 `embed`, `search`, `classify`, `report`, and `mcp` all take `--model <id>`,
-resolved as `--model` > `VIDERE_EMBED_MODEL` > `DEFAULT_MODEL_ID`. The resolved
+resolved as `--model` > `default_model` in `config.toml` > `DEFAULT_MODEL_ID`.
+`videre config set model <id>` writes that key, and `videre config` shows the
+resolved value whether or not it is set. The resolved
 id is computed once per invocation and handed to both the database layer and
 the weight loader, so the vectors written can never come from a different
 checkpoint than the file they are written into.
