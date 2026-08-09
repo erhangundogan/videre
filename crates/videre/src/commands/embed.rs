@@ -39,7 +39,6 @@ pub fn run(args: EmbedArgs) -> Result<()> {
     // to bring a model database into existence; every reader errors instead,
     // so a typo in --model never silently produces an empty library.
     videre_core::embeddings_db::attach(&conn, &db, &model_id, true)?;
-    videre_core::embeddings::warn_legacy_embeddings_once(&conn);
 
     videre_core::pipeline_runs::track(&conn, &db, "embed", || {
         run_embed(&args, &conn, &model_id)

@@ -155,47 +155,9 @@ pub fn insert_embeddings(
     tx.commit()
 }
 
-/// Version that drops the legacy read path below. Greppable on purpose, so
-/// removing it is a scheduled change rather than a promise in a commit
-/// message nobody rereads.
-pub const LEGACY_FALLBACK_REMOVE_IN: &str = "0.11.0";
-
-/// Rows in a pre-split `embeddings` table still sitting in the main database.
-///
-/// Detection only: nothing is read, moved, or deleted.
-pub fn legacy_main_db_embedding_count(conn: &Connection) -> Result<i64> {
-    if !crate::db::table_exists(conn, "embeddings")? {
-        return Ok(0);
-    }
-    conn.query_row("SELECT COUNT(*) FROM main.embeddings", [], |r| r.get(0))
-}
-
-/// Print the legacy-embeddings note at most once per process.
-pub fn warn_legacy_embeddings_once(conn: &Connection) {
-    static WARNED: std::sync::Once = std::sync::Once::new();
-    let count = legacy_main_db_embedding_count(conn).unwrap_or(0);
-    if count == 0 {
-        return;
-    }
-    WARNED.call_once(|| {
-        eprintln!(
-            "note: {count} embedding(s) are still in the main database. videre reads them for \
-             now, but new embeddings go to ~/.videre/embeddings/. Run 'videre embed' to move \
-             to the new location; this fallback is removed in {LEGACY_FALLBACK_REMOVE_IN}."
-        );
-    });
-}
-
 /// Returns an empty vec (rather than a raw SQLite error) when no embeddings
 /// exist yet, since callers rely on "empty" to mean "run videre embed first"
 /// (see `videre search`'s `load_corpus`).
-///
-/// Falls back to a pre-split `embeddings` table in the main database when the
-/// attached one has nothing for this model. Without that, upgrading would
-/// strand every existing user's vectors: the new code would not look where
-/// they are, and search would return zero hits while reporting success. The
-/// attached database always wins, so a re-embed is never shadowed by a stale
-/// copy. Remove in `LEGACY_FALLBACK_REMOVE_IN`.
 pub fn load_embeddings(conn: &Connection, model_id: &str) -> Result<Vec<(String, Vec<u8>)>> {
     let attached: bool = conn
         .query_row(
@@ -205,33 +167,13 @@ pub fn load_embeddings(conn: &Connection, model_id: &str) -> Result<Vec<(String,
         )
         .unwrap_or(0)
         > 0;
-
-    let mut rows: Vec<(String, Vec<u8>)> = Vec::new();
-    if attached {
-        let mut stmt =
-            conn.prepare("SELECT hash, embedding FROM emb.embeddings WHERE model_id = ?1")?;
-        rows = stmt
-            .query_map(params![model_id], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<Result<Vec<_>>>()?;
+    if !attached {
+        return Ok(Vec::new());
     }
-
-    // Named main.embeddings explicitly: with emb attached, an unqualified
-    // table name could resolve to either schema depending on attach order.
-    if crate::db::table_exists(conn, "embeddings")? {
-        let have: std::collections::HashSet<String> = rows.iter().map(|(h, _)| h.clone()).collect();
-        let mut stmt =
-            conn.prepare("SELECT hash, embedding FROM main.embeddings WHERE model_id = ?1")?;
-        for row in stmt.query_map(params![model_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })? {
-            let (hash, blob) = row?;
-            if !have.contains(&hash) {
-                rows.push((hash, blob));
-            }
-        }
-    }
-
-    Ok(rows)
+    let mut stmt =
+        conn.prepare("SELECT hash, embedding FROM emb.embeddings WHERE model_id = ?1")?;
+    let rows = stmt.query_map(params![model_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    rows.collect()
 }
 
 pub fn paths_for_hash(conn: &Connection, hash: &str) -> Result<Vec<String>> {
@@ -429,86 +371,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(found, 1);
-    }
-
-    #[test]
-    fn load_embeddings_falls_back_to_the_main_database() {
-        // The upgrade path. Without this an existing user's vectors sit in
-        // the main database, the new code never looks there, and search
-        // returns zero hits while reporting success.
-        let conn = test_db_attached("emb_fallback");
-        conn.execute_batch(
-            "CREATE TABLE main.embeddings (
-                hash TEXT PRIMARY KEY, model_id TEXT NOT NULL,
-                embedding BLOB NOT NULL, embedded_at TEXT NOT NULL
-            );
-            INSERT INTO main.embeddings VALUES ('h1', 'test-model', X'0102', 'now');",
-        )
-        .unwrap();
-
-        let rows = load_embeddings(&conn, "test-model").unwrap();
-        assert_eq!(rows.len(), 1, "must fall back to main");
-        assert_eq!(rows[0].1, vec![1u8, 2]);
-    }
-
-    #[test]
-    fn the_attached_database_wins_over_the_legacy_one() {
-        // Once a hash is embedded in the new location, the stale main-db copy
-        // must never shadow it, or a re-embed would appear to do nothing.
-        let conn = test_db_attached("emb_precedence");
-        conn.execute_batch(
-            "CREATE TABLE main.embeddings (
-                hash TEXT PRIMARY KEY, model_id TEXT NOT NULL,
-                embedding BLOB NOT NULL, embedded_at TEXT NOT NULL
-            );
-            INSERT INTO main.embeddings VALUES ('h1', 'test-model', X'FFFF', 'now');",
-        )
-        .unwrap();
-        insert_embeddings(&conn, "test-model", &[("h1".to_string(), vec![1u8, 2])]).unwrap();
-
-        let rows = load_embeddings(&conn, "test-model").unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].1, vec![1u8, 2], "the new location must win");
-    }
-
-    #[test]
-    fn fallback_respects_the_model_filter() {
-        let conn = test_db_attached("emb_fallbackmodel");
-        conn.execute_batch(
-            "CREATE TABLE main.embeddings (
-                hash TEXT PRIMARY KEY, model_id TEXT NOT NULL,
-                embedding BLOB NOT NULL, embedded_at TEXT NOT NULL
-            );
-            INSERT INTO main.embeddings VALUES ('h1', 'other/model', X'0102', 'now');",
-        )
-        .unwrap();
-
-        assert!(load_embeddings(&conn, "test-model").unwrap().is_empty());
-    }
-
-    #[test]
-    fn legacy_detection_counts_without_touching_anything() {
-        let conn = test_db_attached("emb_legacycount");
-        conn.execute_batch(
-            "CREATE TABLE main.embeddings (
-                hash TEXT PRIMARY KEY, model_id TEXT NOT NULL,
-                embedding BLOB NOT NULL, embedded_at TEXT NOT NULL
-            );
-            INSERT INTO main.embeddings VALUES ('h1', 'old/model', X'01', 'now');",
-        )
-        .unwrap();
-
-        assert_eq!(legacy_main_db_embedding_count(&conn).unwrap(), 1);
-        let still_there: i64 = conn
-            .query_row("SELECT COUNT(*) FROM main.embeddings", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(still_there, 1, "detection must never delete anything");
-    }
-
-    #[test]
-    fn legacy_detection_returns_zero_when_there_is_no_such_table() {
-        let conn = test_db_attached("emb_nolegacy");
-        assert_eq!(legacy_main_db_embedding_count(&conn).unwrap(), 0);
     }
 
     #[test]
