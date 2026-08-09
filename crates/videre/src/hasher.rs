@@ -183,8 +183,6 @@ fn hash_file_inner(path: &Path) -> io::Result<FileRecord> {
 
 use image::imageops::{resize, FilterType};
 
-const PHASH_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "mov", "mp4"];
-const EXIF_EXTENSIONS: &[&str] = &["jpg", "jpeg", "tiff", "heic", "dng"];
 
 pub fn compute_dhash(path: &Path, mime: Option<&str>) -> Option<u64> {
     let ext = path

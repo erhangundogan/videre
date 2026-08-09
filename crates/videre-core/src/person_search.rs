@@ -47,7 +47,7 @@ mod tests {
              INSERT INTO faces VALUES (3,'h2','60,0,50,50',NULL,X'0000',1,'Bob',1);
              INSERT INTO faces VALUES (4,'h3','0,0,50,50',NULL,X'0000',NULL,NULL,0);"
         ).unwrap();
-        crate::db::ensure_file_hashes_columns(&conn);
+        crate::db::ensure_file_hashes_columns(conn);
     }
 
     #[test]
