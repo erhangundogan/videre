@@ -1,5 +1,5 @@
 mod common;
-use common::{shared_cache_guard, videre_bin};
+use common::{shared_cache_guard, siglip_cached, skip_without_models, videre_bin};
 use std::fs;
 use std::process::Command;
 use tempfile::tempdir;
@@ -7,6 +7,9 @@ use tempfile::tempdir;
 #[test]
 #[cfg(target_os = "macos")]
 fn embed_produces_an_embeddings_row_for_a_real_video() {
+    if skip_without_models("embed", siglip_cached()) {
+        return;
+    }
     let _serial = shared_cache_guard();
     let scan_dir = tempdir().unwrap();
     let out_dir = tempdir().unwrap();
@@ -79,6 +82,9 @@ fn embed_produces_an_embeddings_row_for_a_real_video() {
 #[test]
 #[cfg(target_os = "macos")]
 fn embed_skips_an_audio_only_video_without_calling_quicklook() {
+    if skip_without_models("embed", siglip_cached()) {
+        return;
+    }
     let _serial = shared_cache_guard();
     // Regression guard for a 20s-per-run cost: qlmanage hangs rather than
     // failing on a container with no video track, and nothing marks the file

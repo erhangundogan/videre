@@ -169,10 +169,28 @@ pub fn skip_without_models(what: &str, cached: bool) -> bool {
             cache.display()
         );
     }
-    eprintln!(
+    // Deliberately not `eprintln!`. libtest captures the print macros for
+    // tests that pass, and a skip passes, so an `eprintln!` here is invisible
+    // in a normal `cargo test` run and only appears under `--nocapture`. That
+    // is the opposite of loud, and it is the whole reason skipping is
+    // acceptable at all. Writing to fd 2 directly sidesteps the capture.
+    write_past_test_capture(&format!(
         "SKIP: {what} weights are not cached in {}. \
-         Run `videre {what}` once to populate it; tests never download.",
+         Run `videre {what}` once to populate it; tests never download.\n",
         cache.display()
-    );
+    ));
     true
+}
+
+/// Writes to the process's real stderr, bypassing libtest's output capture.
+///
+/// `ManuallyDrop` because dropping a `File` built from a borrowed fd would
+/// close fd 2 for the rest of the process.
+fn write_past_test_capture(msg: &str) {
+    use std::io::Write;
+    use std::os::fd::FromRawFd;
+
+    let mut stderr = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(2) });
+    let _ = stderr.write_all(msg.as_bytes());
+    let _ = stderr.flush();
 }
