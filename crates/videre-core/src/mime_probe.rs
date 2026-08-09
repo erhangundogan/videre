@@ -63,6 +63,107 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
     None
 }
 
+
+/// Types the embedding pipeline can decode.
+pub const EMBEDDABLE_MIMES: &[&str] = &[
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+    "image/bmp",
+    "image/tiff",
+    "image/heic",
+    "video/quicktime",
+    "video/mp4",
+];
+
+/// Types carrying EXIF metadata worth extracting.
+pub const EXIF_MIMES: &[&str] = &["image/jpeg", "image/tiff", "image/heic"];
+
+/// Types the perceptual hash can be computed for.
+pub const PHASH_MIMES: &[&str] = &[
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+    "image/bmp",
+    "image/tiff",
+    "video/quicktime",
+    "video/mp4",
+];
+
+/// Types counted as photos by `library_stats`.
+pub const PHOTO_MIMES: &[&str] = &[
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+    "image/bmp",
+    "image/tiff",
+    "image/heic",
+];
+
+/// Types counted as videos.
+pub const VIDEO_MIMES: &[&str] = &["video/quicktime", "video/mp4"];
+
+/// The type a filename extension implies, used only when `mime` is NULL.
+fn mime_for_ext(ext: &str) -> Option<&'static str> {
+    Some(match ext.to_lowercase().as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        // DNG really is TIFF; `is_embeddable` vetoes it separately.
+        "tiff" | "tif" | "dng" => "image/tiff",
+        "heic" => "image/heic",
+        "mov" => "video/quicktime",
+        "mp4" | "m4v" => "video/mp4",
+        _ => return None,
+    })
+}
+
+/// The type to route on: the detected mime when known, else derived from the
+/// extension.
+///
+/// The fallback is not compatibility support for older versions; it is how a
+/// nullable column behaves before a library has been re-scanned.
+pub fn effective_mime(mime: Option<&str>, ext: &str) -> Option<&'static str> {
+    if let Some(m) = mime {
+        // Normalise to a &'static str from the tables so callers compare
+        // against the same values the constants hold.
+        if let Some(known) = EMBEDDABLE_MIMES
+            .iter()
+            .chain(PHOTO_MIMES)
+            .chain(VIDEO_MIMES)
+            .find(|k| **k == m)
+        {
+            return Some(known);
+        }
+    }
+    mime_for_ext(ext)
+}
+
+/// Whether `videre embed` should attempt this file.
+///
+/// `ext == "dng"` vetoes regardless of mime. DNG is a TIFF variant, so its
+/// magic bytes are TIFF and TIFF is embeddable, but the `image` crate has no
+/// DNG decoder: without this veto every DNG is queried as pending and fails
+/// to decode on every run, forever. That exact bug was fixed 2026-08-01 by
+/// excluding `dng` from the extension list, and routing on mime would revive
+/// it.
+pub fn is_embeddable(mime: Option<&str>, ext: &str) -> bool {
+    if ext.eq_ignore_ascii_case("dng") {
+        return false;
+    }
+    effective_mime(mime, ext).is_some_and(|m| EMBEDDABLE_MIMES.contains(&m))
+}
+
+/// Whether this is a video, for the single-frame QuickLook path.
+pub fn is_video_mime(mime: &str) -> bool {
+    VIDEO_MIMES.contains(&mime)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,5 +263,54 @@ mod tests {
     #[test]
     fn unrecognised_bytes_are_none() {
         assert_eq!(sniff(b"not a real file header at all"), None);
+    }
+
+    #[test]
+    fn effective_mime_prefers_the_detected_value() {
+        assert_eq!(effective_mime(Some("image/jpeg"), "png"), Some("image/jpeg"));
+    }
+
+    #[test]
+    fn effective_mime_falls_back_to_the_extension_when_null() {
+        // mime is NULL until a library is re-scanned; without this fallback an
+        // existing library reports zero photos and embeds nothing.
+        assert_eq!(effective_mime(None, "jpg"), Some("image/jpeg"));
+        assert_eq!(effective_mime(None, "MOV"), Some("video/quicktime"));
+        assert_eq!(effective_mime(None, "xyz"), None);
+    }
+
+    #[test]
+    fn a_misnamed_jpeg_is_embeddable() {
+        // The real file this exists for: a JPEG named .png that fails every
+        // embed run with "Invalid PNG signature".
+        assert!(is_embeddable(Some("image/jpeg"), "png"));
+    }
+
+    #[test]
+    fn dng_is_never_embeddable_even_though_it_reports_tiff() {
+        // Regression guard for the 2026-08-01 fix. DNG is a TIFF variant, so
+        // its magic bytes genuinely are TIFF, and tiff IS embeddable. Without
+        // this veto every .dng is queried as pending and fails to decode, on
+        // every run, forever: the `image` crate has no DNG decoder.
+        assert!(!is_embeddable(Some("image/tiff"), "dng"));
+        assert!(!is_embeddable(None, "dng"));
+    }
+
+    #[test]
+    fn a_real_tiff_is_still_embeddable_so_the_veto_stays_narrow() {
+        assert!(is_embeddable(Some("image/tiff"), "tiff"));
+    }
+
+    #[test]
+    fn videos_are_embeddable_and_identified_as_video() {
+        assert!(is_embeddable(Some("video/quicktime"), "mov"));
+        assert!(is_video_mime("video/quicktime"));
+        assert!(is_video_mime("video/mp4"));
+        assert!(!is_video_mime("image/jpeg"));
+    }
+
+    #[test]
+    fn an_unknown_type_is_not_embeddable() {
+        assert!(!is_embeddable(None, "xyz"));
     }
 }
