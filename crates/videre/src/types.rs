@@ -49,8 +49,14 @@ pub struct DupGroupJson {
 impl From<DuplicateGroup> for DupGroupJson {
     fn from(group: DuplicateGroup) -> Self {
         let mut files = group.files.into_iter();
-        let keep = files.next().expect("duplicate groups always have >= 2 files");
-        DupGroupJson { hash: group.hash, keep, remove: files.collect() }
+        let keep = files
+            .next()
+            .expect("duplicate groups always have >= 2 files");
+        DupGroupJson {
+            hash: group.hash,
+            keep,
+            remove: files.collect(),
+        }
     }
 }
 
@@ -65,7 +71,10 @@ pub struct SimilarGroupJson {
 
 impl From<DuplicateGroup> for SimilarGroupJson {
     fn from(group: DuplicateGroup) -> Self {
-        SimilarGroupJson { hash: group.hash, files: group.files }
+        SimilarGroupJson {
+            hash: group.hash,
+            files: group.files,
+        }
     }
 }
 
@@ -123,7 +132,9 @@ impl ErrorJson {
     pub fn from_err(e: &anyhow::Error) -> Self {
         ErrorJson {
             schema_version: SCHEMA_VERSION,
-            error: ErrorBody { message: format!("{e:#}") },
+            error: ErrorBody {
+                message: format!("{e:#}"),
+            },
         }
     }
 }
@@ -235,7 +246,11 @@ mod tests {
     fn dup_group_json_splits_keep_and_remove() {
         let group = DuplicateGroup {
             hash: "h".to_string(),
-            files: vec![rec("/keep.jpg", "h"), rec("/rm1.jpg", "h"), rec("/rm2.jpg", "h")],
+            files: vec![
+                rec("/keep.jpg", "h"),
+                rec("/rm1.jpg", "h"),
+                rec("/rm2.jpg", "h"),
+            ],
         };
         let json_group = DupGroupJson::from(group);
         assert_eq!(json_group.keep.path, "/keep.jpg");
@@ -270,7 +285,10 @@ mod tests {
         let json = serde_json::to_string(&doc).unwrap();
         assert!(json.contains("\"similar_groups\""));
         assert!(json.contains("\"files\""));
-        assert!(!json.contains("\"keep\""), "similar groups are flat clusters, not keep/remove");
+        assert!(
+            !json.contains("\"keep\""),
+            "similar groups are flat clusters, not keep/remove"
+        );
     }
 
     #[test]
@@ -300,7 +318,10 @@ mod tests {
         let json = serde_json::to_string(&doc).unwrap();
         assert!(json.contains("\"similar_groups\""));
         assert!(json.contains("\"files\""));
-        assert!(!json.contains("\"keep\""), "similar groups are flat clusters, not keep/remove");
+        assert!(
+            !json.contains("\"keep\""),
+            "similar groups are flat clusters, not keep/remove"
+        );
     }
 
     #[test]
@@ -308,7 +329,10 @@ mod tests {
         let doc = ScanJson {
             schema_version: SCHEMA_VERSION,
             total_files: 5,
-            output: ScanOutputJson { kind: "sqlite", path: "/tmp/hashes.db".to_string() },
+            output: ScanOutputJson {
+                kind: "sqlite",
+                path: "/tmp/hashes.db".to_string(),
+            },
         };
         let json = serde_json::to_string(&doc).unwrap();
         assert!(json.starts_with("{\"schema_version\":1"));
@@ -324,7 +348,13 @@ mod tests {
         let json = serde_json::to_string(&doc).unwrap();
         assert!(json.starts_with("{\"schema_version\":1"));
         assert!(json.contains("\"error\""));
-        assert!(json.contains("outer"), "message must render the anyhow chain: {json}");
-        assert!(json.contains("root cause"), "chain rendered with {{e:#}}: {json}");
+        assert!(
+            json.contains("outer"),
+            "message must render the anyhow chain: {json}"
+        );
+        assert!(
+            json.contains("root cause"),
+            "chain rendered with {{e:#}}: {json}"
+        );
     }
 }

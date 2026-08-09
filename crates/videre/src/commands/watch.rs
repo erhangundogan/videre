@@ -1,11 +1,11 @@
-use anyhow::Result;
 use super::faces::format_clustering_only_summary;
-use videre::{hasher, scanner, sqlite_output, types};
-use videre_core::{db, face_db};
-use videre_ml::pipeline::{run_clustering, run_face_pipeline};
+use anyhow::Result;
 use rayon::prelude::*;
 use std::path::PathBuf;
 use std::time::Duration;
+use videre::{hasher, scanner, sqlite_output, types};
+use videre_core::{db, face_db};
+use videre_ml::pipeline::{run_clustering, run_face_pipeline};
 
 #[derive(clap::Args)]
 pub struct WatchArgs {
@@ -99,7 +99,10 @@ pub fn run(mut args: WatchArgs) -> Result<()> {
 
     loop {
         if !args.silent {
-            eprintln!("videre watch: cycle starting ({})", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
+            eprintln!(
+                "videre watch: cycle starting ({})",
+                chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
+            );
         }
         if let Err(e) = run_cycle(&args, &directory, &db) {
             eprintln!("videre watch: cycle error: {e}");
@@ -155,7 +158,11 @@ fn run_cycle(args: &WatchArgs, directory: &std::path::Path, db: &std::path::Path
 /// sync, orphan embeddings/cache cleanup) against the already-open
 /// connection, tracked in `pipeline_runs` under "prune" exactly like a
 /// standalone `videre prune` invocation would be.
-fn run_prune_stage(args: &WatchArgs, conn: &rusqlite::Connection, db_path: &std::path::Path) -> Result<()> {
+fn run_prune_stage(
+    args: &WatchArgs,
+    conn: &rusqlite::Connection,
+    db_path: &std::path::Path,
+) -> Result<()> {
     let prune_args = super::prune::PruneArgs::for_watch_stage(args.silent);
     let errors = videre_core::pipeline_runs::track(conn, db_path, "prune", || {
         super::prune::run_prune(&prune_args, conn, db_path)
@@ -190,7 +197,10 @@ enum PathExtFilter {
     HeicOnly,
 }
 
-fn dedup_paths_by_hash(conn: &rusqlite::Connection, filter: PathExtFilter) -> Result<Vec<(String, String)>> {
+fn dedup_paths_by_hash(
+    conn: &rusqlite::Connection,
+    filter: PathExtFilter,
+) -> Result<Vec<(String, String)>> {
     let sql = match filter {
         PathExtFilter::Faces => {
             "SELECT path, hash FROM file_hashes \
@@ -199,14 +209,20 @@ fn dedup_paths_by_hash(conn: &rusqlite::Connection, filter: PathExtFilter) -> Re
         PathExtFilter::HeicOnly => "SELECT path, hash FROM file_hashes WHERE ext = 'heic'",
     };
     let mut stmt = conn.prepare(sql)?;
-    let rows: Vec<(String, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+    let rows: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut seen = std::collections::HashSet::new();
-    Ok(rows.into_iter().filter(|(_, hash)| seen.insert(hash.clone())).collect())
+    Ok(rows
+        .into_iter()
+        .filter(|(_, hash)| seen.insert(hash.clone()))
+        .collect())
 }
 
 fn run_faces_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> {
-    let db_path = conn.path().map(std::path::PathBuf::from)
+    let db_path = conn
+        .path()
+        .map(std::path::PathBuf::from)
         .ok_or_else(|| anyhow::anyhow!("faces stage requires a file-backed database"))?;
     videre_core::pipeline_runs::track(conn, &db_path, "faces", || {
         let all_paths = dedup_paths_by_hash(conn, PathExtFilter::Faces)?;
@@ -222,8 +238,11 @@ fn run_faces_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> 
             .collect();
 
         if !to_process.is_empty() {
-            let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-            let result = run_face_pipeline(conn, &to_process, 8, false, args.silent, None, workers)?;
+            let workers = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4);
+            let result =
+                run_face_pipeline(conn, &to_process, 8, false, args.silent, None, workers)?;
             if !args.silent {
                 eprintln!(
                     "videre watch: faces stage processed {} new hash(es), {} face(s)",
@@ -232,9 +251,20 @@ fn run_faces_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> 
                 );
             }
         }
-        let clustering = run_clustering(conn, 0.6, 3, videre_core::face_cluster::DEFAULT_MERGE_SIM, videre_core::face_cluster::DEFAULT_MIN_FACE_PX, videre_core::face_cluster::DEFAULT_MAX_GENERIC_SIM, args.silent)?;
+        let clustering = run_clustering(
+            conn,
+            0.6,
+            3,
+            videre_core::face_cluster::DEFAULT_MERGE_SIM,
+            videre_core::face_cluster::DEFAULT_MIN_FACE_PX,
+            videre_core::face_cluster::DEFAULT_MAX_GENERIC_SIM,
+            args.silent,
+        )?;
         if !args.silent {
-            eprintln!("videre watch: {}", format_clustering_only_summary(clustering, 0.6));
+            eprintln!(
+                "videre watch: {}",
+                format_clustering_only_summary(clustering, 0.6)
+            );
         }
         Ok(())
     })
@@ -249,8 +279,13 @@ fn run_faces_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> 
 /// The tmp-file-then-rename pattern is correct for atomic publishing into
 /// the cache; only the encode step must not rely on extension inference,
 /// so the format is passed explicitly.
-fn publish_thumb(img: &image::DynamicImage, tmp_path: &std::path::Path, final_path: &std::path::Path) -> bool {
-    img.save_with_format(tmp_path, image::ImageFormat::Jpeg).is_ok()
+fn publish_thumb(
+    img: &image::DynamicImage,
+    tmp_path: &std::path::Path,
+    final_path: &std::path::Path,
+) -> bool {
+    img.save_with_format(tmp_path, image::ImageFormat::Jpeg)
+        .is_ok()
         && std::fs::rename(tmp_path, final_path).is_ok()
 }
 
@@ -338,9 +373,10 @@ fn run_location_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<(
     let unresolved: Vec<(f64, f64)> = {
         let mut stmt = conn.prepare(
             "SELECT DISTINCT gps_lat, gps_lon FROM file_hashes \
-             WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL AND location_name IS NULL"
+             WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL AND location_name IS NULL",
         )?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows
     };
@@ -361,7 +397,11 @@ fn run_location_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<(
     Ok(())
 }
 
-fn run_scan_stage(args: &WatchArgs, directory: &std::path::Path, db: &std::path::Path) -> Result<()> {
+fn run_scan_stage(
+    args: &WatchArgs,
+    directory: &std::path::Path,
+    db: &std::path::Path,
+) -> Result<()> {
     let conn = db::open_wal(db)?;
     videre_core::pipeline_runs::track(&conn, db, "scan", || {
         let paths = scanner::scan(directory);
@@ -388,7 +428,8 @@ mod publish_thumb_tests {
         // then renames it into place. image::DynamicImage::save() infers the
         // encoder from the file extension, and a ".tmp<pid>" suffix maps to
         // no encoder, so a plain save() always fails on this tmp path shape.
-        let tmp_dir = std::env::temp_dir().join(format!("publish_thumb_test_{}", std::process::id()));
+        let tmp_dir =
+            std::env::temp_dir().join(format!("publish_thumb_test_{}", std::process::id()));
         std::fs::create_dir_all(&tmp_dir).unwrap();
         let tmp_path = tmp_dir.join(format!("hash_240.tmp{}", std::process::id()));
         let final_path = tmp_dir.join("hash_240.jpg");
@@ -396,8 +437,14 @@ mod publish_thumb_tests {
         let img = image::DynamicImage::new_rgb8(4, 4);
         let ok = publish_thumb(&img, &tmp_path, &final_path);
 
-        assert!(ok, "publish_thumb should succeed even though the tmp path has no recognizable extension");
-        assert!(final_path.exists(), "final thumbnail file should exist after publish");
+        assert!(
+            ok,
+            "publish_thumb should succeed even though the tmp path has no recognizable extension"
+        );
+        assert!(
+            final_path.exists(),
+            "final thumbnail file should exist after publish"
+        );
         assert!(!tmp_path.exists(), "tmp file should be gone after rename");
 
         let _ = std::fs::remove_dir_all(&tmp_dir);

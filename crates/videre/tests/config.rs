@@ -1,36 +1,7 @@
+mod common;
+use common::videre_bin;
 use std::process::Command;
 use tempfile::tempdir;
-
-/// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.
-/// Spawned `videre` child processes inherit the environment, so their lock
-/// files land there instead of the developer's real `~/.videre/locks`, locks
-/// live under the videre home now rather than beside the database, so without
-/// this every run would leave permanent litter in the real home (test database
-/// names are random, so the files would accumulate rather than be reused).
-///
-/// Called from `videre_bin()` so it covers every spawn site automatically. The
-/// `set_var` runs inside `get_or_init` so it happens exactly once: tests share
-/// a process and run in parallel, and calling `set_var` from several threads
-/// would otherwise race every concurrent `getenv`. Tests that set their own
-/// `VIDERE_HOME` per-command still win, since `.env()` overrides what's
-/// inherited.
-fn isolated_home() {
-    static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    HOME.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("videre-it-home-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("create isolated test home");
-        std::env::set_var("VIDERE_HOME", &dir);
-        dir
-    });
-}
-fn videre_bin() -> std::path::PathBuf {
-    isolated_home();
-    let mut path = std::env::current_exe().unwrap();
-    path.pop(); // deps/
-    path.pop(); // debug/
-    path.push("videre");
-    path
-}
 
 #[test]
 fn config_show_works_with_empty_home() {
@@ -43,7 +14,10 @@ fn config_show_works_with_empty_home() {
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("db:            (not set)"), "{stdout}");
-    assert!(stdout.contains("videre config set db"), "the not-set hint must name the settable key: {stdout}");
+    assert!(
+        stdout.contains("videre config set db"),
+        "the not-set hint must name the settable key: {stdout}"
+    );
     assert!(stdout.contains("hashes.db"), "{stdout}");
 }
 
@@ -51,7 +25,10 @@ fn config_show_works_with_empty_home() {
 fn config_set_and_unset_db_roundtrip() {
     let home = tempdir().unwrap();
     let set = Command::new(videre_bin())
-        .arg("config").arg("set").arg("db").arg("/tmp/custom.db")
+        .arg("config")
+        .arg("set")
+        .arg("db")
+        .arg("/tmp/custom.db")
         .env("VIDERE_HOME", home.path())
         .status()
         .expect("failed to run videre config set");
@@ -67,7 +44,9 @@ fn config_set_and_unset_db_roundtrip() {
     assert!(stdout.contains("db:            /tmp/custom.db"), "{stdout}");
 
     let unset = Command::new(videre_bin())
-        .arg("config").arg("unset").arg("db")
+        .arg("config")
+        .arg("unset")
+        .arg("db")
         .env("VIDERE_HOME", home.path())
         .status()
         .unwrap();
@@ -84,7 +63,10 @@ fn config_set_and_unset_db_roundtrip() {
 fn config_set_rejects_unknown_key() {
     let home = tempdir().unwrap();
     let out = Command::new(videre_bin())
-        .arg("config").arg("set").arg("nope").arg("/x")
+        .arg("config")
+        .arg("set")
+        .arg("nope")
+        .arg("/x")
         .env("VIDERE_HOME", home.path())
         .output()
         .unwrap();
@@ -105,7 +87,10 @@ fn config_set_and_unset_path_roundtrip() {
     assert!(stdout0.contains("videre config set path"), "{stdout0}");
 
     let set = Command::new(videre_bin())
-        .arg("config").arg("set").arg("path").arg("/tmp/photos")
+        .arg("config")
+        .arg("set")
+        .arg("path")
+        .arg("/tmp/photos")
         .env("VIDERE_HOME", home.path())
         .status()
         .unwrap();
@@ -122,7 +107,9 @@ fn config_set_and_unset_path_roundtrip() {
     );
 
     let unset = Command::new(videre_bin())
-        .arg("config").arg("unset").arg("path")
+        .arg("config")
+        .arg("unset")
+        .arg("path")
         .env("VIDERE_HOME", home.path())
         .status()
         .unwrap();
@@ -143,7 +130,11 @@ fn set_model_persists_and_is_shown() {
         .args(["config", "set", "model", "google/siglip-base-patch16-224"])
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let text = std::fs::read_to_string(home.path().join("config.toml")).unwrap();
     assert!(
@@ -158,7 +149,10 @@ fn set_model_persists_and_is_shown() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&shown.stdout);
     assert!(stdout.contains("model:"), "{stdout}");
-    assert!(stdout.contains("google/siglip-base-patch16-224"), "{stdout}");
+    assert!(
+        stdout.contains("google/siglip-base-patch16-224"),
+        "{stdout}"
+    );
     assert!(stdout.contains("[from config.toml]"), "{stdout}");
 }
 

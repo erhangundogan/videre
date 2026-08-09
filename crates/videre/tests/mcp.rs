@@ -1,39 +1,10 @@
+mod common;
+use common::videre_bin;
 use rusqlite::Connection;
 use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use tempfile::tempdir;
-
-/// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.
-/// Spawned `videre` child processes inherit the environment, so their lock
-/// files land there instead of the developer's real `~/.videre/locks`, locks
-/// live under the videre home now rather than beside the database, so without
-/// this every run would leave permanent litter in the real home (test database
-/// names are random, so the files would accumulate rather than be reused).
-///
-/// Called from `videre_bin()` so it covers every spawn site automatically. The
-/// `set_var` runs inside `get_or_init` so it happens exactly once: tests share
-/// a process and run in parallel, and calling `set_var` from several threads
-/// would otherwise race every concurrent `getenv`. Tests that set their own
-/// `VIDERE_HOME` per-command still win, since `.env()` overrides what's
-/// inherited.
-fn isolated_home() {
-    static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    HOME.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("videre-it-home-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("create isolated test home");
-        std::env::set_var("VIDERE_HOME", &dir);
-        dir
-    });
-}
-fn videre_bin() -> std::path::PathBuf {
-    isolated_home();
-    let mut p = std::env::current_exe().unwrap();
-    p.pop(); // deps/
-    p.pop(); // debug/
-    p.push("videre");
-    p
-}
 
 /// Fixture: 4 files, one exact-duplicate pair (hash1: alice1 older KEEP, dup newer),
 /// 3 confirmed faces (Alice x2, Bob x1), empty embeddings table, no GPS, no exif.
@@ -62,7 +33,7 @@ fn make_db(dir: &std::path::Path) -> std::path::PathBuf {
            ('hash3', '0,0,50,50', X'0000', 'Bob', 1);",
     )
     .unwrap();
-        videre_core::db::ensure_file_hashes_columns(&conn);
+    videre_core::db::ensure_file_hashes_columns(&conn);
     db
 }
 
@@ -86,7 +57,11 @@ impl McpClient {
             .expect("spawn videre mcp");
         let stdin = child.stdin.take().unwrap();
         let reader = BufReader::new(child.stdout.take().unwrap());
-        let mut client = McpClient { child, stdin, reader };
+        let mut client = McpClient {
+            child,
+            stdin,
+            reader,
+        };
         client.initialize();
         client
     }
@@ -139,8 +114,17 @@ impl McpClient {
         self.send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
     }
 
-    fn call_tool(&mut self, id: u64, name: &str, arguments: serde_json::Value) -> serde_json::Value {
-        self.request(id, "tools/call", json!({"name": name, "arguments": arguments}))
+    fn call_tool(
+        &mut self,
+        id: u64,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> serde_json::Value {
+        self.request(
+            id,
+            "tools/call",
+            json!({"name": name, "arguments": arguments}),
+        )
     }
 
     fn shutdown(mut self) {
@@ -177,7 +161,10 @@ fn stats_tool_returns_counts() {
     assert_eq!(doc["faces_count"], 3);
     assert_eq!(doc["people"], json!(["Alice", "Bob"]));
     assert_eq!(doc["files_with_gps"], 0);
-    assert!(doc.get("exif_date_range").is_none(), "no exif dates in fixture");
+    assert!(
+        doc.get("exif_date_range").is_none(),
+        "no exif dates in fixture"
+    );
     // text content mirrors the structured document
     let text = resp["result"]["content"][0]["text"].as_str().unwrap();
     let text_doc: serde_json::Value = serde_json::from_str(text).unwrap();
@@ -201,7 +188,7 @@ fn stats_tool_zero_counts_without_optional_tables() {
            VALUES ('/tmp/only.jpg', 'h1', 5, 'jpg');",
     )
     .unwrap();
-        videre_core::db::ensure_file_hashes_columns(&conn);
+    videre_core::db::ensure_file_hashes_columns(&conn);
     drop(conn);
 
     let mut client = McpClient::start(&db);
@@ -224,7 +211,10 @@ fn startup_fails_without_db() {
         .output()
         .expect("run videre mcp");
     assert!(!out.status.success());
-    assert!(out.stdout.is_empty(), "nothing may be written to the protocol channel");
+    assert!(
+        out.stdout.is_empty(),
+        "nothing may be written to the protocol channel"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("no database found"), "{stderr}");
 
@@ -255,16 +245,24 @@ fn find_duplicates_tool_returns_keep_remove_groups() {
     let groups = doc["duplicate_groups"].as_array().unwrap();
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0]["hash"], "hash1");
-    assert_eq!(groups[0]["keep"]["path"], "/tmp/alice1.jpg", "oldest is KEEP");
+    assert_eq!(
+        groups[0]["keep"]["path"], "/tmp/alice1.jpg",
+        "oldest is KEEP"
+    );
     let remove = groups[0]["remove"].as_array().unwrap();
     assert_eq!(remove.len(), 1);
     assert_eq!(remove[0]["path"], "/tmp/alice1_copy.jpg");
-    assert!(doc.get("similar_groups").is_none(), "absent without include_similar");
+    assert!(
+        doc.get("similar_groups").is_none(),
+        "absent without include_similar"
+    );
 
     // with include_similar: key present (empty here, fixture has no phashes)
     let resp2 = client.call_tool(4, "find_duplicates", json!({"include_similar": true}));
     let doc2 = &resp2["result"]["structuredContent"];
-    let similar = doc2["similar_groups"].as_array().expect("similar_groups present");
+    let similar = doc2["similar_groups"]
+        .as_array()
+        .expect("similar_groups present");
     assert!(similar.is_empty());
 
     client.shutdown();

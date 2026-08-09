@@ -1,5 +1,5 @@
 use crate::types::FileRecord;
-use rusqlite::{Result, params};
+use rusqlite::{params, Result};
 use std::path::Path;
 
 pub fn write_records(records: &[FileRecord], db_path: &Path) -> Result<()> {

@@ -107,8 +107,12 @@ pub(crate) fn resolve_directory(
 /// automatic config write should be visible, not silent.
 pub(crate) fn maybe_adopt_default_path(explicit: Option<&std::path::Path>, silent: bool) {
     let Some(dir) = explicit else { return };
-    let Ok(home) = videre_core::home::videre_home() else { return };
-    let Ok(config) = videre_core::home::load_config(&home) else { return };
+    let Ok(home) = videre_core::home::videre_home() else {
+        return;
+    };
+    let Ok(config) = videre_core::home::load_config(&home) else {
+        return;
+    };
     if config.default_path.is_some() {
         return;
     }

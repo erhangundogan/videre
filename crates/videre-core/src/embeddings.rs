@@ -1,6 +1,6 @@
 //! Embeddings table: one row per unique content hash, keyed to file_hashes.hash.
 
-use rusqlite::{Connection, Result, params};
+use rusqlite::{params, Connection, Result};
 
 /// Extensions the embedding pipeline can decode. `.mov`/`.mp4` are handled by
 /// extracting one representative frame via QuickLook (macOS only, degrades to
@@ -93,9 +93,7 @@ pub struct PendingImage {
 /// run; moving it along with the table would be a silent performance
 /// regression on every one of them.
 pub fn ensure_embeddings_index(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_file_hashes_hash ON file_hashes(hash);",
-    )
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_file_hashes_hash ON file_hashes(hash);")
 }
 
 /// Unique hashes that are embeddable but not yet embedded under `model_id`;
@@ -177,8 +175,7 @@ pub fn load_embeddings(conn: &Connection, model_id: &str) -> Result<Vec<(String,
 }
 
 pub fn paths_for_hash(conn: &Connection, hash: &str) -> Result<Vec<String>> {
-    let mut stmt =
-        conn.prepare("SELECT path FROM file_hashes WHERE hash = ?1 ORDER BY path")?;
+    let mut stmt = conn.prepare("SELECT path FROM file_hashes WHERE hash = ?1 ORDER BY path")?;
     let rows = stmt.query_map(params![hash], |row| row.get(0))?;
     rows.collect()
 }
@@ -232,8 +229,8 @@ mod tests {
         insert_file(&conn, "/a/1.jpg", "h1", "jpg");
         insert_file(&conn, "/b/1-copy.jpg", "h1", "jpg"); // same hash, second path
         insert_file(&conn, "/a/2.png", "h2", "png");
-        insert_file(&conn, "/a/clip.mp4", "h3", "mp4");   // now embeddable
-        insert_file(&conn, "/a/other.xyz", "h4", "xyz");  // still unsupported
+        insert_file(&conn, "/a/clip.mp4", "h3", "mp4"); // now embeddable
+        insert_file(&conn, "/a/other.xyz", "h4", "xyz"); // still unsupported
 
         let pending = pending_images(&conn, "test-model").unwrap();
         assert_eq!(pending.len(), 3); // h1 once, h2 once, h3 (video) included, h4 excluded
@@ -290,7 +287,11 @@ mod tests {
         )
         .unwrap();
         let pending = pending_images(&conn, "m").unwrap();
-        assert_eq!(pending.len(), 1, "a JPEG named .png must still be embeddable");
+        assert_eq!(
+            pending.len(),
+            1,
+            "a JPEG named .png must still be embeddable"
+        );
     }
 
     #[test]
@@ -331,7 +332,10 @@ mod tests {
         insert_embeddings(
             &conn,
             "test-model",
-            &[("h1".to_string(), vec![1u8, 2, 3, 4]), ("h2".to_string(), vec![5u8, 6])],
+            &[
+                ("h1".to_string(), vec![1u8, 2, 3, 4]),
+                ("h2".to_string(), vec![5u8, 6]),
+            ],
         )
         .unwrap();
 
@@ -390,9 +394,16 @@ mod tests {
         // a formality. What actually matters is that it stays a real HF
         // owner/name SigLIP id, since `Embedder::load` splits on '/' and the
         // whole embeddings table is keyed by this string.
-        assert!(DEFAULT_MODEL_ID.starts_with("google/"), "{DEFAULT_MODEL_ID}");
+        assert!(
+            DEFAULT_MODEL_ID.starts_with("google/"),
+            "{DEFAULT_MODEL_ID}"
+        );
         assert!(DEFAULT_MODEL_ID.contains("siglip"), "{DEFAULT_MODEL_ID}");
-        assert_eq!(DEFAULT_MODEL_ID.matches('/').count(), 1, "{DEFAULT_MODEL_ID}");
+        assert_eq!(
+            DEFAULT_MODEL_ID.matches('/').count(),
+            1,
+            "{DEFAULT_MODEL_ID}"
+        );
     }
 
     fn cfg_home(tag: &str, toml_text: &str) -> std::path::PathBuf {
@@ -418,7 +429,10 @@ mod tests {
     #[test]
     fn resolve_model_id_uses_config_when_there_is_no_flag() {
         let home = cfg_home("fromconfig", "default_model = \"owner/from-config\"\n");
-        assert_eq!(resolve_model_id_in(&home, None).unwrap(), "owner/from-config");
+        assert_eq!(
+            resolve_model_id_in(&home, None).unwrap(),
+            "owner/from-config"
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 

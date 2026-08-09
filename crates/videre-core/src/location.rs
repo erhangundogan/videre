@@ -52,10 +52,8 @@ mod tests {
     #[test]
     fn ensure_location_column_is_idempotent() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL);",
-        )
-        .unwrap();
+        conn.execute_batch("CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL);")
+            .unwrap();
         crate::db::ensure_file_hashes_columns(&conn);
         ensure_location_column(&conn);
         ensure_location_column(&conn); // second call must not error
@@ -70,6 +68,9 @@ mod tests {
     fn location_name_resolves_known_city() {
         // Coordinates for central Paris, France.
         let name = location_name(48.8566, 2.3522).unwrap();
-        assert!(name.contains("FR"), "expected France country code, got: {name}");
+        assert!(
+            name.contains("FR"),
+            "expected France country code, got: {name}"
+        );
     }
 }

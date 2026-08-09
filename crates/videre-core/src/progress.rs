@@ -52,7 +52,11 @@ impl Progress {
         } else {
             Mode::Plain
         };
-        Progress { total, done: AtomicU64::new(0), mode }
+        Progress {
+            total,
+            done: AtomicU64::new(0),
+            mode,
+        }
     }
 
     /// Advance by one item. Safe to call concurrently from multiple threads

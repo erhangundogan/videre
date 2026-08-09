@@ -40,8 +40,11 @@ const VIDEO_EXTS: &str = "'mov','mp4'";
 
 pub fn compute(conn: &Connection) -> Result<LibraryStats> {
     let total_files: i64 = conn.query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))?;
-    let total_size_bytes: i64 =
-        conn.query_row("SELECT COALESCE(SUM(size_bytes), 0) FROM file_hashes", [], |r| r.get(0))?;
+    let total_size_bytes: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(size_bytes), 0) FROM file_hashes",
+        [],
+        |r| r.get(0),
+    )?;
     let total_photos: i64 = conn.query_row(
         &format!(
             "SELECT COUNT(*) FROM file_hashes

@@ -1,43 +1,16 @@
+mod common;
+use common::videre_bin;
 use std::process::Command;
 use tempfile::tempdir;
-
-/// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.
-/// Spawned `videre` child processes inherit the environment, so their lock
-/// files land there instead of the developer's real `~/.videre/locks`, locks
-/// live under the videre home now rather than beside the database, so without
-/// this every run would leave permanent litter in the real home (test database
-/// names are random, so the files would accumulate rather than be reused).
-///
-/// Called from `videre_bin()` so it covers every spawn site automatically. The
-/// `set_var` runs inside `get_or_init` so it happens exactly once: tests share
-/// a process and run in parallel, and calling `set_var` from several threads
-/// would otherwise race every concurrent `getenv`. Tests that set their own
-/// `VIDERE_HOME` per-command still win, since `.env()` overrides what's
-/// inherited.
-fn isolated_home() {
-    static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    HOME.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("videre-it-home-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("create isolated test home");
-        std::env::set_var("VIDERE_HOME", &dir);
-        dir
-    });
-}
-
-fn videre_bin() -> std::path::PathBuf {
-    isolated_home();
-    let mut path = std::env::current_exe().unwrap();
-    path.pop(); // deps/
-    path.pop(); // debug/
-    path.push("videre");
-    path
-}
 
 /// Runs `scan <dir> --output-sqlite <db> --silent [extra_scan_args...]`, then
 /// returns the db path. Fails the test via panic if the scan itself fails.
 fn scan_into_db(dir: &std::path::Path, db: &std::path::Path, extra: &[&str]) {
     let mut cmd = Command::new(videre_bin());
-    cmd.arg("scan").arg("--silent").arg("--output-sqlite").arg(db);
+    cmd.arg("scan")
+        .arg("--silent")
+        .arg("--output-sqlite")
+        .arg(db);
     for a in extra {
         cmd.arg(a);
     }
@@ -65,10 +38,18 @@ fn dedupe_prints_remove_paths_for_exact_duplicates() {
         .arg(&db)
         .output()
         .expect("failed to run videre dedupe");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(lines.len(), 1, "exactly one REMOVE candidate expected: {stdout}");
+    assert_eq!(
+        lines.len(),
+        1,
+        "exactly one REMOVE candidate expected: {stdout}"
+    );
     assert!(lines[0].ends_with("a.jpg") || lines[0].ends_with("b.jpg"));
 }
 
@@ -79,7 +60,10 @@ fn dedupe_rejects_a_directory_positional() {
         .arg("/some/directory")
         .output()
         .expect("failed to run videre dedupe");
-    assert!(!out.status.success(), "dedupe must not accept a directory argument");
+    assert!(
+        !out.status.success(),
+        "dedupe must not accept a directory argument"
+    );
 }
 
 #[test]
@@ -142,9 +126,16 @@ fn dedupe_similar_groups_a_video_and_its_recompressed_variant() {
     let home = tempdir().unwrap();
     let db = home.path().join("hashes.db");
 
-    std::fs::copy("tests/fixtures/testsrc_1s.mp4", scan_dir.path().join("a.mp4")).unwrap();
-    std::fs::copy("tests/fixtures/testsrc_1s_recompressed.mp4", scan_dir.path().join("b.mp4"))
-        .unwrap();
+    std::fs::copy(
+        "tests/fixtures/testsrc_1s.mp4",
+        scan_dir.path().join("a.mp4"),
+    )
+    .unwrap();
+    std::fs::copy(
+        "tests/fixtures/testsrc_1s_recompressed.mp4",
+        scan_dir.path().join("b.mp4"),
+    )
+    .unwrap();
 
     scan_into_db(scan_dir.path(), &db, &["--similar"]);
 
@@ -157,7 +148,11 @@ fn dedupe_similar_groups_a_video_and_its_recompressed_variant() {
         .arg("--json")
         .output()
         .expect("failed to run videre dedupe");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
 
@@ -182,7 +177,11 @@ fn dedupe_similar_groups_a_video_and_its_recompressed_variant() {
     let files = similar[0]["files"]
         .as_array()
         .expect("a similar group must carry a files array");
-    assert_eq!(files.len(), 2, "both videos must land in the one similar group: {doc}");
+    assert_eq!(
+        files.len(),
+        2,
+        "both videos must land in the one similar group: {doc}"
+    );
 }
 
 #[test]
@@ -200,7 +199,11 @@ fn dedupe_similar_does_not_group_two_visually_different_videos() {
     let db = home.path().join("hashes.db");
 
     std::fs::copy("tests/fixtures/red_1s.mp4", scan_dir.path().join("a.mp4")).unwrap();
-    std::fs::copy("tests/fixtures/testsrc_1s.mp4", scan_dir.path().join("b.mp4")).unwrap();
+    std::fs::copy(
+        "tests/fixtures/testsrc_1s.mp4",
+        scan_dir.path().join("b.mp4"),
+    )
+    .unwrap();
 
     scan_into_db(scan_dir.path(), &db, &["--similar"]);
 
@@ -213,7 +216,11 @@ fn dedupe_similar_does_not_group_two_visually_different_videos() {
         .arg("--json")
         .output()
         .expect("failed to run videre dedupe");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let similar = doc["similar_groups"]
@@ -261,12 +268,16 @@ fn json_output_reports_duplicate_groups() {
 
     let mut pair = vec![keep.to_string(), removed.to_string()];
     pair.sort();
-    assert!(pair[0].ends_with("a.jpg") && pair[1].ends_with("b.jpg"),
-        "keep+remove must be exactly the identical pair, got {pair:?}");
+    assert!(
+        pair[0].ends_with("a.jpg") && pair[1].ends_with("b.jpg"),
+        "keep+remove must be exactly the identical pair, got {pair:?}"
+    );
     assert!(keep != removed);
 
-    assert!(doc.get("similar_groups").is_none(),
-        "similar_groups key must be absent without --similar");
+    assert!(
+        doc.get("similar_groups").is_none(),
+        "similar_groups key must be absent without --similar"
+    );
 }
 
 #[test]
@@ -317,7 +328,7 @@ fn dedupe_json_matches_mcp_find_duplicates_shape() {
            ('/tmp/alice2.jpg', 'hash2', 10, '2021-01-01T00:00:00+00:00', 'jpg');",
     )
     .unwrap();
-        videre_core::db::ensure_file_hashes_columns(&conn);
+    videre_core::db::ensure_file_hashes_columns(&conn);
     drop(conn);
 
     let out = Command::new(videre_bin())

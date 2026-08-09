@@ -1,11 +1,11 @@
 use anyhow::Result;
 use rmcp::{
-    ErrorData as McpError, ServerHandler, ServiceExt,
     handler::server::router::tool::ToolRouter,
     handler::server::wrapper::Parameters,
     model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo},
     tool, tool_handler, tool_router,
     transport::stdio,
+    ErrorData as McpError, ServerHandler, ServiceExt,
 };
 use serde::Serialize;
 use std::path::PathBuf;
@@ -48,7 +48,11 @@ pub fn run(args: McpArgs) -> Result<()> {
     eprintln!(
         "videre mcp: serving {} (model {model_id}{})",
         db.display(),
-        if embeddings_ready { "" } else { ", no embeddings" }
+        if embeddings_ready {
+            ""
+        } else {
+            ", no embeddings"
+        }
     );
 
     let rt = tokio::runtime::Runtime::new()?;
@@ -81,7 +85,8 @@ impl VidereServer {
 /// Success: structured_content carries the document, content carries the same
 /// JSON as text for clients that ignore structured content.
 fn json_result(doc: &impl Serialize) -> Result<CallToolResult, McpError> {
-    let value = serde_json::to_value(doc).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+    let value =
+        serde_json::to_value(doc).map_err(|e| McpError::internal_error(e.to_string(), None))?;
     Ok(CallToolResult::structured(value))
 }
 
@@ -235,7 +240,13 @@ fn build_search(
 
     let (query, results) = if let Some(name) = &params.person {
         let hits = search_cmd::person_hits(&conn, name)?;
-        (QueryJson { kind: "person", value: name.clone() }, hits)
+        (
+            QueryJson {
+                kind: "person",
+                value: name.clone(),
+            },
+            hits,
+        )
     } else {
         // Corpus first (fails fast without embeddings, before any model load).
         let corpus = search_cmd::load_corpus(&conn, db, model_id)?;
@@ -255,14 +266,20 @@ fn build_search(
             if let Some(text) = &params.query {
                 (
                     embedder.embed_text(text)?,
-                    QueryJson { kind: "text", value: text.clone() },
+                    QueryJson {
+                        kind: "text",
+                        value: text.clone(),
+                    },
                 )
             } else {
                 let img =
                     std::path::PathBuf::from(params.image_path.as_ref().expect("mode checked"));
                 (
                     videre_ml::model::embed_image_file(embedder, &img)?,
-                    QueryJson { kind: "image", value: img.display().to_string() },
+                    QueryJson {
+                        kind: "image",
+                        value: img.display().to_string(),
+                    },
                 )
             }
             // guard drops here, before ranked_hits runs

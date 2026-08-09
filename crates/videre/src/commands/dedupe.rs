@@ -1,6 +1,6 @@
-use videre::types::ErrorJson;
 use std::path::PathBuf;
 use std::process;
+use videre::types::ErrorJson;
 
 #[derive(clap::Args)]
 pub struct DedupeArgs {
@@ -54,7 +54,8 @@ fn run_text(args: DedupeArgs) -> anyhow::Result<()> {
         }
     };
 
-    let result = videre_core::pipeline_runs::track(&conn, &db, "dedupe", || run_dedupe_text(&args, &db));
+    let result =
+        videre_core::pipeline_runs::track(&conn, &db, "dedupe", || run_dedupe_text(&args, &db));
     if let Err(e) = result {
         eprintln!("Error: {e:#}");
         process::exit(1);

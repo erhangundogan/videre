@@ -20,12 +20,20 @@ pub fn align_face(img: &DynamicImage, landmarks: &[[f32; 2]; 5]) -> RgbImage {
 pub fn umeyama(src: &[[f32; 2]; 5], dst: &[[f32; 2]; 5]) -> [[f32; 3]; 2] {
     let n = src.len() as f32;
 
-    let (mu_sx, mu_sy) = src.iter().fold((0.0f32, 0.0f32), |(ax, ay), p| (ax + p[0], ay + p[1]));
-    let (mu_dx, mu_dy) = dst.iter().fold((0.0f32, 0.0f32), |(ax, ay), p| (ax + p[0], ay + p[1]));
+    let (mu_sx, mu_sy) = src
+        .iter()
+        .fold((0.0f32, 0.0f32), |(ax, ay), p| (ax + p[0], ay + p[1]));
+    let (mu_dx, mu_dy) = dst
+        .iter()
+        .fold((0.0f32, 0.0f32), |(ax, ay), p| (ax + p[0], ay + p[1]));
     let (mu_sx, mu_sy) = (mu_sx / n, mu_sy / n);
     let (mu_dx, mu_dy) = (mu_dx / n, mu_dy / n);
 
-    let var_s: f32 = src.iter().map(|p| (p[0] - mu_sx).powi(2) + (p[1] - mu_sy).powi(2)).sum::<f32>() / n;
+    let var_s: f32 = src
+        .iter()
+        .map(|p| (p[0] - mu_sx).powi(2) + (p[1] - mu_sy).powi(2))
+        .sum::<f32>()
+        / n;
 
     let mut cov = [[0.0f32; 2]; 2];
     for (s, d) in src.iter().zip(dst.iter()) {
@@ -36,7 +44,10 @@ pub fn umeyama(src: &[[f32; 2]; 5], dst: &[[f32; 2]; 5]) -> [[f32; 3]; 2] {
         cov[1][0] += dd[1] * ds[0];
         cov[1][1] += dd[1] * ds[1];
     }
-    cov[0][0] /= n; cov[0][1] /= n; cov[1][0] /= n; cov[1][1] /= n;
+    cov[0][0] /= n;
+    cov[0][1] /= n;
+    cov[1][0] /= n;
+    cov[1][1] /= n;
 
     let det = cov[0][0] * cov[1][1] - cov[0][1] * cov[1][0];
     let s_sign = if det >= 0.0 { 1.0f32 } else { -1.0 };
@@ -58,7 +69,7 @@ pub fn umeyama(src: &[[f32; 2]; 5], dst: &[[f32; 2]; 5]) -> [[f32; 3]; 2] {
 
     [
         [scale * cos_a, -scale * sin_a, tx],
-        [scale * sin_a,  scale * cos_a, ty],
+        [scale * sin_a, scale * cos_a, ty],
     ]
 }
 
@@ -71,8 +82,16 @@ fn warp_affine(img: &DynamicImage, m: [[f32; 3]; 2], out_w: u32, out_h: u32) -> 
     let inv = if det.abs() > 1e-8 {
         let inv_det = 1.0 / det;
         [
-            [m[1][1] * inv_det, -m[0][1] * inv_det, (m[0][1]*m[1][2] - m[1][1]*m[0][2]) * inv_det],
-            [-m[1][0] * inv_det, m[0][0] * inv_det, (m[1][0]*m[0][2] - m[0][0]*m[1][2]) * inv_det],
+            [
+                m[1][1] * inv_det,
+                -m[0][1] * inv_det,
+                (m[0][1] * m[1][2] - m[1][1] * m[0][2]) * inv_det,
+            ],
+            [
+                -m[1][0] * inv_det,
+                m[0][0] * inv_det,
+                (m[1][0] * m[0][2] - m[0][0] * m[1][2]) * inv_det,
+            ],
         ]
     } else {
         [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
@@ -109,9 +128,9 @@ fn bilinear(img: &RgbImage, x: f32, y: f32) -> Rgb<u8> {
 
     let r = |i: usize| -> u8 {
         let v = p00[i] * (1.0 - fx) * (1.0 - fy)
-              + p10[i] * fx * (1.0 - fy)
-              + p01[i] * (1.0 - fx) * fy
-              + p11[i] * fx * fy;
+            + p10[i] * fx * (1.0 - fy)
+            + p01[i] * (1.0 - fx) * fy
+            + p11[i] * fx * fy;
         v.round().clamp(0.0, 255.0) as u8
     };
     Rgb([r(0), r(1), r(2)])
@@ -134,9 +153,12 @@ mod tests {
 
     #[test]
     fn umeyama_pure_translation() {
-        let src: [[f32; 2]; 5] = [[0.0,0.0],[10.0,0.0],[5.0,5.0],[2.0,9.0],[8.0,9.0]];
+        let src: [[f32; 2]; 5] = [[0.0, 0.0], [10.0, 0.0], [5.0, 5.0], [2.0, 9.0], [8.0, 9.0]];
         let mut dst = src;
-        for p in dst.iter_mut() { p[0] += 20.0; p[1] += 30.0; }
+        for p in dst.iter_mut() {
+            p[0] += 20.0;
+            p[1] += 30.0;
+        }
         let m = umeyama(&src, &dst);
         assert!((m[0][0] - 1.0).abs() < 0.01, "scale_x={}", m[0][0]);
         assert!((m[0][2] - 20.0).abs() < 0.5, "tx={}", m[0][2]);
@@ -146,7 +168,13 @@ mod tests {
     #[test]
     fn align_face_returns_112x112() {
         let img = DynamicImage::new_rgb8(200, 200);
-        let lm: [[f32; 2]; 5] = [[40.0,60.0],[80.0,60.0],[60.0,80.0],[45.0,100.0],[75.0,100.0]];
+        let lm: [[f32; 2]; 5] = [
+            [40.0, 60.0],
+            [80.0, 60.0],
+            [60.0, 80.0],
+            [45.0, 100.0],
+            [75.0, 100.0],
+        ];
         let out = align_face(&img, &lm);
         assert_eq!(out.width(), 112);
         assert_eq!(out.height(), 112);

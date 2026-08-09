@@ -48,7 +48,11 @@ pub fn wait_with_timeout(child: &mut std::process::Child, timeout: Duration) -> 
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                return if status.success() { WaitOutcome::Success } else { WaitOutcome::Failed };
+                return if status.success() {
+                    WaitOutcome::Success
+                } else {
+                    WaitOutcome::Failed
+                };
             }
             Ok(None) => {
                 if start.elapsed() >= timeout {
@@ -86,14 +90,23 @@ mod tests {
     #[test]
     fn wait_with_timeout_returns_success_for_fast_process() {
         let mut child = std::process::Command::new("true").spawn().unwrap();
-        assert_eq!(wait_with_timeout(&mut child, Duration::from_secs(5)), WaitOutcome::Success);
+        assert_eq!(
+            wait_with_timeout(&mut child, Duration::from_secs(5)),
+            WaitOutcome::Success
+        );
     }
 
     #[test]
     fn wait_with_timeout_kills_and_returns_timed_out_for_slow_process() {
-        let mut child = std::process::Command::new("sleep").arg("5").spawn().unwrap();
+        let mut child = std::process::Command::new("sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
         let start = Instant::now();
-        assert_eq!(wait_with_timeout(&mut child, Duration::from_millis(200)), WaitOutcome::TimedOut);
+        assert_eq!(
+            wait_with_timeout(&mut child, Duration::from_millis(200)),
+            WaitOutcome::TimedOut
+        );
         assert!(start.elapsed() < Duration::from_secs(2));
     }
 }

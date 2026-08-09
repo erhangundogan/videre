@@ -24,7 +24,11 @@ impl PruneArgs {
     /// meaningful there since the caller already has a connection and always
     /// wants the real (non-preview) pass, so only `silent` is exposed.
     pub(crate) fn for_watch_stage(silent: bool) -> Self {
-        Self { db: None, dry_run: false, silent }
+        Self {
+            db: None,
+            dry_run: false,
+            silent,
+        }
     }
 }
 
@@ -32,7 +36,6 @@ fn system_time_to_iso(t: SystemTime) -> String {
     let dt: DateTime<Utc> = t.into();
     dt.to_rfc3339()
 }
-
 
 pub fn run(args: PruneArgs) -> anyhow::Result<()> {
     let db = super::resolve_reader_db(args.db.clone())?;
@@ -48,7 +51,8 @@ pub fn run(args: PruneArgs) -> anyhow::Result<()> {
 
     let conn = videre_core::db::open_wal(&db).expect("failed to open database");
 
-    let errors = videre_core::pipeline_runs::track(&conn, &db, "prune", || run_prune(&args, &conn, &db))?;
+    let errors =
+        videre_core::pipeline_runs::track(&conn, &db, "prune", || run_prune(&args, &conn, &db))?;
 
     if errors > 0 {
         std::process::exit(1);
@@ -86,13 +90,18 @@ pub(crate) fn run_prune(
         match std::fs::metadata(path) {
             Err(_) => {
                 if !args.silent {
-                    let tag = if args.dry_run { "[dry-run] would remove" } else { "[removed]" };
+                    let tag = if args.dry_run {
+                        "[dry-run] would remove"
+                    } else {
+                        "[removed]"
+                    };
                     println!("{tag} {path}");
                 }
                 if !args.dry_run {
-                    if let Err(e) =
-                        conn.execute("DELETE FROM file_hashes WHERE path = ?1", rusqlite::params![path])
-                    {
+                    if let Err(e) = conn.execute(
+                        "DELETE FROM file_hashes WHERE path = ?1",
+                        rusqlite::params![path],
+                    ) {
                         eprintln!("Error removing {path}: {e}");
                         errors += 1;
                         continue;
@@ -120,7 +129,11 @@ pub(crate) fn run_prune(
                     }
                 }
                 if !args.silent {
-                    let tag = if args.dry_run { "[dry-run] would sync" } else { "[synced]" };
+                    let tag = if args.dry_run {
+                        "[dry-run] would sync"
+                    } else {
+                        "[synced]"
+                    };
                     println!("{tag} {path}  modified_at -> {mtime}");
                 }
                 synced += 1;
@@ -179,15 +192,21 @@ pub(crate) fn run_prune(
     let mut cache_orphans = 0usize;
     if let Ok(entries) = std::fs::read_dir(videre_core::thumb_cache::cache_dir()) {
         let live_hashes: std::collections::HashSet<String> = {
-            let mut stmt = conn.prepare("SELECT DISTINCT hash FROM file_hashes").expect("failed to prepare");
+            let mut stmt = conn
+                .prepare("SELECT DISTINCT hash FROM file_hashes")
+                .expect("failed to prepare");
             stmt.query_map([], |r| r.get(0))
                 .expect("failed to execute")
                 .filter_map(|r| r.ok())
                 .collect()
         };
         for entry in entries.filter_map(|e| e.ok()) {
-            let Some(file_name) = entry.file_name().to_str().map(str::to_string) else { continue };
-            let Some(hash) = videre_core::thumb_cache::hash_from_cache_filename(&file_name) else { continue };
+            let Some(file_name) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            let Some(hash) = videre_core::thumb_cache::hash_from_cache_filename(&file_name) else {
+                continue;
+            };
             if live_hashes.contains(hash) {
                 continue;
             }
@@ -204,13 +223,21 @@ pub(crate) fn run_prune(
     if !args.silent {
         let action = if args.dry_run { "would be" } else { "were" };
         let orphan_note = if orphans > 0 {
-            let qualifier = if args.dry_run { " (lower bound; actual may be higher after removals)" } else { "" };
+            let qualifier = if args.dry_run {
+                " (lower bound; actual may be higher after removals)"
+            } else {
+                ""
+            };
             format!(", {orphans} orphan embedding(s) {action} pruned{qualifier}")
         } else {
             String::new()
         };
         let cache_note = if cache_orphans > 0 {
-            let qualifier = if args.dry_run { " (lower bound; actual may be higher after removals)" } else { "" };
+            let qualifier = if args.dry_run {
+                " (lower bound; actual may be higher after removals)"
+            } else {
+                ""
+            };
             format!(", {cache_orphans} orphan cache file(s) {action} pruned{qualifier}")
         } else {
             String::new()

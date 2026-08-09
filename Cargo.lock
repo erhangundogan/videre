@@ -5010,6 +5010,7 @@ dependencies = [
  "chrono",
  "clap",
  "filetime",
+ "fs2",
  "image",
  "kamadak-exif",
  "rayon",

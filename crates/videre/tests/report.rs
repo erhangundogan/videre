@@ -1,24 +1,9 @@
+mod common;
+use common::isolated_home;
+
 use rusqlite::Connection;
 use std::process::Command;
 use tempfile::tempdir;
-
-/// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.
-///
-/// Required now that embeddings live at `<VIDERE_HOME>/embeddings/...`:
-/// without it the test process writes into the developer's real `~/.videre`
-/// while the spawned binary reads an isolated one, so the assertions compare
-/// two different places and real directories accumulate. Set inside
-/// `get_or_init` so it happens exactly once, since tests share a process and
-/// run in parallel.
-fn isolated_home() {
-    static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    HOME.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("videre-report-home-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("create isolated test home");
-        std::env::set_var("VIDERE_HOME", &dir);
-        dir
-    });
-}
 
 fn report_bin() -> std::path::PathBuf {
     isolated_home();
@@ -58,7 +43,7 @@ fn fixture_db(
         );",
     )
     .unwrap();
-        videre_core::db::ensure_file_hashes_columns(&conn);
+    videre_core::db::ensure_file_hashes_columns(&conn);
     for (path, hash, ext) in [
         (files[0].to_str().unwrap(), "hdup", "jpg"),
         (files[1].to_str().unwrap(), "hdup", "jpg"),
@@ -152,7 +137,10 @@ fn all_files_json_includes_empty_meta_object() {
     let dir = tempdir().unwrap();
     let (db, _files) = fixture_db(dir.path(), false);
     let html = run_report(&db, true);
-    assert!(html.contains("\"meta\":"), "expected a meta field on each file's JSON");
+    assert!(
+        html.contains("\"meta\":"),
+        "expected a meta field on each file's JSON"
+    );
 }
 
 #[test]
@@ -193,7 +181,10 @@ fn all_flag_excludes_files_deleted_after_scan() {
     std::fs::remove_file(&files[2]).unwrap();
     let html = run_report(&db, true);
     // Deleted file must not appear in the gallery
-    assert!(!html.contains(files[2].to_str().unwrap()), "deleted file appears in gallery");
+    assert!(
+        !html.contains(files[2].to_str().unwrap()),
+        "deleted file appears in gallery"
+    );
     // The other files still on disk must appear
     assert!(html.contains(files[0].to_str().unwrap()), "a.jpg missing");
     assert!(html.contains(files[3].to_str().unwrap()), "d.mov missing");
@@ -207,8 +198,14 @@ fn help_lists_new_flags() {
         .output()
         .expect("failed to run videre report");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("by-date"), "expected --by-date in help output");
-    assert!(stdout.contains("show-faces"), "expected --show-faces in help output");
+    assert!(
+        stdout.contains("by-date"),
+        "expected --by-date in help output"
+    );
+    assert!(
+        stdout.contains("show-faces"),
+        "expected --show-faces in help output"
+    );
 }
 
 fn run_report_by_date(db: &std::path::Path) -> String {
@@ -230,12 +227,17 @@ fn by_date_keepfiles_excludes_remove_side_duplicates() {
     let dir = tempdir().unwrap();
     let (db, files) = fixture_db(dir.path(), false);
     let html = run_report_by_date(&db);
-    assert!(html.contains("KEEPFILES"), "expected a KEEPFILES array in output");
+    assert!(
+        html.contains("KEEPFILES"),
+        "expected a KEEPFILES array in output"
+    );
     // Scope the check to the KEEPFILES JSON blob itself, not the whole page:
     // the always-present duplicate-groups review section legitimately shows
     // both hdup paths (KEEP + REMOVE badges), so a whole-page substring check
     // would find both regardless of query_keep_files() correctness.
-    let start = html.find("var KEEPFILES=[").expect("KEEPFILES array not found");
+    let start = html
+        .find("var KEEPFILES=[")
+        .expect("KEEPFILES array not found");
     let end = html[start..]
         .find("];\n")
         .map(|i| start + i)
@@ -245,9 +247,18 @@ fn by_date_keepfiles_excludes_remove_side_duplicates() {
     // plus the singleton and the video, three KEEPFILES entries total.
     let a_present = keepfiles_json.contains(files[0].to_str().unwrap());
     let b_present = keepfiles_json.contains(files[1].to_str().unwrap());
-    assert_ne!(a_present, b_present, "exactly one duplicate-group path should be KEEP");
-    assert!(keepfiles_json.contains(files[2].to_str().unwrap()), "singleton must be included");
-    assert!(keepfiles_json.contains(files[3].to_str().unwrap()), "video must be included");
+    assert_ne!(
+        a_present, b_present,
+        "exactly one duplicate-group path should be KEEP"
+    );
+    assert!(
+        keepfiles_json.contains(files[2].to_str().unwrap()),
+        "singleton must be included"
+    );
+    assert!(
+        keepfiles_json.contains(files[3].to_str().unwrap()),
+        "video must be included"
+    );
 }
 
 #[test]
@@ -266,6 +277,12 @@ fn by_date_emits_year_month_day_buckets() {
     )
     .unwrap();
     let html = run_report_by_date(&db);
-    assert!(html.contains("buildYearView"), "expected year-view JS function");
-    assert!(html.contains("2024") && html.contains("2023"), "expected both years present in KEEPFILES data");
+    assert!(
+        html.contains("buildYearView"),
+        "expected year-view JS function"
+    );
+    assert!(
+        html.contains("2024") && html.contains("2023"),
+        "expected both years present in KEEPFILES data"
+    );
 }
