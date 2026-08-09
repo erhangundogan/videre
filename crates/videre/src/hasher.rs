@@ -140,8 +140,15 @@ fn hash_file_inner(path: &Path) -> io::Result<FileRecord> {
         if n == 0 { break; }
         if first_chunk {
             // Free: the bytes are already here for BLAKE3. The signature
-            // lives in the first 12, and the buffer is 64KB.
-            mime = videre_core::mime_probe::sniff(&buffer[..n]).map(str::to_string);
+            // lives in the first 12, and the buffer is 64KB. An unrecognised
+            // file records the sentinel rather than NULL, so NULL keeps its
+            // single meaning of "never scanned". A zero-byte file never
+            // enters this loop and correctly stays NULL: nothing was read.
+            mime = Some(
+                videre_core::mime_probe::sniff(&buffer[..n])
+                    .unwrap_or(videre_core::mime_probe::UNKNOWN_MIME)
+                    .to_string(),
+            );
             first_chunk = false;
         }
         hasher.update(&buffer[..n]);
@@ -428,10 +435,14 @@ mod tests {
     }
 
     #[test]
-    fn an_unrecognised_file_gets_no_mime() {
+    fn an_unrecognised_file_gets_the_sentinel_not_null() {
+        // NULL must mean "never scanned" so --retry-incomplete terminates.
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("mystery.bin");
+        let path = dir.path().join("mystery.png");
         std::fs::write(&path, b"nothing resembling a known signature here").unwrap();
-        assert_eq!(hash_file(&path).unwrap().mime, None);
+        assert_eq!(
+            hash_file(&path).unwrap().mime.as_deref(),
+            Some(videre_core::mime_probe::UNKNOWN_MIME)
+        );
     }
 }
