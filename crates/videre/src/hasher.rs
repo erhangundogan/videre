@@ -133,9 +133,17 @@ fn hash_file_inner(path: &Path) -> io::Result<FileRecord> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
     let mut buffer = [0u8; 65536];
+    let mut mime: Option<String> = None;
+    let mut first_chunk = true;
     loop {
         let n = reader.read(&mut buffer)?;
         if n == 0 { break; }
+        if first_chunk {
+            // Free: the bytes are already here for BLAKE3. The signature
+            // lives in the first 12, and the buffer is 64KB.
+            mime = videre_core::mime_probe::sniff(&buffer[..n]).map(str::to_string);
+            first_chunk = false;
+        }
         hasher.update(&buffer[..n]);
     }
     let hash = hasher.finalize().to_hex().to_string();
@@ -161,6 +169,7 @@ fn hash_file_inner(path: &Path) -> io::Result<FileRecord> {
         created_at,
         modified_at,
         ext,
+        mime,
         phash: None,
         exif_date,
         gps_lat,
@@ -399,5 +408,28 @@ mod tests {
         assert!((data.gps_lon.unwrap() - 29.012).abs() < 0.01);
         assert_eq!(data.width, Some(4032));
         assert_eq!(data.height, Some(3024));
+    }
+
+    #[test]
+    fn hashing_detects_the_real_type_not_the_extension() {
+        // A JPEG named .png, the shape of the real file that fails every
+        // embed run with "Invalid PNG signature".
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("actually_a_jpeg.png");
+        let mut bytes = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01".to_vec();
+        bytes.extend_from_slice(&[0u8; 64]);
+        std::fs::write(&path, &bytes).unwrap();
+
+        let rec = hash_file(&path).unwrap();
+        assert_eq!(rec.ext, "png", "the extension is recorded as-is");
+        assert_eq!(rec.mime.as_deref(), Some("image/jpeg"), "the content wins");
+    }
+
+    #[test]
+    fn an_unrecognised_file_gets_no_mime() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mystery.bin");
+        std::fs::write(&path, b"nothing resembling a known signature here").unwrap();
+        assert_eq!(hash_file(&path).unwrap().mime, None);
     }
 }

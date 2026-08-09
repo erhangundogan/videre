@@ -106,6 +106,7 @@ mod tests {
             created_at: None,
             modified_at: Some("2023-01-01T00:00:00+00:00".to_string()),
             ext: "jpg".to_string(),
+            mime: None,
             phash: None,
             exif_date: None,
             gps_lat: None,
