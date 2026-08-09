@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to the same branch cancels the first: formatting feedback is
+# only useful for the current tip.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # No cargo build, no dependency resolution: rustfmt parses the source
+      # directly. That is what keeps this job under a minute despite the
+      # workspace pulling in candle and ONNX Runtime, and why it needs no
+      # dependency cache.
+      #
+      # Uses the runner's preinstalled Rust rather than pinning a toolchain.
+      # Formatting under the default config is stable across versions: the two
+      # installed locally (1.8.0-stable and 1.9.0) were checked and produce
+      # byte-identical output. If a future rustfmt ever disagrees, this job
+      # fails loudly with the exact diff rather than silently reformatting
+      # anything.
+      - name: Check formatting
+        run: make fmt-check

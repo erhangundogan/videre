@@ -157,6 +157,32 @@ cargo build --release
 ./target/release/videre stats                                            # library totals + pipeline run status, default db
 ```
 
+## CI
+
+`.github/workflows/ci.yml` runs one job on every push to `main` and every pull
+request: `make fmt-check` (`cargo fmt --all -- --check`). It needs no cargo
+build and no dependency cache, since rustfmt parses the source directly, so it
+finishes in under a minute despite the workspace pulling in candle and ONNX
+Runtime.
+
+The workspace was reformatted to zero drift on 2026-08-09 and this job is what
+keeps it there. Before that it carried 370 hunks of drift, which made any stray
+`cargo fmt` produce a large, plausible-looking, semantically empty diff: one
+swept 20 unrelated `src/` files into a test-only commit, and nothing caught it
+except reading `git show --stat`, because formatting changes are invisible to
+the test suite.
+
+Note that **`cargo fmt` has no per-file mode**. Arguments after `--` are
+rustfmt options, not a file filter, so `cargo fmt -p videre -- path/to/one.rs`
+silently formats the entire package. To format a single file, invoke
+`rustfmt <file>` directly.
+
+Clippy and the test suite are deliberately not in CI yet. Clippy currently
+reports 18 warnings, so it would need either `--allow`-ing them or a cleanup
+pass first, and the test suite needs macOS for the QuickLook paths plus
+multi-gigabyte model downloads (SigLIP via Hugging Face, InsightFace via
+`~/.cache/ort/`) that would dominate every run.
+
 ## Test coverage
 
 `cargo-llvm-cov` (installed via `cargo install cargo-llvm-cov`, plus the
