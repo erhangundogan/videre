@@ -106,6 +106,19 @@ pub const PHOTO_MIMES: &[&str] = &[
 /// Types counted as videos.
 pub const VIDEO_MIMES: &[&str] = &["video/quicktime", "video/mp4"];
 
+/// Stored when a file was read successfully but its bytes match no known
+/// signature.
+///
+/// Distinguishes "checked, unidentifiable" from NULL, which after this exists
+/// means only "never scanned". That distinction is what makes
+/// `videre scan --retry-incomplete` terminate instead of re-reading the same
+/// unidentifiable files on every run, the same reason `faces_scanned` records
+/// images where zero faces were found.
+///
+/// The IANA type for unclassified binary data, so a database inspected by hand
+/// reads sensibly rather than carrying a private magic value.
+pub const UNKNOWN_MIME: &str = "application/octet-stream";
+
 /// The type a filename extension implies, used only when `mime` is NULL.
 fn mime_for_ext(ext: &str) -> Option<&'static str> {
     Some(match ext.to_lowercase().as_str() {
@@ -129,6 +142,10 @@ fn mime_for_ext(ext: &str) -> Option<&'static str> {
 /// The fallback is not compatibility support for older versions; it is how a
 /// nullable column behaves before a library has been re-scanned.
 pub fn effective_mime(mime: Option<&str>, ext: &str) -> Option<&'static str> {
+    // The sentinel is bookkeeping, not a type: fall through to the extension
+    // exactly as a NULL would. Routing on it would silently stop videre
+    // processing files whose bytes it merely failed to identify.
+    let mime = mime.filter(|m| *m != UNKNOWN_MIME);
     if let Some(m) = mime {
         // Normalise to a &'static str from the tables so callers compare
         // against the same values the constants hold.
@@ -312,5 +329,25 @@ mod tests {
     #[test]
     fn an_unknown_type_is_not_embeddable() {
         assert!(!is_embeddable(None, "xyz"));
+    }
+
+    #[test]
+    fn the_sentinel_is_treated_as_unknown_not_as_a_type() {
+        // Bookkeeping only. If the sentinel reached routing, a malformed JPEG
+        // named .jpg would stop being embeddable even though the image crate
+        // decodes it fine: a regression caused purely by better bookkeeping.
+        assert_eq!(effective_mime(Some(UNKNOWN_MIME), "jpg"), Some("image/jpeg"));
+        assert_eq!(effective_mime(Some(UNKNOWN_MIME), "mov"), Some("video/quicktime"));
+    }
+
+    #[test]
+    fn a_file_with_the_sentinel_is_still_embeddable() {
+        assert!(is_embeddable(Some(UNKNOWN_MIME), "jpg"));
+    }
+
+    #[test]
+    fn the_sentinel_with_an_unknown_extension_stays_unknown() {
+        assert_eq!(effective_mime(Some(UNKNOWN_MIME), "xyz"), None);
+        assert!(!is_embeddable(Some(UNKNOWN_MIME), "xyz"));
     }
 }

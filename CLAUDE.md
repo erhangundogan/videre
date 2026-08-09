@@ -610,6 +610,16 @@ because DNG genuinely is a TIFF variant, so `ext = 'dng'` explicitly vetoes
 embeddability: TIFF is embeddable, DNG is not decodable, and routing on mime
 alone would revive the bug fixed 2026-08-01.
 
+An unrecognised file records `application/octet-stream` rather than NULL, so
+`mime IS NULL` means only "never scanned". `videre scan --retry-incomplete`
+uses that to process just the files a previous scan did not finish, which
+matters because a full scan re-reads everything: measured at roughly 460GB and
+9m50s on a 70,601-file library, against 1.8s to walk it. The sentinel is
+bookkeeping only; `effective_mime` treats it exactly as NULL and falls back to
+the extension, so a file whose bytes are merely unidentified is still
+processed. This mirrors `faces_scanned`, which records images where zero faces
+were found for the same reason.
+
 `.mov`/`.mp4` files are checked for a video track before QuickLook is invoked
 (`videre_core::video_probe`). `qlmanage -t` does not fail on a container with
 no video track, it hangs, so videre used to pay the full 20s

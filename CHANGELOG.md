@@ -15,6 +15,21 @@ version number and are released together.
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-08-09
+
+### Added
+
+- **`videre scan --retry-incomplete`** processes only files a previous scan did
+  not finish, instead of re-reading the whole library. A full scan of a 70,601
+  file library reads roughly 460GB and takes about 10 minutes, so filling a
+  handful of stragglers no longer costs a full pass.
+
+### Changed
+
+- A file whose bytes match no known signature now records
+  `application/octet-stream` instead of an empty type, so it is not re-read on
+  every retry. This does not change how such files are decoded.
+
 ## [0.11.0] - 2026-08-09
 
 ### Added
@@ -206,7 +221,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/erhangundogan/videre/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/erhangundogan/videre/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/erhangundogan/videre/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/erhangundogan/videre/compare/v0.9.29...v0.10.0
