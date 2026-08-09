@@ -97,3 +97,47 @@ fn embed_produces_an_embeddings_row_for_a_real_video() {
         "expected a plausible f16 embedding blob (2 bytes per dim), got {blob_len} bytes"
     );
 }
+
+#[test]
+#[cfg(target_os = "macos")]
+fn embed_skips_an_audio_only_video_without_calling_quicklook() {
+    // Regression guard for a 20s-per-run cost: qlmanage hangs rather than
+    // failing on a container with no video track, and nothing marks the file
+    // permanently unembeddable, so the wait recurs on every run.
+    let scan_dir = tempdir().unwrap();
+    let out_dir = tempdir().unwrap();
+    let db_path = out_dir.path().join("hashes.db");
+    fs::copy(
+        "tests/fixtures/audio_only.mov",
+        scan_dir.path().join("audio_only.mov"),
+    )
+    .unwrap();
+
+    let scan = Command::new(videre_bin())
+        .args(["scan", "--silent", "--output-sqlite"])
+        .arg(&db_path)
+        .arg(scan_dir.path())
+        .status()
+        .expect("failed to run videre scan");
+    assert!(scan.success());
+
+    let started = std::time::Instant::now();
+    let out = Command::new(videre_bin())
+        .args(["embed", "--db"])
+        .arg(&db_path)
+        .output()
+        .expect("failed to run videre embed");
+    let elapsed = started.elapsed();
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no video track"),
+        "expected an explicit skip reason, got: {stderr}"
+    );
+    // Generous: the point is that it does not sit through the 20s qlmanage
+    // timeout. Model loading dominates the rest, so this is not a tight bound.
+    assert!(
+        elapsed < std::time::Duration::from_secs(300),
+        "embed took {elapsed:?}, suspiciously close to a qlmanage timeout"
+    );
+}
