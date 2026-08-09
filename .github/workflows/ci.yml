@@ -19,7 +19,7 @@ jobs:
     name: rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # No cargo build, no dependency resolution: rustfmt parses the source
       # directly. That is what keeps this job under a minute despite the
@@ -45,7 +45,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: Swatinem/rust-cache@v2
 
@@ -54,7 +54,7 @@ jobs:
       # DEFAULT_MODEL_ID invalidates the cache rather than silently reusing
       # weights for a different model.
       - id: models
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/huggingface
           key: hf-${{ runner.os }}-${{ hashFiles('crates/videre-ml/src/face_models.rs', 'crates/videre-core/src/embeddings.rs') }}
