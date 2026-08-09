@@ -609,6 +609,117 @@ mod batch_correctness_tests {
         );
     }
 
+    /// Does the boundary sit exactly where a 32-bit byte offset would overflow?
+    ///
+    /// The attention scores tensor is the largest intermediate in the forward
+    /// pass: `batch * heads * patches^2 * 4` bytes in f32. Evaluated at the
+    /// measured boundaries:
+    ///
+    /// | model | bytes/image | clean | corrupt |
+    /// |---|---|---|---|
+    /// | so400m-384 | 34,012,224 | 120 -> 3.801 GB | 127 -> 4.023 GB |
+    ///
+    /// 2^32 bytes is 4.000 GiB, which falls **inside** that interval. If a
+    /// 32-bit offset is overflowing somewhere in candle's Metal backend, the
+    /// boundary is exactly `floor(2^32 / bytes_per_image)`: 126 clean, 127
+    /// corrupt for so400m.
+    ///
+    /// That is a one-image-resolution prediction, so it is a real test rather
+    /// than a fit. If 126 is clean and 127 is corrupt, the mechanism is
+    /// identified and `max_safe_batch` can be computed exactly for any model.
+    /// If 126 is corrupt, the hypothesis is wrong and the boundary is
+    /// something else near the same magnitude.
+    ///
+    /// ```text
+    /// cargo test -p videre-ml --release thirty_two_bit_offset_boundary -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn thirty_two_bit_offset_boundary() {
+        // (model, heads, patches). Patch counts: (384/14)^2 and (224/16)^2.
+        // base-224's config.json only overrides patch_size, so heads/hidden
+        // come from candle's SigLIP defaults.
+        // (model, heads, patches, mlp intermediate). The boundary is set by
+        // whichever single intermediate crosses 2^32 bytes first, which is
+        // attention for so400m and the MLP for base.
+        let cases = [
+            (
+                "google/siglip-so400m-patch14-384",
+                16usize,
+                729usize,
+                4304usize,
+            ),
+            ("google/siglip-base-patch16-224", 12, 196, 3072),
+        ];
+
+        for (model, heads, patches, inter) in cases {
+            let attn = heads * patches * patches * 4;
+            let mlp = patches * inter * 4;
+            let bytes_per_image = attn.max(mlp);
+            let predicted_last_clean = (1usize << 32) / bytes_per_image;
+            let embedder = Embedder::load(crate::device::best_device(), model).unwrap();
+            let size = image_size_for(model);
+            println!("\n=== {model} ===");
+            println!(
+                "  {bytes_per_image} B/image -> predicted last clean batch {predicted_last_clean}"
+            );
+
+            for n in [predicted_last_clean, predicted_last_clean + 1] {
+                let images = make_images(&embedder, n, size, Content::Varied);
+                let (worst, at) = worst_cosine_sampled(&embedder, &images, 8);
+                let gib = (n * bytes_per_image) as f64 / (1024.0 * 1024.0 * 1024.0);
+                println!(
+                    "  batch {n}: attention {gib:.4} GiB, worst cosine {worst:.6} at {at}  {}",
+                    if worst > 0.99 { "clean" } else { "CORRUPT" }
+                );
+            }
+            println!(
+                "  hypothesis holds if {predicted_last_clean} is clean and {} is CORRUPT",
+                predicted_last_clean + 1
+            );
+        }
+    }
+
+    /// Binary-search a model's exact batch boundary.
+    ///
+    /// Used after two byte-budget predictions for `base-224` were falsified
+    /// (2329 from the attention tensor, 1783 from the MLP intermediate; both
+    /// were already corrupt). The so400m boundary matches
+    /// `2^32 / attention_bytes` to one image, but one exact fit and two misses
+    /// is not a law, so the remaining model gets measured rather than derived.
+    ///
+    /// ```text
+    /// cargo test -p videre-ml --release exact_boundary_for_the_default_model -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn exact_boundary_for_the_default_model() {
+        const MODEL: &str = "google/siglip-base-patch16-224";
+        let embedder = Embedder::load(crate::device::best_device(), MODEL).unwrap();
+        let size = image_size_for(MODEL);
+
+        // Known from the ladder sweep: 768 clean, 1783 corrupt.
+        let (mut lo, mut hi) = (768usize, 1783usize);
+        while hi - lo > 1 {
+            let mid = lo + (hi - lo) / 2;
+            let images = make_images(&embedder, mid, size, Content::Varied);
+            let (worst, _) = worst_cosine_sampled(&embedder, &images, 8);
+            let clean = worst > 0.99;
+            println!(
+                "  batch {mid}: worst cosine {worst:.6}  {}",
+                if clean { "clean" } else { "CORRUPT" }
+            );
+            if clean {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        println!("  exact boundary for {MODEL}: {lo} clean, {hi} CORRUPT");
+    }
+
     /// Is the corruption Metal-specific?
     ///
     /// Runs the known-bad configuration on `Device::Cpu` instead of
