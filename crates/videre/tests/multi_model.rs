@@ -1,34 +1,11 @@
 //! End-to-end coverage for the per-model embedding split: several models in
 //! one library, and several libraries not treading on each other.
 
+mod common;
+use common::{isolated_home, videre_bin};
+
 use std::process::Command;
 use tempfile::tempdir;
-
-/// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.
-///
-/// Load-bearing here: embeddings live at `<VIDERE_HOME>/embeddings/...`, so
-/// without this the test process writes into the developer's real `~/.videre`
-/// while the spawned binary reads an isolated one. Set inside `get_or_init`
-/// so it happens exactly once, since tests share a process and run in
-/// parallel and a per-test `set_var` would race every concurrent `getenv`.
-fn isolated_home() -> &'static std::path::Path {
-    static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    HOME.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("videre-mm-home-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("create isolated test home");
-        std::env::set_var("VIDERE_HOME", &dir);
-        dir
-    })
-}
-
-fn videre_bin() -> std::path::PathBuf {
-    isolated_home();
-    let mut path = std::env::current_exe().unwrap();
-    path.pop(); // deps/
-    path.pop(); // debug/
-    path.push("videre");
-    path
-}
 
 const MODEL_A: &str = "google/siglip2-base-patch16-384";
 const MODEL_B: &str = "google/siglip-base-patch16-224";
@@ -105,7 +82,11 @@ fn stats_reports_every_model_separately() {
         .arg(&db)
         .output()
         .expect("failed to run videre stats");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let embeddings = doc["library"]["embeddings"].as_array().unwrap();
@@ -140,7 +121,10 @@ fn search_names_the_available_models_when_one_is_missing() {
         "must exit non-zero rather than return zero hits"
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("no embeddings for google/does-not-exist-384"), "{stderr}");
+    assert!(
+        stderr.contains("no embeddings for google/does-not-exist-384"),
+        "{stderr}"
+    );
     assert!(
         stderr.contains(MODEL_A) && stderr.contains(MODEL_B),
         "the error must list what IS available: {stderr}"
@@ -158,7 +142,11 @@ fn prune_removes_orphans_from_every_model_database() {
         .arg(&db)
         .output()
         .expect("failed to run videre prune");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     for model in [MODEL_A, MODEL_B] {
         assert_eq!(
@@ -190,7 +178,11 @@ fn pruning_one_library_leaves_another_librarys_embeddings_alone() {
         .arg(&db_a)
         .output()
         .expect("failed to run videre prune");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     assert_eq!(count_embeddings(&db_a, MODEL_A), 0, "library A was pruned");
     assert_eq!(

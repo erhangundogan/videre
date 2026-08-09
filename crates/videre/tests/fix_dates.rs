@@ -1,39 +1,9 @@
+mod common;
+use common::videre_bin;
 use rusqlite::Connection;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use tempfile::tempdir;
-
-/// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.
-/// Spawned `videre` child processes inherit the environment, so their lock
-/// files land there instead of the developer's real `~/.videre/locks`, locks
-/// live under the videre home now rather than beside the database, so without
-/// this every run would leave permanent litter in the real home (test database
-/// names are random, so the files would accumulate rather than be reused).
-///
-/// Called from `videre_bin()` so it covers every spawn site automatically. The
-/// `set_var` runs inside `get_or_init` so it happens exactly once: tests share
-/// a process and run in parallel, and calling `set_var` from several threads
-/// would otherwise race every concurrent `getenv`. Tests that set their own
-/// `VIDERE_HOME` per-command still win, since `.env()` overrides what's
-/// inherited.
-fn isolated_home() {
-    static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    HOME.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("videre-it-home-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("create isolated test home");
-        std::env::set_var("VIDERE_HOME", &dir);
-        dir
-    });
-}
-
-fn videre_bin() -> std::path::PathBuf {
-    isolated_home();
-    let mut path = std::env::current_exe().unwrap();
-    path.pop(); // deps/
-    path.pop(); // debug/
-    path.push("videre");
-    path
-}
 
 /// One file with a known exif_date, no created_at/modified_at set.
 /// Returns (db_path, file_path).
@@ -51,7 +21,7 @@ fn fixture_db(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf)
         );",
     )
     .unwrap();
-        videre_core::db::ensure_file_hashes_columns(&conn);
+    videre_core::db::ensure_file_hashes_columns(&conn);
     conn.execute(
         "INSERT INTO file_hashes (path, hash, exif_date) VALUES (?1, 'haaa', '2019-06-15T10:00:00')",
         rusqlite::params![file.to_str().unwrap()],
@@ -63,19 +33,35 @@ fn fixture_db(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf)
 fn mtime_year(path: &std::path::Path) -> i32 {
     use chrono::{Datelike, Local, TimeZone};
     let modified = std::fs::metadata(path).unwrap().modified().unwrap();
-    let secs = modified.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let secs = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
     Local.timestamp_opt(secs, 0).unwrap().year()
 }
 
-fn run_fix_dates(db: &std::path::Path, extra_args: &[&str], stdin_input: Option<&str>) -> std::process::Output {
+fn run_fix_dates(
+    db: &std::path::Path,
+    extra_args: &[&str],
+    stdin_input: Option<&str>,
+) -> std::process::Output {
     let mut cmd = Command::new(videre_bin());
     cmd.arg("fix-dates").arg("--db").arg(db).args(extra_args);
-    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut child = cmd.spawn().expect("failed to run videre fix-dates");
     if let Some(input) = stdin_input {
-        child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
     }
-    child.wait_with_output().expect("failed to wait on videre fix-dates")
+    child
+        .wait_with_output()
+        .expect("failed to wait on videre fix-dates")
 }
 
 #[test]
@@ -98,7 +84,11 @@ fn accepting_the_prompt_updates_the_file() {
 
     let out = run_fix_dates(&db, &[], Some("y\n"));
     assert!(out.status.success());
-    assert_eq!(mtime_year(&file), 2019, "accepting should set mtime from exif_date");
+    assert_eq!(
+        mtime_year(&file),
+        2019,
+        "accepting should set mtime from exif_date"
+    );
 }
 
 #[test]
@@ -110,7 +100,11 @@ fn yes_flag_skips_the_prompt_entirely() {
     // (read_line would block); --yes must bypass it.
     let out = run_fix_dates(&db, &["--yes"], None);
     assert!(out.status.success());
-    assert_eq!(mtime_year(&file), 2019, "--yes should proceed without a prompt");
+    assert_eq!(
+        mtime_year(&file),
+        2019,
+        "--yes should proceed without a prompt"
+    );
 }
 
 #[test]
@@ -122,7 +116,11 @@ fn dry_run_never_prompts() {
     // No stdin provided, dry-run must not block on a prompt either.
     let out = run_fix_dates(&db, &["--dry-run"], None);
     assert!(out.status.success());
-    assert_eq!(mtime_year(&file), before, "dry-run must not modify the file");
+    assert_eq!(
+        mtime_year(&file),
+        before,
+        "dry-run must not modify the file"
+    );
 }
 
 #[test]
@@ -135,5 +133,9 @@ fn eof_on_stdin_is_treated_as_no() {
     // as declining, not accepted and not a hang.
     let out = run_fix_dates(&db, &[], Some(""));
     assert!(out.status.success());
-    assert_eq!(mtime_year(&file), before, "EOF on stdin must be treated as 'no'");
+    assert_eq!(
+        mtime_year(&file),
+        before,
+        "EOF on stdin must be treated as 'no'"
+    );
 }

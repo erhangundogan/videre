@@ -1,61 +1,22 @@
+mod common;
+use common::{shared_cache_guard, videre_bin};
 use std::fs;
 use std::process::Command;
 use tempfile::tempdir;
 
-/// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.
-/// Spawned `videre` child processes inherit the environment, so their lock
-/// files land there instead of the developer's real `~/.videre/locks`, locks
-/// live under the videre home now rather than beside the database, so without
-/// this every run would leave permanent litter in the real home (test database
-/// names are random, so the files would accumulate rather than be reused).
-///
-/// Called from `videre_bin()` so it covers every spawn site automatically. The
-/// `set_var` runs inside `get_or_init` so it happens exactly once: tests share
-/// a process and run in parallel, and calling `set_var` from several threads
-/// would otherwise race every concurrent `getenv`. Tests that set their own
-/// `VIDERE_HOME` per-command still win, since `.env()` overrides what's
-/// inherited.
-fn isolated_home() {
-    static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    HOME.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("videre-it-home-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("create isolated test home");
-        std::env::set_var("VIDERE_HOME", &dir);
-        dir
-    });
-}
-
-/// Serialises the tests that spawn `videre embed`.
-///
-/// Each spawns a child that loads SigLIP weights through the shared Hugging
-/// Face cache. cargo runs tests in one binary on parallel threads, so two
-/// children race on that cache and one reports
-/// `load tokenizer: No such file or directory`. Observed intermittently, and
-/// nothing about it is videre's own concurrency: the cache is simply not
-/// safe for two simultaneous first-time readers.
-fn embed_guard() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-fn videre_bin() -> std::path::PathBuf {
-    isolated_home();
-    let mut path = std::env::current_exe().unwrap();
-    path.pop(); // deps/
-    path.pop(); // debug/
-    path.push("videre");
-    path
-}
-
 #[test]
 #[cfg(target_os = "macos")]
 fn embed_produces_an_embeddings_row_for_a_real_video() {
-    let _serial = embed_guard();
+    let _serial = shared_cache_guard();
     let scan_dir = tempdir().unwrap();
     let out_dir = tempdir().unwrap();
     let db_path = out_dir.path().join("hashes.db");
 
-    fs::copy("tests/fixtures/red_1s.mp4", scan_dir.path().join("clip.mp4")).unwrap();
+    fs::copy(
+        "tests/fixtures/red_1s.mp4",
+        scan_dir.path().join("clip.mp4"),
+    )
+    .unwrap();
 
     let scan_status = Command::new(videre_bin())
         .arg("scan")
@@ -89,7 +50,10 @@ fn embed_produces_an_embeddings_row_for_a_real_video() {
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM emb.embeddings", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(count, 1, "the video's content hash should have an embeddings row");
+    assert_eq!(
+        count, 1,
+        "the video's content hash should have an embeddings row"
+    );
 
     // Sanity-check the embedding itself, not just that a row exists, this is
     // the sole integration-level proof this feature works, so it's worth
@@ -115,7 +79,7 @@ fn embed_produces_an_embeddings_row_for_a_real_video() {
 #[test]
 #[cfg(target_os = "macos")]
 fn embed_skips_an_audio_only_video_without_calling_quicklook() {
-    let _serial = embed_guard();
+    let _serial = shared_cache_guard();
     // Regression guard for a 20s-per-run cost: qlmanage hangs rather than
     // failing on a container with no video track, and nothing marks the file
     // permanently unembeddable, so the wait recurs on every run.
