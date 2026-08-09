@@ -93,3 +93,86 @@ pub fn shared_cache_guard() -> impl Drop {
     }
     Guard(file)
 }
+
+/// Root of the local Hugging Face cache, honouring `HF_HOME`.
+///
+/// Both SigLIP and InsightFace land here. Note this is **not** `~/.cache/ort/`,
+/// which `CLAUDE.md` claimed for months and which has never existed; a check
+/// written against that path would report "cold" forever.
+pub fn hf_cache_dir() -> PathBuf {
+    if let Ok(home) = std::env::var("HF_HOME") {
+        return PathBuf::from(home).join("hub");
+    }
+    dirs_home().join(".cache").join("huggingface").join("hub")
+}
+
+fn dirs_home() -> PathBuf {
+    std::env::var("HOME").map(PathBuf::from).unwrap_or_default()
+}
+
+/// Whether every one of `files` is present in some snapshot of `repo`.
+///
+/// Checks the files themselves, not the repo directory: an interrupted
+/// download leaves the directory in place with the weights missing, and that
+/// state must read as cold or the caller proceeds into a failure.
+///
+/// The snapshot sha is globbed rather than pinned, since it changes whenever
+/// the upstream repo is updated.
+fn repo_files_cached(repo: &str, files: &[&str]) -> bool {
+    let snapshots = hf_cache_dir()
+        .join(format!("models--{}", repo.replace('/', "--")))
+        .join("snapshots");
+    let Ok(entries) = std::fs::read_dir(&snapshots) else {
+        return false;
+    };
+    entries
+        .filter_map(Result::ok)
+        .any(|snap| files.iter().all(|f| snap.path().join(f).exists()))
+}
+
+/// InsightFace SCRFD detector and ArcFace recogniser, used by `videre faces`.
+pub fn face_models_cached() -> bool {
+    repo_files_cached("WePrompt/buffalo_l", &["det_10g.onnx", "w600k_r50.onnx"])
+}
+
+/// SigLIP weights for the resolved default model, used by `videre embed`.
+///
+/// Derives the repo from `DEFAULT_MODEL_ID` rather than hardcoding it, so
+/// changing the default model cannot silently make this always-false and skip
+/// the embed tests forever.
+pub fn siglip_cached() -> bool {
+    repo_files_cached(
+        videre_core::embeddings::DEFAULT_MODEL_ID,
+        &["tokenizer.json", "config.json"],
+    )
+}
+
+/// Whether the caller should return early, printing a loud reason if so.
+///
+/// Tests never download weights: that is the application's job, triggered by a
+/// real `videre embed` or `videre faces` run. A cold cache therefore skips.
+///
+/// Rust has no native skip, so a skipped test passes, which is a real risk of
+/// silently covering nothing. `VIDERE_TEST_REQUIRE_MODELS=1` turns the skip
+/// into a panic, and CI sets it after restoring its cache: a skip there means
+/// the cache silently stopped working, and the test would otherwise never run
+/// anywhere at all.
+pub fn skip_without_models(what: &str, cached: bool) -> bool {
+    if cached {
+        return false;
+    }
+    let cache = hf_cache_dir();
+    if std::env::var("VIDERE_TEST_REQUIRE_MODELS").as_deref() == Ok("1") {
+        panic!(
+            "VIDERE_TEST_REQUIRE_MODELS=1 but {what} weights are missing from {}. \
+             In CI this means the model cache was not restored.",
+            cache.display()
+        );
+    }
+    eprintln!(
+        "SKIP: {what} weights are not cached in {}. \
+         Run `videre {what}` once to populate it; tests never download.",
+        cache.display()
+    );
+    true
+}
