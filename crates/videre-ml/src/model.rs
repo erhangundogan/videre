@@ -365,6 +365,79 @@ mod tests {
 mod batch_correctness_tests {
     use super::*;
 
+    /// How to fill the synthetic images a sweep embeds.
+    ///
+    /// This distinction is load-bearing. The original corruption was
+    /// reproduced with 297 *real* files; the first version of this test used
+    /// only `Uniform`, where every pixel of an image is the same value. If a
+    /// uniform tensor does not drive the same kernels as real image data, a
+    /// sweep built on it can report "clean" at a genuinely corrupt batch size,
+    /// which would make it worse than no test at all.
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) enum Content {
+        /// Every pixel of image `i` is the same value, distinct per image.
+        Uniform,
+        /// Deterministic pseudo-random per pixel, seeded per image.
+        Varied,
+    }
+
+    /// `n` synthetic images, each distinct, so a bug returning one vector
+    /// repeated (or a shifted buffer) cannot pass by accident.
+    pub(crate) fn make_images(
+        embedder: &Embedder,
+        n: usize,
+        size: usize,
+        content: Content,
+    ) -> Vec<Tensor> {
+        (0..n)
+            .map(|i| match content {
+                Content::Uniform => {
+                    let v = (i as f32 / n as f32) * 2.0 - 1.0;
+                    Tensor::full(v, (3, size, size), &embedder.device).unwrap()
+                }
+                Content::Varied => {
+                    // xorshift, so this needs no rng dependency and is
+                    // reproducible across machines and runs.
+                    let mut s = (i as u32).wrapping_mul(2_654_435_761).max(1);
+                    let data: Vec<f32> = (0..3 * size * size)
+                        .map(|_| {
+                            s ^= s << 13;
+                            s ^= s >> 17;
+                            s ^= s << 5;
+                            (s as f32 / u32::MAX as f32) * 2.0 - 1.0
+                        })
+                        .collect();
+                    Tensor::from_vec(data, (3, size, size), &embedder.device).unwrap()
+                }
+            })
+            .collect()
+    }
+
+    /// Worst cosine between each batched embedding and a one-at-a-time
+    /// baseline, plus the index where it occurred.
+    ///
+    /// This comparison is the only thing that detects the corruption: it
+    /// raises no error, produces no NaN, and at batch 256 not even a zero
+    /// vector, just plausible garbage. Uses `videre_core::vectors::cosine`
+    /// rather than an inline loop so this check and the product cannot
+    /// disagree about what similarity means.
+    pub(crate) fn worst_cosine_vs_singles(embedder: &Embedder, images: &[Tensor]) -> (f32, usize) {
+        let batched = embedder.embed_images(images).unwrap();
+        assert_eq!(batched.len(), images.len(), "one embedding per input");
+
+        let mut worst = f32::MAX;
+        let mut worst_at = 0usize;
+        for (i, img) in images.iter().enumerate() {
+            let single = embedder.embed_images(std::slice::from_ref(img)).unwrap();
+            let cos = videre_core::vectors::cosine(&batched[i], &single[0]);
+            if cos < worst {
+                worst = cos;
+                worst_at = i;
+            }
+        }
+        (worst, worst_at)
+    }
+
     /// Empirical proof that `MAX_SAFE_BATCH` is actually safe: embedding N
     /// images in one call must match embedding them one at a time.
     ///
@@ -389,41 +462,65 @@ mod batch_correctness_tests {
     #[cfg(target_os = "macos")]
     fn batched_embeddings_match_one_at_a_time() {
         let embedder = Embedder::load(crate::device::best_device(), MODEL_ID).unwrap();
+        let images = make_images(&embedder, MAX_SAFE_BATCH, IMAGE_SIZE, Content::Varied);
+        let (worst, worst_at) = worst_cosine_vs_singles(&embedder, &images);
 
-        // Distinct inputs, so a bug that returns one vector repeated (or a
-        // shifted/garbage buffer) cannot pass by accident.
-        let n = MAX_SAFE_BATCH;
-        let images: Vec<Tensor> = (0..n)
-            .map(|i| {
-                let v = (i as f32 / n as f32) * 2.0 - 1.0;
-                Tensor::full(v, (3, IMAGE_SIZE, IMAGE_SIZE), &embedder.device).unwrap()
-            })
-            .collect();
+        println!("worst cosine over {MAX_SAFE_BATCH} images: {worst:.6} (index {worst_at})");
+        assert!(
+            worst > 0.99,
+            "batch of {MAX_SAFE_BATCH} disagrees with one-at-a-time embedding (worst cosine \
+             {worst:.6} at index {worst_at}); MAX_SAFE_BATCH is too high for this machine"
+        );
+    }
 
-        let batched = embedder.embed_images(&images).unwrap();
-        assert_eq!(batched.len(), n, "one embedding per input expected");
+    /// **Validates the instrument, not the product.**
+    ///
+    /// Every measurement in
+    /// `docs/superpowers/plans/2026-08-09-embed-batch-corruption.md` depends on
+    /// `worst_cosine_vs_singles` actually being able to see the corruption. So
+    /// this runs the configuration measured corrupt on 2026-08-04 (Metal,
+    /// `siglip-so400m-patch14-384`, batch 128) and asserts it is detected as
+    /// corrupt.
+    ///
+    /// A failure here does **not** mean the bug is fixed. It means the
+    /// synthetic inputs do not reproduce what 297 real files did, and that
+    /// every sweep built on them is worthless. In that case, reproduce with
+    /// real files instead, as the original investigation did.
+    ///
+    /// Reports both input modes, since the first version of the test above
+    /// used `Uniform` only and nothing ever checked that uniform tensors can
+    /// trigger this at all.
+    ///
+    /// ```text
+    /// cargo test -p videre-ml --release instrument_detects_the_known_bad_configuration -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn instrument_detects_the_known_bad_configuration() {
+        const KNOWN_BAD_MODEL: &str = "google/siglip-so400m-patch14-384";
+        const KNOWN_BAD_BATCH: usize = 128;
 
-        let mut worst = f32::MAX;
-        let mut worst_at = 0usize;
-        for (i, img) in images.iter().enumerate() {
-            let single = embedder.embed_images(std::slice::from_ref(img)).unwrap();
-            let (a, b) = (&batched[i], &single[0]);
-            let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
-            let na = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-            let nb = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-            assert!(na > 0.0 && nb > 0.0, "zero-norm embedding at index {i}");
-            let cos = dot / (na * nb);
-            if cos < worst {
-                worst = cos;
-                worst_at = i;
+        let embedder = Embedder::load(crate::device::best_device(), KNOWN_BAD_MODEL).unwrap();
+        let size = image_size_for(KNOWN_BAD_MODEL);
+
+        let mut detected_by = Vec::new();
+        for content in [Content::Uniform, Content::Varied] {
+            let images = make_images(&embedder, KNOWN_BAD_BATCH, size, content);
+            let (worst, at) = worst_cosine_vs_singles(&embedder, &images);
+            println!("{content:?}: worst cosine {worst:.6} at index {at}");
+            if worst <= 0.99 {
+                detected_by.push(content);
             }
         }
 
-        println!("worst cosine over {n} images: {worst:.6} (index {worst_at})");
         assert!(
-            worst > 0.99,
-            "batch of {n} disagrees with one-at-a-time embedding (worst cosine {worst:.6} at \
-             index {worst_at}); MAX_SAFE_BATCH is too high for this machine"
+            !detected_by.is_empty(),
+            "the instrument did NOT reproduce the corruption at batch {KNOWN_BAD_BATCH} on \
+             {KNOWN_BAD_MODEL}, which was measured corrupt on 2026-08-04. Either the defect is \
+             gone (check candle's version) or synthetic tensors cannot trigger it, in which case \
+             every sweep built on this helper is invalid and real files must be used instead."
         );
+        println!("instrument validated; detected by: {detected_by:?}");
     }
 }
