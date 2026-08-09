@@ -177,11 +177,8 @@ rustfmt options, not a file filter, so `cargo fmt -p videre -- path/to/one.rs`
 silently formats the entire package. To format a single file, invoke
 `rustfmt <file>` directly.
 
-Clippy and the test suite are deliberately not in CI yet. Clippy currently
-reports 18 warnings, so it would need either `--allow`-ing them or a cleanup
-pass first, and the test suite needs macOS for the QuickLook paths plus
-multi-gigabyte model downloads (SigLIP via Hugging Face, InsightFace via
-`~/.cache/ort/`) that would dominate every run.
+Clippy is deliberately not in CI yet: it reports 18 warnings, so a lint job
+would need either `--allow`-ing them or a cleanup pass first.
 
 ## Test coverage
 
@@ -297,7 +294,7 @@ The `videre` crate builds a single `[[bin]]` (`videre`, from `src/main.rs`) plus
 - `half`: f16 storage for embeddings
 - `matrixmultiply`: pure-Rust blocked GEMM, used as a fast candidate filter in `videre faces`'s clustering step
 - `ort`: ONNX Runtime bindings for face detection and embedding
-- InsightFace buffalo_l: SCRFD-10GF face detector + ArcFace w600k_r50 embedder (ONNX weights, auto-downloaded to `~/.cache/ort/`)
+- InsightFace buffalo_l: SCRFD-10GF face detector + ArcFace w600k_r50 embedder (ONNX weights, auto-downloaded via hf-hub to `~/.cache/huggingface/hub/models--WePrompt--buffalo_l/`, honouring `HF_HOME`; **not** `~/.cache/ort/`, which this file claimed for months and which has never existed)
 - `rmcp`: official Rust MCP SDK, stdio server for `videre mcp`
 - `schemars`: JSON-schema generation for MCP tool parameters
 - `ureq`: blocking HTTP client for forward geocoding (`videre search --location`), no async runtime needed, matching this project's fully-synchronous architecture
@@ -383,7 +380,7 @@ Because lock paths now resolve through `VIDERE_HOME` rather than sitting beside 
 
 That helper lives in `crates/videre/tests/common/mod.rs` and is shared by every integration-test file. It was previously copy-pasted into each one, which is how `faces_pipeline.rs` and `person_search.rs` came to be missing it entirely: a latent hazard rather than an observed leak, since neither happened to run a lock-taking command, but exactly the kind of omission a per-file copy invites. Calling `isolated_home` from `videre_bin` rather than from each test is what makes it impossible for a new file to forget.
 
-`common` also provides `shared_cache_guard()`, which every test spawning `videre embed` or `videre faces` must hold. Those children download SigLIP weights through the Hugging Face cache and InsightFace ONNX weights through `~/.cache/ort/`, and neither cache is safe for two simultaneous first-time readers. It has to be a **file** lock: cargo runs each test file as its own process and runs those processes in parallel, so the racing readers are typically in different processes, which no `Mutex` can see. `faces_pipeline.rs` and `faces_resumability.rs` are two such binaries. Only contended on a cold cache, so the cost on a warm machine is negligible.
+`common` also provides `shared_cache_guard()`, which every test spawning `videre embed` or `videre faces` must hold. Those children resolve both SigLIP and InsightFace weights through the same Hugging Face cache (`~/.cache/huggingface/hub/`, honouring `HF_HOME`), which is not safe for two simultaneous first-time readers. It has to be a **file** lock: cargo runs each test file as its own process and runs those processes in parallel, so the racing readers are typically in different processes, which no `Mutex` can see. `faces_pipeline.rs` and `faces_resumability.rs` are two such binaries. Only contended on a cold cache, so the cost on a warm machine is negligible.
 
 `classifications` is populated by `videre classify` (zero-shot photo/screenshot/document/meme classification, scoring `embeddings` rows already computed by `videre embed` against 4 fixed text prompts via cosine similarity, no new model, no image re-decoding) and queried via `videre search --category <name>`. Rows below the configurable `--margin` similarity gap between the best and second-best category are stored as `category = "unknown"` rather than a low-confidence guess.
 
@@ -939,7 +936,7 @@ Five independent stages, selected with `--scan` / `--faces` / `--heic` / `--loca
 
 `--interval <seconds>` (default 300) is the sleep between cycles; each cycle runs the selected stages once, logs a per-stage summary to stderr (unless `--silent`), then sleeps. There's no daemonization or systemd unit. Run it in a terminal, tmux/screen pane, or your own process supervisor, and stop it with Ctrl-C.
 
-Thumbnails land in `~/.cache/videre/thumbnails/`, keyed by content hash rather than file path (`<hash>_240.jpg`, `<hash>_1200.jpg`), mirroring the project's existing `~/.cache/ort/` convention for cached model weights, and means the same photo scanned into a different database only needs converting once. On first run of any `videre` subcommand, if the pre-rename cache at `~/.cache/dupe/thumbnails/` still exists and `~/.cache/videre/thumbnails/` doesn't, it's migrated automatically (a plain directory rename, atomic on the same filesystem, and a no-op on any error since the cache regenerates lazily). `videre report`'s `/api/raw?path=...&size=N` endpoint (server mode, `--show-faces`) checks this cache first for HEIC requests and serves the cached JPEG directly if present, falling back to a live `qlmanage` conversion otherwise, so running `videre watch --heic` alongside `videre report --show-faces` eliminates the per-request HEIC conversion cost for anything already warmed.
+Thumbnails land in `~/.cache/videre/thumbnails/`, keyed by content hash rather than file path (`<hash>_240.jpg`, `<hash>_1200.jpg`), mirroring the convention hf-hub already uses for cached model weights under `~/.cache/huggingface/`, and means the same photo scanned into a different database only needs converting once. On first run of any `videre` subcommand, if the pre-rename cache at `~/.cache/dupe/thumbnails/` still exists and `~/.cache/videre/thumbnails/` doesn't, it's migrated automatically (a plain directory rename, atomic on the same filesystem, and a no-op on any error since the cache regenerates lazily). `videre report`'s `/api/raw?path=...&size=N` endpoint (server mode, `--show-faces`) checks this cache first for HEIC requests and serves the cached JPEG directly if present, falling back to a live `qlmanage` conversion otherwise, so running `videre watch --heic` alongside `videre report --show-faces` eliminates the per-request HEIC conversion cost for anything already warmed.
 
 `videre watch` and `videre report --show-faces` are designed to run concurrently against the same SQLite file (see the WAL-mode note in the SQLite schema section above).
 

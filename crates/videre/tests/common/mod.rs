@@ -52,11 +52,10 @@ pub fn videre_bin() -> PathBuf {
 
 /// Serialises children that may download shared model weights.
 ///
-/// `videre embed` pulls SigLIP through the Hugging Face cache and `videre
-/// faces` pulls the InsightFace ONNX weights through `~/.cache/ort/`. Neither
-/// cache is safe for two simultaneous first-time readers: the loser sees a
-/// half-written file and fails with something like `load tokenizer: No such
-/// file or directory`.
+/// `videre embed` (SigLIP) and `videre faces` (InsightFace ONNX) both resolve
+/// weights through the same Hugging Face cache, which is not safe for two
+/// simultaneous first-time readers: the loser sees a half-written file and
+/// fails with something like `load tokenizer: No such file or directory`.
 ///
 /// This has to be a **file** lock, not a `Mutex`. Cargo runs each test file as
 /// its own process and runs those processes in parallel, so the racing readers

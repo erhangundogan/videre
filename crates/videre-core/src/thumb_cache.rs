@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 /// Directory holding pre-converted HEIC thumbnails, keyed by content hash
 /// rather than file path, the same photo scanned into different databases
-/// only needs converting once. Mirrors this project's existing
-/// `~/.cache/ort/` convention for cached model weights.
+/// only needs converting once. Mirrors the convention hf-hub already uses for
+/// cached model weights under `~/.cache/huggingface/`.
 pub fn cache_dir() -> PathBuf {
     dirs_cache_dir().join("videre").join("thumbnails")
 }
