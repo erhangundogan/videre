@@ -21,7 +21,15 @@ pub fn image_to_tensor(path: &Path, size: usize, device: &Device) -> Result<Tens
     } else {
         let timeout_path = path.to_path_buf();
         videre_core::io_timeout::run_with_timeout(videre_core::io_timeout::DEFAULT_IO_TIMEOUT, move || {
-            image::open(&timeout_path)
+            // Not `image::open`: it picks a decoder from the file
+            // extension, so a JPEG named .png reaches the PNG decoder and
+            // fails with "Invalid PNG signature". `with_guessed_format`
+            // reads the magic bytes instead, which is the whole point of
+            // detecting the type in the first place.
+            image::ImageReader::open(&timeout_path)
+                .and_then(|r| r.with_guessed_format())
+                .map_err(image::ImageError::IoError)
+                .and_then(|r| r.decode())
         })
         .map_err(|_| {
             anyhow::anyhow!(
