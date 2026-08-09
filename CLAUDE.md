@@ -591,6 +591,16 @@ exposed via `videre mcp` (same precedent as `--category`, which
 match); `--scores` in text mode prepends `distance_km` instead of a cosine
 score for this one mode.
 
+`.mov`/`.mp4` files are checked for a video track before QuickLook is invoked
+(`videre_core::video_probe`). `qlmanage -t` does not fail on a container with
+no video track, it hangs, so videre used to pay the full 20s
+`QLMANAGE_TIMEOUT` per such file on every run: nothing marks a file
+permanently unembeddable, so `pending_images` keeps returning it. Measured on
+a real 70,601-file library, three audio-only Live Photo companions cost 60s
+per `videre embed` run and another 60s per `videre scan --similar`. The probe
+walks ISO-BMFF boxes for a `vide` handler and fails open, so any parse error
+or unrecognised layout proceeds to QuickLook exactly as before.
+
 Model choice lives in `config.toml` (`videre config set model <id>`), not an
 environment variable; see "Choosing a model" below. The measurements that drove
 the current default are recorded there and in

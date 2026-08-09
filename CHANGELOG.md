@@ -15,6 +15,14 @@ version number and are released together.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Videos with no video track no longer cost 20 seconds each.** `qlmanage`
+  hangs rather than failing on such a file, so `videre embed` and
+  `videre scan --similar` waited out the full timeout on every run, forever.
+  They are now detected and skipped instantly. Measured on a 70,601-file
+  library: 60 seconds saved per `embed` run and the same per `scan --similar`.
+
 ## [0.10.0] - 2026-08-07
 
 ### Added
