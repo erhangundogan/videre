@@ -25,6 +25,19 @@ fn isolated_home() {
     });
 }
 
+/// Serialises the tests that spawn `videre embed`.
+///
+/// Each spawns a child that loads SigLIP weights through the shared Hugging
+/// Face cache. cargo runs tests in one binary on parallel threads, so two
+/// children race on that cache and one reports
+/// `load tokenizer: No such file or directory`. Observed intermittently, and
+/// nothing about it is videre's own concurrency: the cache is simply not
+/// safe for two simultaneous first-time readers.
+fn embed_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn videre_bin() -> std::path::PathBuf {
     isolated_home();
     let mut path = std::env::current_exe().unwrap();
@@ -37,6 +50,7 @@ fn videre_bin() -> std::path::PathBuf {
 #[test]
 #[cfg(target_os = "macos")]
 fn embed_produces_an_embeddings_row_for_a_real_video() {
+    let _serial = embed_guard();
     let scan_dir = tempdir().unwrap();
     let out_dir = tempdir().unwrap();
     let db_path = out_dir.path().join("hashes.db");
@@ -101,6 +115,7 @@ fn embed_produces_an_embeddings_row_for_a_real_video() {
 #[test]
 #[cfg(target_os = "macos")]
 fn embed_skips_an_audio_only_video_without_calling_quicklook() {
+    let _serial = embed_guard();
     // Regression guard for a 20s-per-run cost: qlmanage hangs rather than
     // failing on a container with no video track, and nothing marks the file
     // permanently unembeddable, so the wait recurs on every run.
