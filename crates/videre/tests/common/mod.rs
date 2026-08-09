@@ -182,6 +182,40 @@ pub fn skip_without_models(what: &str, cached: bool) -> bool {
     true
 }
 
+/// A child's stderr with third-party library noise removed.
+///
+/// ONNX Runtime is linked into every `videre` binary and initialises at
+/// startup, even for subcommands that never run inference. On any host whose
+/// CPU it cannot identify it prints
+/// `onnxruntime cpuid_info warning: Unknown CPU vendor` before `main` gets a
+/// say. Measured on ARM64 Linux, which this project documents as a supported
+/// platform, so this is not a container artifact to be waved away: a real user
+/// there sees it too.
+///
+/// Assertions that videre printed nothing mean *videre*, not "no library
+/// anywhere in the process wrote to fd 2". Without this filter such a test
+/// passes on macOS and fails on ARM64 Linux for a reason unrelated to what it
+/// is testing.
+pub fn stderr_without_library_noise(stderr: &str) -> String {
+    stderr
+        .lines()
+        .filter(|l| !l.contains("onnxruntime"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+/// Whether the current process can read a file it has no permission bits for.
+///
+/// True when running as root, which bypasses permission checks entirely, so
+/// any test relying on an unreadable file has nothing to test. Probes the
+/// behaviour rather than checking the uid: it is the behaviour that matters,
+/// and it needs no libc dependency.
+pub fn permissions_are_enforced(unreadable_path: &Path) -> bool {
+    std::fs::read(unreadable_path).is_err()
+}
+
 /// Writes to the process's real stderr, bypassing libtest's output capture.
 ///
 /// `ManuallyDrop` because dropping a `File` built from a borrowed fd would
