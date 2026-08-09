@@ -17,3 +17,4 @@ pub mod person_search;
 pub mod progress;
 pub mod thumb_cache;
 pub mod vectors;
+pub mod video_probe;
