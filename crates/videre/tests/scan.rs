@@ -498,3 +498,154 @@ fn json_mode_reports_scan_shape_and_adopts_default_path() {
     assert!(String::from_utf8_lossy(&config.stdout)
         .contains(&scan_dir.path().display().to_string()));
 }
+
+#[test]
+fn retry_incomplete_processes_nothing_when_everything_has_a_type() {
+    let dir = tempdir().unwrap();
+    let out = tempdir().unwrap();
+    let db = out.path().join("h.db");
+    fs::copy("tests/fixtures/sample_with_exif.jpg", dir.path().join("a.jpg")).unwrap();
+
+    Command::new(videre_bin())
+        .args(["scan", "--silent", "--output-sqlite"])
+        .arg(&db)
+        .arg(dir.path())
+        .status()
+        .unwrap();
+
+    let out2 = Command::new(videre_bin())
+        .args(["scan", "--output-sqlite"])
+        .arg(&db)
+        .arg(dir.path())
+        .arg("--retry-incomplete")
+        .output()
+        .unwrap();
+    assert!(out2.status.success());
+    let stderr = String::from_utf8_lossy(&out2.stderr);
+    assert!(stderr.contains("0 incomplete"), "{stderr}");
+}
+
+#[test]
+fn retry_incomplete_processes_only_the_row_with_no_type() {
+    let dir = tempdir().unwrap();
+    let out = tempdir().unwrap();
+    let db = out.path().join("h.db");
+    for n in ["a.jpg", "b.jpg"] {
+        fs::copy("tests/fixtures/sample_with_exif.jpg", dir.path().join(n)).unwrap();
+    }
+    Command::new(videre_bin())
+        .args(["scan", "--silent", "--output-sqlite"])
+        .arg(&db)
+        .arg(dir.path())
+        .status()
+        .unwrap();
+
+    // Blank one row's type, simulating a file the previous scan never finished.
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute("UPDATE file_hashes SET mime = NULL WHERE path LIKE '%a.jpg'", [])
+        .unwrap();
+    drop(conn);
+
+    let out2 = Command::new(videre_bin())
+        .args(["scan", "--output-sqlite"])
+        .arg(&db)
+        .arg(dir.path())
+        .arg("--retry-incomplete")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out2.stderr);
+    assert!(stderr.contains("1 incomplete"), "{stderr}");
+
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let nulls: i64 = conn
+        .query_row("SELECT COUNT(*) FROM file_hashes WHERE mime IS NULL", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(nulls, 0, "the incomplete row must be filled");
+}
+
+#[test]
+fn retry_incomplete_picks_up_a_file_added_since_the_last_scan() {
+    let dir = tempdir().unwrap();
+    let out = tempdir().unwrap();
+    let db = out.path().join("h.db");
+    fs::copy("tests/fixtures/sample_with_exif.jpg", dir.path().join("a.jpg")).unwrap();
+    Command::new(videre_bin())
+        .args(["scan", "--silent", "--output-sqlite"])
+        .arg(&db)
+        .arg(dir.path())
+        .status()
+        .unwrap();
+
+    // A new file has no row at all, which also counts as incomplete.
+    fs::copy("tests/fixtures/sample_with_exif.jpg", dir.path().join("b.png")).unwrap();
+
+    Command::new(videre_bin())
+        .args(["scan", "--silent", "--output-sqlite"])
+        .arg(&db)
+        .arg(dir.path())
+        .arg("--retry-incomplete")
+        .status()
+        .unwrap();
+
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 2);
+}
+
+#[test]
+fn retry_incomplete_is_rejected_with_jsonl_output() {
+    let dir = tempdir().unwrap();
+    let out = Command::new(videre_bin())
+        .args(["scan"])
+        .arg(dir.path())
+        .args(["--output", "/tmp/x.jsonl", "--retry-incomplete"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "JSONL opens no database, so this must be rejected"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("retry-incomplete") && stderr.contains("output"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn an_unidentifiable_file_records_the_sentinel_and_is_not_retried() {
+    let dir = tempdir().unwrap();
+    let out = tempdir().unwrap();
+    let db = out.path().join("h.db");
+    // A supported extension whose bytes match no signature.
+    fs::write(dir.path().join("broken.png"), b"not actually a png at all, just text").unwrap();
+
+    Command::new(videre_bin())
+        .args(["scan", "--silent", "--output-sqlite"])
+        .arg(&db)
+        .arg(dir.path())
+        .status()
+        .unwrap();
+
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let mime: Option<String> = conn
+        .query_row("SELECT mime FROM file_hashes LIMIT 1", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(mime.as_deref(), Some("application/octet-stream"));
+    drop(conn);
+
+    let out2 = Command::new(videre_bin())
+        .args(["scan", "--output-sqlite"])
+        .arg(&db)
+        .arg(dir.path())
+        .arg("--retry-incomplete")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out2.stderr);
+    assert!(
+        stderr.contains("0 incomplete"),
+        "the sentinel must stop the retry loop: {stderr}"
+    );
+}
