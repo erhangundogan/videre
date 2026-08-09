@@ -34,3 +34,61 @@ jobs:
       # anything.
       - name: Check formatting
         run: make fmt-check
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      # Do not let a macOS failure hide the Linux result, or vice versa.
+      # Running both is the entire point of the matrix.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Model weights, persisted between runs. Keyed on the two files that
+      # decide which weights are fetched, so changing the buffalo_l repo or
+      # DEFAULT_MODEL_ID invalidates the cache rather than silently reusing
+      # weights for a different model.
+      - id: models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ runner.os }}-${{ hashFiles('crates/videre-ml/src/face_models.rs', 'crates/videre-core/src/embeddings.rs') }}
+
+      - name: Build
+        run: cargo build --workspace --tests
+
+      # Downloading happens here, in an explicit step, and never inside a test.
+      # That is what keeps "tests never download" literally true and puts the
+      # cost on its own visible line in the log.
+      #
+      # Needs a database with a real image in it: `videre faces` returns before
+      # loading any model when there is nothing to process, so warming up
+      # against an empty database would download nothing and leave the tests
+      # skipping.
+      #
+      # ~200 MB on Linux, ~1.6 GB on macOS (which also runs the SigLIP-backed
+      # embed tests). Once per cache key.
+      - name: Populate the model cache
+        if: steps.models.outputs.cache-hit != 'true'
+        run: |
+          set -eux
+          mkdir -p /tmp/warm
+          cp crates/videre/tests/fixtures/sample_with_exif.jpg /tmp/warm/
+          ./target/debug/videre scan --silent --output-sqlite /tmp/warm.db /tmp/warm
+          ./target/debug/videre faces --db /tmp/warm.db --silent
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            ./target/debug/videre embed --db /tmp/warm.db --silent
+          fi
+
+      # VIDERE_TEST_REQUIRE_MODELS turns a cold-cache skip into a failure. A
+      # skip here would mean the cache silently stopped working and the
+      # model-backed tests quietly stopped running.
+      - name: Test
+        env:
+          VIDERE_TEST_REQUIRE_MODELS: 1
+        run: cargo test --workspace
