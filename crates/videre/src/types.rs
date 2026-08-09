@@ -8,6 +8,11 @@ pub struct FileRecord {
     pub created_at: Option<String>,
     pub modified_at: Option<String>,
     pub ext: String,
+    /// The type identified by the file's magic bytes, independent of its
+    /// name. NULL for rows written before this column existed; a re-scan
+    /// fills it. See `videre_core::mime_probe`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mime: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phash: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -136,6 +141,7 @@ mod tests {
             created_at: Some("2023-01-01T00:00:00Z".to_string()),
             modified_at: Some("2024-01-01T00:00:00Z".to_string()),
             ext: "jpg".to_string(),
+            mime: None,
             phash: None,
             exif_date: None,
             gps_lat: None,
@@ -166,6 +172,7 @@ mod tests {
             created_at: None,
             modified_at: None,
             ext: "jpg".to_string(),
+            mime: None,
             phash: None,
             exif_date: Some("2023-08-15T14:30:00".to_string()),
             gps_lat: Some(48.85),
@@ -190,6 +197,7 @@ mod tests {
             created_at: None,
             modified_at: None,
             ext: "jpg".to_string(),
+            mime: None,
             phash: None,
             exif_date: None,
             gps_lat: None,
@@ -213,6 +221,7 @@ mod tests {
             created_at: None,
             modified_at: None,
             ext: "jpg".to_string(),
+            mime: None,
             phash: None,
             exif_date: None,
             gps_lat: None,

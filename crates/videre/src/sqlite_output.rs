@@ -13,6 +13,7 @@ pub fn write_records(records: &[FileRecord], db_path: &Path) -> Result<()> {
             created_at  TEXT,
             modified_at TEXT,
             ext         TEXT,
+            mime        TEXT,
             phash       INTEGER,
             exif_date   TEXT,
             gps_lat     REAL,
@@ -22,14 +23,19 @@ pub fn write_records(records: &[FileRecord], db_path: &Path) -> Result<()> {
         );",
     )?;
 
+    // Existing databases predate this column. Same idempotent pattern
+    // location.rs uses for location_name: attempt it, ignore the
+    // duplicate-column error.
+    let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN mime TEXT;");
+
     let tx = conn.unchecked_transaction()?;
 
     {
         let mut stmt = tx.prepare(
             "INSERT OR REPLACE INTO file_hashes
-                (path, hash, size_bytes, created_at, modified_at, ext,
+                (path, hash, size_bytes, created_at, modified_at, ext, mime,
                  phash, exif_date, gps_lat, gps_lon, width, height)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         )?;
 
         for r in records {
@@ -40,6 +46,7 @@ pub fn write_records(records: &[FileRecord], db_path: &Path) -> Result<()> {
                 r.created_at,
                 r.modified_at,
                 r.ext,
+                r.mime,
                 r.phash.map(|p| p as i64),
                 r.exif_date,
                 r.gps_lat,
@@ -59,7 +66,7 @@ pub fn write_records(records: &[FileRecord], db_path: &Path) -> Result<()> {
 pub fn load_records(db_path: &Path) -> Result<Vec<FileRecord>> {
     let conn = videre_core::db::open_wal(db_path)?;
     let mut stmt = conn.prepare(
-        "SELECT path, hash, size_bytes, created_at, modified_at, ext,
+        "SELECT path, hash, size_bytes, created_at, modified_at, ext, mime,
                 phash, exif_date, gps_lat, gps_lon, width, height
          FROM file_hashes",
     )?;
@@ -71,12 +78,13 @@ pub fn load_records(db_path: &Path) -> Result<Vec<FileRecord>> {
             created_at: row.get(3)?,
             modified_at: row.get(4)?,
             ext: row.get(5)?,
-            phash: row.get::<_, Option<i64>>(6)?.map(|p| p as u64),
-            exif_date: row.get(7)?,
-            gps_lat: row.get(8)?,
-            gps_lon: row.get(9)?,
-            width: row.get(10)?,
-            height: row.get(11)?,
+            mime: row.get(6)?,
+            phash: row.get::<_, Option<i64>>(7)?.map(|p| p as u64),
+            exif_date: row.get(8)?,
+            gps_lat: row.get(9)?,
+            gps_lon: row.get(10)?,
+            width: row.get(11)?,
+            height: row.get(12)?,
         })
     })?;
     rows.collect()
@@ -94,6 +102,7 @@ mod tests {
             created_at: Some("2020-01-01T00:00:00+00:00".to_string()),
             modified_at: Some("2021-01-01T00:00:00+00:00".to_string()),
             ext: "jpg".to_string(),
+            mime: None,
             phash: Some(u64::MAX), // exercises the i64 sign-cast roundtrip
             exif_date: Some("2019-06-01T10:00:00".to_string()),
             gps_lat: Some(48.85),
@@ -128,5 +137,43 @@ mod tests {
         let db = dir.path().join("t.db");
         write_records(&[], &db).unwrap(); // creates the table, writes nothing
         assert!(load_records(&db).unwrap().is_empty());
+    }
+
+    #[test]
+    fn mime_round_trips_through_the_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("t.db");
+        let mut r = rec("/a/x.png", "h1");
+        r.mime = Some("image/jpeg".to_string());
+        write_records(&[r], &db).unwrap();
+
+        let back = load_records(&db).unwrap();
+        assert_eq!(back[0].mime.as_deref(), Some("image/jpeg"));
+    }
+
+    #[test]
+    fn a_database_without_the_mime_column_gains_it() {
+        // Existing libraries predate the column. The migration must add it
+        // rather than failing, and existing rows keep NULL until re-scanned.
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("old.db");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (
+                path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
+                created_at TEXT, modified_at TEXT, ext TEXT, phash INTEGER,
+                exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER,
+                height INTEGER
+            );
+            INSERT INTO file_hashes (path, hash, size_bytes, ext)
+             VALUES ('/old.jpg', 'h0', 123, 'jpg');",
+        )
+        .unwrap();
+        drop(conn);
+
+        write_records(&[rec("/new.jpg", "h1")], &db).unwrap();
+        let back = load_records(&db).unwrap();
+        assert_eq!(back.len(), 2);
+        assert!(back.iter().all(|r| r.mime.is_none()));
     }
 }
