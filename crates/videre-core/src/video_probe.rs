@@ -127,6 +127,30 @@ pub(crate) fn has_video_track_in<R: Read + Seek>(r: &mut R, end: u64) -> bool {
     }
 }
 
+/// True unless the container definitely has no video track.
+///
+/// Fails open: a missing file, unreadable file, unknown layout, or I/O timeout
+/// all return `true`, so the caller proceeds exactly as it does today. The only
+/// `false` is a container parsed successfully that provably contains no `vide`
+/// handler.
+///
+/// All file access goes through `io_timeout`, the project-wide rule for I/O on
+/// user-supplied paths: these files commonly live on removable volumes, and an
+/// unbounded read on a disconnected drive hangs the process, which is the
+/// failure this probe exists to reduce rather than reproduce.
+pub fn has_video_track(path: &Path) -> bool {
+    let path = path.to_path_buf();
+    crate::io_timeout::run_with_timeout(crate::io_timeout::DEFAULT_IO_TIMEOUT, move || {
+        let mut f = std::fs::File::open(&path).ok()?;
+        let end = f.seek(SeekFrom::End(0)).ok()?;
+        f.seek(SeekFrom::Start(0)).ok()?;
+        Some(has_video_track_in(&mut f, end))
+    })
+    .ok()
+    .flatten()
+    .unwrap_or(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,5 +280,40 @@ mod tests {
         f.extend_from_slice(&huge.to_be_bytes());
         f.extend_from_slice(b"moov");
         assert!(probe(f));
+    }
+
+    fn write_temp(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("videre_vp_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join(name);
+        std::fs::write(&p, bytes).unwrap();
+        p
+    }
+
+    #[test]
+    fn has_video_track_reads_a_real_file() {
+        let p = write_temp("audio.mov", &file_with(&[trak(b"soun")]));
+        assert!(!has_video_track(&p));
+        let p = write_temp("video.mov", &file_with(&[trak(b"vide")]));
+        assert!(has_video_track(&p));
+    }
+
+    #[test]
+    fn a_nonexistent_path_fails_open() {
+        assert!(has_video_track(std::path::Path::new("/nonexistent/nope.mov")));
+    }
+
+    #[test]
+    fn an_empty_file_fails_open() {
+        let p = write_temp("empty.mov", b"");
+        assert!(has_video_track(&p));
+    }
+
+    #[test]
+    fn a_jpeg_fails_open() {
+        // Not a container at all. Must not read as "no video track", or a
+        // caller passing the wrong path would silently skip work.
+        let p = write_temp("not_a_video.jpg", b"\xff\xd8\xff\xe0\x00\x10JFIF\0\x01");
+        assert!(has_video_track(&p));
     }
 }
