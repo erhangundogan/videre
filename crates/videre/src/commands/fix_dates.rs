@@ -47,9 +47,8 @@ pub fn run(args: FixDatesArgs) -> anyhow::Result<()> {
 
     let conn = videre_core::db::open_wal(&db).expect("failed to open database");
 
-    let errors = videre_core::pipeline_runs::track(&conn, &db, "fix-dates", || {
-        run_fix_dates(&args, &conn)
-    })?;
+    let errors =
+        videre_core::pipeline_runs::track(&conn, &db, "fix-dates", || run_fix_dates(&args, &conn))?;
 
     if errors > 0 {
         std::process::exit(1);
@@ -130,7 +129,11 @@ fn run_fix_dates(args: &FixDatesArgs, conn: &rusqlite::Connection) -> anyhow::Re
         }
 
         if !args.silent {
-            let prefix = if args.dry_run { "[dry-run]" } else { "[updated]" };
+            let prefix = if args.dry_run {
+                "[dry-run]"
+            } else {
+                "[updated]"
+            };
             println!("{prefix} {path}  →  {exif_date}");
         }
         changed += 1;
@@ -146,7 +149,11 @@ fn run_fix_dates(args: &FixDatesArgs, conn: &rusqlite::Connection) -> anyhow::Re
             "{} file(s) with exif_date, {} {}, {} error(s){}.",
             total,
             changed,
-            if args.dry_run { "would be updated" } else { "updated" },
+            if args.dry_run {
+                "would be updated"
+            } else {
+                "updated"
+            },
             errors,
             skipped_note,
         );

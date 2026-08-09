@@ -52,7 +52,9 @@ impl FaceDetector {
         let input_tensor = preprocess(img);
         let outputs = self
             .session
-            .run(ort::inputs![TensorRef::from_array_view(input_tensor.view())?])
+            .run(ort::inputs![TensorRef::from_array_view(
+                input_tensor.view()
+            )?])
             .context("SCRFD inference")?;
         postprocess(&outputs, orig_w, orig_h)
     }
@@ -61,14 +63,19 @@ impl FaceDetector {
 /// Resize `img` to 640x640 and convert to a CHW BGR float32 tensor normalised
 /// by `(pixel - 127.5) / 128.0`.
 fn preprocess(img: &DynamicImage) -> Array4<f32> {
-    let resized = img.resize_exact(INPUT_SIZE, INPUT_SIZE, image::imageops::FilterType::Triangle);
+    let resized = img.resize_exact(
+        INPUT_SIZE,
+        INPUT_SIZE,
+        image::imageops::FilterType::Triangle,
+    );
     let rgb = resized.to_rgb8();
     let mut tensor = Array4::<f32>::zeros([1, 3, INPUT_SIZE as usize, INPUT_SIZE as usize]);
     for (x, y, pix) in rgb.enumerate_pixels() {
         // SCRFD expects BGR channel order.
         tensor[[0, 0, y as usize, x as usize]] = (pix[2] as f32 - 127.5) / 128.0; // B
         tensor[[0, 1, y as usize, x as usize]] = (pix[1] as f32 - 127.5) / 128.0; // G
-        tensor[[0, 2, y as usize, x as usize]] = (pix[0] as f32 - 127.5) / 128.0; // R
+        tensor[[0, 2, y as usize, x as usize]] = (pix[0] as f32 - 127.5) / 128.0;
+        // R
     }
     tensor
 }
@@ -209,8 +216,16 @@ mod tests {
 
     #[test]
     fn nms_removes_duplicate() {
-        let d1 = Detection { bbox: [0.0, 0.0, 10.0, 10.0], score: 0.9, landmarks: [[0.0; 2]; 5] };
-        let d2 = Detection { bbox: [1.0, 1.0, 11.0, 11.0], score: 0.8, landmarks: [[0.0; 2]; 5] };
+        let d1 = Detection {
+            bbox: [0.0, 0.0, 10.0, 10.0],
+            score: 0.9,
+            landmarks: [[0.0; 2]; 5],
+        };
+        let d2 = Detection {
+            bbox: [1.0, 1.0, 11.0, 11.0],
+            score: 0.8,
+            landmarks: [[0.0; 2]; 5],
+        };
         let result = nms(vec![d1, d2], 0.4);
         assert_eq!(result.len(), 1);
         assert!((result[0].score - 0.9).abs() < 1e-5);
@@ -227,7 +242,10 @@ mod tests {
             *p = image::Rgb([255, 0, 0]);
         }
         let tensor = preprocess(&image::DynamicImage::ImageRgb8(img));
-        assert_eq!(tensor.shape(), &[1, 3, INPUT_SIZE as usize, INPUT_SIZE as usize]);
+        assert_eq!(
+            tensor.shape(),
+            &[1, 3, INPUT_SIZE as usize, INPUT_SIZE as usize]
+        );
         let b = tensor[[0, 0, 0, 0]];
         let g = tensor[[0, 1, 0, 0]];
         let r = tensor[[0, 2, 0, 0]];
@@ -238,7 +256,11 @@ mod tests {
 
     #[test]
     fn nms_keeps_non_overlapping() {
-        let d1 = Detection { bbox: [0.0, 0.0, 5.0, 5.0], score: 0.9, landmarks: [[0.0; 2]; 5] };
+        let d1 = Detection {
+            bbox: [0.0, 0.0, 5.0, 5.0],
+            score: 0.9,
+            landmarks: [[0.0; 2]; 5],
+        };
         let d2 = Detection {
             bbox: [100.0, 100.0, 110.0, 110.0],
             score: 0.8,

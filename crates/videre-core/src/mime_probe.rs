@@ -13,8 +13,9 @@
 
 /// Top-level boxes that identify a classic QuickTime file, which predates
 /// ISO-BMFF's `ftyp` and may begin with any of these.
-const QUICKTIME_BOXES: [&[u8; 4]; 7] =
-    [b"ftyp", b"wide", b"mdat", b"moov", b"free", b"skip", b"pnot"];
+const QUICKTIME_BOXES: [&[u8; 4]; 7] = [
+    b"ftyp", b"wide", b"mdat", b"moov", b"free", b"skip", b"pnot",
+];
 
 /// The IANA type identified by `head`'s leading bytes, or None if
 /// unrecognised. Needs at least 12 bytes; shorter input is always None.
@@ -49,7 +50,10 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
     if box_type == b"ftyp" {
         let brand = &head[8..12];
         // HEIC and MP4 share the ftyp box; only the brand separates them.
-        if matches!(brand, b"heic" | b"heix" | b"hevc" | b"hevx" | b"mif1" | b"msf1") {
+        if matches!(
+            brand,
+            b"heic" | b"heix" | b"hevc" | b"hevx" | b"mif1" | b"msf1"
+        ) {
             return Some("image/heic");
         }
         if &brand[..2] == b"qt" {
@@ -62,7 +66,6 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
     }
     None
 }
-
 
 /// Types the embedding pipeline can decode.
 pub const EMBEDDABLE_MIMES: &[&str] = &[
@@ -203,7 +206,10 @@ mod tests {
 
     #[test]
     fn png_is_detected() {
-        assert_eq!(sniff(b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0d"), Some("image/png"));
+        assert_eq!(
+            sniff(b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0d"),
+            Some("image/png")
+        );
     }
 
     #[test]
@@ -284,7 +290,10 @@ mod tests {
 
     #[test]
     fn effective_mime_prefers_the_detected_value() {
-        assert_eq!(effective_mime(Some("image/jpeg"), "png"), Some("image/jpeg"));
+        assert_eq!(
+            effective_mime(Some("image/jpeg"), "png"),
+            Some("image/jpeg")
+        );
     }
 
     #[test]
@@ -336,8 +345,14 @@ mod tests {
         // Bookkeeping only. If the sentinel reached routing, a malformed JPEG
         // named .jpg would stop being embeddable even though the image crate
         // decodes it fine: a regression caused purely by better bookkeeping.
-        assert_eq!(effective_mime(Some(UNKNOWN_MIME), "jpg"), Some("image/jpeg"));
-        assert_eq!(effective_mime(Some(UNKNOWN_MIME), "mov"), Some("video/quicktime"));
+        assert_eq!(
+            effective_mime(Some(UNKNOWN_MIME), "jpg"),
+            Some("image/jpeg")
+        );
+        assert_eq!(
+            effective_mime(Some(UNKNOWN_MIME), "mov"),
+            Some("video/quicktime")
+        );
     }
 
     #[test]

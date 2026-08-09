@@ -3,40 +3,13 @@
 //! process (SIGKILL, not a graceful Ctrl-C) partway through a real run and
 //! asserts a resumed run picks up correctly with no images permanently lost.
 
+mod common;
+use common::{face_models_cached, shared_cache_guard, skip_without_models, videre_bin as bin};
+
 use rusqlite::Connection;
 use std::process::Command;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
-
-/// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.
-/// Spawned `videre` child processes inherit the environment, so their lock
-/// files land there instead of the developer's real `~/.videre/locks`, locks
-/// live under the videre home now rather than beside the database, so without
-/// this every run would leave permanent litter in the real home (test database
-/// names are random, so the files would accumulate rather than be reused).
-///
-/// Called from `bin()` so it covers every spawn site automatically. The
-/// `set_var` runs inside `get_or_init` so it happens exactly once: tests share
-/// a process and run in parallel, and calling `set_var` from several threads
-/// would otherwise race every concurrent `getenv`.
-fn isolated_home() {
-    static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    HOME.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("videre-it-home-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("create isolated test home");
-        std::env::set_var("VIDERE_HOME", &dir);
-        dir
-    });
-}
-
-fn bin() -> std::path::PathBuf {
-    isolated_home();
-    let mut p = std::env::current_exe().unwrap();
-    p.pop(); // deps/
-    p.pop(); // debug/
-    p.push("videre");
-    p
-}
 
 /// Populates `db` with `n` `file_hashes` rows, each a distinct fake hash
 /// pointing at its own copy of the real `sample_with_exif.jpg` fixture (real
@@ -55,8 +28,9 @@ fn fixture_db(dir: &std::path::Path, n: usize) -> std::path::PathBuf {
          width INTEGER, height INTEGER);",
     )
     .unwrap();
-        videre_core::db::ensure_file_hashes_columns(&conn);
-    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample_with_exif.jpg");
+    videre_core::db::ensure_file_hashes_columns(&conn);
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/sample_with_exif.jpg");
     for i in 0..n {
         let path = dir.join(format!("img_{i:04}.jpg"));
         std::fs::copy(&source, &path).unwrap();
@@ -71,7 +45,9 @@ fn fixture_db(dir: &std::path::Path, n: usize) -> std::path::PathBuf {
 }
 
 fn scanned_count(db: &std::path::Path) -> i64 {
-    let Ok(conn) = Connection::open(db) else { return 0 };
+    let Ok(conn) = Connection::open(db) else {
+        return 0;
+    };
     conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='faces_scanned'",
         [],
@@ -79,12 +55,22 @@ fn scanned_count(db: &std::path::Path) -> i64 {
     )
     .ok()
     .filter(|&n| n > 0)
-    .and_then(|_| conn.query_row("SELECT COUNT(*) FROM faces_scanned", [], |r| r.get(0)).ok())
+    .and_then(|_| {
+        conn.query_row("SELECT COUNT(*) FROM faces_scanned", [], |r| r.get(0))
+            .ok()
+    })
     .unwrap_or(0)
 }
 
 #[test]
 fn kill_mid_run_then_resume_processes_every_image_exactly_once() {
+    // Held for the whole test, not just the first spawn: this one SIGKILLs its
+    // child, and a concurrent first-time weights download in another test
+    // binary would otherwise be the thing that dies half-written.
+    if skip_without_models("faces", face_models_cached()) {
+        return;
+    }
+    let _serial = shared_cache_guard();
     const N: usize = 10;
     let dir = tempdir().unwrap();
     let db = fixture_db(dir.path(), N);
@@ -94,8 +80,10 @@ fn kill_mid_run_then_resume_processes_every_image_exactly_once() {
     // multi-worker parallelism, which is covered elsewhere).
     let mut child = Command::new(bin())
         .arg("faces")
-        .arg("--db").arg(&db)
-        .arg("--workers").arg("1")
+        .arg("--db")
+        .arg(&db)
+        .arg("--workers")
+        .arg("1")
         .arg("--silent")
         .spawn()
         .expect("failed to spawn videre faces");
@@ -106,7 +94,10 @@ fn kill_mid_run_then_resume_processes_every_image_exactly_once() {
     // mid-run rather than before start or after completion.
     let deadline = Instant::now() + Duration::from_secs(60);
     let killed_at = loop {
-        assert!(Instant::now() < deadline, "process never showed partial progress within 60s");
+        assert!(
+            Instant::now() < deadline,
+            "process never showed partial progress within 60s"
+        );
         let n = scanned_count(&db);
         if n > 0 && (n as usize) < N {
             break n;
@@ -135,20 +126,32 @@ fn kill_mid_run_then_resume_processes_every_image_exactly_once() {
     // finish covering every image, with no errors.
     let status = Command::new(bin())
         .arg("faces")
-        .arg("--db").arg(&db)
-        .arg("--workers").arg("1")
+        .arg("--db")
+        .arg(&db)
+        .arg("--workers")
+        .arg("1")
         .arg("--silent")
         .status()
         .expect("failed to run resumed videre faces");
     assert!(status.success(), "resumed run should exit 0");
 
     let final_count = scanned_count(&db);
-    assert_eq!(final_count as usize, N, "every image must end up scanned exactly once after resuming");
+    assert_eq!(
+        final_count as usize, N,
+        "every image must end up scanned exactly once after resuming"
+    );
 
     // faces_scanned.hash is a PRIMARY KEY, so duplicate-processing would have
     // already failed the INSERT rather than silently double-counting, this
     // is an explicit belt-and-suspenders check of that invariant.
     let conn = Connection::open(&db).unwrap();
-    let distinct: i64 = conn.query_row("SELECT COUNT(DISTINCT hash) FROM faces_scanned", [], |r| r.get(0)).unwrap();
-    assert_eq!(distinct as usize, N, "no hash should be recorded more than once");
+    let distinct: i64 = conn
+        .query_row("SELECT COUNT(DISTINCT hash) FROM faces_scanned", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        distinct as usize, N,
+        "no hash should be recorded more than once"
+    );
 }

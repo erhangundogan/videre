@@ -227,7 +227,10 @@ mod tests {
     fn no_moov_fails_open() {
         let mut f = bx(b"ftyp", b"qt  ");
         f.extend_from_slice(&bx(b"mdat", &[0u8; 16]));
-        assert!(probe(f), "unparseable input must be treated as having video");
+        assert!(
+            probe(f),
+            "unparseable input must be treated as having video"
+        );
     }
 
     #[test]
@@ -298,7 +301,9 @@ mod tests {
 
     #[test]
     fn a_nonexistent_path_fails_open() {
-        assert!(has_video_track(std::path::Path::new("/nonexistent/nope.mov")));
+        assert!(has_video_track(std::path::Path::new(
+            "/nonexistent/nope.mov"
+        )));
     }
 
     #[test]

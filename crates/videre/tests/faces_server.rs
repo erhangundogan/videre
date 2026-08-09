@@ -18,7 +18,7 @@ fn make_db_with_faces(dir: &std::path::Path) -> std::path::PathBuf {
          INSERT INTO faces (hash, bbox, embedding, confirmed) VALUES ('abc123', '0,0,50,50', X'0000', 0);",
     )
     .unwrap();
-        videre_core::db::ensure_file_hashes_columns(&conn);
+    videre_core::db::ensure_file_hashes_columns(&conn);
     db
 }
 
@@ -32,21 +32,28 @@ fn get_faces_returns_singletons() {
         .output()
         .expect("failed to run videre report");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("faces"), "Expected --faces in help output, got: {stdout}");
+    assert!(
+        stdout.contains("faces"),
+        "Expected --faces in help output, got: {stdout}"
+    );
 }
 
 #[test]
 fn make_db_with_faces_creates_valid_schema() {
     let dir = tempdir().unwrap();
     let db_path = make_db_with_faces(dir.path());
-    assert!(db_path.exists(), "database file should exist after make_db_with_faces");
+    assert!(
+        db_path.exists(),
+        "database file should exist after make_db_with_faces"
+    );
     let conn = Connection::open(&db_path).unwrap();
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM faces", [], |r| r.get(0))
         .unwrap();
     assert_eq!(count, 1, "expected one seed face row");
     // Verify is_primary column exists
-    conn.execute("UPDATE faces SET is_primary = 1 WHERE id = 1", []).unwrap();
+    conn.execute("UPDATE faces SET is_primary = 1 WHERE id = 1", [])
+        .unwrap();
 }
 
 #[test]
@@ -80,7 +87,10 @@ fn show_faces_alone_is_accepted_by_cli_parser() {
     let still_running = child.try_wait().unwrap().is_none();
     child.kill().ok();
     child.wait().ok();
-    assert!(still_running, "videre report --show-faces should still be running (serving), not have exited/errored");
+    assert!(
+        still_running,
+        "videre report --show-faces should still be running (serving), not have exited/errored"
+    );
 }
 
 #[test]
@@ -91,7 +101,11 @@ fn thumb_cache_hit_avoids_qlmanage_conversion() {
     // the shared videre_core::thumb_cache helpers dupe-report will call.
     let hash = "test-cache-hit-hash";
     std::fs::create_dir_all(videre_core::thumb_cache::cache_dir()).unwrap();
-    std::fs::write(videre_core::thumb_cache::thumb_path(hash, 240), b"fake-jpeg-bytes").unwrap();
+    std::fs::write(
+        videre_core::thumb_cache::thumb_path(hash, 240),
+        b"fake-jpeg-bytes",
+    )
+    .unwrap();
     assert!(videre_core::thumb_cache::thumb_exists(hash, 240));
     std::fs::remove_file(videre_core::thumb_cache::thumb_path(hash, 240)).ok();
 }

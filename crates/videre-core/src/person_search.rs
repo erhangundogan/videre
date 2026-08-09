@@ -1,7 +1,11 @@
 use rusqlite::Connection;
 
 /// File paths containing confirmed faces for the given person label.
-pub fn search_by_person(conn: &Connection, name: &str, limit: Option<usize>) -> rusqlite::Result<Vec<String>> {
+pub fn search_by_person(
+    conn: &Connection,
+    name: &str,
+    limit: Option<usize>,
+) -> rusqlite::Result<Vec<String>> {
     let limit_sql = limit.map(|n| format!(" LIMIT {n}")).unwrap_or_default();
     let sql = format!(
         "SELECT DISTINCT fh.path
@@ -20,7 +24,7 @@ pub fn list_persons(conn: &Connection) -> rusqlite::Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT person_label FROM faces
          WHERE person_label IS NOT NULL AND confirmed = 1
-         ORDER BY person_label"
+         ORDER BY person_label",
     )?;
     let rows = stmt.query_map([], |r| r.get(0))?;
     rows.collect()

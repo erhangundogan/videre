@@ -7,10 +7,18 @@ use std::path::Path;
 // KEEP candidate sort key: exif_date wins; otherwise oldest of created_at / modified_at.
 fn best_date(r: &FileRecord) -> &str {
     if let Some(d) = r.exif_date.as_deref() {
-        if !d.starts_with("0000") { return d; }
+        if !d.starts_with("0000") {
+            return d;
+        }
     }
     match (r.created_at.as_deref(), r.modified_at.as_deref()) {
-        (Some(c), Some(m)) => if c < m { c } else { m },
+        (Some(c), Some(m)) => {
+            if c < m {
+                c
+            } else {
+                m
+            }
+        }
         (Some(c), None) => c,
         (None, Some(m)) => m,
         (None, None) => "",
@@ -20,7 +28,9 @@ fn best_date(r: &FileRecord) -> &str {
 pub fn find_duplicate_groups(records: &[FileRecord]) -> Vec<DuplicateGroup> {
     let mut map: HashMap<String, Vec<FileRecord>> = HashMap::new();
     for record in records {
-        map.entry(record.hash.clone()).or_default().push(record.clone());
+        map.entry(record.hash.clone())
+            .or_default()
+            .push(record.clone());
     }
     let mut groups: Vec<DuplicateGroup> = map
         .into_iter()
@@ -51,14 +61,16 @@ pub fn find_similar_groups(records: &[FileRecord], threshold: u32) -> Vec<Duplic
     let mut groups: Vec<DuplicateGroup> = Vec::new();
 
     for i in 0..with_phash.len() {
-        if visited[i] { continue; }
+        if visited[i] {
+            continue;
+        }
         let mut group = vec![with_phash[i].clone()];
         for j in (i + 1)..with_phash.len() {
-            if visited[j] { continue; }
-            let dist = crate::hasher::hamming(
-                with_phash[i].phash.unwrap(),
-                with_phash[j].phash.unwrap(),
-            );
+            if visited[j] {
+                continue;
+            }
+            let dist =
+                crate::hasher::hamming(with_phash[i].phash.unwrap(), with_phash[j].phash.unwrap());
             if dist <= threshold {
                 group.push(with_phash[j].clone());
                 visited[j] = true;
@@ -185,10 +197,7 @@ mod tests {
 
     #[test]
     fn find_duplicate_groups_returns_empty_when_no_dupes() {
-        let records = vec![
-            make_record("/a.jpg", "h1"),
-            make_record("/b.jpg", "h2"),
-        ];
+        let records = vec![make_record("/a.jpg", "h1"), make_record("/b.jpg", "h2")];
         assert!(find_duplicate_groups(&records).is_empty());
     }
 

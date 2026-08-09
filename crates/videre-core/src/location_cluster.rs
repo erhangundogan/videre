@@ -96,12 +96,19 @@ pub fn cluster_by_distance(points: &[(f64, f64)], radius_km: f64) -> Vec<Vec<usi
             if new_d != dist[i][k] {
                 dist[i][k] = new_d;
                 dist[k][i] = new_d;
-                heap.push(HeapEntry { dist: new_d, i: i.min(k), j: i.max(k) });
+                heap.push(HeapEntry {
+                    dist: new_d,
+                    i: i.min(k),
+                    j: i.max(k),
+                });
             }
         }
     }
 
-    (0..n).filter(|&r| alive[r]).map(|r| std::mem::take(&mut members[r])).collect()
+    (0..n)
+        .filter(|&r| alive[r])
+        .map(|r| std::mem::take(&mut members[r]))
+        .collect()
 }
 
 /// Unweighted mean of the given members' `(lat, lon)` coordinates, not
@@ -209,16 +216,20 @@ mod tests {
     #[test]
     fn ensure_location_cluster_id_column_is_idempotent() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL);",
+        conn.execute_batch("CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL);")
+            .unwrap();
+        crate::db::ensure_file_hashes_columns(&conn);
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash) VALUES ('x', 'h1')",
+            [],
         )
         .unwrap();
-        crate::db::ensure_file_hashes_columns(&conn);
-        conn.execute("INSERT INTO file_hashes (path, hash) VALUES ('x', 'h1')", [])
-            .unwrap();
         ensure_location_cluster_id_column(&conn);
         ensure_location_cluster_id_column(&conn); // second call must not error
-        conn.execute("UPDATE file_hashes SET location_cluster_id = 1 WHERE path = 'x'", [])
-            .unwrap();
+        conn.execute(
+            "UPDATE file_hashes SET location_cluster_id = 1 WHERE path = 'x'",
+            [],
+        )
+        .unwrap();
     }
 }

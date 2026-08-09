@@ -3,7 +3,7 @@
 //! reuses embeddings `videre embed` already computed. See
 //! docs/superpowers/specs/2026-07-29-screenshot-document-classification-design.md.
 
-use rusqlite::{Connection, Result, params};
+use rusqlite::{params, Connection, Result};
 
 /// Create `classifications`, keyed by `(model_id, hash)`.
 ///
@@ -72,8 +72,7 @@ pub fn pending_hashes(conn: &Connection, model_id: &str) -> Result<Vec<String>> 
 /// exclusion used when the caller list comes from `embeddings` directly
 /// rather than being pre-built like it is here.
 pub fn exclude_video_hashes(conn: &Connection, hashes: &[String]) -> Result<Vec<String>> {
-    let mut stmt =
-        conn.prepare("SELECT hash, lower(COALESCE(ext, '')), mime FROM file_hashes")?;
+    let mut stmt = conn.prepare("SELECT hash, lower(COALESCE(ext, '')), mime FROM file_hashes")?;
     // (hash, ext, mime) so the decision uses content when known.
     let rows: Vec<(String, String, Option<String>)> = stmt
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
@@ -273,7 +272,9 @@ mod tests {
         insert_classifications(&conn, "model-b", &[("h1".to_string(), "photo", 0.8)]).unwrap();
 
         assert_eq!(
-            paths_for_category(&conn, "model-a", "screenshot").unwrap().len(),
+            paths_for_category(&conn, "model-a", "screenshot")
+                .unwrap()
+                .len(),
             1
         );
         assert!(paths_for_category(&conn, "model-b", "screenshot")
@@ -333,18 +334,30 @@ mod tests {
         let conn = test_db_attached("cls_modelaware");
         insert_embedding(&conn, "h1", "model-a");
 
-        assert_eq!(pending_hashes(&conn, "model-a").unwrap(), vec!["h1".to_string()]);
+        assert_eq!(
+            pending_hashes(&conn, "model-a").unwrap(),
+            vec!["h1".to_string()]
+        );
         assert!(pending_hashes(&conn, "model-b").unwrap().is_empty());
     }
 
     #[test]
     fn insert_classifications_upserts_on_conflict() {
         let conn = test_db_attached("cls_upsert");
-        insert_classifications(&conn, "test-model", &[("h1".to_string(), "screenshot", 0.4)]).unwrap();
+        insert_classifications(
+            &conn,
+            "test-model",
+            &[("h1".to_string(), "screenshot", 0.4)],
+        )
+        .unwrap();
         insert_classifications(&conn, "test-model", &[("h1".to_string(), "photo", 0.9)]).unwrap();
 
         let category: String = conn
-            .query_row("SELECT category FROM classifications WHERE hash = 'h1'", [], |r| r.get(0))
+            .query_row(
+                "SELECT category FROM classifications WHERE hash = 'h1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(category, "photo");
         let count: i64 = conn
@@ -380,6 +393,8 @@ mod tests {
         insert_file(&conn, "/a/1.jpg", "h1");
         insert_classifications(&conn, "test-model", &[("h1".to_string(), "photo", 0.9)]).unwrap();
 
-        assert!(paths_for_category(&conn, "test-model", "meme").unwrap().is_empty());
+        assert!(paths_for_category(&conn, "test-model", "meme")
+            .unwrap()
+            .is_empty());
     }
 }

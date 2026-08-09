@@ -1,28 +1,9 @@
+mod common;
+use common::isolated_home;
+
 use rusqlite::Connection;
 use std::process::Command;
 use tempfile::tempdir;
-
-/// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.
-///
-/// This file was the one integration-test file without this helper, which was
-/// harmless while prune touched nothing under the videre home. It is not
-/// harmless now: embeddings live at `<VIDERE_HOME>/embeddings/...`, so without
-/// it the test process writes into the developer's real `~/.videre` while the
-/// spawned binary reads an isolated one, and the assertions silently compare
-/// two different places. Observed leaking real directories before this fix.
-///
-/// Set inside `get_or_init` so it happens exactly once: tests share a process
-/// and run in parallel, and a per-test `set_var` would race every concurrent
-/// `getenv`.
-fn isolated_home() {
-    static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    HOME.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("videre-prune-home-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("create isolated test home");
-        std::env::set_var("VIDERE_HOME", &dir);
-        dir
-    });
-}
 
 fn prune_bin() -> std::path::PathBuf {
     isolated_home();
@@ -35,7 +16,14 @@ fn prune_bin() -> std::path::PathBuf {
 
 /// Fixture with two real files and one phantom path (never created on disk).
 /// Returns (db_path, path_a, path_b, phantom_path).
-fn fixture_db(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf, String) {
+fn fixture_db(
+    dir: &std::path::Path,
+) -> (
+    std::path::PathBuf,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    String,
+) {
     let a = dir.join("a.jpg");
     let b = dir.join("b.jpg");
     std::fs::write(&a, b"img_a").unwrap();
@@ -52,11 +40,11 @@ fn fixture_db(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf,
         );",
     )
     .unwrap();
-        videre_core::db::ensure_file_hashes_columns(&conn);
+    videre_core::db::ensure_file_hashes_columns(&conn);
     for (path, hash) in [
         (a.to_str().unwrap(), "haaa"),
         (b.to_str().unwrap(), "hbbb"),
-        (phantom.as_str(),    "hphantom"),
+        (phantom.as_str(), "hphantom"),
     ] {
         conn.execute(
             "INSERT INTO file_hashes (path, hash, modified_at) VALUES (?1, ?2, '2020-01-01T00:00:00+00:00')",
@@ -140,7 +128,11 @@ fn missing_default_db_prints_friendly_error() {
 fn run_prune(db: &std::path::Path, dry_run: bool) {
     let home = db.parent().expect("db must have a parent dir");
     let mut cmd = Command::new(prune_bin());
-    cmd.arg("prune").arg("--db").arg(db).arg("--silent").env("HOME", home);
+    cmd.arg("prune")
+        .arg("--db")
+        .arg(db)
+        .arg("--silent")
+        .env("HOME", home);
     if dry_run {
         cmd.arg("--dry-run");
     }
@@ -173,7 +165,10 @@ fn syncs_modified_at_for_existing_files() {
     // DB has a stale '2020-01-01T00:00:00+00:00'; actual mtime is now
     run_prune(&db, false);
     let new_val = get_modified_at(&db, a.to_str().unwrap()).unwrap();
-    assert_ne!(new_val, "2020-01-01T00:00:00+00:00", "modified_at should be refreshed");
+    assert_ne!(
+        new_val, "2020-01-01T00:00:00+00:00",
+        "modified_at should be refreshed"
+    );
 }
 
 #[test]
@@ -182,7 +177,10 @@ fn dry_run_makes_no_changes() {
     let (db, a, _, phantom) = fixture_db(dir.path());
     let original_mtime = get_modified_at(&db, a.to_str().unwrap());
     run_prune(&db, true);
-    assert!(row_exists(&db, &phantom), "dry-run must not remove phantom row");
+    assert!(
+        row_exists(&db, &phantom),
+        "dry-run must not remove phantom row"
+    );
     assert_eq!(
         get_modified_at(&db, a.to_str().unwrap()),
         original_mtime,
@@ -197,8 +195,14 @@ fn removes_orphan_embeddings_after_pruning() {
     // hphantom has an embedding; haaa and hbbb do not
     add_embeddings(&db, &["hphantom", "haaa"]);
     run_prune(&db, false);
-    assert!(!embedding_exists(&db, "hphantom"), "orphan embedding should be removed");
-    assert!(embedding_exists(&db, "haaa"), "embedding for surviving file should be kept");
+    assert!(
+        !embedding_exists(&db, "hphantom"),
+        "orphan embedding should be removed"
+    );
+    assert!(
+        embedding_exists(&db, "haaa"),
+        "embedding for surviving file should be kept"
+    );
 }
 
 #[test]
@@ -210,13 +214,20 @@ fn preserves_embedding_when_hash_shared_with_surviving_file() {
     conn.execute(
         "UPDATE file_hashes SET hash = 'haaa' WHERE path LIKE '%gone%'",
         [],
-    ).unwrap();
+    )
+    .unwrap();
     drop(conn);
     add_embeddings(&db, &["haaa"]);
     run_prune(&db, false);
     // gone.jpg row is removed, but haaa embedding must stay (a.jpg still uses it)
-    assert!(!row_exists(&db, &dir.path().join("gone.jpg").to_str().unwrap().to_string()));
-    assert!(embedding_exists(&db, "haaa"), "shared-hash embedding must not be pruned");
+    assert!(!row_exists(
+        &db,
+        &dir.path().join("gone.jpg").to_str().unwrap().to_string()
+    ));
+    assert!(
+        embedding_exists(&db, "haaa"),
+        "shared-hash embedding must not be pruned"
+    );
     let _ = a;
 }
 
@@ -237,8 +248,11 @@ fn removes_orphan_cache_files_after_pruning() {
 
     // Give one of fixture_db's real rows this exact hash so it counts as "live".
     let conn = Connection::open(&db).unwrap();
-    conn.execute("UPDATE file_hashes SET hash = ?1 WHERE path LIKE '%a.jpg'", rusqlite::params![live_hash])
-        .unwrap();
+    conn.execute(
+        "UPDATE file_hashes SET hash = ?1 WHERE path LIKE '%a.jpg'",
+        rusqlite::params![live_hash],
+    )
+    .unwrap();
     drop(conn);
 
     let cache_dir = dir.path().join(".cache").join("videre").join("thumbnails");
@@ -253,10 +267,22 @@ fn removes_orphan_cache_files_after_pruning() {
 
     run_prune(&db, false);
 
-    assert!(live_thumb.exists(), "cache entry for a surviving hash must be kept");
-    assert!(!orphan_thumb.exists(), "cache entry for a hash with no file_hashes row must be removed");
-    assert!(!orphan_original.exists(), "original-cache entry for an orphaned hash must be removed too");
-    assert!(orphan_tmp.exists(), "in-flight .tmp files must never be touched by prune");
+    assert!(
+        live_thumb.exists(),
+        "cache entry for a surviving hash must be kept"
+    );
+    assert!(
+        !orphan_thumb.exists(),
+        "cache entry for a hash with no file_hashes row must be removed"
+    );
+    assert!(
+        !orphan_original.exists(),
+        "original-cache entry for an orphaned hash must be removed too"
+    );
+    assert!(
+        orphan_tmp.exists(),
+        "in-flight .tmp files must never be touched by prune"
+    );
 }
 
 #[test]
@@ -272,5 +298,8 @@ fn dry_run_does_not_remove_orphan_cache_files() {
 
     run_prune(&db, true);
 
-    assert!(orphan_thumb.exists(), "dry-run must not delete any cache file");
+    assert!(
+        orphan_thumb.exists(),
+        "dry-run must not delete any cache file"
+    );
 }

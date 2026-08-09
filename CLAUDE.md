@@ -157,6 +157,73 @@ cargo build --release
 ./target/release/videre stats                                            # library totals + pipeline run status, default db
 ```
 
+## CI
+
+`.github/workflows/ci.yml` runs one job on every push to `main` and every pull
+request: `make fmt-check` (`cargo fmt --all -- --check`). It needs no cargo
+build and no dependency cache, since rustfmt parses the source directly, so it
+finishes in under a minute despite the workspace pulling in candle and ONNX
+Runtime.
+
+The workspace was reformatted to zero drift on 2026-08-09 and this job is what
+keeps it there. Before that it carried 370 hunks of drift, which made any stray
+`cargo fmt` produce a large, plausible-looking, semantically empty diff: one
+swept 20 unrelated `src/` files into a test-only commit, and nothing caught it
+except reading `git show --stat`, because formatting changes are invisible to
+the test suite.
+
+Note that **`cargo fmt` has no per-file mode**. Arguments after `--` are
+rustfmt options, not a file filter, so `cargo fmt -p videre -- path/to/one.rs`
+silently formats the entire package. To format a single file, invoke
+`rustfmt <file>` directly.
+
+A `test` job runs the full suite on `ubuntu-latest` and `macos-latest`, with
+`fail-fast: false` so one runner's failure never hides the other's result.
+Linux is a first-class test target, not an afterthought: only four tests are
+macOS-gated (video poster-frames via QuickLook) and everything else runs on
+both.
+
+**Tests never download model weights.** That is the application's job, done
+when someone runs `videre embed` or `videre faces`, not a side effect of `cargo
+test` on a fresh machine. Three tests need weights (`faces_resumability`, plus
+`embed.rs`'s two on macOS); each calls `common::skip_without_models` and
+returns early when the Hugging Face cache is cold. `faces_pipeline` is
+deliberately *not* gated, because `commands/faces.rs` returns at the
+`to_process.is_empty()` branch before loading anything; a regression guard
+there runs the binary against a fresh `HF_HOME` and asserts nothing was
+downloaded, so moving that model load earlier fails loudly instead of quietly
+adding a 200MB download to every cold CI run.
+
+Rust has no native skip, so a skipped test passes. Two things stop that from
+becoming silent coverage loss. The skip message writes to fd 2 directly rather
+than via `eprintln!`, because libtest captures the print macros for passing
+tests and the message would otherwise only appear under `--nocapture`. And
+`VIDERE_TEST_REQUIRE_MODELS=1` turns a cold-cache skip into a panic; CI sets it
+after restoring its cache, so a cache that silently stops working fails the
+build rather than disabling those tests.
+
+CI caches `~/.cache/huggingface` keyed on `face_models.rs` and `embeddings.rs`,
+so changing the buffalo_l repo or `DEFAULT_MODEL_ID` invalidates it instead of
+reusing weights for a different model. On a miss an explicit step populates the
+cache (~200MB Linux, ~1.6GB macOS, once per key) by seeding a database with a
+real fixture image first, since warming against an empty database would
+download nothing.
+
+Two tests used to pass only on macOS, found by actually running the suite in
+the `rust:1` image. ONNX Runtime is linked into every `videre` binary and
+initialises at startup even for subcommands that never infer; on a host whose
+CPU it cannot identify it prints `onnxruntime cpuid_info warning: Unknown CPU
+vendor` before `main` runs, which broke an assertion that `--silent` produces
+no stderr. That reproduces on ARM64 Linux, a supported platform, so
+`common::stderr_without_library_noise` filters library chatter before such
+checks. Separately, a test that makes a file unreadable with `chmod 000` is
+meaningless as root (root bypasses permission bits), which is the default in a
+stock Docker image, so it now probes whether permissions are enforced and skips
+when they are not.
+
+Clippy is deliberately not in CI yet: it reports 18 warnings, so a lint job
+would need either `--allow`-ing them or a cleanup pass first.
+
 ## Test coverage
 
 `cargo-llvm-cov` (installed via `cargo install cargo-llvm-cov`, plus the
@@ -271,7 +338,7 @@ The `videre` crate builds a single `[[bin]]` (`videre`, from `src/main.rs`) plus
 - `half`: f16 storage for embeddings
 - `matrixmultiply`: pure-Rust blocked GEMM, used as a fast candidate filter in `videre faces`'s clustering step
 - `ort`: ONNX Runtime bindings for face detection and embedding
-- InsightFace buffalo_l: SCRFD-10GF face detector + ArcFace w600k_r50 embedder (ONNX weights, auto-downloaded to `~/.cache/ort/`)
+- InsightFace buffalo_l: SCRFD-10GF face detector + ArcFace w600k_r50 embedder (ONNX weights, auto-downloaded via hf-hub to `~/.cache/huggingface/hub/models--WePrompt--buffalo_l/`, honouring `HF_HOME`; **not** `~/.cache/ort/`, which this file claimed for months and which has never existed)
 - `rmcp`: official Rust MCP SDK, stdio server for `videre mcp`
 - `schemars`: JSON-schema generation for MCP tool parameters
 - `ureq`: blocking HTTP client for forward geocoding (`videre search --location`), no async runtime needed, matching this project's fully-synchronous architecture
@@ -353,7 +420,11 @@ A companion `faces_scanned` table (`hash TEXT PRIMARY KEY, scanned_at TEXT`) rec
 
 `pipeline_runs` holds one row per tracked command (`scan`, `faces`, `embed`, `classify`, `dedupe`, `fix-dates`, `prune`, `locations`; `command` is the primary key, upserted on every run, not an append-only log). `status` is `running`/`success`/`failed`/`interrupted` as stored; a `crashed` status is never written to this column. It's computed only when reading (a `running` row whose per-db-per-command `flock` file isn't currently held by a live process is reported as `crashed` at read time). Those locks live at `<videre home>/locks/<db stem>-<hash of the canonical db path>.<command>.lock` (see `videre_core::home::locks_dir` and `pipeline_runs::lock_path_for`). The hash is load-bearing, not decoration: two libraries can both be named `photos.db` in different directories, and keying on the stem alone would make them share a lock, silently serializing unrelated libraries and making `videre stats` report one as running because the other is. Canonicalizing first also means a symlink and a relative path to the same database resolve to one lock. Locks moved here on 2026-08-03 from `<db path>.<command>.lock` sidecars, which scattered lock files into `~/.videre` and into whatever directory a `--db` database lived in; `acquire_lock` sweeps and deletes those legacy sidecars for all commands (only when it can exclusively `flock` one, proving no live process holds it), so a single command run after upgrading clears them. `videre watch` itself takes the same kind of lock for liveness but has no row here, since it has no "finished" moment during normal operation.
 
-Because lock paths now resolve through `VIDERE_HOME` rather than sitting beside the database, any test that touches a lock **must** point `VIDERE_HOME` at a temp directory. Otherwise it writes into the developer's real `~/.videre/locks` and leaves permanent litter (test database names are random, so files accumulate rather than being reused). Both `pipeline_runs`' unit tests and every integration-test file that spawns the binary do this via an `isolated_home()` helper called from `videre_bin()`/`bin()`, which sets the env var once per test binary inside a `OnceLock` (tests share a process and run in parallel, so a per-test `set_var` would race every concurrent `getenv`); spawned children inherit it. See `videre stats` below for how this is surfaced.
+Because lock paths now resolve through `VIDERE_HOME` rather than sitting beside the database, any test that touches a lock **must** point `VIDERE_HOME` at a temp directory. Otherwise it writes into the developer's real `~/.videre/locks` and leaves permanent litter (test database names are random, so files accumulate rather than being reused). Both `pipeline_runs`' unit tests and every integration-test file that spawns the binary do this via an `isolated_home()` helper called from `videre_bin()`, which sets the env var once per test binary inside a `OnceLock` (tests share a process and run in parallel, so a per-test `set_var` would race every concurrent `getenv`); spawned children inherit it. See `videre stats` below for how this is surfaced.
+
+That helper lives in `crates/videre/tests/common/mod.rs` and is shared by every integration-test file. It was previously copy-pasted into each one, which is how `faces_pipeline.rs` and `person_search.rs` came to be missing it entirely: a latent hazard rather than an observed leak, since neither happened to run a lock-taking command, but exactly the kind of omission a per-file copy invites. Calling `isolated_home` from `videre_bin` rather than from each test is what makes it impossible for a new file to forget.
+
+`common` also provides `shared_cache_guard()`, which every test spawning `videre embed` or `videre faces` must hold. Those children resolve both SigLIP and InsightFace weights through the same Hugging Face cache (`~/.cache/huggingface/hub/`, honouring `HF_HOME`), which is not safe for two simultaneous first-time readers. It has to be a **file** lock: cargo runs each test file as its own process and runs those processes in parallel, so the racing readers are typically in different processes, which no `Mutex` can see. `faces_pipeline.rs` and `faces_resumability.rs` are two such binaries. Only contended on a cold cache, so the cost on a warm machine is negligible.
 
 `classifications` is populated by `videre classify` (zero-shot photo/screenshot/document/meme classification, scoring `embeddings` rows already computed by `videre embed` against 4 fixed text prompts via cosine similarity, no new model, no image re-decoding) and queried via `videre search --category <name>`. Rows below the configurable `--margin` similarity gap between the best and second-best category are stored as `category = "unknown"` rather than a low-confidence guess.
 
@@ -909,7 +980,7 @@ Five independent stages, selected with `--scan` / `--faces` / `--heic` / `--loca
 
 `--interval <seconds>` (default 300) is the sleep between cycles; each cycle runs the selected stages once, logs a per-stage summary to stderr (unless `--silent`), then sleeps. There's no daemonization or systemd unit. Run it in a terminal, tmux/screen pane, or your own process supervisor, and stop it with Ctrl-C.
 
-Thumbnails land in `~/.cache/videre/thumbnails/`, keyed by content hash rather than file path (`<hash>_240.jpg`, `<hash>_1200.jpg`), mirroring the project's existing `~/.cache/ort/` convention for cached model weights, and means the same photo scanned into a different database only needs converting once. On first run of any `videre` subcommand, if the pre-rename cache at `~/.cache/dupe/thumbnails/` still exists and `~/.cache/videre/thumbnails/` doesn't, it's migrated automatically (a plain directory rename, atomic on the same filesystem, and a no-op on any error since the cache regenerates lazily). `videre report`'s `/api/raw?path=...&size=N` endpoint (server mode, `--show-faces`) checks this cache first for HEIC requests and serves the cached JPEG directly if present, falling back to a live `qlmanage` conversion otherwise, so running `videre watch --heic` alongside `videre report --show-faces` eliminates the per-request HEIC conversion cost for anything already warmed.
+Thumbnails land in `~/.cache/videre/thumbnails/`, keyed by content hash rather than file path (`<hash>_240.jpg`, `<hash>_1200.jpg`), mirroring the convention hf-hub already uses for cached model weights under `~/.cache/huggingface/`, and means the same photo scanned into a different database only needs converting once. On first run of any `videre` subcommand, if the pre-rename cache at `~/.cache/dupe/thumbnails/` still exists and `~/.cache/videre/thumbnails/` doesn't, it's migrated automatically (a plain directory rename, atomic on the same filesystem, and a no-op on any error since the cache regenerates lazily). `videre report`'s `/api/raw?path=...&size=N` endpoint (server mode, `--show-faces`) checks this cache first for HEIC requests and serves the cached JPEG directly if present, falling back to a live `qlmanage` conversion otherwise, so running `videre watch --heic` alongside `videre report --show-faces` eliminates the per-request HEIC conversion cost for anything already warmed.
 
 `videre watch` and `videre report --show-faces` are designed to run concurrently against the same SQLite file (see the WAL-mode note in the SQLite schema section above).
 

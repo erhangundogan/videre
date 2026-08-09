@@ -1,10 +1,10 @@
+use rayon::prelude::*;
+use std::path::PathBuf;
+use std::process;
 use videre::{
     hasher, output, scanner, sqlite_output,
     types::{ErrorJson, ScanJson, ScanOutputJson, SCHEMA_VERSION},
 };
-use rayon::prelude::*;
-use std::path::PathBuf;
-use std::process;
 
 #[derive(clap::Args)]
 pub struct ScanArgs {
@@ -67,7 +67,11 @@ pub fn run(args: ScanArgs) -> anyhow::Result<()> {
 /// many were incomplete, how many got a type, and how many remain
 /// unidentifiable. That last number now carries the sentinel, so a second run
 /// reports 0 incomplete rather than repeating the work.
-fn format_retry_summary(walked: usize, records: &[videre::types::FileRecord], skipped: usize) -> String {
+fn format_retry_summary(
+    walked: usize,
+    records: &[videre::types::FileRecord],
+    skipped: usize,
+) -> String {
     let unresolved = records
         .iter()
         .filter(|r| r.mime.as_deref() == Some(videre_core::mime_probe::UNKNOWN_MIME))
@@ -240,7 +244,10 @@ fn run_text(args: ScanArgs) -> anyhow::Result<()> {
                 process::exit(1);
             }
             if !args.silent {
-                eprintln!("{}", format_write_summary(records.len(), skipped, &format!("{:?}", db_path)));
+                eprintln!(
+                    "{}",
+                    format_write_summary(records.len(), skipped, &format!("{:?}", db_path))
+                );
             }
         }
         Ok(OutputTarget::Jsonl(path)) => {
@@ -249,7 +256,10 @@ fn run_text(args: ScanArgs) -> anyhow::Result<()> {
                 process::exit(1);
             }
             if !args.silent {
-                eprintln!("{}", format_write_summary(records.len(), skipped, &format!("{:?}", path)));
+                eprintln!(
+                    "{}",
+                    format_write_summary(records.len(), skipped, &format!("{:?}", path))
+                );
             }
         }
     }
@@ -285,17 +295,29 @@ fn run_json(args: &ScanArgs) -> anyhow::Result<ScanJson> {
                     .map_err(|e| anyhow::anyhow!("writing to {:?}: {}", db_path, e))
             })?;
             if !args.silent {
-                eprintln!("{}", format_write_summary(records.len(), skipped, &format!("{:?}", db_path)));
+                eprintln!(
+                    "{}",
+                    format_write_summary(records.len(), skipped, &format!("{:?}", db_path))
+                );
             }
-            ScanOutputJson { kind: "sqlite", path: db_path.display().to_string() }
+            ScanOutputJson {
+                kind: "sqlite",
+                path: db_path.display().to_string(),
+            }
         }
         OutputTarget::Jsonl(path) => {
             output::append_records(&records, &path)
                 .map_err(|e| anyhow::anyhow!("writing to {:?}: {}", path, e))?;
             if !args.silent {
-                eprintln!("{}", format_write_summary(records.len(), skipped, &format!("{:?}", path)));
+                eprintln!(
+                    "{}",
+                    format_write_summary(records.len(), skipped, &format!("{:?}", path))
+                );
             }
-            ScanOutputJson { kind: "jsonl", path: path.display().to_string() }
+            ScanOutputJson {
+                kind: "jsonl",
+                path: path.display().to_string(),
+            }
         }
     };
 

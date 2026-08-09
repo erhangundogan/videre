@@ -200,7 +200,9 @@ pub fn counts_by_model(db_path: &Path) -> Result<Vec<ModelEmbeddingCount>> {
     let mut out = Vec::new();
     for model_id in list_models(db_path)? {
         let path = self::db_path(db_path, &model_id)?;
-        let size_bytes = std::fs::metadata(&path).map(|m| m.len() as i64).unwrap_or(0);
+        let size_bytes = std::fs::metadata(&path)
+            .map(|m| m.len() as i64)
+            .unwrap_or(0);
         let conn = Connection::open(&path).with_context(|| format!("open {}", path.display()))?;
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0))
@@ -359,7 +361,10 @@ mod tests {
         with_home("dbpath", |home| {
             let lib = touch_db(home, "hashes.db");
             let p = db_path(&lib, "google/siglip2-base-patch16-384").unwrap();
-            assert_eq!(p.file_name().unwrap(), "google--siglip2-base-patch16-384.db");
+            assert_eq!(
+                p.file_name().unwrap(),
+                "google--siglip2-base-patch16-384.db"
+            );
             assert_eq!(p.parent().unwrap(), library_dir(&lib).unwrap());
         });
     }
