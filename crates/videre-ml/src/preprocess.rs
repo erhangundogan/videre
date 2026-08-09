@@ -87,6 +87,24 @@ pub fn decode_via_quicklook(path: &Path, size: usize, tag: &str) -> Result<image
         videre_core::heic::warn_quicklook_unavailable_once();
         anyhow::bail!("needs macOS QuickLook (`qlmanage`)");
     }
+    // `qlmanage -t` does not fail on a container with no video track, it
+    // hangs; videre kills it at QLMANAGE_TIMEOUT and pays 20s per file, on
+    // every run, because nothing marks the file permanently unembeddable.
+    // Measured: 60s per `videre embed` and another 60s per `scan --similar`
+    // on a real library with three audio-only Live Photo companions.
+    //
+    // Gated on extension so HEIC, which shares this function, is untouched.
+    // Placed before the semaphore so a skipped file never holds a permit.
+    let probe_ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase());
+    if matches!(probe_ext.as_deref(), Some("mov") | Some("mp4"))
+        && !videre_core::video_probe::has_video_track(path)
+    {
+        anyhow::bail!("no video track (audio-only file); skipped without calling QuickLook");
+    }
+
     use std::hash::{Hash, Hasher};
     use videre_core::io_timeout::{wait_with_timeout, WaitOutcome};
     let mut h = std::collections::hash_map::DefaultHasher::new();
