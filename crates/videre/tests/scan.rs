@@ -403,11 +403,9 @@ fn silent_flag_suppresses_the_adoption_note() {
         .output()
         .unwrap();
     assert!(out.status.success());
-    assert!(
-        String::from_utf8_lossy(&out.stderr).trim().is_empty(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let ours = common::stderr_without_library_noise(&stderr);
+    assert!(ours.is_empty(), "{ours}");
 
     let config = Command::new(videre_bin())
         .arg("config")
@@ -438,6 +436,14 @@ fn skipped_files_are_reported_in_wrote_summary() {
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+    }
+
+    // Root ignores permission bits, so the file is readable, nothing is
+    // skipped, and this test has nothing left to assert. Seen running the
+    // suite in a stock Docker image, which runs as root by default.
+    if !common::permissions_are_enforced(&unreadable) {
+        eprintln!("SKIP: running as root, so chmod 000 does not make a file unreadable");
+        return;
     }
 
     let out = Command::new(videre_bin())
