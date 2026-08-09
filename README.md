@@ -161,6 +161,7 @@ videre scan ~/Photos --similar                    # also fingerprint images/vide
 videre scan ~/Photos --output-sqlite ~/photos.db  # write to a specific database instead
 videre scan ~/Photos --output                     # write JSONL to ~/.videre/hashes.jsonl instead of SQLite
 videre scan ~/Photos --output out.jsonl           # write JSONL to a specific file
+videre scan ~/Photos --retry-incomplete           # only files an earlier scan didn't finish
 videre scan ~/Photos --silent                     # no progress output
 videre scan ~/Photos --json                       # print one JSON summary object instead
 ```
@@ -168,6 +169,18 @@ videre scan ~/Photos --json                       # print one JSON summary objec
 Re-running is safe and idempotent, since existing entries are updated in place.
 `--output` and `--output-sqlite` cannot be combined. A bare `--output` must come
 *after* the folder, or it swallows the folder as its value.
+
+A normal scan re-reads every byte of every file, which on a large library is the
+slow part by far: about 10 minutes and 460GB of reading for 70,000 files, of
+which walking the folder is under two seconds. `--retry-incomplete` still walks
+the folder but opens only files that have no entry yet, or whose entry a previous
+run left unfinished (an interrupted scan, or a file that timed out on a slow or
+disconnected drive). On an already-complete library of that size it finishes in
+about a second, having opened nothing. New files are picked up too, since they
+have no entry yet.
+
+It needs a database to consult, so it cannot be combined with `--output`, which
+writes JSONL.
 
 ### videre dedupe
 
