@@ -48,6 +48,7 @@ fn clusters_nearby_gps_rows_and_prints_json_summary() {
              ('/tmp/c.jpg', 'hc', 'jpg', 51.5074, -0.1278);",
     )
     .unwrap();
+        videre_core::db::ensure_file_hashes_columns(&conn);
     drop(conn);
 
     let out = Command::new(videre_bin())
@@ -81,6 +82,7 @@ fn zero_gps_rows_prints_empty_and_exits_zero() {
          INSERT INTO file_hashes (path, hash, ext) VALUES ('/tmp/a.jpg', 'ha', 'jpg');",
     )
     .unwrap();
+        videre_core::db::ensure_file_hashes_columns(&conn);
     drop(conn);
 
     let out = Command::new(videre_bin())
@@ -107,6 +109,7 @@ fn geojson_output_is_a_feature_collection_with_lon_lat_order() {
              ('/tmp/a.jpg', 'ha', 'jpg', 48.8566, 2.3522);",
     )
     .unwrap();
+        videre_core::db::ensure_file_hashes_columns(&conn);
     drop(conn);
 
     let out = Command::new(videre_bin())
@@ -153,6 +156,7 @@ fn rerun_replaces_previous_clusters_not_appends() {
              ('/tmp/a.jpg', 'ha', 'jpg', 48.8566, 2.3522);",
     )
     .unwrap();
+        videre_core::db::ensure_file_hashes_columns(&conn);
     drop(conn);
 
     for _ in 0..2 {
@@ -186,6 +190,7 @@ fn file_hashes_location_cluster_id_is_assigned_and_cleared_on_rerun() {
              ('/tmp/b.jpg', 'hb', 'jpg', 48.8606, 2.3376);",
     )
     .unwrap();
+        videre_core::db::ensure_file_hashes_columns(&conn);
     drop(conn);
 
     let status = Command::new(videre_bin())

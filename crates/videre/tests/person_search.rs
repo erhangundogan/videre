@@ -35,6 +35,7 @@ fn make_db(dir: &std::path::Path) -> std::path::PathBuf {
            VALUES ('hash3', '0,0,50,50', X'0000', 'Bob', 1);",
     )
     .unwrap();
+        videre_core::db::ensure_file_hashes_columns(&conn);
     db
 }
 
@@ -105,6 +106,7 @@ fn person_search_unconfirmed_not_returned() {
            VALUES ('hash4', '0,0,50,50', X'0000', 'Carol', 0);",
     )
     .unwrap();
+        videre_core::db::ensure_file_hashes_columns(&conn);
     let out = Command::new(bin())
         .arg("search")
         .arg("--db").arg(&db)

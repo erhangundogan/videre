@@ -55,6 +55,7 @@ fn fixture_db(dir: &std::path::Path, n: usize) -> std::path::PathBuf {
          width INTEGER, height INTEGER);",
     )
     .unwrap();
+        videre_core::db::ensure_file_hashes_columns(&conn);
     let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample_with_exif.jpg");
     for i in 0..n {
         let path = dir.join(format!("img_{i:04}.jpg"));

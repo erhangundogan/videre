@@ -47,6 +47,7 @@ mod tests {
              INSERT INTO faces VALUES (3,'h2','60,0,50,50',NULL,X'0000',1,'Bob',1);
              INSERT INTO faces VALUES (4,'h3','0,0,50,50',NULL,X'0000',NULL,NULL,0);"
         ).unwrap();
+        crate::db::ensure_file_hashes_columns(&conn);
     }
 
     #[test]
@@ -75,6 +76,7 @@ mod tests {
              INSERT INTO faces VALUES (2,'hy','0,0,10,10',NULL,X'0000',0,'Alice',1);
              INSERT INTO faces VALUES (3,'hz','0,0,10,10',NULL,X'0000',0,'Alice',1);"
         ).unwrap();
+        crate::db::ensure_file_hashes_columns(&conn);
         let paths = search_by_person(&conn, "Alice", Some(2)).unwrap();
         assert_eq!(paths.len(), 2);
     }

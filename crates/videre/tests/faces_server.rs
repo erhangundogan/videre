@@ -18,6 +18,7 @@ fn make_db_with_faces(dir: &std::path::Path) -> std::path::PathBuf {
          INSERT INTO faces (hash, bbox, embedding, confirmed) VALUES ('abc123', '0,0,50,50', X'0000', 0);",
     )
     .unwrap();
+        videre_core::db::ensure_file_hashes_columns(&conn);
     db
 }
 

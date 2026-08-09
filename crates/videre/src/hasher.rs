@@ -155,7 +155,9 @@ fn hash_file_inner(path: &Path) -> io::Result<FileRecord> {
         .to_lowercase();
 
     let (exif_date, gps_lat, gps_lon, width, height) =
-        if EXIF_EXTENSIONS.contains(&ext.as_str()) {
+        if videre_core::mime_probe::effective_mime(mime.as_deref(), &ext)
+            .is_some_and(|m| videre_core::mime_probe::EXIF_MIMES.contains(&m))
+        {
             let d = extract_exif(path);
             (d.exif_date, d.gps_lat, d.gps_lon, d.width, d.height)
         } else {
@@ -184,17 +186,19 @@ use image::imageops::{resize, FilterType};
 const PHASH_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "mov", "mp4"];
 const EXIF_EXTENSIONS: &[&str] = &["jpg", "jpeg", "tiff", "heic", "dng"];
 
-pub fn compute_dhash(path: &Path) -> Option<u64> {
+pub fn compute_dhash(path: &Path, mime: Option<&str>) -> Option<u64> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase())?;
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
 
-    if !PHASH_EXTENSIONS.contains(&ext.as_str()) {
+    let mime = videre_core::mime_probe::effective_mime(mime, &ext)?;
+    if !videre_core::mime_probe::PHASH_MIMES.contains(&mime) {
         return None;
     }
 
-    let img = if ext == "mov" || ext == "mp4" {
+    let img = if videre_core::mime_probe::is_video_mime(mime) {
         // Poster-frame dHash: decode the same QuickLook poster-frame `videre embed`
         // already uses for SigLIP, then run the identical dHash algorithm on it.
         // 64px is plenty of source resolution since we immediately resize to 9x8.
@@ -279,8 +283,8 @@ mod tests {
         img.save(&path_a).unwrap();
         img.save(&path_b).unwrap();
 
-        let ha = compute_dhash(&path_a);
-        let hb = compute_dhash(&path_b);
+        let ha = compute_dhash(&path_a, None);
+        let hb = compute_dhash(&path_b, None);
         assert!(ha.is_some());
         assert_eq!(ha, hb);
     }
@@ -291,7 +295,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("clip.mp4");
         std::fs::copy("tests/fixtures/red_1s.mp4", &path).unwrap();
-        let hash = compute_dhash(&path);
+        let hash = compute_dhash(&path, None);
         assert!(hash.is_some(), "expected a dHash computed from the video's poster-frame");
     }
 
@@ -304,8 +308,8 @@ mod tests {
         std::fs::copy("tests/fixtures/red_1s.mp4", &path_a).unwrap();
         std::fs::copy("tests/fixtures/red_1s.mp4", &path_b).unwrap();
 
-        let ha = compute_dhash(&path_a);
-        let hb = compute_dhash(&path_b);
+        let ha = compute_dhash(&path_a, None);
+        let hb = compute_dhash(&path_b, None);
         assert!(ha.is_some());
         assert_eq!(ha, hb, "identical video content must produce identical poster-frame dHash");
     }
@@ -315,7 +319,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("notes.txt");
         std::fs::write(&path, b"plain text, not a supported extension").unwrap();
-        assert!(compute_dhash(&path).is_none());
+        assert!(compute_dhash(&path, None).is_none());
     }
 
     #[test]
@@ -323,7 +327,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("video.mov");
         std::fs::write(&path, b"not a real video").unwrap();
-        assert!(compute_dhash(&path).is_none());
+        assert!(compute_dhash(&path, None).is_none());
     }
 
     #[test]

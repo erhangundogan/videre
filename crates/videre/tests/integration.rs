@@ -317,6 +317,7 @@ fn dedupe_json_matches_mcp_find_duplicates_shape() {
            ('/tmp/alice2.jpg', 'hash2', 10, '2021-01-01T00:00:00+00:00', 'jpg');",
     )
     .unwrap();
+        videre_core::db::ensure_file_hashes_columns(&conn);
     drop(conn);
 
     let out = Command::new(videre_bin())

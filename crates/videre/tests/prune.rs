@@ -52,6 +52,7 @@ fn fixture_db(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf,
         );",
     )
     .unwrap();
+        videre_core::db::ensure_file_hashes_columns(&conn);
     for (path, hash) in [
         (a.to_str().unwrap(), "haaa"),
         (b.to_str().unwrap(), "hbbb"),

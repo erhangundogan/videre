@@ -276,6 +276,7 @@ mod tests {
                 (5,'h5','0,0,9,9',X'0000',NULL,NULL,0,0);",
         )
         .unwrap();
+        videre_core::db::ensure_file_hashes_columns(&conn);
         conn
     }
 

@@ -2660,6 +2660,7 @@ mod tests {
             );",
         )
         .unwrap();
+        videre_core::db::ensure_file_hashes_columns(&conn);
         conn
     }
 
@@ -2676,6 +2677,7 @@ mod tests {
              is_primary INTEGER DEFAULT 0);",
         )
         .unwrap();
+        videre_core::db::ensure_file_hashes_columns(&conn);
         conn
     }
 
