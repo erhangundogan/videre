@@ -15,6 +15,19 @@ version number and are released together.
 
 ## [Unreleased]
 
+### Added
+
+- **`videre scan --retry-incomplete`** processes only files a previous scan did
+  not finish, instead of re-reading the whole library. A full scan of a 70,601
+  file library reads roughly 460GB and takes about 10 minutes, so filling a
+  handful of stragglers no longer costs a full pass.
+
+### Changed
+
+- A file whose bytes match no known signature now records
+  `application/octet-stream` instead of an empty type, so it is not re-read on
+  every retry. This does not change how such files are decoded.
+
 ## [0.11.0] - 2026-08-09
 
 ### Added
