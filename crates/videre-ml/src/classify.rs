@@ -12,8 +12,14 @@ pub const UNKNOWN_CATEGORY: &str = "unknown";
 pub const CATEGORY_PROMPTS: &[(&str, &str)] = &[
     ("photo", "a photo of a person, place, or thing"),
     ("screenshot", "a screenshot of a phone or computer screen"),
-    ("document", "a photo of a document, receipt, or piece of paper"),
-    ("meme", "a meme image with text captions overlaid on a picture"),
+    (
+        "document",
+        "a photo of a document, receipt, or piece of paper",
+    ),
+    (
+        "meme",
+        "a meme image with text captions overlaid on a picture",
+    ),
 ];
 
 /// Picks the winning category from per-prompt similarity scores, or
@@ -28,7 +34,10 @@ pub const CATEGORY_PROMPTS: &[(&str, &str)] = &[
 /// Panics if `scores` is empty, callers always pass one score per
 /// `CATEGORY_PROMPTS` entry, which is never empty.
 pub fn classify_from_scores(scores: &[(&'static str, f32)], margin: f32) -> (&'static str, f32) {
-    assert!(!scores.is_empty(), "classify_from_scores requires at least one score");
+    assert!(
+        !scores.is_empty(),
+        "classify_from_scores requires at least one score"
+    );
     let mut sorted: Vec<(&'static str, f32)> = scores.to_vec();
     sorted.sort_by(|a, b| b.1.total_cmp(&a.1));
     let (top_category, top_score) = sorted[0];
@@ -49,7 +58,12 @@ mod tests {
 
     #[test]
     fn clear_winner_returns_that_category_with_its_score() {
-        let scores = [("photo", 0.9), ("screenshot", 0.3), ("document", 0.2), ("meme", 0.1)];
+        let scores = [
+            ("photo", 0.9),
+            ("screenshot", 0.3),
+            ("document", 0.2),
+            ("meme", 0.1),
+        ];
         let (cat, score) = classify_from_scores(&scores, 0.05);
         assert_eq!(cat, "photo");
         assert_eq!(score, 0.9);
@@ -57,7 +71,12 @@ mod tests {
 
     #[test]
     fn top_two_within_margin_falls_back_to_unknown() {
-        let scores = [("photo", 0.52), ("screenshot", 0.50), ("document", 0.1), ("meme", 0.05)];
+        let scores = [
+            ("photo", 0.52),
+            ("screenshot", 0.50),
+            ("document", 0.1),
+            ("meme", 0.05),
+        ];
         let (cat, score) = classify_from_scores(&scores, 0.05);
         assert_eq!(cat, UNKNOWN_CATEGORY);
         assert_eq!(score, 0.52);

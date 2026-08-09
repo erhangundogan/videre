@@ -113,8 +113,7 @@ impl Embedder {
             .filename("config.json")
             .send()
             .context("fetch config.json")?;
-        let config_str =
-            std::fs::read_to_string(&config_path).context("read config.json")?;
+        let config_str = std::fs::read_to_string(&config_path).context("read config.json")?;
         let config: siglip::Config =
             serde_json::from_str(&config_str).context("parse siglip config.json")?;
 
@@ -152,7 +151,12 @@ impl Embedder {
         };
 
         let model = siglip::Model::new(&config, vb).context("build siglip model")?;
-        Ok(Self { model, tokenizer, device, dtype })
+        Ok(Self {
+            model,
+            tokenizer,
+            device,
+            dtype,
+        })
     }
 
     /// Embed a batch of `[3, IMAGE_SIZE, IMAGE_SIZE]` image tensors.
@@ -273,8 +277,7 @@ fn load_sharded_safetensors(repo: &Repo) -> Result<Vec<PathBuf>> {
         .filename("model.safetensors.index.json")
         .send()
         .context("fetch model.safetensors.index.json")?;
-    let index_str =
-        std::fs::read_to_string(&index_path).context("read safetensors index")?;
+    let index_str = std::fs::read_to_string(&index_path).context("read safetensors index")?;
     let shards = shard_names_from_index(&index_str)?;
 
     let mut paths = Vec::with_capacity(shards.len());
@@ -305,7 +308,10 @@ mod index_parsing_tests {
         let shards = shard_names_from_index(index).unwrap();
         assert_eq!(
             shards,
-            vec!["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"]
+            vec![
+                "model-00001-of-00002.safetensors",
+                "model-00002-of-00002.safetensors"
+            ]
         );
     }
 
@@ -346,12 +352,10 @@ mod tests {
     #[test]
     fn text_and_image_towers_agree_on_semantics() {
         let e = Embedder::load(crate::device::best_device(), MODEL_ID).unwrap();
-        let red =
-            embed_image_file(&e, std::path::Path::new("tests/fixtures/red_2x2.png")).unwrap();
+        let red = embed_image_file(&e, std::path::Path::new("tests/fixtures/red_2x2.png")).unwrap();
         let q_red = e.embed_text("a solid red square").unwrap();
         let q_dog = e.embed_text("a photo of a dog").unwrap();
-        let dot =
-            |a: &[f32], b: &[f32]| -> f32 { a.iter().zip(b).map(|(x, y)| x * y).sum() };
+        let dot = |a: &[f32], b: &[f32]| -> f32 { a.iter().zip(b).map(|(x, y)| x * y).sum() };
         assert!(dot(&red, &q_red) > dot(&red, &q_dog));
         assert_eq!(red.len(), q_red.len());
     }

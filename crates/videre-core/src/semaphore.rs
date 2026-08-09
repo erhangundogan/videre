@@ -27,7 +27,11 @@ impl Drop for SemaphorePermit<'_> {
 
 impl Semaphore {
     pub fn new(max: usize) -> Self {
-        Semaphore { state: Mutex::new(0), cond: Condvar::new(), max }
+        Semaphore {
+            state: Mutex::new(0),
+            cond: Condvar::new(),
+            max,
+        }
     }
 
     /// Blocks until fewer than `max` permits are held, then takes one.

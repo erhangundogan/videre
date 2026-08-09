@@ -138,7 +138,11 @@ pub fn heic_via_quicklook(path: &str, tag: &str, max_size: Option<u32>) -> Optio
     }
     let file_name = std::path::Path::new(path).file_name()?.to_str()?;
     let out_file = out_dir.join(format!("{file_name}.png"));
-    let result = if outcome == WaitOutcome::Success { image::open(&out_file).ok() } else { None };
+    let result = if outcome == WaitOutcome::Success {
+        image::open(&out_file).ok()
+    } else {
+        None
+    };
     let _ = std::fs::remove_dir_all(&out_dir);
     result
 }
@@ -154,7 +158,10 @@ mod tests {
 
     #[test]
     fn resolve_qlmanage_concurrency_falls_back_to_default_when_absent() {
-        assert_eq!(resolve_qlmanage_concurrency(None), QLMANAGE_MAX_CONCURRENT_DEFAULT);
+        assert_eq!(
+            resolve_qlmanage_concurrency(None),
+            QLMANAGE_MAX_CONCURRENT_DEFAULT
+        );
     }
 
     #[test]

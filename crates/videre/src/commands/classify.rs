@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
+use std::path::PathBuf;
 use videre_core::{classify as classify_core, embeddings, vectors};
 use videre_ml::{classify as classify_ml, device, model};
-use std::path::PathBuf;
 
 #[derive(clap::Args)]
 pub struct ClassifyArgs {
@@ -31,8 +31,7 @@ pub struct ClassifyArgs {
 
 pub fn run(args: ClassifyArgs) -> Result<()> {
     let db = super::resolve_reader_db(args.db.clone())?;
-    let conn = videre_core::db::open_wal(&db)
-        .with_context(|| format!("open {}", db.display()))?;
+    let conn = videre_core::db::open_wal(&db).with_context(|| format!("open {}", db.display()))?;
 
     let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref())?;
     videre_core::embeddings_db::attach_for_read(&conn, &db, &model_id)?;
@@ -49,7 +48,9 @@ fn run_classify(args: &ClassifyArgs, conn: &rusqlite::Connection, model_id: &str
     // Loaded once and looked up by hash below rather than holding the whole
     // corpus twice, hashes.len() can be in the tens of thousands.
     let all_embeddings: std::collections::HashMap<String, Vec<u8>> =
-        embeddings::load_embeddings(conn, model_id)?.into_iter().collect();
+        embeddings::load_embeddings(conn, model_id)?
+            .into_iter()
+            .collect();
 
     let hashes: Vec<String> = if args.reprocess {
         let all: Vec<String> = all_embeddings.keys().cloned().collect();

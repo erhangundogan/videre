@@ -1,7 +1,7 @@
-use videre::types::{ErrorJson, StatsJson, SCHEMA_VERSION};
-use videre_core::pipeline_runs::PipelineRunStatus;
 use std::path::PathBuf;
 use std::process;
+use videre::types::{ErrorJson, StatsJson, SCHEMA_VERSION};
+use videre_core::pipeline_runs::PipelineRunStatus;
 
 #[derive(clap::Args)]
 pub struct StatsArgs {
@@ -51,7 +51,9 @@ pub fn run(args: StatsArgs) -> anyhow::Result<()> {
     }
 }
 
-fn resolve_and_open(args: &StatsArgs) -> anyhow::Result<(std::path::PathBuf, rusqlite::Connection)> {
+fn resolve_and_open(
+    args: &StatsArgs,
+) -> anyhow::Result<(std::path::PathBuf, rusqlite::Connection)> {
     let db = super::resolve_reader_db_must_exist(args.db.clone())?;
     let conn = videre_core::db::open_wal(&db)?;
     Ok((db, conn))
@@ -103,7 +105,11 @@ fn run_text(args: &StatsArgs) -> anyhow::Result<()> {
             .duration_ms
             .map(|d| format!("{d}ms"))
             .unwrap_or_else(|| "-".to_string());
-        let running_note = if p.currently_running { "  (running now)" } else { "" };
+        let running_note = if p.currently_running {
+            "  (running now)"
+        } else {
+            ""
+        };
         println!(
             "  {:10} {:12} last_run={:<20} duration={:<8}{}",
             p.command, status, last_run, duration, running_note
@@ -119,5 +125,9 @@ fn run_json(args: &StatsArgs) -> anyhow::Result<StatsJson> {
     let (db, conn) = resolve_and_open(args)?;
     let library = videre_core::library_stats::compute_full(&conn, &db)?;
     let pipelines = videre_core::pipeline_runs::read_all(&conn, &db)?;
-    Ok(StatsJson { schema_version: SCHEMA_VERSION, library, pipelines })
+    Ok(StatsJson {
+        schema_version: SCHEMA_VERSION,
+        library,
+        pipelines,
+    })
 }

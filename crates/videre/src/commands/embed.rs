@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
-use videre_core::{embeddings, vectors};
-use videre_ml::{device, model, preprocess};
 use rayon::prelude::*;
 use std::path::PathBuf;
+use videre_core::{embeddings, vectors};
+use videre_ml::{device, model, preprocess};
 
 #[derive(clap::Args)]
 pub struct EmbedArgs {
@@ -31,8 +31,7 @@ pub struct EmbedArgs {
 
 pub fn run(args: EmbedArgs) -> Result<()> {
     let db = super::resolve_reader_db(args.db.clone())?;
-    let conn = videre_core::db::open_wal(&db)
-        .with_context(|| format!("open {}", db.display()))?;
+    let conn = videre_core::db::open_wal(&db).with_context(|| format!("open {}", db.display()))?;
 
     let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref())?;
     // create: true here and nowhere else. embed is the only command allowed
@@ -40,9 +39,7 @@ pub fn run(args: EmbedArgs) -> Result<()> {
     // so a typo in --model never silently produces an empty library.
     videre_core::embeddings_db::attach(&conn, &db, &model_id, true)?;
 
-    videre_core::pipeline_runs::track(&conn, &db, "embed", || {
-        run_embed(&args, &conn, &model_id)
-    })
+    videre_core::pipeline_runs::track(&conn, &db, "embed", || run_embed(&args, &conn, &model_id))
 }
 
 /// Clamps `--batch` into the range known to produce correct embeddings, and
@@ -110,8 +107,7 @@ fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection, model_id: &str) -> R
                 }
             })
             .collect();
-        let decoded: Vec<(String, candle_core::Tensor)> =
-            decoded.into_iter().flatten().collect();
+        let decoded: Vec<(String, candle_core::Tensor)> = decoded.into_iter().flatten().collect();
         failed += chunk.len() - decoded.len();
 
         let mut rows: Vec<(String, Vec<u8>)> = Vec::with_capacity(decoded.len());
@@ -145,7 +141,10 @@ fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection, model_id: &str) -> R
 /// has no `videre watch` stage equivalent that shares this logic.
 fn format_summary(done: usize, failed: usize, elapsed: std::time::Duration) -> String {
     if failed > 0 {
-        format!("{done} image(s) embedded, {failed} skipped, done in {}s", elapsed.as_secs())
+        format!(
+            "{done} image(s) embedded, {failed} skipped, done in {}s",
+            elapsed.as_secs()
+        )
     } else {
         format!("{done} image(s) embedded, done in {}s", elapsed.as_secs())
     }
@@ -176,7 +175,10 @@ mod tests {
 
     #[test]
     fn clamp_batch_caps_values_above_the_safe_maximum() {
-        assert_eq!(clamp_batch(model::MAX_SAFE_BATCH + 1), model::MAX_SAFE_BATCH);
+        assert_eq!(
+            clamp_batch(model::MAX_SAFE_BATCH + 1),
+            model::MAX_SAFE_BATCH
+        );
         assert_eq!(clamp_batch(128), model::MAX_SAFE_BATCH);
         assert_eq!(clamp_batch(256), model::MAX_SAFE_BATCH);
         assert_eq!(clamp_batch(usize::MAX), model::MAX_SAFE_BATCH);

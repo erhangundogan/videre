@@ -109,7 +109,10 @@ fn query_vectors(conn: &Connection, model_id: &str) -> Option<VectorBlock> {
         .ok()?
         .filter_map(|r| r.ok())
         .collect();
-    let first_len = rows.iter().map(|(_, b)| b.len()).find(|l| *l > 0 && l % 2 == 0)?;
+    let first_len = rows
+        .iter()
+        .map(|(_, b)| b.len())
+        .find(|l| *l > 0 && l % 2 == 0)?;
     let dim = first_len / 2;
     let mut blob = Vec::with_capacity(rows.len() * first_len);
     let mut hashes = Vec::with_capacity(rows.len());
@@ -123,15 +126,27 @@ fn query_vectors(conn: &Connection, model_id: &str) -> Option<VectorBlock> {
     if hashes.is_empty() {
         return None;
     }
-    Some(VectorBlock { hashes, b64: base64_encode(&blob), dim })
+    Some(VectorBlock {
+        hashes,
+        b64: base64_encode(&blob),
+        dim,
+    })
 }
 
 fn best_date(r: &FileRow) -> &str {
     if let Some(d) = r.exif_date.as_deref() {
-        if !d.starts_with("0000") { return d; }
+        if !d.starts_with("0000") {
+            return d;
+        }
     }
     match (r.created_at.as_deref(), r.modified_at.as_deref()) {
-        (Some(c), Some(m)) => if c < m { c } else { m },
+        (Some(c), Some(m)) => {
+            if c < m {
+                c
+            } else {
+                m
+            }
+        }
         (Some(c), None) => c,
         (None, Some(m)) => m,
         (None, None) => "",
@@ -148,8 +163,16 @@ fn base64_encode(data: &[u8]) -> String {
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(CHARS[((n >> 18) & 63) as usize] as char);
         out.push(CHARS[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { CHARS[((n >> 6) & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { CHARS[(n & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            CHARS[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            CHARS[(n & 63) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -174,8 +197,11 @@ fn heic_to_b64(path: &str, max_px: u32) -> Option<String> {
         img
     };
     let mut buf = Vec::new();
-    img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Jpeg)
-        .ok()?;
+    img.write_to(
+        &mut std::io::Cursor::new(&mut buf),
+        image::ImageFormat::Jpeg,
+    )
+    .ok()?;
     Some(base64_encode(&buf))
 }
 
@@ -187,7 +213,10 @@ fn face_thumb_b64(path: &str, bbox: [f32; 4], face_id: i64) -> Option<String> {
     let thumb = videre_api::make_face_thumb(path, bbox, face_id)?;
     let mut buf = Vec::new();
     thumb
-        .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Jpeg)
+        .write_to(
+            &mut std::io::Cursor::new(&mut buf),
+            image::ImageFormat::Jpeg,
+        )
         .ok()?;
     Some(format!("data:image/jpeg;base64,{}", base64_encode(&buf)))
 }
@@ -196,8 +225,13 @@ fn face_thumb_b64(path: &str, bbox: [f32; 4], face_id: i64) -> Option<String> {
 /// [x1,y1,x2,y2] shape make_face_thumb expects (same conversion
 /// handle_face_image already does inline).
 fn parse_bbox(bbox: &str) -> Option<[f32; 4]> {
-    let parts: Vec<f32> = bbox.split(',').filter_map(|p| p.trim().parse().ok()).collect();
-    if parts.len() != 4 { return None; }
+    let parts: Vec<f32> = bbox
+        .split(',')
+        .filter_map(|p| p.trim().parse().ok())
+        .collect();
+    if parts.len() != 4 {
+        return None;
+    }
     Some([parts[0], parts[1], parts[0] + parts[2], parts[1] + parts[3]])
 }
 
@@ -225,14 +259,14 @@ fn json_str(s: &str) -> String {
     out.push('"');
     for c in s.chars() {
         match c {
-            '"'  => out.push_str("\\\""),
+            '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            '<'  => out.push_str("\\u003c"),
+            '<' => out.push_str("\\u003c"),
             c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c    => out.push(c),
+            c => out.push(c),
         }
     }
     out.push('"');
@@ -270,19 +304,37 @@ fn file_to_json_with_faces(
         ("null".to_string(), "null".to_string())
     };
 
-    let cr = f.created_at.as_deref()
+    let cr = f
+        .created_at
+        .as_deref()
         .map(|d| json_str(&d[..d.len().min(19)]))
         .unwrap_or_else(|| "null".to_string());
-    let mo = f.modified_at.as_deref()
+    let mo = f
+        .modified_at
+        .as_deref()
         .map(|d| json_str(&d[..d.len().min(19)]))
         .unwrap_or_else(|| "null".to_string());
-    let ex = f.exif_date.as_deref()
+    let ex = f
+        .exif_date
+        .as_deref()
         .map(json_str)
         .unwrap_or_else(|| "null".to_string());
-    let lat = f.gps_lat.map(|v| format!("{:.6}", v)).unwrap_or_else(|| "null".to_string());
-    let lon = f.gps_lon.map(|v| format!("{:.6}", v)).unwrap_or_else(|| "null".to_string());
-    let w = f.width.map(|v| v.to_string()).unwrap_or_else(|| "null".to_string());
-    let h = f.height.map(|v| v.to_string()).unwrap_or_else(|| "null".to_string());
+    let lat = f
+        .gps_lat
+        .map(|v| format!("{:.6}", v))
+        .unwrap_or_else(|| "null".to_string());
+    let lon = f
+        .gps_lon
+        .map(|v| format!("{:.6}", v))
+        .unwrap_or_else(|| "null".to_string());
+    let w = f
+        .width
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "null".to_string());
+    let h = f
+        .height
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "null".to_string());
 
     let faces_json: Vec<String> = faces
         .iter()
@@ -310,11 +362,17 @@ fn file_to_json_with_faces(
          \"tb\":{tb},\"fb\":{fb},\"meta\":{{\"faces\":[{faces}],\"location\":{loc}}}}}",
         hash = json_str(&f.hash),
         path = json_str(&f.path),
-        ext  = json_str(&f.ext),
+        ext = json_str(&f.ext),
         size = f.size_bytes,
-        cr = cr, mo = mo, ex = ex,
-        lat = lat, lon = lon, w = w, h = h,
-        tb = tb, fb = fb,
+        cr = cr,
+        mo = mo,
+        ex = ex,
+        lat = lat,
+        lon = lon,
+        w = w,
+        h = h,
+        tb = tb,
+        fb = fb,
         faces = faces_json.join(","),
         loc = loc,
     )
@@ -329,22 +387,30 @@ fn group_to_json(
     let hash_prefix = &group[0].hash[..group[0].hash.len().min(8)];
     let waste = group[0].size_bytes * (group.len() as i64 - 1);
     let keep_date = best_date(&group[0]);
-    let date_json = if keep_date.is_empty() { "null".to_string() } else { json_str(keep_date) };
-    let files_json: Vec<String> = group.iter()
+    let date_json = if keep_date.is_empty() {
+        "null".to_string()
+    } else {
+        json_str(keep_date)
+    };
+    let files_json: Vec<String> = group
+        .iter()
         .map(|f| {
             file_to_json_with_faces(
                 f,
                 heic,
                 heic_original,
-                faces_by_hash.get(&f.hash).map(|v| v.as_slice()).unwrap_or(&[]),
+                faces_by_hash
+                    .get(&f.hash)
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[]),
             )
         })
         .collect();
     format!(
         "{{\"hash\":{hash},\"waste\":{waste},\"date\":{date},\"files\":[{files}]}}",
-        hash  = json_str(hash_prefix),
+        hash = json_str(hash_prefix),
         waste = waste,
-        date  = date_json,
+        date = date_json,
         files = files_json.join(","),
     )
 }
@@ -374,17 +440,17 @@ fn query_groups(conn: &Connection) -> Vec<Vec<FileRow>> {
     let rows: Vec<FileRow> = stmt
         .query_map([], |r| {
             Ok(FileRow {
-                path:       r.get(0)?,
-                hash:       r.get(1)?,
+                path: r.get(0)?,
+                hash: r.get(1)?,
                 size_bytes: r.get(2)?,
-                ext:        r.get(3)?,
+                ext: r.get(3)?,
                 created_at: r.get(4)?,
-                modified_at:r.get(5)?,
-                exif_date:  r.get(6)?,
-                gps_lat:    r.get(7)?,
-                gps_lon:    r.get(8)?,
-                width:      r.get(9)?,
-                height:     r.get(10)?,
+                modified_at: r.get(5)?,
+                exif_date: r.get(6)?,
+                gps_lat: r.get(7)?,
+                gps_lon: r.get(8)?,
+                width: r.get(9)?,
+                height: r.get(10)?,
             })
         })
         .expect("failed to execute query")
@@ -419,17 +485,17 @@ fn query_all_files(conn: &Connection) -> Vec<FileRow> {
         .expect("failed to prepare query");
     stmt.query_map([], |r| {
         Ok(FileRow {
-            path:       r.get(0)?,
-            hash:       r.get(1)?,
+            path: r.get(0)?,
+            hash: r.get(1)?,
             size_bytes: r.get(2)?,
-            ext:        r.get(3)?,
+            ext: r.get(3)?,
             created_at: r.get(4)?,
-            modified_at:r.get(5)?,
-            exif_date:  r.get(6)?,
-            gps_lat:    r.get(7)?,
-            gps_lon:    r.get(8)?,
-            width:      r.get(9)?,
-            height:     r.get(10)?,
+            modified_at: r.get(5)?,
+            exif_date: r.get(6)?,
+            gps_lat: r.get(7)?,
+            gps_lon: r.get(8)?,
+            width: r.get(9)?,
+            height: r.get(10)?,
         })
     })
     .expect("failed to execute query")
@@ -726,7 +792,9 @@ fn generate_html(
     // Embed all group data as JSON
     out.push_str("<script>\nvar GROUPS=[\n");
     for (i, group) in groups.iter().enumerate() {
-        if i > 0 { out.push(','); }
+        if i > 0 {
+            out.push(',');
+        }
         out.push('\n');
         out.push_str(&group_to_json(group, heic, heic_original, faces_by_hash));
     }
@@ -737,12 +805,17 @@ fn generate_html(
     if let Some(files) = all_files {
         out.push_str("var ALLFILES=[\n");
         for (i, f) in files.iter().enumerate() {
-            if i > 0 { out.push(','); }
+            if i > 0 {
+                out.push(',');
+            }
             out.push_str(&file_to_json_with_faces(
                 f,
                 heic,
                 heic_original,
-                faces_by_hash.get(&f.hash).map(|v| v.as_slice()).unwrap_or(&[]),
+                faces_by_hash
+                    .get(&f.hash)
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[]),
             ));
         }
         out.push_str("\n];\n");
@@ -751,7 +824,9 @@ fn generate_html(
                 out.push_str(&format!("var VEC_DIM={};\n", vb.dim));
                 out.push_str("var VEC_HASHES=[");
                 for (i, h) in vb.hashes.iter().enumerate() {
-                    if i > 0 { out.push(','); }
+                    if i > 0 {
+                        out.push(',');
+                    }
                     out.push_str(&json_str(h));
                 }
                 out.push_str("];\n");
@@ -769,12 +844,17 @@ fn generate_html(
     if let Some(kf) = keep_files {
         out.push_str("var KEEPFILES=[\n");
         for (i, f) in kf.iter().enumerate() {
-            if i > 0 { out.push(','); }
+            if i > 0 {
+                out.push(',');
+            }
             out.push_str(&file_to_json_with_faces(
                 f,
                 heic,
                 heic_original,
-                faces_by_hash.get(&f.hash).map(|v| v.as_slice()).unwrap_or(&[]),
+                faces_by_hash
+                    .get(&f.hash)
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[]),
             ));
         }
         out.push_str("\n];\n");
@@ -2134,7 +2214,10 @@ async fn handle_location(
     Query(q): Query<LocationQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<AxumJson<LocationResponse>, StatusCode> {
-    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     // `q.lat`/`q.lon` arrive rounded to 6 decimal places (the precision
     // `file_to_json_with_faces` bakes into `meta.location` client-side), but
     // `file_hashes.gps_lat`/`gps_lon` are stored at full EXIF precision, an
@@ -2168,15 +2251,23 @@ async fn handle_location(
 async fn handle_get_faces(
     State(state): State<Arc<AppState>>,
 ) -> Result<AxumJson<FacesData>, StatusCode> {
-    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    videre_api::faces_list(&conn).map(AxumJson).map_err(api_status)
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    videre_api::faces_list(&conn)
+        .map(AxumJson)
+        .map_err(api_status)
 }
 
 async fn handle_assign(
     State(state): State<Arc<AppState>>,
     AxumJson(req): AxumJson<AssignRequest>,
 ) -> Result<StatusCode, StatusCode> {
-    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     videre_api::assign(&conn, &req.face_ids, &req.person_label)
         .map(|_| StatusCode::OK)
         .map_err(api_status)
@@ -2186,7 +2277,10 @@ async fn handle_new_person(
     State(state): State<Arc<AppState>>,
     AxumJson(req): AxumJson<NewPersonRequest>,
 ) -> Result<StatusCode, StatusCode> {
-    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     videre_api::new_person(&conn, &req.face_ids, &req.label)
         .map(|_| StatusCode::OK)
         .map_err(api_status)
@@ -2196,7 +2290,10 @@ async fn handle_remove_face(
     State(state): State<Arc<AppState>>,
     AxumJson(req): AxumJson<RemoveFaceRequest>,
 ) -> Result<StatusCode, StatusCode> {
-    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     videre_api::remove_face(&conn, req.face_id)
         .map(|_| StatusCode::OK)
         .map_err(api_status)
@@ -2206,7 +2303,10 @@ async fn handle_delete_person(
     State(state): State<Arc<AppState>>,
     AxumJson(req): AxumJson<DeletePersonRequest>,
 ) -> Result<StatusCode, StatusCode> {
-    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     videre_api::delete_person(&conn, &req.label)
         .map(|_| StatusCode::OK)
         .map_err(api_status)
@@ -2216,7 +2316,10 @@ async fn handle_rename_person(
     State(state): State<Arc<AppState>>,
     AxumJson(req): AxumJson<RenamePersonRequest>,
 ) -> Result<StatusCode, StatusCode> {
-    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     videre_api::rename_person(&conn, &req.old_label, &req.new_label)
         .map(|_| StatusCode::OK)
         .map_err(api_status)
@@ -2226,7 +2329,10 @@ async fn handle_dissolve_cluster(
     State(state): State<Arc<AppState>>,
     AxumJson(req): AxumJson<DissolveClusterRequest>,
 ) -> Result<StatusCode, StatusCode> {
-    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     videre_api::dissolve_cluster(&conn, req.cluster_id)
         .map(|_| StatusCode::OK)
         .map_err(api_status)
@@ -2236,7 +2342,10 @@ async fn handle_set_primary(
     State(state): State<Arc<AppState>>,
     AxumJson(req): AxumJson<SetPrimaryRequest>,
 ) -> Result<StatusCode, StatusCode> {
-    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     videre_api::set_primary(&conn, req.face_id, &req.person_label)
         .map(|_| StatusCode::OK)
         .map_err(api_status)
@@ -2246,7 +2355,10 @@ async fn handle_search_person(
     State(state): State<Arc<AppState>>,
     Query(q): Query<PersonSearchQuery>,
 ) -> Result<AxumJson<Vec<String>>, StatusCode> {
-    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     videre_api::search_person(&conn, &q.name)
         .map(AxumJson)
         .map_err(api_status)
@@ -2271,7 +2383,10 @@ async fn handle_cluster_api(
     axum::extract::Path(cluster_id): axum::extract::Path<i64>,
     State(state): State<Arc<AppState>>,
 ) -> Result<AxumJson<ClusterDetail>, StatusCode> {
-    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     videre_api::cluster_detail(&conn, cluster_id)
         .map(AxumJson)
         .map_err(api_status)
@@ -2280,7 +2395,11 @@ async fn handle_cluster_api(
 async fn handle_person_page(State(state): State<Arc<AppState>>) -> axum::response::Html<String> {
     let html = PERSON_HTML.replace(
         "__FACES_UI_ENABLED__",
-        if state.serve_faces_ui { "true" } else { "false" },
+        if state.serve_faces_ui {
+            "true"
+        } else {
+            "false"
+        },
     );
     axum::response::Html(html)
 }
@@ -2289,7 +2408,10 @@ async fn handle_person_api(
     axum::extract::Path(name): axum::extract::Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> Result<AxumJson<PersonDetail>, StatusCode> {
-    let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     videre_api::person_detail(&conn, &name)
         .map(AxumJson)
         .map_err(api_status)
@@ -2307,7 +2429,10 @@ async fn handle_face_image(
     // rendering in a library with thousands of faces.
     let bytes = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, StatusCode> {
         let lookup = {
-            let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let conn = state
+                .conn
+                .lock()
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             videre_api::face_lookup(&conn, face_id).map_err(|_| StatusCode::NOT_FOUND)?
         };
         videre_api::face_bytes_from_lookup(&lookup, face_id).map_err(|_| StatusCode::NOT_FOUND)
@@ -2352,7 +2477,10 @@ async fn handle_raw_file(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl axum::response::IntoResponse, StatusCode> {
     let (path, hash) = {
-        let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let conn = state
+            .conn
+            .lock()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         conn.query_row(
             "SELECT path, hash FROM file_hashes WHERE path = ?1 LIMIT 1",
             [&q.path],
@@ -2381,49 +2509,57 @@ async fn handle_raw_file(
     }
 
     let size = q.size;
-    let (content_type, bytes) = tokio::task::spawn_blocking(move || -> Option<(&'static str, Vec<u8>)> {
-        if ext == "heic" {
-            // `size` doubles as the qlmanage render cap: when Some, this
-            // caller downscales to it below anyway; when None, the caller
-            // wants the true original (no downscale applied), which is
-            // exactly heic_via_quicklook(..., None)'s full-resolution
-            // behavior too. See its safety note.
-            let img = videre_core::heic::heic_via_quicklook(&path, &format!("raw{}", size.unwrap_or(0)), size)?;
-            let img = match size {
-                Some(max_px) if img.width() > max_px || img.height() > max_px => {
-                    img.resize(max_px, max_px, image::imageops::FilterType::Triangle)
-                }
-                _ => img,
-            };
-            let mut buf = Vec::new();
-            img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Jpeg)
+    let (content_type, bytes) =
+        tokio::task::spawn_blocking(move || -> Option<(&'static str, Vec<u8>)> {
+            if ext == "heic" {
+                // `size` doubles as the qlmanage render cap: when Some, this
+                // caller downscales to it below anyway; when None, the caller
+                // wants the true original (no downscale applied), which is
+                // exactly heic_via_quicklook(..., None)'s full-resolution
+                // behavior too. See its safety note.
+                let img = videre_core::heic::heic_via_quicklook(
+                    &path,
+                    &format!("raw{}", size.unwrap_or(0)),
+                    size,
+                )?;
+                let img = match size {
+                    Some(max_px) if img.width() > max_px || img.height() > max_px => {
+                        img.resize(max_px, max_px, image::imageops::FilterType::Triangle)
+                    }
+                    _ => img,
+                };
+                let mut buf = Vec::new();
+                img.write_to(
+                    &mut std::io::Cursor::new(&mut buf),
+                    image::ImageFormat::Jpeg,
+                )
                 .ok()?;
-            Some(("image/jpeg", buf))
-        } else {
-            let timeout_path = path.clone();
-            let bytes = match videre_core::io_timeout::run_with_timeout(
-                videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
-                move || std::fs::read(&timeout_path),
-            ) {
-                Ok(Ok(bytes)) => bytes,
-                Ok(Err(e)) => {
-                    eprintln!("warning: raw file unavailable for {path}: {e}; skipping");
-                    return None;
-                }
-                Err(_) => {
-                    eprintln!(
-                        "warning: timed out reading {path} \
+                Some(("image/jpeg", buf))
+            } else {
+                let timeout_path = path.clone();
+                let bytes = match videre_core::io_timeout::run_with_timeout(
+                    videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
+                    move || std::fs::read(&timeout_path),
+                ) {
+                    Ok(Ok(bytes)) => bytes,
+                    Ok(Err(e)) => {
+                        eprintln!("warning: raw file unavailable for {path}: {e}; skipping");
+                        return None;
+                    }
+                    Err(_) => {
+                        eprintln!(
+                            "warning: timed out reading {path} \
                          (file may be unreachable - is its drive connected?); skipping"
-                    );
-                    return None;
-                }
-            };
-            Some((mime_for_ext(&ext), bytes))
-        }
-    })
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    .ok_or(StatusCode::NOT_FOUND)?;
+                        );
+                        return None;
+                    }
+                };
+                Some((mime_for_ext(&ext), bytes))
+            }
+        })
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
     Ok(([(axum::http::header::CONTENT_TYPE, content_type)], bytes))
 }
 
@@ -2441,10 +2577,14 @@ async fn handle_original_image(
     let (content_type, bytes) =
         tokio::task::spawn_blocking(move || -> Result<(&'static str, Vec<u8>), StatusCode> {
             let lookup = {
-                let conn = state.conn.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                let conn = state
+                    .conn
+                    .lock()
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
                 videre_api::original_lookup(&conn, face_id).map_err(|_| StatusCode::NOT_FOUND)?
             };
-            videre_api::original_bytes_from_lookup(&lookup, face_id).map_err(|_| StatusCode::NOT_FOUND)
+            videre_api::original_bytes_from_lookup(&lookup, face_id)
+                .map_err(|_| StatusCode::NOT_FOUND)
         })
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
@@ -2468,7 +2608,10 @@ struct ServeOptions {
     model_id: String,
 }
 
-async fn serve_faces_async(db: &Path, opts: ServeOptions) -> Result<(), Box<dyn std::error::Error>> {
+async fn serve_faces_async(
+    db: &Path,
+    opts: ServeOptions,
+) -> Result<(), Box<dyn std::error::Error>> {
     let conn = videre_core::db::open_wal(db)?;
     videre_core::location::ensure_location_column(&conn);
     // Only --all needs vectors. A missing model database disables the
@@ -2521,7 +2664,9 @@ async fn serve_faces_async(db: &Path, opts: ServeOptions) -> Result<(), Box<dyn 
     //   --show-faces alone   -> `/` = live report, no `/faces` route
     //   both                 -> `/` = live report, `/faces` = labeling UI
     router = match (state.serve_faces_ui, opts.show_report) {
-        (true, true) => router.route("/", get(handle_report)).route("/faces", get(handle_root)),
+        (true, true) => router
+            .route("/", get(handle_report))
+            .route("/faces", get(handle_root)),
         (true, false) => router.route("/", get(handle_root)),
         (false, true) => router.route("/", get(handle_report)),
         (false, false) => router, // unreachable: serve_faces_async only runs when at least one is set
@@ -2707,8 +2852,8 @@ mod tests {
         static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let home = HOME.get_or_init(|| {
-            let dir = std::env::temp_dir()
-                .join(format!("videre-report-emb-{}", std::process::id()));
+            let dir =
+                std::env::temp_dir().join(format!("videre-report-emb-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             unsafe { std::env::set_var("VIDERE_HOME", &dir) };
             dir
@@ -2760,16 +2905,19 @@ mod tests {
         conn.execute(
             "INSERT INTO emb.embeddings VALUES ('bbb', ?1, ?2, 'now')",
             rusqlite::params![videre_core::embeddings::DEFAULT_MODEL_ID, two],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO emb.embeddings VALUES ('aaa', ?1, ?2, 'now')",
             rusqlite::params![videre_core::embeddings::DEFAULT_MODEL_ID, one.clone()],
-        ).unwrap();
+        )
+        .unwrap();
         // Wrong model id must be excluded
         conn.execute(
             "INSERT INTO emb.embeddings VALUES ('ccc', 'other-model', ?1, 'now')",
             rusqlite::params![one],
-        ).unwrap();
+        )
+        .unwrap();
 
         let vb = query_vectors(&conn, videre_core::embeddings::DEFAULT_MODEL_ID).unwrap();
         assert_eq!(vb.hashes, vec!["aaa".to_string(), "bbb".to_string()]);
@@ -2790,11 +2938,13 @@ mod tests {
         conn.execute(
             "INSERT INTO emb.embeddings VALUES ('aaa', ?1, ?2, 'now')",
             rusqlite::params![videre_core::embeddings::DEFAULT_MODEL_ID, good],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO emb.embeddings VALUES ('bbb', ?1, ?2, 'now')",
             rusqlite::params![videre_core::embeddings::DEFAULT_MODEL_ID, bad],
-        ).unwrap();
+        )
+        .unwrap();
         let vb = query_vectors(&conn, videre_core::embeddings::DEFAULT_MODEL_ID).unwrap();
         assert_eq!(vb.hashes, vec!["aaa".to_string()]);
     }
@@ -2806,13 +2956,15 @@ mod tests {
         conn.execute(
             "INSERT INTO file_hashes (path, hash, ext) VALUES ('/a/x.jpg', 'aaa', 'jpg')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let v = videre_core::vectors::to_f16_bytes(&[1.0, 0.0]);
         for hash in ["aaa", "orphan"] {
             conn.execute(
                 "INSERT INTO emb.embeddings VALUES (?1, ?2, ?3, 'now')",
                 rusqlite::params![hash, videre_core::embeddings::DEFAULT_MODEL_ID, v.clone()],
-            ).unwrap();
+            )
+            .unwrap();
         }
         let vb = query_vectors(&conn, videre_core::embeddings::DEFAULT_MODEL_ID).unwrap();
         assert_eq!(vb.hashes, vec!["aaa".to_string()]);
@@ -2839,8 +2991,13 @@ mod tests {
             hash: "h1".to_string(),
             size_bytes: 10,
             ext: "jpg".to_string(),
-            created_at: None, modified_at: None, exif_date: None,
-            gps_lat: None, gps_lon: None, width: None, height: None,
+            created_at: None,
+            modified_at: None,
+            exif_date: None,
+            gps_lat: None,
+            gps_lon: None,
+            width: None,
+            height: None,
         };
         let faces = vec![(1i64, "Alice".to_string(), "0,0,10,10".to_string())];
         // make_face_thumb will return None (file doesn't exist), so faces_json
@@ -2904,11 +3061,22 @@ mod tests {
         )
         .unwrap();
         let state = test_state(conn, true);
-        let result = handle_remove_face(State(state.clone()), AxumJson(RemoveFaceRequest { face_id: 1 })).await;
+        let result = handle_remove_face(
+            State(state.clone()),
+            AxumJson(RemoveFaceRequest { face_id: 1 }),
+        )
+        .await;
         assert_eq!(result, Ok(StatusCode::OK));
         let conn = state.conn.lock().unwrap();
-        let is_primary: i64 = conn.query_row("SELECT is_primary FROM faces WHERE id = 1", [], |r| r.get(0)).unwrap();
-        assert_eq!(is_primary, 0, "is_primary must be reset when a face is removed");
+        let is_primary: i64 = conn
+            .query_row("SELECT is_primary FROM faces WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            is_primary, 0,
+            "is_primary must be reset when a face is removed"
+        );
     }
 
     #[tokio::test]
@@ -2937,7 +3105,10 @@ mod tests {
 
         let first = handle_face_image(axum::extract::Path(9001), State(state.clone())).await;
         assert!(first.is_ok());
-        assert!(cache_path.exists(), "handler must write through to the cache on a miss");
+        assert!(
+            cache_path.exists(),
+            "handler must write through to the cache on a miss"
+        );
 
         let second = handle_face_image(axum::extract::Path(9001), State(state.clone())).await;
         assert!(second.is_ok(), "second request must be served from cache");
@@ -2963,27 +3134,44 @@ mod tests {
         let state = test_state(conn, true);
         let result = handle_delete_person(
             State(state.clone()),
-            AxumJson(DeletePersonRequest { label: "Alice".to_string() }),
+            AxumJson(DeletePersonRequest {
+                label: "Alice".to_string(),
+            }),
         )
         .await;
         assert_eq!(result, Ok(StatusCode::OK));
 
         let conn = state.conn.lock().unwrap();
-        let (cluster_id, person_label, confirmed, is_primary): (Option<i64>, Option<String>, i64, i64) = conn
+        let (cluster_id, person_label, confirmed, is_primary): (
+            Option<i64>,
+            Option<String>,
+            i64,
+            i64,
+        ) = conn
             .query_row(
                 "SELECT cluster_id, person_label, confirmed, is_primary FROM faces WHERE id = 1",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .unwrap();
-        assert_eq!(cluster_id, Some(5), "cluster_id must survive removal - the face rejoins its unassigned cluster");
+        assert_eq!(
+            cluster_id,
+            Some(5),
+            "cluster_id must survive removal - the face rejoins its unassigned cluster"
+        );
         assert_eq!(person_label, None);
         assert_eq!(confirmed, 0);
         assert_eq!(is_primary, 0);
 
-        let cluster_id2: Option<i64> =
-            conn.query_row("SELECT cluster_id FROM faces WHERE id = 2", [], |r| r.get(0)).unwrap();
-        assert_eq!(cluster_id2, None, "a face that was already a singleton stays a singleton");
+        let cluster_id2: Option<i64> = conn
+            .query_row("SELECT cluster_id FROM faces WHERE id = 2", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            cluster_id2, None,
+            "a face that was already a singleton stays a singleton"
+        );
     }
 
     #[tokio::test]
@@ -2998,12 +3186,19 @@ mod tests {
         let state = test_state(conn, true);
         let result = handle_rename_person(
             State(state.clone()),
-            AxumJson(RenamePersonRequest { old_label: "Alice".to_string(), new_label: "Alicia".to_string() }),
+            AxumJson(RenamePersonRequest {
+                old_label: "Alice".to_string(),
+                new_label: "Alicia".to_string(),
+            }),
         )
         .await;
         assert_eq!(result, Ok(StatusCode::OK));
         let conn = state.conn.lock().unwrap();
-        let label: String = conn.query_row("SELECT person_label FROM faces WHERE id = 1", [], |r| r.get(0)).unwrap();
+        let label: String = conn
+            .query_row("SELECT person_label FROM faces WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(label, "Alicia");
     }
 
@@ -3025,12 +3220,19 @@ mod tests {
         let state = test_state(conn, true);
         let result = handle_rename_person(
             State(state.clone()),
-            AxumJson(RenamePersonRequest { old_label: "Alice".to_string(), new_label: "Bob".to_string() }),
+            AxumJson(RenamePersonRequest {
+                old_label: "Alice".to_string(),
+                new_label: "Bob".to_string(),
+            }),
         )
         .await;
         assert_eq!(result, Err(StatusCode::CONFLICT));
         let conn = state.conn.lock().unwrap();
-        let label: String = conn.query_row("SELECT person_label FROM faces WHERE id = 1", [], |r| r.get(0)).unwrap();
+        let label: String = conn
+            .query_row("SELECT person_label FROM faces WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(label, "Alice", "rename must not have applied on collision");
     }
 
@@ -3040,7 +3242,10 @@ mod tests {
         let state = test_state(conn, true);
         let result = handle_rename_person(
             State(state.clone()),
-            AxumJson(RenamePersonRequest { old_label: "Ghost".to_string(), new_label: "Someone".to_string() }),
+            AxumJson(RenamePersonRequest {
+                old_label: "Ghost".to_string(),
+                new_label: "Someone".to_string(),
+            }),
         )
         .await;
         assert_eq!(result, Err(StatusCode::NOT_FOUND));
@@ -3070,7 +3275,10 @@ mod tests {
         // would fail (NOT_FOUND), success here proves the cache was used
         // instead of trying to convert the (nonexistent) source file.
         let result = handle_original_image(axum::extract::Path(9002), State(state.clone())).await;
-        assert!(result.is_ok(), "must serve from cache instead of failing to convert a nonexistent source file");
+        assert!(
+            result.is_ok(),
+            "must serve from cache instead of failing to convert a nonexistent source file"
+        );
 
         let _ = std::fs::remove_file(&cache_path);
     }
@@ -3093,8 +3301,24 @@ mod tests {
 
     #[test]
     fn generated_html_links_person_faces_with_from_lightbox_and_escapes_name() {
-        let stats = Stats { total_files: 0, duplicate_groups: 0, duplicate_files: 0, wasted_bytes: 0 };
-        let html = generate_html("/tmp/test.db", &stats, &[], None, None, None, false, false, &HashMap::new(), true);
+        let stats = Stats {
+            total_files: 0,
+            duplicate_groups: 0,
+            duplicate_files: 0,
+            wasted_bytes: 0,
+        };
+        let html = generate_html(
+            "/tmp/test.db",
+            &stats,
+            &[],
+            None,
+            None,
+            None,
+            false,
+            false,
+            &HashMap::new(),
+            true,
+        );
         assert!(
             html.contains("?from=lightbox\">'+escH(fc.name)+'</a>"),
             "person link in the lightbox meta panel must carry ?from=lightbox and escape the name"

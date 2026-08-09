@@ -6,7 +6,7 @@ pub struct FaceRow {
     pub hash: String,
     pub bbox: String,
     pub landmark: Option<String>,
-    pub embedding: Vec<u8>,      // 512 f16 values as little-endian bytes (1024 bytes)
+    pub embedding: Vec<u8>, // 512 f16 values as little-endian bytes (1024 bytes)
     pub cluster_id: Option<i64>,
     pub person_label: Option<String>,
     pub confirmed: i64,
@@ -25,7 +25,7 @@ pub fn create_faces_table(conn: &Connection) -> rusqlite::Result<()> {
             person_label  TEXT,
             confirmed     INTEGER DEFAULT 0,
             is_primary    INTEGER DEFAULT 0
-        );"
+        );",
     )?;
     // Migration for existing tables without is_primary column; ignored if already exists.
     let _ = conn.execute_batch("ALTER TABLE faces ADD COLUMN is_primary INTEGER DEFAULT 0");
@@ -45,7 +45,10 @@ pub fn create_faces_table(conn: &Connection) -> rusqlite::Result<()> {
 /// Marks a hash as face-scanned (idempotent). Call after detection runs for a
 /// hash regardless of whether any faces were found.
 pub fn mark_scanned(conn: &Connection, hash: &str) -> rusqlite::Result<()> {
-    conn.execute("INSERT OR IGNORE INTO faces_scanned (hash) VALUES (?1)", rusqlite::params![hash])?;
+    conn.execute(
+        "INSERT OR IGNORE INTO faces_scanned (hash) VALUES (?1)",
+        rusqlite::params![hash],
+    )?;
     Ok(())
 }
 
@@ -81,7 +84,11 @@ pub fn select_unscanned(
     out
 }
 
-pub fn replace_faces_for_hash(conn: &Connection, hash: &str, faces: &[FaceRow]) -> rusqlite::Result<()> {
+pub fn replace_faces_for_hash(
+    conn: &Connection,
+    hash: &str,
+    faces: &[FaceRow],
+) -> rusqlite::Result<()> {
     conn.execute_batch("BEGIN")?;
     let result = (|| -> rusqlite::Result<()> {
         conn.execute("DELETE FROM faces WHERE hash = ?1", rusqlite::params![hash])?;
@@ -98,8 +105,14 @@ pub fn replace_faces_for_hash(conn: &Connection, hash: &str, faces: &[FaceRow]) 
         Ok(())
     })();
     match result {
-        Ok(()) => { conn.execute_batch("COMMIT")?; Ok(()) }
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); Err(e) }
+        Ok(()) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
     }
 }
 
@@ -151,11 +164,21 @@ pub fn load_faces_for_clustering(conn: &Connection) -> rusqlite::Result<Vec<(i64
 /// Smaller side (min of width, height) of a `"x,y,w,h"` bbox string, or 0.0 if
 /// it does not parse into at least four numeric fields.
 fn bbox_min_side(bbox: &str) -> f32 {
-    let nums: Vec<f32> = bbox.split(',').filter_map(|s| s.trim().parse().ok()).collect();
-    if nums.len() >= 4 { nums[2].min(nums[3]) } else { 0.0 }
+    let nums: Vec<f32> = bbox
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+    if nums.len() >= 4 {
+        nums[2].min(nums[3])
+    } else {
+        0.0
+    }
 }
 
-pub fn update_cluster_assignments(conn: &Connection, assignments: &[(i64, Option<i64>)]) -> rusqlite::Result<()> {
+pub fn update_cluster_assignments(
+    conn: &Connection,
+    assignments: &[(i64, Option<i64>)],
+) -> rusqlite::Result<()> {
     for (face_id, cluster_id) in assignments {
         conn.execute(
             "UPDATE faces SET cluster_id = ?1 WHERE id = ?2",
@@ -206,7 +229,9 @@ pub fn labeled_faces_by_hash(conn: &Connection) -> rusqlite::Result<LabeledFaces
 
 #[cfg(test)]
 fn make_embedding(vals: &[f32]) -> Vec<u8> {
-    vals.iter().flat_map(|&v| f16::from_f32(v).to_le_bytes()).collect()
+    vals.iter()
+        .flat_map(|&v| f16::from_f32(v).to_le_bytes())
+        .collect()
 }
 
 #[cfg(test)]
@@ -229,10 +254,21 @@ mod tests {
     fn insert_and_load_embedding() {
         let conn = open();
         let emb = make_embedding(&vec![0.5f32; 512]);
-        replace_faces_for_hash(&conn, "habc", &[FaceRow {
-            hash: "habc".into(), bbox: "0,0,50,50".into(), landmark: None,
-            embedding: emb, cluster_id: None, person_label: None, confirmed: 0, is_primary: 0,
-        }]).unwrap();
+        replace_faces_for_hash(
+            &conn,
+            "habc",
+            &[FaceRow {
+                hash: "habc".into(),
+                bbox: "0,0,50,50".into(),
+                landmark: None,
+                embedding: emb,
+                cluster_id: None,
+                person_label: None,
+                confirmed: 0,
+                is_primary: 0,
+            }],
+        )
+        .unwrap();
         let rows = load_face_embeddings(&conn).unwrap();
         assert_eq!(rows.len(), 1);
         let (id, emb_f32) = &rows[0];
@@ -245,13 +281,48 @@ mod tests {
     fn replace_removes_old_rows_for_same_hash() {
         let conn = open();
         let emb = make_embedding(&vec![0.0f32; 512]);
-        replace_faces_for_hash(&conn, "h1", &[
-            FaceRow { hash: "h1".into(), bbox: "0,0,10,10".into(), landmark: None, embedding: emb.clone(), cluster_id: None, person_label: None, confirmed: 0, is_primary: 0 },
-            FaceRow { hash: "h1".into(), bbox: "20,0,10,10".into(), landmark: None, embedding: emb.clone(), cluster_id: None, person_label: None, confirmed: 0, is_primary: 0 },
-        ]).unwrap();
-        replace_faces_for_hash(&conn, "h1", &[
-            FaceRow { hash: "h1".into(), bbox: "99,0,10,10".into(), landmark: None, embedding: emb, cluster_id: None, person_label: None, confirmed: 0, is_primary: 0 },
-        ]).unwrap();
+        replace_faces_for_hash(
+            &conn,
+            "h1",
+            &[
+                FaceRow {
+                    hash: "h1".into(),
+                    bbox: "0,0,10,10".into(),
+                    landmark: None,
+                    embedding: emb.clone(),
+                    cluster_id: None,
+                    person_label: None,
+                    confirmed: 0,
+                    is_primary: 0,
+                },
+                FaceRow {
+                    hash: "h1".into(),
+                    bbox: "20,0,10,10".into(),
+                    landmark: None,
+                    embedding: emb.clone(),
+                    cluster_id: None,
+                    person_label: None,
+                    confirmed: 0,
+                    is_primary: 0,
+                },
+            ],
+        )
+        .unwrap();
+        replace_faces_for_hash(
+            &conn,
+            "h1",
+            &[FaceRow {
+                hash: "h1".into(),
+                bbox: "99,0,10,10".into(),
+                landmark: None,
+                embedding: emb,
+                cluster_id: None,
+                person_label: None,
+                confirmed: 0,
+                is_primary: 0,
+            }],
+        )
+        .unwrap();
         let rows = load_face_embeddings(&conn).unwrap();
         assert_eq!(rows.len(), 1);
     }
@@ -260,11 +331,29 @@ mod tests {
     fn update_cluster_assignments_works() {
         let conn = open();
         let emb = make_embedding(&vec![0.0f32; 512]);
-        replace_faces_for_hash(&conn, "h1", &[FaceRow { hash: "h1".into(), bbox: "0,0,10,10".into(), landmark: None, embedding: emb, cluster_id: None, person_label: None, confirmed: 0, is_primary: 0 }]).unwrap();
+        replace_faces_for_hash(
+            &conn,
+            "h1",
+            &[FaceRow {
+                hash: "h1".into(),
+                bbox: "0,0,10,10".into(),
+                landmark: None,
+                embedding: emb,
+                cluster_id: None,
+                person_label: None,
+                confirmed: 0,
+                is_primary: 0,
+            }],
+        )
+        .unwrap();
         let rows = load_face_embeddings(&conn).unwrap();
         let id = rows[0].0;
         update_cluster_assignments(&conn, &[(id, Some(3))]).unwrap();
-        let n: i64 = conn.query_row("SELECT cluster_id FROM faces WHERE id=?1", [id], |r| r.get(0)).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT cluster_id FROM faces WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(n, 3);
     }
 
@@ -273,10 +362,33 @@ mod tests {
         let conn = open();
         let emb = make_embedding(&vec![0.25f32; 512]);
         // bbox "x,y,w,h": min side is min(w,h).
-        replace_faces_for_hash(&conn, "h1", &[
-            FaceRow { hash: "h1".into(), bbox: "10,10,200,300".into(), landmark: None, embedding: emb.clone(), cluster_id: None, person_label: None, confirmed: 0, is_primary: 0 },
-            FaceRow { hash: "h1".into(), bbox: "0,0,40,25".into(), landmark: None, embedding: emb, cluster_id: None, person_label: None, confirmed: 0, is_primary: 0 },
-        ]).unwrap();
+        replace_faces_for_hash(
+            &conn,
+            "h1",
+            &[
+                FaceRow {
+                    hash: "h1".into(),
+                    bbox: "10,10,200,300".into(),
+                    landmark: None,
+                    embedding: emb.clone(),
+                    cluster_id: None,
+                    person_label: None,
+                    confirmed: 0,
+                    is_primary: 0,
+                },
+                FaceRow {
+                    hash: "h1".into(),
+                    bbox: "0,0,40,25".into(),
+                    landmark: None,
+                    embedding: emb,
+                    cluster_id: None,
+                    person_label: None,
+                    confirmed: 0,
+                    is_primary: 0,
+                },
+            ],
+        )
+        .unwrap();
         let mut rows = load_faces_for_clustering(&conn).unwrap();
         rows.sort_by(|a, b| b.2.total_cmp(&a.2));
         assert_eq!(rows[0].2, 200.0, "min side of 200x300 bbox");
@@ -333,7 +445,21 @@ mod tests {
     fn hashes_with_faces_returns_inserted_hash() {
         let conn = open();
         let emb = make_embedding(&vec![0.0f32; 512]);
-        replace_faces_for_hash(&conn, "myhash", &[FaceRow { hash: "myhash".into(), bbox: "0,0,10,10".into(), landmark: None, embedding: emb, cluster_id: None, person_label: None, confirmed: 0, is_primary: 0 }]).unwrap();
+        replace_faces_for_hash(
+            &conn,
+            "myhash",
+            &[FaceRow {
+                hash: "myhash".into(),
+                bbox: "0,0,10,10".into(),
+                landmark: None,
+                embedding: emb,
+                cluster_id: None,
+                person_label: None,
+                confirmed: 0,
+                is_primary: 0,
+            }],
+        )
+        .unwrap();
         let hashes = hashes_with_faces(&conn).unwrap();
         assert_eq!(hashes, vec!["myhash"]);
     }

@@ -42,7 +42,11 @@ impl ProfileStats {
 pub fn format_profile_report(stats: &ProfileStats) -> String {
     let total = stats.count_heic + stats.count_other;
     let avg_ms = |total: std::time::Duration, count: usize| -> u128 {
-        if count == 0 { 0 } else { total.as_millis() / count as u128 }
+        if count == 0 {
+            0
+        } else {
+            total.as_millis() / count as u128
+        }
     };
     let mut s = format!(
         "--profile: {total} image(s) ({} heic, {} other)",
@@ -53,13 +57,18 @@ pub fn format_profile_report(stats: &ProfileStats) -> String {
     }
     s.push_str(&format!(
         "\nload: heic avg {}ms (n={}), other avg {}ms (n={})",
-        avg_ms(stats.load_heic, stats.count_heic), stats.count_heic,
-        avg_ms(stats.load_other, stats.count_other), stats.count_other,
+        avg_ms(stats.load_heic, stats.count_heic),
+        stats.count_heic,
+        avg_ms(stats.load_other, stats.count_other),
+        stats.count_other,
     ));
     s.push_str(&format!("\ndetect: avg {}ms", avg_ms(stats.detect, total)));
     s.push_str(&format!("\nalign: avg {}ms", avg_ms(stats.align, total)));
     s.push_str(&format!("\nembed: avg {}ms", avg_ms(stats.embed, total)));
-    s.push_str(&format!("\ndb_write: avg {}ms", avg_ms(stats.db_write, total)));
+    s.push_str(&format!(
+        "\ndb_write: avg {}ms",
+        avg_ms(stats.db_write, total)
+    ));
     s
 }
 
@@ -72,7 +81,10 @@ pub fn format_profile_report(stats: &ProfileStats) -> String {
 /// gracefully, `--workers` is validated to be at least 1 before this is
 /// called).
 pub fn round_robin_partition<T: Clone>(items: &[T], workers: usize) -> Vec<Vec<T>> {
-    assert!(workers > 0, "round_robin_partition requires at least 1 worker");
+    assert!(
+        workers > 0,
+        "round_robin_partition requires at least 1 worker"
+    );
     let mut parts: Vec<Vec<T>> = vec![Vec::new(); workers];
     for (i, item) in items.iter().enumerate() {
         parts[i % workers].push(item.clone());
@@ -98,10 +110,17 @@ pub struct FacesRunResult {
 /// `EmbedBatchError` carry counts only, not message text, since the text was
 /// already printed at the point of failure.
 pub enum WorkerMsg {
-    NoFace { hash: String },
-    Faces { hash: String, rows: Vec<videre_core::face_db::FaceRow> },
+    NoFace {
+        hash: String,
+    },
+    Faces {
+        hash: String,
+        rows: Vec<videre_core::face_db::FaceRow>,
+    },
     ImageError,
-    EmbedBatchError { n: usize },
+    EmbedBatchError {
+        n: usize,
+    },
 }
 
 /// Updates `result`'s counters for one `WorkerMsg`, the part of handling a
@@ -145,7 +164,12 @@ pub fn run_face_pipeline(
     use crate::{face_align, face_detect, face_embed, face_models};
 
     if to_process.is_empty() {
-        return Ok(FacesRunResult { total_faces: 0, write_errors: 0, images_processed: 0, detect_errors: 0 });
+        return Ok(FacesRunResult {
+            total_faces: 0,
+            write_errors: 0,
+            images_processed: 0,
+            detect_errors: 0,
+        });
     }
 
     let (det_path, rec_path) = face_models::buffalo_l_paths()?;
@@ -158,7 +182,12 @@ pub fn run_face_pipeline(
     let partitions = round_robin_partition(to_process, worker_count);
     let want_profile = profile.is_some();
 
-    let mut result = FacesRunResult { total_faces: 0, write_errors: 0, images_processed: 0, detect_errors: 0 };
+    let mut result = FacesRunResult {
+        total_faces: 0,
+        write_errors: 0,
+        images_processed: 0,
+        detect_errors: 0,
+    };
 
     std::thread::scope(|scope| -> Result<()> {
         let (tx, rx) = std::sync::mpsc::channel::<WorkerMsg>();
@@ -203,9 +232,15 @@ pub fn run_face_pipeline(
                             if want_profile {
                                 let d = load_start.elapsed();
                                 let is_heic = path.as_bytes().len() >= 5
-                                    && path.as_bytes()[path.len() - 5..].eq_ignore_ascii_case(b".heic");
-                                if is_heic { local_profile.load_heic += d; local_profile.count_heic += 1; }
-                                else { local_profile.load_other += d; local_profile.count_other += 1; }
+                                    && path.as_bytes()[path.len() - 5..]
+                                        .eq_ignore_ascii_case(b".heic");
+                                if is_heic {
+                                    local_profile.load_heic += d;
+                                    local_profile.count_heic += 1;
+                                } else {
+                                    local_profile.load_other += d;
+                                    local_profile.count_other += 1;
+                                }
                             }
 
                             let detect_start = std::time::Instant::now();
@@ -218,7 +253,9 @@ pub fn run_face_pipeline(
                                     continue;
                                 }
                             };
-                            if want_profile { local_profile.detect += detect_start.elapsed(); }
+                            if want_profile {
+                                local_profile.detect += detect_start.elapsed();
+                            }
 
                             if detections.is_empty() {
                                 let _ = tx.send(WorkerMsg::NoFace { hash: hash.clone() });
@@ -227,50 +264,87 @@ pub fn run_face_pipeline(
                             }
 
                             let align_start = std::time::Instant::now();
-                            let crops: Vec<image::RgbImage> = detections.iter()
+                            let crops: Vec<image::RgbImage> = detections
+                                .iter()
                                 .map(|d| face_align::align_face(&img, &d.landmarks))
                                 .collect();
-                            if want_profile { local_profile.align += align_start.elapsed(); }
+                            if want_profile {
+                                local_profile.align += align_start.elapsed();
+                            }
 
                             let n_crops = crops.len();
                             chunk_crops.extend(crops);
-                            chunk_entries.push(ChunkEntry { hash: hash.clone(), detections, n_crops });
+                            chunk_entries.push(ChunkEntry {
+                                hash: hash.clone(),
+                                detections,
+                                n_crops,
+                            });
                             progress.tick();
                         }
 
-                        if chunk_crops.is_empty() { continue; }
+                        if chunk_crops.is_empty() {
+                            continue;
+                        }
 
                         let embed_start = std::time::Instant::now();
                         let all_embeddings = match embedder.embed_batch(&chunk_crops) {
                             Ok(e) => e,
                             Err(e) => {
                                 progress.println(&format!("embed_batch failed: {e}"));
-                                let _ = tx.send(WorkerMsg::EmbedBatchError { n: chunk_entries.len() });
+                                let _ = tx.send(WorkerMsg::EmbedBatchError {
+                                    n: chunk_entries.len(),
+                                });
                                 continue;
                             }
                         };
-                        if want_profile { local_profile.embed += embed_start.elapsed(); }
+                        if want_profile {
+                            local_profile.embed += embed_start.elapsed();
+                        }
 
                         let mut emb_offset = 0;
                         for entry in &chunk_entries {
                             let n = entry.n_crops;
                             let embs = &all_embeddings[emb_offset..emb_offset + n];
                             emb_offset += n;
-                            let rows: Vec<videre_core::face_db::FaceRow> = entry.detections.iter().zip(embs.iter()).map(|(det, emb)| {
-                                let [x1, y1, x2, y2] = det.bbox;
-                                let bbox = format!("{},{},{},{}", x1 as i32, y1 as i32, (x2 - x1) as i32, (y2 - y1) as i32);
-                                let lm_str: String = det.landmarks.iter()
-                                    .flat_map(|[x, y]| [x.to_string(), y.to_string()])
-                                    .collect::<Vec<_>>().join(",");
-                                let embedding: Vec<u8> = emb.iter()
-                                    .flat_map(|&v| half::f16::from_f32(v).to_le_bytes())
-                                    .collect();
-                                videre_core::face_db::FaceRow {
-                                    hash: entry.hash.clone(), bbox, landmark: Some(lm_str),
-                                    embedding, cluster_id: None, person_label: None, confirmed: 0, is_primary: 0,
-                                }
-                            }).collect();
-                            let _ = tx.send(WorkerMsg::Faces { hash: entry.hash.clone(), rows });
+                            let rows: Vec<videre_core::face_db::FaceRow> = entry
+                                .detections
+                                .iter()
+                                .zip(embs.iter())
+                                .map(|(det, emb)| {
+                                    let [x1, y1, x2, y2] = det.bbox;
+                                    let bbox = format!(
+                                        "{},{},{},{}",
+                                        x1 as i32,
+                                        y1 as i32,
+                                        (x2 - x1) as i32,
+                                        (y2 - y1) as i32
+                                    );
+                                    let lm_str: String = det
+                                        .landmarks
+                                        .iter()
+                                        .flat_map(|[x, y]| [x.to_string(), y.to_string()])
+                                        .collect::<Vec<_>>()
+                                        .join(",");
+                                    let embedding: Vec<u8> = emb
+                                        .iter()
+                                        .flat_map(|&v| half::f16::from_f32(v).to_le_bytes())
+                                        .collect();
+                                    videre_core::face_db::FaceRow {
+                                        hash: entry.hash.clone(),
+                                        bbox,
+                                        landmark: Some(lm_str),
+                                        embedding,
+                                        cluster_id: None,
+                                        person_label: None,
+                                        confirmed: 0,
+                                        is_primary: 0,
+                                    }
+                                })
+                                .collect();
+                            let _ = tx.send(WorkerMsg::Faces {
+                                hash: entry.hash.clone(),
+                                rows,
+                            });
                         }
                     }
                     Ok(local_profile)
@@ -285,10 +359,15 @@ pub fn run_face_pipeline(
                 WorkerMsg::Faces { hash, rows } => {
                     if !dry_run {
                         let write_start = std::time::Instant::now();
-                        let write_result = videre_core::face_db::replace_faces_for_hash(conn, &hash, &rows);
-                        if let Some(p) = profile.as_deref_mut() { p.db_write += write_start.elapsed(); }
+                        let write_result =
+                            videre_core::face_db::replace_faces_for_hash(conn, &hash, &rows);
+                        if let Some(p) = profile.as_deref_mut() {
+                            p.db_write += write_start.elapsed();
+                        }
                         match write_result {
-                            Ok(()) => { let _ = videre_core::face_db::mark_scanned(conn, &hash); }
+                            Ok(()) => {
+                                let _ = videre_core::face_db::mark_scanned(conn, &hash);
+                            }
                             Err(e) => {
                                 progress.println(&format!("write failed {hash}: {e}"));
                                 result.write_errors += 1;
@@ -297,7 +376,9 @@ pub fn run_face_pipeline(
                     }
                 }
                 WorkerMsg::NoFace { hash } => {
-                    if !dry_run { let _ = videre_core::face_db::mark_scanned(conn, &hash); }
+                    if !dry_run {
+                        let _ = videre_core::face_db::mark_scanned(conn, &hash);
+                    }
                 }
                 WorkerMsg::ImageError | WorkerMsg::EmbedBatchError { .. } => {}
             }
@@ -361,8 +442,8 @@ pub fn cluster_with_quality_gate(
     let mut low_quality_ids: Vec<i64> = Vec::new();
     for (id, emb, side) in faces {
         let too_small = *side < min_face_px;
-        let too_generic = !global_mean.is_empty()
-            && cosine_sim(emb, &global_mean) > max_generic_sim;
+        let too_generic =
+            !global_mean.is_empty() && cosine_sim(emb, &global_mean) > max_generic_sim;
         if too_small || too_generic {
             low_quality_ids.push(*id);
         } else {
@@ -377,8 +458,13 @@ pub fn cluster_with_quality_gate(
     if !silent {
         eprintln!("Clustering {} face(s) (eps={eps:.2})...", quality.len());
     }
-    let mut assignments =
-        videre_core::face_cluster::cluster_faces(&quality, eps, min_cluster_size, merge_sim, silent);
+    let mut assignments = videre_core::face_cluster::cluster_faces(
+        &quality,
+        eps,
+        min_cluster_size,
+        merge_sim,
+        silent,
+    );
     assignments.extend(low_quality_ids.into_iter().map(|id| (id, None)));
     assignments
 }
@@ -391,11 +477,19 @@ fn normalized_mean<'a>(embs: impl Iterator<Item = &'a Vec<f32>>) -> Vec<f32> {
         if sum.is_empty() {
             sum = e.clone();
         } else {
-            for (s, v) in sum.iter_mut().zip(e) { *s += v; }
+            for (s, v) in sum.iter_mut().zip(e) {
+                *s += v;
+            }
         }
     }
     let norm = sum.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm > 1e-12 { for s in &mut sum { *s /= norm; } } else { sum.clear(); }
+    if norm > 1e-12 {
+        for s in &mut sum {
+            *s /= norm;
+        }
+    } else {
+        sum.clear();
+    }
     sum
 }
 
@@ -423,7 +517,13 @@ pub fn run_clustering(
         return Ok(None);
     }
     let assignments = cluster_with_quality_gate(
-        &all_faces, eps, min_cluster_size, merge_sim, min_face_px, max_generic_sim, silent,
+        &all_faces,
+        eps,
+        min_cluster_size,
+        merge_sim,
+        min_face_px,
+        max_generic_sim,
+        silent,
     );
     videre_core::face_db::update_cluster_assignments(conn, &assignments)?;
     let clustered_faces = assignments.iter().filter(|(_, c)| c.is_some()).count();
@@ -432,7 +532,11 @@ pub fn run_clustering(
         .filter_map(|(_, c)| *c)
         .collect::<std::collections::HashSet<_>>()
         .len();
-    Ok(Some(ClusteringResult { total_faces: all_faces.len(), clustered_faces, cluster_count }))
+    Ok(Some(ClusteringResult {
+        total_faces: all_faces.len(),
+        clustered_faces,
+        cluster_count,
+    }))
 }
 
 fn load_image(path: &str, hash: &str) -> Result<image::DynamicImage, String> {
@@ -469,7 +573,9 @@ fn load_image(path: &str, hash: &str) -> Result<image::DynamicImage, String> {
             });
         }
         #[cfg(not(target_os = "macos"))]
-        return Err(format!("HEIC decoding is only supported on macOS: {path} (hash {hash})"));
+        return Err(format!(
+            "HEIC decoding is only supported on macOS: {path} (hash {hash})"
+        ));
     }
     let timeout_path = path.to_string();
     videre_core::io_timeout::run_with_timeout(videre_core::io_timeout::DEFAULT_IO_TIMEOUT, move || {
@@ -567,7 +673,10 @@ mod tests {
     #[test]
     fn load_image_missing_file_returns_descriptive_error() {
         let err = load_image("/no/such/path/does-not-exist.jpg", "irrelevant-hash").unwrap_err();
-        assert!(err.contains("/no/such/path/does-not-exist.jpg"), "error should name the path: {err}");
+        assert!(
+            err.contains("/no/such/path/does-not-exist.jpg"),
+            "error should name the path: {err}"
+        );
     }
 
     #[test]
@@ -577,7 +686,9 @@ mod tests {
         let cache_path = videre_core::thumb_cache::original_path(&hash);
         std::fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
         let img = image::RgbImage::from_pixel(2, 2, image::Rgb([255, 0, 0]));
-        image::DynamicImage::ImageRgb8(img).save(&cache_path).unwrap();
+        image::DynamicImage::ImageRgb8(img)
+            .save(&cache_path)
+            .unwrap();
 
         // The .heic path below does not exist and is never real HEIC, if
         // load_image fell through to a fresh qlmanage decode instead of
@@ -599,7 +710,9 @@ mod tests {
 
     fn l2(mut v: Vec<f32>) -> Vec<f32> {
         let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        for x in &mut v { *x /= n; }
+        for x in &mut v {
+            *x /= n;
+        }
         v
     }
 
@@ -611,9 +724,14 @@ mod tests {
         let a = || l2(vec![1.0, 0.02, 0.0]);
         let b = || l2(vec![0.0, 0.02, 1.0]);
         let faces = vec![
-            (1, a(), 200.0), (2, a(), 180.0), (3, a(), 160.0),
-            (4, b(), 200.0), (5, b(), 190.0), (6, b(), 170.0),
-            (7, a(), 20.0), (8, a(), 15.0), // tiny, would otherwise join A
+            (1, a(), 200.0),
+            (2, a(), 180.0),
+            (3, a(), 160.0),
+            (4, b(), 200.0),
+            (5, b(), 190.0),
+            (6, b(), 170.0),
+            (7, a(), 20.0),
+            (8, a(), 15.0), // tiny, would otherwise join A
         ];
         // max_generic_sim = 1.0 disables the distinctiveness gate for this test.
         let result = cluster_with_quality_gate(&faces, 0.3, 3, 1.0, 50.0, 1.0, true);
@@ -635,15 +753,23 @@ mod tests {
         let gen = |noise: f32| l2(vec![1.0, noise, 0.0]);
         let dist = |noise: f32| l2(vec![0.0, noise, 1.0]);
         let faces = vec![
-            (1, gen(0.01), 300.0), (2, gen(0.02), 300.0), (3, gen(0.03), 300.0),
-            (4, gen(0.04), 300.0), (5, gen(0.05), 300.0),
-            (6, dist(0.01), 300.0), (7, dist(0.02), 300.0), (8, dist(0.03), 300.0),
+            (1, gen(0.01), 300.0),
+            (2, gen(0.02), 300.0),
+            (3, gen(0.03), 300.0),
+            (4, gen(0.04), 300.0),
+            (5, gen(0.05), 300.0),
+            (6, dist(0.01), 300.0),
+            (7, dist(0.02), 300.0),
+            (8, dist(0.03), 300.0),
         ];
         // size gate off (min_face_px=0), distinctiveness gate at 0.6.
         let result = cluster_with_quality_gate(&faces, 0.3, 3, 1.0, 0.0, 0.6, true);
         let map: std::collections::HashMap<_, _> = result.into_iter().collect();
         for id in 1..=5 {
-            assert_eq!(map[&id], None, "generic (near-average) large face {id} must be gated out");
+            assert_eq!(
+                map[&id], None,
+                "generic (near-average) large face {id} must be gated out"
+            );
         }
         assert!(map[&6].is_some(), "distinctive faces must still cluster");
         assert_eq!(map[&6], map[&7], "distinctive identity stays together");
@@ -711,7 +837,12 @@ mod tests {
 
     #[test]
     fn apply_worker_msg_no_face_increments_images_processed_only() {
-        let mut result = FacesRunResult { total_faces: 0, write_errors: 0, images_processed: 0, detect_errors: 0 };
+        let mut result = FacesRunResult {
+            total_faces: 0,
+            write_errors: 0,
+            images_processed: 0,
+            detect_errors: 0,
+        };
         apply_worker_msg_counts(&mut result, &WorkerMsg::NoFace { hash: "h1".into() });
         assert_eq!(result.images_processed, 1);
         assert_eq!(result.total_faces, 0);
@@ -720,16 +851,32 @@ mod tests {
 
     #[test]
     fn apply_worker_msg_faces_increments_processed_and_total_faces() {
-        let mut result = FacesRunResult { total_faces: 0, write_errors: 0, images_processed: 0, detect_errors: 0 };
+        let mut result = FacesRunResult {
+            total_faces: 0,
+            write_errors: 0,
+            images_processed: 0,
+            detect_errors: 0,
+        };
         let rows = vec![sample_face_row("h1"), sample_face_row("h1")];
-        apply_worker_msg_counts(&mut result, &WorkerMsg::Faces { hash: "h1".into(), rows });
+        apply_worker_msg_counts(
+            &mut result,
+            &WorkerMsg::Faces {
+                hash: "h1".into(),
+                rows,
+            },
+        );
         assert_eq!(result.images_processed, 1);
         assert_eq!(result.total_faces, 2);
     }
 
     #[test]
     fn apply_worker_msg_image_error_increments_processed_and_detect_errors() {
-        let mut result = FacesRunResult { total_faces: 0, write_errors: 0, images_processed: 0, detect_errors: 0 };
+        let mut result = FacesRunResult {
+            total_faces: 0,
+            write_errors: 0,
+            images_processed: 0,
+            detect_errors: 0,
+        };
         apply_worker_msg_counts(&mut result, &WorkerMsg::ImageError);
         assert_eq!(result.images_processed, 1);
         assert_eq!(result.detect_errors, 1);
@@ -737,7 +884,12 @@ mod tests {
 
     #[test]
     fn apply_worker_msg_embed_batch_error_increments_processed_and_detect_errors_by_n() {
-        let mut result = FacesRunResult { total_faces: 0, write_errors: 0, images_processed: 0, detect_errors: 0 };
+        let mut result = FacesRunResult {
+            total_faces: 0,
+            write_errors: 0,
+            images_processed: 0,
+            detect_errors: 0,
+        };
         apply_worker_msg_counts(&mut result, &WorkerMsg::EmbedBatchError { n: 5 });
         assert_eq!(result.images_processed, 5);
         assert_eq!(result.detect_errors, 5);
