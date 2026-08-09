@@ -371,7 +371,7 @@ mod tests {
 
         // Claim the file is far larger than the bytes actually present, so the
         // bounds check passes and the cap is what rejects it.
-        let end = (MOOV_CAP + 1_000_000) as u64;
+        let end = MOOV_CAP + 1_000_000;
         assert!(has_video_track_in(&mut Cursor::new(f), end));
     }
 
