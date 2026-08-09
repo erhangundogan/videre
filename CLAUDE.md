@@ -286,6 +286,7 @@ CREATE TABLE file_hashes (
     created_at  TEXT,
     modified_at TEXT,
     ext         TEXT,
+    mime        TEXT,
     phash       INTEGER,
     exif_date   TEXT,
     gps_lat     REAL,
@@ -590,6 +591,24 @@ exposed via `videre mcp` (same precedent as `--category`, which
 `path`/`hash`/`distance_km` (no `score`, since this isn't a ranked semantic
 match); `--scores` in text mode prepends `distance_km` instead of a cosine
 score for this one mode.
+
+`mime` holds the type identified by the file's magic bytes, independent of its
+name (`videre_core::mime_probe`). It is detected during the scan's existing
+BLAKE3 read, so it costs no extra I/O: `hash_file_inner` already fills a 64KB
+buffer and the signature is in the first 12 bytes. Decoding, perceptual
+hashing, EXIF extraction, and the photo/video split all route on `mime` when
+set and fall back to `ext` when NULL, which is the state of every row written
+before this column existed until the library is re-scanned. The idempotent
+`ALTER` runs in `db::open_wal`, so every command migrates the database on open
+rather than only `scan`; readers query the column, so migrating on write alone
+would break `dedupe` and `stats` on an un-rescanned library.
+
+Two details worth knowing. Classic QuickTime `.mov` files carry no `ftyp` box,
+beginning with `wide` or `mdat` instead; 2.5% of a real library is this shape,
+and detection accepts those top-level boxes. And `.dng` reports `image/tiff`,
+because DNG genuinely is a TIFF variant, so `ext = 'dng'` explicitly vetoes
+embeddability: TIFF is embeddable, DNG is not decodable, and routing on mime
+alone would revive the bug fixed 2026-08-01.
 
 `.mov`/`.mp4` files are checked for a video track before QuickLook is invoked
 (`videre_core::video_probe`). `qlmanage -t` does not fail on a container with

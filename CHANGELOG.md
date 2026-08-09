@@ -15,6 +15,32 @@ version number and are released together.
 
 ## [Unreleased]
 
+### Added
+
+- **`videre scan` records each file's real type** in a new `file_hashes.mime`
+  column, detected from its magic bytes rather than its filename. Costs no
+  extra reading: the bytes are already in memory for hashing. Existing
+  libraries gain the column automatically and fill it on the next scan.
+
+### Changed
+
+- **Removed the pre-0.10 fallback that read embeddings from the main
+  database.** It was always scheduled for this release. An unmigrated 0.9.x
+  library now gets the same clear error as any other missing model, naming
+  what does exist and the command to run. Nothing is deleted; the old rows sit
+  untouched and can be dropped by hand.
+
+### Fixed
+
+- **Misnamed files are decoded by their real type.** A JPEG named `.png`
+  previously failed every `videre embed` run with "Invalid PNG signature"; it
+  now embeds correctly. Decoding, perceptual hashing, EXIF extraction, and the
+  photo/video split all route on content rather than filename.
+- **A partly-created per-model embedding database is repaired** rather than
+  attached broken forever. Previously an initialisation cut short by a crash
+  or a full disk left a file that every later run skipped, failing with "no
+  such table".
+
 ## [0.10.1] - 2026-08-09
 
 ### Fixed
