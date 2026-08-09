@@ -177,6 +177,50 @@ rustfmt options, not a file filter, so `cargo fmt -p videre -- path/to/one.rs`
 silently formats the entire package. To format a single file, invoke
 `rustfmt <file>` directly.
 
+A `test` job runs the full suite on `ubuntu-latest` and `macos-latest`, with
+`fail-fast: false` so one runner's failure never hides the other's result.
+Linux is a first-class test target, not an afterthought: only four tests are
+macOS-gated (video poster-frames via QuickLook) and everything else runs on
+both.
+
+**Tests never download model weights.** That is the application's job, done
+when someone runs `videre embed` or `videre faces`, not a side effect of `cargo
+test` on a fresh machine. Three tests need weights (`faces_resumability`, plus
+`embed.rs`'s two on macOS); each calls `common::skip_without_models` and
+returns early when the Hugging Face cache is cold. `faces_pipeline` is
+deliberately *not* gated, because `commands/faces.rs` returns at the
+`to_process.is_empty()` branch before loading anything; a regression guard
+there runs the binary against a fresh `HF_HOME` and asserts nothing was
+downloaded, so moving that model load earlier fails loudly instead of quietly
+adding a 200MB download to every cold CI run.
+
+Rust has no native skip, so a skipped test passes. Two things stop that from
+becoming silent coverage loss. The skip message writes to fd 2 directly rather
+than via `eprintln!`, because libtest captures the print macros for passing
+tests and the message would otherwise only appear under `--nocapture`. And
+`VIDERE_TEST_REQUIRE_MODELS=1` turns a cold-cache skip into a panic; CI sets it
+after restoring its cache, so a cache that silently stops working fails the
+build rather than disabling those tests.
+
+CI caches `~/.cache/huggingface` keyed on `face_models.rs` and `embeddings.rs`,
+so changing the buffalo_l repo or `DEFAULT_MODEL_ID` invalidates it instead of
+reusing weights for a different model. On a miss an explicit step populates the
+cache (~200MB Linux, ~1.6GB macOS, once per key) by seeding a database with a
+real fixture image first, since warming against an empty database would
+download nothing.
+
+Two tests used to pass only on macOS, found by actually running the suite in
+the `rust:1` image. ONNX Runtime is linked into every `videre` binary and
+initialises at startup even for subcommands that never infer; on a host whose
+CPU it cannot identify it prints `onnxruntime cpuid_info warning: Unknown CPU
+vendor` before `main` runs, which broke an assertion that `--silent` produces
+no stderr. That reproduces on ARM64 Linux, a supported platform, so
+`common::stderr_without_library_noise` filters library chatter before such
+checks. Separately, a test that makes a file unreadable with `chmod 000` is
+meaningless as root (root bypasses permission bits), which is the default in a
+stock Docker image, so it now probes whether permissions are enforced and skips
+when they are not.
+
 Clippy is deliberately not in CI yet: it reports 18 warnings, so a lint job
 would need either `--allow`-ing them or a cleanup pass first.
 
