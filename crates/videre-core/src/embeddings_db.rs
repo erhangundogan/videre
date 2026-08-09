@@ -139,6 +139,26 @@ pub fn attach(conn: &Connection, db_path: &Path, model_id: &str, create: bool) -
         [path.to_string_lossy().as_ref()],
     )
     .with_context(|| format!("attach {}", path.display()))?;
+    if create {
+        // `path.exists()` above is not sufficient on its own: a file can exist
+        // without the table, if initialisation was interrupted by a crash or a
+        // full disk, or if two processes create it at once. Attaching such a
+        // file leaves it broken forever, since every later call sees the file
+        // and skips init. Re-asserting the schema is idempotent and cheap.
+        //
+        // page_size is deliberately NOT set here: it only takes effect on an
+        // empty database, so it belongs in `init_model_db` before any table
+        // exists. A recovered file keeps whatever page size it was born with.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS emb.embeddings (
+                hash        TEXT PRIMARY KEY NOT NULL,
+                model_id    TEXT NOT NULL,
+                embedding   BLOB NOT NULL,
+                embedded_at TEXT NOT NULL
+            );",
+        )
+        .with_context(|| format!("ensure schema in {}", path.display()))?;
+    }
     Ok(())
 }
 
@@ -258,6 +278,11 @@ pub(crate) fn test_home() -> &'static Path {
 
 /// Test-only: a fresh library directory plus an empty database file at
 /// `<test home>/<tag>/<tag>.db`, ready to hand to `attach`.
+///
+/// **`tag` must be unique across the whole test binary.** This wipes its
+/// directory on entry, so two tests sharing a tag delete each other's database
+/// mid-run and fail intermittently with `canonicalize ...: No such file or
+/// directory`. That happened once already, by reusing `emb_dng`.
 #[cfg(test)]
 pub(crate) fn test_library(tag: &str) -> PathBuf {
     let dir = test_home().join(tag);
@@ -393,6 +418,28 @@ mod tests {
                 .query_row("SELECT COUNT(*) FROM emb.embeddings", [], |r| r.get(0))
                 .unwrap();
             assert_eq!(n, 1, "re-attaching must not clobber existing rows");
+        });
+    }
+
+    #[test]
+    fn attach_with_create_repairs_a_file_that_exists_without_the_table() {
+        // `path.exists()` alone is not enough: initialisation can be cut short
+        // by a crash or a full disk, and attaching the resulting file leaves it
+        // broken forever because every later call sees the file and skips init.
+        // Surfaced as an intermittent "no such table: emb.embeddings" in tests.
+        with_home("repair", |home| {
+            let lib = touch_db(home, "hashes.db");
+            let model = "google/siglip2-base-patch16-384";
+            let path = db_path(&lib, model).unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"").unwrap(); // exists, but empty
+
+            let conn = Connection::open_in_memory().unwrap();
+            attach(&conn, &lib, model, true).unwrap();
+            let n: i64 = conn
+                .query_row("SELECT COUNT(*) FROM emb.embeddings", [], |r| r.get(0))
+                .expect("the table must exist after attach(create: true)");
+            assert_eq!(n, 0);
         });
     }
 

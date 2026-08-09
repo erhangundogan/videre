@@ -101,30 +101,38 @@ pub fn ensure_embeddings_index(conn: &Connection) -> Result<()> {
 /// Unique hashes that are embeddable but not yet embedded under `model_id`;
 /// one representative path per hash (MIN(path) keeps it deterministic).
 pub fn pending_images(conn: &Connection, model_id: &str) -> Result<Vec<PendingImage>> {
-    let placeholders = EMBEDDABLE_EXTS
+    let mimes = crate::mime_probe::EMBEDDABLE_MIMES
         .iter()
-        .map(|_| "?")
+        .map(|m| format!("'{m}'"))
         .collect::<Vec<_>>()
         .join(",");
-    let model_param = EMBEDDABLE_EXTS.len() + 1;
+    let exts = EMBEDDABLE_EXTS
+        .iter()
+        .map(|e| format!("'{e}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    // mime decides when present; ext is the fallback for rows written before
+    // the column existed. `ext = 'dng'` vetoes either way: DNG's magic bytes
+    // are TIFF and TIFF is embeddable, but the image crate cannot decode DNG,
+    // and querying them as pending forever is the bug fixed 2026-08-01.
+    // Both lists are compile-time constants, so inlining them is safe; the
+    // model id stays a bound parameter.
     let sql = format!(
         "SELECT hash, MIN(path) FROM file_hashes
-         WHERE lower(ext) IN ({placeholders})
+         WHERE lower(COALESCE(ext, '')) != 'dng'
+           AND (mime IN ({mimes}) OR (mime IS NULL AND lower(ext) IN ({exts})))
            AND NOT EXISTS (SELECT 1 FROM emb.embeddings e
-                           WHERE e.hash = file_hashes.hash AND e.model_id = ?{model_param})
+                           WHERE e.hash = file_hashes.hash AND e.model_id = ?1)
          GROUP BY hash
          ORDER BY hash"
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(
-        rusqlite::params_from_iter(EMBEDDABLE_EXTS.iter().copied().chain(std::iter::once(model_id))),
-        |row| {
-            Ok(PendingImage {
-                hash: row.get(0)?,
-                path: row.get(1)?,
-            })
-        },
-    )?;
+    let rows = stmt.query_map(params![model_id], |row| {
+        Ok(PendingImage {
+            hash: row.get(0)?,
+            path: row.get(1)?,
+        })
+    })?;
     rows.collect()
 }
 
@@ -249,6 +257,7 @@ mod tests {
             "CREATE TABLE file_hashes (
                 path        TEXT PRIMARY KEY,
                 hash        TEXT NOT NULL,
+                mime        TEXT,
                 size_bytes  INTEGER,
                 created_at  TEXT,
                 modified_at TEXT,
@@ -327,6 +336,44 @@ mod tests {
         let pending = pending_images(&conn, "b").unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].hash, "h1");
+    }
+
+    #[test]
+    fn pending_images_uses_mime_over_a_wrong_extension() {
+        let conn = test_db_attached("emb_mime");
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, ext, mime)
+             VALUES ('/a/actually_a_jpeg.png', 'h1', 'png', 'image/jpeg')",
+            [],
+        )
+        .unwrap();
+        let pending = pending_images(&conn, "m").unwrap();
+        assert_eq!(pending.len(), 1, "a JPEG named .png must still be embeddable");
+    }
+
+    #[test]
+    fn pending_images_falls_back_to_ext_when_mime_is_null() {
+        let conn = test_db_attached("emb_nullmime");
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, ext, mime) VALUES ('/a/1.jpg', 'h1', 'jpg', NULL)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(pending_images(&conn, "m").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn pending_images_still_excludes_dng_even_though_its_mime_is_tiff() {
+        // Regression guard for the 2026-08-01 fix: tiff is embeddable, DNG
+        // reports tiff, and the image crate cannot decode DNG.
+        let conn = test_db_attached("emb_dng_mime");
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, ext, mime)
+             VALUES ('/a/raw.dng', 'h1', 'dng', 'image/tiff')",
+            [],
+        )
+        .unwrap();
+        assert!(pending_images(&conn, "m").unwrap().is_empty());
     }
 
     #[test]
