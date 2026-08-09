@@ -1,38 +1,8 @@
+mod common;
+use common::videre_bin;
 use std::fs;
 use std::process::Command;
 use tempfile::tempdir;
-
-/// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.
-/// Spawned `videre` child processes inherit the environment, so their lock
-/// files land there instead of the developer's real `~/.videre/locks`, locks
-/// live under the videre home now rather than beside the database, so without
-/// this every run would leave permanent litter in the real home (test database
-/// names are random, so the files would accumulate rather than be reused).
-///
-/// Called from `videre_bin()` so it covers every spawn site automatically. The
-/// `set_var` runs inside `get_or_init` so it happens exactly once: tests share
-/// a process and run in parallel, and calling `set_var` from several threads
-/// would otherwise race every concurrent `getenv`. Tests that set their own
-/// `VIDERE_HOME` per-command still win, since `.env()` overrides what's
-/// inherited.
-fn isolated_home() {
-    static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    HOME.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("videre-it-home-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("create isolated test home");
-        std::env::set_var("VIDERE_HOME", &dir);
-        dir
-    });
-}
-
-fn videre_bin() -> std::path::PathBuf {
-    isolated_home();
-    let mut path = std::env::current_exe().unwrap();
-    path.pop(); // deps/
-    path.pop(); // debug/
-    path.push("videre");
-    path
-}
 
 // Preflight check: `videre search` on a scanned-but-not-embedded db must fail
 // fast with a "run videre embed first" message rather than loading the SigLIP
@@ -125,7 +95,11 @@ fn location_search_returns_nearby_photos_sorted_by_distance() {
         .arg("--json")
         .output()
         .expect("failed to run videre search --location");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let results = doc["results"].as_array().unwrap();
@@ -206,7 +180,10 @@ fn location_and_radius_conflict_with_other_search_modes() {
         .arg("10")
         .output()
         .expect("failed to run videre search");
-    assert!(!out.status.success(), "--radius without --location must be rejected");
+    assert!(
+        !out.status.success(),
+        "--radius without --location must be rejected"
+    );
 }
 
 #[test]
@@ -265,11 +242,25 @@ fn location_search_truncates_to_top_k_closest() {
         .arg("--json")
         .output()
         .expect("failed to run videre search --location");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let results = doc["results"].as_array().unwrap();
-    assert_eq!(results.len(), 2, "-k 2 must truncate 3 in-radius matches down to 2");
-    assert!(results[0]["path"].as_str().unwrap().ends_with("a.jpg"), "{doc}");
-    assert!(results[1]["path"].as_str().unwrap().ends_with("b.jpg"), "{doc}");
+    assert_eq!(
+        results.len(),
+        2,
+        "-k 2 must truncate 3 in-radius matches down to 2"
+    );
+    assert!(
+        results[0]["path"].as_str().unwrap().ends_with("a.jpg"),
+        "{doc}"
+    );
+    assert!(
+        results[1]["path"].as_str().unwrap().ends_with("b.jpg"),
+        "{doc}"
+    );
 }

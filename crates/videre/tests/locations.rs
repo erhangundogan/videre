@@ -1,38 +1,8 @@
+mod common;
+use common::videre_bin;
 use rusqlite::Connection;
 use std::process::Command;
 use tempfile::tempdir;
-
-/// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.
-/// Spawned `videre` child processes inherit the environment, so their lock
-/// files land there instead of the developer's real `~/.videre/locks`, locks
-/// live under the videre home now rather than beside the database, so without
-/// this every run would leave permanent litter in the real home (test database
-/// names are random, so the files would accumulate rather than be reused).
-///
-/// Called from `videre_bin()` so it covers every spawn site automatically. The
-/// `set_var` runs inside `get_or_init` so it happens exactly once: tests share
-/// a process and run in parallel, and calling `set_var` from several threads
-/// would otherwise race every concurrent `getenv`. Tests that set their own
-/// `VIDERE_HOME` per-command still win, since `.env()` overrides what's
-/// inherited.
-fn isolated_home() {
-    static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    HOME.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("videre-it-home-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("create isolated test home");
-        std::env::set_var("VIDERE_HOME", &dir);
-        dir
-    });
-}
-
-fn videre_bin() -> std::path::PathBuf {
-    isolated_home();
-    let mut path = std::env::current_exe().unwrap();
-    path.pop(); // deps/
-    path.pop(); // debug/
-    path.push("videre");
-    path
-}
 
 #[test]
 fn clusters_nearby_gps_rows_and_prints_json_summary() {
@@ -48,7 +18,7 @@ fn clusters_nearby_gps_rows_and_prints_json_summary() {
              ('/tmp/c.jpg', 'hc', 'jpg', 51.5074, -0.1278);",
     )
     .unwrap();
-        videre_core::db::ensure_file_hashes_columns(&conn);
+    videre_core::db::ensure_file_hashes_columns(&conn);
     drop(conn);
 
     let out = Command::new(videre_bin())
@@ -60,13 +30,20 @@ fn clusters_nearby_gps_rows_and_prints_json_summary() {
         .arg("--json")
         .output()
         .expect("failed to run videre locations");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(doc["schema_version"], 1);
     let clusters = doc["clusters"].as_array().unwrap();
     assert_eq!(clusters.len(), 2, "{doc}");
-    let mut counts: Vec<i64> = clusters.iter().map(|c| c["photo_count"].as_i64().unwrap()).collect();
+    let mut counts: Vec<i64> = clusters
+        .iter()
+        .map(|c| c["photo_count"].as_i64().unwrap())
+        .collect();
     counts.sort();
     assert_eq!(counts, vec![1, 2]);
 }
@@ -82,7 +59,7 @@ fn zero_gps_rows_prints_empty_and_exits_zero() {
          INSERT INTO file_hashes (path, hash, ext) VALUES ('/tmp/a.jpg', 'ha', 'jpg');",
     )
     .unwrap();
-        videre_core::db::ensure_file_hashes_columns(&conn);
+    videre_core::db::ensure_file_hashes_columns(&conn);
     drop(conn);
 
     let out = Command::new(videre_bin())
@@ -109,7 +86,7 @@ fn geojson_output_is_a_feature_collection_with_lon_lat_order() {
              ('/tmp/a.jpg', 'ha', 'jpg', 48.8566, 2.3522);",
     )
     .unwrap();
-        videre_core::db::ensure_file_hashes_columns(&conn);
+    videre_core::db::ensure_file_hashes_columns(&conn);
     drop(conn);
 
     let out = Command::new(videre_bin())
@@ -156,7 +133,7 @@ fn rerun_replaces_previous_clusters_not_appends() {
              ('/tmp/a.jpg', 'ha', 'jpg', 48.8566, 2.3522);",
     )
     .unwrap();
-        videre_core::db::ensure_file_hashes_columns(&conn);
+    videre_core::db::ensure_file_hashes_columns(&conn);
     drop(conn);
 
     for _ in 0..2 {
@@ -190,7 +167,7 @@ fn file_hashes_location_cluster_id_is_assigned_and_cleared_on_rerun() {
              ('/tmp/b.jpg', 'hb', 'jpg', 48.8606, 2.3376);",
     )
     .unwrap();
-        videre_core::db::ensure_file_hashes_columns(&conn);
+    videre_core::db::ensure_file_hashes_columns(&conn);
     drop(conn);
 
     let status = Command::new(videre_bin())
@@ -219,16 +196,25 @@ fn file_hashes_location_cluster_id_is_assigned_and_cleared_on_rerun() {
         )
         .unwrap(),
     );
-    assert!(cluster_a.is_some(), "expected a.jpg to get a location_cluster_id");
-    assert_eq!(cluster_a, cluster_b, "both nearby photos must land in the same cluster");
+    assert!(
+        cluster_a.is_some(),
+        "expected a.jpg to get a location_cluster_id"
+    );
+    assert_eq!(
+        cluster_a, cluster_b,
+        "both nearby photos must land in the same cluster"
+    );
     drop(conn);
 
     // Remove b's GPS so a rerun reclusters it out of any cluster, the
     // NULL-clearing step (locations.rs's "clears file_hashes.location_cluster_id")
     // must actually take effect, not just leave the previous run's value in place.
     let conn = Connection::open(&db).unwrap();
-    conn.execute("UPDATE file_hashes SET gps_lat = NULL, gps_lon = NULL WHERE path = '/tmp/b.jpg'", [])
-        .unwrap();
+    conn.execute(
+        "UPDATE file_hashes SET gps_lat = NULL, gps_lon = NULL WHERE path = '/tmp/b.jpg'",
+        [],
+    )
+    .unwrap();
     drop(conn);
 
     let status = Command::new(videre_bin())

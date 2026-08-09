@@ -1,37 +1,8 @@
+mod common;
+use common::videre_bin;
 use std::fs;
 use std::process::Command;
 use tempfile::tempdir;
-
-/// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.
-/// Spawned `videre` child processes inherit the environment, so their lock
-/// files land there instead of the developer's real `~/.videre/locks`, locks
-/// live under the videre home now rather than beside the database, so without
-/// this every run would leave permanent litter in the real home (test database
-/// names are random, so the files would accumulate rather than be reused).
-///
-/// Called from `videre_bin()` so it covers every spawn site automatically. The
-/// `set_var` runs inside `get_or_init` so it happens exactly once: tests share
-/// a process and run in parallel, and calling `set_var` from several threads
-/// would otherwise race every concurrent `getenv`. Tests that set their own
-/// `VIDERE_HOME` per-command still win, since `.env()` overrides what's
-/// inherited.
-fn isolated_home() {
-    static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    HOME.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("videre-it-home-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("create isolated test home");
-        std::env::set_var("VIDERE_HOME", &dir);
-        dir
-    });
-}
-fn videre_bin() -> std::path::PathBuf {
-    isolated_home();
-    let mut path = std::env::current_exe().unwrap();
-    path.pop(); // deps/
-    path.pop(); // debug/
-    path.push("videre");
-    path
-}
 
 #[test]
 fn jsonl_output_contains_all_scanned_records_with_correct_hashes() {
@@ -62,11 +33,17 @@ fn jsonl_output_contains_all_scanned_records_with_correct_hashes() {
         .iter()
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
-    let mut hash_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut hash_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     for r in &records {
-        *hash_counts.entry(r["hash"].as_str().unwrap().to_string()).or_insert(0) += 1;
+        *hash_counts
+            .entry(r["hash"].as_str().unwrap().to_string())
+            .or_insert(0) += 1;
     }
-    assert!(hash_counts.values().any(|&c| c >= 2), "expected at least one hash to appear twice");
+    assert!(
+        hash_counts.values().any(|&c| c >= 2),
+        "expected at least one hash to appear twice"
+    );
 }
 
 #[test]
@@ -197,7 +174,10 @@ fn sqlite_and_output_flags_conflict() {
         .status()
         .expect("failed to run videre");
 
-    assert!(!status.success(), "should fail when both --output and --output-sqlite are given");
+    assert!(
+        !status.success(),
+        "should fail when both --output and --output-sqlite are given"
+    );
 }
 
 #[test]
@@ -214,12 +194,22 @@ fn bare_scan_writes_default_sqlite_db() {
         .env("VIDERE_HOME", home.path())
         .output()
         .expect("failed to run videre");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert!(out.stdout.is_empty(), "scan's stdout is always empty in text mode");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "scan's stdout is always empty in text mode"
+    );
 
     let db = home.path().join("hashes.db");
     assert!(db.exists(), "bare scan must create the default db");
-    assert!(!home.path().join("hashes.jsonl").exists(), "no jsonl by default");
+    assert!(
+        !home.path().join("hashes.jsonl").exists(),
+        "no jsonl by default"
+    );
     let conn = rusqlite::Connection::open(&db).unwrap();
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
@@ -241,11 +231,21 @@ fn bare_output_flag_writes_default_jsonl() {
         .env("VIDERE_HOME", home.path())
         .output()
         .expect("failed to run videre");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let jsonl = home.path().join("hashes.jsonl");
-    assert!(jsonl.exists(), "bare --output must target the default jsonl");
+    assert!(
+        jsonl.exists(),
+        "bare --output must target the default jsonl"
+    );
     assert_eq!(fs::read_to_string(&jsonl).unwrap().lines().count(), 1);
-    assert!(!home.path().join("hashes.db").exists(), "no sqlite db when --output used");
+    assert!(
+        !home.path().join("hashes.db").exists(),
+        "no sqlite db when --output used"
+    );
 }
 
 #[test]
@@ -272,7 +272,10 @@ fn bare_scan_without_directory_or_config_path_errors() {
     let doc: serde_json::Value = serde_json::from_slice(&out2.stdout)
         .expect("stdout must be one valid JSON object even on error");
     assert!(
-        doc["error"]["message"].as_str().unwrap().contains("config set path"),
+        doc["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("config set path"),
         "{doc}"
     );
 }
@@ -285,7 +288,10 @@ fn config_path_supplies_scan_directory() {
     fs::write(scan_dir.path().join("b.jpg"), b"same content").unwrap();
 
     let set = Command::new(videre_bin())
-        .arg("config").arg("set").arg("path").arg(scan_dir.path())
+        .arg("config")
+        .arg("set")
+        .arg("path")
+        .arg(scan_dir.path())
         .env("VIDERE_HOME", home.path())
         .status()
         .unwrap();
@@ -297,7 +303,11 @@ fn config_path_supplies_scan_directory() {
         .env("VIDERE_HOME", home.path())
         .output()
         .expect("failed to run videre");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(home.path().join("hashes.db").exists());
 }
 
@@ -313,9 +323,16 @@ fn first_explicit_scan_adopts_directory_as_default_path() {
         .env("VIDERE_HOME", home.path())
         .output()
         .expect("failed to run videre");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("saved"), "expected an adoption note: {stderr}");
+    assert!(
+        stderr.contains("saved"),
+        "expected an adoption note: {stderr}"
+    );
     assert!(stderr.contains("videre config set path"), "{stderr}");
 
     let out2 = Command::new(videre_bin())
@@ -324,7 +341,11 @@ fn first_explicit_scan_adopts_directory_as_default_path() {
         .env("VIDERE_HOME", home.path())
         .output()
         .expect("failed to run videre");
-    assert!(out2.status.success(), "{}", String::from_utf8_lossy(&out2.stderr));
+    assert!(
+        out2.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out2.stderr)
+    );
 }
 
 #[test]
@@ -336,22 +357,31 @@ fn second_explicit_scan_does_not_overwrite_adopted_default_path() {
     fs::write(second_dir.path().join("b.jpg"), b"other content").unwrap();
 
     Command::new(videre_bin())
-        .arg("scan").arg("--silent").arg(first_dir.path())
+        .arg("scan")
+        .arg("--silent")
+        .arg(first_dir.path())
         .env("VIDERE_HOME", home.path())
-        .status().unwrap();
+        .status()
+        .unwrap();
 
     let out = Command::new(videre_bin())
-        .arg("scan").arg("--silent").arg(second_dir.path())
+        .arg("scan")
+        .arg("--silent")
+        .arg(second_dir.path())
         .env("VIDERE_HOME", home.path())
-        .output().unwrap();
+        .output()
+        .unwrap();
     assert!(out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).trim().is_empty()
-        || !String::from_utf8_lossy(&out.stderr).contains("saved"));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).trim().is_empty()
+            || !String::from_utf8_lossy(&out.stderr).contains("saved")
+    );
 
     let config = Command::new(videre_bin())
         .arg("config")
         .env("VIDERE_HOME", home.path())
-        .output().unwrap();
+        .output()
+        .unwrap();
     let stdout = String::from_utf8_lossy(&config.stdout);
     assert!(
         stdout.contains(&first_dir.path().display().to_string()),
@@ -366,18 +396,27 @@ fn silent_flag_suppresses_the_adoption_note() {
     fs::write(scan_dir.path().join("a.jpg"), b"content").unwrap();
 
     let out = Command::new(videre_bin())
-        .arg("scan").arg("--silent").arg(scan_dir.path())
+        .arg("scan")
+        .arg("--silent")
+        .arg(scan_dir.path())
         .env("VIDERE_HOME", home.path())
-        .output().unwrap();
+        .output()
+        .unwrap();
     assert!(out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).trim().is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).trim().is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let config = Command::new(videre_bin())
         .arg("config")
         .env("VIDERE_HOME", home.path())
-        .output().unwrap();
-    assert!(String::from_utf8_lossy(&config.stdout)
-        .contains(&scan_dir.path().display().to_string()));
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&config.stdout).contains(&scan_dir.path().display().to_string())
+    );
 }
 
 #[test]
@@ -409,7 +448,11 @@ fn skipped_files_are_reported_in_wrote_summary() {
         .output()
         .expect("failed to run videre");
 
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("Wrote 1 record(s)"), "{stderr}");
     assert!(stderr.contains("(1 skipped)"), "{stderr}");
@@ -479,9 +522,13 @@ fn json_mode_reports_scan_shape_and_adopts_default_path() {
     fs::write(scan_dir.path().join("b.jpg"), b"other content").unwrap();
 
     let out = Command::new(videre_bin())
-        .arg("scan").arg("--silent").arg("--json").arg(scan_dir.path())
+        .arg("scan")
+        .arg("--silent")
+        .arg("--json")
+        .arg(scan_dir.path())
         .env("VIDERE_HOME", home.path())
-        .output().unwrap();
+        .output()
+        .unwrap();
     assert!(out.status.success());
     let doc: serde_json::Value = serde_json::from_slice(&out.stdout)
         .expect("stdout must remain pure JSON even when adopting a default path");
@@ -494,9 +541,11 @@ fn json_mode_reports_scan_shape_and_adopts_default_path() {
     let config = Command::new(videre_bin())
         .arg("config")
         .env("VIDERE_HOME", home.path())
-        .output().unwrap();
-    assert!(String::from_utf8_lossy(&config.stdout)
-        .contains(&scan_dir.path().display().to_string()));
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&config.stdout).contains(&scan_dir.path().display().to_string())
+    );
 }
 
 #[test]
@@ -504,7 +553,11 @@ fn retry_incomplete_processes_nothing_when_everything_has_a_type() {
     let dir = tempdir().unwrap();
     let out = tempdir().unwrap();
     let db = out.path().join("h.db");
-    fs::copy("tests/fixtures/sample_with_exif.jpg", dir.path().join("a.jpg")).unwrap();
+    fs::copy(
+        "tests/fixtures/sample_with_exif.jpg",
+        dir.path().join("a.jpg"),
+    )
+    .unwrap();
 
     Command::new(videre_bin())
         .args(["scan", "--silent", "--output-sqlite"])
@@ -542,8 +595,11 @@ fn retry_incomplete_processes_only_the_row_with_no_type() {
 
     // Blank one row's type, simulating a file the previous scan never finished.
     let conn = rusqlite::Connection::open(&db).unwrap();
-    conn.execute("UPDATE file_hashes SET mime = NULL WHERE path LIKE '%a.jpg'", [])
-        .unwrap();
+    conn.execute(
+        "UPDATE file_hashes SET mime = NULL WHERE path LIKE '%a.jpg'",
+        [],
+    )
+    .unwrap();
     drop(conn);
 
     let out2 = Command::new(videre_bin())
@@ -558,7 +614,11 @@ fn retry_incomplete_processes_only_the_row_with_no_type() {
 
     let conn = rusqlite::Connection::open(&db).unwrap();
     let nulls: i64 = conn
-        .query_row("SELECT COUNT(*) FROM file_hashes WHERE mime IS NULL", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM file_hashes WHERE mime IS NULL",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(nulls, 0, "the incomplete row must be filled");
 }
@@ -568,7 +628,11 @@ fn retry_incomplete_picks_up_a_file_added_since_the_last_scan() {
     let dir = tempdir().unwrap();
     let out = tempdir().unwrap();
     let db = out.path().join("h.db");
-    fs::copy("tests/fixtures/sample_with_exif.jpg", dir.path().join("a.jpg")).unwrap();
+    fs::copy(
+        "tests/fixtures/sample_with_exif.jpg",
+        dir.path().join("a.jpg"),
+    )
+    .unwrap();
     Command::new(videre_bin())
         .args(["scan", "--silent", "--output-sqlite"])
         .arg(&db)
@@ -577,7 +641,11 @@ fn retry_incomplete_picks_up_a_file_added_since_the_last_scan() {
         .unwrap();
 
     // A new file has no row at all, which also counts as incomplete.
-    fs::copy("tests/fixtures/sample_with_exif.jpg", dir.path().join("b.png")).unwrap();
+    fs::copy(
+        "tests/fixtures/sample_with_exif.jpg",
+        dir.path().join("b.png"),
+    )
+    .unwrap();
 
     Command::new(videre_bin())
         .args(["scan", "--silent", "--output-sqlite"])
@@ -620,7 +688,11 @@ fn an_unidentifiable_file_records_the_sentinel_and_is_not_retried() {
     let out = tempdir().unwrap();
     let db = out.path().join("h.db");
     // A supported extension whose bytes match no signature.
-    fs::write(dir.path().join("broken.png"), b"not actually a png at all, just text").unwrap();
+    fs::write(
+        dir.path().join("broken.png"),
+        b"not actually a png at all, just text",
+    )
+    .unwrap();
 
     Command::new(videre_bin())
         .args(["scan", "--silent", "--output-sqlite"])
