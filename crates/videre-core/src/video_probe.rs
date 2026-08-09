@@ -108,10 +108,8 @@ fn find_vide(buf: &[u8], parent_is_mdia: bool) -> Result<bool, ()> {
                 return Ok(true);
             }
         }
-        if &typ == b"trak" || &typ == b"mdia" {
-            if find_vide(payload, &typ == b"mdia")? {
-                return Ok(true);
-            }
+        if (&typ == b"trak" || &typ == b"mdia") && find_vide(payload, &typ == b"mdia")? {
+            return Ok(true);
         }
         i += size;
     }
