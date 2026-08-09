@@ -15,6 +15,8 @@ version number and are released together.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-09
+
 ### Added
 
 - **`videre scan` records each file's real type** in a new `file_hashes.mime`
@@ -204,7 +206,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/erhangundogan/videre/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/erhangundogan/videre/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/erhangundogan/videre/compare/v0.9.29...v0.10.0
 [0.9.29]: https://github.com/erhangundogan/videre/compare/v0.9.28...v0.9.29
