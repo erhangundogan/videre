@@ -42,7 +42,11 @@ pub fn image_to_tensor(path: &Path, size: usize, device: &Device) -> Result<Tens
     };
 
     let img = img
-        .resize_exact(size as u32, size as u32, image::imageops::FilterType::Triangle)
+        .resize_exact(
+            size as u32,
+            size as u32,
+            image::imageops::FilterType::Triangle,
+        )
         .to_rgb8();
 
     let data: Vec<f32> = img.into_raw().iter().map(|&b| b as f32 / 255.0).collect();
@@ -138,7 +142,11 @@ pub fn decode_via_quicklook(path: &Path, size: usize, tag: &str) -> Result<image
         QLMANAGE_TIMEOUT.as_secs(),
         path.display()
     );
-    anyhow::ensure!(outcome == WaitOutcome::Success, "qlmanage failed for {}", path.display());
+    anyhow::ensure!(
+        outcome == WaitOutcome::Success,
+        "qlmanage failed for {}",
+        path.display()
+    );
     let file_name = path.file_name().context("path has no file name")?;
     let out_file = out_dir.join(format!("{}.png", file_name.to_string_lossy()));
     let img = image::open(&out_file)

@@ -188,32 +188,50 @@ mod tests {
     #[test]
     fn hash_from_cache_filename_parses_thumb_path() {
         let h1 = test_hash("0123456789abcdef");
-        assert_eq!(hash_from_cache_filename(&format!("{h1}_240.jpg")), Some(h1.as_str()));
-        assert_eq!(hash_from_cache_filename(&format!("{h1}_1200.jpg")), Some(h1.as_str()));
+        assert_eq!(
+            hash_from_cache_filename(&format!("{h1}_240.jpg")),
+            Some(h1.as_str())
+        );
+        assert_eq!(
+            hash_from_cache_filename(&format!("{h1}_1200.jpg")),
+            Some(h1.as_str())
+        );
     }
 
     #[test]
     fn hash_from_cache_filename_parses_face_thumb_path() {
         let h1 = test_hash("0123456789abcdef");
-        assert_eq!(hash_from_cache_filename(&format!("{h1}_face3_140.jpg")), Some(h1.as_str()));
+        assert_eq!(
+            hash_from_cache_filename(&format!("{h1}_face3_140.jpg")),
+            Some(h1.as_str())
+        );
     }
 
     #[test]
     fn hash_from_cache_filename_parses_original_path() {
         let h1 = test_hash("0123456789abcdef");
-        assert_eq!(hash_from_cache_filename(&format!("{h1}_original.jpg")), Some(h1.as_str()));
+        assert_eq!(
+            hash_from_cache_filename(&format!("{h1}_original.jpg")),
+            Some(h1.as_str())
+        );
     }
 
     #[test]
     fn hash_from_cache_filename_distinguishes_different_hashes() {
         let h2 = test_hash("fedcba9876543210");
-        assert_eq!(hash_from_cache_filename(&format!("{h2}_240.jpg")), Some(h2.as_str()));
+        assert_eq!(
+            hash_from_cache_filename(&format!("{h2}_240.jpg")),
+            Some(h2.as_str())
+        );
     }
 
     #[test]
     fn hash_from_cache_filename_rejects_tmp_files() {
         let h1 = test_hash("0123456789abcdef");
-        assert_eq!(hash_from_cache_filename(&format!("{h1}_original.tmp1234")), None);
+        assert_eq!(
+            hash_from_cache_filename(&format!("{h1}_original.tmp1234")),
+            None
+        );
         assert_eq!(hash_from_cache_filename(&format!("{h1}_240.tmp5678")), None);
     }
 
@@ -222,7 +240,10 @@ mod tests {
         assert_eq!(hash_from_cache_filename("short_240.jpg"), None);
         assert_eq!(hash_from_cache_filename(".DS_Store"), None);
         let non_hex_64 = "g".repeat(HASH_HEX_LEN);
-        assert_eq!(hash_from_cache_filename(&format!("{non_hex_64}_240.jpg")), None);
+        assert_eq!(
+            hash_from_cache_filename(&format!("{non_hex_64}_240.jpg")),
+            None
+        );
     }
 
     #[test]
@@ -233,7 +254,10 @@ mod tests {
         std::fs::create_dir_all(&old).unwrap();
         std::fs::write(old.join("h_240.jpg"), b"x").unwrap();
         migrate_dir(&old, &new);
-        assert!(new.join("h_240.jpg").exists(), "cached file must survive migration");
+        assert!(
+            new.join("h_240.jpg").exists(),
+            "cached file must survive migration"
+        );
         assert!(!old.exists(), "old dir must be gone after migration");
         let _ = std::fs::remove_dir_all(&tmp);
     }

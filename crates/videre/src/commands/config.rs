@@ -77,7 +77,11 @@ fn show(home: &std::path::Path) -> Result<()> {
     println!(
         "config:        {}{}",
         config_file.display(),
-        if config_file.exists() { "" } else { " (absent)" }
+        if config_file.exists() {
+            ""
+        } else {
+            " (absent)"
+        }
     );
     // Display keys match the names `videre config set <key>` accepts, so the
     // output doubles as documentation for how to change each value.

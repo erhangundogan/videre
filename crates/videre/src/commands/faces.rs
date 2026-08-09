@@ -1,45 +1,60 @@
 use anyhow::Result;
-use videre_core::face_db;
-use videre_ml::pipeline::{format_profile_report, run_clustering, run_face_pipeline, ClusteringResult, FacesRunResult, ProfileStats};
 use std::path::PathBuf;
+use videre_core::face_db;
+use videre_ml::pipeline::{
+    format_profile_report, run_clustering, run_face_pipeline, ClusteringResult, FacesRunResult,
+    ProfileStats,
+};
 
 #[derive(clap::Args)]
 pub struct FacesArgs {
     /// SQLite database (default: resolved from ~/.videre; see 'videre config')
     #[arg(long)]
     db: Option<PathBuf>,
-    #[arg(long)] reprocess: bool,
+    #[arg(long)]
+    reprocess: bool,
     /// Skip detection; just re-run clustering on existing embeddings
-    #[arg(long)] recluster: bool,
-    #[arg(long, default_value = "8")] batch: usize,
-    #[arg(long)] dry_run: bool,
-    #[arg(long)] silent: bool,
+    #[arg(long)]
+    recluster: bool,
+    #[arg(long, default_value = "8")]
+    batch: usize,
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    silent: bool,
     /// Average-linkage cosine-distance radius (0 = identical, 2 = opposite). Default 0.6.
-    #[arg(long, default_value = "0.6")] eps: f32,
+    #[arg(long, default_value = "0.6")]
+    eps: f32,
     /// Minimum faces per cluster (below this, faces are left as singletons). Default 3.
-    #[arg(long, default_value = "3")] min_cluster_size: usize,
+    #[arg(long, default_value = "3")]
+    min_cluster_size: usize,
     /// Centroid-merge similarity: after clustering, clusters whose mean embeddings
     /// are at least this cosine-similar are merged (reunites one person's fragmented
     /// clusters). 0 = identical direction required, 1 = disables merging. Default 0.35.
-    #[arg(long, default_value = "0.35")] merge_sim: f32,
+    #[arg(long, default_value = "0.35")]
+    merge_sim: f32,
     /// Minimum face size (smaller bbox side, px) to take part in clustering. Smaller
     /// faces embed poorly and pile into a mixed junk cluster, so they are held out as
     /// unassigned singletons. 0 disables the gate. Default 80.
-    #[arg(long, default_value = "80")] min_face_size: f32,
+    #[arg(long, default_value = "80")]
+    min_face_size: f32,
     /// Process at most N not-yet-scanned images this run, then stop. Resumable: each
     /// run records what it scanned (including images with no faces) and a rerun
     /// continues where it left off. Clustering is skipped on a limited run. Run
     /// `videre faces --recluster` when you're done scanning.
-    #[arg(long)] limit: Option<usize>,
+    #[arg(long)]
+    limit: Option<usize>,
     /// Distinctiveness gate: faces whose embedding is more than this cosine-similar to
     /// the population-average face (occluded/profile/blurry/false detections) are held
     /// out of clustering. Lower = stricter. 1 disables. Default 0.4.
-    #[arg(long, default_value = "0.4")] max_generic_sim: f32,
+    #[arg(long, default_value = "0.4")]
+    max_generic_sim: f32,
     /// Print per-stage timing (load/detect/align/embed/db_write, load split
     /// HEIC vs. other) averaged per image, after the run finishes. A tuning
     /// tool, not part of the normal summary. See
     /// docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md.
-    #[arg(long)] profile: bool,
+    #[arg(long)]
+    profile: bool,
     /// Number of worker threads for face detection/embedding (each with its
     /// own ONNX sessions, intra-op-thread-capped so they don't collectively
     /// oversubscribe the machine). Defaults to 2x available core count, real
@@ -50,7 +65,8 @@ pub struct FacesArgs {
     /// leaves CPU idle while many workers sit blocked on that subprocess,
     /// oversubscribing keeps cores busy with other workers' CPU-bound
     /// detect/embed work while some workers wait on I/O.
-    #[arg(long)] workers: Option<usize>,
+    #[arg(long)]
+    workers: Option<usize>,
     /// Max concurrent `qlmanage` subprocesses (HEIC decoding), process-wide.
     /// Default 6 (raised from 3 after real profiling showed HEIC-heavy runs
     /// leaving CPU idle under `--workers`'s default 2x-cores worker count.
@@ -59,7 +75,8 @@ pub struct FacesArgs {
     /// QuickLook's thumbnail agent and the source drive's I/O may not
     /// actually sustain more concurrent conversions, so treat higher values
     /// as an experiment to re-measure with `--profile`, not a guaranteed win.
-    #[arg(long)] qlmanage_concurrency: Option<usize>,
+    #[arg(long)]
+    qlmanage_concurrency: Option<usize>,
 }
 
 pub fn run(args: FacesArgs) -> Result<()> {
@@ -82,7 +99,8 @@ pub fn run(args: FacesArgs) -> Result<()> {
         let mut stmt = conn.prepare(
             "SELECT path, hash FROM file_hashes WHERE ext IN ('jpg','jpeg','png','gif','webp','bmp','tiff','heic')"
         )?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows
     };
@@ -110,7 +128,15 @@ pub fn run(args: FacesArgs) -> Result<()> {
         }
         // Skip detection; jump straight to clustering
         if !args.dry_run {
-            let clustering = run_clustering(&conn, args.eps, args.min_cluster_size, args.merge_sim, args.min_face_size, args.max_generic_sim, args.silent)?;
+            let clustering = run_clustering(
+                &conn,
+                args.eps,
+                args.min_cluster_size,
+                args.merge_sim,
+                args.min_face_size,
+                args.max_generic_sim,
+                args.silent,
+            )?;
             if !args.silent {
                 eprintln!("{}", format_clustering_only_summary(clustering, args.eps));
             }
@@ -145,12 +171,22 @@ fn run_detection_and_clustering(
     let started = std::time::Instant::now();
     let mut profile_stats = ProfileStats::default();
     let workers = args.workers.unwrap_or_else(|| {
-        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
         cores * 2
     });
     let result = run_face_pipeline(
-        conn, to_process, args.batch, args.dry_run, args.silent,
-        if args.profile { Some(&mut profile_stats) } else { None },
+        conn,
+        to_process,
+        args.batch,
+        args.dry_run,
+        args.silent,
+        if args.profile {
+            Some(&mut profile_stats)
+        } else {
+            None
+        },
         workers,
     )?;
 
@@ -159,13 +195,24 @@ fn run_detection_and_clustering(
     // small chunk is wasted work. On a limited run, tell the user to cluster once
     // they've finished scanning.
     let clustering = if !args.dry_run && args.limit.is_none() {
-        run_clustering(conn, args.eps, args.min_cluster_size, args.merge_sim, args.min_face_size, args.max_generic_sim, args.silent)?
+        run_clustering(
+            conn,
+            args.eps,
+            args.min_cluster_size,
+            args.merge_sim,
+            args.min_face_size,
+            args.max_generic_sim,
+            args.silent,
+        )?
     } else {
         None
     };
 
     if !args.silent {
-        eprintln!("{}", format_summary(&result, clustering, args.eps, started.elapsed()));
+        eprintln!(
+            "{}",
+            format_summary(&result, clustering, args.eps, started.elapsed())
+        );
         if args.limit.is_some() && !args.dry_run {
             let remaining = face_db::scanned_hashes(conn)?.len();
             eprintln!(
@@ -178,7 +225,10 @@ fn run_detection_and_clustering(
         eprintln!("{}", format_profile_report(&profile_stats));
     }
 
-    Ok(FacesOutcome { write_errors: result.write_errors, detect_errors: result.detect_errors })
+    Ok(FacesOutcome {
+        write_errors: result.write_errors,
+        detect_errors: result.detect_errors,
+    })
 }
 
 /// Assembles the single consolidated summary line printed after both
@@ -214,7 +264,10 @@ pub(crate) fn format_summary(
 /// process, but recluster anyway") path, where no detection ran this
 /// invocation, so there is no image count or elapsed-time figure to report.
 /// `pub(crate)` since `watch.rs`'s faces stage also calls this.
-pub(crate) fn format_clustering_only_summary(clustering: Option<ClusteringResult>, eps: f32) -> String {
+pub(crate) fn format_clustering_only_summary(
+    clustering: Option<ClusteringResult>,
+    eps: f32,
+) -> String {
     match clustering {
         Some(c) => format!(
             "{}/{} faces clustered into {} people (eps={:.2})",
@@ -230,8 +283,17 @@ mod tests {
 
     #[test]
     fn format_summary_no_errors() {
-        let result = FacesRunResult { total_faces: 187, write_errors: 0, images_processed: 234, detect_errors: 0 };
-        let clustering = Some(ClusteringResult { total_faces: 187, clustered_faces: 152, cluster_count: 14 });
+        let result = FacesRunResult {
+            total_faces: 187,
+            write_errors: 0,
+            images_processed: 234,
+            detect_errors: 0,
+        };
+        let clustering = Some(ClusteringResult {
+            total_faces: 187,
+            clustered_faces: 152,
+            cluster_count: 14,
+        });
         let summary = format_summary(&result, clustering, 0.6, std::time::Duration::from_secs(41));
         assert_eq!(
             summary,
@@ -241,8 +303,17 @@ mod tests {
 
     #[test]
     fn format_summary_with_errors() {
-        let result = FacesRunResult { total_faces: 187, write_errors: 2, images_processed: 234, detect_errors: 1 };
-        let clustering = Some(ClusteringResult { total_faces: 187, clustered_faces: 152, cluster_count: 14 });
+        let result = FacesRunResult {
+            total_faces: 187,
+            write_errors: 2,
+            images_processed: 234,
+            detect_errors: 1,
+        };
+        let clustering = Some(ClusteringResult {
+            total_faces: 187,
+            clustered_faces: 152,
+            cluster_count: 14,
+        });
         let summary = format_summary(&result, clustering, 0.6, std::time::Duration::from_secs(41));
         assert_eq!(
             summary,
@@ -252,14 +323,26 @@ mod tests {
 
     #[test]
     fn format_summary_no_faces_found() {
-        let result = FacesRunResult { total_faces: 0, write_errors: 0, images_processed: 234, detect_errors: 0 };
+        let result = FacesRunResult {
+            total_faces: 0,
+            write_errors: 0,
+            images_processed: 234,
+            detect_errors: 0,
+        };
         let summary = format_summary(&result, None, 0.6, std::time::Duration::from_secs(41));
-        assert_eq!(summary, "234 image(s) processed, 0 face(s) found, done in 41s");
+        assert_eq!(
+            summary,
+            "234 image(s) processed, 0 face(s) found, done in 41s"
+        );
     }
 
     #[test]
     fn format_clustering_only_summary_some() {
-        let clustering = Some(ClusteringResult { total_faces: 187, clustered_faces: 152, cluster_count: 14 });
+        let clustering = Some(ClusteringResult {
+            total_faces: 187,
+            clustered_faces: 152,
+            cluster_count: 14,
+        });
         let summary = format_clustering_only_summary(clustering, 0.6);
         assert_eq!(summary, "152/187 faces clustered into 14 people (eps=0.60)");
     }

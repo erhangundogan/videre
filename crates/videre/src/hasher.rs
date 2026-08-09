@@ -15,19 +15,17 @@ struct ExifData {
 }
 
 fn rational_to_f64(r: &exif::Rational) -> f64 {
-    if r.denom == 0 { 0.0 } else { r.num as f64 / r.denom as f64 }
+    if r.denom == 0 {
+        0.0
+    } else {
+        r.num as f64 / r.denom as f64
+    }
 }
 
-fn extract_gps(
-    exif: &exif::Exif,
-    coord_tag: Tag,
-    ref_tag: Tag,
-    negative_ref: u8,
-) -> Option<f64> {
+fn extract_gps(exif: &exif::Exif, coord_tag: Tag, ref_tag: Tag, negative_ref: u8) -> Option<f64> {
     let coord_field = exif.get_field(coord_tag, In::PRIMARY)?;
     let ref_field = exif.get_field(ref_tag, In::PRIMARY)?;
-    if let (Value::Rational(rationals), Value::Ascii(refs)) =
-        (&coord_field.value, &ref_field.value)
+    if let (Value::Rational(rationals), Value::Ascii(refs)) = (&coord_field.value, &ref_field.value)
     {
         if rationals.len() < 3 {
             return None;
@@ -137,7 +135,9 @@ fn hash_file_inner(path: &Path) -> io::Result<FileRecord> {
     let mut first_chunk = true;
     loop {
         let n = reader.read(&mut buffer)?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         if first_chunk {
             // Free: the bytes are already here for BLAKE3. The signature
             // lives in the first 12, and the buffer is 64KB. An unrecognised
@@ -190,7 +190,6 @@ fn hash_file_inner(path: &Path) -> io::Result<FileRecord> {
 
 use image::imageops::{resize, FilterType};
 
-
 pub fn compute_dhash(path: &Path, mime: Option<&str>) -> Option<u64> {
     let ext = path
         .extension()
@@ -236,8 +235,8 @@ fn system_time_to_iso(t: SystemTime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
     use std::fs;
+    use tempfile::tempdir;
 
     #[test]
     fn hash_file_returns_correct_record() {
@@ -301,7 +300,10 @@ mod tests {
         let path = dir.path().join("clip.mp4");
         std::fs::copy("tests/fixtures/red_1s.mp4", &path).unwrap();
         let hash = compute_dhash(&path, None);
-        assert!(hash.is_some(), "expected a dHash computed from the video's poster-frame");
+        assert!(
+            hash.is_some(),
+            "expected a dHash computed from the video's poster-frame"
+        );
     }
 
     #[test]
@@ -316,7 +318,10 @@ mod tests {
         let ha = compute_dhash(&path_a, None);
         let hb = compute_dhash(&path_b, None);
         assert!(ha.is_some());
-        assert_eq!(ha, hb, "identical video content must produce identical poster-frame dHash");
+        assert_eq!(
+            ha, hb,
+            "identical video content must produce identical poster-frame dHash"
+        );
     }
 
     #[test]

@@ -29,8 +29,16 @@ use std::path::{Path, PathBuf};
 /// `videre watch` itself is deliberately not in this list, it has no
 /// "finished" moment during normal operation, so it gets its own liveness
 /// lock (see `watch_lock_path`) but no `pipeline_runs` row.
-pub const TRACKED_COMMANDS: [&str; 8] =
-    ["scan", "faces", "embed", "classify", "dedupe", "fix-dates", "prune", "locations"];
+pub const TRACKED_COMMANDS: [&str; 8] = [
+    "scan",
+    "faces",
+    "embed",
+    "classify",
+    "dedupe",
+    "fix-dates",
+    "prune",
+    "locations",
+];
 
 pub fn ensure_pipeline_runs_table(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -110,10 +118,7 @@ fn lock_path_for(db_path: &Path, command: &str) -> Result<PathBuf> {
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "db".to_string());
-    Ok(crate::home::locks_dir()?.join(format!(
-        "{stem}-{:016x}.{command}.lock",
-        hasher.finish()
-    )))
+    Ok(crate::home::locks_dir()?.join(format!("{stem}-{:016x}.{command}.lock", hasher.finish())))
 }
 
 /// Deletes every pre-`locks/` sidecar lock (`<db path>.<command>.lock`) left
@@ -129,7 +134,9 @@ fn lock_path_for(db_path: &Path, command: &str) -> Result<PathBuf> {
 /// housekeeping and must never be able to fail a real run.
 fn remove_legacy_sidecar_locks(db_path: &Path) {
     use fs2::FileExt;
-    let Ok(canonical) = db_path.canonicalize() else { return };
+    let Ok(canonical) = db_path.canonicalize() else {
+        return;
+    };
     // Sweep every command's sidecar, not just the one being acquired: cleaning
     // only the current command would leave the rest sitting in the user's
     // directory until each of those commands happened to run, and something
@@ -139,7 +146,9 @@ fn remove_legacy_sidecar_locks(db_path: &Path) {
         if !legacy.exists() {
             continue;
         }
-        let Ok(file) = OpenOptions::new().write(true).open(&legacy) else { continue };
+        let Ok(file) = OpenOptions::new().write(true).open(&legacy) else {
+            continue;
+        };
         if file.try_lock_exclusive().is_ok() {
             let _ = fs2::FileExt::unlock(&file);
             drop(file);
@@ -165,8 +174,9 @@ pub fn acquire_lock(db_path: &Path, command: &str) -> Result<LockGuard> {
         .write(true)
         .open(&lock_path)
         .with_context(|| format!("open lock file {}", lock_path.display()))?;
-    file.try_lock_exclusive()
-        .map_err(|_| anyhow::anyhow!("{command} is already running against {}", db_path.display()))?;
+    file.try_lock_exclusive().map_err(|_| {
+        anyhow::anyhow!("{command} is already running against {}", db_path.display())
+    })?;
     Ok(LockGuard(file))
 }
 
@@ -244,7 +254,9 @@ pub fn install_sigint_handler(db_path: &Path, command: &'static str) -> Result<(
             let duration_ms = started_at
                 .and_then(|s| chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S").ok())
                 .map(|started| {
-                    (chrono::Utc::now().naive_utc() - started).num_milliseconds().max(0)
+                    (chrono::Utc::now().naive_utc() - started)
+                        .num_milliseconds()
+                        .max(0)
                 })
                 .unwrap_or(0);
             let _ = finish_run(&conn, command, "interrupted", duration_ms, None);
@@ -321,8 +333,7 @@ mod tests {
     fn isolated_home() {
         static HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
         HOME.get_or_init(|| {
-            let dir = std::env::temp_dir()
-                .join(format!("videre-test-home-{}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("videre-test-home-{}", std::process::id()));
             std::fs::create_dir_all(&dir).expect("create isolated test home");
             std::env::set_var("VIDERE_HOME", &dir);
             dir
@@ -343,7 +354,10 @@ mod tests {
 
         assert_eq!(path.parent().unwrap(), crate::home::locks_dir().unwrap());
         assert!(
-            path.file_name().unwrap().to_string_lossy().ends_with(".scan.lock"),
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with(".scan.lock"),
             "unexpected lock file name: {}",
             path.display()
         );
@@ -370,7 +384,10 @@ mod tests {
 
         let a_lock = lock_path_for(&a, "scan").unwrap();
         let b_lock = lock_path_for(&b, "scan").unwrap();
-        assert_ne!(a_lock, b_lock, "identically-named databases must not share a lock");
+        assert_ne!(
+            a_lock, b_lock,
+            "identically-named databases must not share a lock"
+        );
 
         // ...and both still land in the one locks directory.
         assert_eq!(a_lock.parent(), b_lock.parent());
@@ -388,7 +405,10 @@ mod tests {
         assert!(legacy.exists());
 
         let _guard = acquire_lock(db.path(), "scan").unwrap();
-        assert!(!legacy.exists(), "stale sidecar lock should have been cleaned up");
+        assert!(
+            !legacy.exists(),
+            "stale sidecar lock should have been cleaned up"
+        );
     }
 
     #[test]
@@ -403,7 +423,11 @@ mod tests {
         start_run(&conn, "embed").unwrap();
 
         let status: String = conn
-            .query_row("SELECT status FROM pipeline_runs WHERE command = 'embed'", [], |r| r.get(0))
+            .query_row(
+                "SELECT status FROM pipeline_runs WHERE command = 'embed'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(status, "running");
 
@@ -440,7 +464,9 @@ mod tests {
         assert_eq!(duration_ms, None);
         assert_eq!(summary, None);
 
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM pipeline_runs", [], |r| r.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pipeline_runs", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(count, 1, "upsert, not a second row");
     }
 
@@ -452,7 +478,10 @@ mod tests {
 
         let _first = acquire_lock(db_path, "faces").unwrap();
         let second = acquire_lock(db_path, "faces");
-        assert!(second.is_err(), "a second concurrent lock on the same command must be refused");
+        assert!(
+            second.is_err(),
+            "a second concurrent lock on the same command must be refused"
+        );
     }
 
     #[test]
@@ -463,7 +492,10 @@ mod tests {
 
         let _faces_lock = acquire_lock(db_path, "faces").unwrap();
         let embed_lock = acquire_lock(db_path, "embed");
-        assert!(embed_lock.is_ok(), "different commands must not contend for the same lock");
+        assert!(
+            embed_lock.is_ok(),
+            "different commands must not contend for the same lock"
+        );
     }
 
     #[test]
@@ -477,7 +509,10 @@ mod tests {
         } // dropped here, releasing the flock
 
         let second = acquire_lock(db_path, "scan");
-        assert!(second.is_ok(), "lock must be available again once the guard is dropped");
+        assert!(
+            second.is_ok(),
+            "lock must be available again once the guard is dropped"
+        );
     }
 
     #[test]
@@ -490,7 +525,11 @@ mod tests {
         assert_eq!(result, 42);
 
         let status: String = conn
-            .query_row("SELECT status FROM pipeline_runs WHERE command = 'embed'", [], |r| r.get(0))
+            .query_row(
+                "SELECT status FROM pipeline_runs WHERE command = 'embed'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(status, "success");
     }
@@ -525,10 +564,17 @@ mod tests {
 
         let _held = acquire_lock(db_file.path(), "scan").unwrap();
         let result: Result<()> = track(&conn, db_file.path(), "scan", || Ok(()));
-        assert!(result.is_err(), "track must refuse to run while the lock is already held");
+        assert!(
+            result.is_err(),
+            "track must refuse to run while the lock is already held"
+        );
 
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM pipeline_runs WHERE command = 'scan'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM pipeline_runs WHERE command = 'scan'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 0);
     }
@@ -590,9 +636,16 @@ mod tests {
         assert!(!faces.currently_running);
 
         let stored_status: String = conn
-            .query_row("SELECT status FROM pipeline_runs WHERE command = 'faces'", [], |r| r.get(0))
+            .query_row(
+                "SELECT status FROM pipeline_runs WHERE command = 'faces'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(stored_status, "running", "read_all must not write back the crashed label");
+        assert_eq!(
+            stored_status, "running",
+            "read_all must not write back the crashed label"
+        );
     }
 
     #[test]

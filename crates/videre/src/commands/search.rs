@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde::Serialize;
+use std::path::{Path, PathBuf};
 use videre::types::{ErrorJson, SCHEMA_VERSION};
 use videre_core::{classify as classify_core, embeddings, vectors};
 use videre_ml::{device, model, search};
-use std::path::{Path, PathBuf};
 
 #[derive(clap::Args)]
 pub struct SearchArgs {
@@ -31,13 +31,24 @@ pub struct SearchArgs {
 
     /// Return paths classified as this category: photo/screenshot/document/
     /// meme/unknown (requires a prior 'videre classify' run)
-    #[arg(long, conflicts_with = "query", conflicts_with = "image", conflicts_with = "person")]
+    #[arg(
+        long,
+        conflicts_with = "query",
+        conflicts_with = "image",
+        conflicts_with = "person"
+    )]
     category: Option<String>,
 
     /// Find photos within --radius km of this place, e.g. "Berlin, Germany"
     /// (forward-geocoded via the free public Nominatim API, the first
     /// network call this CLI ever makes; results are cached locally)
-    #[arg(long, conflicts_with = "query", conflicts_with = "image", conflicts_with = "person", conflicts_with = "category")]
+    #[arg(
+        long,
+        conflicts_with = "query",
+        conflicts_with = "image",
+        conflicts_with = "person",
+        conflicts_with = "category"
+    )]
     location: Option<String>,
 
     /// Search radius in km around --location
@@ -128,7 +139,12 @@ pub(crate) fn person_hits(conn: &Connection, name: &str) -> Result<Vec<SearchHit
     let paths = videre_core::person_search::search_by_person(conn, name, None)?;
     Ok(paths
         .into_iter()
-        .map(|path| SearchHitJson { path, hash: None, score: None, distance_km: None })
+        .map(|path| SearchHitJson {
+            path,
+            hash: None,
+            score: None,
+            distance_km: None,
+        })
         .collect())
 }
 
@@ -136,11 +152,20 @@ pub(crate) fn person_hits(conn: &Connection, name: &str) -> Result<Vec<SearchHit
 /// Unlike `person_hits`, hash comes along for free from the join query
 /// itself (person search's own helper doesn't return one), so it's
 /// included here.
-pub(crate) fn category_hits(conn: &Connection, model_id: &str, category: &str) -> Result<Vec<SearchHitJson>> {
+pub(crate) fn category_hits(
+    conn: &Connection,
+    model_id: &str,
+    category: &str,
+) -> Result<Vec<SearchHitJson>> {
     let pairs = classify_core::paths_for_category(conn, model_id, category)?;
     Ok(pairs
         .into_iter()
-        .map(|(path, hash)| SearchHitJson { path, hash: Some(hash), score: None, distance_km: None })
+        .map(|(path, hash)| SearchHitJson {
+            path,
+            hash: Some(hash),
+            score: None,
+            distance_km: None,
+        })
         .collect())
 }
 
@@ -169,9 +194,18 @@ pub(crate) fn location_hits(
     let mut hits: Vec<(f64, SearchHitJson)> = rows
         .into_iter()
         .filter_map(|(path, hash, lat, lon)| {
-            let distance = videre_core::location_cluster::haversine_km(center_lat, center_lon, lat, lon);
+            let distance =
+                videre_core::location_cluster::haversine_km(center_lat, center_lon, lat, lon);
             if distance <= radius_km {
-                Some((distance, SearchHitJson { path, hash: Some(hash), score: None, distance_km: Some(distance) }))
+                Some((
+                    distance,
+                    SearchHitJson {
+                        path,
+                        hash: Some(hash),
+                        score: None,
+                        distance_km: Some(distance),
+                    },
+                ))
             } else {
                 None
             }
@@ -228,8 +262,7 @@ pub(crate) fn ranked_hits(
 /// hits carry hash + cosine score, one entry per on-disk path of a matched hash.
 fn collect_hits(args: &SearchArgs) -> Result<(QueryJson, Vec<SearchHitJson>)> {
     let db = super::resolve_reader_db(args.db.clone())?;
-    let conn = videre_core::db::open_wal(&db)
-        .with_context(|| format!("open {}", db.display()))?;
+    let conn = videre_core::db::open_wal(&db).with_context(|| format!("open {}", db.display()))?;
 
     let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref())?;
 
@@ -249,7 +282,13 @@ fn collect_hits(args: &SearchArgs) -> Result<(QueryJson, Vec<SearchHitJson>)> {
         if hits.is_empty() && !args.json {
             eprintln!("No files found classified as: {name}");
         }
-        return Ok((QueryJson { kind: "category", value: name.clone() }, hits));
+        return Ok((
+            QueryJson {
+                kind: "category",
+                value: name.clone(),
+            },
+            hits,
+        ));
     }
 
     if let Some(place) = &args.location {
@@ -258,7 +297,13 @@ fn collect_hits(args: &SearchArgs) -> Result<(QueryJson, Vec<SearchHitJson>)> {
         if hits.is_empty() && !args.json {
             eprintln!("No photos found within {}km of: {place}", args.radius);
         }
-        return Ok((QueryJson { kind: "location", value: place.clone() }, hits));
+        return Ok((
+            QueryJson {
+                kind: "location",
+                value: place.clone(),
+            },
+            hits,
+        ));
     }
 
     if let Some(name) = &args.person {
@@ -268,7 +313,13 @@ fn collect_hits(args: &SearchArgs) -> Result<(QueryJson, Vec<SearchHitJson>)> {
             // the only channel so a clean agent invocation emits nothing on stderr.
             eprintln!("No confirmed photos found for person: {name}");
         }
-        return Ok((QueryJson { kind: "person", value: name.clone() }, hits));
+        return Ok((
+            QueryJson {
+                kind: "person",
+                value: name.clone(),
+            },
+            hits,
+        ));
     }
 
     let corpus = load_corpus(&conn, &db, &model_id)?;
@@ -277,11 +328,17 @@ fn collect_hits(args: &SearchArgs) -> Result<(QueryJson, Vec<SearchHitJson>)> {
     let (query_vec, query) = match (&args.query, &args.image) {
         (Some(text), None) => (
             embedder.embed_text(text)?,
-            QueryJson { kind: "text", value: text.clone() },
+            QueryJson {
+                kind: "text",
+                value: text.clone(),
+            },
         ),
         (None, Some(img)) => (
             model::embed_image_file(&embedder, img)?,
-            QueryJson { kind: "image", value: img.display().to_string() },
+            QueryJson {
+                kind: "image",
+                value: img.display().to_string(),
+            },
         ),
         _ => anyhow::bail!("provide either a text query or --image <path>"),
     };
@@ -298,7 +355,10 @@ mod tests {
     fn text_hit_serializes_with_hash_and_score() {
         let doc = SearchJson {
             schema_version: SCHEMA_VERSION,
-            query: QueryJson { kind: "text", value: "sunset".to_string() },
+            query: QueryJson {
+                kind: "text",
+                value: "sunset".to_string(),
+            },
             count: 1,
             results: vec![SearchHitJson {
                 path: "/a.jpg".to_string(),
@@ -319,7 +379,10 @@ mod tests {
     fn person_hit_omits_hash_and_score_keys() {
         let doc = SearchJson {
             schema_version: SCHEMA_VERSION,
-            query: QueryJson { kind: "person", value: "Alice".to_string() },
+            query: QueryJson {
+                kind: "person",
+                value: "Alice".to_string(),
+            },
             count: 1,
             results: vec![SearchHitJson {
                 path: "/a.jpg".to_string(),
@@ -338,7 +401,10 @@ mod tests {
     fn category_hit_includes_hash_but_omits_score() {
         let doc = SearchJson {
             schema_version: SCHEMA_VERSION,
-            query: QueryJson { kind: "category", value: "screenshot".to_string() },
+            query: QueryJson {
+                kind: "category",
+                value: "screenshot".to_string(),
+            },
             count: 1,
             results: vec![SearchHitJson {
                 path: "/a.png".to_string(),

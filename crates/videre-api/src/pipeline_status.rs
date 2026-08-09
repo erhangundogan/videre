@@ -20,7 +20,10 @@ mod tests {
         let db_file = tempfile::NamedTempFile::new().unwrap();
 
         let statuses = pipeline_status(&conn, db_file.path()).unwrap();
-        assert_eq!(statuses.len(), videre_core::pipeline_runs::TRACKED_COMMANDS.len());
+        assert_eq!(
+            statuses.len(),
+            videre_core::pipeline_runs::TRACKED_COMMANDS.len()
+        );
         assert!(statuses.iter().all(|s| s.status.is_none()));
     }
 }

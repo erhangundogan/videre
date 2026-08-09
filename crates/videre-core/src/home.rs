@@ -214,7 +214,10 @@ mod tests {
     fn config_default_db_wins_over_builtin_default() {
         let home = tmp_home("wins");
         set_default_db(&home, Path::new("/tmp/custom.db")).unwrap();
-        assert_eq!(resolve_db_in(&home).unwrap(), PathBuf::from("/tmp/custom.db"));
+        assert_eq!(
+            resolve_db_in(&home).unwrap(),
+            PathBuf::from("/tmp/custom.db")
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -232,7 +235,11 @@ mod tests {
         let home = tmp_home("abs");
         set_default_db(&home, Path::new("rel.db")).unwrap();
         let db = load_config(&home).unwrap().default_db.unwrap();
-        assert!(db.is_absolute(), "saved path must be absolute: {}", db.display());
+        assert!(
+            db.is_absolute(),
+            "saved path must be absolute: {}",
+            db.display()
+        );
         assert!(db.ends_with("rel.db"));
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -243,7 +250,10 @@ mod tests {
         std::fs::write(home.join("config.toml"), "future_key = \"x\"\n").unwrap();
         set_default_db(&home, Path::new("/tmp/a.db")).unwrap();
         let text = std::fs::read_to_string(home.join("config.toml")).unwrap();
-        assert!(text.contains("future_key"), "unknown keys must survive a rewrite: {text}");
+        assert!(
+            text.contains("future_key"),
+            "unknown keys must survive a rewrite: {text}"
+        );
         assert!(text.contains("default_db"));
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -272,7 +282,11 @@ mod tests {
         let home = tmp_home("path_roundtrip");
         set_default_path(&home, Path::new("photos")).unwrap();
         let dir = load_config(&home).unwrap().default_path.unwrap();
-        assert!(dir.is_absolute(), "saved path must be absolute: {}", dir.display());
+        assert!(
+            dir.is_absolute(),
+            "saved path must be absolute: {}",
+            dir.display()
+        );
         assert!(dir.ends_with("photos"));
         unset_default_path(&home).unwrap();
         assert_eq!(load_config(&home).unwrap().default_path, None);

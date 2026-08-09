@@ -9,7 +9,9 @@ use std::io::BufReader;
 const FACE_THUMB_SIZE: u32 = 140;
 
 fn read_exif_orientation(path: &str) -> u16 {
-    let Ok(f) = std::fs::File::open(path) else { return 1 };
+    let Ok(f) = std::fs::File::open(path) else {
+        return 1;
+    };
     let Ok(exif_data) = exif::Reader::new().read_from_container(&mut BufReader::new(f)) else {
         return 1;
     };
@@ -124,9 +126,10 @@ pub fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image
 /// other synchronous embedder) forever.
 fn read_with_timeout(path: &str) -> std::io::Result<Vec<u8>> {
     let owned = path.to_string();
-    videre_core::io_timeout::run_with_timeout(videre_core::io_timeout::DEFAULT_IO_TIMEOUT, move || {
-        std::fs::read(&owned)
-    })
+    videre_core::io_timeout::run_with_timeout(
+        videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
+        move || std::fs::read(&owned),
+    )
     .unwrap_or_else(|_| {
         Err(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
@@ -172,7 +175,11 @@ pub fn face_lookup(conn: &Connection, face_id: i64) -> Result<FaceLookup> {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .map_err(|_| Error::NotFound)?;
-    Ok(FaceLookup { bbox_json, file_path, hash })
+    Ok(FaceLookup {
+        bbox_json,
+        file_path,
+        hash,
+    })
 }
 
 /// The expensive part of `face_image_bytes`: cache check, decode/crop/encode,
@@ -186,7 +193,11 @@ pub fn face_bytes_from_lookup(lookup: &FaceLookup, face_id: i64) -> Result<Vec<u
         }
     }
 
-    let parts: Vec<f32> = lookup.bbox_json.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+    let parts: Vec<f32> = lookup
+        .bbox_json
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
     if parts.len() != 4 {
         return Err(Error::NotFound);
     }
@@ -194,7 +205,10 @@ pub fn face_bytes_from_lookup(lookup: &FaceLookup, face_id: i64) -> Result<Vec<u
     let thumb = make_face_thumb(&lookup.file_path, bbox, face_id).ok_or(Error::NotFound)?;
     let mut buf = Vec::new();
     thumb
-        .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Jpeg)
+        .write_to(
+            &mut std::io::Cursor::new(&mut buf),
+            image::ImageFormat::Jpeg,
+        )
         .map_err(|_| Error::NotFound)?;
 
     // Best-effort write-through (a cache-write failure must not fail the read).
@@ -265,11 +279,15 @@ pub fn original_bytes_from_lookup(
         }
         // None: this serves the true original image, so it must stay at
         // full resolution.
-        let img = videre_core::heic::heic_via_quicklook(&file_path, &format!("orig{face_id}"), None)
-            .ok_or(Error::NotFound)?;
+        let img =
+            videre_core::heic::heic_via_quicklook(&file_path, &format!("orig{face_id}"), None)
+                .ok_or(Error::NotFound)?;
         let mut buf = Vec::new();
-        img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Jpeg)
-            .map_err(|_| Error::NotFound)?;
+        img.write_to(
+            &mut std::io::Cursor::new(&mut buf),
+            image::ImageFormat::Jpeg,
+        )
+        .map_err(|_| Error::NotFound)?;
         let final_path = videre_core::thumb_cache::original_path(&hash);
         if let Some(parent) = final_path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -310,16 +328,21 @@ mod tests {
     fn unknown_face_id_is_not_found() {
         let conn = Connection::open_in_memory().unwrap();
         videre_core::face_db::create_faces_table(&conn).unwrap();
-        conn.execute_batch("CREATE TABLE file_hashes (hash TEXT PRIMARY KEY, path TEXT);").unwrap();
+        conn.execute_batch("CREATE TABLE file_hashes (hash TEXT PRIMARY KEY, path TEXT);")
+            .unwrap();
         assert!(matches!(face_image_bytes(&conn, 999), Err(Error::NotFound)));
-        assert!(matches!(original_image_bytes(&conn, 999), Err(Error::NotFound)));
+        assert!(matches!(
+            original_image_bytes(&conn, 999),
+            Err(Error::NotFound)
+        ));
     }
 
     #[test]
     fn face_lookup_unknown_id_is_not_found() {
         let conn = Connection::open_in_memory().unwrap();
         videre_core::face_db::create_faces_table(&conn).unwrap();
-        conn.execute_batch("CREATE TABLE file_hashes (hash TEXT PRIMARY KEY, path TEXT);").unwrap();
+        conn.execute_batch("CREATE TABLE file_hashes (hash TEXT PRIMARY KEY, path TEXT);")
+            .unwrap();
         assert!(matches!(face_lookup(&conn, 999), Err(Error::NotFound)));
     }
 
@@ -327,7 +350,8 @@ mod tests {
     fn original_lookup_unknown_id_is_not_found() {
         let conn = Connection::open_in_memory().unwrap();
         videre_core::face_db::create_faces_table(&conn).unwrap();
-        conn.execute_batch("CREATE TABLE file_hashes (hash TEXT PRIMARY KEY, path TEXT);").unwrap();
+        conn.execute_batch("CREATE TABLE file_hashes (hash TEXT PRIMARY KEY, path TEXT);")
+            .unwrap();
         assert!(matches!(original_lookup(&conn, 999), Err(Error::NotFound)));
     }
 
@@ -338,7 +362,8 @@ mod tests {
         // release the connection lock before doing the expensive part.
         let conn = Connection::open_in_memory().unwrap();
         videre_core::face_db::create_faces_table(&conn).unwrap();
-        conn.execute_batch("CREATE TABLE file_hashes (hash TEXT PRIMARY KEY, path TEXT);").unwrap();
+        conn.execute_batch("CREATE TABLE file_hashes (hash TEXT PRIMARY KEY, path TEXT);")
+            .unwrap();
         conn.execute(
             "INSERT INTO file_hashes (hash, path) VALUES ('h1', '/no/such/file.jpg')",
             [],

@@ -48,8 +48,7 @@ struct ClusterJson {
 
 pub fn run(args: LocationsArgs) -> Result<()> {
     let db = super::resolve_reader_db(args.db.clone())?;
-    let conn = videre_core::db::open_wal(&db)
-        .with_context(|| format!("open {}", db.display()))?;
+    let conn = videre_core::db::open_wal(&db).with_context(|| format!("open {}", db.display()))?;
 
     if args.json {
         match run_locations_tracked(&args, &db, &conn) {
@@ -150,7 +149,13 @@ fn run_locations(args: &LocationsArgs, conn: &Connection) -> Result<Vec<ClusterJ
             rusqlite::params![photo_count, id],
         )?;
 
-        clusters.push(ClusterJson { id, name, centroid_lat, centroid_lon, photo_count });
+        clusters.push(ClusterJson {
+            id,
+            name,
+            centroid_lat,
+            centroid_lon,
+            photo_count,
+        });
     }
 
     clusters.sort_by(|a, b| b.photo_count.cmp(&a.photo_count));
@@ -172,7 +177,10 @@ fn print_summary(clusters: &[ClusterJson], radius_km: f64, silent: bool) {
             c.centroid_lon
         );
     }
-    println!("{} location cluster(s) found (radius={radius_km}km).", clusters.len());
+    println!(
+        "{} location cluster(s) found (radius={radius_km}km).",
+        clusters.len()
+    );
 }
 
 fn to_geojson(clusters: &[ClusterJson], radius_km: f64) -> String {

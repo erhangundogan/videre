@@ -75,7 +75,8 @@ mod tests {
     #[test]
     fn table_exists_true_for_existing_table() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE widgets (id INTEGER);").unwrap();
+        conn.execute_batch("CREATE TABLE widgets (id INTEGER);")
+            .unwrap();
         assert!(table_exists(&conn, "widgets").unwrap());
     }
 

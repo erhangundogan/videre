@@ -65,7 +65,9 @@ pub fn average_linkage_cosine(
     silent: bool,
 ) -> Vec<(i64, Option<i64>)> {
     let n = points.len();
-    if n == 0 { return Vec::new(); }
+    if n == 0 {
+        return Vec::new();
+    }
     let clusters = agglomerate_average(points, eps, silent);
     label_clusters(points, &clusters, min_samples)
 }
@@ -133,12 +135,19 @@ fn agglomerate_average(points: &[(i64, Vec<f32>)], eps: f32, silent: bool) -> Ve
             let size_k = members[k].len() as f32;
             let new_d = cluster_dist_from_sums(&sums[i], &sums[k], new_size_i, size_k);
             if new_d <= eps {
-                heap.push(HeapEntry { dist: new_d, i: i.min(k), j: i.max(k) });
+                heap.push(HeapEntry {
+                    dist: new_d,
+                    i: i.min(k),
+                    j: i.max(k),
+                });
             }
         }
     }
 
-    (0..n).filter(|&r| alive[r]).map(|r| std::mem::take(&mut members[r])).collect()
+    (0..n)
+        .filter(|&r| alive[r])
+        .map(|r| std::mem::take(&mut members[r]))
+        .collect()
 }
 
 /// Seeds `heap` with every pair `(i, j)`, `i < j`, whose cosine distance is
@@ -215,12 +224,20 @@ fn seed_eps_eligible_pairs_via_gemm_blocked(
         // row/col strides (n, 1).
         unsafe {
             matrixmultiply::sgemm(
-                block_len, dim, n,
+                block_len,
+                dim,
+                n,
                 1.0,
-                flat.as_ptr().add(block_start * dim), dim as isize, 1,
-                flat.as_ptr(), 1, dim as isize,
+                flat.as_ptr().add(block_start * dim),
+                dim as isize,
+                1,
+                flat.as_ptr(),
+                1,
+                dim as isize,
                 0.0,
-                out.as_mut_ptr(), n as isize, 1,
+                out.as_mut_ptr(),
+                n as isize,
+                1,
             );
         }
 
@@ -258,9 +275,21 @@ mod gemm_seeding_tests {
         // hand-checked naive scan, not just "runs without panicking".
         let points: Vec<(i64, Vec<f32>)> = vec![
             (1, vec![1.0, 0.0, 0.0]),
-            (2, vec![0.99, 0.01, 0.0].iter().map(|x| x / (0.99f32 * 0.99 + 0.01 * 0.01).sqrt()).collect()),
+            (
+                2,
+                vec![0.99, 0.01, 0.0]
+                    .iter()
+                    .map(|x| x / (0.99f32 * 0.99 + 0.01 * 0.01).sqrt())
+                    .collect(),
+            ),
             (3, vec![0.0, 1.0, 0.0]),
-            (4, vec![0.0, 0.99, 0.01].iter().map(|x| x / (0.99f32 * 0.99 + 0.01 * 0.01).sqrt()).collect()),
+            (
+                4,
+                vec![0.0, 0.99, 0.01]
+                    .iter()
+                    .map(|x| x / (0.99f32 * 0.99 + 0.01 * 0.01).sqrt())
+                    .collect(),
+            ),
         ];
         let eps = 0.1;
 
@@ -286,7 +315,11 @@ mod gemm_seeding_tests {
 
         assert_eq!(gemm_pairs.len(), naive_pairs.len(), "pair count must match");
         for (gemm, naive) in gemm_pairs.iter().zip(&naive_pairs) {
-            assert_eq!((gemm.0, gemm.1), (naive.0, naive.1), "pair indices must match");
+            assert_eq!(
+                (gemm.0, gemm.1),
+                (naive.0, naive.1),
+                "pair indices must match"
+            );
             assert_eq!(
                 gemm.2.to_bits(),
                 naive.2.to_bits(),
@@ -294,8 +327,13 @@ mod gemm_seeding_tests {
                  this is what the merge loop's exact-equality staleness check depends on"
             );
         }
-        let pairs_only: Vec<(usize, usize)> = naive_pairs.iter().map(|(i, j, _)| (*i, *j)).collect();
-        assert_eq!(pairs_only, vec![(0, 1), (2, 3)], "sanity: only the two near-identical pairs should qualify");
+        let pairs_only: Vec<(usize, usize)> =
+            naive_pairs.iter().map(|(i, j, _)| (*i, *j)).collect();
+        assert_eq!(
+            pairs_only,
+            vec![(0, 1), (2, 3)],
+            "sanity: only the two near-identical pairs should qualify"
+        );
     }
 
     #[test]
@@ -308,11 +346,11 @@ mod gemm_seeding_tests {
         // row after block_start advances) would surface as a wrong pair
         // set, not just a wrong count.
         let points: Vec<(i64, Vec<f32>)> = vec![
-            (1, vec![1.0, 0.0, 0.0]),                    // 0: close to 1
-            (2, vec![0.95, 0.312, 0.0]),                 // 1: close to 0 (already ~unit)
-            (3, vec![0.0, 1.0, 0.0]),                     // 2: close to 3
-            (4, vec![0.0, 0.95, 0.312]),                  // 3: close to 2
-            (5, vec![0.0, 0.0, 1.0]),                     // 4: far from everything
+            (1, vec![1.0, 0.0, 0.0]),    // 0: close to 1
+            (2, vec![0.95, 0.312, 0.0]), // 1: close to 0 (already ~unit)
+            (3, vec![0.0, 1.0, 0.0]),    // 2: close to 3
+            (4, vec![0.0, 0.95, 0.312]), // 3: close to 2
+            (5, vec![0.0, 0.0, 1.0]),    // 4: far from everything
         ];
         let eps = 0.1;
 
@@ -325,7 +363,10 @@ mod gemm_seeding_tests {
             }
         }
         naive_pairs.sort();
-        assert!(!naive_pairs.is_empty(), "fixture must have at least one eps-eligible pair to be a meaningful test");
+        assert!(
+            !naive_pairs.is_empty(),
+            "fixture must have at least one eps-eligible pair to be a meaningful test"
+        );
 
         let mut heap: BinaryHeap<HeapEntry> = BinaryHeap::new();
         let progress = crate::progress::Progress::new(points.len() as u64, true);
@@ -364,10 +405,16 @@ fn centroid(points: &[(i64, Vec<f32>)], member_idxs: &[usize]) -> Vec<f32> {
     let dim = points[member_idxs[0]].1.len();
     let mut sum = vec![0.0f32; dim];
     for &idx in member_idxs {
-        for (s, v) in sum.iter_mut().zip(&points[idx].1) { *s += v; }
+        for (s, v) in sum.iter_mut().zip(&points[idx].1) {
+            *s += v;
+        }
     }
     let norm = sum.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm > 1e-12 { for s in &mut sum { *s /= norm; } }
+    if norm > 1e-12 {
+        for s in &mut sum {
+            *s /= norm;
+        }
+    }
     sum
 }
 
@@ -392,7 +439,11 @@ fn merge_by_centroid(
     let mut sim: Vec<Vec<f32>> = vec![vec![0.0f32; c]; c];
     for i in 0..c {
         for j in (i + 1)..c {
-            let s = centroids[i].iter().zip(&centroids[j]).map(|(a, b)| a * b).sum::<f32>();
+            let s = centroids[i]
+                .iter()
+                .zip(&centroids[j])
+                .map(|(a, b)| a * b)
+                .sum::<f32>();
             sim[i][j] = s;
             sim[j][i] = s;
         }
@@ -409,7 +460,9 @@ fn merge_by_centroid(
             }
         }
         let Some((s, i, j)) = best else { break };
-        if s < merge_sim { break; }
+        if s < merge_sim {
+            break;
+        }
 
         // Merge j into i, drop j (swap_remove keeps indices tidy), recompute i's centroid.
         // Note: `best` only ever binds pairs with i < j (from the loop bounds
@@ -448,7 +501,11 @@ fn merge_by_centroid(
             if k == i {
                 continue;
             }
-            let s = centroids[i].iter().zip(&centroids[k]).map(|(a, b)| a * b).sum::<f32>();
+            let s = centroids[i]
+                .iter()
+                .zip(&centroids[k])
+                .map(|(a, b)| a * b)
+                .sum::<f32>();
             sim[i][k] = s;
             sim[k][i] = s;
         }
@@ -468,13 +525,19 @@ fn label_clusters(
     let mut labels: Vec<Option<i64>> = vec![None; points.len()];
     let mut cluster_id: i64 = 0;
     for members in clusters {
-        if members.len() < min_samples { continue; }
+        if members.len() < min_samples {
+            continue;
+        }
         for &idx in members {
             labels[idx] = Some(cluster_id);
         }
         cluster_id += 1;
     }
-    points.iter().zip(labels).map(|((id, _), lbl)| (*id, lbl)).collect()
+    points
+        .iter()
+        .zip(labels)
+        .map(|((id, _), lbl)| (*id, lbl))
+        .collect()
 }
 
 #[derive(Copy, Clone, PartialEq)]
@@ -491,7 +554,9 @@ impl Ord for HeapEntry {
     }
 }
 impl PartialOrd for HeapEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 fn cosine_dist(a: &[f32], b: &[f32]) -> f32 {
@@ -531,7 +596,10 @@ mod sums_distance_tests {
         let b = vec![0.6f32, 0.8, 0.0]; // 0.6^2 + 0.8^2 = 1.0, already unit
         let expected = cosine_dist(&a, &b);
         let actual = cluster_dist_from_sums(&a, &b, 1.0, 1.0);
-        assert!((actual - expected).abs() < 1e-6, "expected {expected}, got {actual}");
+        assert!(
+            (actual - expected).abs() < 1e-6,
+            "expected {expected}, got {actual}"
+        );
     }
 
     #[test]
@@ -584,7 +652,9 @@ pub fn cluster_faces(
     silent: bool,
 ) -> Vec<(i64, Option<i64>)> {
     let n = points.len();
-    if n == 0 { return Vec::new(); }
+    if n == 0 {
+        return Vec::new();
+    }
     let clusters = agglomerate_average(points, eps, silent);
 
     // Only real clusters (>= min_samples) take part in the centroid-merge.
@@ -629,7 +699,8 @@ mod tests {
     #[test]
     fn identical_vectors_cluster_together() {
         let v = l2(vec![1.0f32, 0.0, 0.0]);
-        let result = average_linkage_cosine(&[(1, v.clone()), (2, v.clone()), (3, v)], 0.05, 2, true);
+        let result =
+            average_linkage_cosine(&[(1, v.clone()), (2, v.clone()), (3, v)], 0.05, 2, true);
         let ids: Vec<_> = result.iter().map(|(_, c)| *c).collect();
         assert!(ids.iter().all(|c| c.is_some()), "all must be clustered");
         assert_eq!(ids[0], ids[1]);
@@ -668,8 +739,7 @@ mod tests {
             .collect();
         let result = average_linkage_cosine(&points, 0.6, 2, true);
         let map: std::collections::HashMap<_, _> = result.into_iter().collect();
-        let cluster_ids: std::collections::HashSet<_> =
-            map.values().filter_map(|c| *c).collect();
+        let cluster_ids: std::collections::HashSet<_> = map.values().filter_map(|c| *c).collect();
         assert!(
             cluster_ids.len() > 1,
             "chain must not collapse into a single cluster, got cluster ids {cluster_ids:?}"
@@ -691,16 +761,25 @@ mod tests {
         // cluster gets, that's the real-world bug where a person's photos
         // fracture into dozens of separate clusters because of a handful of
         // odd-angle or blurry faces.
-        let deg = |d: f32| { let r = d.to_radians(); vec![r.cos(), r.sin()] };
+        let deg = |d: f32| {
+            let r = d.to_radians();
+            vec![r.cos(), r.sin()]
+        };
         let points: Vec<(i64, Vec<f32>)> = vec![
-            (1, deg(0.0)), (2, deg(0.0)), (3, deg(0.0)),
-            (4, deg(20.0)), (5, deg(20.0)),
+            (1, deg(0.0)),
+            (2, deg(0.0)),
+            (3, deg(0.0)),
+            (4, deg(20.0)),
+            (5, deg(20.0)),
             (6, deg(70.0)),
         ];
         let result = average_linkage_cosine(&points, 0.6, 2, true);
         let map: std::collections::HashMap<_, _> = result.into_iter().collect();
         assert!(map[&1].is_some(), "the core group must still cluster");
-        assert_eq!(map[&1], map[&6], "the odd-angle photo must join the same person's cluster");
+        assert_eq!(
+            map[&1], map[&6],
+            "the odd-angle photo must join the same person's cluster"
+        );
     }
 
     #[test]
@@ -742,7 +821,10 @@ mod tests {
         let result = average_linkage_cosine(&same_identity_two_subclusters(), 0.3, 1, true);
         let clusters: std::collections::HashSet<_> =
             result.iter().filter_map(|(_, c)| *c).collect();
-        assert!(clusters.len() >= 2, "premise: average-linkage should split them, got {clusters:?}");
+        assert!(
+            clusters.len() >= 2,
+            "premise: average-linkage should split them, got {clusters:?}"
+        );
     }
 
     #[test]
@@ -752,7 +834,10 @@ mod tests {
         let c1 = map[&1];
         assert!(c1.is_some(), "faces must be clustered, not left as noise");
         for id in 2..=6 {
-            assert_eq!(map[&id], c1, "all six same-identity faces must share one cluster");
+            assert_eq!(
+                map[&id], c1,
+                "all six same-identity faces must share one cluster"
+            );
         }
     }
 
@@ -766,19 +851,26 @@ mod tests {
             mut clusters: Vec<Vec<usize>>,
             merge_sim: f32,
         ) -> Vec<Vec<usize>> {
-            let mut centroids: Vec<Vec<f32>> = clusters.iter().map(|c| centroid(points, c)).collect();
+            let mut centroids: Vec<Vec<f32>> =
+                clusters.iter().map(|c| centroid(points, c)).collect();
             loop {
                 let mut best: Option<(f32, usize, usize)> = None;
                 for i in 0..clusters.len() {
                     for j in (i + 1)..clusters.len() {
-                        let s = centroids[i].iter().zip(&centroids[j]).map(|(a, b)| a * b).sum::<f32>();
+                        let s = centroids[i]
+                            .iter()
+                            .zip(&centroids[j])
+                            .map(|(a, b)| a * b)
+                            .sum::<f32>();
                         if best.is_none_or(|(bs, _, _)| s > bs) {
                             best = Some((s, i, j));
                         }
                     }
                 }
                 let Some((s, i, j)) = best else { break };
-                if s < merge_sim { break; }
+                if s < merge_sim {
+                    break;
+                }
                 let moved = std::mem::take(&mut clusters[j]);
                 clusters[i].extend(moved);
                 clusters.swap_remove(j);
@@ -794,10 +886,20 @@ mod tests {
         let via_incremental = merge_by_centroid(&points, initial_clusters.clone(), 0.4);
         let via_reference = reference_merge_by_centroid(&points, initial_clusters, 0.4);
 
-        let mut incremental_sorted: Vec<Vec<usize>> =
-            via_incremental.into_iter().map(|mut c| { c.sort(); c }).collect();
-        let mut reference_sorted: Vec<Vec<usize>> =
-            via_reference.into_iter().map(|mut c| { c.sort(); c }).collect();
+        let mut incremental_sorted: Vec<Vec<usize>> = via_incremental
+            .into_iter()
+            .map(|mut c| {
+                c.sort();
+                c
+            })
+            .collect();
+        let mut reference_sorted: Vec<Vec<usize>> = via_reference
+            .into_iter()
+            .map(|mut c| {
+                c.sort();
+                c
+            })
+            .collect();
         incremental_sorted.sort();
         reference_sorted.sort();
 
@@ -838,10 +940,7 @@ mod tests {
     fn agglomerate_average_matches_dense_matrix_reference_on_synthetic_data() {
         // Byte-for-byte copy of the ORIGINAL (pre-2026-08-03) dense-matrix
         // agglomerate_average, kept only as a reference oracle for this test.
-        fn reference_agglomerate_average(
-            points: &[(i64, Vec<f32>)],
-            eps: f32,
-        ) -> Vec<Vec<usize>> {
+        fn reference_agglomerate_average(points: &[(i64, Vec<f32>)], eps: f32) -> Vec<Vec<usize>> {
             let n = points.len();
             let mut dist: Vec<Vec<f32>> = vec![vec![0.0f32; n]; n];
             let mut heap: BinaryHeap<HeapEntry> = BinaryHeap::new();
@@ -880,11 +979,18 @@ mod tests {
                     if new_d != dist[i][k] {
                         dist[i][k] = new_d;
                         dist[k][i] = new_d;
-                        heap.push(HeapEntry { dist: new_d, i: i.min(k), j: i.max(k) });
+                        heap.push(HeapEntry {
+                            dist: new_d,
+                            i: i.min(k),
+                            j: i.max(k),
+                        });
                     }
                 }
             }
-            (0..n).filter(|&r| alive[r]).map(|r| std::mem::take(&mut members[r])).collect()
+            (0..n)
+                .filter(|&r| alive[r])
+                .map(|r| std::mem::take(&mut members[r]))
+                .collect()
         }
 
         // Deterministic synthetic fixture: a small seeded LCG generates ~300
@@ -893,7 +999,9 @@ mod tests {
         // real person's face embeddings cluster around a rough centroid),
         // then every point is L2-normalized (matching real ArcFace output).
         fn lcg_next(state: &mut u64) -> f32 {
-            *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            *state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((*state >> 33) as f32 / (1u64 << 31) as f32) - 1.0 // roughly in [-1, 1)
         }
 
@@ -936,10 +1044,20 @@ mod tests {
             let via_new = agglomerate_average(&points, eps, true);
             let via_reference = reference_agglomerate_average(&points, eps);
 
-            let mut new_sorted: Vec<Vec<usize>> =
-                via_new.into_iter().map(|mut c| { c.sort(); c }).collect();
-            let mut reference_sorted: Vec<Vec<usize>> =
-                via_reference.into_iter().map(|mut c| { c.sort(); c }).collect();
+            let mut new_sorted: Vec<Vec<usize>> = via_new
+                .into_iter()
+                .map(|mut c| {
+                    c.sort();
+                    c
+                })
+                .collect();
+            let mut reference_sorted: Vec<Vec<usize>> = via_reference
+                .into_iter()
+                .map(|mut c| {
+                    c.sort();
+                    c
+                })
+                .collect();
             new_sorted.sort();
             reference_sorted.sort();
 

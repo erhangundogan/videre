@@ -57,7 +57,7 @@ mod tests {
     #[test]
     fn top_k_skips_dimension_mismatch() {
         let corpus = vec![
-            ("bad".to_string(), vec![1.0f32]),          // wrong dims
+            ("bad".to_string(), vec![1.0f32]), // wrong dims
             ("good".to_string(), vec![1.0f32, 0.0]),
         ];
         let hits = top_k(&[1.0, 0.0], &corpus, 10);

@@ -34,7 +34,7 @@ mod tests {
         fs::create_dir(&sub).unwrap();
         fs::write(dir.path().join("a.jpg"), b"").unwrap();
         fs::write(dir.path().join("b.txt"), b"").unwrap(); // excluded
-        fs::write(sub.join("c.PNG"), b"").unwrap();        // case-insensitive
+        fs::write(sub.join("c.PNG"), b"").unwrap(); // case-insensitive
         fs::write(sub.join("d.heic"), b"").unwrap();
 
         let results = scan(dir.path());
