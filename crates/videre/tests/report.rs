@@ -58,6 +58,7 @@ fn fixture_db(
         );",
     )
     .unwrap();
+        videre_core::db::ensure_file_hashes_columns(&conn);
     for (path, hash, ext) in [
         (files[0].to_str().unwrap(), "hdup", "jpg"),
         (files[1].to_str().unwrap(), "hdup", "jpg"),

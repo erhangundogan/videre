@@ -154,6 +154,7 @@ fn stats_tracks_locations_runs() {
         );",
     )
     .unwrap();
+        videre_core::db::ensure_file_hashes_columns(&conn);
     drop(conn);
 
     let status = Command::new(videre_bin())

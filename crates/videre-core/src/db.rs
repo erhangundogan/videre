@@ -11,7 +11,23 @@ use std::path::Path;
 pub fn open_wal(path: &Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
+    ensure_file_hashes_columns(&conn);
     Ok(conn)
+}
+
+/// Idempotent column migrations for `file_hashes`, run on every open.
+///
+/// It must be every open rather than only on write: readers query `mime`, and
+/// a library scanned before the column existed would otherwise fail with
+/// "no such column" on `dedupe`, `stats`, `search`, and the rest, until the
+/// user happened to re-scan. Errors (column already exists, or no table yet in
+/// a brand-new database) are ignored, the same pattern
+/// `location::ensure_location_column` and `face_db`'s `is_primary` use.
+///
+/// `open_wal` is only ever used for the main library database; per-model
+/// embedding databases go through `Connection::open` in `embeddings_db`.
+pub fn ensure_file_hashes_columns(conn: &Connection) {
+    let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN mime TEXT;");
 }
 
 /// Whether `name` exists as a table in `conn`, used by every reader that

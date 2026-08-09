@@ -51,7 +51,9 @@ pub fn pending_hashes(conn: &Connection, model_id: &str) -> Result<Vec<String>> 
            )
            AND NOT EXISTS (
                SELECT 1 FROM file_hashes fh
-               WHERE fh.hash = emb.embeddings.hash AND lower(fh.ext) IN ('mov', 'mp4')
+               WHERE fh.hash = emb.embeddings.hash
+                 AND (fh.mime IN ('video/quicktime', 'video/mp4')
+                      OR (fh.mime IS NULL AND lower(fh.ext) IN ('mov', 'mp4')))
            )
          ORDER BY hash",
     )?;
@@ -71,17 +73,21 @@ pub fn pending_hashes(conn: &Connection, model_id: &str) -> Result<Vec<String>> 
 /// rather than being pre-built like it is here.
 pub fn exclude_video_hashes(conn: &Connection, hashes: &[String]) -> Result<Vec<String>> {
     let mut stmt =
-        conn.prepare("SELECT hash, lower(ext) FROM file_hashes WHERE ext IS NOT NULL")?;
-    let ext_by_hash: std::collections::HashMap<String, String> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        conn.prepare("SELECT hash, lower(COALESCE(ext, '')), mime FROM file_hashes")?;
+    // (hash, ext, mime) so the decision uses content when known.
+    let rows: Vec<(String, String, Option<String>)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?;
+    let ext_by_hash: std::collections::HashMap<String, (String, Option<String>)> =
+        rows.into_iter().map(|(h, e, m)| (h, (e, m))).collect();
 
     Ok(hashes
         .iter()
         .filter(|hash| {
-            !ext_by_hash
-                .get(*hash)
-                .is_some_and(|ext| crate::embeddings::is_video_ext(ext))
+            !ext_by_hash.get(*hash).is_some_and(|(ext, mime)| {
+                crate::mime_probe::effective_mime(mime.as_deref(), ext)
+                    .is_some_and(crate::mime_probe::is_video_mime)
+            })
         })
         .cloned()
         .collect())
@@ -145,6 +151,7 @@ mod tests {
             );",
         )
         .unwrap();
+        crate::db::ensure_file_hashes_columns(&conn);
         ensure_classifications_table(&conn).unwrap();
         crate::embeddings_db::attach(&conn, &lib, "test-model", true).unwrap();
         conn
@@ -228,6 +235,7 @@ mod tests {
             "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL, ext TEXT);",
         )
         .unwrap();
+        crate::db::ensure_file_hashes_columns(&conn);
         ensure_classifications_table(&conn).unwrap();
 
         crate::embeddings_db::attach(&conn, &lib, "model-a", true).unwrap();

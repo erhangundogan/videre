@@ -26,6 +26,10 @@ pub struct LibraryStats {
 
 use crate::db::table_exists;
 
+const PHOTO_MIME_LIST: &str =
+    "'image/jpeg','image/png','image/gif','image/webp','image/bmp','image/tiff','image/heic'";
+const VIDEO_MIME_LIST: &str = "'video/quicktime','video/mp4'";
+
 const PHOTO_EXTS: &str = "'jpg','jpeg','png','gif','webp','bmp','tiff','heic','dng'";
 const VIDEO_EXTS: &str = "'mov','mp4'";
 
@@ -39,12 +43,20 @@ pub fn compute(conn: &Connection) -> Result<LibraryStats> {
     let total_size_bytes: i64 =
         conn.query_row("SELECT COALESCE(SUM(size_bytes), 0) FROM file_hashes", [], |r| r.get(0))?;
     let total_photos: i64 = conn.query_row(
-        &format!("SELECT COUNT(*) FROM file_hashes WHERE lower(ext) IN ({PHOTO_EXTS})"),
+        &format!(
+            "SELECT COUNT(*) FROM file_hashes
+             WHERE mime IN ({PHOTO_MIME_LIST})
+                OR (mime IS NULL AND lower(ext) IN ({PHOTO_EXTS}))"
+        ),
         [],
         |r| r.get(0),
     )?;
     let total_videos: i64 = conn.query_row(
-        &format!("SELECT COUNT(*) FROM file_hashes WHERE lower(ext) IN ({VIDEO_EXTS})"),
+        &format!(
+            "SELECT COUNT(*) FROM file_hashes
+             WHERE mime IN ({VIDEO_MIME_LIST})
+                OR (mime IS NULL AND lower(ext) IN ({VIDEO_EXTS}))"
+        ),
         [],
         |r| r.get(0),
     )?;
@@ -122,6 +134,7 @@ mod tests {
             );",
         )
         .unwrap();
+        crate::db::ensure_file_hashes_columns(&conn);
         conn
     }
 

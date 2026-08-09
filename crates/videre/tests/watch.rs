@@ -73,6 +73,7 @@ fn faces_stage_skips_hashes_already_processed() {
          INSERT INTO file_hashes (path, hash, ext) VALUES ('/tmp/a.jpg', 'h1', 'jpg');
          INSERT INTO faces (hash, bbox, embedding) VALUES ('h1', '0,0,10,10', X'0000');",
     ).unwrap();
+        videre_core::db::ensure_file_hashes_columns(&conn);
     drop(conn);
 
     let mut child = Command::new(videre_bin()).arg("watch")
@@ -99,6 +100,7 @@ fn heic_stage_writes_no_cache_file_for_non_heic_hashes() {
         "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL, ext TEXT);
          INSERT INTO file_hashes (path, hash, ext) VALUES ('/tmp/a.jpg', 'hjpg', 'jpg');",
     ).unwrap();
+        videre_core::db::ensure_file_hashes_columns(&conn);
     drop(conn);
 
     let mut child = Command::new(videre_bin()).arg("watch")
@@ -149,6 +151,7 @@ fn location_stage_populates_location_name_for_gps_rows() {
          INSERT INTO file_hashes (path, hash, ext, gps_lat, gps_lon)
              VALUES ('/tmp/paris.jpg', 'hparis', 'jpg', 48.8566, 2.3522);",
     ).unwrap();
+        videre_core::db::ensure_file_hashes_columns(&conn);
     drop(conn);
 
     let mut child = Command::new(videre_bin()).arg("watch")
@@ -184,6 +187,7 @@ fn prune_stage_removes_stale_rows() {
              exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER);
          INSERT INTO file_hashes (path, hash, ext) VALUES ('/tmp/does-not-exist.jpg', 'hgone', 'jpg');",
     ).unwrap();
+        videre_core::db::ensure_file_hashes_columns(&conn);
     drop(conn);
 
     let mut child = Command::new(videre_bin()).arg("watch")
@@ -214,6 +218,7 @@ fn default_stages_do_not_include_prune() {
              exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER);
          INSERT INTO file_hashes (path, hash, ext) VALUES ('/tmp/does-not-exist.jpg', 'hgone', 'jpg');",
     ).unwrap();
+        videre_core::db::ensure_file_hashes_columns(&conn);
     drop(conn);
 
     // No stage flags at all: scan/faces/heic/location default on, but prune

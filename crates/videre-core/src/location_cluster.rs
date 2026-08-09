@@ -213,6 +213,7 @@ mod tests {
             "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL);",
         )
         .unwrap();
+        crate::db::ensure_file_hashes_columns(&conn);
         conn.execute("INSERT INTO file_hashes (path, hash) VALUES ('x', 'h1')", [])
             .unwrap();
         ensure_location_cluster_id_column(&conn);

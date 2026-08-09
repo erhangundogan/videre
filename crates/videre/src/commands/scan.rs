@@ -81,7 +81,7 @@ fn gather_records(args: &ScanArgs, directory: &std::path::Path) -> (Vec<videre::
         records
             .into_iter()
             .map(|mut r| {
-                r.phash = hasher::compute_dhash(std::path::Path::new(&r.path));
+                r.phash = hasher::compute_dhash(std::path::Path::new(&r.path), r.mime.as_deref());
                 r
             })
             .collect()

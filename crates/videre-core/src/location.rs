@@ -56,6 +56,7 @@ mod tests {
             "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL);",
         )
         .unwrap();
+        crate::db::ensure_file_hashes_columns(&conn);
         ensure_location_column(&conn);
         ensure_location_column(&conn); // second call must not error
         conn.execute(

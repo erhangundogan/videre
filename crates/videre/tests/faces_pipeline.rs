@@ -18,6 +18,7 @@ fn make_db(dir: &std::path::Path) -> std::path::PathBuf {
          phash INTEGER, exif_date TEXT, gps_lat REAL, gps_lon REAL,
          width INTEGER, height INTEGER);"
     ).unwrap();
+        videre_core::db::ensure_file_hashes_columns(&conn);
     db
 }
 

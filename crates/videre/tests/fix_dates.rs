@@ -51,6 +51,7 @@ fn fixture_db(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf)
         );",
     )
     .unwrap();
+        videre_core::db::ensure_file_hashes_columns(&conn);
     conn.execute(
         "INSERT INTO file_hashes (path, hash, exif_date) VALUES (?1, 'haaa', '2019-06-15T10:00:00')",
         rusqlite::params![file.to_str().unwrap()],
