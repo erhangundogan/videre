@@ -25,6 +25,11 @@ pub struct ScanArgs {
     #[arg(long)]
     similar: bool,
 
+    /// Only process files no scan has finished: those with no database row, or
+    /// a row with no recorded type. Needs a SQLite destination.
+    #[arg(long, conflicts_with = "output")]
+    retry_incomplete: bool,
+
     /// Suppress progress output on stderr
     #[arg(long)]
     silent: bool,
@@ -56,8 +61,60 @@ pub fn run(args: ScanArgs) -> anyhow::Result<()> {
 /// warnings go to stderr, gated by --silent (except hash-failure warnings,
 /// which always print via `Progress::println`). Returns the records plus the
 /// count of files that were scanned but failed to hash.
-fn gather_records(args: &ScanArgs, directory: &std::path::Path) -> (Vec<videre::types::FileRecord>, usize) {
-    let paths = scanner::scan(directory);
+/// The `--retry-incomplete` summary, printed before the write summary.
+///
+/// Three counts because the flag's value is knowing whether it worked: how
+/// many were incomplete, how many got a type, and how many remain
+/// unidentifiable. That last number now carries the sentinel, so a second run
+/// reports 0 incomplete rather than repeating the work.
+fn format_retry_summary(walked: usize, records: &[videre::types::FileRecord], skipped: usize) -> String {
+    let unresolved = records
+        .iter()
+        .filter(|r| r.mime.as_deref() == Some(videre_core::mime_probe::UNKNOWN_MIME))
+        .count();
+    format!(
+        "{walked} file(s) walked, {} incomplete; {} processed, {} identified, {unresolved} still unrecognised",
+        records.len() + skipped,
+        records.len(),
+        records.len() - unresolved,
+    )
+}
+
+/// Paths to skip under `--retry-incomplete`, empty when the flag is off.
+///
+/// Resolved before gathering because `gather_records` has no database handle;
+/// the connection is opened later in `run`. A missing database is an empty
+/// set: nothing has been scanned, so nothing is complete.
+fn completed_paths(args: &ScanArgs) -> std::collections::HashSet<String> {
+    if !args.retry_incomplete {
+        return std::collections::HashSet::new();
+    }
+    // --retry-incomplete conflicts with --output, so the target is always
+    // SQLite here, but fall back to an empty set rather than panicking if
+    // that ever changes.
+    let Ok(OutputTarget::Sqlite(db_path)) = output_target(args) else {
+        return std::collections::HashSet::new();
+    };
+    if !db_path.exists() {
+        return std::collections::HashSet::new();
+    }
+    videre_core::db::open_wal(&db_path)
+        .ok()
+        .and_then(|conn| videre_core::db::paths_with_known_mime(&conn).ok())
+        .unwrap_or_default()
+}
+
+fn gather_records(
+    args: &ScanArgs,
+    directory: &std::path::Path,
+    completed: &std::collections::HashSet<String>,
+) -> (Vec<videre::types::FileRecord>, usize, usize) {
+    let all_paths = scanner::scan(directory);
+    let walked = all_paths.len();
+    let paths: Vec<_> = all_paths
+        .into_iter()
+        .filter(|p| !completed.contains(&p.to_string_lossy().to_string()))
+        .collect();
     let progress = videre_core::progress::Progress::new(paths.len() as u64, args.silent);
 
     let records: Vec<_> = paths
@@ -89,7 +146,7 @@ fn gather_records(args: &ScanArgs, directory: &std::path::Path) -> (Vec<videre::
         records
     };
 
-    (records, skipped)
+    (records, skipped, walked)
 }
 
 /// Formats the "Wrote N record(s) to <path>" summary line, with an
@@ -151,7 +208,12 @@ fn run_text(args: ScanArgs) -> anyhow::Result<()> {
     }
     super::maybe_adopt_default_path(args.directory.as_deref(), args.silent);
 
-    let (records, skipped) = gather_records(&args, &directory);
+    let completed = completed_paths(&args);
+    let (records, skipped, walked) = gather_records(&args, &directory, &completed);
+
+    if args.retry_incomplete && !args.silent {
+        eprintln!("{}", format_retry_summary(walked, &records, skipped));
+    }
 
     match output_target(&args) {
         Err(e) => {
@@ -207,7 +269,12 @@ fn run_json(args: &ScanArgs) -> anyhow::Result<ScanJson> {
     );
     super::maybe_adopt_default_path(args.directory.as_deref(), args.silent);
 
-    let (records, skipped) = gather_records(args, &directory);
+    let completed = completed_paths(args);
+    let (records, skipped, walked) = gather_records(args, &directory, &completed);
+
+    if args.retry_incomplete && !args.silent {
+        eprintln!("{}", format_retry_summary(walked, &records, skipped));
+    }
 
     let output = match output_target(args)? {
         OutputTarget::Sqlite(db_path) => {
