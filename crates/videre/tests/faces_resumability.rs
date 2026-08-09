@@ -4,7 +4,7 @@
 //! asserts a resumed run picks up correctly with no images permanently lost.
 
 mod common;
-use common::{shared_cache_guard, videre_bin as bin};
+use common::{face_models_cached, shared_cache_guard, skip_without_models, videre_bin as bin};
 
 use rusqlite::Connection;
 use std::process::Command;
@@ -67,6 +67,9 @@ fn kill_mid_run_then_resume_processes_every_image_exactly_once() {
     // Held for the whole test, not just the first spawn: this one SIGKILLs its
     // child, and a concurrent first-time weights download in another test
     // binary would otherwise be the thing that dies half-written.
+    if skip_without_models("faces", face_models_cached()) {
+        return;
+    }
     let _serial = shared_cache_guard();
     const N: usize = 10;
     let dir = tempdir().unwrap();
