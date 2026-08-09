@@ -422,12 +422,31 @@ mod batch_correctness_tests {
     /// rather than an inline loop so this check and the product cannot
     /// disagree about what similarity means.
     pub(crate) fn worst_cosine_vs_singles(embedder: &Embedder, images: &[Tensor]) -> (f32, usize) {
+        worst_cosine_sampled(embedder, images, 1)
+    }
+
+    /// As above, but only re-embedding every `stride`-th image singly.
+    ///
+    /// The baseline is the expensive half: one forward pass per image checked.
+    /// On CPU with a 3.5GB model that is minutes per batch, so a full sweep
+    /// becomes hours. Sampling is sound here because the corruption is not
+    /// sporadic: it takes out essentially every vector in an affected batch
+    /// (254 of 254 full-batch entries at `--batch 127`, 256 of 256 at 128), so
+    /// a handful of probes either all agree or all disagree.
+    ///
+    /// Use `stride = 1` whenever the run is cheap enough; this exists to make
+    /// the CPU comparison possible at all, not to speed up the Metal one.
+    pub(crate) fn worst_cosine_sampled(
+        embedder: &Embedder,
+        images: &[Tensor],
+        stride: usize,
+    ) -> (f32, usize) {
         let batched = embedder.embed_images(images).unwrap();
         assert_eq!(batched.len(), images.len(), "one embedding per input");
 
         let mut worst = f32::MAX;
         let mut worst_at = 0usize;
-        for (i, img) in images.iter().enumerate() {
+        for (i, img) in images.iter().enumerate().step_by(stride.max(1)) {
             let single = embedder.embed_images(std::slice::from_ref(img)).unwrap();
             let cos = videre_core::vectors::cosine(&batched[i], &single[0]);
             if cos < worst {
@@ -522,5 +541,121 @@ mod batch_correctness_tests {
              every sweep built on this helper is invalid and real files must be used instead."
         );
         println!("instrument validated; detected by: {detected_by:?}");
+    }
+
+    /// Where does a model's batch threshold sit?
+    ///
+    /// Walks a ladder of batch sizes and prints clean/corrupt for each, so the
+    /// boundary can be read off directly. Stops early once a size is corrupt:
+    /// the phenomenon is monotonic (everything at or above the threshold is
+    /// affected), and the sizes above it are the expensive ones to run.
+    fn report_boundary(model_id: &str, ladder: &[usize], stride: usize) {
+        let embedder = Embedder::load(crate::device::best_device(), model_id).unwrap();
+        let size = image_size_for(model_id);
+        println!("\n=== {model_id} ({size}px) ===");
+        let mut last_clean = 0usize;
+        for &n in ladder {
+            let images = make_images(&embedder, n, size, Content::Varied);
+            let started = std::time::Instant::now();
+            let (worst, at) = worst_cosine_sampled(&embedder, &images, stride);
+            let verdict = if worst > 0.99 { "clean" } else { "CORRUPT" };
+            println!(
+                "  batch {n:>4}: worst cosine {worst:.6} at {at:>4}  {verdict}  ({:?})",
+                started.elapsed()
+            );
+            if worst > 0.99 {
+                last_clean = n;
+            } else {
+                println!("  -> boundary between {last_clean} and {n}");
+                return;
+            }
+        }
+        println!("  -> no corruption found up to {}", ladder.last().unwrap());
+    }
+
+    /// Is the threshold a count of images, or a budget of bytes?
+    ///
+    /// This decides whether `MAX_SAFE_BATCH` can legitimately be one constant.
+    /// Every candidate root cause (a Metal buffer or threadgroup limit,
+    /// unified-memory pressure) scales with bytes in flight, and bytes per
+    /// image differ sharply between these two models: 384px/1152-dim against
+    /// 224px/768-dim is roughly 3x the activation footprint.
+    ///
+    /// If the smaller model's boundary sits ~3x higher, the limit is bytes and
+    /// a single constant is wrong for any model it was not measured on, which
+    /// today includes the default. If both break at the same count, a constant
+    /// is defensible.
+    ///
+    /// The constant was measured only on so400m, before the project gained
+    /// per-model databases and `videre config set model`.
+    ///
+    /// ```text
+    /// cargo test -p videre-ml --release threshold_by_model_size -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn threshold_by_model_size() {
+        const STRIDE: usize = 8;
+        report_boundary(
+            "google/siglip-so400m-patch14-384",
+            &[96, 120, 127, 128, 160],
+            STRIDE,
+        );
+        report_boundary(
+            "google/siglip-base-patch16-224",
+            &[96, 128, 192, 256, 384, 512, 768],
+            STRIDE,
+        );
+    }
+
+    /// Is the corruption Metal-specific?
+    ///
+    /// Runs the known-bad configuration on `Device::Cpu` instead of
+    /// `best_device()`. `Embedder::load` already takes a device, so this needs
+    /// no production change.
+    ///
+    /// A clean CPU result where Metal is corrupt puts the defect in candle's
+    /// Metal backend and makes this an upstream bug. A corrupt CPU result
+    /// makes it far more serious than believed, since Linux would be affected
+    /// too.
+    ///
+    /// Prints rather than asserts a direction: this is a measurement, and
+    /// which way it comes out is the finding. It only asserts the run
+    /// completed and produced finite numbers.
+    ///
+    /// ```text
+    /// cargo test -p videre-ml --release cpu_result_at_the_known_bad_batch -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn cpu_result_at_the_known_bad_batch() {
+        const KNOWN_BAD_MODEL: &str = "google/siglip-so400m-patch14-384";
+        const KNOWN_BAD_BATCH: usize = 128;
+        // Every 16th image: ~8 baseline passes instead of 128. See
+        // worst_cosine_sampled for why sampling is sound for this defect.
+        const STRIDE: usize = 16;
+
+        let embedder = Embedder::load(candle_core::Device::Cpu, KNOWN_BAD_MODEL).unwrap();
+        let size = image_size_for(KNOWN_BAD_MODEL);
+        let images = make_images(&embedder, KNOWN_BAD_BATCH, size, Content::Varied);
+
+        let started = std::time::Instant::now();
+        let (worst, at) = worst_cosine_sampled(&embedder, &images, STRIDE);
+        let elapsed = started.elapsed();
+
+        println!(
+            "CPU / {KNOWN_BAD_MODEL} / batch {KNOWN_BAD_BATCH}: worst cosine {worst:.6} at index \
+             {at}, {elapsed:?}"
+        );
+        println!(
+            "{}",
+            if worst > 0.99 {
+                "CPU is CLEAN at a batch size Metal corrupts -> Metal-backend defect"
+            } else {
+                "CPU is ALSO CORRUPT -> not Metal-specific, affects Linux too"
+            }
+        );
+        assert!(worst.is_finite(), "comparison produced a non-finite cosine");
     }
 }
