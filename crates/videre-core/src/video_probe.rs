@@ -273,14 +273,106 @@ mod tests {
         assert!(probe(f));
     }
 
+    /// `size == 0` at the top level means "this box runs to end of file",
+    /// which `read_header` resolves against `end`. Legal ISO-BMFF, and the
+    /// shape a file still being written (or one truncated mid-record) has.
+    ///
+    /// Distinct from the 64-bit case above: that one is `read_header`'s
+    /// `size == 1` branch, this is its `size == 0` branch, and neither implies
+    /// the other.
+    #[test]
+    fn a_top_level_size_zero_box_runs_to_end_of_file() {
+        let mut f = bx(b"ftyp", b"qt  ");
+        // A size-0 'free' box swallows everything after it, so the moov that
+        // follows is never reached. That is "no moov found", which fails open
+        // (true) rather than reporting "no video track" (false): the probe
+        // only ever answers false when it has actually parsed a moov and seen
+        // no video handler. Asserting false here is what this test did first,
+        // and it failed, which is the distinction worth pinning down.
+        f.extend_from_slice(&0u32.to_be_bytes());
+        f.extend_from_slice(b"free");
+        f.extend_from_slice(&bx(b"moov", &trak(b"vide")));
+        assert!(probe(f));
+    }
+
+    /// `find_vide` walks the already-buffered `moov`, and carries its own
+    /// size decoding independent of `read_header`'s. A 64-bit size inside
+    /// `moov` is unusual but legal, and nothing else exercises this branch.
+    #[test]
+    fn a_64_bit_size_inside_moov_is_handled() {
+        let inner = trak(b"vide");
+        // A 64-bit-sized 'free' box preceding the real trak, inside moov.
+        let mut moov_payload = 1u32.to_be_bytes().to_vec();
+        moov_payload.extend_from_slice(b"free");
+        moov_payload.extend_from_slice(&(16u64 + 8).to_be_bytes());
+        moov_payload.extend_from_slice(&[0u8; 8]);
+        moov_payload.extend_from_slice(&inner);
+
+        let mut f = bx(b"ftyp", b"qt  ");
+        f.extend_from_slice(&bx(b"moov", &moov_payload));
+        assert!(probe(f));
+    }
+
+    /// A box inside `moov` claiming a 64-bit size without room for the 8 extra
+    /// header bytes is malformed. Must fail open (probe reports true, so the
+    /// caller still tries QuickLook) rather than panicking on the slice.
+    #[test]
+    fn a_truncated_64_bit_header_inside_moov_fails_open() {
+        let mut moov_payload = 1u32.to_be_bytes().to_vec();
+        moov_payload.extend_from_slice(b"free");
+        moov_payload.extend_from_slice(&[0u8; 4]); // 4 bytes, not the 8 needed
+
+        let mut f = bx(b"ftyp", b"qt  ");
+        f.extend_from_slice(&bx(b"moov", &moov_payload));
+        assert!(probe(f));
+    }
+
+    /// `size == 0` inside `moov` means the box runs to the end of the parent
+    /// buffer, `find_vide`'s counterpart to the top-level case above.
+    #[test]
+    fn a_size_zero_box_inside_moov_runs_to_end_of_parent() {
+        let mut moov_payload = 0u32.to_be_bytes().to_vec();
+        moov_payload.extend_from_slice(b"free");
+        moov_payload.extend_from_slice(&trak(b"vide"));
+
+        let mut f = bx(b"ftyp", b"qt  ");
+        f.extend_from_slice(&bx(b"moov", &moov_payload));
+        // The size-0 free box consumes the trak, so no video handler is seen.
+        assert!(!probe(f));
+    }
+
     #[test]
     fn an_oversized_moov_fails_open_rather_than_allocating() {
         // Declares a moov far larger than MOOV_CAP. Must not try to read it.
+        //
+        // Note this actually trips the "child extends past end of file" bounds
+        // check, not the MOOV_CAP guard, because the declared size also runs
+        // past the tiny buffer. The cap itself is covered by the test below.
         let mut f = bx(b"ftyp", b"qt  ");
         let huge = (MOOV_CAP + 1_000_000) as u32;
         f.extend_from_slice(&huge.to_be_bytes());
         f.extend_from_slice(b"moov");
         assert!(probe(f));
+    }
+
+    /// The `MOOV_CAP` guard proper: a moov that fits inside the file but is
+    /// still too large to buffer.
+    ///
+    /// Passing `end` explicitly rather than deriving it from the buffer is
+    /// what makes this cheap. The guard exists to avoid allocating a huge
+    /// buffer, so a test that had to build a >32MB fixture to reach it would
+    /// be doing the very thing the guard prevents.
+    #[test]
+    fn a_moov_larger_than_the_cap_is_refused_without_reading_it() {
+        let mut f = bx(b"ftyp", b"qt  ");
+        let over_cap = (MOOV_CAP + 1024) as u32;
+        f.extend_from_slice(&over_cap.to_be_bytes());
+        f.extend_from_slice(b"moov");
+
+        // Claim the file is far larger than the bytes actually present, so the
+        // bounds check passes and the cap is what rejects it.
+        let end = (MOOV_CAP + 1_000_000) as u64;
+        assert!(has_video_track_in(&mut Cursor::new(f), end));
     }
 
     fn write_temp(name: &str, bytes: &[u8]) -> std::path::PathBuf {
