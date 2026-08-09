@@ -242,7 +242,6 @@ fn collect_hits(args: &SearchArgs) -> Result<(QueryJson, Vec<SearchHitJson>)> {
         // into existence, or "no results" would silently replace a clear
         // error naming the models that do exist.
         videre_core::embeddings_db::attach_for_read(&conn, &db, &model_id)?;
-        videre_core::embeddings::warn_legacy_embeddings_once(&conn);
     }
 
     if let Some(name) = &args.category {

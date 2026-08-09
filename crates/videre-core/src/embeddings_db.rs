@@ -222,30 +222,15 @@ pub fn counts_by_model(db_path: &Path) -> Result<Vec<ModelEmbeddingCount>> {
     Ok(out)
 }
 
-/// Attach for a reader, tolerating a missing model database when the main
-/// database still holds pre-split embeddings.
+/// Attach for a reader: a missing model database is an error naming the models
+/// that do exist.
 ///
-/// Readers must not create a model database, but they also must not hard-fail
-/// on an unmigrated 0.9.x library: those vectors live in `main.embeddings`,
-/// and `embeddings::load_embeddings` reads them when nothing is attached. A
-/// plain `attach(create: false)` here would abort before that fallback ever
-/// ran, making it dead code for precisely the case it exists to handle, and
-/// turning the 0.10 upgrade into the silent break it was written to prevent.
-///
-/// Errors only when there is genuinely nothing to read, in which case the
-/// message still names the models that do exist.
+/// Kept as a distinct name from `attach(.., false)` so call sites read as
+/// intent rather than as a boolean. It previously tolerated a missing database
+/// when the main one still held pre-0.10 rows; that fallback was removed in
+/// 0.11.0, as `LEGACY_FALLBACK_REMOVE_IN` scheduled.
 pub fn attach_for_read(conn: &Connection, db_path: &Path, model_id: &str) -> Result<()> {
-    match attach(conn, db_path, model_id, false) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let legacy = crate::embeddings::legacy_main_db_embedding_count(conn).unwrap_or(0);
-            if legacy > 0 {
-                Ok(())
-            } else {
-                Err(e)
-            }
-        }
-    }
+    attach(conn, db_path, model_id, false)
 }
 
 /// DETACH the model database. Needed before attaching a different model on
@@ -520,31 +505,6 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(unqualified, 0, "documents exactly why emb. is required");
-        });
-    }
-
-    #[test]
-    fn attach_for_read_tolerates_a_missing_model_db_when_legacy_rows_exist() {
-        // Regression guard for a bug that made the whole legacy fallback dead
-        // code: readers attached with create:false, which failed before
-        // load_embeddings ever ran, so a 0.9.x library got a hard error
-        // instead of its own vectors. Only an end-to-end run caught it,
-        // because every unit test attached explicitly first.
-        with_home("readlegacy", |home| {
-            let lib = home.join("hashes.db");
-            std::fs::write(&lib, b"").unwrap();
-            let conn = Connection::open_in_memory().unwrap();
-            conn.execute_batch(
-                "CREATE TABLE embeddings (
-                    hash TEXT PRIMARY KEY, model_id TEXT NOT NULL,
-                    embedding BLOB NOT NULL, embedded_at TEXT NOT NULL
-                );
-                INSERT INTO embeddings VALUES ('h1', 'm', X'0102', 'now');",
-            )
-            .unwrap();
-
-            attach_for_read(&conn, &lib, "google/siglip2-base-patch16-384")
-                .expect("legacy rows must keep an unmigrated library working");
         });
     }
 
