@@ -158,7 +158,7 @@ Reads a folder recursively and records every media file in the database.
 videre scan ~/Photos                              # scan into the default database
 videre scan                                       # same, using the folder from `videre config set path`
 videre scan ~/Photos --similar                    # also fingerprint images/videos for near-duplicate detection
-videre scan ~/Photos --output-sqlite ~/photos.db  # write to a specific database instead
+videre scan ~/Photos --db ~/photos.db             # write to a specific database instead
 videre scan ~/Photos --output                     # write JSONL to ~/.videre/hashes.jsonl instead of SQLite
 videre scan ~/Photos --output out.jsonl           # write JSONL to a specific file
 videre scan ~/Photos --retry-incomplete           # only files an earlier scan didn't finish
@@ -167,7 +167,7 @@ videre scan ~/Photos --json                       # print one JSON summary objec
 ```
 
 Re-running is safe and idempotent, since existing entries are updated in place.
-`--output` and `--output-sqlite` cannot be combined. A bare `--output` must come
+`--output` and `--db` cannot be combined. A bare `--output` must come
 *after* the folder, or it swallows the folder as its value.
 
 A normal scan re-reads every byte of every file, which on a large library is the
@@ -350,7 +350,7 @@ videre watch ~/Photos --location       # only look up place names
 videre watch ~/Photos --prune          # also clean stale entries (off by default)
 videre watch ~/Photos --interval 60    # seconds between cycles (default 300)
 videre watch ~/Photos --silent         # no per-cycle output
-videre watch ~/Photos --output-sqlite ~/photos.db   # use a specific database
+videre watch ~/Photos --db ~/photos.db              # use a specific database
 ```
 
 ### videre stats
@@ -400,8 +400,7 @@ Everything lives in `~/.videre`:
 ```
 
 Nothing is created until you actually write something. To use a different
-database, pass `--db <path>` (or `--output-sqlite <path>` for `scan` and
-`watch`), or set a default once:
+database, pass `--db <path>`, or set a default once:
 
 ```bash
 videre config set db ~/photos.db

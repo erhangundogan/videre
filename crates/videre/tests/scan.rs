@@ -727,3 +727,58 @@ fn an_unidentifiable_file_records_the_sentinel_and_is_not_retried() {
         "the sentinel must stop the retry loop: {stderr}"
     );
 }
+
+/// `--db` and `--output-sqlite` must name the same destination.
+///
+/// `scan` and `watch` used `--output-sqlite` while all eleven readers used
+/// `--db`, an accident of history: this command predates the readers, from
+/// when JSONL and SQLite were peer output *formats* rather than one
+/// destination and one opt-out. `--db` is now the primary name and the old one
+/// is an alias, so existing scripts keep working. This test is what stops the
+/// alias being dropped as "unused".
+#[test]
+fn db_and_output_sqlite_are_the_same_flag() {
+    let scan_dir = tempdir().unwrap();
+    let out = tempdir().unwrap();
+    fs::write(scan_dir.path().join("a.jpg"), b"content").unwrap();
+
+    for (flag, name) in [("--db", "new.db"), ("--output-sqlite", "old.db")] {
+        let db = out.path().join(name);
+        let status = Command::new(videre_bin())
+            .arg("scan")
+            .arg("--silent")
+            .arg(flag)
+            .arg(&db)
+            .arg(scan_dir.path())
+            .status()
+            .expect("failed to run videre scan");
+        assert!(status.success(), "{flag} should be accepted");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "{flag} should have written the record");
+    }
+}
+
+/// The conflict with --output survives the rename. clap matches on the field
+/// name, so renaming `output_sqlite` to `db` without updating `conflicts_with`
+/// would have silently dropped this.
+#[test]
+fn db_still_conflicts_with_jsonl_output() {
+    let scan_dir = tempdir().unwrap();
+    fs::write(scan_dir.path().join("a.jpg"), b"content").unwrap();
+    let out = Command::new(videre_bin())
+        .arg("scan")
+        .arg("--db")
+        .arg(scan_dir.path().join("x.db"))
+        .arg("--output")
+        .arg(scan_dir.path().join("x.jsonl"))
+        .arg(scan_dir.path())
+        .output()
+        .expect("failed to run videre scan");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--db"), "{stderr}");
+    assert!(stderr.contains("--output"), "{stderr}");
+}

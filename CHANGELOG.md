@@ -15,6 +15,19 @@ version number and are released together.
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-08-10
+
+### Changed
+
+- **`videre scan` and `videre watch` now take `--db`**, the same flag every
+  other subcommand uses. `--output-sqlite` still works as an alias, so existing
+  scripts are unaffected.
+
+  It was called `--output-sqlite` for historical reasons: `scan` predates the
+  readers, from when JSONL and SQLite were peer output *formats* rather than one
+  destination and one opt-out. `videre scan --db` failing was surprising every
+  time.
+
 ## [0.11.2] - 2026-08-10
 
 ### Fixed
@@ -255,7 +268,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.11.3...HEAD
+[0.11.3]: https://github.com/erhangundogan/videre/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/erhangundogan/videre/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/erhangundogan/videre/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/erhangundogan/videre/compare/v0.10.1...v0.11.0

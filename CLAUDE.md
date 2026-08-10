@@ -27,14 +27,14 @@ Note: `docs/superpowers/` design specs and implementation plans predate the vide
 videre scan [OPTIONS] [directory]     # directory optional when 'path' is set in videre config
 
 Options:
-  --output [<path>]        JSONL output file (appended). Bare --output (no value) targets ~/.videre/hashes.jsonl; must come AFTER the directory positional, or clap consumes the directory as the flag's value. Mutually exclusive with --output-sqlite
-  --output-sqlite <path>   SQLite output file; upserts by path; mutually exclusive with --output. When neither --output nor --output-sqlite is given, records go to the resolved default db (see ~/.videre below)
+  --output [<path>]        JSONL output file (appended). Bare --output (no value) targets ~/.videre/hashes.jsonl; must come AFTER the directory positional, or clap consumes the directory as the flag's value. Mutually exclusive with --db
+  --db <path>              SQLite database to write; upserts by path; mutually exclusive with --output. When neither is given, records go to the resolved default db (see ~/.videre below). Accepts --output-sqlite as an alias, the original name
   --similar                Also compute and store perceptual hashes for near-duplicate detection
   --silent                 Suppress progress output on stderr
   --json                   Emit a single JSON object on stdout instead of human-readable text
 ```
 
-`--output` and `--output-sqlite` cannot be used together: passing both is an error.
+`--output` and `--db` cannot be used together: passing both is an error. `scan` and `watch` accept `--output-sqlite` as an alias for `--db`; it was the original name, from when JSONL and SQLite were peer output *formats* rather than one destination and one opt-out.
 
 `--similar` for `.mov`/`.mp4` files needs macOS (`qlmanage`), the first platform dependency `videre scan` has ever had. Every other `scan` code path stays platform-agnostic. On non-macOS, or if `qlmanage` fails for any reason, the file simply gets no `phash` (same graceful-skip behavior as any other undecodable file) rather than a hard error. Existing databases scanned before this feature shipped have `phash = NULL` for every video; re-run `videre scan --similar` to populate it. The feature is purely additive and never invalidates existing rows.
 
@@ -129,7 +129,7 @@ Per-command support matrix:
 cargo build --release
 ./target/release/videre scan ~/Photos                                    # populate the default db
 ./target/release/videre dedupe | xargs trash                             # delete duplicates
-./target/release/videre scan --output-sqlite ~/photos.db ~/Photos        # scan to an explicit SQLite db
+./target/release/videre scan --db ~/photos.db ~/Photos        # scan to an explicit SQLite db
 ./target/release/videre dedupe --db ~/photos.db                          # read from an explicit db
 ./target/release/videre report                                           # generate HTML report from the default db
 ./target/release/videre report --db ~/photos.db                          # generate HTML report from an explicit db
@@ -148,7 +148,7 @@ cargo build --release
 ./target/release/videre report --by-date                                 # static Year/Month/Day drill-down gallery
 ./target/release/videre report --show-faces                              # live report with face/location lightbox metadata
 ./target/release/videre watch ~/Photos                                   # background: scan + faces + HEIC cache + location, looping, default db
-./target/release/videre watch --output-sqlite ~/photos.db ~/Photos       # same, against an explicit db
+./target/release/videre watch --db ~/photos.db ~/Photos       # same, against an explicit db
 ./target/release/videre config                                           # show resolved home dir, config.toml, and db paths
 ./target/release/videre config set db ~/photos.db                        # persist a default db in config.toml
 ./target/release/videre config set path ~/Photos                         # persist a default directory for dedupe/watch
@@ -272,7 +272,7 @@ jq 'select(.ext == "heic")' ~/.videre/hashes.jsonl
 
 Every subcommand shares a home directory at `~/.videre` (override with the `VIDERE_HOME` env var), created lazily by writers (`scan`, `watch`, `config set`). Readers never create it. It holds `hashes.db` (default SQLite database), `hashes.jsonl` (default JSONL output, only written when `--output` is used bare), `config.toml` (optional overrides, currently just `default_db`), `locks/` (per-database-per-command `flock` files; see the `pipeline_runs` notes below), and `embeddings/` (per-model embedding databases; see below).
 
-Database resolution order for every subcommand: explicit path (`--db` on the eleven readers: `report`, `fix-dates`, `prune`, `embed`, `search`, `faces`, `classify`, `mcp`, `dedupe`, `locations`, `stats`; `--output-sqlite` on the two writers: `scan`, `watch`) > `default_db` in `config.toml` > `~/.videre/hashes.db`. Readers never create a database; if the resolved path doesn't exist they print `no database found at <path>; run 'videre scan <dir>' first` and exit 1 (arrives as the JSON error object under `search --json`).
+Database resolution order for every subcommand: explicit path (`--db`, accepted by every subcommand that takes one; `scan` and `watch` also accept `--output-sqlite` as an alias) > `default_db` in `config.toml` > `~/.videre/hashes.db`. Readers never create a database; if the resolved path doesn't exist they print `no database found at <path>; run 'videre scan <dir>' first` and exit 1 (arrives as the JSON error object under `search --json`).
 
 `videre config` shows the resolved home dir, `config.toml` path, the `db` and `path` settings (labeled by their settable keys, with a set-command hint when unset), resolved db, and jsonl path. `videre config set db <path>` writes an absolute path to `config.toml` as `default_db`; `videre config set path <dir>` writes `default_path`, which `videre scan` and `videre watch` use when their directory positional is omitted (no built-in fallback: without it, the directory is required). Both setters preserve any other keys already present; `videre config unset db|path` removes a key. `videre scan <dir>` also adopts `<dir>` as `default_path` automatically the first time it is run with no `default_path` already set (a one-time convenience for the common case of a single photo library); it prints a one-line stderr note when it does (suppressed by `--silent`), and never overwrites an already-configured `default_path` on later runs.
 
@@ -330,7 +330,7 @@ The `videre` crate builds a single `[[bin]]` (`videre`, from `src/main.rs`) plus
 - `chrono`: date formatting
 - `image`: image decoding and dHash perceptual hashing for `--similar` (implemented inline, no img_hash crate); the same dHash algorithm also runs against a QuickLook-decoded poster-frame for `.mov`/`.mp4` files, reusing `videre-ml`'s `decode_via_quicklook`
 - `kamadak-exif`: EXIF metadata extraction (always on for jpg/jpeg/tiff/heic/dng)
-- `rusqlite` (bundled): SQLite output for `--output-sqlite` and `videre report`
+- `rusqlite` (bundled): SQLite output for `--db` and `videre report`
 - `filetime`: set file `mtime` portably for `videre fix-dates`
 - `candle-core` / `candle-nn` / `candle-transformers`: SigLIP inference, Metal on macOS
 - `tokenizers`: text tokenization for SigLIP
@@ -1021,7 +1021,7 @@ videre watch [directory]                                             # default d
 videre watch <directory> --scan --faces                              # only these stages
 videre watch <directory> --interval 60                                # custom cycle interval (seconds)
 videre watch <directory> --silent                                    # suppress per-cycle stderr output
-videre watch --output-sqlite <db> <directory>                        # explicit db instead of the default
+videre watch --db <db> <directory>                        # explicit db instead of the default
 videre watch <directory> --prune                                     # opt-in: also reclaim stale rows/cache each cycle
 ```
 
