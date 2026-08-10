@@ -102,9 +102,12 @@ videre search "golden gate bridge at sunset"
 videre search --image reference.jpg       # find photos like this one
 ```
 
-The first `videre embed` downloads about 1.4 GB of model data and takes a while
+The first `videre embed` downloads about 780 MB of model data and takes a while
 on a big library. You can stop it at any point and rerun later, and it picks up
-where it left off.
+where it left off. `videre faces` downloads a separate 180 MB the first time.
+
+Nothing is downloaded until you run a command that needs it: scanning,
+de-duplicating, fixing dates, pruning and stats work with no model at all.
 
 ### Find people
 
@@ -335,7 +338,28 @@ videre prune --dry-run                 # show what would be removed
 videre prune                           # remove stale entries and refresh metadata
 videre prune --silent                  # no per-file output
 videre prune --db ~/photos.db          # use a specific database
+videre prune --prune-unreachable       # also drop entries whose folder is gone
+videre prune --force                   # allow an unusually large cleanup
 ```
+
+**If a drive is not plugged in, prune leaves it alone.** An entry is only
+removed when the file is missing *and* its folder still exists. A missing folder
+means the drive or directory is gone, not that you deleted the photos, so those
+entries are kept and reported:
+
+```
+12,431 row(s) skipped as unreachable (1 directory missing: /Volumes/Photos)
+  run with --prune-unreachable to remove them anyway
+```
+
+That matters because removing those entries would also throw away their search
+embeddings and cached thumbnails, which take hours to rebuild. Use
+`--prune-unreachable` when a folder really is gone for good.
+
+Two further safeguards: a cleanup that would remove more than 20% of your
+library (and at least 100 entries) stops and changes nothing unless you pass
+`--force`, and a run that hits 10 errors in a row gives up rather than printing
+thousands of lines. `videre watch --prune` can override neither.
 
 ### videre watch
 

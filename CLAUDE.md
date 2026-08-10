@@ -285,7 +285,7 @@ crates/
     src/main.rs
     src/commands/{mod.rs,dedupe.rs,report.rs,scan.rs,fix_dates.rs,prune.rs,embed.rs,search.rs,faces.rs,classify.rs,watch.rs,config.rs,mcp.rs,stats.rs,locations.rs}
     src/{lib.rs,scanner.rs,hasher.rs,output.rs,sqlite_output.rs,types.rs}
-    tests/{integration.rs,report.rs,prune.rs,watch.rs,faces_pipeline.rs,faces_server.rs,faces_resumability.rs,person_search.rs,mcp.rs,scan.rs,config.rs,embed.rs,fix_dates.rs,locations.rs,stats.rs,search.rs,fixtures/}
+    tests/{integration.rs,report.rs,prune.rs,watch.rs,multi_model.rs,faces_pipeline.rs,faces_server.rs,faces_resumability.rs,person_search.rs,mcp.rs,scan.rs,config.rs,embed.rs,fix_dates.rs,locations.rs,stats.rs,search.rs,fixtures/}
   videre-core/
     Cargo.toml
     src/lib.rs
@@ -297,6 +297,7 @@ crates/
     src/person_search.rs
     src/db.rs
     src/heic.rs
+    src/hf_cache.rs
     src/location.rs
     src/location_cluster.rs
     src/geocode.rs
@@ -481,7 +482,7 @@ Report includes:
 - Per-file: thumbnail preview, KEEP/REMOVE badge, filename, path + copy button, size, created, modified, EXIF date, GPS link, dimensions
 - Image thumbnails via `file://` URL in static mode, or `/api/raw?path=...` in server mode (lazy-loaded, force-loaded on group expand)
 - `.mov` and `.mp4` files shown as `<video>` thumbnail; click opens lightbox with playback controls
-- `.heic` files: in static mode, "HEIC" text by default; `--heic` embeds a 240px JPEG thumbnail; `--heic-original` also embeds a 1200px lightbox version (macOS only, requires `qlmanage`, part of Quick Look/CoreServices). In server mode (`--show-faces`), HEIC always renders automatically, and `--heic`/`--heic-original` are ignored there, since thumbnails are converted lazily per request via `/api/raw?path=...&size=N`, checking `videre watch`'s `~/.cache/videre/thumbnails/` cache first before falling back to a live `qlmanage` conversion (eagerly converting every HEIC file before responding made server mode take minutes on a collection with many HEIC files)
+- `.heic` files: in static mode, "HEIC" text by default; `--heic` embeds a 240px JPEG thumbnail; `--heic-original` also embeds a 1200px lightbox version (macOS only, requires `qlmanage`, part of Quick Look/CoreServices). In server mode (`--show-faces`), HEIC always renders automatically, and `--heic`/`--heic-original` are ignored there, since thumbnails are converted lazily per request via `/api/raw?path=...&size=N`, checking `videre watch`'s thumbnail cache first before falling back to a live `qlmanage` conversion (eagerly converting every HEIC file before responding made server mode take minutes on a collection with many HEIC files)
 - Lightbox overlay for full-size image/video viewing; Escape or backdrop click closes
 - `--all`: gallery of files that exist on disk (200-card pages, lazy thumbnails) + "Similar" button per file; click opens a results panel with top-24 cosine matches using inline SigLIP f16 embeddings (requires prior `videre embed` run)
 
@@ -530,7 +531,7 @@ In a single pass:
   parent directory is also missing**
 - Refreshes `modified_at` for surviving files from their current filesystem mtime
 - Deletes orphan embedding rows whose hash has no remaining `file_hashes` entry, across **every** model database for that library, attaching and detaching each in turn and reporting a count per model
-- Deletes `~/.cache/videre/thumbnails/` cache files (240/1200px thumbnails, face crops, full-res originals) whose hash has no remaining `file_hashes` entry (orphan cleanup). This is the only bound on that cache's otherwise-unlimited growth (see the `videre faces`/`videre watch` HEIC-caching notes above); `.tmp*` scratch files from an in-flight write are never touched
+- Deletes thumbnail-cache files (240/1200px thumbnails, face crops, full-res originals) from the resolved cache directory whose hash has no remaining `file_hashes` entry (orphan cleanup). This is the only bound on that cache's otherwise-unlimited growth (see the `videre faces`/`videre watch` HEIC-caching notes above); `.tmp*` scratch files from an in-flight write are never touched
 
 Shared-hash safety (applies to both embeddings and cache files): if two paths share the same hash and one file is deleted, the embedding/cache entry is only removed if no `file_hashes` row for that hash survives. Dry-run orphan counts are a lower bound (pre-existing orphans only; does not account for orphans created by the would-be deletions). Exits with code 1 if any row update or cache-file removal fails.
 
@@ -865,11 +866,14 @@ stay intact and queryable via `--model`; the new one simply starts from zero.
 ### Upgrading from before the split
 
 Embeddings written by 0.9.x sit in an `embeddings` table in the main database.
-`load_embeddings` still reads them when the model database has nothing for that
-model, so an existing library keeps working untouched instead of silently
-returning zero hits. The attached database always wins, so a re-embed is never
-shadowed by a stale copy. This fallback is removed in 0.11.0; see
-`LEGACY_FALLBACK_REMOVE_IN` in `videre-core/src/embeddings.rs`.
+**That fallback was removed in 0.11.0 and no longer exists in the code**
+(`LEGACY_FALLBACK_REMOVE_IN` is gone with it). A library last embedded on 0.9.x
+now gets the same clear error as any other missing model, naming what does
+exist and the command to run, rather than silently returning zero hits.
+
+Nothing is deleted: the old `embeddings` table sits untouched in the main
+database and can be dropped by hand. Re-running `videre embed` builds the
+per-model database from scratch.
 
 ## videre classify
 
@@ -919,7 +923,7 @@ videre faces --profile                  # print per-stage timing (load/detect/al
 videre faces --qlmanage-concurrency <n> # max concurrent qlmanage (HEIC decode) subprocesses, process-wide (default: 6)
 ```
 
-Uses InsightFace buffalo_l: SCRFD-10GF for detection, 5-point landmark alignment, ArcFace w600k_r50 for 512-dim L2-normalized embeddings. Weights are downloaded from `hf-hub` on first run. ONNX Runtime (`ort`) runs inference on CPU (an explicit per-worker intra-op thread cap; see the concurrency note below; the macOS CoreML execution provider was measured to give no speedup for these models and is not used). HEIC images are converted via `qlmanage` (see videre report HEIC note above) before detection, unless a cached full-resolution decode already exists at `~/.cache/videre/thumbnails/<hash>_original.jpg` (written by `videre watch --heic`, or lazily by `videre report --show-faces`'s original-image endpoint), in which case that cached JPEG is read directly instead of paying for another `qlmanage` subprocess. Detection's bbox coordinates are stored relative to whatever image detection ran on, so this cache must be full resolution (not the 240/1200px thumbnail sizes), and `videre watch --heic` decodes at full resolution specifically to feed both this cache and its own thumbnails from one decode. Real measurement on a real library: ~108ms per cached HEIC load vs. ~7.6s for a live decode, roughly 70x faster once the cache is warm; a single-pixel bbox rounding difference (JPEG recompression noise) was observed in 1 of 20 checked coordinates against live-decode ground truth, not a correctness issue. Falls back to a fresh live decode when the cache hasn't been populated for a hash yet, so detection works correctly even if `videre watch --heic` has never run.
+Uses InsightFace buffalo_l: SCRFD-10GF for detection, 5-point landmark alignment, ArcFace w600k_r50 for 512-dim L2-normalized embeddings. Weights are downloaded from `hf-hub` on first run. ONNX Runtime (`ort`) runs inference on CPU (an explicit per-worker intra-op thread cap; see the concurrency note below; the macOS CoreML execution provider was measured to give no speedup for these models and is not used). HEIC images are converted via `qlmanage` (see videre report HEIC note above) before detection, unless a cached full-resolution decode already exists in the thumbnail cache as `<hash>_original.jpg` (written by `videre watch --heic`, or lazily by `videre report --show-faces`'s original-image endpoint), in which case that cached JPEG is read directly instead of paying for another `qlmanage` subprocess. Detection's bbox coordinates are stored relative to whatever image detection ran on, so this cache must be full resolution (not the 240/1200px thumbnail sizes), and `videre watch --heic` decodes at full resolution specifically to feed both this cache and its own thumbnails from one decode. Real measurement on a real library: ~108ms per cached HEIC load vs. ~7.6s for a live decode, roughly 70x faster once the cache is warm; a single-pixel bbox rounding difference (JPEG recompression noise) was observed in 1 of 20 checked coordinates against live-decode ground truth, not a correctness issue. Falls back to a fresh live decode when the cache hasn't been populated for a hash yet, so detection works correctly even if `videre watch --heic` has never run.
 
 Detection is **resumable**. Every processed hash is recorded in a `faces_scanned` table, including images where zero faces were detected, which leave no `faces` row. The skip set for a run is "already scanned" (unioned with "already has faces", so a first run after upgrading doesn't redo prior work), not merely "has a face", so a no-face image is detected exactly once ever rather than re-detected on every run. Faces and the scanned marker are committed per hash as the run proceeds, so an interrupt (Ctrl-C) loses at most the in-flight image and a rerun continues where it left off. `--limit <n>` processes at most N not-yet-scanned images then stops (for chipping away at a large library in bounded chunks); a limited run skips the final clustering step (it is an O(n^2) whole-library pass not worth repeating after every chunk). Run `videre faces --recluster` once scanning is complete.
 
@@ -1042,7 +1046,7 @@ Five independent stages, selected with `--scan` / `--faces` / `--heic` / `--loca
 
 `--interval <seconds>` (default 300) is the sleep between cycles; each cycle runs the selected stages once, logs a per-stage summary to stderr (unless `--silent`), then sleeps. There's no daemonization or systemd unit. Run it in a terminal, tmux/screen pane, or your own process supervisor, and stop it with Ctrl-C.
 
-Thumbnails land in `~/.cache/videre/thumbnails/`, keyed by content hash rather than file path (`<hash>_240.jpg`, `<hash>_1200.jpg`), mirroring the convention hf-hub already uses for cached model weights under `~/.cache/huggingface/`, and means the same photo scanned into a different database only needs converting once. On first run of any `videre` subcommand, if the pre-rename cache at `~/.cache/dupe/thumbnails/` still exists and `~/.cache/videre/thumbnails/` doesn't, it's migrated automatically (a plain directory rename, atomic on the same filesystem, and a no-op on any error since the cache regenerates lazily). `videre report`'s `/api/raw?path=...&size=N` endpoint (server mode, `--show-faces`) checks this cache first for HEIC requests and serves the cached JPEG directly if present, falling back to a live `qlmanage` conversion otherwise, so running `videre watch --heic` alongside `videre report --show-faces` eliminates the per-request HEIC conversion cost for anything already warmed.
+Thumbnails land in `<videre home>/cache/thumbnails/` when `VIDERE_HOME` is set, and `~/.cache/videre/thumbnails/` otherwise (see the thumbnail-cache entry in TECH_DEBT for why that branch still exists and what should replace it). Keyed by content hash rather than file path (`<hash>_240.jpg`, `<hash>_1200.jpg`), mirroring the convention hf-hub already uses for cached model weights under `~/.cache/huggingface/`, and means the same photo scanned into a different database only needs converting once. On first run of any `videre` subcommand, if the pre-rename cache at `~/.cache/dupe/thumbnails/` still exists and `~/.cache/videre/thumbnails/` doesn't, it's migrated automatically (a plain directory rename, atomic on the same filesystem, and a no-op on any error since the cache regenerates lazily). `videre report`'s `/api/raw?path=...&size=N` endpoint (server mode, `--show-faces`) checks this cache first for HEIC requests and serves the cached JPEG directly if present, falling back to a live `qlmanage` conversion otherwise, so running `videre watch --heic` alongside `videre report --show-faces` eliminates the per-request HEIC conversion cost for anything already warmed.
 
 `videre watch` and `videre report --show-faces` are designed to run concurrently against the same SQLite file (see the WAL-mode note in the SQLite schema section above).
 
