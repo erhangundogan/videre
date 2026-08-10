@@ -344,3 +344,170 @@ fn dry_run_does_not_remove_orphan_cache_files() {
         "dry-run must not delete any cache file"
     );
 }
+
+/// **The regression test for the unmounted-volume bug.**
+///
+/// `prune` used to treat any `metadata()` failure as "this file was deleted",
+/// so unplugging a drive deleted every row for it. The rows are the cheap part:
+/// once they are gone their hashes look orphaned, and the embeddings and cached
+/// thumbnails for them are deleted too. That is hours of recompute (a HEIC
+/// full-resolution decode is ~7.6s) against minutes to re-scan rows.
+///
+/// Simulates the unmount by deleting the whole directory, which is what an
+/// absent volume looks like from the filesystem's point of view: neither the
+/// files nor their parent exist.
+///
+/// The embedding assertion is the point of this test.
+#[test]
+fn an_unreachable_directory_does_not_delete_rows_or_embeddings() {
+    let dir = tempdir().unwrap();
+    let sub = dir.path().join("on_the_drive");
+    std::fs::create_dir_all(&sub).unwrap();
+    let a = sub.join("a.jpg");
+    let b = sub.join("b.jpg");
+    std::fs::write(&a, b"img_a").unwrap();
+    std::fs::write(&b, b"img_b").unwrap();
+
+    let db = dir.path().join("test.db");
+    let conn = Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE file_hashes (
+            path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
+            created_at TEXT, modified_at TEXT, ext TEXT, phash INTEGER,
+            exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER
+        );",
+    )
+    .unwrap();
+    videre_core::db::ensure_file_hashes_columns(&conn);
+    for (p, h) in [(&a, "hdrive_a"), (&b, "hdrive_b")] {
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, modified_at) VALUES (?1, ?2, '2020-01-01T00:00:00+00:00')",
+            rusqlite::params![p.to_str().unwrap(), h],
+        )
+        .unwrap();
+    }
+    drop(conn);
+    add_embeddings(&db, &["hdrive_a", "hdrive_b"]);
+
+    // The drive goes away: files and their containing directory vanish at once.
+    std::fs::remove_dir_all(&sub).unwrap();
+
+    run_prune(&db, false);
+
+    assert!(
+        row_exists(&db, a.to_str().unwrap()),
+        "row for an unreachable volume must survive"
+    );
+    assert!(row_exists(&db, b.to_str().unwrap()), "ditto");
+    assert!(
+        embedding_exists(&db, "hdrive_a"),
+        "embedding must survive: this is the expensive half, hours to recompute"
+    );
+    assert!(embedding_exists(&db, "hdrive_b"), "ditto");
+}
+
+/// The inverse, so the guard cannot be satisfied by simply never deleting:
+/// a single file removed while its directory remains is a real deletion.
+#[test]
+fn a_deleted_file_in_a_present_directory_is_still_pruned() {
+    let dir = tempdir().unwrap();
+    let (db, a, _, _) = fixture_db(dir.path());
+    std::fs::remove_file(&a).unwrap();
+
+    run_prune(&db, false);
+
+    assert!(
+        !row_exists(&db, a.to_str().unwrap()),
+        "a genuinely deleted file must still be pruned"
+    );
+}
+
+/// `--prune-unreachable` is the documented way out for a folder that really is
+/// gone. Without it the guard would be a one-way door.
+#[test]
+fn prune_unreachable_removes_what_the_guard_skipped() {
+    let dir = tempdir().unwrap();
+    let sub = dir.path().join("gone_for_good");
+    std::fs::create_dir_all(&sub).unwrap();
+    let a = sub.join("a.jpg");
+    std::fs::write(&a, b"img").unwrap();
+
+    let db = dir.path().join("test.db");
+    let conn = Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE file_hashes (
+            path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
+            created_at TEXT, modified_at TEXT, ext TEXT, phash INTEGER,
+            exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER
+        );",
+    )
+    .unwrap();
+    videre_core::db::ensure_file_hashes_columns(&conn);
+    conn.execute(
+        "INSERT INTO file_hashes (path, hash) VALUES (?1, 'hgone')",
+        rusqlite::params![a.to_str().unwrap()],
+    )
+    .unwrap();
+    drop(conn);
+
+    std::fs::remove_dir_all(&sub).unwrap();
+
+    // Default: kept.
+    run_prune(&db, false);
+    assert!(row_exists(&db, a.to_str().unwrap()), "kept by default");
+
+    // Explicit: removed.
+    let status = Command::new(prune_bin())
+        .arg("prune")
+        .arg("--db")
+        .arg(&db)
+        .arg("--silent")
+        .arg("--prune-unreachable")
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(
+        !row_exists(&db, a.to_str().unwrap()),
+        "--prune-unreachable must remove it"
+    );
+}
+
+/// The bulk guard needs BOTH conditions, so a small library where most files
+/// were legitimately deleted still prunes. 3 of 5 rows is 60%, far over the
+/// fraction, but under the row floor.
+#[test]
+fn the_bulk_guard_does_not_block_a_small_library() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("test.db");
+    let conn = Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE file_hashes (
+            path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
+            created_at TEXT, modified_at TEXT, ext TEXT, phash INTEGER,
+            exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER
+        );",
+    )
+    .unwrap();
+    videre_core::db::ensure_file_hashes_columns(&conn);
+    // Two survive, three are deleted files whose directory still exists.
+    for i in 0..5 {
+        let p = dir.path().join(format!("f{i}.jpg"));
+        if i < 2 {
+            std::fs::write(&p, b"x").unwrap();
+        }
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash) VALUES (?1, ?2)",
+            rusqlite::params![p.to_str().unwrap(), format!("h{i}")],
+        )
+        .unwrap();
+    }
+    drop(conn);
+
+    run_prune(&db, false);
+
+    let left: i64 = Connection::open(&db)
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(left, 2, "60% removal under the row floor must still prune");
+}
