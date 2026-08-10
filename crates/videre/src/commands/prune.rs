@@ -52,6 +52,48 @@ impl PruneArgs {
     }
 }
 
+/// How many missing directories to name before summarising the rest. The
+/// report exists to stop a flood of near-identical lines, so it must not
+/// become one itself.
+const MAX_REPORTED_DIRS: usize = 5;
+
+/// Consecutive failures after which the run aborts.
+///
+/// Consecutive rather than cumulative: a library with a handful of genuinely
+/// unreadable files should still prune, while a systemically failing drive
+/// should stop immediately instead of emitting one line per row. Any success
+/// resets the count.
+const MAX_CONSECUTIVE_ERRORS: usize = 10;
+
+/// Share of the library whose removal is implausible enough to stop for.
+///
+/// Both conditions must hold. A percentage alone would block a five-row
+/// fixture where three files were legitimately deleted; a raw count alone
+/// would never trip on a small library.
+const BULK_DELETE_FRACTION: f64 = 0.20;
+const BULK_DELETE_MIN_ROWS: usize = 100;
+
+/// Reports a run that stopped because failures kept coming.
+///
+/// Prints the first error verbatim: after ten near-identical messages it is
+/// the only one that still carries information, and it is the one that has
+/// scrolled away.
+fn abort_on_repeated_errors(
+    consecutive: usize,
+    total_errors: usize,
+    checked: usize,
+    first: &Option<String>,
+) {
+    eprintln!(
+        "aborted after {consecutive} consecutive errors ({total_errors} total), \
+         {checked} row(s) checked"
+    );
+    if let Some(e) = first {
+        eprintln!("  first error: {e}");
+    }
+    eprintln!("  the volume may be failing; earlier changes are already committed and prune is idempotent, so re-run once the cause is fixed");
+}
+
 fn system_time_to_iso(t: SystemTime) -> String {
     let dt: DateTime<Utc> = t.into();
     dt.to_rfc3339()
@@ -111,6 +153,21 @@ pub(crate) fn run_prune(
     // report is "these 2 directories are gone", not 12,431 identical lines.
     let mut unreachable_dirs: std::collections::BTreeSet<String> = Default::default();
     let mut unreachable = 0usize;
+    // Consecutive, not cumulative: a few unreadable files should not abort an
+    // otherwise good run, but a systemically failing drive should stop at once
+    // instead of printing one line per row.
+    let mut consecutive = 0usize;
+    let mut first_error: Option<String> = None;
+
+    // Classify every row before touching the database, so the bulk guard below
+    // can see the true number of removals and refuse *before* any of them
+    // happen. Acting as we classify would mean discovering the run was
+    // implausible only after deleting most of it.
+    enum Fate {
+        Remove,
+        Sync(String),
+    }
+    let mut planned: Vec<(&String, Fate)> = Vec::with_capacity(paths.len());
 
     for path in &paths {
         match std::fs::metadata(path) {
@@ -128,6 +185,49 @@ pub(crate) fn run_prune(
                     unreachable += 1;
                     continue;
                 }
+                planned.push((path, Fate::Remove));
+            }
+            Ok(meta) => match meta.modified() {
+                Ok(t) => planned.push((path, Fate::Sync(system_time_to_iso(t)))),
+                Err(e) => {
+                    eprintln!("Error reading mtime for {path}: {e}");
+                    errors += 1;
+                    if first_error.is_none() {
+                        first_error = Some(format!("reading mtime for {path}: {e}"));
+                    }
+                    consecutive += 1;
+                    if consecutive >= MAX_CONSECUTIVE_ERRORS {
+                        abort_on_repeated_errors(consecutive, errors, total, &first_error);
+                        return Ok(errors);
+                    }
+                    continue;
+                }
+            },
+        }
+        consecutive = 0;
+    }
+
+    // Both conditions, deliberately. See the constants' doc comments.
+    let to_remove = planned
+        .iter()
+        .filter(|(_, f)| matches!(f, Fate::Remove))
+        .count();
+    if !args.force
+        && to_remove >= BULK_DELETE_MIN_ROWS
+        && (to_remove as f64) > (total as f64) * BULK_DELETE_FRACTION
+    {
+        eprintln!(
+            "refusing to remove {to_remove} of {total} row(s) ({:.0}% of the library): \
+             that is more likely a mounting accident than deleted photos.",
+            (to_remove as f64 / total as f64) * 100.0
+        );
+        eprintln!("  nothing was changed; re-run with --force if this is intended");
+        return Ok(errors);
+    }
+
+    for (path, fate) in &planned {
+        match fate {
+            Fate::Remove => {
                 if !args.silent {
                     let tag = if args.dry_run {
                         "[dry-run] would remove"
@@ -143,20 +243,20 @@ pub(crate) fn run_prune(
                     ) {
                         eprintln!("Error removing {path}: {e}");
                         errors += 1;
+                        if first_error.is_none() {
+                            first_error = Some(format!("removing {path}: {e}"));
+                        }
+                        consecutive += 1;
+                        if consecutive >= MAX_CONSECUTIVE_ERRORS {
+                            abort_on_repeated_errors(consecutive, errors, total, &first_error);
+                            return Ok(errors);
+                        }
                         continue;
                     }
                 }
                 removed += 1;
             }
-            Ok(meta) => {
-                let mtime = match meta.modified() {
-                    Ok(t) => system_time_to_iso(t),
-                    Err(e) => {
-                        eprintln!("Error reading mtime for {path}: {e}");
-                        errors += 1;
-                        continue;
-                    }
-                };
+            Fate::Sync(mtime) => {
                 if !args.dry_run {
                     if let Err(e) = conn.execute(
                         "UPDATE file_hashes SET modified_at = ?1 WHERE path = ?2",
@@ -164,6 +264,14 @@ pub(crate) fn run_prune(
                     ) {
                         eprintln!("Error syncing {path}: {e}");
                         errors += 1;
+                        if first_error.is_none() {
+                            first_error = Some(format!("syncing {path}: {e}"));
+                        }
+                        consecutive += 1;
+                        if consecutive >= MAX_CONSECUTIVE_ERRORS {
+                            abort_on_repeated_errors(consecutive, errors, total, &first_error);
+                            return Ok(errors);
+                        }
                         continue;
                     }
                 }
@@ -286,5 +394,73 @@ pub(crate) fn run_prune(
         );
     }
 
+    // Printed even under --silent. A run that quietly skips thousands of rows
+    // is exactly the silence this guard exists to end: the count is how a user
+    // learns their drive was not mounted.
+    if unreachable > 0 {
+        eprintln!("{unreachable} row(s) skipped as unreachable{}", {
+            let mut it = unreachable_dirs.iter();
+            let shown: Vec<&String> = it.by_ref().take(MAX_REPORTED_DIRS).collect();
+            let rest = unreachable_dirs.len().saturating_sub(shown.len());
+            let more = if rest > 0 {
+                format!(", and {rest} more")
+            } else {
+                String::new()
+            };
+            format!(
+                " ({} director{} missing: {}{more})",
+                unreachable_dirs.len(),
+                if unreachable_dirs.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                },
+                shown
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        });
+        eprintln!("  run with --prune-unreachable to remove them anyway");
+    }
+
     Ok(errors)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `videre watch --prune` runs unattended on a loop and cannot ask, so
+    /// neither override may be reachable from it. Cheap to assert, and it is
+    /// exactly the regression that would silently re-enable unattended
+    /// deletion of an unmounted drive's rows.
+    #[test]
+    fn watch_stage_cannot_override_either_guard() {
+        for silent in [true, false] {
+            let a = PruneArgs::for_watch_stage(silent);
+            assert!(!a.prune_unreachable, "watch must never prune unreachable");
+            assert!(!a.force, "watch must never bypass the bulk guard");
+            assert!(!a.dry_run);
+            assert_eq!(a.silent, silent);
+        }
+    }
+
+    /// Both bulk-guard conditions must hold. Encoded as a test so the constants
+    /// cannot drift into "percentage only", which would block small libraries
+    /// where most files were legitimately deleted.
+    #[test]
+    fn the_bulk_guard_needs_both_a_fraction_and_a_floor() {
+        let trips = |to_remove: usize, total: usize| {
+            to_remove >= BULK_DELETE_MIN_ROWS
+                && (to_remove as f64) > (total as f64) * BULK_DELETE_FRACTION
+        };
+        // 3 of 5 is 60%, way over the fraction, but far under the floor.
+        assert!(!trips(3, 5), "small library must not be blocked");
+        // 100 of 300 is 33%, over both.
+        assert!(trips(100, 300), "a third of a real library must stop");
+        // 100 of 10,000 is 1%: over the floor, under the fraction.
+        assert!(!trips(100, 10_000), "routine cleanup must not be blocked");
+    }
 }
