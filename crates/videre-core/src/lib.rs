@@ -6,6 +6,7 @@ pub mod face_cluster;
 pub mod face_db;
 pub mod geocode;
 pub mod heic;
+pub mod hf_cache;
 pub mod home;
 pub mod io_timeout;
 pub mod library_stats;
