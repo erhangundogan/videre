@@ -119,20 +119,49 @@ fn missing_default_db_prints_friendly_error() {
     assert!(stderr.contains("videre scan"), "{stderr}");
 }
 
-/// Runs `videre prune` with `HOME` pinned to `db`'s own tempdir. Critical for
-/// safety, not just isolation: prune now deletes orphaned
-/// `~/.cache/videre/thumbnails/` entries relative to whatever db it's given,
-/// and every fixture db here has only 2-3 rows, without this override, a
-/// non-dry-run test would see the REAL cache's thousands of real thumbnails
-/// as "orphaned" (absent from the tiny fixture db) and delete them all.
+/// Runs `videre prune`.
+///
+/// Critical for safety, not just tidiness: prune deletes orphaned thumbnail
+/// cache entries relative to whatever db it is given, and every fixture db
+/// here has 2-3 rows, so against the real cache every one of thousands of real
+/// thumbnails reads as an orphan and is deleted.
+///
+/// The isolation comes from `VIDERE_HOME`, which `videre_bin()` sets once per
+/// test binary and every child inherits. This used to be a per-command `HOME`
+/// override, which worked here but had to be repeated at every spawn site;
+/// `multi_model.rs` never did it, and its prune tests wiped the developer's
+/// real cache on every `cargo test --workspace`. Isolation that has to be
+/// remembered eventually is not.
 fn run_prune(db: &std::path::Path, dry_run: bool) {
-    let home = db.parent().expect("db must have a parent dir");
+    let mut cmd = Command::new(prune_bin());
+    cmd.arg("prune").arg("--db").arg(db).arg("--silent");
+    if dry_run {
+        cmd.arg("--dry-run");
+    }
+    let status = cmd.status().expect("failed to run videre prune");
+    assert!(status.success());
+}
+
+/// `run_prune` with `VIDERE_HOME` pinned to `home`, giving the caller its own
+/// thumbnail cache.
+///
+/// The cache tests need this because the binary-wide `VIDERE_HOME` means one
+/// shared cache directory, and *every* non-dry-run prune in this file deletes
+/// everything there that is orphaned relative to its own 2-3 row fixture db.
+/// That includes the cache tests' fixtures, so without a private home they are
+/// destroyed by unrelated tests running in parallel.
+///
+/// The embedding tests deliberately keep the shared home: they seed through
+/// `embeddings_db` from this process, which resolves the same variable, so
+/// pinning it only for the child would leave the two looking in different
+/// places.
+fn run_prune_in(db: &std::path::Path, dry_run: bool, home: &std::path::Path) {
     let mut cmd = Command::new(prune_bin());
     cmd.arg("prune")
         .arg("--db")
         .arg(db)
         .arg("--silent")
-        .env("HOME", home);
+        .env("VIDERE_HOME", home);
     if dry_run {
         cmd.arg("--dry-run");
     }
@@ -255,7 +284,13 @@ fn removes_orphan_cache_files_after_pruning() {
     .unwrap();
     drop(conn);
 
-    let cache_dir = dir.path().join(".cache").join("videre").join("thumbnails");
+    // Derived from VIDERE_HOME, which `videre_bin()` sets once for this whole
+    // test binary and which every spawned child inherits. This used to be built
+    // from a per-command `HOME` override, which worked but had to be remembered
+    // at every spawn site: `multi_model.rs` did not, so its prune tests deleted
+    // the developer's real `~/.cache/videre/thumbnails` on every suite run.
+    let home = dir.path().join("home");
+    let cache_dir = home.join("cache").join("thumbnails");
     std::fs::create_dir_all(&cache_dir).unwrap();
     let live_thumb = cache_dir.join(format!("{live_hash}_240.jpg"));
     let orphan_thumb = cache_dir.join(format!("{orphan_hash}_240.jpg"));
@@ -265,7 +300,7 @@ fn removes_orphan_cache_files_after_pruning() {
         std::fs::write(f, b"x").unwrap();
     }
 
-    run_prune(&db, false);
+    run_prune_in(&db, false, &home);
 
     assert!(
         live_thumb.exists(),
@@ -291,7 +326,13 @@ fn dry_run_does_not_remove_orphan_cache_files() {
     let (db, _, _, _) = fixture_db(dir.path());
     let orphan_hash = cache_test_hash('9');
 
-    let cache_dir = dir.path().join(".cache").join("videre").join("thumbnails");
+    // Derived from VIDERE_HOME, which `videre_bin()` sets once for this whole
+    // test binary and which every spawned child inherits. This used to be built
+    // from a per-command `HOME` override, which worked but had to be remembered
+    // at every spawn site: `multi_model.rs` did not, so its prune tests deleted
+    // the developer's real `~/.cache/videre/thumbnails` on every suite run.
+    let home = dir.path().join("home");
+    let cache_dir = home.join("cache").join("thumbnails");
     std::fs::create_dir_all(&cache_dir).unwrap();
     let orphan_thumb = cache_dir.join(format!("{orphan_hash}_240.jpg"));
     std::fs::write(&orphan_thumb, b"x").unwrap();
