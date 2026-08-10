@@ -979,3 +979,83 @@ mod batch_correctness_tests {
         assert!(worst.is_finite(), "comparison produced a non-finite cosine");
     }
 }
+
+#[cfg(test)]
+mod metal_matmul_probe {
+    use candle_core::{DType, Device, Tensor};
+
+    /// A `matmul` returns all zeros when its output crosses 2^32 bytes, if a
+    /// buffer of exactly 2^32 bytes was allocated immediately before it.
+    ///
+    /// No model involved, which is the point: this is the smallest known
+    /// reproduction of a Metal-backend failure at the 4 GiB line, and it runs
+    /// in seconds rather than needing a 3.5GB download.
+    ///
+    /// `A[m,k] @ B[k,n]` with every element 1.0 must give every output element
+    /// exactly `k`, so no baseline run is needed: the right answer is known
+    /// analytically. At m = n = 32768 the f32 output is exactly 2^32 bytes.
+    ///
+    /// **Order matters, and a naive size sweep is misleading.** Measured over
+    /// four runs: 32768 then 32769 zeroes the second; 36000 first makes
+    /// everything pass, including 32769; sizes up to 4.8 GiB are fine when they
+    /// do not follow the exactly-2^32 allocation. Consistent with a cached
+    /// buffer's size comparison truncating to 32 bits (32769^2 * 4 mod 2^32 is
+    /// 262,148, which would compare as smaller than the cached buffer and be
+    /// reused despite being too small), though the allocator code has not been
+    /// read to confirm it.
+    ///
+    /// Metal reports `maxBufferLength` of 16 GiB on this machine, so 4 GiB is
+    /// nowhere near a platform cap.
+    ///
+    /// Whether this is the same defect as the SigLIP batch corruption is
+    /// **unproven**: that one returns plausible wrong values, this returns
+    /// exact zeros. Both sit at the same boundary.
+    ///
+    /// Samples a few positions rather than reading back a billion floats.
+    ///
+    /// ```text
+    /// cargo test -p videre-ml --release matmul_across_the_four_gib_boundary -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn matmul_across_the_four_gib_boundary() {
+        const K: usize = 8;
+        let device = Device::new_metal(0).expect("metal device");
+
+        for n in [32768usize, 32769] {
+            let bytes = (n * n * 4) as f64 / 1024.0 / 1024.0 / 1024.0;
+            let a = Tensor::ones((n, K), DType::F32, &device).unwrap();
+            let b = Tensor::ones((K, n), DType::F32, &device).unwrap();
+            let c = match a.matmul(&b) {
+                Ok(c) => c,
+                Err(e) => {
+                    println!("  n={n:>5} output {bytes:.3} GiB: matmul ERRORED: {e}");
+                    continue;
+                }
+            };
+
+            let mut worst: Option<(usize, usize, f32)> = None;
+            for (i, j) in [(0usize, 0usize), (n / 2, n / 2), (n - 1, n - 1)] {
+                let v: f32 = c
+                    .narrow(0, i, 1)
+                    .unwrap()
+                    .narrow(1, j, 1)
+                    .unwrap()
+                    .to_dtype(DType::F32)
+                    .unwrap()
+                    .to_vec2::<f32>()
+                    .unwrap()[0][0];
+                if (v - K as f32).abs() > 1e-3 && worst.is_none() {
+                    worst = Some((i, j, v));
+                }
+            }
+            match worst {
+                None => println!("  n={n:>5} output {bytes:.3} GiB: correct (all sampled == {K})"),
+                Some((i, j, v)) => println!(
+                    "  n={n:>5} output {bytes:.3} GiB: WRONG at [{i},{j}] = {v}, expected {K}"
+                ),
+            }
+        }
+    }
+}
