@@ -521,15 +521,70 @@ videre prune                 # default db; apply
 videre prune --db <db>       # explicit db
 videre prune --dry-run       # preview without modifying the database
 videre prune --silent        # apply without per-file output
+videre prune --prune-unreachable  # also remove rows whose directory is missing
+videre prune --force         # proceed despite the bulk-deletion guard
 ```
 
 In a single pass:
-- Deletes `file_hashes` rows for files no longer on disk
+- Deletes `file_hashes` rows for files no longer on disk, **unless the file's
+  parent directory is also missing**
 - Refreshes `modified_at` for surviving files from their current filesystem mtime
 - Deletes orphan embedding rows whose hash has no remaining `file_hashes` entry, across **every** model database for that library, attaching and detaching each in turn and reporting a count per model
 - Deletes `~/.cache/videre/thumbnails/` cache files (240/1200px thumbnails, face crops, full-res originals) whose hash has no remaining `file_hashes` entry (orphan cleanup). This is the only bound on that cache's otherwise-unlimited growth (see the `videre faces`/`videre watch` HEIC-caching notes above); `.tmp*` scratch files from an in-flight write are never touched
 
 Shared-hash safety (applies to both embeddings and cache files): if two paths share the same hash and one file is deleted, the embedding/cache entry is only removed if no `file_hashes` row for that hash survives. Dry-run orphan counts are a lower bound (pre-existing orphans only; does not account for orphans created by the would-be deletions). Exits with code 1 if any row update or cache-file removal fails.
+
+### Unreachable volumes, and why prune refuses
+
+A missing file is only treated as deleted when its **parent directory still
+exists**. If the parent is missing too, the directory or the whole volume is
+gone, and the row is kept and reported as unreachable.
+
+This is a data-safety guard, not tidiness. `prune` used to treat every
+`metadata()` failure as a deletion, so running it with a drive unplugged deleted
+every row for that drive. The rows are the cheap part: once they are gone their
+hashes look orphaned, and the orphan sweeps then delete the embeddings and
+cached thumbnails too. That is hours of recompute (a HEIC full-resolution decode
+is ~7.6s) against minutes to re-scan rows. `videre watch --prune` runs the same
+code unattended on a loop, so it could happen with nobody watching.
+
+Deliberately not a mount-table lookup: on macOS `/Volumes` reports the same
+filesystem as `/` when nothing is mounted there, so an unmounted volume leaves
+nothing to query. Telling it apart from a deleted directory exactly would need
+platform-specific enumeration or state recorded at scan time. The parent check
+needs neither and behaves identically on Linux. The probe is bounded by
+`io_timeout`, since a stale NFS/SMB mount can hang `metadata` forever, and a
+timeout counts as *not* trustworthy: an unanswerable question must not authorise
+a deletion.
+
+Consequences worth knowing:
+
+- **Skipped rows keep their hashes live**, so the embedding and cache sweeps
+  never consider them orphaned. No change was needed in either sweep; protecting
+  the rows protects everything downstream.
+- **The skip count prints even under `--silent`**, which otherwise suppresses
+  the summary, and names up to 5 missing directories. A run that quietly skips
+  thousands of rows is exactly the silence this fixes.
+- `--prune-unreachable` removes them anyway, for a folder that really is gone.
+- A deliberately deleted subfolder is skipped too, and its rows linger until
+  that flag is used. The conservative direction is the safe one.
+
+Two further guards:
+
+- **Bulk deletion.** A run removing more than 20% of the library *and* at least
+  100 rows stops before deleting anything and requires `--force`. Both
+  conditions: a percentage alone blocks a five-row fixture where three files
+  were legitimately deleted, a count alone never trips on a small library. This
+  catches what the parent check misses, such as a volume that remounts empty.
+- **Repeated failure.** After 10 consecutive errors the run aborts, printing the
+  first error verbatim rather than emitting one near-identical line per row.
+  Consecutive, not cumulative, so scattered unreadable files do not abort a good
+  run. Earlier changes stay committed; `prune` is idempotent, so a re-run after
+  fixing the cause continues safely.
+
+`videre watch --prune` can override **neither** guard: it runs unattended and
+cannot ask, so `PruneArgs::for_watch_stage` pins both to false and a unit test
+asserts it.
 
 `videre prune`'s runs are tracked in `pipeline_runs` (added 2026-08-01), visible via `videre stats`.
 
