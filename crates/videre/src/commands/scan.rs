@@ -12,14 +12,18 @@ pub struct ScanArgs {
     directory: Option<PathBuf>,
 
     /// JSONL output file (appended). Bare --output targets ~/.videre/hashes.jsonl.
-    /// Note: place a bare --output AFTER the directory. Cannot be used with --output-sqlite
-    #[arg(long, num_args = 0..=1, conflicts_with = "output_sqlite")]
+    /// Note: place a bare --output AFTER the directory. Cannot be used with --db
+    #[arg(long, num_args = 0..=1, conflicts_with = "db")]
     output: Option<Option<PathBuf>>,
 
-    /// SQLite output file (upserted by path). When neither --output nor
-    /// --output-sqlite is given, records go to the resolved default db
-    #[arg(long)]
-    output_sqlite: Option<PathBuf>,
+    /// SQLite database to write (upserted by path). Without this, and without
+    /// --output, records go to the resolved default db.
+    ///
+    /// `--output-sqlite` is the original name, kept working: this command
+    /// predates the `--db` every reader uses, from when JSONL and SQLite were
+    /// peer output *formats* rather than one destination and one opt-out.
+    #[arg(long, alias = "output-sqlite")]
+    db: Option<PathBuf>,
 
     /// Also compute and store perceptual hashes for near-duplicate detection
     #[arg(long)]
@@ -174,7 +178,7 @@ enum OutputTarget {
 /// jsonl path. Defaulted destinations get their parent dir created (that is
 /// how ~/.videre comes into existence on first use).
 fn output_target(args: &ScanArgs) -> anyhow::Result<OutputTarget> {
-    if let Some(ref db) = args.output_sqlite {
+    if let Some(ref db) = args.db {
         return Ok(OutputTarget::Sqlite(db.clone()));
     }
     match &args.output {

@@ -14,8 +14,11 @@ pub struct WatchArgs {
 
     /// SQLite database to populate (same file videre report reads).
     /// Default: resolved from ~/.videre; see 'videre config'
-    #[arg(long)]
-    output_sqlite: Option<PathBuf>,
+    ///
+    /// `--output-sqlite` is the original name, kept working: inherited from
+    /// `videre scan`, which predates the `--db` every reader uses.
+    #[arg(long, alias = "output-sqlite")]
+    db: Option<PathBuf>,
 
     /// Re-run the scan/hash/EXIF pipeline each cycle
     #[arg(long)]
@@ -67,7 +70,7 @@ pub fn run(mut args: WatchArgs) -> Result<()> {
 
     // Watch is a writer: create the parent dir for a defaulted db path (that
     // is how ~/.videre comes into existence on first use).
-    let db: PathBuf = match &args.output_sqlite {
+    let db: PathBuf = match &args.db {
         Some(p) => p.clone(),
         None => {
             let db = videre_core::home::resolve_db(None)?;
