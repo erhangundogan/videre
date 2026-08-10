@@ -4,7 +4,25 @@ use std::path::PathBuf;
 /// rather than file path, the same photo scanned into different databases
 /// only needs converting once. Mirrors the convention hf-hub already uses for
 /// cached model weights under `~/.cache/huggingface/`.
+///
+/// Lives under `VIDERE_HOME` when that is set, and under `~/.cache/videre`
+/// otherwise. The override exists because this cache was previously keyed on
+/// `$HOME` alone, which nothing in the test suite isolates: every
+/// `cargo test --workspace` run therefore pruned the developer's **real**
+/// thumbnail cache, since a temp test database shares no hashes with it and
+/// every cached file reads as an orphan. Two prune tests running in parallel
+/// then raced each other's deletions and failed on the second one's missing
+/// files, which is how this was found.
+///
+/// Deleting a thumbnail is not data loss, but it is expensive to undo: a HEIC
+/// full-resolution decode costs ~7.6s, against ~108ms to read a cached one.
+///
+/// The default path is unchanged when `VIDERE_HOME` is unset, so this does not
+/// move any existing user's cache.
 pub fn cache_dir() -> PathBuf {
+    if let Some(home) = std::env::var_os("VIDERE_HOME") {
+        return PathBuf::from(home).join("cache").join("thumbnails");
+    }
     dirs_cache_dir().join("videre").join("thumbnails")
 }
 

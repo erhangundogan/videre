@@ -96,43 +96,16 @@ pub fn shared_cache_guard() -> impl Drop {
 
 /// Root of the local Hugging Face cache, honouring `HF_HOME`.
 ///
-/// Both SigLIP and InsightFace land here. Note this is **not** `~/.cache/ort/`,
-/// which `CLAUDE.md` claimed for months and which has never existed; a check
-/// written against that path would report "cold" forever.
+/// Delegates to `videre_core::hf_cache`, which owns this knowledge because
+/// `videre-ml`'s own tests need the same check and a second copy would be free
+/// to drift.
 pub fn hf_cache_dir() -> PathBuf {
-    if let Ok(home) = std::env::var("HF_HOME") {
-        return PathBuf::from(home).join("hub");
-    }
-    dirs_home().join(".cache").join("huggingface").join("hub")
-}
-
-fn dirs_home() -> PathBuf {
-    std::env::var("HOME").map(PathBuf::from).unwrap_or_default()
-}
-
-/// Whether every one of `files` is present in some snapshot of `repo`.
-///
-/// Checks the files themselves, not the repo directory: an interrupted
-/// download leaves the directory in place with the weights missing, and that
-/// state must read as cold or the caller proceeds into a failure.
-///
-/// The snapshot sha is globbed rather than pinned, since it changes whenever
-/// the upstream repo is updated.
-fn repo_files_cached(repo: &str, files: &[&str]) -> bool {
-    let snapshots = hf_cache_dir()
-        .join(format!("models--{}", repo.replace('/', "--")))
-        .join("snapshots");
-    let Ok(entries) = std::fs::read_dir(&snapshots) else {
-        return false;
-    };
-    entries
-        .filter_map(Result::ok)
-        .any(|snap| files.iter().all(|f| snap.path().join(f).exists()))
+    videre_core::hf_cache::cache_dir()
 }
 
 /// InsightFace SCRFD detector and ArcFace recogniser, used by `videre faces`.
 pub fn face_models_cached() -> bool {
-    repo_files_cached("WePrompt/buffalo_l", &["det_10g.onnx", "w600k_r50.onnx"])
+    videre_core::hf_cache::repo_has("WePrompt/buffalo_l", &["det_10g.onnx", "w600k_r50.onnx"])
 }
 
 /// SigLIP weights for the resolved default model, used by `videre embed`.
@@ -141,10 +114,7 @@ pub fn face_models_cached() -> bool {
 /// changing the default model cannot silently make this always-false and skip
 /// the embed tests forever.
 pub fn siglip_cached() -> bool {
-    repo_files_cached(
-        videre_core::embeddings::DEFAULT_MODEL_ID,
-        &["tokenizer.json", "config.json"],
-    )
+    videre_core::hf_cache::siglip_ready(videre_core::embeddings::DEFAULT_MODEL_ID)
 }
 
 /// Whether the caller should return early, printing a loud reason if so.
