@@ -29,9 +29,70 @@ pub fn l2_normalize(v: &mut [f32]) {
     }
 }
 
+/// Cosine similarity, normalizing as it goes.
+///
+/// Unlike the several private dot-product loops around the workspace
+/// (`face_cluster::cosine_dist`, `pipeline::cosine_sim`, `search::top_k`),
+/// this does **not** assume its inputs are already L2-normalized. Those
+/// callers work on stored embeddings, which are normalized on write; this one
+/// exists for comparing freshly computed vectors, where that guarantee does
+/// not hold.
+///
+/// Returns 0.0 when either vector has zero norm, rather than a NaN from
+/// dividing by zero. A zero-norm embedding is itself a symptom worth
+/// surfacing (batch 128 produced 30 of them), and NaN would silently poison
+/// any comparison downstream.
+///
+/// Returns 0.0 on a length mismatch rather than panicking or comparing a
+/// prefix, since two different-width embeddings are not meaningfully similar.
+pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() {
+        return 0.0;
+    }
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if na == 0.0 || nb == 0.0 {
+        return 0.0;
+    }
+    dot / (na * nb)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cosine_of_identical_vectors_is_one() {
+        let v = vec![1.0, 2.0, 3.0];
+        assert!((cosine(&v, &v) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cosine_ignores_magnitude() {
+        // The whole point of normalizing: a scaled copy is the same direction.
+        let a = vec![1.0, 2.0, 3.0];
+        let b: Vec<f32> = a.iter().map(|x| x * 7.5).collect();
+        assert!((cosine(&a, &b) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cosine_of_orthogonal_is_zero_and_opposite_is_minus_one() {
+        assert!(cosine(&[1.0, 0.0], &[0.0, 1.0]).abs() < 1e-6);
+        assert!((cosine(&[1.0, 0.0], &[-1.0, 0.0]) + 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cosine_with_a_zero_vector_is_zero_not_nan() {
+        let c = cosine(&[0.0, 0.0], &[1.0, 2.0]);
+        assert!(c.is_finite(), "must not be NaN");
+        assert_eq!(c, 0.0);
+    }
+
+    #[test]
+    fn cosine_of_mismatched_lengths_is_zero() {
+        assert_eq!(cosine(&[1.0, 2.0], &[1.0, 2.0, 3.0]), 0.0);
+    }
 
     #[test]
     fn f16_round_trip_preserves_values_within_tolerance() {
