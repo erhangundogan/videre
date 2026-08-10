@@ -15,6 +15,40 @@ version number and are released together.
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-08-10
+
+### Fixed
+
+- **`videre prune` no longer deletes your library when a drive is
+  disconnected.** It treated every "cannot read this file" as "this file was
+  deleted", so pruning with an external drive unplugged removed every row for
+  that drive. The rows were the cheap part: their embeddings and cached
+  thumbnails were then swept as orphans, which is hours of recompute against
+  minutes to re-scan rows. `videre watch --prune` runs the same code unattended
+  on a loop.
+
+  A row is now removed only when the file is missing **and its parent directory
+  still exists**. A missing parent means the folder or the whole volume is gone,
+  so the rows are kept and reported. Pass `--prune-unreachable` when a folder
+  really is gone for good.
+
+### Added
+
+- **`videre prune` stops before an implausibly large deletion.** A run removing
+  more than 20% of the library and at least 100 rows now refuses and changes
+  nothing, so a volume that remounts empty cannot quietly empty the database.
+  `--force` proceeds anyway.
+- **`videre prune` gives up after 10 consecutive errors** instead of printing
+  one near-identical line per row, reporting the first error verbatim. Earlier
+  changes stay committed and prune is idempotent, so it is safe to re-run once
+  the cause is fixed.
+- Skipped rows are reported **even with `--silent`**, naming the missing
+  directories, since a run that quietly skips thousands of rows is the problem
+  this release exists to fix.
+
+`videre watch --prune` can override neither guard: it runs unattended and cannot
+ask.
+
 ## [0.11.1] - 2026-08-09
 
 ### Added
@@ -221,7 +255,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/erhangundogan/videre/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/erhangundogan/videre/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/erhangundogan/videre/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/erhangundogan/videre/compare/v0.10.0...v0.10.1
