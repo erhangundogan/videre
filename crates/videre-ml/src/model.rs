@@ -35,24 +35,54 @@ pub fn image_size_for(model_id: &str) -> usize {
 
 /// Largest number of images `embed_images` may be given in one call.
 ///
-/// Above a threshold measured between 121 and 127 (120 verified clean, 127
-/// verified corrupt), this path silently returns embeddings that do not match
-/// a one-image-at-a-time baseline, no error, no NaN, just wrong vectors.
-/// Every *full* batch at or above the threshold is affected; a trailing
-/// partial batch is always correct, which is what makes the failure so easy to
-/// miss. Measured 2026-08-04 on macOS/Metal with `siglip-so400m-patch14-384`;
-/// full reproduction in
-/// `docs/superpowers/2026-08-04-embed-batch-corruption-investigation.md`.
+/// Above a per-model threshold, candle's **Metal** backend silently returns
+/// embeddings that do not match a one-image-at-a-time baseline: no error, no
+/// NaN, just wrong vectors. Every *full* batch at or above the threshold is
+/// affected while the trailing partial batch is correct, which is what makes
+/// the failure so easy to miss.
 ///
-/// This lives here rather than in the CLI because it is a property of this
-/// inference path, not of any one caller. Anyone tempted to raise it: checking
-/// output for zero/NaN vectors is NOT sufficient, `--batch 256` yields zero
-/// all-zero vectors and is still fully corrupt. Only a cosine comparison
-/// against a small-batch baseline detects it (see the ignored
-/// `batched_embeddings_match_one_at_a_time` test below). 96 keeps deliberate
-/// headroom below the observed boundary, since the exact threshold may shift
-/// with available unified memory.
+/// Measured on Metal 2026-08-09 (full tables in
+/// `docs/superpowers/2026-08-04-embed-batch-corruption-investigation.md`):
+///
+/// | model | last clean | first corrupt |
+/// |---|---|---|
+/// | `siglip-so400m-patch14-384` | 126 | 127 |
+/// | `siglip-base-patch16-224` | 891 | 892 |
+///
+/// **CPU is unaffected**: the same batch that gives 0.670 cosine on Metal is
+/// bit-identical (1.000000) on `Device::Cpu`, so this is a candle Metal-backend
+/// defect rather than anything in videre or the models. Linux is therefore not
+/// exposed.
+///
+/// 96 is below both measured boundaries. It stays a single constant rather
+/// than becoming `max_safe_batch(model_id)` for two measured reasons:
+///
+/// 1. **No formula predicts the boundary.** Three were tested. Threshold
+///    proportional to patches x hidden dims predicted base at 669 (clean at
+///    768). The attention tensor crossing 2^32 bytes predicted so400m's 126/127
+///    exactly but base at 2329 (already corrupt). Largest of attention or MLP
+///    predicted 1783 (already corrupt). One exact fit against two misses is not
+///    something to extrapolate to an unmeasured model.
+/// 2. **A larger batch buys nothing.** Per-image time is flat and then worsens:
+///    base-224 runs 31.0ms/image at 96 and 39.1ms at 768, so400m 510ms at 96
+///    and 500ms at 120. The original "4x speedup" that prompted all this was
+///    the corrupt path skipping work, not a real gain.
+///
+/// So there is no upside to raising it, and `verify_large_batch` below guards
+/// the case this constant cannot: a model whose boundary sits *below* 96.
+///
+/// Anyone tempted to raise it anyway: checking output for zero/NaN vectors is
+/// NOT sufficient. `--batch 256` yields no all-zero vectors and is still fully
+/// corrupt. Only a cosine comparison against a smaller-batch baseline detects
+/// it; see `batched_embeddings_match_one_at_a_time`.
 pub const MAX_SAFE_BATCH: usize = 96;
+
+/// Fraction of `MAX_SAFE_BATCH` at or above which a batch is self-checked.
+///
+/// The check costs one extra forward pass, so it is worth ~1/N of a batch of
+/// N. Applying it only to large batches keeps that cost off the small-batch
+/// path, where the defect has never been observed on any model.
+const VERIFY_ABOVE: usize = MAX_SAFE_BATCH / 2;
 
 /// Maximum token sequence length for text queries.
 const MAX_TEXT_LEN: usize = 64;
@@ -180,6 +210,66 @@ impl Embedder {
         for i in 0..b {
             let row: Vec<f32> = features.get(i)?.to_dtype(DType::F32)?.to_vec1()?;
             let mut row = row;
+            videre_core::vectors::l2_normalize(&mut row);
+            out.push(row);
+        }
+        self.verify_large_batch(images, &out)?;
+        Ok(out)
+    }
+
+    /// Check a large batch against a single-image re-run, and refuse the whole
+    /// batch if they disagree.
+    ///
+    /// `MAX_SAFE_BATCH` is below the boundary of every model measured so far,
+    /// but no formula predicts that boundary (see its doc comment), so nothing
+    /// guarantees it for a model nobody has run. This is the guard for that
+    /// case, and it needs no formula: it re-embeds one image on its own and
+    /// compares.
+    ///
+    /// Returning an error rather than warning is deliberate. The caller must
+    /// write nothing, because a corrupt embedding is worse than a missing one:
+    /// `videre search` and `videre classify` consume it silently forever after,
+    /// and the failure leaves no trace to find it by. A missing embedding is
+    /// simply recomputed on the next run.
+    ///
+    /// Costs one extra forward pass per checked batch, so ~1% at batch 96.
+    /// Only batches at or above `VERIFY_ABOVE` are checked; a single-image
+    /// re-run is far below that, so this cannot recurse.
+    fn verify_large_batch(&self, images: &[Tensor], out: &[Vec<f32>]) -> Result<()> {
+        if images.len() < VERIFY_ABOVE {
+            return Ok(());
+        }
+        // Index 0: on every corrupt batch observed, the whole full batch is
+        // affected rather than a scattered subset, so any index detects it.
+        let single = self.embed_images_unchecked(std::slice::from_ref(&images[0]))?;
+        let cos = videre_core::vectors::cosine(&out[0], &single[0]);
+        if cos > 0.99 {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "batch of {} produced embeddings that disagree with a single-image re-run \
+             (cosine {cos:.6}); refusing to write. This is a known candle Metal-backend \
+             defect above a per-model batch size. Re-run with a smaller --batch (the \
+             default is safe on every model measured so far).",
+            images.len()
+        )
+    }
+
+    /// `embed_images` without the self-check, so the check itself cannot
+    /// recurse into it.
+    fn embed_images_unchecked(&self, images: &[Tensor]) -> Result<Vec<Vec<f32>>> {
+        let batch = Tensor::stack(images, 0)
+            .context("stack image batch")?
+            .to_dtype(self.dtype)
+            .context("cast image batch to model dtype")?;
+        let features = self
+            .model
+            .get_image_features(&batch)
+            .context("image forward pass")?;
+        let b = features.dim(0)?;
+        let mut out = Vec::with_capacity(b);
+        for i in 0..b {
+            let mut row: Vec<f32> = features.get(i)?.to_dtype(DType::F32)?.to_vec1()?;
             videre_core::vectors::l2_normalize(&mut row);
             out.push(row);
         }
@@ -718,6 +808,125 @@ mod batch_correctness_tests {
             }
         }
         println!("  exact boundary for {MODEL}: {lo} clean, {hi} CORRUPT");
+    }
+
+    /// **Not ignored**: this is the permanent guard, and it runs in CI.
+    ///
+    /// Uses `Device::Cpu` deliberately. The defect is in candle's Metal
+    /// backend (CPU was bit-identical where Metal gave 0.670), so on Linux CI
+    /// this is green and guards the CPU path against the defect ever spreading
+    /// there. If it ever fails, the bug is materially worse than currently
+    /// believed, since Linux would be affected too.
+    ///
+    /// Batch is `VERIFY_ABOVE`, the smallest size the self-check applies to, so
+    /// this also proves the guard does not reject a correct batch. Kept modest
+    /// because CPU inference is slow: this pays one forward pass per image
+    /// sampled, not per image in the batch.
+    ///
+    /// Skips loudly when weights are not cached, matching the policy that
+    /// tests never download; CI warms the cache in an explicit step.
+    #[test]
+    fn cpu_batch_matches_single_image_baseline() {
+        if !videre_core::hf_cache::siglip_ready(MODEL_ID) {
+            eprintln!(
+                "SKIP cpu_batch_matches_single_image_baseline: {MODEL_ID} weights are not in {}. \
+                 Run `videre embed` once to populate it; tests never download.",
+                videre_core::hf_cache::cache_dir().display()
+            );
+            return;
+        }
+
+        let embedder = Embedder::load(candle_core::Device::Cpu, MODEL_ID).unwrap();
+        let size = image_size_for(MODEL_ID);
+        let images = make_images(&embedder, VERIFY_ABOVE, size, Content::Varied);
+        // Stride so the baseline costs a handful of passes, not VERIFY_ABOVE.
+        let (worst, at) = worst_cosine_sampled(&embedder, &images, VERIFY_ABOVE / 4);
+
+        assert!(
+            worst > 0.99,
+            "CPU batch of {VERIFY_ABOVE} disagrees with a one-at-a-time baseline (worst cosine \
+             {worst:.6} at index {at}). The batch corruption was Metal-only when measured on \
+             2026-08-09; this failing means it now affects CPU, and therefore Linux."
+        );
+    }
+
+    /// The guard turns silent corruption into a hard error.
+    ///
+    /// End-to-end proof rather than a unit test of the comparison: runs the
+    /// configuration measured corrupt (so400m at 127, above `MAX_SAFE_BATCH`
+    /// so the CLI would never reach it, but the library API allows it) and
+    /// asserts `embed_images` now returns `Err` instead of plausible garbage.
+    ///
+    /// Also checks the safe path still works, since a guard that rejected
+    /// everything would pass the first assertion and be useless.
+    ///
+    /// ```text
+    /// cargo test -p videre-ml --release guard_rejects_a_corrupt_batch -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn guard_rejects_a_corrupt_batch() {
+        const MODEL: &str = "google/siglip-so400m-patch14-384";
+        let embedder = Embedder::load(crate::device::best_device(), MODEL).unwrap();
+        let size = image_size_for(MODEL);
+
+        let corrupt = make_images(&embedder, 127, size, Content::Varied);
+        let err = embedder
+            .embed_images(&corrupt)
+            .expect_err("batch 127 is measured corrupt; the guard must reject it");
+        let msg = format!("{err:#}");
+        println!("rejected as expected: {msg}");
+        assert!(msg.contains("refusing to write"), "{msg}");
+        assert!(
+            msg.contains("127"),
+            "error should name the batch size: {msg}"
+        );
+
+        let safe = make_images(&embedder, MAX_SAFE_BATCH, size, Content::Varied);
+        let started = std::time::Instant::now();
+        let ok = embedder
+            .embed_images(&safe)
+            .expect("a batch at MAX_SAFE_BATCH must still succeed");
+        assert_eq!(ok.len(), MAX_SAFE_BATCH);
+        println!(
+            "batch {MAX_SAFE_BATCH} still succeeds in {:?} (includes the extra verification pass)",
+            started.elapsed()
+        );
+    }
+
+    /// What the guard costs on the path it actually runs on.
+    ///
+    /// One extra forward pass per checked batch, so it should be ~1/N. Printed
+    /// rather than asserted, since a threshold here would be a flaky timing
+    /// test; the number is the point.
+    ///
+    /// ```text
+    /// cargo test -p videre-ml --release guard_overhead -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn guard_overhead() {
+        let embedder = Embedder::load(crate::device::best_device(), MODEL_ID).unwrap();
+        let size = image_size_for(MODEL_ID);
+        let images = make_images(&embedder, MAX_SAFE_BATCH, size, Content::Varied);
+
+        // Warm up, so the first run's lazy allocation is not counted.
+        let _ = embedder.embed_images_unchecked(&images).unwrap();
+
+        let t0 = std::time::Instant::now();
+        let _ = embedder.embed_images_unchecked(&images).unwrap();
+        let without = t0.elapsed();
+
+        let t1 = std::time::Instant::now();
+        let _ = embedder.embed_images(&images).unwrap();
+        let with = t1.elapsed();
+
+        println!(
+            "batch {MAX_SAFE_BATCH}: {without:?} unchecked, {with:?} checked ({:.1}% overhead)",
+            (with.as_secs_f64() / without.as_secs_f64() - 1.0) * 100.0
+        );
     }
 
     /// Is the corruption Metal-specific?
