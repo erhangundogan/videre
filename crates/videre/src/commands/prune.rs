@@ -16,6 +16,21 @@ pub struct PruneArgs {
     /// Suppress per-file output (errors are always shown)
     #[arg(long)]
     pub(crate) silent: bool,
+
+    /// Also remove rows whose directory is missing entirely.
+    ///
+    /// By default those are kept, because a missing directory usually means an
+    /// unmounted drive rather than deleted files, and deleting the rows also
+    /// orphans their embeddings and cached thumbnails. Pass this when the
+    /// folder really is gone for good.
+    #[arg(long)]
+    pub(crate) prune_unreachable: bool,
+
+    /// Proceed even when a run would remove an implausibly large share of the
+    /// library. Separate from --prune-unreachable on purpose: "that folder is
+    /// gone" and "yes, delete tens of thousands of rows" are different claims.
+    #[arg(long)]
+    pub(crate) force: bool,
 }
 
 impl PruneArgs {
@@ -28,6 +43,11 @@ impl PruneArgs {
             db: None,
             dry_run: false,
             silent,
+            // Never overridable from `watch`: it runs unattended on a loop and
+            // cannot ask. A user who genuinely wants either runs `videre prune`
+            // by hand.
+            prune_unreachable: false,
+            force: false,
         }
     }
 }
@@ -86,9 +106,28 @@ pub(crate) fn run_prune(
     let mut synced = 0usize;
     let mut errors = 0usize;
 
+    // Directories whose absence made rows unreachable, for the summary. A set,
+    // because one missing drive accounts for thousands of rows and the useful
+    // report is "these 2 directories are gone", not 12,431 identical lines.
+    let mut unreachable_dirs: std::collections::BTreeSet<String> = Default::default();
+    let mut unreachable = 0usize;
+
     for path in &paths {
         match std::fs::metadata(path) {
             Err(_) => {
+                // A missing file is only a deletion if its parent is still
+                // there. Parent gone means the directory, or the whole volume,
+                // is gone: keep the row. Deleting it would additionally orphan
+                // its embedding and cached thumbnail, which is hours of
+                // recompute against minutes to re-scan the row.
+                let p = std::path::Path::new(path);
+                if !videre_core::io_timeout::absence_is_trustworthy(p) && !args.prune_unreachable {
+                    if let Some(parent) = p.parent() {
+                        unreachable_dirs.insert(parent.display().to_string());
+                    }
+                    unreachable += 1;
+                    continue;
+                }
                 if !args.silent {
                     let tag = if args.dry_run {
                         "[dry-run] would remove"
