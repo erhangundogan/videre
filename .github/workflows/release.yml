@@ -10,7 +10,30 @@ permissions:
   contents: write # required to upload release assets
 
 jobs:
+  # taiki-e/upload-rust-binary-action uploads *to an existing release*; pushing
+  # a tag does not create one. Without this the builds all succeed and every
+  # upload fails with "release not found", which is what happened on the first
+  # attempt. Created as a draft so a failing smoke job can stop it going public.
+  create-release:
+    name: create draft release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Create or reuse the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eux
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "release already exists, reusing it"
+          else
+            gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" \
+              --notes "Artifacts are uploaded by CI. Published once the smoke job passes."
+          fi
+
   build:
+    needs: create-release
     name: build ${{ matrix.target }}
     strategy:
       # One target failing must not cancel the others: knowing three of four
@@ -118,3 +141,19 @@ jobs:
           n=$(./videre stats --db "$VIDERE_HOME/t.db" --json | grep -oE '"total_files":[0-9]+' | grep -oE '[0-9]+')
           echo "scanned $n file(s)"
           test "$n" -gt 0
+
+  # The gate. Only a release whose artifacts have been downloaded onto a clean
+  # runner and actually executed becomes visible. If smoke fails, the draft
+  # stays a draft: the tag exists, the binaries exist, but nobody is offered a
+  # download that was never run.
+  publish:
+    name: publish the release
+    needs: smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Undraft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false
