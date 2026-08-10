@@ -1,0 +1,120 @@
+name: Release
+
+# Separate from ci.yml on purpose: a tag push must not be blocked by, or
+# entangled with, the test matrix. CI gates `main`; this gates the artifacts.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # required to upload release assets
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    strategy:
+      # One target failing must not cancel the others: knowing three of four
+      # built is more useful than knowing the run stopped.
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          # macos-latest is arm64 now, so Intel needs its own runner.
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # NOTE: aarch64-unknown-linux-gnu needs `-C target-feature=+fp16`, which
+      # `.cargo/config.toml` sets for that target. Builds run from the repo
+      # root and inherit it. Without it the build dies with 11x
+      # `error: instruction requires: fullfp16` from gemm-f16 (a transitive
+      # candle-core dependency). Do not "simplify" that config file away.
+      #
+      # NOTE: never replace this with `cargo check` on ARM64 Linux. `check`
+      # passes even when `build` fails, because it skips codegen.
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: videre
+          target: ${{ matrix.target }}
+          archive: $bin-$tag-$target
+          checksum: sha256
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Proof the artifact is self-contained. macOS was measured before this
+      # workflow existed (system frameworks only, zero rpath, ONNX Runtime
+      # statically linked). Linux was assumed, so print it and read it: a
+      # versioned libonnxruntime.so, or any path inside the runner's
+      # workspace, means the archive is not portable and the distribution
+      # story changes.
+      - name: Report dynamic dependencies
+        shell: bash
+        run: |
+          bin="target/${{ matrix.target }}/release/videre"
+          [ -f "$bin" ] || bin="target/release/videre"
+          echo "== $bin =="
+          ls -lh "$bin"
+          if command -v otool >/dev/null; then otool -L "$bin"; else ldd "$bin" || true; fi
+
+  smoke:
+    name: smoke ${{ matrix.target }}
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      # Fixtures live in the repo (they are `exclude`d from the crate package,
+      # not from git), so checkout gives the smoke test real JPEG/MOV/MP4 to
+      # work on without downloading anything.
+      - uses: actions/checkout@v5
+
+      - name: Download the built artifact
+        shell: bash
+        run: |
+          set -eux
+          gh release download "$GITHUB_REF_NAME" \
+            --pattern "videre-$GITHUB_REF_NAME-${{ matrix.target }}.tar.gz" \
+            --output videre.tar.gz
+          tar xzf videre.tar.gz
+          chmod +x videre
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The point of this job: a binary that only runs where it was built is a
+      # failure mode this project has hit three times in other forms. Exercise
+      # the real thing on a runner that never compiled it.
+      #
+      # No model downloads, so it stays fast. VIDERE_HOME is pinned to a temp
+      # directory so the smoke test cannot touch the runner's real home, the
+      # same discipline the test suite uses.
+      #
+      # Asserts the exit code and a non-zero file count, not an exact count:
+      # Linux skips HEIC and video frames, so counts legitimately differ by
+      # platform.
+      - name: Run it
+        shell: bash
+        run: |
+          set -eux
+          export VIDERE_HOME="$(mktemp -d)"
+          ./videre --version
+          ./videre scan crates/videre/tests/fixtures --db "$VIDERE_HOME/t.db" --silent
+          ./videre stats --db "$VIDERE_HOME/t.db"
+          n=$(./videre stats --db "$VIDERE_HOME/t.db" --json | grep -oE '"total_files":[0-9]+' | grep -oE '[0-9]+')
+          echo "scanned $n file(s)"
+          test "$n" -gt 0
