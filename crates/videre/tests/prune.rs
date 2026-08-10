@@ -344,3 +344,80 @@ fn dry_run_does_not_remove_orphan_cache_files() {
         "dry-run must not delete any cache file"
     );
 }
+
+/// **The regression test for the unmounted-volume bug.**
+///
+/// `prune` used to treat any `metadata()` failure as "this file was deleted",
+/// so unplugging a drive deleted every row for it. The rows are the cheap part:
+/// once they are gone their hashes look orphaned, and the embeddings and cached
+/// thumbnails for them are deleted too. That is hours of recompute (a HEIC
+/// full-resolution decode is ~7.6s) against minutes to re-scan rows.
+///
+/// Simulates the unmount by deleting the whole directory, which is what an
+/// absent volume looks like from the filesystem's point of view: neither the
+/// files nor their parent exist.
+///
+/// The embedding assertion is the point of this test.
+#[test]
+fn an_unreachable_directory_does_not_delete_rows_or_embeddings() {
+    let dir = tempdir().unwrap();
+    let sub = dir.path().join("on_the_drive");
+    std::fs::create_dir_all(&sub).unwrap();
+    let a = sub.join("a.jpg");
+    let b = sub.join("b.jpg");
+    std::fs::write(&a, b"img_a").unwrap();
+    std::fs::write(&b, b"img_b").unwrap();
+
+    let db = dir.path().join("test.db");
+    let conn = Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE file_hashes (
+            path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
+            created_at TEXT, modified_at TEXT, ext TEXT, phash INTEGER,
+            exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER
+        );",
+    )
+    .unwrap();
+    videre_core::db::ensure_file_hashes_columns(&conn);
+    for (p, h) in [(&a, "hdrive_a"), (&b, "hdrive_b")] {
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, modified_at) VALUES (?1, ?2, '2020-01-01T00:00:00+00:00')",
+            rusqlite::params![p.to_str().unwrap(), h],
+        )
+        .unwrap();
+    }
+    drop(conn);
+    add_embeddings(&db, &["hdrive_a", "hdrive_b"]);
+
+    // The drive goes away: files and their containing directory vanish at once.
+    std::fs::remove_dir_all(&sub).unwrap();
+
+    run_prune(&db, false);
+
+    assert!(
+        row_exists(&db, a.to_str().unwrap()),
+        "row for an unreachable volume must survive"
+    );
+    assert!(row_exists(&db, b.to_str().unwrap()), "ditto");
+    assert!(
+        embedding_exists(&db, "hdrive_a"),
+        "embedding must survive: this is the expensive half, hours to recompute"
+    );
+    assert!(embedding_exists(&db, "hdrive_b"), "ditto");
+}
+
+/// The inverse, so the guard cannot be satisfied by simply never deleting:
+/// a single file removed while its directory remains is a real deletion.
+#[test]
+fn a_deleted_file_in_a_present_directory_is_still_pruned() {
+    let dir = tempdir().unwrap();
+    let (db, a, _, _) = fixture_db(dir.path());
+    std::fs::remove_file(&a).unwrap();
+
+    run_prune(&db, false);
+
+    assert!(
+        !row_exists(&db, a.to_str().unwrap()),
+        "a genuinely deleted file must still be pruned"
+    );
+}
