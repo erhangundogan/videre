@@ -15,6 +15,23 @@ version number and are released together.
 
 ## [Unreleased]
 
+## [0.11.4] - 2026-08-10
+
+### Fixed
+
+- **Documentation corrections.** No code changes; released so the corrected
+  README reaches crates.io.
+  - The first `videre embed` downloads about **780 MB**, not the 1.4 GB the
+    README claimed. That figure was `siglip2-base-patch16-384`, which stopped
+    being the default in 0.10.0. `videre faces` downloads a separate 180 MB.
+  - Stated explicitly that model downloads are **lazy and per-command**:
+    `scan`, `dedupe`, `fix-dates`, `prune`, `stats` and `locations` need no
+    model at all.
+  - The README now documents `videre prune`'s safety guards, added in 0.11.2
+    but never described there: a disconnected drive is left alone,
+    `--prune-unreachable` overrides it, and a cleanup removing more than 20%
+    of the library stops unless forced.
+
 ## [0.11.3] - 2026-08-10
 
 ### Changed
@@ -268,7 +285,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.11.3...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.11.4...HEAD
+[0.11.4]: https://github.com/erhangundogan/videre/compare/v0.11.3...v0.11.4
 [0.11.3]: https://github.com/erhangundogan/videre/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/erhangundogan/videre/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/erhangundogan/videre/compare/v0.11.0...v0.11.1
