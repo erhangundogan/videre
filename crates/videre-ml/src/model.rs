@@ -825,7 +825,16 @@ mod batch_correctness_tests {
     ///
     /// Skips loudly when weights are not cached, matching the policy that
     /// tests never download; CI warms the cache in an explicit step.
+    ///
+    /// **Not compiled on macOS**, deliberately. CPU inference is slow, and on a
+    /// shared GitHub macOS runner this single test pushed the job from 4m18s to
+    /// past 18 minutes, against 2m33s for the whole Linux job. Its entire
+    /// purpose is guarding the CPU path against the Metal defect spreading
+    /// there, and Linux covers exactly that, so running it on macOS was
+    /// duplicated work on the slowest runner. macOS keeps the `#[ignore]`d
+    /// Metal tests above, which are what that platform uniquely covers.
     #[test]
+    #[cfg(not(target_os = "macos"))]
     fn cpu_batch_matches_single_image_baseline() {
         if !videre_core::hf_cache::siglip_ready(MODEL_ID) {
             eprintln!(
