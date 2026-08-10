@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -64,6 +65,82 @@ pub fn wait_with_timeout(child: &mut std::process::Child, timeout: Duration) -> 
             }
             Err(_) => return WaitOutcome::Failed,
         }
+    }
+}
+
+/// Whether a missing file's absence can be trusted as a real deletion.
+///
+/// `false` when the parent directory is *also* missing: that means the
+/// directory, or the whole volume, is gone rather than this one file having
+/// been deleted. `videre prune` uses this to avoid deleting every row for an
+/// unmounted drive, which additionally destroys the embeddings and cached
+/// thumbnails for those hashes (hours of recompute, against minutes to
+/// re-scan the rows themselves).
+///
+/// Deliberately not a mount-table lookup. On macOS `/Volumes` reports the same
+/// filesystem as `/` when nothing is mounted there, so an unmounted volume
+/// leaves nothing to query; telling "unmounted" from "deleted directory" apart
+/// exactly needs either platform-specific enumeration or state recorded at
+/// scan time. This rule needs neither and behaves identically on Linux.
+///
+/// Bounded by `run_with_timeout`, because a stale NFS or SMB mount can hang
+/// `metadata` indefinitely and a safety check that hangs is not a safety
+/// check. A timeout returns `false`: an unanswerable question must never
+/// authorise a deletion.
+///
+/// A path with no parent (`/`, or a bare relative name) also returns `false`,
+/// since there is nothing to corroborate the absence against.
+pub fn absence_is_trustworthy(path: &Path) -> bool {
+    let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) else {
+        return false;
+    };
+    let parent = parent.to_path_buf();
+    run_with_timeout(DEFAULT_IO_TIMEOUT, move || parent.is_dir()).unwrap_or(false)
+}
+
+#[cfg(test)]
+mod absence_tests {
+    use super::*;
+
+    fn tmp(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("videre-absence-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_missing_file_in_an_existing_directory_is_trustworthy() {
+        let dir = tmp("present");
+        assert!(absence_is_trustworthy(&dir.join("gone.jpg")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_file_in_a_missing_directory_is_not() {
+        // The unmounted-volume shape: neither the file nor its parent exists.
+        let dir = tmp("absent");
+        let nested = dir.join("subdir");
+        assert!(!absence_is_trustworthy(&nested.join("gone.jpg")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_real_present_file_is_trustworthy_too() {
+        // The function only judges the parent; callers ask it about paths they
+        // already know are missing, but it must not depend on that.
+        let dir = tmp("realfile");
+        let f = dir.join("here.jpg");
+        std::fs::write(&f, b"x").unwrap();
+        assert!(absence_is_trustworthy(&f));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_path_without_a_usable_parent_is_not_trustworthy() {
+        // Nothing to corroborate the absence against, so refuse rather than
+        // authorise a deletion.
+        assert!(!absence_is_trustworthy(Path::new("/")));
+        assert!(!absence_is_trustworthy(Path::new("bare-name.jpg")));
     }
 }
 
