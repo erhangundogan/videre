@@ -773,8 +773,15 @@ Two things measured and rejected, recorded so they aren't retried: raising
 `--batch` (silently corrupts; see `MAX_SAFE_BATCH`) and collapsing the
 per-image GPU readback into one transfer (0.988x, no effect).
 
-Model weights auto-download from Hugging Face (google/siglip2-base-patch16-384, ~1.4GB) on
-first run.
+Model weights auto-download from Hugging Face on first use of a command that
+needs them, not at install or on first run of any command. Measured on disk
+2026-08-10: the default `google/siglip-base-patch16-224` is **778MB**, and
+`videre faces`'s InsightFace `buffalo_l` is a separate **182MB**. Non-default
+models are larger (`siglip2-base-patch16-384` 1.4GB, `siglip-so400m-patch14-384`
+3.3GB) and are only fetched if selected with `--model` or `config set model`.
+
+`scan`, `dedupe`, `fix-dates`, `prune`, `stats`, `locations`, and `report`
+without similarity search need **no model at all**.
 
 ### Where embeddings live
 
