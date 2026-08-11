@@ -217,7 +217,7 @@ pub fn candidates_with_model(conn: &Connection, f: &Filters, model_id: &str) -> 
     }
 
     let mut acc: Option<HashSet<String>> = None;
-    let mut narrow = |s: HashSet<String>, acc: &mut Option<HashSet<String>>| match acc {
+    let narrow = |s: HashSet<String>, acc: &mut Option<HashSet<String>>| match acc {
         Some(existing) => *acc = Some(existing.intersection(&s).cloned().collect()),
         None => *acc = Some(s),
     };
