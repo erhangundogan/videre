@@ -58,6 +58,11 @@ cd videre
 cargo build --release
 ```
 
+**Apple Silicon Macs, and Linux.** Intel Macs are not supported: the ONNX
+Runtime dependency ships no prebuilt binaries for `x86_64-apple-darwin`, so
+videre cannot be built there at all, including via `cargo install`. Discovered
+2026-08-11 while setting up release builds.
+
 **macOS is the primary platform.** videre also runs on Linux, with one gap:
 HEIC photos and video frames are decoded using a macOS system tool, so on
 Linux those files are skipped (with a clear message) for thumbnails, search,
