@@ -15,6 +15,36 @@ version number and are released together.
 
 ## [Unreleased]
 
+## [0.11.5] - 2026-08-11
+
+### Added
+
+- **Prebuilt binaries.** Releases now ship ready-to-run archives, so installing
+  no longer needs a Rust toolchain or a long compile:
+
+  | platform | archive |
+  |---|---|
+  | Apple Silicon Mac | `aarch64-apple-darwin` (21 MB) |
+  | Linux x86_64 | `x86_64-unknown-linux-gnu` (23 MB) |
+  | Linux ARM64 | `aarch64-unknown-linux-gnu` (24 MB) |
+
+  Each has a `.sha256` alongside. Every archive is downloaded onto a clean
+  machine and actually run before the release is published, so a binary that
+  only works where it was built cannot ship.
+
+### Changed
+
+- The README now leads with the binary download, and notes the macOS Gatekeeper
+  quarantine on browser downloads.
+
+### Known limitation
+
+- **Intel Macs are not supported.** The ONNX Runtime dependency ships no
+  prebuilt binaries for `x86_64-apple-darwin`, so videre cannot be built for
+  that target at all, including via `cargo install`. This was not introduced
+  here; it has been true for as long as ONNX Runtime has been a dependency, and
+  setting up release builds is simply what surfaced it.
+
 ## [0.11.4] - 2026-08-10
 
 ### Fixed
@@ -285,7 +315,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.11.4...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.11.5...HEAD
+[0.11.5]: https://github.com/erhangundogan/videre/compare/v0.11.4...v0.11.5
 [0.11.4]: https://github.com/erhangundogan/videre/compare/v0.11.3...v0.11.4
 [0.11.3]: https://github.com/erhangundogan/videre/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/erhangundogan/videre/compare/v0.11.1...v0.11.2
