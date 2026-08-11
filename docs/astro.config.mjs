@@ -3,12 +3,13 @@ import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 
 const REPO = 'https://github.com/erhangundogan/videre';
+const SITE = 'https://docs.videre.sh';
 
 // https://astro.build/config
 export default defineConfig({
 	// Used for canonical URLs and the Pagefind search index. Must match the
 	// deployed origin, or sitemap and social links point at the wrong host.
-	site: 'https://docs.videre.sh',
+	site: SITE,
 	integrations: [
 		starlight({
 			title: 'videre',
@@ -20,6 +21,22 @@ export default defineConfig({
 				replacesTitle: true,
 			},
 			favicon: '/favicon.svg',
+			// Starlight emits twitter:card=summary_large_image but no image, which
+			// renders a large empty box on every platform that honours it. One
+			// static card, regenerated with `yarn og`, is far better than none.
+			head: [
+				{ tag: 'meta', attrs: { property: 'og:image', content: `${SITE}/og.png` } },
+				{ tag: 'meta', attrs: { property: 'og:image:width', content: '1200' } },
+				{ tag: 'meta', attrs: { property: 'og:image:height', content: '630' } },
+				{
+					tag: 'meta',
+					attrs: {
+						property: 'og:image:alt',
+						content: 'videre: local-first photo and video library CLI',
+					},
+				},
+				{ tag: 'meta', attrs: { name: 'twitter:image', content: `${SITE}/og.png` } },
+			],
 			social: [{ icon: 'github', label: 'GitHub', href: REPO }],
 			editLink: { baseUrl: `${REPO}/edit/main/docs/` },
 			lastUpdated: true,
