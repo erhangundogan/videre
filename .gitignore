@@ -16,5 +16,9 @@ rustc-ice-*.txt
 .cargo/credentials
 .cargo/credentials.toml
 .mcp.json
-docs/
 .superpowers/
+
+# The docs site (docs/) is tracked, and brings its own .gitignore for build
+# output. Specs and plans live outside the repo now, at ~/superpowers; this
+# line stays as a guard so writing one back to the old path cannot publish it.
+docs/superpowers/
