@@ -1,0 +1,16 @@
+/*
+ * Restore horizontal scrolling on code blocks.
+ *
+ * starlight-theme-rapide 0.5.2 leaves Expressive Code's `pre` at
+ * `overflow-x: visible`, where stock Starlight sets `auto`. Nothing in the
+ * ancestor chain clips either, so a wide block bleeds out of the content
+ * column and renders underneath the right-hand table of contents instead of
+ * scrolling. Verified by comparing the same page with and without the theme:
+ * without it `overflow-x` computes to `auto` and the block scrolls.
+ *
+ * This matters more here than on most sites: nearly every command page has
+ * examples around 100 characters wide, with aligned trailing comments.
+ */
+.expressive-code pre {
+	overflow-x: auto;
+}
