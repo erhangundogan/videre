@@ -311,6 +311,55 @@ pub fn parse_sort(spec: &str) -> Result<Vec<SortKey>> {
     Ok(out)
 }
 
+use std::cmp::Ordering;
+
+/// The fields a sort can key on. `commands/search.rs` builds these from its
+/// own hit type, so the ranker never depends on the CLI's JSON shape.
+#[derive(Debug, Clone)]
+pub struct Sortable {
+    pub path: String,
+    pub score: Option<f32>,
+    pub distance_km: Option<f64>,
+    pub date: Option<String>,
+    pub size_bytes: Option<i64>,
+}
+
+/// Missing values always sort last, whichever direction is asked for, so a row
+/// with no date never outranks one that has one.
+fn cmp_opt<T: PartialOrd>(a: &Option<T>, b: &Option<T>, desc: bool) -> Ordering {
+    match (a, b) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(x), Some(y)) => {
+            let base = x.partial_cmp(y).unwrap_or(Ordering::Equal);
+            if desc {
+                base.reverse()
+            } else {
+                base
+            }
+        }
+    }
+}
+
+/// Sorts in place. `sort_by` is stable, so fully tied rows keep input order.
+pub fn apply_sort(hits: &mut [Sortable], keys: &[SortKey]) {
+    hits.sort_by(|a, b| {
+        for k in keys {
+            let ord = match k.field {
+                SortField::Relevance => cmp_opt(&a.score, &b.score, k.desc),
+                SortField::Distance => cmp_opt(&a.distance_km, &b.distance_km, k.desc),
+                SortField::Date => cmp_opt(&a.date, &b.date, k.desc),
+                SortField::Size => cmp_opt(&a.size_bytes, &b.size_bytes, k.desc),
+            };
+            if ord != Ordering::Equal {
+                return ord;
+            }
+        }
+        Ordering::Equal
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -735,5 +784,62 @@ mod tests {
                 "error for {spec:?} should mention {needle:?}, got: {err}"
             );
         }
+    }
+
+    fn hit(path: &str, score: Option<f32>, km: Option<f64>, date: &str, size: i64) -> Sortable {
+        Sortable {
+            path: path.into(),
+            score,
+            distance_km: km,
+            date: Some(date.into()),
+            size_bytes: Some(size),
+        }
+    }
+
+    #[test]
+    fn multi_field_sort_uses_later_fields_as_tie_breakers() {
+        let mut v = vec![
+            hit("/old.jpg", None, Some(1.0), "2024-01-01T00:00:00", 10),
+            hit("/new.jpg", None, Some(1.0), "2025-01-01T00:00:00", 10),
+            hit("/far.jpg", None, Some(9.0), "2026-01-01T00:00:00", 10),
+        ];
+        apply_sort(&mut v, &parse_sort("distance,date").unwrap());
+        let order: Vec<&str> = v.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(
+            order,
+            vec!["/new.jpg", "/old.jpg", "/far.jpg"],
+            "nearest first, newest first within the same distance"
+        );
+    }
+
+    #[test]
+    fn missing_sort_values_sort_last_in_both_directions() {
+        let mut v = vec![
+            Sortable {
+                path: "/none.jpg".into(),
+                score: None,
+                distance_km: None,
+                date: None,
+                size_bytes: None,
+            },
+            hit("/has.jpg", None, None, "2025-01-01T00:00:00", 10),
+        ];
+        apply_sort(&mut v, &parse_sort("date:desc").unwrap());
+        assert_eq!(
+            v[0].path, "/has.jpg",
+            "a row with no date must not outrank one with a date"
+        );
+        apply_sort(&mut v, &parse_sort("date:asc").unwrap());
+        assert_eq!(v[0].path, "/has.jpg", "and the same when ascending");
+    }
+
+    #[test]
+    fn sort_is_stable_on_full_ties() {
+        let mut v = vec![
+            hit("/a.jpg", None, Some(1.0), "2025-01-01T00:00:00", 10),
+            hit("/b.jpg", None, Some(1.0), "2025-01-01T00:00:00", 10),
+        ];
+        apply_sort(&mut v, &parse_sort("distance,date").unwrap());
+        assert_eq!(v[0].path, "/a.jpg", "equal rows keep their input order");
     }
 }
