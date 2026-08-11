@@ -109,3 +109,7 @@ closest category wins, if it wins by more than `--margin`.
 
 That is why it is cheap: it is four text embeddings plus one comparison per
 image, with no image decoding at all.
+
+## More detail
+
+- [Using several search models](/guides/multiple-models/) covers why classifications do not carry across models.

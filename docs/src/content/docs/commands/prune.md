@@ -124,3 +124,8 @@ do the thing you wanted; check `videre stats` if you expected space back.
 
 **Exits nonzero if any row update or cache removal failed**, which is worth
 checking in a script.
+
+## More detail
+
+- [Caches and disk use](/guides/caches/) covers everything this can and cannot reclaim.
+- [Backing up](/guides/backup/) covers what is worth keeping before a large cleanup.

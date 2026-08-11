@@ -145,3 +145,8 @@ together.
 
 **A crash is visible, not silent.** If a stage fails, `videre stats` shows the
 command as failed or crashed, which is what `--check` is for.
+
+## More detail
+
+- [Long-running jobs](/guides/long-running-jobs/) covers what is safe to run while this is going.
+- [Caches and disk use](/guides/caches/) covers what the HEIC stage stores and how large it gets.

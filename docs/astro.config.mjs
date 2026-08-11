@@ -38,6 +38,17 @@ export default defineConfig({
 					],
 				},
 				{
+					label: 'Guides',
+					items: [
+						{ label: 'Long-running jobs', slug: 'guides/long-running-jobs' },
+						{ label: 'Keeping libraries separate', slug: 'guides/multiple-libraries' },
+						{ label: 'Using several search models', slug: 'guides/multiple-models' },
+						{ label: 'Caches and disk use', slug: 'guides/caches' },
+						{ label: 'Backing up', slug: 'guides/backup' },
+						{ label: 'JSONL output', slug: 'guides/jsonl' },
+					],
+				},
+				{
 					label: 'Commands',
 					items: [
 						{ label: 'Overview', slug: 'commands' },
