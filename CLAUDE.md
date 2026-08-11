@@ -76,6 +76,14 @@ them would more than quadruple the download for `cargo install videre`.
 
 ## Platform support
 
+**Intel macOS (`x86_64-apple-darwin`) does not build at all.** `ort-sys`
+2.0.0-rc.13 ships no prebuilt ONNX Runtime for that target, so any build fails
+with `no prebuilt binaries available for target x86_64-apple-darwin`, wherever
+it runs. This is not a CI or cross-compilation problem and cannot be fixed by
+choosing a different runner: it affects `cargo install videre` on an Intel Mac
+identically. Found 2026-08-11 when the release matrix first tried the target.
+Revisit if `ort` starts shipping Intel macOS binaries.
+
 macOS is the development platform and everything works there. The workspace
 also builds and runs on Linux, verified 2026-08-03 by building and running it
 inside the official `rust:1` Docker image on both architectures.
