@@ -25,35 +25,44 @@ pub struct SearchArgs {
     #[arg(long, conflicts_with = "query")]
     image: Option<PathBuf>,
 
-    /// Return paths containing a named person (confirmed faces only)
-    #[arg(long, conflicts_with = "query", conflicts_with = "image")]
+    /// Only files containing a named person (confirmed faces only)
+    #[arg(long)]
     person: Option<String>,
 
-    /// Return paths classified as this category: photo/screenshot/document/
+    /// Only files classified as this category: photo/screenshot/document/
     /// meme/unknown (requires a prior 'videre classify' run)
-    #[arg(
-        long,
-        conflicts_with = "query",
-        conflicts_with = "image",
-        conflicts_with = "person"
-    )]
+    #[arg(long)]
     category: Option<String>,
 
-    /// Find photos within --radius km of this place, e.g. "Berlin, Germany"
+    /// Only photos within --radius km of this place, e.g. "Berlin, Germany"
     /// (forward-geocoded via the free public Nominatim API, the first
     /// network call this CLI ever makes; results are cached locally)
-    #[arg(
-        long,
-        conflicts_with = "query",
-        conflicts_with = "image",
-        conflicts_with = "person",
-        conflicts_with = "category"
-    )]
+    #[arg(long)]
     location: Option<String>,
 
     /// Search radius in km around --location
     #[arg(long, default_value_t = 20.0, requires = "location")]
     radius: f64,
+
+    /// Only files whose date is on or after this (inclusive).
+    /// Accepts YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS.
+    #[arg(long, conflicts_with = "date")]
+    after: Option<String>,
+
+    /// Only files whose date is before this (exclusive), so adjacent ranges
+    /// do not both match the boundary instant.
+    #[arg(long, conflicts_with = "date")]
+    before: Option<String>,
+
+    /// Shorthand for a whole year, month, or day: YYYY, YYYY-MM, or YYYY-MM-DD
+    #[arg(long)]
+    date: Option<String>,
+
+    /// Result order: comma-separated field[:asc|desc]. Fields: relevance,
+    /// distance, date, size. Defaults are relevance/date/size descending and
+    /// distance ascending.
+    #[arg(long)]
+    sort: Option<String>,
 
     /// Number of results
     #[arg(short = 'k', long, default_value_t = 20)]
