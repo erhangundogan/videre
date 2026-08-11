@@ -6,6 +6,12 @@ dist/
 # dependencies
 node_modules/
 
+# yarn 4: yarn.lock and .yarnrc.yml are tracked, everything else here is not.
+# No .yarn/releases entry, since the Yarn binary is deliberately not vendored
+# (package.json's packageManager field pins the version instead).
+.yarn/*
+.pnp.*
+
 # logs
 npm-debug.log*
 yarn-debug.log*
