@@ -147,3 +147,7 @@ time. After deleting duplicates, regenerate it.
 
 **Only one report server at a time.** Both `--faces` and `--show-faces` bind
 7878, so a second one fails to start while the first is running.
+
+## More detail
+
+- [Browsing and labeling](/guides/browsing/) covers the three interfaces this produces, which flags give a file and which start a server, and the labeling workflow in depth.
