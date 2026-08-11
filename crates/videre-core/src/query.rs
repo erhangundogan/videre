@@ -100,6 +100,25 @@ pub fn normalise_bound(spec: &str) -> Result<String> {
     Ok(start)
 }
 
+/// Hashes with at least one confirmed face labelled `name`.
+pub fn by_person(conn: &Connection, name: &str) -> Result<HashSet<String>> {
+    let mut stmt =
+        conn.prepare("SELECT DISTINCT hash FROM faces WHERE person_label = ?1 AND confirmed = 1")?;
+    let rows = stmt.query_map(rusqlite::params![name], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<rusqlite::Result<HashSet<String>>>()?)
+}
+
+/// Hashes classified as `category` by `model_id`.
+pub fn by_category(conn: &Connection, model_id: &str, category: &str) -> Result<HashSet<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT hash FROM classifications WHERE model_id = ?1 AND category = ?2",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![model_id, category], |r| {
+        r.get::<_, String>(0)
+    })?;
+    Ok(rows.collect::<rusqlite::Result<HashSet<String>>>()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,5 +296,53 @@ mod tests {
                 "error for {bad:?} should name the accepted forms, got: {err}"
             );
         }
+    }
+
+    fn db_with_faces_and_classes() -> Connection {
+        let conn = db();
+        conn.execute_batch(
+            "CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL,
+                person_label TEXT, confirmed INTEGER DEFAULT 0);
+             CREATE TABLE classifications (model_id TEXT NOT NULL, hash TEXT NOT NULL,
+                category TEXT NOT NULL, confidence REAL NOT NULL,
+                classified_at TEXT NOT NULL, PRIMARY KEY (model_id, hash));",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn person_predicate_returns_confirmed_only() {
+        let conn = db_with_faces_and_classes();
+        conn.execute_batch(
+            "INSERT INTO faces (hash, person_label, confirmed) VALUES
+                ('h1','Alice',1), ('h2','Alice',0), ('h3','Bob',1);",
+        )
+        .unwrap();
+        let got = by_person(&conn, "Alice").unwrap();
+        assert!(got.contains("h1"));
+        assert!(!got.contains("h2"), "unconfirmed faces must not match");
+        assert!(!got.contains("h3"));
+    }
+
+    #[test]
+    fn category_predicate_is_model_scoped() {
+        let conn = db_with_faces_and_classes();
+        conn.execute_batch(
+            "INSERT INTO classifications VALUES
+                ('m1','h1','screenshot',0.9,'now'),
+                ('m2','h2','screenshot',0.9,'now');",
+        )
+        .unwrap();
+        let got = by_category(&conn, "m1", "screenshot").unwrap();
+        assert!(got.contains("h1"));
+        assert!(!got.contains("h2"), "another model's rows must not leak in");
+    }
+
+    #[test]
+    fn predicates_return_empty_not_error_when_nothing_matches() {
+        let conn = db_with_faces_and_classes();
+        assert!(by_person(&conn, "Nobody").unwrap().is_empty());
+        assert!(by_category(&conn, "m1", "meme").unwrap().is_empty());
     }
 }
