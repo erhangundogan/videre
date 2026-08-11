@@ -8,8 +8,12 @@ downloaded on first use of a command that needs them, never at install.
 
 | Command | Model | Downloaded size |
 |---|---|---|
-| [`videre embed`](/commands/embed/), [`videre search`](/commands/search/) | SigLIP | about 780 MB (default) |
-| [`videre faces`](/commands/faces/) | InsightFace buffalo_l | about 180 MB |
+| [`videre embed`](/commands/embed/), [`videre search`](/commands/search/) | SigLIP, default [`google/siglip-base-patch16-224`](https://huggingface.co/google/siglip-base-patch16-224) | about 780 MB |
+| [`videre faces`](/commands/faces/) | InsightFace [`WePrompt/buffalo_l`](https://huggingface.co/WePrompt/buffalo_l) (SCRFD detector + ArcFace embedder) | about 180 MB |
+
+Both live in the shared Hugging Face cache at `~/.cache/huggingface/hub/`,
+overridable with `HF_HOME`. See
+[what gets downloaded](/start/install/#models-are-not-downloaded-at-install).
 
 `scan`, `dedupe`, `fix-dates`, `prune`, `stats`, `locations`, and `report`
 without similarity search need **no model at all**.
