@@ -78,8 +78,11 @@ invalidates nothing. That makes it practical to try a larger model on a real
 library and keep the old vectors until you are convinced.
 
 Be aware of the cost before starting: a second model means a second full pass
-over every image, plus its own download (1.4 GB for `siglip2-base-patch16-384`,
-3.3 GB for `siglip-so400m-patch14-384`) and its own 130 MB to 190 MB of vectors
+over every image, plus its own download (1.4 GB for
+[`siglip2-base-patch16-384`](https://huggingface.co/google/siglip2-base-patch16-384),
+3.3 GB for
+[`siglip-so400m-patch14-384`](https://huggingface.co/google/siglip-so400m-patch14-384))
+and its own 130 MB to 190 MB of vectors
 per 70,000 photos.
 
 If you settle on the new one, make it the default and the old vectors can be
