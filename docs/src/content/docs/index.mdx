@@ -29,7 +29,11 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 ## What it does
 
 <CardGrid stagger>
-	<Card title="Find duplicates" icon="copy">
+	{/* Icon names must exist in Starlight's built-in set: an unknown name renders
+	    an empty <svg> silently rather than failing the build. Stick to the
+	    line-art built-ins here, since the `seti:` icons are solid-filled and look
+	    noticeably heavier beside them. */}
+	<Card title="Find duplicates" icon="list-format">
 		Exact copies by content, and near-identical ones by appearance. It prints
 		what *could* go and stops there, so nothing is deleted without you.
 	</Card>
@@ -37,15 +41,15 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 		Ask for "sunset over water" or "my red car" and get matches, entirely
 		offline. Or hand it a photo and find ones that look like it.
 	</Card>
-	<Card title="Recognise faces" icon="seti:pipeline">
+	<Card title="Recognise faces" icon="puzzle">
 		Faces are grouped for you, so you name one group of 40 photos rather than
 		tagging 40 photos one at a time.
 	</Card>
-	<Card title="Fix wrong dates" icon="seti:clock">
+	<Card title="Fix wrong dates" icon="clock">
 		Set each file's timestamp from the date the camera actually recorded, so
 		everything sorts properly again.
 	</Card>
-	<Card title="Group by place" icon="earth">
+	<Card title="Group by place" icon="star">
 		Cluster photos by where they were taken, using GPS already in the files.
 	</Card>
 	<Card title="Drive it from an AI agent" icon="rocket">
