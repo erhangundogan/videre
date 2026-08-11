@@ -46,7 +46,13 @@ review to a model with no server to set up.
 
 ## Install
 
-Download a binary from the [latest release](https://github.com/erhangundogan/videre/releases/latest)
+On macOS or Linux with Homebrew:
+
+```bash
+brew install erhangundogan/tap/videre
+```
+
+Or download a binary from the [latest release](https://github.com/erhangundogan/videre/releases/latest)
 and put it on your `PATH`. No Rust toolchain needed, nothing to compile.
 
 | platform | file |
@@ -62,7 +68,13 @@ tar xzf videre-*-aarch64-apple-darwin.tar.gz
 
 Each archive has a `.sha256` alongside it. On macOS, a binary downloaded with a
 browser is quarantined by Gatekeeper; either download with `curl`, or clear it
-with `xattr -d com.apple.quarantine videre`.
+with `xattr -d com.apple.quarantine videre`. Homebrew installs are not
+quarantined, so `brew install` avoids this entirely.
+
+**If you previously ran `cargo install videre`**, that copy lives in
+`~/.cargo/bin` and usually comes first on `PATH`, so it will keep shadowing a
+newer Homebrew install. Remove it with `cargo uninstall videre`, or check which
+one you are running with `which videre`.
 
 Or build it yourself, which needs Rust:
 
