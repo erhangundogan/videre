@@ -45,6 +45,61 @@ pub fn by_date(
     Ok(rows.collect::<rusqlite::Result<HashSet<String>>>()?)
 }
 
+use chrono::NaiveDate;
+
+const DATE_FORMS: &str = "expected YYYY, YYYY-MM, YYYY-MM-DD, or YYYY-MM-DDTHH:MM:SS";
+
+fn start_of(y: i32, m: u32, d: u32) -> Result<String> {
+    NaiveDate::from_ymd_opt(y, m, d)
+        .map(|x| format!("{}T00:00:00", x.format("%Y-%m-%d")))
+        .ok_or_else(|| anyhow::anyhow!("invalid date {y:04}-{m:02}-{d:02}; {DATE_FORMS}"))
+}
+
+/// Expands `--date` shorthand into a half-open `[start, end)` range.
+pub fn expand_date(spec: &str) -> Result<(String, String)> {
+    let parts: Vec<&str> = spec.split('-').collect();
+    let bad = || anyhow::anyhow!("cannot parse date {spec:?}; {DATE_FORMS}");
+    match parts.as_slice() {
+        [y] => {
+            let y: i32 = y.parse().map_err(|_| bad())?;
+            Ok((start_of(y, 1, 1)?, start_of(y + 1, 1, 1)?))
+        }
+        [y, m] => {
+            let (y, m): (i32, u32) = (y.parse().map_err(|_| bad())?, m.parse().map_err(|_| bad())?);
+            let start = start_of(y, m, 1)?;
+            let end = if m == 12 {
+                start_of(y + 1, 1, 1)?
+            } else {
+                start_of(y, m + 1, 1)?
+            };
+            Ok((start, end))
+        }
+        [y, m, d] => {
+            let (y, m, d): (i32, u32, u32) = (
+                y.parse().map_err(|_| bad())?,
+                m.parse().map_err(|_| bad())?,
+                d.parse().map_err(|_| bad())?,
+            );
+            let day = NaiveDate::from_ymd_opt(y, m, d).ok_or_else(bad)?;
+            let next = day.succ_opt().ok_or_else(bad)?;
+            Ok((
+                format!("{}T00:00:00", day.format("%Y-%m-%d")),
+                format!("{}T00:00:00", next.format("%Y-%m-%d")),
+            ))
+        }
+        _ => Err(bad()),
+    }
+}
+
+/// Normalises an `--after`/`--before` bound to full ISO-8601.
+pub fn normalise_bound(spec: &str) -> Result<String> {
+    if spec.contains('T') {
+        return Ok(spec.to_string());
+    }
+    let (start, _) = expand_date(spec)?;
+    Ok(start)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,5 +228,54 @@ mod tests {
         assert!(by_date(&conn, None, Some("2026-01-01T00:00:00"))
             .unwrap()
             .contains("h5"));
+    }
+
+    #[test]
+    fn date_shorthand_expands_to_half_open_ranges() {
+        assert_eq!(
+            expand_date("2025").unwrap(),
+            ("2025-01-01T00:00:00".into(), "2026-01-01T00:00:00".into())
+        );
+        assert_eq!(
+            expand_date("2025-05").unwrap(),
+            ("2025-05-01T00:00:00".into(), "2025-06-01T00:00:00".into())
+        );
+        assert_eq!(
+            expand_date("2025-12").unwrap(),
+            ("2025-12-01T00:00:00".into(), "2026-01-01T00:00:00".into())
+        );
+        assert_eq!(
+            expand_date("2025-05-14").unwrap(),
+            ("2025-05-14T00:00:00".into(), "2025-05-15T00:00:00".into())
+        );
+    }
+
+    #[test]
+    fn date_shorthand_handles_month_and_year_rollover() {
+        assert_eq!(expand_date("2024-02-29").unwrap().1, "2024-03-01T00:00:00");
+        assert_eq!(expand_date("2025-12-31").unwrap().1, "2026-01-01T00:00:00");
+    }
+
+    #[test]
+    fn normalise_bound_accepts_date_or_datetime() {
+        assert_eq!(
+            normalise_bound("2025-05-14").unwrap(),
+            "2025-05-14T00:00:00"
+        );
+        assert_eq!(
+            normalise_bound("2025-05-14T09:30:00").unwrap(),
+            "2025-05-14T09:30:00"
+        );
+    }
+
+    #[test]
+    fn bad_dates_are_rejected_with_a_helpful_message() {
+        for bad in ["", "May 2025", "2025-13", "2025-02-30", "20250514"] {
+            let err = expand_date(bad).unwrap_err().to_string();
+            assert!(
+                err.contains("YYYY"),
+                "error for {bad:?} should name the accepted forms, got: {err}"
+            );
+        }
     }
 }
