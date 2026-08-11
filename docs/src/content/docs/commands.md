@@ -42,6 +42,7 @@ Most commands share these:
 | `search --person` | `faces`, then naming via `report --faces` |
 | `search --category` | `classify` (which needs `embed`) |
 | `search --location` | GPS data in your photos |
+| `search --date` / `--after` / `--before` | nothing beyond `scan` |
 
 [Workflows](/start/workflows/) has the full dependency map, what to run
 *afterwards* (`prune` is the one people forget), recipes for the common jobs,

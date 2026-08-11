@@ -56,6 +56,11 @@ ALTER TABLE file_hashes ADD COLUMN location_cluster_id INTEGER;
 
 `created_at` is always empty on Linux; the birth time needs a macOS syscall.
 
+Date filters on [`videre search`](/commands/search/) do not match `exif_date`
+directly. They match the **effective date**: `exif_date` when present and not
+`0000-*`, otherwise `modified_at`. That is the same rule
+[`videre dedupe`](/commands/dedupe/) uses to pick which copy to keep.
+
 :::note[hash is the join key, not path]
 Faces, classifications and embeddings are all keyed by `hash`, never by `path`.
 That is what lets duplicate copies of one photo share a single face detection or

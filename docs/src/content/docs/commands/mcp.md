@@ -22,15 +22,27 @@ the configurations below.
 |---|---|---|
 | `stats` | none | Library summary: files, size, embeddings, faces, people, GPS coverage, date range |
 | `find_duplicates` | `include_similar` | Exact-duplicate groups as `keep` and `remove`, plus review-only look-alikes |
-| `search` | `query`, `person`, `image_path`, `top_k` | Semantic, person, or by-example search |
+| `search` | `query`, `image_path`, `person`, `category`, `location`, `radius_km`, `after`, `before`, `date`, `sort`, `top_k` | Composed search: filters narrow, a ranker orders |
 
-`search` takes exactly one of `query`, `person` or `image_path`. Text and image
-search need [`videre embed`](/commands/embed/); `person` needs
-[`videre faces`](/commands/faces/) plus naming.
+`search` takes **at most one ranker** (`query` or `image_path`) and any number of
+filters (`person`, `category`, `location` + `radius_km`, and `after`/`before`/`date`),
+which AND together. At least one of the two is required. `sort` accepts a
+comma-separated `field[:asc|desc]` list.
 
-`--category` and `--location` search are CLI-only. `--location` in particular is
-excluded because it is the one mode that reaches the network and writes to the
-database.
+Text and image search need [`videre embed`](/commands/embed/); `person` needs
+[`videre faces`](/commands/faces/) plus naming; `category` needs
+[`videre classify`](/commands/classify/).
+
+The MCP server and the CLI run the identical code path, so a composed tool call
+and the equivalent `videre search` invocation return the same results by
+construction. See [compositional searches](/guides/compositional-search/) for
+what composes with what.
+
+:::caution[`location` is the one parameter that reaches the network]
+Geocoding a place name makes an outbound request on a cache miss and writes the
+answer to the `geocode_cache` table, so it is also the only part of this
+read-only server that writes anything. Repeats are served locally.
+:::
 
 ## Finding the binary path
 
