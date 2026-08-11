@@ -254,6 +254,63 @@ pub fn candidates_with_model(conn: &Connection, f: &Filters, model_id: &str) -> 
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortField {
+    Relevance,
+    Distance,
+    Date,
+    Size,
+}
+
+impl SortField {
+    /// The direction people mean when they do not say: best match first,
+    /// nearest first, newest first, largest first.
+    fn default_desc(self) -> bool {
+        !matches!(self, SortField::Distance)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SortKey {
+    pub field: SortField,
+    pub desc: bool,
+}
+
+const SORT_FIELDS: &str = "valid fields: relevance, distance, date, size";
+const SORT_DIRS: &str = "valid directions: asc, desc";
+
+pub fn parse_sort(spec: &str) -> Result<Vec<SortKey>> {
+    let mut out: Vec<SortKey> = Vec::new();
+    for raw in spec.split(',') {
+        let part = raw.trim();
+        if part.is_empty() {
+            anyhow::bail!("empty sort field; {SORT_FIELDS}");
+        }
+        let (name, dir) = match part.split_once(':') {
+            Some((n, d)) => (n.trim(), Some(d.trim())),
+            None => (part, None),
+        };
+        let field = match name.to_ascii_lowercase().as_str() {
+            "relevance" => SortField::Relevance,
+            "distance" => SortField::Distance,
+            "date" => SortField::Date,
+            "size" => SortField::Size,
+            other => anyhow::bail!("unknown sort field {other:?}; {SORT_FIELDS}"),
+        };
+        let desc = match dir.map(|d| d.to_ascii_lowercase()) {
+            None => field.default_desc(),
+            Some(d) if d == "asc" => false,
+            Some(d) if d == "desc" => true,
+            Some(d) => anyhow::bail!("unknown sort direction {d:?}; {SORT_DIRS}"),
+        };
+        if out.iter().any(|k| k.field == field) {
+            anyhow::bail!("sort field {name:?} repeated; each field may appear once");
+        }
+        out.push(SortKey { field, desc });
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,5 +666,74 @@ mod tests {
         assert_eq!(got.hashes.as_ref().unwrap().len(), 1);
         let d = got.distances.unwrap();
         assert!(d.contains_key("hn"), "distances must be kept for survivors");
+    }
+
+    #[test]
+    fn sort_defaults_direction_per_field() {
+        assert_eq!(
+            parse_sort("distance,date").unwrap(),
+            vec![
+                SortKey {
+                    field: SortField::Distance,
+                    desc: false
+                },
+                SortKey {
+                    field: SortField::Date,
+                    desc: true
+                },
+            ]
+        );
+        assert_eq!(
+            parse_sort("relevance").unwrap(),
+            vec![SortKey {
+                field: SortField::Relevance,
+                desc: true
+            }]
+        );
+        assert_eq!(
+            parse_sort("size").unwrap(),
+            vec![SortKey {
+                field: SortField::Size,
+                desc: true
+            }]
+        );
+    }
+
+    #[test]
+    fn sort_accepts_explicit_directions() {
+        assert_eq!(
+            parse_sort("distance:desc,date:asc").unwrap(),
+            vec![
+                SortKey {
+                    field: SortField::Distance,
+                    desc: true
+                },
+                SortKey {
+                    field: SortField::Date,
+                    desc: false
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn sort_tolerates_spaces_and_case() {
+        assert_eq!(parse_sort(" Distance : ASC ").unwrap()[0].desc, false);
+    }
+
+    #[test]
+    fn sort_rejects_bad_specs_naming_valid_values() {
+        for (spec, needle) in [
+            ("bogus", "relevance"),
+            ("date:sideways", "asc"),
+            ("date,date", "repeated"),
+            ("", "relevance"),
+        ] {
+            let err = parse_sort(spec).unwrap_err().to_string();
+            assert!(
+                err.contains(needle),
+                "error for {spec:?} should mention {needle:?}, got: {err}"
+            );
+        }
     }
 }
