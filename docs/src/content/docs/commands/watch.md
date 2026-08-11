@@ -35,30 +35,113 @@ run. `--prune` is the exception: it is opt-in and never defaults on.
 | `--location` | Looks up place names for GPS coordinates that have none |
 | `--prune` | Same cleanup as [`videre prune`](/commands/prune/) |
 
-## Why `--heic` is worth running
+Note that [`embed`](/commands/embed/) and [`classify`](/commands/classify/) are
+**not** stages. Semantic search data is not kept current automatically; run
+`videre embed` yourself after adding a batch of photos.
 
-It decodes each HEIC file once and caches the result, including a full-size
-copy. [`videre faces`](/commands/faces/) then reads that cache instead of
-decoding again: about 108 ms per image against 7.6 s, roughly 70x.
+## Choosing what to run
 
-[`videre report --show-faces`](/commands/report/) uses the same cache, so
-warming it removes the per-request conversion cost there too.
+**Everything, and forget about it.** The common case:
 
-This cache has a real disk cost at scale, tens of GB for a HEIC-heavy library,
-and only [`videre prune`](/commands/prune/) reclaims any of it.
+```bash
+videre watch ~/Photos
+```
 
-## Running it alongside other commands
+**Just keep the index current**, leaving face detection for when you are not
+using the machine:
 
-`videre watch` and `videre report --show-faces` are designed to run concurrently
-against the same database.
+```bash
+videre watch ~/Photos --scan --location --interval 120
+```
 
-Running `watch --faces` at the same time as a manual `videre embed` is a
-different matter, since both drive HEIC conversion. See
-[cautions](/start/cautions/).
+**Warm the cache before a big job**, then stop it:
 
-`--prune` runs unattended, so it can override neither of prune's safety guards.
+```bash
+videre watch ~/Photos --heic       # Ctrl-C once the per-cycle counts settle
+videre faces
+```
 
-## Supervision
+**Include cleanup**, if your photos live on an always-connected disk:
 
-There is no daemon mode and no service unit. Run it in a terminal, a tmux or
-screen pane, or your own process supervisor.
+```bash
+videre watch ~/Photos --scan --faces --heic --location --prune
+```
+
+Passing `--prune` requires listing the other stages you want, since naming any
+stage disables the defaults.
+
+## Running it for real
+
+There is no daemon mode and no service unit. It runs in the foreground until
+interrupted.
+
+```bash
+# a tmux pane
+tmux new -s videre 'videre watch ~/Photos'
+
+# or with a log
+videre watch ~/Photos 2>> ~/.videre/watch.log
+```
+
+For something that survives a reboot, wrap it in a launchd agent on macOS or a
+systemd user unit on Linux. It expects to be restarted freely: every stage is
+resumable and idempotent, so a kill at any point loses at most the work in
+flight.
+
+Check on it from another terminal:
+
+```bash
+videre stats                 # last run and status per command
+videre stats --check         # exit non-zero if anything failed, for cron
+```
+
+## Interval
+
+`--interval` is the sleep *between* cycles, not a schedule. A cycle that takes
+ten minutes followed by `--interval 300` means a new cycle every fifteen.
+
+The default of 300 suits a library that changes occasionally. Lower it if you
+import often and want photos searchable sooner; raise it if cycles are long and
+you would rather they not overlap with your own work.
+
+The first cycle on a large library is by far the longest, because everything is
+new. Later cycles typically do nothing and finish in seconds.
+
+## Caveats
+
+:::caution[Do not run watch alongside a manual embed or faces]
+`watch --faces` and `watch --heic` both drive HEIC conversion, as do
+[`videre embed`](/commands/embed/) and [`videre faces`](/commands/faces/). The
+concurrency limit is per process, so two videre processes together permit twice
+as many conversions against one shared macOS service.
+
+Measured: a HEIC load averaged over 16 seconds against about 7.6 uncontended,
+and one file exceeded the timeout that converted in 0.39 s alone. Nothing is
+lost, since skipped files retry next cycle, but both jobs get much slower.
+
+If you are about to run a long `embed` or `faces` by hand, stop `watch` first,
+or start it with only `--scan --location`.
+:::
+
+**`--prune` cannot override prune's safety guards.** It runs unattended and
+cannot ask, so the bulk-deletion and repeated-failure guards are always active.
+An unplugged drive is skipped rather than wiped. See
+[`videre prune`](/commands/prune/) for the rules.
+
+**The HEIC cache grows without limit.** `--heic` caches a full-resolution decode
+per HEIC file, which is what makes face detection fast, and can reach tens of
+GB. Only `prune` reclaims any of it, and only for photos no longer in the
+database. See the [thumbnail cache](/reference/paths/#thumbnail-cache).
+
+**One folder per process.** `watch` takes a single directory. Watching two roots
+means two processes, and they should not run their HEIC or faces stages at the
+same time, for the reason above. See
+[scanning more than one folder](/reference/paths/#scanning-more-than-one-folder).
+
+**Reading while it runs is fine.** The database is opened in WAL mode, so
+[`report --show-faces`](/commands/report/), `search`, `stats` and your own
+`sqlite3` queries all work against a live `watch`. Those two are designed to run
+together.
+
+**A crash is visible, not silent.** If a stage fails, `videre stats` shows the
+command as failed or crashed, which is what `--check` is for.
