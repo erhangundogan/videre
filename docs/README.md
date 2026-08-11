@@ -4,11 +4,25 @@ The source for <https://docs.videre.sh>, built with
 [Astro](https://astro.build) + [Starlight](https://starlight.astro.build).
 
 ```bash
-npm install       # once
-npm run dev       # http://localhost:4321
-npm run build     # static site into dist/
-npm run preview   # serve dist/ locally
+yarn install      # once
+yarn dev          # http://localhost:4321
+yarn build        # static site into dist/
+yarn preview      # serve dist/ locally
 ```
+
+Yarn 4, pinned by the `packageManager` field in `package.json`. To have that
+version enforced exactly rather than falling back to whatever `yarn` is on your
+`PATH`:
+
+```bash
+corepack enable
+```
+
+:warning: This project sets `nodeLinker: node-modules` in `.yarnrc.yml`. Yarn's
+default PnP linker **does not work here**: Astro resolves virtual module
+specifiers such as `astro:toolbar:internal`, which are not real packages, and
+PnP rejects them as unsound. The build fails at the bundling stage. Please don't
+"modernise" this back to PnP without re-testing a full `yarn build`.
 
 ## Layout
 
