@@ -165,6 +165,95 @@ pub fn by_location(
     Ok(out)
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct GeoFilter {
+    pub lat: f64,
+    pub lon: f64,
+    pub radius_km: f64,
+}
+
+/// Every filter is ANDed. `None` means the predicate is inactive.
+#[derive(Debug, Clone, Default)]
+pub struct Filters {
+    pub person: Option<String>,
+    pub category: Option<String>,
+    pub location: Option<GeoFilter>,
+    pub after: Option<String>,
+    pub before: Option<String>,
+}
+
+impl Filters {
+    pub fn any_active(&self) -> bool {
+        self.person.is_some()
+            || self.category.is_some()
+            || self.location.is_some()
+            || self.after.is_some()
+            || self.before.is_some()
+    }
+}
+
+pub struct Candidates {
+    /// Hashes satisfying every active predicate. `None` means no filter was
+    /// active, i.e. do not constrain.
+    pub hashes: Option<HashSet<String>>,
+    /// Km per surviving hash. `Some` only when `location` was set.
+    pub distances: Option<HashMap<String, f64>>,
+}
+
+/// Intersects every active predicate.
+///
+/// `model_id` is needed only by the category predicate; pass the resolved model
+/// even when `category` is `None`.
+pub fn candidates(conn: &Connection, f: &Filters) -> Result<Candidates> {
+    candidates_with_model(conn, f, "")
+}
+
+pub fn candidates_with_model(conn: &Connection, f: &Filters, model_id: &str) -> Result<Candidates> {
+    if !f.any_active() {
+        return Ok(Candidates {
+            hashes: None,
+            distances: None,
+        });
+    }
+
+    let mut acc: Option<HashSet<String>> = None;
+    let mut narrow = |s: HashSet<String>, acc: &mut Option<HashSet<String>>| match acc {
+        Some(existing) => *acc = Some(existing.intersection(&s).cloned().collect()),
+        None => *acc = Some(s),
+    };
+
+    if let Some(name) = &f.person {
+        narrow(by_person(conn, name)?, &mut acc);
+    }
+    if let Some(cat) = &f.category {
+        narrow(by_category(conn, model_id, cat)?, &mut acc);
+    }
+    if f.after.is_some() || f.before.is_some() {
+        narrow(
+            by_date(conn, f.after.as_deref(), f.before.as_deref())?,
+            &mut acc,
+        );
+    }
+
+    let mut distances = None;
+    if let Some(g) = f.location {
+        let d = by_location(conn, g.lat, g.lon, g.radius_km)?;
+        narrow(d.keys().cloned().collect(), &mut acc);
+        // Keep only survivors, so the ranker never sees a filtered-out hash.
+        let surviving = acc.clone().unwrap_or_default();
+        distances = Some(
+            d.into_iter()
+                .filter(|(h, _)| surviving.contains(h))
+                .collect(),
+        );
+    }
+
+    Ok(Candidates {
+        hashes: acc,
+        distances,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -434,5 +523,91 @@ mod tests {
             (870.0..890.0).contains(&d),
             "Berlin to Paris is ~878 km, got {d}"
         );
+    }
+
+    #[test]
+    fn no_filters_means_unconstrained() {
+        let conn = db_with_faces_and_classes();
+        let got = candidates(&conn, &Filters::default()).unwrap();
+        assert!(got.hashes.is_none(), "an empty Filters must not constrain");
+        assert!(got.distances.is_none());
+    }
+
+    #[test]
+    fn two_predicates_intersect() {
+        let conn = db_with_faces_and_classes();
+        add(
+            &conn,
+            "/a.jpg",
+            "h1",
+            Some("2025-05-14T10:00:00"),
+            "2025-05-14T10:00:00",
+        );
+        add(
+            &conn,
+            "/b.jpg",
+            "h2",
+            Some("2024-05-14T10:00:00"),
+            "2024-05-14T10:00:00",
+        );
+        conn.execute_batch(
+            "INSERT INTO faces (hash, person_label, confirmed) VALUES ('h1','Alice',1), ('h2','Alice',1);",
+        )
+        .unwrap();
+
+        let f = Filters {
+            person: Some("Alice".into()),
+            after: Some("2025-01-01T00:00:00".into()),
+            before: Some("2026-01-01T00:00:00".into()),
+            ..Filters::default()
+        };
+        let got = candidates(&conn, &f).unwrap().hashes.unwrap();
+        assert_eq!(got.len(), 1, "only h1 is both Alice and in 2025");
+        assert!(got.contains("h1"));
+    }
+
+    #[test]
+    fn a_predicate_matching_nothing_yields_an_empty_set_not_none() {
+        let conn = db_with_faces_and_classes();
+        add(
+            &conn,
+            "/a.jpg",
+            "h1",
+            Some("2025-05-14T10:00:00"),
+            "2025-05-14T10:00:00",
+        );
+        let f = Filters {
+            person: Some("Nobody".into()),
+            ..Filters::default()
+        };
+        let got = candidates(&conn, &f).unwrap().hashes.unwrap();
+        assert!(
+            got.is_empty(),
+            "no match must be an empty set, never unconstrained"
+        );
+    }
+
+    #[test]
+    fn location_distances_survive_intersection_with_other_filters() {
+        let conn = db_with_gps();
+        conn.execute_batch(
+            "CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL,
+                person_label TEXT, confirmed INTEGER DEFAULT 0);
+             INSERT INTO faces (hash, person_label, confirmed) VALUES ('hn','Alice',1);",
+        )
+        .unwrap();
+        let f = Filters {
+            person: Some("Alice".into()),
+            location: Some(GeoFilter {
+                lat: 52.5200,
+                lon: 13.4050,
+                radius_km: 10.0,
+            }),
+            ..Filters::default()
+        };
+        let got = candidates(&conn, &f).unwrap();
+        assert_eq!(got.hashes.as_ref().unwrap().len(), 1);
+        let d = got.distances.unwrap();
+        assert!(d.contains_key("hn"), "distances must be kept for survivors");
     }
 }
