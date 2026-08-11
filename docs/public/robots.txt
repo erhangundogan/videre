@@ -1,0 +1,7 @@
+# Documentation for videre, a local-first photo and video library CLI.
+# https://github.com/erhangundogan/videre
+
+User-agent: *
+Allow: /
+
+Sitemap: https://docs.videre.sh/sitemap-index.xml
