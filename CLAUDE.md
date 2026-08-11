@@ -211,6 +211,26 @@ module that knows this layout.
   any table exists, since SQLite silently ignores it afterwards and needs a full
   `VACUUM` to apply.
 
+### Search predicates live in one place, used by two surfaces
+
+`videre_core::query` owns every search filter: `by_date`, `by_person`,
+`by_category`, `by_location`, plus `candidates_with_model` which intersects the
+active ones into a hash set. `commands/search.rs` builds a `Filters` from its
+args; `commands/mcp.rs` builds a `SearchArgs` and calls straight into
+`search::run_json` behind the `QueryEmbedder` trait, so the two surfaces run the
+*same* code rather than parallel implementations that can drift.
+
+`QueryEmbedder` exists only so the MCP server can keep its embedder cached
+across calls while the CLI builds a fresh one per invocation. Do not collapse it
+back into a concrete type without solving that.
+
+**The effective date is `EFFECTIVE_DATE_SQL`, not `exif_date`.** Date filters
+match `exif_date` when present and not `0000%`, else `modified_at`. The `0000%`
+guard is the same rule `output.rs::best_date` uses when picking which duplicate
+to keep; a camera with an unset clock must fall back rather than match year
+zero. Filtering happens before ranking, so a composed query scores fewer
+vectors than an unfiltered one.
+
 ### Locks are keyed by a hash of the canonical database path
 
 `<videre home>/locks/<db stem>-<hash of canonical path>.<command>.lock`. The

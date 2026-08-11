@@ -194,107 +194,143 @@ struct FindDuplicatesParams {
     include_similar: bool,
 }
 
+/// Every field is optional and every filter is ANDed. The doc comments are the
+/// descriptions an agent actually reads in the tool schema, so they carry the
+/// accepted forms rather than pointing elsewhere.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct SearchParams {
-    /// Text query, e.g. "sunset on beach" (requires prior 'videre embed')
+    /// Ranker: semantic text query, e.g. "sunset on beach" (requires prior
+    /// 'videre embed'). Cannot be combined with image_path.
     #[serde(default)]
     query: Option<String>,
-    /// Person name, confirmed faces only (requires 'videre faces' + labeling)
-    #[serde(default)]
-    person: Option<String>,
-    /// Path to a local example image to search by (requires prior 'videre embed')
+    /// Ranker: path to a local example image to find similar files to
+    /// (requires prior 'videre embed'). Cannot be combined with query.
     #[serde(default)]
     image_path: Option<String>,
-    /// Maximum matched hashes to return (default 20); paths may exceed this
-    /// when duplicate files share a hash
+    /// Filter: only files containing this labeled person, confirmed faces only
+    /// (requires 'videre faces' + labeling)
+    #[serde(default)]
+    person: Option<String>,
+    /// Filter: only files classified as this category, one of photo,
+    /// screenshot, document, meme, unknown (requires a prior 'videre classify')
+    #[serde(default)]
+    category: Option<String>,
+    /// Filter: place name, e.g. "Berlin, Germany", combined with radius_km.
+    /// Reaches the network on a cache miss and writes the result to the
+    /// geocode_cache table; every later query for the same place is local.
+    #[serde(default)]
+    location: Option<String>,
+    /// Radius in km around location (default 20). Ignored without location.
+    #[serde(default)]
+    radius_km: Option<f64>,
+    /// Filter: inclusive lower date bound, YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS
+    #[serde(default)]
+    after: Option<String>,
+    /// Filter: exclusive upper date bound, YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS,
+    /// so adjacent ranges never both match the boundary instant
+    #[serde(default)]
+    before: Option<String>,
+    /// Filter: shorthand for a whole year, month or day, as YYYY, YYYY-MM or
+    /// YYYY-MM-DD. Mutually exclusive with after/before.
+    #[serde(default)]
+    date: Option<String>,
+    /// Result order: comma-separated field[:asc|desc] over relevance, distance,
+    /// date and size, e.g. "distance:asc,date:desc". Defaults are relevance,
+    /// date and size descending and distance ascending. relevance needs a
+    /// query or image_path; distance needs location.
+    #[serde(default)]
+    sort: Option<String>,
+    /// Maximum results to return (default 20)
     #[serde(default)]
     top_k: Option<usize>,
 }
 
+/// The MCP server's embedder: loaded on the first ranking search and kept for
+/// the life of the process, so only that one call pays the load. The CLI's
+/// equivalent (`search::FreshEmbedder`) loads per invocation instead; that
+/// difference is the only reason the pipeline takes an embedder at all.
+struct CachedEmbedder<'a>(&'a std::sync::Mutex<Option<videre_ml::model::Embedder>>);
+
+impl crate::commands::search::QueryEmbedder for CachedEmbedder<'_> {
+    fn embed(
+        &self,
+        model_id: &str,
+        input: crate::commands::search::QueryInput<'_>,
+    ) -> anyhow::Result<Vec<f32>> {
+        use crate::commands::search::QueryInput;
+
+        let mut guard = self
+            .0
+            .lock()
+            .map_err(|_| anyhow::anyhow!("embedder lock poisoned"))?;
+        if guard.is_none() {
+            *guard = Some(videre_ml::model::Embedder::load(
+                videre_ml::device::best_device(),
+                model_id,
+            )?);
+        }
+        let embedder = guard.as_ref().expect("just initialized");
+        match input {
+            QueryInput::Text(text) => embedder.embed_text(text),
+            QueryInput::Image(path) => videre_ml::model::embed_image_file(embedder, path),
+        }
+    }
+}
+
+/// Runs an MCP `search` call through exactly the pipeline `videre search
+/// --json` uses, by building the same `SearchArgs` the CLI parses into. The
+/// only MCP-specific parts are the two validity checks, whose wording names
+/// tool parameters rather than CLI flags, and the cached embedder.
 fn build_search(
     db: &std::path::Path,
     model_id: &str,
     embedder_cell: &std::sync::Mutex<Option<videre_ml::model::Embedder>>,
     params: &SearchParams,
 ) -> anyhow::Result<crate::commands::search::SearchJson> {
-    use crate::commands::search::{self as search_cmd, QueryJson};
+    use crate::commands::search::{self as search_cmd, SearchArgs};
 
-    let mode_count = [
-        params.query.is_some(),
-        params.person.is_some(),
-        params.image_path.is_some(),
-    ]
-    .iter()
-    .filter(|b| **b)
-    .count();
+    // Filters compose; rankers do not, since only one thing can order a result
+    // list. Checked here rather than left to the CLI's own guard so the message
+    // names the parameters the caller actually passed.
     anyhow::ensure!(
-        mode_count == 1,
-        "provide exactly one of 'query', 'person', or 'image_path'"
+        !(params.query.is_some() && params.image_path.is_some()),
+        "provide at most one ranker: 'query' or 'image_path', not both"
+    );
+    let any_filter = params.person.is_some()
+        || params.category.is_some()
+        || params.location.is_some()
+        || params.after.is_some()
+        || params.before.is_some()
+        || params.date.is_some();
+    anyhow::ensure!(
+        params.query.is_some() || params.image_path.is_some() || any_filter,
+        "provide at least one of 'query', 'image_path', 'person', 'category', \
+         'location', 'after', 'before' or 'date'; an unfiltered search would \
+         return the whole library"
     );
 
-    let conn = videre_core::db::open_wal(db)?;
-    if params.person.is_none() {
-        videre_core::embeddings_db::attach_for_read(&conn, db, model_id)?;
-    }
-    let top_k = params.top_k.unwrap_or(20);
-
-    let (query, results) = if let Some(name) = &params.person {
-        let hits = search_cmd::person_hits(&conn, name)?;
-        (
-            QueryJson {
-                kind: "person",
-                value: name.clone(),
-            },
-            hits,
-        )
-    } else {
-        // Corpus first (fails fast without embeddings, before any model load).
-        let corpus = search_cmd::load_corpus(&conn, db, model_id)?;
-
-        let (query_vec, query) = {
-            let mut guard = embedder_cell
-                .lock()
-                .map_err(|_| anyhow::anyhow!("embedder lock poisoned"))?;
-            if guard.is_none() {
-                *guard = Some(videre_ml::model::Embedder::load(
-                    videre_ml::device::best_device(),
-                    model_id,
-                )?);
-            }
-            let embedder = guard.as_ref().expect("just initialized");
-
-            if let Some(text) = &params.query {
-                (
-                    embedder.embed_text(text)?,
-                    QueryJson {
-                        kind: "text",
-                        value: text.clone(),
-                    },
-                )
-            } else {
-                let img =
-                    std::path::PathBuf::from(params.image_path.as_ref().expect("mode checked"));
-                (
-                    videre_ml::model::embed_image_file(embedder, &img)?,
-                    QueryJson {
-                        kind: "image",
-                        value: img.display().to_string(),
-                    },
-                )
-            }
-            // guard drops here, before ranked_hits runs
-        };
-
-        let hits = search_cmd::ranked_hits(&conn, &corpus, &query_vec, top_k)?;
-        (query, hits)
+    let args = SearchArgs {
+        // Both bound at startup, so a call cannot retarget the server.
+        db: Some(db.to_path_buf()),
+        model: Some(model_id.to_string()),
+        query: params.query.clone(),
+        image: params.image_path.as_deref().map(std::path::PathBuf::from),
+        person: params.person.clone(),
+        category: params.category.clone(),
+        location: params.location.clone(),
+        radius: params.radius_km.unwrap_or(20.0),
+        after: params.after.clone(),
+        before: params.before.clone(),
+        date: params.date.clone(),
+        sort: params.sort.clone(),
+        top_k: params.top_k.unwrap_or(20),
+        scores: false,
+        // json: true keeps the pipeline off stderr. An empty result is
+        // reported as count 0, which is what the protocol channel carries.
+        json: true,
     };
 
-    Ok(search_cmd::SearchJson {
-        schema_version: SCHEMA_VERSION,
-        query,
-        count: results.len(),
-        results,
-    })
+    search_cmd::run_json(&args, &CachedEmbedder(embedder_cell))
 }
 
 #[tool_router]
@@ -328,9 +364,9 @@ impl VidereServer {
         }
     }
 
-    /// Semantic and person search over the indexed library.
+    /// Composed search: filters narrow, an optional ranker orders.
     #[tool(
-        description = "Search the videre library. Provide exactly one of: 'query' (semantic text search), 'person' (labeled person name), or 'image_path' (find similar to a local image). Returns per-path results with hash and cosine score (person hits carry path only). The first text/image search loads the embedding model and may be slow; later calls are fast. Requires 'videre embed' for text/image and 'videre faces' + labeling for person."
+        description = "Search the videre library with composable filters. Every filter given is ANDed, so they only ever narrow: 'person' (labeled person, confirmed faces only), 'category' (photo/screenshot/document/meme/unknown), 'location' + 'radius_km', and a date range as either 'after'/'before' (before is exclusive) or the 'date' shorthand YYYY, YYYY-MM or YYYY-MM-DD. At most one ranker may be given: 'query' (semantic text) or 'image_path' (similar to a local image), never both; a ranker orders the filtered survivors by cosine score. At least one filter or ranker is required. 'sort' takes a comma-separated field[:asc|desc] list over relevance, distance, date and size, e.g. \"distance:asc,date:desc\"; relevance needs a ranker and distance needs 'location'. Results carry path, hash, and where applicable score, distance_km and date. Dates match the EXIF capture date when present and valid, otherwise the file mtime. WARNING: 'location' forward-geocodes the place name over the network on a cache miss and writes the answer to the geocode_cache table; repeats are local. Requires 'videre embed' for query/image_path, 'videre faces' + labeling for person, and 'videre classify' for category. The first text/image search loads the embedding model and may be slow; later calls are fast."
     )]
     async fn search(
         &self,
