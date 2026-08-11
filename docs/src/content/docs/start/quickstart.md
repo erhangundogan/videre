@@ -58,6 +58,15 @@ videre search --person "Alice"
 
 `videre faces` downloads about 180 MB the first time.
 
+## What needs what
+
+Each of the above is a small pipeline: `search` needs `embed` first,
+`search --person` needs `faces` plus naming, and `prune` belongs after anything
+that deletes files.
+
+[Workflows](/start/workflows/) has the full map, plus recipes for the common
+jobs and rough costs for the long ones.
+
 ## Other things it can do
 
 ```bash
