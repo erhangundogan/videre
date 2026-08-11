@@ -24,6 +24,10 @@ Re-running is safe and idempotent, since existing entries are updated in place.
 :::note
 `--output` and `--db` cannot be combined. A bare `--output` must come *after*
 the folder, or it swallows the folder as its value.
+
+`--output-sqlite` still works as an alias for `--db`. It was the original name,
+from when JSONL and SQLite were peer output *formats* rather than one
+destination and one opt-out. Existing scripts do not need changing.
 :::
 
 ## `--retry-incomplete`

@@ -19,6 +19,9 @@ videre watch ~/Photos --silent         # no per-cycle output
 videre watch ~/Photos --db ~/photos.db # use a specific database
 ```
 
+`--output-sqlite` still works as an alias for `--db`, the name it had
+originally. Existing scripts do not need changing.
+
 ## Stages
 
 If none of `--scan`, `--faces`, `--heic` or `--location` are given, all four
