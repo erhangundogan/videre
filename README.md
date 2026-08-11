@@ -93,7 +93,7 @@ does not change your photos.
 ```bash
 videre dedupe                 # list which copies could go
 videre report                 # ...or review them visually in a browser first
-videre dedupe | xargs trash   # delete them
+videre dedupe | xargs trash   # delete them, once you have looked
 
 videre embed                  # one-time: prepares photos for search
 videre search "golden gate bridge at sunset"
@@ -116,26 +116,6 @@ More: [docs.videre.sh/start/quickstart](https://docs.videre.sh/start/quickstart/
 
 Every command takes `--help`. Full reference with every flag:
 [docs.videre.sh/commands](https://docs.videre.sh/commands/)
-
-## Before you point it at a real library
-
-Most of videre is read-only. These are the parts that are not.
-
-**`videre dedupe` prints files to delete.** Its output is the REMOVE side of each
-duplicate group, so `videre dedupe | xargs trash` deletes those files
-immediately. Look before you pipe: run `videre report` first, or send the list to
-a file and read it.
-
-**Keep your photos connected when running `prune`.** It removes database entries
-for files it cannot find. videre guards against an unplugged drive (a row is only
-removed when the file is missing *and* its folder still exists), but the guard is
-worth knowing about rather than relying on.
-
-**`videre fix-dates` rewrites file timestamps on disk.** There is no undo. It
-asks for confirmation first, and `--dry-run` shows exactly what it would do.
-
-The rest, including disk use and running two heavy commands at once:
-[docs.videre.sh/start/cautions](https://docs.videre.sh/start/cautions/)
 
 ## License
 
