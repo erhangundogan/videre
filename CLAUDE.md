@@ -76,6 +76,14 @@ them would more than quadruple the download for `cargo install videre`.
 
 ## Platform support
 
+**Intel macOS (`x86_64-apple-darwin`) does not build at all.** `ort-sys`
+2.0.0-rc.13 ships no prebuilt ONNX Runtime for that target, so any build fails
+with `no prebuilt binaries available for target x86_64-apple-darwin`, wherever
+it runs. This is not a CI or cross-compilation problem and cannot be fixed by
+choosing a different runner: it affects `cargo install videre` on an Intel Mac
+identically. Found 2026-08-11 when the release matrix first tried the target.
+Revisit if `ort` starts shipping Intel macOS binaries.
+
 macOS is the development platform and everything works there. The workspace
 also builds and runs on Linux, verified 2026-08-03 by building and running it
 inside the official `rust:1` Docker image on both architectures.
@@ -223,6 +231,34 @@ when they are not.
 
 Clippy is deliberately not in CI yet: it reports 18 warnings, so a lint job
 would need either `--allow`-ing them or a cleanup pass first.
+
+## Release binaries
+
+`.github/workflows/release.yml` runs on a `v*` tag and builds three targets:
+`aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`.
+Measured 2026-08-11: 21MB, 23MB and 24MB compressed from a 62MB binary, built
+in 5-10 minutes each.
+
+The shape is **create draft -> build -> smoke -> publish**, and the ordering is
+load-bearing. `taiki-e/upload-rust-binary-action` uploads to an *existing*
+release and a tag does not create one, so the draft comes first. The smoke job
+then downloads each archive onto a runner that never compiled it and runs
+`--version`, a real `scan` over `crates/videre/tests/fixtures`, and `stats`.
+Only then does `publish` undraft it. A build or smoke failure leaves the
+release a draft: the tag and binaries exist, but nobody is offered a download
+that was never executed. That is not theoretical, it fired for real on
+2026-08-11 when the Intel macOS build failed.
+
+Both jobs set `timeout-minutes` (45 and 20). The default is six hours, which is
+how a job queued against a retired `macos-13` runner ran for ten hours without
+executing a single step. A hang is worse than a failure because nothing tells
+you.
+
+Artifacts are self-contained on every shipped target, verified rather than
+assumed: `otool -L` on macOS shows only system frameworks with zero rpath
+entries, and `ldd` on both Linux targets shows only `libstdc++`, `libgcc_s`,
+`libm`, `libc` and the loader. ONNX Runtime is statically linked (its static
+library is 77MB, which is most of the binary's size).
 
 ## Test coverage
 
