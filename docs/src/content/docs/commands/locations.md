@@ -3,8 +3,9 @@ title: videre locations
 description: Group photos by where they were taken, using GPS data already in the files.
 ---
 
-Groups photos by where they were taken, using GPS data already in the files.
-No network access: place names come from an offline lookup.
+Groups photos by where they were taken, using GPS coordinates
+[`videre scan`](/commands/scan/) already extracted from EXIF. No network access:
+place names come from an offline lookup.
 
 ```bash
 videre locations                       # group and print a summary
@@ -15,36 +16,113 @@ videre locations --silent              # no summary
 videre locations --db ~/photos.db      # use a specific database
 ```
 
-`--radius` defaults to 15 km, roughly "which city was I in" granularity. It is
-the one tunable parameter.
+## The workflow
 
-Having no GPS data at all is not an error: it reports zero groups and exits
-successfully.
+```bash
+videre scan ~/Photos       # GPS comes from EXIF during the scan
+videre locations           # group those coordinates into places
+```
 
-## Full recompute every run
+Output is a summary of the places found, largest first:
 
-Each run regroups from scratch rather than adding to previous results. There is
-no expensive detection step to make incremental, and the grouping maths itself
-is sub-second.
+```
+142 location cluster(s) found
+  Berlin, Germany              3,841 photos
+  Kreuzberg, Berlin, Germany     612 photos
+  Lisbon, Portugal               498 photos
+  ...
+```
 
-The slow part is writing the results back: measured at about 8 minutes on a
-70,000 file library, in a single transaction. Since that holds the write lock
-for the whole window, a concurrently running [`videre watch`](/commands/watch/)
-will block until it finishes.
+Nothing else is required. GPS is already in the database after a scan, so this
+does not depend on [`watch --location`](/commands/watch/) having run.
 
-Group IDs are **not stable across runs**, only within a single run's output.
+## Choosing a radius
 
-## `--geojson`
+`--radius` is the only real tuning, and it decides what counts as one place:
 
-Emits a standard `FeatureCollection` of `Point` features, so the output drops
-straight into geojson.io, QGIS, or anything else that reads GeoJSON. Per the
-GeoJSON spec, coordinates are `[lon, lat]`, reversed from the order videre uses
-everywhere else.
+| Radius | Groups look like |
+|---|---|
+| 2 to 5 km | Neighbourhoods and individual venues |
+| 15 km (default) | Which city was I in |
+| 50 to 100 km | Regions, metro areas |
+| 300+ km | Countries, trips |
+
+There is no correct value. A single holiday reads better at 5 km, a decade of
+photos at 15 or more. Since every run recomputes from scratch, trying another
+radius costs nothing but time.
+
+```bash
+videre locations --radius 5     # break a city into districts
+videre locations --radius 200   # collapse a trip into one place
+```
+
+Every coordinate ends up in some group. Unlike face grouping there is no quality
+gate, so a single photo taken somewhere unique becomes its own one-photo place,
+which is correct: a GPS fix is never ambiguous the way a blurry face is.
+
+## Feeding a map
+
+`--geojson` emits a standard `FeatureCollection` of points, which drops straight
+into geojson.io, QGIS, or anything else that reads GeoJSON:
+
+```bash
+videre locations --geojson > places.geojson
+videre locations --radius 5 --geojson | pbcopy    # paste into geojson.io
+```
+
+Per the GeoJSON spec, coordinates are `[lon, lat]`, reversed from the order
+videre uses everywhere else. That is the spec's convention, not a bug.
+
+`--json` gives the same data in videre's own shape, with `id`, `name`,
+`centroid_lat`, `centroid_lon` and `photo_count` per cluster:
+
+```bash
+videre locations --json | jq -r '.clusters[] | "\(.photo_count)\t\(.name)"' | sort -rn
+```
 
 `--json` and `--geojson` are mutually exclusive.
+
+## Caveats
+
+:::caution[Every run is a full recompute, and it is slower than it sounds]
+Each run clears the previous results and regroups from scratch. The clustering
+itself is sub-second, but writing the results back measured about **8 minutes on
+a 70,000 file library**.
+
+The whole recompute runs inside one transaction, so it holds the single write
+lock for that entire window. A [`videre watch`](/commands/watch/) running at the
+same time will block until it finishes.
+
+On a large library, run it deliberately rather than casually, and not while
+something else needs to write.
+:::
+
+**Cluster IDs are not stable between runs.** They are only meaningful within one
+run's output. Do not store them or build anything that assumes `id` 7 is the
+same place tomorrow. Names are re-derived each time; the IDs are not.
+
+**`photo_count` counts files, not distinct photos.** Two copies of one image at
+the same coordinates count twice, because it counts rows in the database. That
+makes the numbers a good measure of storage and a slightly inflated measure of
+"how many pictures did I take here".
+
+**Only photos with GPS take part.** Most phone photos have it; most scans,
+screenshots and older camera photos do not. Nothing is wrong if a large part of
+your library never appears here. A library with no GPS at all is not an error:
+it reports zero clusters and exits successfully.
+
+**Place names come from an offline lookup**, so they are coarser than a live
+geocoder would give and occasionally name a nearby larger place instead of the
+exact one. That is the tradeoff for making this work with no network.
+
+**Centroids are a plain average**, which is wrong near the antimeridian
+(+/-180 longitude) and the poles. A group spanning that line gets a centroid
+somewhere unhelpful. Accepted rather than solved, since this is
+15 km-granularity grouping.
 
 ## Related
 
 This groups places already in your library. To search for an arbitrary place by
-name, including ones you have no photos of yet, use
-[`videre search --location`](/commands/search/) — that one does use the network.
+name, including somewhere you have no photos of yet, use
+[`videre search --location`](/commands/search/). That one does use the network,
+and does not depend on this command having run.
