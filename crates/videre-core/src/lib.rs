@@ -16,6 +16,7 @@ pub mod mime_probe;
 pub mod person_search;
 pub mod pipeline_runs;
 pub mod progress;
+pub mod query;
 pub mod semaphore;
 pub mod thumb_cache;
 pub mod vectors;

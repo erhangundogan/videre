@@ -15,9 +15,13 @@ export default defineConfig({
 			title: 'videre',
 			description:
 				'A local-first CLI for making sense of a folder full of photos and videos: duplicates, semantic search, faces, and places.',
+			// Horizontal lockup: the mark and wordmark side by side fit the header
+			// bar far better than the stacked square version, which forced the
+			// header taller to stay legible. The square logos are still used by
+			// scripts/make-og-image.mjs, whose card is laid out around them.
 			logo: {
-				light: './src/assets/logo-light.svg',
-				dark: './src/assets/logo-dark.svg',
+				light: './src/assets/logo-horizontal-light.svg',
+				dark: './src/assets/logo-horizontal-dark.svg',
 				replacesTitle: true,
 			},
 			favicon: '/favicon.svg',
@@ -78,6 +82,7 @@ export default defineConfig({
 					label: 'Guides',
 					items: [
 						{ label: 'Browsing and labeling', slug: 'guides/browsing' },
+						{ label: 'Compositional searches', slug: 'guides/compositional-search' },
 						{ label: 'Long-running jobs', slug: 'guides/long-running-jobs' },
 						{ label: 'Keeping libraries separate', slug: 'guides/multiple-libraries' },
 						{ label: 'Using several search models', slug: 'guides/multiple-models' },

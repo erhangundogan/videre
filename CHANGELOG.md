@@ -15,6 +15,47 @@ version number and are released together.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-08-11
+
+### Added
+
+- **`videre search` filters now compose.** `--person`, `--category`, `--location`
+  and the new date bounds can be combined freely; each narrows the result set,
+  and a text query or `--image` ranks whatever survives. Previously exactly one
+  mode could be used per invocation.
+- **Date filtering.** `--after` (inclusive) and `--before` (exclusive), or the
+  `--date` shorthand accepting `YYYY`, `YYYY-MM` or `YYYY-MM-DD`. Adjacent ranges
+  tile without both claiming the boundary instant.
+- **`--sort`**, taking a comma-separated `field[:asc|desc]` list over
+  `relevance`, `distance`, `date` and `size`. Later fields break ties in earlier
+  ones, so `--sort=distance,date` means nearest first and newest first among
+  files at the same place. Directions are optional; each field defaults to what
+  is usually meant.
+- **The MCP `search` tool exposes all of it**, under the same names. The CLI and
+  the MCP server now run the identical code path, so results cannot diverge.
+- Search results carry the effective date, so a caller can see why a file
+  matched.
+
+### Changed
+
+- **`-k` now applies to `--person` and `--category`.** Those modes previously
+  returned every match, unordered. They are now truncated like any other search
+  and ordered deterministically. Pass a large `-k` for the full set.
+- **The MCP `search` tool's rule changed** from "exactly one of query, person or
+  image_path" to "at most one ranker, plus any filters, at least one of
+  something". Existing single-parameter calls keep working.
+- Asking for a sort whose input is absent is now an error rather than a silent
+  fallback: `--sort relevance` needs a query or `--image`, `--sort distance`
+  needs `--location`.
+
+### Notes
+
+Dates match the EXIF capture date when a file has one, and its modification time
+otherwise, so files without EXIF (screenshots, most videos) stay reachable by
+date. The trade-off is that results can mix "when taken" with "when the file was
+last written"; running `videre fix-dates` makes the two agree.
+
+
 ## [0.11.5] - 2026-08-11
 
 ### Added
@@ -315,7 +356,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.11.5...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/erhangundogan/videre/compare/v0.11.5...v0.12.0
 [0.11.5]: https://github.com/erhangundogan/videre/compare/v0.11.4...v0.11.5
 [0.11.4]: https://github.com/erhangundogan/videre/compare/v0.11.3...v0.11.4
 [0.11.3]: https://github.com/erhangundogan/videre/compare/v0.11.2...v0.11.3

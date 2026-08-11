@@ -174,6 +174,16 @@ videre prune             # removes the old ones
 Faces and embeddings survive, because they are keyed by content rather than
 path. Only the paths change.
 
+### Ask a compound question
+
+```bash
+videre search --category document --date 2025-05 \
+  --location "Altunizade, Istanbul" --radius 5
+```
+
+Filters AND together, so each one narrows further. See
+[compositional searches](/guides/compositional-search/).
+
 ### Try a different search model
 
 ```bash
