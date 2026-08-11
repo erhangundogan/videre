@@ -33,6 +33,7 @@ export default defineConfig({
 						{ label: 'What videre is', slug: 'index' },
 						{ label: 'Install', slug: 'start/install' },
 						{ label: 'Quickstart', slug: 'start/quickstart' },
+						{ label: 'Workflows', slug: 'start/workflows' },
 						{ label: 'Cautions', slug: 'start/cautions' },
 					],
 				},
