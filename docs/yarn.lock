@@ -2397,7 +2397,6 @@ __metadata:
     "@astrojs/starlight": "npm:^0.41.7"
     astro: "npm:^7.1.6"
     sharp: "npm:^0.35.3"
-    starlight-theme-rapide: "npm:^0.5.2"
     wrangler: "npm:^4.120.1"
   languageName: unknown
   linkType: soft
@@ -5260,15 +5259,6 @@ __metadata:
   version: 2.0.2
   resolution: "space-separated-tokens@npm:2.0.2"
   checksum: 10c0/6173e1d903dca41dcab6a2deed8b4caf61bd13b6d7af8374713500570aa929ff9414ae09a0519f4f8772df993300305a395d4871f35bc4ca72b6db57e1f30af8
-  languageName: node
-  linkType: hard
-
-"starlight-theme-rapide@npm:^0.5.2":
-  version: 0.5.2
-  resolution: "starlight-theme-rapide@npm:0.5.2"
-  peerDependencies:
-    "@astrojs/starlight": ">=0.34.0"
-  checksum: 10c0/08c1fd8a13c9516637f278de5d06deb05b1e0feb192c1922233549bcf6849349d1bf1e9c74386b1306bebefac70104705c8936b9e9cd3d8be12fed07b23d817b
   languageName: node
   linkType: hard
 
