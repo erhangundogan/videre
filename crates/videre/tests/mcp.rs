@@ -37,6 +37,47 @@ fn make_db(dir: &std::path::Path) -> std::path::PathBuf {
     db
 }
 
+/// Fixture: four dated files, three of them classified as documents (two in
+/// May 2025, one in June), plus a May photo. Enough for a composed
+/// category + date query to have something to both narrow and order.
+fn make_dated_db(dir: &std::path::Path) -> std::path::PathBuf {
+    let db = dir.join("dated.db");
+    let conn = Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL,
+         size_bytes INTEGER, created_at TEXT, modified_at TEXT, ext TEXT,
+         phash INTEGER, exif_date TEXT, gps_lat REAL, gps_lon REAL,
+         width INTEGER, height INTEGER);
+         CREATE TABLE classifications (model_id TEXT NOT NULL, hash TEXT NOT NULL,
+         category TEXT NOT NULL, confidence REAL NOT NULL, classified_at TEXT NOT NULL,
+         PRIMARY KEY (model_id, hash));
+         CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL,
+         bbox TEXT NOT NULL, landmark TEXT, embedding BLOB NOT NULL,
+         cluster_id INTEGER, person_label TEXT, confirmed INTEGER DEFAULT 0,
+         is_primary INTEGER DEFAULT 0);
+         INSERT INTO file_hashes (path, hash, size_bytes, modified_at, exif_date, ext) VALUES
+           ('/tmp/may-a.png', 'd1', 10, '2025-05-02T00:00:00', '2025-05-02T00:00:00', 'png'),
+           ('/tmp/may-b.png', 'd2', 10, '2025-05-20T00:00:00', '2025-05-20T00:00:00', 'png'),
+           ('/tmp/june.png',  'd3', 10, '2025-06-01T00:00:00', '2025-06-01T00:00:00', 'png'),
+           ('/tmp/may-photo.png', 'd4', 10, '2025-05-11T00:00:00', '2025-05-11T00:00:00', 'png');
+         INSERT INTO faces (hash, bbox, embedding, person_label, confirmed) VALUES
+           ('d1', '0,0,50,50', X'0000', 'Alice', 1),
+           ('d3', '0,0,50,50', X'0000', 'Alice', 1);",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO classifications VALUES
+           (?1, 'd1', 'document', 0.9, '2025-01-01T00:00:00'),
+           (?1, 'd2', 'document', 0.9, '2025-01-01T00:00:00'),
+           (?1, 'd3', 'document', 0.9, '2025-01-01T00:00:00'),
+           (?1, 'd4', 'photo',    0.9, '2025-01-01T00:00:00')",
+        [videre_core::embeddings::DEFAULT_MODEL_ID],
+    )
+    .unwrap();
+    videre_core::db::ensure_file_hashes_columns(&conn);
+    db
+}
+
 struct McpClient {
     child: Child,
     stdin: ChildStdin,
@@ -315,20 +356,112 @@ fn search_text_without_embeddings_is_tool_error_and_server_survives() {
 }
 
 #[test]
-fn search_with_zero_or_two_query_modes_is_tool_error() {
+fn search_with_no_input_or_two_rankers_is_tool_error() {
     let dir = tempdir().unwrap();
     let db = make_db(dir.path());
     let mut client = McpClient::start(&db);
 
+    // Nothing at all would mean "the whole library", which is a mistake, not a
+    // query.
     let none = client.call_tool(8, "search", json!({}));
     assert_eq!(none["result"]["isError"], true, "{none}");
     assert!(none["result"]["content"][0]["text"]
         .as_str()
         .unwrap()
-        .contains("exactly one"));
+        .contains("at least one"));
 
-    let two = client.call_tool(9, "search", json!({"query": "x", "person": "Alice"}));
+    // Two rankers cannot both order the results. Filters compose; rankers do not.
+    let two = client.call_tool(
+        9,
+        "search",
+        json!({"query": "x", "image_path": "/tmp/example.jpg"}),
+    );
     assert_eq!(two["result"]["isError"], true, "{two}");
+    assert!(
+        two["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("at most one"),
+        "{two}"
+    );
+
+    client.shutdown();
+}
+
+#[test]
+fn search_composes_filters_and_matches_the_cli() {
+    let dir = tempdir().unwrap();
+    let db = make_dated_db(dir.path());
+
+    let mut client = McpClient::start(&db);
+    let resp = client.call_tool(
+        10,
+        "search",
+        json!({"category": "document", "date": "2025-05", "sort": "date:asc"}),
+    );
+    assert_ne!(resp["result"]["isError"], json!(true), "{resp}");
+    let doc = resp["result"]["structuredContent"].clone();
+    client.shutdown();
+
+    let cli = Command::new(videre_bin())
+        .args([
+            "search",
+            "--db",
+            db.to_str().unwrap(),
+            "--category",
+            "document",
+            "--date",
+            "2025-05",
+            "--sort",
+            "date:asc",
+            "--json",
+        ])
+        .output()
+        .expect("run videre search");
+    let cli_doc: serde_json::Value = serde_json::from_slice(&cli.stdout).unwrap();
+
+    assert_eq!(
+        cli_doc["count"], 2,
+        "fixture should have exactly two May 2025 documents: {cli_doc}"
+    );
+    assert_eq!(
+        cli_doc["results"][0]["path"], "/tmp/may-a.png",
+        "date:asc puts the earlier document first: {cli_doc}"
+    );
+    assert_eq!(
+        doc, cli_doc,
+        "the MCP tool and the CLI must run the same query"
+    );
+}
+
+#[test]
+fn search_treats_person_as_a_composable_filter() {
+    let dir = tempdir().unwrap();
+    let db = make_dated_db(dir.path());
+    let mut client = McpClient::start(&db);
+
+    // Alice appears on d1 (May) and d3 (June); the date filter keeps only May.
+    let resp = client.call_tool(11, "search", json!({"person": "Alice", "date": "2025-05"}));
+    assert_ne!(resp["result"]["isError"], json!(true), "{resp}");
+    let doc = &resp["result"]["structuredContent"];
+    assert_eq!(doc["count"], 1, "{doc}");
+    assert_eq!(doc["results"][0]["path"], "/tmp/may-a.png", "{doc}");
+
+    client.shutdown();
+}
+
+#[test]
+fn search_top_k_truncates_a_filter_only_query() {
+    let dir = tempdir().unwrap();
+    let db = make_dated_db(dir.path());
+    let mut client = McpClient::start(&db);
+
+    let resp = client.call_tool(12, "search", json!({"category": "document", "top_k": 1}));
+    let doc = &resp["result"]["structuredContent"];
+    assert_eq!(
+        doc["count"], 1,
+        "top_k must apply to a filter-only query: {doc}"
+    );
 
     client.shutdown();
 }

@@ -8,75 +8,79 @@ use videre_core::query::{self, Candidates, Filters, SortField, SortKey, Sortable
 use videre_core::{embeddings, vectors};
 use videre_ml::{device, model, search};
 
+/// One search request. Fields are `pub(crate)` rather than private because the
+/// MCP server builds one directly from its tool parameters and runs it through
+/// the same pipeline; a second, parallel query path is exactly what would let
+/// the two surfaces drift apart.
 #[derive(clap::Args)]
 pub struct SearchArgs {
     /// SQLite database with embeddings (default: resolved from ~/.videre; see 'videre config')
     #[arg(long)]
-    db: Option<PathBuf>,
+    pub(crate) db: Option<PathBuf>,
 
     /// Embedding model to search against (default: 'videre config set model', else
     /// the built-in default). Must already have been embedded; run
     /// 'videre stats' to see which models this library has.
     #[arg(long)]
-    model: Option<String>,
+    pub(crate) model: Option<String>,
 
     /// Text query, e.g. "sunset on beach" (omit when using --image)
-    query: Option<String>,
+    pub(crate) query: Option<String>,
 
     /// Search by example image instead of text
     #[arg(long, conflicts_with = "query")]
-    image: Option<PathBuf>,
+    pub(crate) image: Option<PathBuf>,
 
     /// Only files containing a named person (confirmed faces only)
     #[arg(long)]
-    person: Option<String>,
+    pub(crate) person: Option<String>,
 
     /// Only files classified as this category: photo/screenshot/document/
     /// meme/unknown (requires a prior 'videre classify' run)
     #[arg(long)]
-    category: Option<String>,
+    pub(crate) category: Option<String>,
 
     /// Only photos within --radius km of this place, e.g. "Berlin, Germany"
     /// (forward-geocoded via the free public Nominatim API, the first
     /// network call this CLI ever makes; results are cached locally)
     #[arg(long)]
-    location: Option<String>,
+    pub(crate) location: Option<String>,
 
     /// Search radius in km around --location
     #[arg(long, default_value_t = 20.0, requires = "location")]
-    radius: f64,
+    pub(crate) radius: f64,
 
     /// Only files whose date is on or after this (inclusive).
     /// Accepts YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS.
     #[arg(long, conflicts_with = "date")]
-    after: Option<String>,
+    pub(crate) after: Option<String>,
 
     /// Only files whose date is before this (exclusive), so adjacent ranges
     /// do not both match the boundary instant.
     #[arg(long, conflicts_with = "date")]
-    before: Option<String>,
+    pub(crate) before: Option<String>,
 
     /// Shorthand for a whole year, month, or day: YYYY, YYYY-MM, or YYYY-MM-DD
     #[arg(long)]
-    date: Option<String>,
+    pub(crate) date: Option<String>,
 
     /// Result order: comma-separated field[:asc|desc]. Fields: relevance,
     /// distance, date, size. Defaults are relevance/date/size descending and
     /// distance ascending.
     #[arg(long)]
-    sort: Option<String>,
+    pub(crate) sort: Option<String>,
 
     /// Number of results
     #[arg(short = 'k', long, default_value_t = 20)]
-    top_k: usize,
+    pub(crate) top_k: usize,
 
     /// Prepend the cosine score to each output line (no-op with --json: score is always included)
     #[arg(long)]
-    scores: bool,
+    pub(crate) scores: bool,
 
     /// Emit a single JSON object on stdout instead of human-readable text
     #[arg(long)]
-    json: bool,
+    pub(crate) json: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -139,7 +143,7 @@ impl Outcome {
 
 pub fn run(args: SearchArgs) -> Result<()> {
     if args.json {
-        match run_json(&args) {
+        match run_json(&args, &FreshEmbedder) {
             Ok(doc) => {
                 println!("{}", serde_json::to_string(&doc)?);
                 Ok(())
@@ -157,7 +161,7 @@ pub fn run(args: SearchArgs) -> Result<()> {
 }
 
 fn run_text(args: &SearchArgs) -> Result<()> {
-    let outcome = collect_hits(args)?;
+    let outcome = collect_hits(args, &FreshEmbedder)?;
     for row in &outcome.rows {
         if !args.scores {
             println!("{}", row.path);
@@ -187,8 +191,10 @@ fn run_text(args: &SearchArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_json(args: &SearchArgs) -> Result<SearchJson> {
-    let outcome = collect_hits(args)?;
+/// The whole query, as a JSON document. Shared with the MCP `search` tool,
+/// which builds a `SearchArgs` of its own and calls straight in here.
+pub(crate) fn run_json(args: &SearchArgs, embedder: &dyn QueryEmbedder) -> Result<SearchJson> {
+    let outcome = collect_hits(args, embedder)?;
     let results = outcome.hits();
     Ok(SearchJson {
         schema_version: SCHEMA_VERSION,
@@ -198,19 +204,34 @@ fn run_json(args: &SearchArgs) -> Result<SearchJson> {
     })
 }
 
-/// Person query: bare paths, no hash/score (confirmed faces only).
-pub(crate) fn person_hits(conn: &Connection, name: &str) -> Result<Vec<SearchHitJson>> {
-    let paths = videre_core::person_search::search_by_person(conn, name, None)?;
-    Ok(paths
-        .into_iter()
-        .map(|path| SearchHitJson {
-            path,
-            hash: None,
-            score: None,
-            distance_km: None,
-            date: None,
-        })
-        .collect())
+/// What a ranking query is: text, or an example image.
+pub(crate) enum QueryInput<'a> {
+    Text(&'a str),
+    Image(&'a Path),
+}
+
+/// Turns a ranking query into a vector.
+///
+/// Injected rather than constructed inside the pipeline because the two
+/// surfaces have opposite lifetimes: the CLI loads an embedder, answers one
+/// query and exits, while the MCP server keeps one alive across calls so only
+/// the first search pays the load. Everything else about the query is shared,
+/// which is what stops the two drifting apart.
+pub(crate) trait QueryEmbedder {
+    fn embed(&self, model_id: &str, input: QueryInput<'_>) -> Result<Vec<f32>>;
+}
+
+/// The CLI's: one embedder per invocation, dropped when the command exits.
+pub(crate) struct FreshEmbedder;
+
+impl QueryEmbedder for FreshEmbedder {
+    fn embed(&self, model_id: &str, input: QueryInput<'_>) -> Result<Vec<f32>> {
+        let embedder = model::Embedder::load(device::best_device(), model_id)?;
+        match input {
+            QueryInput::Text(text) => embedder.embed_text(text),
+            QueryInput::Image(path) => model::embed_image_file(&embedder, path),
+        }
+    }
 }
 
 /// Load the embedding corpus, erroring if empty. Called BEFORE any model load
@@ -230,29 +251,6 @@ pub(crate) fn load_corpus(
         .into_iter()
         .map(|(hash, blob)| (hash, vectors::from_f16_bytes(&blob)))
         .collect())
-}
-
-/// Rank the corpus against a query vector; one hit per on-disk path of each
-/// matched hash, carrying hash + cosine score.
-pub(crate) fn ranked_hits(
-    conn: &Connection,
-    corpus: &[(String, Vec<f32>)],
-    query_vec: &[f32],
-    top_k: usize,
-) -> Result<Vec<SearchHitJson>> {
-    let mut hits = Vec::new();
-    for (hash, score) in search::top_k(query_vec, corpus, top_k) {
-        for path in embeddings::paths_for_hash(conn, &hash)? {
-            hits.push(SearchHitJson {
-                path,
-                hash: Some(hash.clone()),
-                score: Some(score),
-                distance_km: None,
-                date: None,
-            });
-        }
-    }
-    Ok(hits)
 }
 
 /// Whether this invocation ranks by similarity at all. Only a text query or
@@ -415,7 +413,7 @@ fn describe_query(args: &SearchArgs, dates: &(Option<String>, Option<String>)) -
 /// Person hits carry only a path (person search has always returned bare
 /// paths); every other hit carries its hash, plus a cosine score when there
 /// was a ranking query and a distance when `--location` was given.
-fn collect_hits(args: &SearchArgs) -> Result<Outcome> {
+fn collect_hits(args: &SearchArgs, embedder: &dyn QueryEmbedder) -> Result<Outcome> {
     let sort_keys = resolve_sort(args)?;
     let primary = sort_keys[0].field;
     let dates = resolve_dates(args)?;
@@ -453,7 +451,7 @@ fn collect_hits(args: &SearchArgs) -> Result<Outcome> {
     }
 
     let scores = is_ranked(args)
-        .then(|| rank(args, &conn, &db, &model_id, &cands, &sort_keys))
+        .then(|| rank(args, &conn, &db, &model_id, &cands, &sort_keys, embedder))
         .transpose()?;
 
     // A ranked query has already reduced the field to its scored hashes.
@@ -519,6 +517,7 @@ fn rank(
     model_id: &str,
     cands: &Candidates,
     sort_keys: &[SortKey],
+    embedder: &dyn QueryEmbedder,
 ) -> Result<HashMap<String, f32>> {
     let corpus = load_corpus(conn, db, model_id)?;
     let corpus: Vec<(String, Vec<f32>)> = match &cands.hashes {
@@ -529,10 +528,9 @@ fn rank(
         None => corpus,
     };
 
-    let embedder = model::Embedder::load(device::best_device(), model_id)?;
     let query_vec = match (&args.query, &args.image) {
-        (Some(text), None) => embedder.embed_text(text)?,
-        (None, Some(img)) => model::embed_image_file(&embedder, img)?,
+        (Some(text), None) => embedder.embed(model_id, QueryInput::Text(text))?,
+        (None, Some(img)) => embedder.embed(model_id, QueryInput::Image(img))?,
         _ => anyhow::bail!("provide either a text query or --image <path>"),
     };
 
