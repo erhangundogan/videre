@@ -1,0 +1,79 @@
+---
+# The page title becomes the browser tab and the search-result headline, where
+# Starlight appends the site name. A bare "videre" here renders "videre | videre",
+# which wastes the one line search engines show for the domain's front page.
+title: Local-first photo and video library CLI
+description: A local-first CLI for making sense of a folder full of photos and videos.
+template: splash
+hero:
+  title: videre
+  tagline: A local-first tool for making sense of a folder full of photos and videos. Nothing is uploaded, nothing is moved, nothing is deleted behind your back.
+  image:
+    dark: ../../assets/logo-dark.svg
+    light: ../../assets/logo-light.svg
+  actions:
+    - text: Quickstart
+      link: /start/quickstart/
+      icon: right-arrow
+    - text: Install
+      link: /start/install/
+      variant: minimal
+    - text: View on GitHub
+      link: https://github.com/erhangundogan/videre
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## What it does
+
+<CardGrid stagger>
+	<Card title="Find duplicates" icon="copy">
+		Exact copies by content, and near-identical ones by appearance. It prints
+		what *could* go and stops there, so nothing is deleted without you.
+	</Card>
+	<Card title="Search by description" icon="magnifier">
+		Ask for "sunset over water" or "my red car" and get matches, entirely
+		offline. Or hand it a photo and find ones that look like it.
+	</Card>
+	<Card title="Recognise faces" icon="seti:pipeline">
+		Faces are grouped for you, so you name one group of 40 photos rather than
+		tagging 40 photos one at a time.
+	</Card>
+	<Card title="Fix wrong dates" icon="seti:clock">
+		Set each file's timestamp from the date the camera actually recorded, so
+		everything sorts properly again.
+	</Card>
+	<Card title="Group by place" icon="earth">
+		Cluster photos by where they were taken, using GPS already in the files.
+	</Card>
+	<Card title="Drive it from an AI agent" icon="rocket">
+		`videre mcp` hands search and duplicate review to a model over stdio, with
+		no server to set up.
+	</Card>
+</CardGrid>
+
+## Why videre
+
+Most photo apps want to *own* your library. They import everything into their
+own storage, index it in a database only they can read, then nudge you toward
+their cloud. videre works the other way round: it is a lens over a folder you
+already own. Point it at a directory and you get a single SQLite file describing
+what is there. Stop using it and your photos are exactly as they were.
+
+- **It never touches your photos.** Nothing is moved, renamed, copied, or
+  re-encoded. The one exception is [`videre fix-dates`](/commands/fix-dates/),
+  which you run deliberately, and which only corrects a file's date.
+- **Nothing leaves your machine.** No account, no upload, no telemetry. The one
+  exception is [`videre search --location`](/commands/search/), which looks a
+  place name up once and remembers it.
+- **It will not delete anything behind your back.**
+  [`videre dedupe`](/commands/dedupe/) prints what could go and stops. You
+  decide, and you can review the candidates in a browser first.
+- **Long jobs are safe to interrupt.** Preparing search or scanning faces can
+  take hours on a large library. Ctrl-C is fine; rerunning continues from where
+  it stopped.
+
+Before you point it at a real library, read the [cautions](/start/cautions/) —
+it is short, and it covers the handful of commands that do change something.
