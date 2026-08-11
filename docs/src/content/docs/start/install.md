@@ -94,7 +94,43 @@ See [platform support](/reference/platforms/) for the per-command matrix.
 Nothing is downloaded until you run a command that needs it. Scanning,
 de-duplicating, fixing dates, pruning and stats work with no model at all.
 
-- The first [`videre embed`](/commands/embed/) downloads about 780 MB.
-- The first [`videre faces`](/commands/faces/) downloads a separate 180 MB.
+Two commands need machine-learning models, and each fetches its own from
+[Hugging Face](https://huggingface.co) the first time you run it:
 
-Both are resumable, so you can stop and rerun.
+| Command | Model | What it is | Size |
+|---|---|---|---|
+| [`videre embed`](/commands/embed/) | [`google/siglip-base-patch16-224`](https://huggingface.co/google/siglip-base-patch16-224) | SigLIP, Google's image/text model. Turns a photo and a phrase into comparable vectors, which is what makes "sunset over water" match a picture. | ~780 MB |
+| [`videre faces`](/commands/faces/) | [`WePrompt/buffalo_l`](https://huggingface.co/WePrompt/buffalo_l) | InsightFace buffalo_l, two ONNX models: `det_10g.onnx` (SCRFD) finds faces, `w600k_r50.onnx` (ArcFace) turns each face into a vector so matching ones can be grouped. | ~180 MB |
+
+Both downloads are resumable, so you can stop and rerun.
+
+They are only fetched once and then reused, including by later runs against a
+different library. The download happens at the start of the run, before any of
+your photos are processed.
+
+### Where they are stored
+
+In the standard Hugging Face cache, shared with any other tool that uses it:
+
+```
+~/.cache/huggingface/hub/
+```
+
+Set `HF_HOME` to put it elsewhere. This is separate from
+[videre's own directory](/reference/paths/), so removing `~/.videre` does not
+delete the models, and deleting the cache means the next `embed` or `faces` run
+downloads them again.
+
+### Bigger models are opt-in
+
+The table above is the default. If you select a different
+[search model](/reference/models/), it is fetched instead, and the larger ones
+are considerably bigger: `siglip2-base-patch16-384` is about 1.4 GB and
+`siglip-so400m-patch14-384` about 3.3 GB. Nothing downloads them unless you ask
+for them by name.
+
+:::note[Nothing is uploaded]
+These are downloads only. The models run on your machine, and your photos are
+never sent anywhere. The one feature that makes an outbound request is
+[`videre search --location`](/commands/search/), which looks up a place name.
+:::
