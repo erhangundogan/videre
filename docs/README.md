@@ -45,9 +45,30 @@ browser.
 
 ## Deploying
 
-Any static host works, since `npm run build` produces plain files in `dist/`.
-For Cloudflare Pages: root directory `docs`, build command `npm run build`,
-output directory `dist`.
+`yarn build` produces plain static files in `dist/`, so any static host works.
+The site is served from Cloudflare Pages at <https://docs.videre.sh>.
+
+Project settings:
+
+| Setting | Value |
+|---|---|
+| Root directory | `docs` |
+| Build command | `corepack enable && yarn install --immutable && yarn build` |
+| Build output directory | `dist` |
+| Node version | from `.node-version` (24.11.1) |
+
+Two of those are load-bearing rather than boilerplate:
+
+**`corepack enable` in the build command.** Cloudflare's build image ships Yarn
+1 by default. Running it against this Yarn 4 lockfile fails, so corepack has to
+be turned on first to honour the `packageManager` field in `package.json`.
+
+**`.node-version` pins 24.11.1.** Astro 7 requires Node >= 22.12.0, verified the
+hard way: a build on 22.11.0 refuses to start with `Node.js v22.11.0 is not
+supported by Astro`. Pinning a bare major would leave that to chance.
+
+`--immutable` makes the build fail if `yarn.lock` is out of date, rather than
+silently resolving different versions than the ones tested locally.
 
 ## Where things belong
 
