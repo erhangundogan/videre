@@ -14,7 +14,7 @@ export default defineConfig({
 		starlight({
 			title: 'videre',
 			description:
-				'A local-first CLI for making sense of a folder full of photos and videos: duplicates, semantic search, faces, and places.',
+				'Find any photo by describing it, by who is in it, or where it was taken. Duplicates, semantic search, faces and places over a folder you already own, entirely offline.',
 			// Horizontal lockup: the mark and wordmark side by side fit the header
 			// bar far better than the stacked square version, which forced the
 			// header taller to stay legible. The square logos are still used by
