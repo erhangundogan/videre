@@ -215,7 +215,12 @@ jobs:
 
           # Checksums come from the release's own .sha256 files, so the formula
           # can never disagree with what was actually published.
-          gh release download "$tag" --pattern '*.sha256' --dir /tmp/sums
+          #
+          # --repo is required: this job deliberately does not check the
+          # repository out, so gh has no git remote to infer from and fails
+          # with "not a git repository". That is what broke the v0.12.0 tap.
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+            --pattern '*.sha256' --dir /tmp/sums
           sha() { awk '{print $1}' "/tmp/sums/videre-$tag-$1.sha256"; }
           mac_arm=$(sha aarch64-apple-darwin)
           lnx_x64=$(sha x86_64-unknown-linux-gnu)
