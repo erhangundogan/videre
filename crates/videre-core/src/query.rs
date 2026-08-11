@@ -119,6 +119,52 @@ pub fn by_category(conn: &Connection, model_id: &str, category: &str) -> Result<
     Ok(rows.collect::<rusqlite::Result<HashSet<String>>>()?)
 }
 
+use std::collections::HashMap;
+
+/// Great-circle distance in km.
+fn haversine(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    const R: f64 = 6371.0;
+    let (dlat, dlon) = ((lat2 - lat1).to_radians(), (lon2 - lon1).to_radians());
+    let a = (dlat / 2.0).sin().powi(2)
+        + lat1.to_radians().cos() * lat2.to_radians().cos() * (dlon / 2.0).sin().powi(2);
+    2.0 * R * a.sqrt().asin()
+}
+
+/// Hashes within `radius_km` of a point, mapped to their distance in km.
+///
+/// Returns distances rather than a bare set because they are the ranker's
+/// input for `SortField::Distance`.
+pub fn by_location(
+    conn: &Connection,
+    lat: f64,
+    lon: f64,
+    radius_km: f64,
+) -> Result<HashMap<String, f64>> {
+    let mut stmt = conn.prepare(
+        "SELECT hash, gps_lat, gps_lon FROM file_hashes
+         WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, f64>(1)?,
+            r.get::<_, f64>(2)?,
+        ))
+    })?;
+    let mut out = HashMap::new();
+    for row in rows {
+        let (hash, plat, plon) = row?;
+        let d = haversine(lat, lon, plat, plon);
+        if d <= radius_km {
+            // Keep the nearest path for a hash that appears at several coords.
+            out.entry(hash)
+                .and_modify(|e: &mut f64| *e = e.min(d))
+                .or_insert(d);
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,5 +390,49 @@ mod tests {
         let conn = db_with_faces_and_classes();
         assert!(by_person(&conn, "Nobody").unwrap().is_empty());
         assert!(by_category(&conn, "m1", "meme").unwrap().is_empty());
+    }
+
+    fn db_with_gps() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (
+                path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
+                modified_at TEXT, exif_date TEXT, gps_lat REAL, gps_lon REAL);
+             INSERT INTO file_hashes VALUES
+                ('/near.jpg','hn',100,'2025-01-01T00:00:00',NULL,52.5200,13.4050),
+                ('/far.jpg','hf',100,'2025-01-01T00:00:00',NULL,48.8566,2.3522),
+                ('/nogps.jpg','hx',100,'2025-01-01T00:00:00',NULL,NULL,NULL);",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn location_predicate_returns_only_within_radius_with_distances() {
+        let conn = db_with_gps();
+        // Berlin centre, 10 km radius.
+        let got = by_location(&conn, 52.5200, 13.4050, 10.0).unwrap();
+        assert!(got.contains_key("hn"));
+        assert!(
+            !got.contains_key("hf"),
+            "Paris is not within 10 km of Berlin"
+        );
+        assert!(!got.contains_key("hx"), "a file with no GPS cannot match");
+        assert!(
+            got["hn"] < 0.1,
+            "distance to itself should be ~0, got {}",
+            got["hn"]
+        );
+    }
+
+    #[test]
+    fn location_distance_is_roughly_correct_over_a_long_span() {
+        let conn = db_with_gps();
+        let got = by_location(&conn, 52.5200, 13.4050, 2000.0).unwrap();
+        let d = got["hf"];
+        assert!(
+            (870.0..890.0).contains(&d),
+            "Berlin to Paris is ~878 km, got {d}"
+        );
     }
 }
