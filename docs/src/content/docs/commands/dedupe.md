@@ -151,3 +151,7 @@ whether you have near-duplicates instead.
 With `--json`, stdout is instead a single JSON object, always, including an
 error object plus a nonzero exit code on failure. That makes it safe to script
 against without parsing the human-readable summary.
+
+## More detail
+
+- [Backing up](/guides/backup/) covers what to keep before deleting in bulk.

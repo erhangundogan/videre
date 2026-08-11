@@ -126,3 +126,8 @@ faster and lose more on an interrupt.
 on pure JPEG/PNG, 7% on a realistic mix, with no meaningful quality change. It
 is opt-in because 7% did not justify perturbing an existing library, and it
 does not affect vectors already written.
+
+## More detail
+
+- [Long-running jobs](/guides/long-running-jobs/) covers what is safe to run alongside this, and what an interrupt costs.
+- [Using several search models](/guides/multiple-models/) covers trying a bigger model without losing this work.

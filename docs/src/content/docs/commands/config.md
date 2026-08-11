@@ -118,3 +118,7 @@ yourself. See [`videre scan`](/commands/scan/).
 or `--model`. The only environment variables that affect behaviour are
 `VIDERE_HOME` and `VIDERE_EMBED_DTYPE`, both listed under
 [where your data lives](/reference/paths/#environment-variables).
+
+## More detail
+
+- [Keeping libraries separate](/guides/multiple-libraries/) covers using these settings for more than one collection.

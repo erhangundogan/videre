@@ -109,8 +109,9 @@ videre dedupe --db ~/work.db          # only ever considers work photos
 ```
 
 Separate databases also get separate embeddings and separate locks, so the two
-never interfere. Set one as the default and pass `--db` for the other, or use
-`VIDERE_HOME` below to switch the whole context at once.
+never interfere. See
+[keeping libraries separate](/guides/multiple-libraries/) for what is still
+shared between them, and when `VIDERE_HOME` is the better tool.
 
 :::caution[An unplugged drive is handled, but know the rule]
 With several roots in one database, some of them may be offline at any time.
@@ -167,88 +168,21 @@ Model choice is deliberately not an environment variable. Use
 
 ## Thumbnail cache
 
-Converting a HEIC file is slow, about 7.6 seconds each, so decoded images are
-cached and reused. This is the one piece of videre's storage that can grow to
-tens of gigabytes, and the one most worth understanding.
-
-### Where it lives
+Decoded images are cached so a slow HEIC conversion happens once rather than
+every time.
 
 ```
 ~/.cache/videre/thumbnails/          # normally
 <VIDERE_HOME>/cache/thumbnails/      # when VIDERE_HOME is set
 ```
 
-Files are named by **content hash**, not path:
+Keyed by content hash, so the same photo in two databases is converted once.
+This is the one store that reaches **tens of GB**, because it keeps a
+full-resolution decode per HEIC file, and it has no size limit or expiry. Only
+[`videre prune`](/commands/prune/) reclaims anything, and only for photos no
+longer in the database.
 
-| File | What it is |
-|---|---|
-| `<hash>_240.jpg` | Grid thumbnail |
-| `<hash>_1200.jpg` | Lightbox size |
-| `<hash>_original.jpg` | **Full resolution decode** |
-| `<hash>_face<id>_<size>.jpg` | A cropped face |
-| `<hash>_*.tmp<pid>` | A write in progress, ignore these |
+Deleting the directory is safe; everything in it regenerates on demand.
 
-### The full-resolution copies are the size problem
-
-`<hash>_original.jpg` is a complete decode at original dimensions, not a
-thumbnail. It exists because [`videre faces`](/commands/faces/) needs full
-resolution to place face boxes correctly, and reusing it is about 70x faster
-than decoding again (~108 ms against ~7.6 s).
-
-The consequence is that a HEIC-heavy library can easily produce **tens of GB** of
-cache. Nothing warns you, and there is no size limit or eviction:
-
-- No maximum size, no age-based expiry, no `--max-cache-size`.
-- It only grows during normal use, since
-  [`watch --heic`](/commands/watch/) fills it deliberately and
-  [`report --show-faces`](/commands/report/) fills it lazily as you browse.
-- **Only [`videre prune`](/commands/prune/) ever removes anything**, and only
-  entries whose hash no longer appears in `file_hashes`. Cache for photos you
-  still own is never reclaimed.
-
-If you need the space back immediately, deleting the directory is safe. Every
-file in it is derived, and it regenerates on demand:
-
-```bash
-du -sh ~/.cache/videre/thumbnails/
-rm -rf ~/.cache/videre/thumbnails/
-```
-
-The only cost is re-conversion, which is why this is safe to do casually and an
-embedding is not.
-
-### It is shared between libraries
-
-Unlike [embeddings](/reference/models/), which are per library, this cache is a
-single global directory keyed by content.
-
-That is mostly a benefit: the same photo scanned into two databases is converted
-once. But two consequences follow.
-
-**One library's `prune` can delete another's cache.** Cache entries are removed
-when the hash is absent from *that* database's `file_hashes`, and prune cannot
-see the other library. So pruning your work library may discard thumbnails your
-personal library was using.
-
-This is harmless, and deliberately so: the affected photos simply get converted
-again next time they are viewed. Embeddings are kept per library precisely
-because losing those would cost hours instead of milliseconds.
-
-**`VIDERE_HOME` splits the cache.** Because the location follows `VIDERE_HOME`,
-switching to a different home means starting from an empty cache, and the old
-one stays on disk until you remove it. Worth knowing if you use `VIDERE_HOME` to
-juggle libraries: you pay the conversion cost once per home, and orphaned caches
-accumulate.
-
-### Warming it deliberately
-
-Running the HEIC stage before a long face-detection run avoids decoding
-everything twice:
-
-```bash
-videre watch ~/Photos --heic     # decode and cache, then Ctrl-C when it settles
-videre faces                     # reads the cache instead of re-decoding
-```
-
-Do not run these two at the same time. See the concurrency caveat under
-[`videre faces`](/commands/faces/).
+[Caches and disk use](/guides/caches/) covers all three caches, what each costs
+to lose, and how to work through reclaiming space.

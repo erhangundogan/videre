@@ -176,3 +176,7 @@ the drive unplugged; the paths it prints just will not resolve.
 | `--location` | `path`, `hash`, `distance_km` |
 
 `--scores` is a no-op under `--json`, since the score is always included.
+
+## More detail
+
+- [Using several search models](/guides/multiple-models/) covers comparing models on your own queries.

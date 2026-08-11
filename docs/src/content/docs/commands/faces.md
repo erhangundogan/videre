@@ -186,3 +186,9 @@ time creeps up, so 6 is the default.
 `--profile` prints per-stage timings (load, detect, align, embed, db write),
 which is the quickest way to see whether a slow run is bound by decoding or by
 inference.
+
+## More detail
+
+- [Long-running jobs](/guides/long-running-jobs/) covers running this alongside other commands, and resuming.
+- [Caches and disk use](/guides/caches/) covers the decode cache this reads from.
+- [Backing up](/guides/backup/) covers why the names you assign are the one thing that cannot be recomputed.

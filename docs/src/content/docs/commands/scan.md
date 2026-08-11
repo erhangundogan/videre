@@ -102,3 +102,8 @@ cause is fixed.
 **A full scan reads every byte.** On an external drive or a network share that
 is the dominant cost, and it is why `--retry-incomplete` exists. Nothing is
 written to your files at any point.
+
+## More detail
+
+- [JSONL output](/guides/jsonl/) covers `--output` and what it gives up.
+- [Keeping libraries separate](/guides/multiple-libraries/) covers scanning collections that should not see each other.
