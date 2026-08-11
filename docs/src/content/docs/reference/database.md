@@ -227,6 +227,26 @@ SELECT COUNT(*) FROM file_hashes WHERE mime IS NULL;
 
 Those are what [`scan --retry-incomplete`](/commands/scan/) picks up.
 
+:::note[`NULL` and `application/octet-stream` mean different things]
+`mime IS NULL` means the file was **never processed**: no scan has read its
+bytes, or one started and did not finish.
+
+`mime = 'application/octet-stream'` means it **was** read and its type could not
+be identified. That is a finished result, not a failure.
+
+The distinction is what keeps `--retry-incomplete` from retrying the same
+unidentifiable file on every run forever. When deciding how to handle a file,
+videre treats the sentinel exactly like `NULL` and falls back to the extension,
+so an unrecognised file is still processed normally.
+
+```sql
+-- genuinely unfinished
+SELECT COUNT(*) FROM file_hashes WHERE mime IS NULL;
+-- read, but unidentifiable
+SELECT COUNT(*) FROM file_hashes WHERE mime = 'application/octet-stream';
+```
+:::
+
 ## Writing to it yourself
 
 videre opens every connection in WAL mode, so one writer and many readers

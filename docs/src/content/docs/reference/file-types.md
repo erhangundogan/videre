@@ -29,8 +29,18 @@ Types are identified by the file's actual leading bytes, not its name, so a
 mislabeled file is still handled correctly. This costs nothing extra, since the
 bytes are already being read to hash the file.
 
-Files scanned before this existed have no recorded type until you re-scan; those
-fall back to the file extension.
+A `.png` that is really a JPEG is treated as a JPEG. A `.dng` reports as TIFF,
+which it genuinely is, so DNG is excluded from search by extension rather than
+by type.
+
+When the bytes match nothing recognised, the file is recorded as
+`application/octet-stream` rather than left empty. That is a real answer, not a
+failure: it records that the question was asked and settled, which is what stops
+[`scan --retry-incomplete`](/commands/scan/) reopening the same file on every
+run. Such a file is still processed, falling back to its extension.
+
+Files scanned before type detection existed have no recorded type until you
+re-scan; those also fall back to the extension.
 
 ## EXIF fields
 
