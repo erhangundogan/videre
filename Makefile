@@ -46,8 +46,31 @@ coverage: ## Print per-file unit-test coverage (cargo-llvm-cov)
 coverage-html: ## Generate an HTML coverage report at target/llvm-cov/html/index.html
 	rustup run $(COVERAGE_TOOLCHAIN) cargo llvm-cov --workspace --html
 
+.PHONY: verify
+verify: fmt-check test docs-build ## Everything CI and a release gate on: formatting, tests, docs
+
+.PHONY: docs
+docs: ## Serve the docs site at http://localhost:4321 with live reload
+	yarn --cwd docs dev
+
+.PHONY: docs-install
+docs-install: ## Install the docs site's dependencies (yarn 4, run once)
+	yarn --cwd docs install --immutable
+
+.PHONY: docs-build
+docs-build: ## Build the docs site into docs/dist
+	yarn --cwd docs build
+
+.PHONY: docs-og
+docs-og: ## Regenerate the social card at docs/public/og.png
+	yarn --cwd docs og
+
+# :warning: This installs into ~/.cargo/bin, which usually comes first on PATH
+# and will then shadow a Homebrew-installed videre, silently. `videre --version`
+# keeps reporting the cargo copy however many times you `brew upgrade`. Check
+# with `which videre`, and `cargo uninstall videre` to undo.
 .PHONY: install
-install: ## Install the videre binary to ~/.cargo/bin via cargo install
+install: ## Install to ~/.cargo/bin (warning: shadows a Homebrew install, see comment)
 	cargo install --path crates/videre --force
 
 .PHONY: clean
