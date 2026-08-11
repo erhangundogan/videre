@@ -15,6 +15,10 @@ videre search "a dog" --json               # print one JSON object instead
 videre search --location "Rome" --radius 5 # tighter radius in km (default 20)
 videre search "a dog" --db ~/photos.db     # use a specific database
 videre search "a dog" --model <model-id>   # search a specific model's data
+videre search --date 2019-09               # only that month
+videre search --after 2020-01-01           # inclusive lower bound
+videre search --before 2020-01-01          # exclusive upper bound
+videre search --sort=distance,date         # order, with tie-breaks
 ```
 
 ## What each mode needs
@@ -118,16 +122,63 @@ videre search "kids playing in snow" --scores --model google/siglip2-base-patch1
 Asking for a model you have not prepared gives an error naming the ones you do
 have, rather than silently returning nothing.
 
-## How the modes differ
+## Filters compose
 
-Text and image search are ranked by similarity, and `-k` limits the results.
+`--person`, `--category`, `--location` and the date bounds are **filters**: give
+any combination and they AND together, each narrowing further.
 
-`--person` and `--category` are set membership, not ranked queries, so they
-ignore `-k` and have no score.
+A text query or `--image` is a **ranker**: at most one, and it orders whatever
+the filters left.
 
-`--location` is a "k nearest" query: results are sorted by distance ascending
-and truncated to `-k`. With `--scores` it prepends the distance in km rather
-than a similarity score.
+```bash
+videre search --category document --date 2025-05 --location "Istanbul" --radius 5
+videre search "birthday cake" --person "Alice" --after 2024-01-01
+```
+
+`-k` truncates the result of all of it, and `--sort` decides the order. See
+[compositional searches](/guides/compositional-search/) for the full model,
+worked examples and recipes.
+
+## Dates
+
+```bash
+videre search --date 2019            # a whole year
+videre search --date 2019-09         # a month
+videre search --date 2019-09-14      # a day
+videre search --after 2020-01-01     # everything since (inclusive)
+videre search --before 2020-01-01    # everything before (exclusive)
+```
+
+`--date` is shorthand and conflicts with `--after`/`--before`. `--before` is
+exclusive so adjacent ranges never both claim the boundary.
+
+Dates match the **EXIF capture date when the file has one, otherwise its
+modification time**, so screenshots and videos without EXIF are still reachable.
+That fallback can mix "when taken" with "when last written"; see the
+[guide](/guides/compositional-search/) for what that means in practice.
+
+## Sorting
+
+```bash
+videre search --date 2019 --sort date:asc            # oldest first
+videre search --location "Berlin" --sort=distance,date
+```
+
+`--sort` takes a comma-separated `field[:asc|desc]` list over `relevance`,
+`distance`, `date` and `size`. Later fields break ties in earlier ones.
+Directions are optional: relevance, date and size default to descending,
+distance to ascending.
+
+Omitted, it defaults to `relevance` if you gave a query or `--image`, else
+`distance` if you gave `--location`, else `date`.
+
+Asking for a sort whose input is missing is an error rather than a silent
+fallback:
+
+```
+$ videre search --sort distance
+error: --sort distance needs --location <place>
+```
 
 ## `--location` is the one mode that uses the network
 
@@ -145,13 +196,17 @@ include its suburbs, while a neighbourhood needs a few km to be meaningful.
 
 The result is cached locally, keyed by the query string, so repeating a query
 never repeats the lookup. That cache write makes `--location` the only search
-mode that writes to the database, and the only one not exposed through
-[`videre mcp`](/commands/mcp/).
+filter that writes to the database, including when it is used through
+[`videre mcp`](/commands/mcp/), which exposes it under the same name.
 
 For grouping photos by places already in your library, with no network at all,
 use [`videre locations`](/commands/locations/) instead.
 
 ## Caveats
+
+**`-k` now applies to `--person` and `--category`.** They previously returned
+every match, unordered. They are now truncated like any other search and
+ordered deterministically. Pass a large `-k` for the full set.
 
 **Video results are weaker.** Videos are embedded from a single frame, so a clip
 only matches if its opening frame shows the subject.
@@ -178,5 +233,7 @@ the drive unplugged; the paths it prints just will not resolve.
 `--scores` is a no-op under `--json`, since the score is always included.
 
 ## More detail
+
+- [Compositional searches](/guides/compositional-search/) covers combining filters, dates and sorting, with worked examples.
 
 - [Using several search models](/guides/multiple-models/) covers comparing models on your own queries.

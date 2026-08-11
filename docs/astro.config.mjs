@@ -78,6 +78,7 @@ export default defineConfig({
 					label: 'Guides',
 					items: [
 						{ label: 'Browsing and labeling', slug: 'guides/browsing' },
+						{ label: 'Compositional searches', slug: 'guides/compositional-search' },
 						{ label: 'Long-running jobs', slug: 'guides/long-running-jobs' },
 						{ label: 'Keeping libraries separate', slug: 'guides/multiple-libraries' },
 						{ label: 'Using several search models', slug: 'guides/multiple-models' },
