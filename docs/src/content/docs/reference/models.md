@@ -30,9 +30,11 @@ videre embed --model google/siglip2-base-patch16-384      # just this once
 videre config                                             # show what resolves
 ```
 
-Non-default models are larger and are only fetched if you actually select one.
-`siglip2-base-patch16-384` is about 1.4 GB, `siglip-so400m-patch14-384` about
-3.3 GB.
+Non-default models are larger and are only fetched if you actually select one:
+[`siglip2-base-patch16-384`](https://huggingface.co/google/siglip2-base-patch16-384)
+is about 1.4 GB, and
+[`siglip-so400m-patch14-384`](https://huggingface.co/google/siglip-so400m-patch14-384)
+about 3.3 GB.
 
 ## Using more than one
 

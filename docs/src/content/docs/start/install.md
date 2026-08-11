@@ -125,8 +125,11 @@ downloads them again.
 
 The table above is the default. If you select a different
 [search model](/reference/models/), it is fetched instead, and the larger ones
-are considerably bigger: `siglip2-base-patch16-384` is about 1.4 GB and
-`siglip-so400m-patch14-384` about 3.3 GB. Nothing downloads them unless you ask
+are considerably bigger:
+[`siglip2-base-patch16-384`](https://huggingface.co/google/siglip2-base-patch16-384)
+is about 1.4 GB and
+[`siglip-so400m-patch14-384`](https://huggingface.co/google/siglip-so400m-patch14-384)
+about 3.3 GB. Nothing downloads them unless you ask
 for them by name.
 
 :::note[Nothing is uploaded]

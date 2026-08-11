@@ -11,9 +11,12 @@ so trying one costs time but risks nothing.
 
 | Model | Download | Notes |
 |---|---|---|
-| `google/siglip-base-patch16-224` | ~780 MB | The default |
-| `google/siglip2-base-patch16-384` | ~1.4 GB | Newer, higher resolution |
-| `google/siglip-so400m-patch14-384` | ~3.3 GB | Largest |
+| [`google/siglip-base-patch16-224`](https://huggingface.co/google/siglip-base-patch16-224) | ~780 MB | The default |
+| [`google/siglip2-base-patch16-384`](https://huggingface.co/google/siglip2-base-patch16-384) | ~1.4 GB | Newer, higher resolution |
+| [`google/siglip-so400m-patch14-384`](https://huggingface.co/google/siglip-so400m-patch14-384) | ~3.3 GB | Largest |
+
+Each links to its model card on Hugging Face, where the training data, intended
+use, and limitations are documented by the people who built it.
 
 Higher resolution and more parameters generally mean better matching on fine
 detail, at proportionally more time per image and more disk.
