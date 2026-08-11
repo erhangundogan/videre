@@ -46,11 +46,29 @@ review to a model with no server to set up.
 
 ## Install
 
+Download a binary from the [latest release](https://github.com/erhangundogan/videre/releases/latest)
+and put it on your `PATH`. No Rust toolchain needed, nothing to compile.
+
+| platform | file |
+|---|---|
+| Apple Silicon Mac | `videre-<version>-aarch64-apple-darwin.tar.gz` |
+| Linux x86_64 | `videre-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux ARM64 | `videre-<version>-aarch64-unknown-linux-gnu.tar.gz` |
+
+```bash
+tar xzf videre-*-aarch64-apple-darwin.tar.gz
+./videre --version
+```
+
+Each archive has a `.sha256` alongside it. On macOS, a binary downloaded with a
+browser is quarantined by Gatekeeper; either download with `curl`, or clear it
+with `xattr -d com.apple.quarantine videre`.
+
+Or build it yourself, which needs Rust:
+
 ```bash
 cargo install videre
 ```
-
-Or from source:
 
 ```bash
 git clone git@github.com:erhangundogan/videre.git
@@ -58,10 +76,9 @@ cd videre
 cargo build --release
 ```
 
-**Apple Silicon Macs, and Linux.** Intel Macs are not supported: the ONNX
-Runtime dependency ships no prebuilt binaries for `x86_64-apple-darwin`, so
-videre cannot be built there at all, including via `cargo install`. Discovered
-2026-08-11 while setting up release builds.
+**Intel Macs are not supported.** The ONNX Runtime dependency ships no prebuilt
+binaries for `x86_64-apple-darwin`, so videre cannot be built there at all,
+including via `cargo install`.
 
 **macOS is the primary platform.** videre also runs on Linux, with one gap:
 HEIC photos and video frames are decoded using a macOS system tool, so on
@@ -69,7 +86,8 @@ Linux those files are skipped (with a clear message) for thumbnails, search,
 and face detection. They are still scanned, hashed, and de-duplicated. Regular
 JPEG/PNG and friends work everywhere.
 
-On ARM64 Linux the build needs one extra flag:
+On ARM64 Linux, *building from source* needs one extra flag (the released
+binary does not, it is already built with it):
 
 ```bash
 RUSTFLAGS="-C target-feature=+fp16" cargo install videre
