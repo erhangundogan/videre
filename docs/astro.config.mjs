@@ -1,6 +1,7 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import starlightThemeRapide from 'starlight-theme-rapide';
 
 const REPO = 'https://github.com/erhangundogan/videre';
 const SITE = 'https://docs.videre.sh';
@@ -12,6 +13,11 @@ export default defineConfig({
 	site: SITE,
 	integrations: [
 		starlight({
+			// A Starlight plugin, not a stylesheet: it swaps the whole colour
+			// system for the VS Code Vitesse palette. Keep it first so anything
+			// set below is understood as an override of the theme.
+			plugins: [starlightThemeRapide()],
+			customCss: ['./src/styles/overrides.css'],
 			title: 'videre',
 			description:
 				'Find any photo by describing it, by who is in it, or where it was taken. Duplicates, semantic search, faces and places over a folder you already own, entirely offline.',
