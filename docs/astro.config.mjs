@@ -60,6 +60,7 @@ export default defineConfig({
 					label: 'Reference',
 					items: [
 						{ label: 'Where your data lives', slug: 'reference/paths' },
+						{ label: 'The database', slug: 'reference/database' },
 						{ label: 'Platform support', slug: 'reference/platforms' },
 						{ label: 'Supported files', slug: 'reference/file-types' },
 						{ label: 'Search models', slug: 'reference/models' },
