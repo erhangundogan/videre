@@ -28,8 +28,38 @@ jobs:
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             echo "release already exists, reusing it"
           else
+            # Real notes, not a placeholder: this is what people read on the
+            # release page. v0.11.5 shipped with the internal "artifacts are
+            # uploaded by CI" string as its public description, which is how
+            # this was noticed. Written via a heredoc to a file, because
+            # inlining markdown into a YAML block scalar breaks on the first
+            # unindented line.
+            cat > /tmp/notes.md <<'NOTES'
+            ## Install
+
+            ```bash
+            brew install erhangundogan/tap/videre
+            ```
+
+            Or download an archive below and put `videre` on your `PATH`. No Rust toolchain, nothing to compile.
+
+            | platform | archive |
+            |---|---|
+            | Apple Silicon Mac | `aarch64-apple-darwin` |
+            | Linux x86_64 | `x86_64-unknown-linux-gnu` |
+            | Linux ARM64 | `aarch64-unknown-linux-gnu` |
+
+            Each has a `.sha256` alongside it. Every archive is downloaded onto a clean machine and actually run before this release is published.
+
+            Model weights download on first use, not at install: ~780 MB for `videre embed`, ~180 MB for `videre faces`. `scan`, `dedupe`, `fix-dates`, `prune`, `stats` and `locations` need no model at all.
+
+            Intel Macs are not supported: ONNX Runtime ships no prebuilt binaries for `x86_64-apple-darwin`.
+
+            See [CHANGELOG.md](https://github.com/erhangundogan/videre/blob/main/CHANGELOG.md) for what changed.
+            NOTES
+            sed -i 's/^            //' /tmp/notes.md
             gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" \
-              --notes "Artifacts are uploaded by CI. Published once the smoke job passes."
+              --notes-file /tmp/notes.md
           fi
 
   build:
@@ -172,3 +202,69 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release edit "$GITHUB_REF_NAME" --draft=false
+
+  # Regenerate the Homebrew formula so the tap can never lag the release. A tap
+  # that lags does not fail: it silently installs an old version, which is
+  # worse than not having one.
+  #
+  # Runs after publish, so the assets and their checksums definitely exist.
+  # Needs TAP_TOKEN, a fine-grained PAT with contents:write on the tap repo:
+  # the default GITHUB_TOKEN is scoped to this repository and cannot push
+  # there. Fails loudly if the secret is missing or expired rather than
+  # skipping, because a silently stale tap is exactly the failure being
+  # prevented.
+  tap:
+    name: bump the homebrew formula
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Regenerate and push the formula
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAP_TOKEN:-}" ]; then
+            echo "TAP_TOKEN is not set; the tap cannot be updated and would silently serve an old version." >&2
+            exit 1
+          fi
+          tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
+
+          # Checksums come from the release's own .sha256 files, so the formula
+          # can never disagree with what was actually published.
+          gh release download "$tag" --pattern '*.sha256' --dir /tmp/sums
+          sha() { awk '{print $1}' "/tmp/sums/videre-$tag-$1.sha256"; }
+          mac_arm=$(sha aarch64-apple-darwin)
+          lnx_x64=$(sha x86_64-unknown-linux-gnu)
+          lnx_arm=$(sha aarch64-unknown-linux-gnu)
+
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/erhangundogan/homebrew-tap.git" /tmp/tap
+          cd /tmp/tap
+          python3 - "$version" "$mac_arm" "$lnx_x64" "$lnx_arm" <<'PY'
+          import re, sys, pathlib
+          version, mac_arm, lnx_x64, lnx_arm = sys.argv[1:5]
+          p = pathlib.Path("Formula/videre.rb")
+          s = p.read_text()
+          s = re.sub(r'version "[^"]+"', f'version "{version}"', s, count=1)
+          # Order in the file is macOS arm, Linux x64, Linux arm.
+          shas = [mac_arm, lnx_x64, lnx_arm]
+          out, i = [], 0
+          for line in s.split("\n"):
+              if re.match(r'\s*sha256 "', line) and i < len(shas):
+                  line = re.sub(r'"[^"]+"', f'"{shas[i]}"', line); i += 1
+              out.append(line)
+          assert i == 3, f"expected 3 sha256 lines, rewrote {i}"
+          p.write_text("\n".join(out))
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/videre.rb
+          if git diff --cached --quiet; then
+            echo "formula already current"
+          else
+            git commit -m "videre $version"
+            git push
+          fi
