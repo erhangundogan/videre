@@ -38,18 +38,6 @@ export default defineConfig({
 					],
 				},
 				{
-					label: 'Guides',
-					items: [
-						{ label: 'Browsing and labeling', slug: 'guides/browsing' },
-						{ label: 'Long-running jobs', slug: 'guides/long-running-jobs' },
-						{ label: 'Keeping libraries separate', slug: 'guides/multiple-libraries' },
-						{ label: 'Using several search models', slug: 'guides/multiple-models' },
-						{ label: 'Caches and disk use', slug: 'guides/caches' },
-						{ label: 'Backing up', slug: 'guides/backup' },
-						{ label: 'JSONL output', slug: 'guides/jsonl' },
-					],
-				},
-				{
 					label: 'Commands',
 					items: [
 						{ label: 'Overview', slug: 'commands' },
@@ -67,6 +55,18 @@ export default defineConfig({
 						{ label: 'stats', slug: 'commands/stats' },
 						{ label: 'config', slug: 'commands/config' },
 						{ label: 'mcp', slug: 'commands/mcp' },
+					],
+				},
+				{
+					label: 'Guides',
+					items: [
+						{ label: 'Browsing and labeling', slug: 'guides/browsing' },
+						{ label: 'Long-running jobs', slug: 'guides/long-running-jobs' },
+						{ label: 'Keeping libraries separate', slug: 'guides/multiple-libraries' },
+						{ label: 'Using several search models', slug: 'guides/multiple-models' },
+						{ label: 'Caches and disk use', slug: 'guides/caches' },
+						{ label: 'Backing up', slug: 'guides/backup' },
+						{ label: 'JSONL output', slug: 'guides/jsonl' },
 					],
 				},
 				{
