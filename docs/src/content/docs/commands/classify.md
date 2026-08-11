@@ -3,9 +3,9 @@ title: videre classify
 description: Tag each photo as photo, screenshot, document, or meme.
 ---
 
-Tags each photo as photo, screenshot, document, or meme. Reuses the work
-[`videre embed`](/commands/embed/) already did, so it is quick: no new model, no
-re-reading of images.
+Tags each image as `photo`, `screenshot`, `document`, or `meme`, so you can
+separate real photographs from the receipts, memes and screenshots that
+accumulate in a camera roll.
 
 ```bash
 videre classify                        # classify everything not done yet
@@ -13,26 +13,99 @@ videre classify --reprocess            # redo everything, including already-tagg
 videre classify --margin 0.05          # how confident it must be (default 0.05)
 videre classify --silent               # no per-image progress
 videre classify --db ~/photos.db       # use a specific database
-videre classify --model <model-id>     # classify a specific model's data
+videre classify --model <id>           # classify a specific model's data
 ```
 
-Then find them with [`videre search --category`](/commands/search/):
+## The workflow
+
+It reuses the vectors [`videre embed`](/commands/embed/) already computed, so
+there is no new model to download and no image is read from disk again. On a
+library that is already embedded it finishes in seconds to minutes rather than
+hours.
 
 ```bash
+videre embed                           # prerequisite, the slow part
+videre classify                        # fast, reuses that work
 videre search --category screenshot
 ```
 
-Resumable: rerunning only classifies what is not yet done, unless `--reprocess`.
+Then use it to clear out the clutter:
 
-## Confidence
+```bash
+videre search --category screenshot -k 5000 > /tmp/shots.txt
+videre search --category meme | xargs -I{} mv {} ~/memes/
+videre search --category document        # receipts, tickets, forms
+```
 
-Anything it is not confident about is stored as `unknown` rather than guessed.
-`--margin` is the minimum gap between the best and second-best category needed
-to accept a result.
+Resumable: rerunning only classifies what is not yet done, so adding photos
+means `scan`, `embed`, `classify` again and only the new ones are considered.
 
-The default of 0.05 was chosen against real data: it produced no wrong labels,
-at the cost of leaving about 55% unknown. A lower 0.02 caught more but produced
-some confidently wrong ones. Raise it for stricter tagging, lower it if you
-would rather have a guess than an `unknown`.
+## Expect a lot of `unknown`
 
-Videos are excluded, since none of the four categories fit a video frame.
+This is the behaviour that surprises people. With the default `--margin 0.05`,
+roughly **half a real library comes back `unknown`**, and that is deliberate.
+
+A category is only assigned when the best-matching category beats the
+second-best by at least `--margin`. Below that gap, videre stores `unknown`
+rather than guessing.
+
+That default was chosen against real data: at 0.05 it produced **no wrong
+labels** at the cost of leaving about 55% unlabelled. At 0.02 it caught more
+but produced some confidently wrong ones, which is worse: an unknown you can
+still find by other means, while a screenshot filed as a document is invisible.
+
+```bash
+videre classify --reprocess --margin 0.02   # label more, accept some errors
+videre classify --reprocess --margin 0.10   # label less, be surer
+```
+
+`--reprocess` is needed when changing `--margin`, since already-classified
+images are otherwise skipped.
+
+Note that the underlying scores cluster in a narrow band, so `--margin` is more
+sensitive than its scale suggests. Move it in small steps and check the result
+before committing to it across a library.
+
+## What each category catches
+
+| Category | Typically |
+|---|---|
+| `photo` | Anything camera-shaped: people, places, objects, scenes |
+| `screenshot` | Phone and desktop captures, app UI, web pages |
+| `document` | Receipts, tickets, forms, scans, whiteboards, pages of text |
+| `meme` | Image macros, captioned pictures, reaction images |
+| `unknown` | The gap between the top two was too small to call |
+
+These are broad visual categories, not content understanding. A photograph *of*
+a document tends to land in `document`, which is usually what you want. A
+screenshot *of* a photo is genuinely ambiguous and often ends up `unknown`.
+
+## Caveats
+
+**It needs `videre embed` first.** Classification scores existing vectors; there
+is nothing to score without them. Images that were not embedded (`.dng`, and
+HEIC or video on Linux) are simply absent from the results.
+
+**Videos are excluded entirely**, since none of the four categories describes a
+video frame.
+
+**Results are per model.** Classifications are keyed by
+[model](/reference/models/) as well as by image, so switching models means
+classifying again under the new one. The old results are kept, not overwritten.
+
+**Rerunning after changing `--margin` needs `--reprocess`.** Without it, nothing
+happens: every image is already classified and therefore skipped.
+
+**There is no way to correct a label by hand.** Categories are derived, not
+edited. If a label is wrong, the levers are `--margin` and choosing a different
+model.
+
+## How it works
+
+Each of the four categories has a fixed text description. Those are embedded
+once with the same text encoder [`videre search`](/commands/search/) uses, then
+every stored image vector is compared against all four by cosine similarity. The
+closest category wins, if it wins by more than `--margin`.
+
+That is why it is cheap: it is four text embeddings plus one comparison per
+image, with no image decoding at all.
