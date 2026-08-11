@@ -38,6 +38,21 @@ stderr and in [`videre report`](/commands/report/), where you can look at them.
 This needs a prior [`videre scan --similar`](/commands/scan/) to have computed
 the fingerprints.
 
+### What counts as alike
+
+Each image is reduced to a 64-bit fingerprint: converted to greyscale, scaled to
+9x8, and each pixel compared with its right-hand neighbour to give one bit per
+comparison. Two images are treated as similar when at most 10 of those 64 bits
+differ, and overlapping pairs are then joined into groups.
+
+In practice that catches resizes, re-compressions, crops that keep the overall
+composition, and light edits. It will not catch a photo of the same scene taken
+a moment later, since those differ far more than 10 bits.
+
+HEIC files never get a fingerprint. For videos it is computed from a single
+poster frame, so it finds re-encodes that keep the opening frame but not a trim
+that cuts it.
+
 ## Output streams
 
 | Stream | Contents |
