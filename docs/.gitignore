@@ -6,11 +6,24 @@ dist/
 # dependencies
 node_modules/
 
-# yarn 4: yarn.lock and .yarnrc.yml are tracked, everything else here is not.
-# No .yarn/releases entry, since the Yarn binary is deliberately not vendored
-# (package.json's packageManager field pins the version instead).
+# yarn 4. The cache and install-state are local artifacts; everything negated
+# below has to be committed or installs differ between machines. A `yarn patch`
+# is the one that fails silently: without the negation the patch applies for
+# whoever created it and nobody else, with no error anywhere.
+# `.yarn/*` (not `.yarn/`) is required for the negations to work at all, since
+# git will not re-include a path inside an excluded directory.
 .yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
 .pnp.*
+
+# Note: .yarn/releases is negated above, but no Yarn binary is vendored today.
+# package.json's packageManager field pins the version instead. If someone runs
+# `yarn set version`, that sets yarnPath and the release must then be committed,
+# which the negation allows rather than silently breaking.
 
 # logs
 npm-debug.log*
