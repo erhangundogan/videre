@@ -12,6 +12,9 @@ nothing at all.
 
 This page is the map.
 
+Every command's own page has its flags and caveats; [Commands](/commands/) is
+the index.
+
 ## The pipeline
 
 ```

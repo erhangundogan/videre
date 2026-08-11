@@ -58,6 +58,9 @@ videre search --person "Alice"
 
 `videre faces` downloads about 180 MB the first time.
 
+Every command takes `--help`, and [Commands](/commands/) is the full reference
+with every flag.
+
 ## What needs what
 
 Each of the above is a small pipeline: `search` needs `embed` first,
