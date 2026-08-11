@@ -10,9 +10,9 @@ description: Which file types videre reads, and what it can do with each.
 | Type | Scan & dedupe | EXIF | Search | Faces | Near-duplicate |
 |---|---|---|---|---|---|
 | jpg, jpeg, tiff | yes | yes | yes | yes | yes |
-| png, gif, webp, bmp | yes | — | yes | yes | yes |
+| png, gif, webp, bmp | yes | no | yes | yes | yes |
 | heic | yes | yes | macOS only | macOS only | no |
-| mov, mp4 | yes | — | macOS only | — | macOS only |
+| mov, mp4 | yes | no | macOS only | no | macOS only |
 | dng | yes | yes | no | no | no |
 
 Everything is scanned, hashed and exactly de-duplicated regardless. The gaps
