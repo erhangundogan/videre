@@ -30,6 +30,16 @@ from when JSONL and SQLite were peer output *formats* rather than one
 destination and one opt-out. Existing scripts do not need changing.
 :::
 
+## What it records
+
+For every file: its content hash, size, timestamps, extension, detected type,
+and EXIF where present (date taken, GPS, dimensions). Nothing is opened for
+decoding unless you pass `--similar`.
+
+It does **not** prepare search or detect faces. Those are
+[`videre embed`](/commands/embed/) and [`videre faces`](/commands/faces/), run
+separately and much slower.
+
 ## `--retry-incomplete`
 
 A normal scan re-reads every byte of every file, which on a large library is the
@@ -37,10 +47,15 @@ slow part by far: about 10 minutes and 460 GB of reading for 70,000 files, of
 which walking the folder is under two seconds.
 
 `--retry-incomplete` still walks the folder but opens only files that have no
-entry yet, or whose entry a previous run left unfinished — an interrupted scan,
-or a file that timed out on a slow or disconnected drive. On an already-complete
-library of that size it finishes in about a second, having opened nothing. New
-files are picked up too, since they have no entry yet.
+entry yet, or whose entry a previous run left unfinished, such as an interrupted
+scan or a file that timed out on a slow drive. On an already-complete library of
+that size it finishes in about a second, having opened nothing. New files are
+picked up too, since they have no entry yet.
+
+```bash
+videre scan ~/Photos                      # the full pass, occasionally
+videre scan ~/Photos --retry-incomplete   # the quick pass, routinely
+```
 
 It needs a database to consult, so it cannot be combined with `--output`, which
 writes JSONL.
@@ -51,13 +66,39 @@ Also computes a perceptual fingerprint, which is what lets
 [`videre dedupe --similar`](/commands/dedupe/) find photos that merely *look*
 alike rather than being byte-identical.
 
-For `.mov` and `.mp4` files this needs macOS, since the frame is extracted with
+This decodes every image, so it is substantially slower than a plain scan. It is
+worth doing once when you intend to hunt near-duplicates, not routinely.
+
+For `.mov` and `.mp4` this needs macOS, since the frame is extracted with
 QuickLook. Elsewhere those files simply get no fingerprint, the same graceful
 skip as any other undecodable file. HEIC files never get one.
 
-## Defaults it sets for you
+## Caveats
 
-The first time you run `videre scan <folder>` with no default folder configured,
-it adopts that folder as your default so later commands work with no arguments.
-It prints a one-line note when it does, and never overwrites a folder you
-configured yourself. Change it with `videre config set path <dir>`.
+**Rows are keyed by path, so a moved file looks like a new one.** Re-scanning
+after reorganising folders adds rows at the new paths and leaves the old ones
+behind, pointing at files that no longer exist. Run
+[`videre prune`](/commands/prune/) afterwards to clear them. Nothing derived is
+lost in the meantime, because faces and embeddings are keyed by content, not
+path.
+
+**Scanning several folders puts them all in one database.** That is often what
+you want, but it means `dedupe` and `prune` then act across all of them, and a
+bare `videre scan` with no argument only refreshes the *first* folder you ever
+scanned. See
+[scanning more than one folder](/reference/paths/#scanning-more-than-one-folder)
+for the full picture and how to keep collections separate.
+
+**The first folder you scan becomes your default.** It is adopted automatically
+so later commands work with no arguments, it prints a note when it happens, and
+it never overwrites a folder you configured yourself. Change it with
+`videre config set path <dir>`.
+
+**Unreadable files are skipped, not fatal.** A permissions error or a file that
+times out on a slow or disconnected drive leaves that file unrecorded and the
+scan continues. `--retry-incomplete` is how you pick them up later once the
+cause is fixed.
+
+**A full scan reads every byte.** On an external drive or a network share that
+is the dominant cost, and it is why `--retry-incomplete` exists. Nothing is
+written to your files at any point.

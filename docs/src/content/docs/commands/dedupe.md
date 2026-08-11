@@ -17,17 +17,80 @@ videre dedupe --json                   # print one JSON object instead
 
 :::danger
 This prints the REMOVE side of each duplicate group, so
-`videre dedupe | xargs trash` deletes those files immediately. Run
-[`videre report`](/commands/report/) first to review the KEEP/REMOVE badges, or
-write the list to a file and read it.
+`videre dedupe | xargs trash` deletes those files immediately. Look before you
+pipe.
 :::
+
+## The safe way to do it
+
+Review in a browser first. That is what [`videre report`](/commands/report/) is
+for, and it takes one extra command:
+
+```bash
+videre scan ~/Photos           # 1. record what you have
+videre report                  # 2. review the groups visually
+videre dedupe | xargs trash    # 3. delete, once you agree
+videre prune                   # 4. tidy the database afterwards
+```
+
+Step 2 opens a page showing every duplicate group with thumbnails, KEEP and
+REMOVE badges, sizes, dates and paths, sorted by how much space each group
+wastes. It is the same grouping and the same KEEP choice `dedupe` will print, so
+what you see is what will happen.
+
+If you would rather read the list than look at it:
+
+```bash
+videre dedupe > /tmp/remove.txt        # inspect it
+wc -l /tmp/remove.txt
+xargs trash < /tmp/remove.txt          # then act
+```
+
+`trash` moves to the system trash, which is recoverable. `rm` is not. On a
+library you care about, prefer `trash` (macOS: `brew install trash`).
+
+Step 4 matters more than it looks: until you prune, the database still lists the
+deleted files, and their embeddings and cached thumbnails are still on disk. See
+[`videre prune`](/commands/prune/).
+
+## What counts as a duplicate
+
+Exact, byte-for-byte identical content. Files are hashed with BLAKE3 and grouped
+by that hash, so two files are duplicates only if their bytes match completely.
+
+A re-saved, re-compressed, resized or cropped copy is **not** a duplicate here,
+however similar it looks. That is what `--similar` is for.
+
+Filenames, folders and timestamps are irrelevant to the grouping. `IMG_0042.jpg`
+and `holiday-best.jpg` are one group if their contents match.
 
 ## Which copy is kept
 
-Within each group, the KEEP candidate is the one with the oldest EXIF date. If
-that is absent it falls back to the earlier of the created and modified
-timestamps. EXIF dates of `0000-00-00T00:00:00`, which cameras with an unset
-clock produce, are treated as absent.
+Within each group, files are sorted oldest first and **the first is kept**,
+everything after it is printed for removal.
+
+The sort key is:
+
+1. `exif_date`, the date the camera recorded, if present
+2. otherwise the earlier of the file's created and modified timestamps
+3. otherwise nothing, which sorts first
+
+EXIF dates of `0000-00-00T00:00:00`, produced by cameras with an unset clock,
+are treated as absent and fall through to step 2.
+
+The intent is to keep the copy closest to the original: an edited or re-saved
+copy usually has a later filesystem date, while the EXIF date survives copying.
+
+:::note[It does not matter which copy survives]
+Members of a group are byte-identical, so whichever is kept, the file you end up
+with is the same file. The only thing that differs is **which path** remains,
+which is why reviewing in `videre report` is worth it: the KEEP copy may be in a
+folder you would not have chosen, especially across
+[multiple scanned folders](/reference/paths/#scanning-more-than-one-folder).
+
+If two copies have identical dates, the choice between them is arbitrary. Again,
+the bytes are the same.
+:::
 
 ## `--similar` is review-only
 
@@ -53,6 +116,31 @@ HEIC files never get a fingerprint. For videos it is computed from a single
 poster frame, so it finds re-encodes that keep the opening frame but not a trim
 that cuts it.
 
+There is no automatic way to act on these, by design. Review them in the report
+and delete by hand.
+
+## Caveats
+
+**It reads the database, not your disk.** Results reflect your last
+[`videre scan`](/commands/scan/). Files deleted since then still appear, and
+files added since then are missing. Re-scan first if in doubt.
+
+**It spans every folder in the database.** If you scanned several roots into one
+database, a group can contain copies from different drives, and the KEEP copy
+may be on the one you consider the backup. See
+[scanning more than one folder](/reference/paths/#scanning-more-than-one-folder).
+
+**Deleting duplicates does not free everything.** Embeddings and cached
+thumbnails for those photos remain until [`videre prune`](/commands/prune/)
+removes them. Conversely, deleting one copy of a photo you still have elsewhere
+frees nothing derived, because that work is keyed by content and still in use.
+
+**Output order is by content hash**, which is effectively arbitrary. Use
+`videre report` if you want groups ordered by wasted space.
+
+**Empty output means no exact duplicates**, not an error. Try `--similar` to see
+whether you have near-duplicates instead.
+
 ## Output streams
 
 | Stream | Contents |
@@ -60,5 +148,6 @@ that cuts it.
 | stdout | REMOVE candidate paths, one per line |
 | stderr | Progress and summary, suppressed by `--silent` |
 
-With `--json`, stdout is instead a single JSON object — always, including an
-error object plus a nonzero exit code on failure.
+With `--json`, stdout is instead a single JSON object, always, including an
+error object plus a nonzero exit code on failure. That makes it safe to script
+against without parsing the human-readable summary.
