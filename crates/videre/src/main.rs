@@ -23,6 +23,8 @@ enum Command {
     Scan(commands::scan::ScanArgs),
     /// Set each file's mtime to its EXIF shoot date
     FixDates(commands::fix_dates::FixDatesArgs),
+    /// Import from Google Takeout, Apple Photos, or a Lightroom catalog
+    Import(commands::import::ImportArgs),
     /// Remove stale rows, sync metadata, clean orphan embeddings
     Prune(commands::prune::PruneArgs),
     /// Cluster GPS coordinates by geographic proximity and persist the result
@@ -53,6 +55,7 @@ fn main() {
         Command::Report(args) => commands::report::run(args),
         Command::Scan(args) => commands::scan::run(args),
         Command::FixDates(args) => commands::fix_dates::run(args),
+        Command::Import(args) => commands::import::run(args),
         Command::Prune(args) => commands::prune::run(args),
         Command::Locations(args) => commands::locations::run(args),
         Command::Embed(args) => commands::embed::run(args),
