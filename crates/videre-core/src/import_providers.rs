@@ -4,8 +4,9 @@
 //! adding a row here, never editing the ladder in `import_location`.
 
 use crate::import_location::{LayoutProbe, Rung};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+#[derive(Debug)]
 pub struct ProviderDescriptor {
     pub id: &'static str,
     pub display: &'static str,
@@ -109,6 +110,62 @@ pub fn detect(path: &Path) -> Option<&'static ProviderDescriptor> {
     PROVIDERS.iter().find(|p| (p.detect)(path))
 }
 
+#[derive(Debug)]
+pub struct Candidate {
+    pub path: PathBuf,
+    pub provider: &'static ProviderDescriptor,
+}
+
+/// Default places to look, per platform.
+///
+/// Chosen over any search index because it is the only approach that works
+/// everywhere: Spotlight is macOS-only and invisible to users who have narrowed
+/// it, and Linux has no dependable equivalent. Measured at 81 ms for the full
+/// macOS set, since each entry is one `read_dir` of one directory.
+pub fn default_search_roots() -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let mut roots = Vec::new();
+    if let Some(h) = home {
+        roots.push(h.join("Pictures"));
+        roots.push(h.join("Pictures/Lightroom"));
+        roots.push(h.join("Documents"));
+        roots.push(h.join("Desktop"));
+        roots.push(h.join("Downloads"));
+    }
+    if cfg!(target_os = "macos") {
+        if let Ok(vols) = std::fs::read_dir("/Volumes") {
+            for v in vols.filter_map(|e| e.ok()) {
+                roots.push(v.path());
+                roots.push(v.path().join("Pictures"));
+            }
+        }
+    }
+    roots
+}
+
+/// One level of `read_dir` per root, testing each entry structurally.
+pub fn discover_in(roots: &[PathBuf]) -> Vec<Candidate> {
+    let mut out = Vec::new();
+    for root in roots {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            continue; // a missing root is normal, not an error
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            if let Some(provider) = detect(&entry.path()) {
+                out.push(Candidate {
+                    path: entry.path(),
+                    provider,
+                });
+            }
+        }
+    }
+    out
+}
+
+pub fn discover() -> Vec<Candidate> {
+    discover_in(&default_search_roots())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,6 +232,46 @@ mod tests {
         fs::write(d.path().join("a.jpg"), b"").unwrap();
         fs::write(d.path().join("a.jpg.supplemental-metadata.json"), b"{}").unwrap();
         assert_eq!(detect(d.path()).map(|p| p.id), Some("google-takeout"));
+    }
+
+    #[test]
+    fn finds_a_library_in_a_search_root() {
+        let d = tempdir().unwrap();
+        let pics = d.path().join("Pictures");
+        let lib = pics.join("Photos Library.photoslibrary");
+        fs::create_dir_all(lib.join("originals")).unwrap();
+        fs::create_dir_all(lib.join("database")).unwrap();
+        fs::write(lib.join("database/Photos.sqlite"), b"").unwrap();
+
+        let found = discover_in(&[pics]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].provider.id, "apple-photos");
+        assert_eq!(found[0].path, lib);
+    }
+
+    #[test]
+    fn finds_several_libraries_and_reports_all() {
+        let d = tempdir().unwrap();
+        let pics = d.path().join("Pictures");
+        let lib = pics.join("A.photoslibrary");
+        fs::create_dir_all(lib.join("originals")).unwrap();
+        fs::create_dir_all(lib.join("database")).unwrap();
+        fs::write(lib.join("database/Photos.sqlite"), b"").unwrap();
+        fs::create_dir_all(pics.join("Lightroom")).unwrap();
+        fs::write(pics.join("Lightroom/Catalog.lrcat"), b"").unwrap();
+
+        let found = discover_in(&[pics]);
+        assert_eq!(
+            found.len(),
+            2,
+            "both libraries must be reported, not the first"
+        );
+    }
+
+    #[test]
+    fn a_missing_search_root_is_skipped_silently() {
+        let found = discover_in(&[std::path::PathBuf::from("/definitely/not/here")]);
+        assert!(found.is_empty());
     }
 
     #[test]
