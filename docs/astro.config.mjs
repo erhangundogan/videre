@@ -62,6 +62,7 @@ export default defineConfig({
 					label: 'Commands',
 					items: [
 						{ label: 'Overview', slug: 'commands' },
+						{ label: 'import', slug: 'commands/import' },
 						{ label: 'scan', slug: 'commands/scan' },
 						{ label: 'dedupe', slug: 'commands/dedupe' },
 						{ label: 'report', slug: 'commands/report' },
@@ -81,6 +82,7 @@ export default defineConfig({
 				{
 					label: 'Guides',
 					items: [
+						{ label: 'Leaving Google Photos', slug: 'guides/leaving-google-photos' },
 						{ label: 'Browsing and labeling', slug: 'guides/browsing' },
 						{ label: 'Compositional searches', slug: 'guides/compositional-search' },
 						{ label: 'Long-running jobs', slug: 'guides/long-running-jobs' },

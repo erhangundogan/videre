@@ -4,6 +4,10 @@ pub mod dedupe;
 pub mod embed;
 pub mod faces;
 pub mod fix_dates;
+pub mod import;
+pub mod import_apple;
+pub mod import_lightroom;
+pub mod import_takeout;
 pub mod locations;
 pub mod mcp;
 pub mod prune;
@@ -12,6 +16,22 @@ pub mod scan;
 pub mod search;
 pub mod stats;
 pub mod watch;
+
+/// Prompts on stderr and reads a yes/no answer from stdin. Any input other
+/// than "y"/"yes" (case-insensitive) is treated as "no", including EOF (e.g.
+/// stdin piped from /dev/null in a non-interactive context), the safe
+/// default for a prompt gating a file mutation.
+///
+/// Shared by every command that modifies the user's files, so the answer to
+/// "what counts as yes" cannot drift between them.
+pub(crate) fn confirm(prompt: &str) -> anyhow::Result<bool> {
+    use std::io::Write;
+    eprint!("{prompt} [y/N] ");
+    std::io::stderr().flush()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    Ok(matches!(input.trim().to_lowercase().as_str(), "y" | "yes"))
+}
 
 /// Reader-side db resolution. Explicit paths keep their command's existing
 /// semantics untouched; defaulted paths must already exist (SQLite would

@@ -207,6 +207,14 @@ pub fn compute_dhash(path: &Path, mime: Option<&str>) -> Option<u64> {
         // already uses for SigLIP, then run the identical dHash algorithm on it.
         // 64px is plenty of source resolution since we immediately resize to 9x8.
         videre_ml::preprocess::decode_via_quicklook(path, 64, "scan-similar-video").ok()?
+    } else if mime == "image/heic" {
+        // The `image` crate cannot decode HEIC, so it goes through the same
+        // QuickLook conversion `embed` and `faces` already use. 64px is ample
+        // when the next step resizes to 9x8, and keeps the conversion cheap.
+        // `heic_via_quicklook` keys its scratch directory on path *and* tag and
+        // deletes it afterwards, so a small conversion here cannot disturb the
+        // larger ones other commands depend on.
+        videre_core::heic::heic_via_quicklook(path.to_str()?, "scan-similar-heic", Some(64))?
     } else {
         image::open(path).ok()?
     };

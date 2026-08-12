@@ -5,6 +5,7 @@ description: Every videre subcommand, what it does, and where to read more.
 
 | Command | What it does |
 |---------|--------------|
+| [`videre import`](/commands/import/) | Bring photos in from Google Takeout, Apple Photos, or Lightroom |
 | [`videre scan`](/commands/scan/) | Read a folder and record what's in it. Run this first. |
 | [`videre dedupe`](/commands/dedupe/) | List duplicate copies you could delete |
 | [`videre report`](/commands/report/) | Generate an HTML gallery, or serve the face-naming UI |
@@ -38,6 +39,7 @@ Most commands share these:
 | To run | You first need |
 |---|---|
 | `dedupe`, `report`, `fix-dates`, `prune`, `stats`, `locations` | `scan` |
+| `scan`, when coming from another tool | `import` first, so dates are fixed before they are recorded |
 | `search` (text or image) | `embed` |
 | `search --person` | `faces`, then naming via `report --faces` |
 | `search --category` | `classify` (which needs `embed`) |

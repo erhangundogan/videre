@@ -40,6 +40,16 @@ embeddings and cached thumbnails, which take hours to rebuild. Your photos would
 be untouched, but faces, names, and locations are stored against those rows and
 would go with them.
 
+## `videre import` also changes file timestamps
+
+[`videre import`](/commands/import/) sets each file's date from whatever the
+exporting tool recorded, which is the point of running it. Like `fix-dates` it
+asks for confirmation first, and `--dry-run` shows exactly what it would do.
+Only the modification time changes; contents are never touched.
+
+It reads other applications' libraries, and only reads: nothing is written back
+to a Photos library or a Lightroom catalog.
+
 ## `videre fix-dates` rewrites file timestamps on disk
 
 It sets each file's modification time from its EXIF date. That is a real change
