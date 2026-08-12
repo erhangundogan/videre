@@ -1,1 +1,27 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><path fill-rule="evenodd" d="M81 36 64 0 47 36l-1 2-9-10a6 6 0 0 0-9 9l10 10h-2L0 64l36 17h2L28 91a6 6 0 1 0 9 9l9-10 1 2 17 36 17-36v-2l9 10a6 6 0 1 0 9-9l-9-9 2-1 36-17-36-17-2-1 9-9a6 6 0 1 0-9-9l-9 10v-2Zm-17 2-2 5c-4 8-11 15-19 19l-5 2 5 2c8 4 15 11 19 19l2 5 2-5c4-8 11-15 19-19l5-2-5-2c-8-4-15-11-19-19l-2-5Z" clip-rule="evenodd"/><path d="M118 19a6 6 0 0 0-9-9l-3 3a6 6 0 1 0 9 9l3-3Zm-96 4c-2 2-6 2-9 0l-3-3a6 6 0 1 1 9-9l3 3c3 2 3 6 0 9Zm0 82c-2-2-6-2-9 0l-3 3a6 6 0 1 0 9 9l3-3c3-2 3-6 0-9Zm96 4a6 6 0 0 1-9 9l-3-3a6 6 0 1 1 9-9l3 3Z"/><style>path{fill:#000}@media (prefers-color-scheme:dark){path{fill:#fff}}</style></svg>
+<svg viewBox="0 -66 432 432" xmlns="http://www.w3.org/2000/svg" fill="none">
+  <!--
+    Square viewBox: the artwork is 432x300, so it is centred in a 432x432 box
+    (y offset -66). A non-square favicon gets letterboxed or squashed by the
+    browser, which is why the source dimensions are not used directly.
+
+    Colour comes from CSS rather than the fill/stroke attributes, because a
+    favicon has no page around it to inherit from and a single fixed colour is
+    invisible against half of all browser themes: white disappears on a light
+    tab, black on a dark one. CSS beats a presentation attribute, so the
+    attributes below stay as a fallback for anything that ignores the style
+    block. Matches the logo convention: black on light, white on dark.
+  -->
+  <style>
+    circle, line { fill: #000; stroke: #000; }
+    @media (prefers-color-scheme: dark) {
+      circle, line { fill: #fff; stroke: #fff; }
+    }
+  </style>
+  <circle cx="24" cy="96" r="23.5" fill="black" stroke="black"/>
+  <circle cx="216" cy="24" r="23.5" fill="black" stroke="black"/>
+  <circle cx="408" cy="96" r="23.5" fill="black" stroke="black"/>
+  <circle cx="216" cy="268" r="31.5" fill="black" stroke="black"/>
+  <line x1="64.9706" y1="142" x2="154.066" y2="231.095" stroke="black" stroke-width="24" stroke-linecap="round"/>
+  <line x1="215" y1="205" x2="215" y2="79" stroke="black" stroke-width="24" stroke-linecap="round"/>
+  <line x1="278" y1="231.095" x2="367.095" y2="142" stroke="black" stroke-width="24" stroke-linecap="round"/>
+</svg>
