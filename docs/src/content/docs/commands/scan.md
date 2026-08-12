@@ -116,9 +116,23 @@ HEIC cannot be decoded directly, so it converts through QuickLook exactly as
 [`embed`](/commands/embed/) and [`faces`](/commands/faces/) do, which means
 HEIC near-duplicate detection is macOS-only.
 
-The conversion is cheap here because the hash only needs a 9x8 grid, so videre
-asks QuickLook for a 64px rendition rather than a full-size one: measured at 3
-seconds against 2 for the same count of JPEGs, including process startup.
+The conversion is cheap per file, because the hash only needs a 9x8 grid, so
+videre asks QuickLook for a 64px rendition rather than a full-size one. It is
+not cheap in bulk: HEIC and video both pay a conversion, so on a library made
+mostly of those, `--similar` is a long job.
+
+Measured on 700 real files (300 HEIC, 300 JPEG, 60 MOV, 40 PNG, 2.3 GB) on a
+10-core machine, with the files already in the page cache so the figure
+reflects decoding rather than disk:
+
+| | Time |
+|---|---|
+| before parallel hashing (0.13.0) | 108s |
+| after (0.13.1) | 15s |
+
+Expect less than that 7.2x on an external drive, where reading the files, not
+decoding them, becomes the limit. Progress is shown throughout, so a long run
+is visibly a long run rather than an apparent hang.
 
 :::note[Matching survives resizing]
 The perceptual hash compares images by shape, not bytes, so a photo matches its
