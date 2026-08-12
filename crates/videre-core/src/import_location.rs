@@ -19,6 +19,7 @@
 //! there*. Location may come from a database; content always comes from the
 //! files.
 
+use crate::import_providers::ProviderDescriptor;
 use std::path::{Path, PathBuf};
 
 /// Ordered most precise first, which is also the order they are tried.
@@ -102,6 +103,78 @@ pub fn probe_layouts(root: &Path, probes: &[LayoutProbe]) -> Option<(PathBuf, Pr
     None
 }
 
+#[derive(Debug, Default)]
+pub struct LocateOptions {
+    /// `--originals <dir>`: overrides every rung. The pressure valve for the
+    /// day a vendor changes their structure, so the feature keeps working by
+    /// hand immediately rather than after videre ships a fix.
+    pub originals_override: Option<PathBuf>,
+    /// `--use-library-db`: adds the database rung above the layout rung. Off by
+    /// default, which is why the default run never opens a provider catalog.
+    pub use_database: bool,
+}
+
+/// Resolves where a provider's files live, per the location contract.
+///
+/// `db_roots` is supplied by the caller for providers whose database rung is in
+/// play, since reading a vendor catalog is command-level work, not core's.
+pub fn locate_with_database(
+    provider: &ProviderDescriptor,
+    root: &Path,
+    opts: &LocateOptions,
+    db_roots: Option<Vec<PathBuf>>,
+) -> anyhow::Result<Located> {
+    let mut tried: Vec<String> = Vec::new();
+
+    if let Some(dir) = &opts.originals_override {
+        return Ok(Located::Found {
+            roots: vec![dir.clone()],
+            via: Provenance::UserSupplied,
+        });
+    }
+
+    let want_db = opts.use_database || provider.default_rung == Rung::Database;
+    if want_db {
+        match db_roots {
+            Some(roots) if !roots.is_empty() => {
+                return Ok(Located::Found {
+                    roots,
+                    via: Provenance::Database,
+                })
+            }
+            _ => tried.push("the provider catalog: not readable or no rows".to_string()),
+        }
+    } else if !provider.layouts.is_empty() {
+        tried.push("the provider catalog: not read (pass --use-library-db to try it)".to_string());
+    }
+
+    if let Some((path, via)) = probe_layouts(root, provider.layouts) {
+        return Ok(Located::Found {
+            roots: vec![path],
+            via,
+        });
+    }
+    if !provider.layouts.is_empty() {
+        let names: Vec<&str> = provider
+            .layouts
+            .iter()
+            .flat_map(|l| l.dir_names.iter().copied())
+            .collect();
+        tried.push(format!("known layouts: no {} folder", names.join(", ")));
+    }
+
+    Ok(Located::NotFound { tried })
+}
+
+/// The common case: no database rung in play.
+pub fn locate(
+    provider: &ProviderDescriptor,
+    root: &Path,
+    opts: &LocateOptions,
+) -> anyhow::Result<Located> {
+    locate_with_database(provider, root, opts, None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,6 +256,66 @@ mod tests {
         let d = tempdir().unwrap();
         fs::write(d.path().join("originals"), b"not a directory").unwrap();
         assert!(probe_layouts(d.path(), &[probe(&["originals"], None)]).is_none());
+    }
+
+    fn apple() -> &'static crate::import_providers::ProviderDescriptor {
+        crate::import_providers::PROVIDERS
+            .iter()
+            .find(|p| p.id == "apple-photos")
+            .unwrap()
+    }
+
+    #[test]
+    fn user_supplied_path_wins_over_every_rung() {
+        let d = tempdir().unwrap();
+        fs::create_dir(d.path().join("originals")).unwrap();
+        let elsewhere = tempdir().unwrap();
+
+        let got = locate(
+            apple(),
+            d.path(),
+            &LocateOptions {
+                originals_override: Some(elsewhere.path().to_path_buf()),
+                use_database: false,
+            },
+        )
+        .unwrap();
+
+        match got {
+            Located::Found { roots, via } => {
+                assert_eq!(roots, vec![elsewhere.path().to_path_buf()]);
+                assert_eq!(via, Provenance::UserSupplied);
+            }
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn default_uses_the_folder_layout_rung_and_never_opens_a_database() {
+        let d = tempdir().unwrap();
+        fs::create_dir(d.path().join("Masters")).unwrap();
+        let got = locate(apple(), d.path(), &LocateOptions::default()).unwrap();
+        match got {
+            Located::Found { via, .. } => assert_eq!(via, Provenance::Layout("Masters")),
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn every_rung_failing_reports_what_was_tried() {
+        let d = tempdir().unwrap();
+        let got = locate(apple(), d.path(), &LocateOptions::default()).unwrap();
+        match got {
+            Located::NotFound { tried } => {
+                assert!(!tried.is_empty(), "must say what it attempted");
+                let joined = tried.join(" ");
+                assert!(
+                    joined.contains("originals"),
+                    "should name the layouts: {joined}"
+                );
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
     }
 
     #[test]
