@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::builder::PossibleValuesParser;
 use videre_core::home;
 
-const CONFIG_KEYS: &[&str] = &["db", "path", "model"];
+const CONFIG_KEYS: &[&str] = &["db", "path", "model", "read-rate"];
 
 #[derive(clap::Args)]
 pub struct ConfigArgs {
@@ -55,6 +55,12 @@ pub fn run(args: ConfigArgs) -> Result<()> {
         Some(ConfigAction::Set { key, value }) => match key.as_str() {
             "db" => home::set_default_db(&home, std::path::Path::new(&value)),
             "path" => home::set_default_path(&home, std::path::Path::new(&value)),
+            "read-rate" => {
+                let mb_s: u64 = value.parse().map_err(|_| {
+                    anyhow::anyhow!("read-rate must be a whole number of MB/s, got {value:?}")
+                })?;
+                home::set_min_read_rate(&home, mb_s)
+            }
             "model" => {
                 validate_model_id(&value)?;
                 home::set_default_model(&home, &value)
@@ -64,6 +70,7 @@ pub fn run(args: ConfigArgs) -> Result<()> {
         Some(ConfigAction::Unset { key }) => match key.as_str() {
             "db" => home::unset_default_db(&home),
             "path" => home::unset_default_path(&home),
+            "read-rate" => home::unset_min_read_rate(&home),
             "model" => home::unset_default_model(&home),
             _ => unreachable!("clap restricts keys to CONFIG_KEYS"),
         },

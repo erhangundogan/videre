@@ -36,6 +36,7 @@ jsonl:         ~/.videre/hashes.jsonl
 | `resolved db` | What commands will **actually** use right now |
 | `resolved path` | The folder `scan` and `watch` use with no argument |
 | `model` | The resolved search model, marked `(default)` when not configured |
+| `read-rate` | Assumed floor read speed in MB/s, used to scale the file-read timeout to file size. Default 20. Only worth changing on a mount slower than that |
 | `jsonl` | Where a bare `scan --output` would write |
 
 The distinction between `db` and `resolved db` is the useful part. The first is
