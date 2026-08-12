@@ -64,6 +64,45 @@ version number and are released together.
 
 ## [Unreleased]
 
+### Fixed
+
+Found by running `videre import` against a real 36GB Google Takeout export and
+a real Photos library, rather than against fixtures.
+
+- **Takeout detection missed `Google Photos/`**, the folder people are most
+  likely to point at. A real export keeps only album directories there, with
+  the sidecars one level inside them, so probing the immediate directory alone
+  reported a genuine export as ordinary photos. Detection now looks one level
+  down, bounded so it stays a recognition step rather than a deep walk.
+
+- **A permission failure was reported as a missing library.** Layout probing
+  goes through `Path::is_dir`, which answers false for "blocked" exactly as it
+  does for "absent", so a macOS-protected `.photoslibrary` produced advice
+  about Apple changing their structure. It now names Full Disk Access and the
+  need to restart the program, which is the actual fix.
+
+- **An empty `originals/` was asserted to be a referenced library.** On disk
+  that is indistinguishable from one whose originals iCloud has evicted,
+  including when iCloud was switched off with "Remove from Mac". Photos keeps
+  displaying every picture from the previews it retained, so nothing looks
+  wrong until an original is needed. Both causes are now offered, the one that
+  loses data first.
+
+- **A kept-originals backup was not detected at all.** Apple detection required
+  `database/Photos.sqlite` beside the originals, so a backup where only
+  `originals/` was copied off a library went unrecognised. The `0`-`F` hex
+  fan-out is the signature that survives such a copy, and is specific enough
+  not to fire on an ordinary folder that merely happens to be called
+  `originals`.
+
+- **`videre scan --similar` computed no perceptual hash for HEIC**, silently
+  skipping the default iPhone format in near-duplicate detection. `PHASH_MIMES`
+  omitted `image/heic` and the underlying `image` crate cannot decode it. HEIC
+  now converts through QuickLook exactly as video already did, asking for a
+  64px rendition since the hash resizes to 9x8 - measured at 3 seconds per 20
+  files against 2 for JPEG. macOS-only, as QuickLook is.
+
+
 ## [0.12.0] - 2026-08-11
 
 ### Added
