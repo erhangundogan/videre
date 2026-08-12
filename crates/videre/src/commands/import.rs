@@ -265,6 +265,14 @@ fn apple_preflight(root: &Path, files: &[PathBuf], args: &ImportArgs) -> anyhow:
     use super::import_apple;
 
     let shape = import_apple::survey(root, files);
+
+    // Nothing to prepare for, so the checklist would be noise on top of a
+    // message that already says the run cannot happen.
+    if shape.files == 0 {
+        eprintln!("{}", import_apple::empty_originals_warning());
+        return Ok(false);
+    }
+
     if !args.silent {
         eprint!("{}", import_apple::checklist(&shape));
     }
@@ -447,9 +455,26 @@ fn report_not_found(root: &Path, provider: &ProviderDescriptor, tried: &[String]
         eprintln!("  where they are.");
         eprintln!();
     }
-    eprintln!("  This usually means the application changed its structure in a version");
-    eprintln!("  newer than this build of videre knows about.");
-    eprintln!();
+    if videre_core::import_location::access_is_denied(root) {
+        // The folders are almost certainly there; the OS is hiding them.
+        eprintln!("  videre is not allowed to read this folder, so it cannot see what is");
+        eprintln!("  inside it. This is a permissions problem, not a missing library.");
+        eprintln!();
+        if cfg!(target_os = "macos") {
+            eprintln!("  macOS protects a Photos library. Grant access to the program you run");
+            eprintln!("  videre from (Terminal, iTerm, your editor):");
+            eprintln!();
+            eprintln!("    System Settings -> Privacy & Security -> Full Disk Access");
+            eprintln!();
+            eprintln!("  Add it, switch it on, then quit and reopen it. The setting only takes");
+            eprintln!("  effect in a newly started program.");
+            eprintln!();
+        }
+    } else {
+        eprintln!("  This usually means the application changed its structure in a version");
+        eprintln!("  newer than this build of videre knows about.");
+        eprintln!();
+    }
     eprintln!("  If you know where the photos are, point videre at them directly:");
     eprintln!(
         "    videre import {} --originals <path/to/photos>",

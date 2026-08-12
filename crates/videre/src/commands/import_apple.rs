@@ -77,7 +77,13 @@ impl LibraryShape {
     /// almost nothing while the package is otherwise complete. Directly
     /// observable, and needs no schema.
     pub(crate) fn looks_referenced(&self) -> bool {
-        self.files <= REFERENCED_MAX_FILES
+        // `files > 0` matters: an *empty* originals folder is ambiguous between
+        // a referenced library and one whose originals iCloud has evicted, and
+        // the filesystem cannot separate them, so it gets its own message
+        // rather than being asserted as referenced. Found against a real
+        // library with an empty originals/ and all 16 derivatives fan-out dirs.
+        self.files > 0
+            && self.files <= REFERENCED_MAX_FILES
             && self.package_bytes > 0
             && self.originals_bytes.saturating_mul(10) < self.package_bytes
     }
@@ -144,6 +150,35 @@ pub(crate) fn optimised_warning(shape: &LibraryShape) -> String {
     )
 }
 
+/// `originals/` held nothing at all.
+///
+/// Deliberately offers both explanations instead of picking one. On disk they
+/// are indistinguishable, and the one that loses data (iCloud eviction) is the
+/// one worth naming first.
+pub(crate) fn empty_originals_warning() -> String {
+    format!(
+        "warning: the originals folder is empty, so there is nothing to import.\n  \
+           Two things cause this, and they look identical on disk:\n\
+         \n  \
+           1. The originals are not on this Mac, only in iCloud.\n     \
+              Photos > Settings > iCloud: if \"Optimise Mac Storage\" is on,\n     \
+              choose \"Download Originals to this Mac\" and let it finish.\n     \
+              This also happens with iCloud switched off, if it was turned off\n     \
+              with \"Remove from Mac\" rather than \"Download Originals\".\n     \
+              Photos still shows every picture, because it displays the\n     \
+              previews it kept, so nothing looks wrong until the originals\n     \
+              are actually needed. Check with File > Export > Export\n     \
+              Unmodified Original. Do not delete the library first: what is\n     \
+              only in iCloud is not coming back.\n\
+         \n  \
+           2. It is a referenced library, where Photos links to files kept\n     \
+              elsewhere. Photos > Settings > General: if \"Copy items to the\n     \
+              Photos library\" is off, then those files are ordinary photos\n     \
+              already, with nothing to import. Use them directly:\n     \
+              videre scan <path/to/photos>\n",
+    )
+}
+
 pub(crate) fn referenced_warning(shape: &LibraryShape) -> String {
     format!(
         "warning: originals/ contains {} file(s), but the library is {}.\n  \
@@ -207,6 +242,25 @@ mod tests {
         assert!(
             !shape(&[], 0).looks_optimised(),
             "no files is not optimised"
+        );
+    }
+
+    #[test]
+    fn a_completely_empty_originals_folder_is_not_asserted_to_be_referenced() {
+        // Real library, 2026-08-12: empty originals/ with all 16 derivative
+        // fan-out dirs. That shape is produced both by a referenced library
+        // and by iCloud having evicted the originals, so claiming either one
+        // as fact would be a guess, and the wrong guess is the one that ends
+        // with the user deleting a library whose photos are only in iCloud.
+        let s = shape(&[], 4_000_000_000);
+        assert!(!s.looks_referenced());
+        assert!(!s.looks_optimised());
+        let msg = empty_originals_warning();
+        assert!(msg.contains("iCloud"), "must name the data-losing cause");
+        assert!(msg.contains("referenced"), "must name the other cause");
+        assert!(
+            msg.contains("videre scan"),
+            "referenced files need scanning, not importing"
         );
     }
 

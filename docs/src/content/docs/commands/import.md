@@ -97,6 +97,9 @@ characters, so `photo.jpg.supplemental-metadata.json` can arrive as
 `photo.jpg.suppl.json` or even `photo.jpg.s.json`. Import handles those, plus
 `(1)` duplicate counters and `-edited` versions.
 
+Point it at whichever level you have: the folder you extracted into, the
+`Takeout/` folder, or `Google Photos/` itself all work.
+
 It uses `photoTakenTime`, never `creationTime`. The second one is when the file
 was uploaded to Google, often years after the photo was taken, and using it is
 the most common way other tools get this wrong.
@@ -106,6 +109,18 @@ belong to two sidecars, the file is left alone and counted separately. A wrong
 date is worse than a missing one.
 
 ### Apple Photos and iPhoto
+
+:::danger[Grant Full Disk Access first]
+macOS protects a `.photoslibrary`, so by default videre cannot read inside it
+at all and the import reports that it could not find your files.
+
+Open **System Settings -> Privacy & Security -> Full Disk Access**, add the
+program you run videre from (Terminal, iTerm, your editor), switch it on, then
+quit and reopen it. The setting only applies to a newly started program.
+
+videre tells you when this is what happened, rather than blaming a missing
+folder.
+:::
 
 Reads `originals/` (or `Masters/`, or `Originals/`) directly. Before starting it
 prints a short checklist, because two things about the library's state matter
@@ -126,6 +141,14 @@ per file, because individual small files are perfectly normal.
 It also detects a *referenced* library, where Photos links to files elsewhere
 rather than copying them in. There the answer is to point videre at your real
 folders instead.
+
+If `originals/` turns out to be completely empty, import stops and explains
+rather than reporting zero files. That state has two causes which are
+indistinguishable on disk, so both are offered: iCloud has evicted your
+originals, or the library is a referenced one. The first is checked in
+**Photos > Settings > iCloud**, the second in **Photos > Settings > General**.
+A referenced library needs no import at all; its files are ordinary photos, so
+[`videre scan`](/commands/scan/) is the whole answer.
 
 ### Lightroom
 

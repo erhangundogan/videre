@@ -43,16 +43,33 @@ fn is_lightroom(p: &Path) -> bool {
         })
 }
 
-fn is_takeout(p: &Path) -> bool {
-    if p.join("Google Photos").is_dir() || p.join("Takeout/Google Photos").is_dir() {
-        return true;
-    }
-    std::fs::read_dir(p).is_ok_and(|d| {
+/// True when `dir` directly contains at least one Takeout sidecar.
+fn has_sidecar(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|d| {
         d.filter_map(|e| e.ok()).any(|e| {
             e.file_name()
                 .to_string_lossy()
                 .contains(".supplemental-metadat")
         })
+    })
+}
+
+fn is_takeout(p: &Path) -> bool {
+    if p.join("Google Photos").is_dir() || p.join("Takeout/Google Photos").is_dir() {
+        return true;
+    }
+    if has_sidecar(p) {
+        return true;
+    }
+    // Also look one level down. A real export's `Google Photos/` folder holds
+    // only album directories, with the sidecars inside them, so pointing at it
+    // directly (a natural thing to do) found nothing when this checked the
+    // immediate directory alone. Found against a real 36GB Takeout export.
+    std::fs::read_dir(p).is_ok_and(|d| {
+        d.filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .take(64) // bounded: enough to recognise an export, never a deep walk
+            .any(|e| has_sidecar(&e.path()))
     })
 }
 
@@ -272,6 +289,19 @@ mod tests {
     fn a_missing_search_root_is_skipped_silently() {
         let found = discover_in(&[std::path::PathBuf::from("/definitely/not/here")]);
         assert!(found.is_empty());
+    }
+
+    #[test]
+    fn detects_takeout_when_sidecars_are_one_level_down() {
+        // A real export's "Google Photos" folder contains only album
+        // directories; the sidecars live inside them. Pointing straight at it
+        // is a natural thing to do and must be recognised.
+        let d = tempdir().unwrap();
+        let album = d.path().join("Photos from 2019");
+        fs::create_dir_all(&album).unwrap();
+        fs::write(album.join("a.jpg"), b"").unwrap();
+        fs::write(album.join("a.jpg.supplemental-metadata.json"), b"{}").unwrap();
+        assert_eq!(detect(d.path()).map(|p| p.id), Some("google-takeout"));
     }
 
     #[test]
