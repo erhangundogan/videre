@@ -61,6 +61,22 @@ pub enum Located {
     NotFound { tried: Vec<String> },
 }
 
+/// True when `path` exists but cannot be read because the OS denied access.
+///
+/// Layout probing goes through `Path::is_dir`, which answers false for both
+/// "absent" and "blocked", so without this a permission failure is reported as
+/// a missing folder and the user is told the vendor changed their structure.
+/// On macOS a `.photoslibrary` is TCC-protected, so this is the *normal* first
+/// experience of `videre import` until Full Disk Access is granted; measured
+/// against a real library, where `originals/` returned EPERM while a genuinely
+/// absent `Masters/` returned ENOENT.
+pub fn access_is_denied(path: &Path) -> bool {
+    matches!(
+        std::fs::read_dir(path),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied
+    )
+}
+
 /// One candidate folder layout for a provider.
 ///
 /// `dir_names` are tried in order, so a provider that renamed its folder across
@@ -329,5 +345,32 @@ mod tests {
     fn rungs_order_from_most_to_least_precise() {
         assert!(Rung::Database < Rung::FolderLayout);
         assert!(Rung::FolderLayout < Rung::AskUser);
+    }
+}
+
+#[cfg(test)]
+mod access_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn unreadable_directory_is_denied_not_absent() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let d = tempdir().unwrap();
+            let blocked = d.path().join("blocked");
+            std::fs::create_dir(&blocked).unwrap();
+            std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o000)).unwrap();
+            // Meaningless as root, which ignores the mode bits entirely.
+            if std::fs::read_dir(&blocked).is_ok() {
+                return;
+            }
+            assert!(access_is_denied(&blocked));
+            // The distinction that matters: a genuinely absent folder is not
+            // "denied", so the two failure modes stay separable.
+            assert!(!access_is_denied(&d.path().join("nope")));
+            std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
     }
 }
