@@ -21,6 +21,36 @@ pub struct ProviderDescriptor {
     pub detect: fn(&Path) -> bool,
 }
 
+/// Apple fans `originals/` out into directories named `0`-`F`, one per leading
+/// hex character of the asset UUID, to keep any single directory small.
+///
+/// This is the signature that survives when only the originals folder is kept:
+/// a backup copy has no `database/Photos.sqlite` to detect by, and a folder
+/// merely *named* "originals" is common in ordinary photo workflows. Requiring
+/// most of the fan-out present, and outnumbering anything else, separates the
+/// two without a catalog. Found against a real 399GB backup of 70,854 files
+/// that detection missed entirely.
+fn has_hex_fanout(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let (mut hex, mut other) = (0usize, 0usize);
+    for e in entries.filter_map(|e| e.ok()) {
+        if !e.path().is_dir() {
+            continue;
+        }
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        // Tolerates a partial copy: 8 of 16 is still unmistakably the layout.
+        if name.len() == 1 && name.chars().all(|c| c.is_ascii_hexdigit()) {
+            hex += 1;
+        } else {
+            other += 1;
+        }
+    }
+    hex >= 8 && hex > other
+}
+
 fn is_apple_photos(p: &Path) -> bool {
     // Structure, not name: the folder may be called anything, and the
     // originals directory has been spelled three ways across generations.
@@ -31,6 +61,12 @@ fn is_apple_photos(p: &Path) -> bool {
     (has_db && has_originals)
         || p.extension().is_some_and(|e| e == "photoslibrary")
         || (p.join("Masters").is_dir() && p.join("Database").is_dir())
+        // A kept-originals backup: no catalog beside it, so the fan-out is the
+        // only evidence. Both the folder holding it and the folder itself.
+        || ["originals", "Masters", "Originals"]
+            .iter()
+            .any(|d| has_hex_fanout(&p.join(d)))
+        || has_hex_fanout(p)
 }
 
 fn is_lightroom(p: &Path) -> bool {
@@ -302,6 +338,34 @@ mod tests {
         fs::write(album.join("a.jpg"), b"").unwrap();
         fs::write(album.join("a.jpg.supplemental-metadata.json"), b"{}").unwrap();
         assert_eq!(detect(d.path()).map(|p| p.id), Some("google-takeout"));
+    }
+
+    #[test]
+    #[test]
+    fn detects_a_kept_originals_backup_with_no_catalog_beside_it() {
+        // A real 399GB backup: someone copied only `originals/` off a Photos
+        // library, so there is no database to detect by. The hex fan-out is
+        // the whole signature.
+        let d = tempdir().unwrap();
+        let orig = d.path().join("originals");
+        for name in "0123456789ABCDEF".chars() {
+            fs::create_dir_all(orig.join(name.to_string())).unwrap();
+        }
+        assert_eq!(detect(d.path()).map(|p| p.id), Some("apple-photos"));
+        // ...and when pointed straight at the originals folder itself.
+        assert_eq!(detect(&orig).map(|p| p.id), Some("apple-photos"));
+    }
+
+    #[test]
+    fn a_folder_merely_named_originals_is_not_an_apple_library() {
+        // The guard that keeps the above from firing on ordinary workflows:
+        // photographers keep an `originals/` folder all the time.
+        let d = tempdir().unwrap();
+        let orig = d.path().join("originals");
+        fs::create_dir_all(orig.join("2024 Holiday")).unwrap();
+        fs::create_dir_all(orig.join("Wedding")).unwrap();
+        fs::write(orig.join("a.jpg"), b"").unwrap();
+        assert!(detect(d.path()).is_none());
     }
 
     #[test]
