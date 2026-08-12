@@ -107,3 +107,24 @@ written to your files at any point.
 
 - [JSONL output](/guides/jsonl/) covers `--output` and what it gives up.
 - [Keeping libraries separate](/guides/multiple-libraries/) covers scanning collections that should not see each other.
+
+
+## HEIC and near-duplicates
+
+`--similar` hashes HEIC as well as JPEG, PNG, GIF, WebP, BMP, TIFF and video.
+HEIC cannot be decoded directly, so it converts through QuickLook exactly as
+[`embed`](/commands/embed/) and [`faces`](/commands/faces/) do, which means
+HEIC near-duplicate detection is macOS-only.
+
+The conversion is cheap here because the hash only needs a 9x8 grid, so videre
+asks QuickLook for a 64px rendition rather than a full-size one: measured at 3
+seconds against 2 for the same count of JPEGs, including process startup.
+
+:::note[Matching survives resizing]
+The perceptual hash compares images by shape, not bytes, so a photo matches its
+own downscaled copy. Measured on a real library, a HEIC original and its
+768x1024 preview differed by 0 to 5 bits out of 64, and 29,258 real rendition
+pairs were within 4 bits 99.1% of the time. Exact equality only held for 53.4%
+of them, which is why near-duplicate grouping uses a distance rather than an
+equality test.
+:::
