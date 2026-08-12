@@ -93,6 +93,21 @@ videre report --faces          # name the people you care about
 Only the first is required. Stop wherever you like; each later step adds one
 capability. `embed` and `faces` are both resumable, so Ctrl-C is safe.
 
+### Come from another photo tool
+
+```bash
+videre import ~/Takeout --dry-run   # see what it found
+videre import ~/Takeout             # fix the dates the exporter mangled
+videre scan ~/Takeout               # now record them
+videre dedupe                       # collapse the copies albums created
+videre prune
+```
+
+**Import comes before scan**, since dates must be corrected before `scan`
+records them. Works the same for an Apple Photos library or a Lightroom catalog:
+point it at the library and it works out the rest. See
+[Leaving Google Photos](/guides/leaving-google-photos/).
+
 ### Clean up duplicates safely
 
 ```bash
