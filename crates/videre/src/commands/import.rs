@@ -164,6 +164,23 @@ fn import_one(
         eprintln!("Dry run: no files will be modified.");
     }
 
+    if provider.id == "google-takeout" {
+        let survey = super::import_takeout::survey(&files);
+        summary.matched = survey.matched.len();
+        summary.unmatched = survey.unmatched;
+        summary.ambiguous = survey.ambiguous;
+        if !args.silent {
+            report_takeout_survey(&summary, survey.folders);
+            for m in &survey.matched {
+                println!(
+                    "[matched] {}  <-  {}",
+                    m.file.display(),
+                    m.sidecar.file_name().unwrap_or_default().to_string_lossy()
+                );
+            }
+        }
+    }
+
     if !args.yes && !args.dry_run && !confirm("Continue?")? {
         eprintln!("Aborted; no files modified.");
         summary.aborted = true;
@@ -214,6 +231,21 @@ fn report_nothing_importable(path: &Path) {
         "  Nothing to import: run 'videre scan {}' to use them directly.",
         path.display()
     );
+}
+
+/// The matched percentage is the number to watch: far below ~95% means the
+/// matching rules have missed a naming variant and the run wants inspecting
+/// rather than trusting.
+fn report_takeout_survey(s: &Summary, folders: usize) {
+    let pct = if s.files > 0 {
+        (s.matched as f64) * 100.0 / (s.files as f64)
+    } else {
+        0.0
+    };
+    eprintln!("  {} media file(s) in {folders} folder(s)", s.files);
+    eprintln!("  {} matched a sidecar ({pct:.1}%)", s.matched);
+    eprintln!("  {} unmatched, left untouched", s.unmatched);
+    eprintln!("  {} ambiguous, left untouched", s.ambiguous);
 }
 
 fn report_not_found(root: &Path, tried: &[String]) {
