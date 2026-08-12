@@ -5,6 +5,7 @@ pub mod embed;
 pub mod faces;
 pub mod fix_dates;
 pub mod import;
+pub mod import_takeout;
 pub mod locations;
 pub mod mcp;
 pub mod prune;
