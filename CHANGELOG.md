@@ -13,6 +13,25 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.13.1] - 2026-08-12
+
+### Changed
+
+- **`videre scan --similar` now computes perceptual hashes in parallel, and
+  shows progress while it does.** The pass ran single-threaded with no output,
+  so on a large library it was a long silence indistinguishable from a hang.
+  Measured on 700 real files (300 HEIC, 300 JPEG, 60 MOV, 40 PNG, 2.3 GB) on a
+  10-core machine: **108s to 15s**. Expect less on an external drive, where
+  reading the files rather than decoding them becomes the limit.
+
+  The hashing pass above it was already parallel; only this one was not. It
+  became far more noticeable in 0.13.0, when HEIC started taking the QuickLook
+  path and joined video in paying a conversion per file.
+
+  Hashes and their order are unchanged: verified end to end on real HEIC and
+  video, where the parallel and serial runs produced identical values for all
+  700 files.
+
 ## [0.13.0] - 2026-08-12
 
 ### Added
