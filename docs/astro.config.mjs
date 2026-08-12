@@ -29,6 +29,15 @@ export default defineConfig({
 			// renders a large empty box on every platform that honours it. One
 			// static card, regenerated with `yarn og`, is far better than none.
 			head: [
+				// iOS ignores SVG favicons entirely, and an added-to-home-screen
+				// tile is composited straight onto the user's wallpaper, so unlike
+				// the favicon it cannot follow the system theme: the background is
+				// baked in. A dark tile holds up against light and dark wallpapers
+				// alike, where a white one tends to disappear against a light one.
+				{
+					tag: 'link',
+					attrs: { rel: 'apple-touch-icon', sizes: '180x180', href: '/apple-touch-icon.png' },
+				},
 				{ tag: 'meta', attrs: { property: 'og:image', content: `${SITE}/og.png` } },
 				{ tag: 'meta', attrs: { property: 'og:image:width', content: '1200' } },
 				{ tag: 'meta', attrs: { property: 'og:image:height', content: '630' } },
