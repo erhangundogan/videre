@@ -6,6 +6,7 @@
 //! data in `videre_core::import_providers`) and how to recover per-file
 //! metadata. Nothing here knows what a Takeout sidecar is.
 
+use filetime::FileTime;
 use std::path::{Path, PathBuf};
 use videre_core::import_location::{locate_with_database, LocateOptions, Located};
 use videre_core::import_providers::{self, ProviderDescriptor};
@@ -164,32 +165,33 @@ fn import_one(
         eprintln!("Dry run: no files will be modified.");
     }
 
-    if provider.id == "google-takeout" {
-        let survey = super::import_takeout::survey(&files);
-        summary.matched = survey.matched.len();
-        summary.unmatched = survey.unmatched;
-        summary.ambiguous = survey.ambiguous;
-        if !args.silent {
-            report_takeout_survey(&summary, survey.folders);
-            for m in &survey.matched {
-                println!(
-                    "[matched] {}  <-  {}",
-                    m.file.display(),
-                    m.sidecar.file_name().unwrap_or_default().to_string_lossy()
-                );
-            }
-        }
-    }
+    // Per-file metadata recovery: the one thing a source supplies that the
+    // command cannot. Everything after this point is source-agnostic again.
+    let pending = if provider.id == "google-takeout" {
+        recover_takeout_dates(&files, &mut summary, args)
+    } else {
+        Vec::new()
+    };
 
-    if !args.yes && !args.dry_run && !confirm("Continue?")? {
+    let question = if pending.is_empty() {
+        "Continue?".to_string()
+    } else {
+        format!(
+            "This will set the modified time on {} file(s) from their import source. Continue?",
+            pending.len()
+        )
+    };
+    if !args.yes && !args.dry_run && !confirm(&question)? {
         eprintln!("Aborted; no files modified.");
         summary.aborted = true;
         return Ok(Some(summary));
     }
 
+    apply_dates(&pending, &mut summary, args);
+
     if !args.silent {
         eprintln!(
-            "Nothing to apply for this source yet. Next:\n  videre scan {}",
+            "Next:\n  videre scan {}",
             roots
                 .first()
                 .map(|r| r.display().to_string())
@@ -198,6 +200,104 @@ fn import_one(
     }
 
     Ok(Some(summary))
+}
+
+/// A file and the capture time recovered for it, in Unix seconds.
+type PendingDate = (PathBuf, i64);
+
+fn recover_takeout_dates(
+    files: &[PathBuf],
+    summary: &mut Summary,
+    args: &ImportArgs,
+) -> Vec<PendingDate> {
+    use super::import_takeout;
+
+    let survey = import_takeout::survey(files);
+    summary.matched = survey.matched.len();
+    summary.unmatched = survey.unmatched;
+    summary.ambiguous = survey.ambiguous;
+
+    let mut pending = Vec::new();
+    let mut already_correct = 0usize;
+    for m in &survey.matched {
+        let meta = match std::fs::read_to_string(&m.sidecar)
+            .map_err(anyhow::Error::from)
+            .and_then(|text| import_takeout::parse_sidecar(&text))
+        {
+            Ok(meta) => meta,
+            Err(e) => {
+                // A malformed sidecar leaves its file untouched and the run
+                // continues; a missing date is a normal outcome, not a failure.
+                eprintln!("warning: {}: {e}", m.sidecar.display());
+                continue;
+            }
+        };
+        if meta.gps.is_some() {
+            summary.with_location += 1;
+        }
+        let Some(taken) = meta.taken_unix else {
+            continue;
+        };
+        if current_mtime(&m.file) == Some(taken) {
+            already_correct += 1;
+            continue;
+        }
+        pending.push((m.file.clone(), taken));
+    }
+
+    if !args.silent {
+        report_takeout_survey(summary, survey.folders);
+        eprintln!(
+            "  {} would have their date corrected ({already_correct} already agree)",
+            pending.len()
+        );
+    }
+    pending
+}
+
+/// Sets each recovered capture time as the file's mtime.
+///
+/// `filetime::set_file_mtime` is the same call `fix-dates` uses, so the two
+/// commands cannot disagree about what "correcting a date" means.
+fn apply_dates(pending: &[PendingDate], summary: &mut Summary, args: &ImportArgs) {
+    for (file, taken) in pending {
+        if !args.dry_run {
+            if let Err(e) = filetime::set_file_mtime(file, FileTime::from_unix_time(*taken, 0)) {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    // Moved or trashed since the walk; not this run's problem.
+                    continue;
+                }
+                eprintln!("Error: {}: {e}", file.display());
+                summary.errors += 1;
+                continue;
+            }
+        }
+        summary.updated += 1;
+        if !args.silent {
+            let prefix = if args.dry_run {
+                "[dry-run]"
+            } else {
+                "[updated]"
+            };
+            println!("{prefix} {}  ->  {}", file.display(), format_date(*taken));
+        }
+    }
+}
+
+fn current_mtime(path: &Path) -> Option<i64> {
+    std::fs::metadata(path)
+        .ok()
+        .map(|m| FileTime::from_last_modification_time(&m).unix_seconds())
+}
+
+fn format_date(unix: i64) -> String {
+    chrono::DateTime::from_timestamp(unix, 0)
+        .map(|d| {
+            d.with_timezone(&chrono::Local)
+                .format("%Y-%m-%dT%H:%M:%S")
+                .to_string()
+        })
+        .unwrap_or_else(|| unix.to_string())
 }
 
 /// Takeout is routinely handed the export folder itself rather than its
