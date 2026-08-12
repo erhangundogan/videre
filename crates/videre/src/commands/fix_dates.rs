@@ -20,18 +20,7 @@ pub struct FixDatesArgs {
     yes: bool,
 }
 
-/// Prompts on stderr and reads a yes/no answer from stdin. Any input other
-/// than "y"/"yes" (case-insensitive) is treated as "no", including EOF (e.g.
-/// stdin piped from /dev/null in a non-interactive context), the safe
-/// default for a prompt gating a file mutation.
-fn confirm(prompt: &str) -> anyhow::Result<bool> {
-    use std::io::Write;
-    eprint!("{prompt} [y/N] ");
-    std::io::stderr().flush()?;
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-    Ok(matches!(input.trim().to_lowercase().as_str(), "y" | "yes"))
-}
+use super::confirm;
 
 pub fn run(args: FixDatesArgs) -> anyhow::Result<()> {
     let db = super::resolve_reader_db(args.db.clone())?;
