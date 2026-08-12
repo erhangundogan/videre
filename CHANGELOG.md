@@ -13,6 +13,55 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.13.0] - 2026-08-12
+
+### Added
+
+- **`videre import`**, bringing photos in from another tool. Point it at a
+  folder, a library package, or an export and it works out the rest:
+
+  ```bash
+  videre import ~/Pictures        # find whatever is in there
+  videre import ~/Takeout         # a Google Takeout export
+  videre import                   # search the usual places
+  ```
+
+- **Google Takeout.** Restores the capture dates Takeout leaves in `.json`
+  sidecars rather than in the files. Handles Google's truncated sidecar names
+  (`photo.jpg.supplemental-metadata.json` arriving as `photo.jpg.s.json`), `(1)`
+  duplicate counters, and `-edited` versions. Uses `photoTakenTime`, never
+  `creationTime`, which is the upload date and the most common way other tools
+  get this wrong. An ambiguous name applies no date at all, since a wrong date is
+  worse than a missing one.
+
+- **Apple Photos and iPhoto.** Reads `originals/`, `Masters/` or `Originals/`
+  directly, covering all three layouts Apple has used. Prints a pre-flight
+  checklist first, led by "Download Originals to this Mac", because importing
+  iCloud placeholders as though they were originals is the one failure here that
+  destroys data. Warns when the library's median file size suggests optimised
+  storage, and detects a referenced library.
+
+- **Adobe Lightroom.** Reads `.lrcat` to find which folders hold the photos,
+  which is the one thing a filesystem scan cannot tell you. The catalog is copied
+  before reading, never opened in place. Root folders on disconnected drives are
+  reported as offline rather than treated as missing files.
+
+- **A shared location contract** in `videre-core`, used by every source: an
+  optional provider database, then known folder layouts, then asking the user.
+  The default never opens a provider database. `--originals <dir>` overrides
+  every step, so the feature keeps working by hand on the day a vendor changes
+  their structure rather than after videre ships a fix. Each run reports which
+  step found the files.
+
+### Notes
+
+- Import modifies file timestamps, like `fix-dates`, so it asks for confirmation
+  and supports `--dry-run`. Only the modification time changes.
+- Import comes **before** `scan`, since dates must be corrected before `scan`
+  records them.
+- `--into`, for copying into a clean destination tree, is accepted but not yet
+  implemented; it exits with a message rather than being silently ignored.
+
 ## [Unreleased]
 
 ## [0.12.0] - 2026-08-11
