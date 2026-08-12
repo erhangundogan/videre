@@ -143,18 +143,51 @@ fn gather_records(
     let skipped = paths.len() - records.len();
 
     let records = if args.similar {
-        records
-            .into_iter()
-            .map(|mut r| {
-                r.phash = hasher::compute_dhash(std::path::Path::new(&r.path), r.mime.as_deref());
-                r
-            })
-            .collect()
+        // Distinguishes this bar from the hashing one above: `Progress` renders
+        // no label, so two passes would otherwise show two identical bars.
+        if !args.silent {
+            eprintln!("Computing perceptual hashes for {} file(s)", records.len());
+        }
+        apply_phashes(records, args.silent)
     } else {
         records
     };
 
     (records, skipped, walked)
+}
+
+/// Fills in the perceptual hash for every record.
+///
+/// A second full pass over the files, and for HEIC and video each one costs a
+/// QuickLook conversion, so this is the slow half of `--similar` on a large
+/// library. It ran serially and without progress output until 0.13.1, which on
+/// a real 428GB library meant an hour of silence indistinguishable from a hang.
+///
+/// Parallelism needs no extra synchronisation. `Vec`'s parallel iterator is
+/// *indexed*, so `collect()` preserves input order; that matters because a
+/// silent reordering would put a photo in the wrong near-duplicate group with
+/// no error to notice. QuickLook concurrency is bounded by
+/// `videre_core::heic::qlmanage_semaphore`, not by the thread count, so more
+/// threads cannot mean more `qlmanage` processes.
+///
+/// Note that `heic_via_quicklook` prints its own timeout warning with a bare
+/// `eprintln!`, which can interleave with the bar. Routing it would mean
+/// plumbing a reporter through `videre-core` for a rare line.
+fn apply_phashes(
+    records: Vec<videre::types::FileRecord>,
+    silent: bool,
+) -> Vec<videre::types::FileRecord> {
+    let progress = videre_core::progress::Progress::new(records.len() as u64, silent);
+    let out: Vec<_> = records
+        .into_par_iter()
+        .map(|mut r| {
+            r.phash = hasher::compute_dhash(std::path::Path::new(&r.path), r.mime.as_deref());
+            progress.tick();
+            r
+        })
+        .collect();
+    progress.finish();
+    out
 }
 
 /// Formats the "Wrote N record(s) to <path>" summary line, with an
@@ -330,4 +363,83 @@ fn run_json(args: &ScanArgs) -> anyhow::Result<ScanJson> {
         total_files: records.len(),
         output,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    /// Writes `n` visually distinct PNGs, so every phash differs and a
+    /// reordering cannot accidentally still compare equal.
+    ///
+    /// Deterministic noise rather than gradients: dHash reduces to a 9x8 grid
+    /// and compares horizontally adjacent pixels, so smooth gradients collapse
+    /// to the same bit pattern. A first attempt with gradients produced only 5
+    /// distinct hashes from 16 images, which would have left this test unable
+    /// to detect the reordering it exists to catch.
+    fn distinct_pngs(dir: &std::path::Path, n: u8) {
+        for i in 0..n {
+            let mut state = (i as u32).wrapping_add(1).wrapping_mul(0x9E3779B9);
+            let mut img = image::RgbImage::new(32, 32);
+            for px in img.pixels_mut() {
+                // xorshift32: no dependency, and identical on every platform so
+                // the fixtures cannot differ between CI runners.
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                px.0 = [state as u8, (state >> 8) as u8, (state >> 16) as u8];
+            }
+            img.save(dir.join(format!("img{i:02}.png"))).unwrap();
+        }
+    }
+
+    #[test]
+    fn parallel_phashes_match_the_serial_result_in_value_and_order() {
+        // The failure this guards is silent: `collect()` returning records in a
+        // different order than it received them would pair each path with
+        // another file's hash, putting photos in the wrong near-duplicate group
+        // with no error anywhere. Values alone are not enough to assert; the
+        // order has to be checked too.
+        let dir = tempdir().unwrap();
+        distinct_pngs(dir.path(), 16);
+
+        let records: Vec<_> = scanner::scan(dir.path())
+            .iter()
+            .filter_map(|p| hasher::hash_file(p).ok())
+            .collect();
+        assert_eq!(records.len(), 16, "fixtures should all hash");
+
+        let serial: Vec<_> = records
+            .clone()
+            .into_iter()
+            .map(|mut r| {
+                r.phash = hasher::compute_dhash(std::path::Path::new(&r.path), r.mime.as_deref());
+                r
+            })
+            .collect();
+        let parallel = apply_phashes(records, true);
+
+        let expected: Vec<_> = serial.iter().map(|r| (r.path.clone(), r.phash)).collect();
+        let actual: Vec<_> = parallel.iter().map(|r| (r.path.clone(), r.phash)).collect();
+        assert_eq!(expected, actual, "parallel must match serial exactly");
+
+        assert!(
+            parallel.iter().all(|r| r.phash.is_some()),
+            "every PNG must produce a hash"
+        );
+        let unique: std::collections::HashSet<_> =
+            parallel.iter().filter_map(|r| r.phash).collect();
+        assert!(
+            unique.len() > 8,
+            "fixtures must be visually distinct or this test cannot detect a \
+             reordering, got {} unique hashes",
+            unique.len()
+        );
+    }
+
+    #[test]
+    fn apply_phashes_on_an_empty_set_is_not_an_error() {
+        assert!(apply_phashes(Vec::new(), true).is_empty());
+    }
 }
