@@ -87,6 +87,140 @@ fn dry_run_changes_nothing_on_disk() {
     assert_eq!(before, std::fs::metadata(&f).unwrap().modified().unwrap());
 }
 
+/// A modern Apple package: `originals/` plus the `database/Photos.sqlite`
+/// sibling that makes detection structural rather than name-based.
+fn apple_library(root: &Path, name: &str, file_bytes: usize, count: usize) -> PathBuf {
+    let lib = root.join(name);
+    std::fs::create_dir_all(lib.join("originals/0")).unwrap();
+    std::fs::create_dir_all(lib.join("database")).unwrap();
+    std::fs::write(lib.join("database/Photos.sqlite"), b"").unwrap();
+    for i in 0..count {
+        std::fs::write(
+            lib.join(format!("originals/0/{i}.jpg")),
+            vec![b'x'; file_bytes],
+        )
+        .unwrap();
+    }
+    lib
+}
+
+/// Runs `videre import` with `answer` on stdin, returning stderr + stdout.
+fn import_answering(args: &[&str], answer: &str) -> String {
+    use std::io::Write;
+    let mut child = std::process::Command::new(videre_bin())
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(answer.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    String::from_utf8_lossy(&out.stderr).to_string() + &String::from_utf8_lossy(&out.stdout)
+}
+
+#[test]
+fn a_library_of_tiny_files_warns_that_it_looks_optimised() {
+    let d = tempfile::tempdir().unwrap();
+    // 20 files of 1 KB: far below what camera originals are, and enough of
+    // them that the near-empty referenced check does not fire instead.
+    let lib = apple_library(d.path(), "Optimised.photoslibrary", 1024, 20);
+
+    let out = std::process::Command::new(videre_bin())
+        .args(["import", lib.to_str().unwrap(), "--dry-run"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stderr).to_string();
+
+    assert!(
+        text.contains("median file size"),
+        "must warn about the population, not a file: {text}"
+    );
+    assert!(
+        text.contains("Optimise Mac Storage"),
+        "must name the setting that causes it: {text}"
+    );
+}
+
+#[test]
+fn a_library_of_normal_sized_files_does_not_warn() {
+    let d = tempfile::tempdir().unwrap();
+    let lib = apple_library(d.path(), "Normal.photoslibrary", 400 * 1024, 8);
+
+    let out = std::process::Command::new(videre_bin())
+        .args(["import", lib.to_str().unwrap(), "--dry-run"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stderr).to_string();
+
+    assert!(
+        !text.contains("median file size"),
+        "no false positive on an ordinary library: {text}"
+    );
+}
+
+#[test]
+fn a_nearly_empty_originals_folder_warns_about_a_referenced_library() {
+    let d = tempfile::tempdir().unwrap();
+    let lib = apple_library(d.path(), "Referenced.photoslibrary", 16, 2);
+    // The package is otherwise substantial: previews and databases are there,
+    // the originals are not, which is exactly what a referenced library is.
+    std::fs::create_dir_all(lib.join("resources/derivatives")).unwrap();
+    std::fs::write(
+        lib.join("resources/derivatives/previews.blob"),
+        vec![b'x'; 400_000],
+    )
+    .unwrap();
+
+    let out = std::process::Command::new(videre_bin())
+        .args(["import", lib.to_str().unwrap(), "--dry-run"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stderr).to_string();
+
+    assert!(
+        text.contains("referenced library"),
+        "must explain the empty originals folder: {text}"
+    );
+}
+
+#[test]
+fn the_preflight_checklist_prints_and_anything_but_y_aborts() {
+    let d = tempfile::tempdir().unwrap();
+    let lib = apple_library(d.path(), "Ask.photoslibrary", 400 * 1024, 4);
+
+    let text = import_answering(&["import", lib.to_str().unwrap()], "n\n");
+
+    assert!(
+        text.contains("Download Originals to this Mac"),
+        "the checklist must print: {text}"
+    );
+    assert!(text.contains("Aborted"), "anything but y aborts: {text}");
+}
+
+#[test]
+fn yes_skips_the_prompt_but_still_prints_the_checklist() {
+    let d = tempfile::tempdir().unwrap();
+    let lib = apple_library(d.path(), "Yes.photoslibrary", 400 * 1024, 4);
+
+    let out = std::process::Command::new(videre_bin())
+        .args(["import", lib.to_str().unwrap(), "--yes"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stderr).to_string();
+
+    assert!(
+        text.contains("Download Originals to this Mac"),
+        "the checklist must appear in logs even when nobody is asked: {text}"
+    );
+    assert!(!text.contains("Aborted"), "--yes must proceed: {text}");
+}
+
 #[test]
 fn takeout_import_corrects_the_date_from_the_sidecar() {
     let d = tempfile::tempdir().unwrap();

@@ -165,6 +165,11 @@ fn import_one(
         eprintln!("Dry run: no files will be modified.");
     }
 
+    if provider.id == "apple-photos" && !apple_preflight(root, &files, args)? {
+        summary.aborted = true;
+        return Ok(Some(summary));
+    }
+
     // Per-file metadata recovery: the one thing a source supplies that the
     // command cannot. Everything after this point is source-agnostic again.
     let pending = if provider.id == "google-takeout" {
@@ -200,6 +205,34 @@ fn import_one(
     }
 
     Ok(Some(summary))
+}
+
+/// The Apple pre-flight: the checklist, then the two filesystem warnings.
+///
+/// Returns false when the user declined. The checklist prints even under
+/// `--yes`, so it appears in any log: skipping the prompt is a statement about
+/// automation, not a reason to hide what the user is being asked to confirm.
+fn apple_preflight(root: &Path, files: &[PathBuf], args: &ImportArgs) -> anyhow::Result<bool> {
+    use super::import_apple;
+
+    let shape = import_apple::survey(root, files);
+    if !args.silent {
+        eprint!("{}", import_apple::checklist(&shape));
+    }
+
+    if shape.looks_referenced() {
+        // Reported instead of the optimised warning, not as well as it: a
+        // referenced library is a better explanation of tiny originals than
+        // iCloud optimisation, and two warnings for one symptom is noise.
+        eprintln!("{}", import_apple::referenced_warning(&shape));
+    } else if shape.looks_optimised() {
+        eprintln!("{}", import_apple::optimised_warning(&shape));
+        if !args.allow_partial && !args.yes && !args.dry_run && !confirm("Continue anyway?")? {
+            eprintln!("Aborted; no files modified.");
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// A file and the capture time recovered for it, in Unix seconds.
