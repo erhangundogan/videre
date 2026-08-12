@@ -39,6 +39,9 @@ pub struct Config {
     /// Embedding model id, e.g. `google/siglip-base-patch16-224`. A plain
     /// string, not a path: it must never be absolutized.
     pub default_model: Option<String>,
+    /// Assumed floor read rate in MB/s, used to scale the I/O timeout to file
+    /// size. Only needed on a mount slower than the default.
+    pub min_read_rate_mb_s: Option<u64>,
 }
 
 /// Path of the config file inside a given home dir: <home>/config.toml.
@@ -52,6 +55,31 @@ fn path_key(table: &toml::Table, file: &Path, key: &str) -> Result<Option<PathBu
         Some(toml::Value::String(s)) => Ok(Some(PathBuf::from(s))),
         Some(other) => bail!(
             "malformed config {}: {} must be a string, got {}",
+            file.display(),
+            key,
+            other.type_str()
+        ),
+    }
+}
+
+/// Read a positive-integer-valued key.
+///
+/// Stored as a TOML integer rather than a string, so it round-trips as a
+/// number. Zero is rejected here rather than clamped: as a read rate it means
+/// an unbounded timeout, which is the hang the timeout exists to prevent, and
+/// silently substituting a different number would hide a typo in the config.
+fn positive_int_key(table: &toml::Table, file: &Path, key: &str) -> Result<Option<u64>> {
+    match table.get(key) {
+        None => Ok(None),
+        Some(toml::Value::Integer(n)) if *n > 0 => Ok(Some(*n as u64)),
+        Some(toml::Value::Integer(n)) => bail!(
+            "malformed config {}: {} must be greater than 0, got {}",
+            file.display(),
+            key,
+            n
+        ),
+        Some(other) => bail!(
+            "malformed config {}: {} must be an integer, got {}",
             file.display(),
             key,
             other.type_str()
@@ -90,6 +118,7 @@ pub fn load_config(home: &Path) -> Result<Config> {
         default_db: path_key(&table, &path, "default_db")?,
         default_path: path_key(&table, &path, "default_path")?,
         default_model: string_key(&table, &path, "default_model")?,
+        min_read_rate_mb_s: positive_int_key(&table, &path, "min_read_rate_mb_s")?,
     })
 }
 
@@ -167,6 +196,37 @@ pub fn set_default_path(home: &Path, dir: &Path) -> Result<()> {
 
 pub fn unset_default_path(home: &Path) -> Result<()> {
     unset_key(home, "default_path")
+}
+
+/// Write one integer-valued key, as a TOML integer rather than a string so it
+/// round-trips through `positive_int_key`.
+fn set_int_key(home: &Path, key: &str, value: i64) -> Result<()> {
+    std::fs::create_dir_all(home).with_context(|| format!("create {}", home.display()))?;
+    let path = config_path(home);
+    let mut table: toml::Table = match std::fs::read_to_string(&path) {
+        Ok(t) => t
+            .parse()
+            .with_context(|| format!("malformed config {}", path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
+        Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
+    };
+    table.insert(key.to_string(), toml::Value::Integer(value));
+    std::fs::write(&path, toml::to_string_pretty(&table)?)
+        .with_context(|| format!("write {}", path.display()))?;
+    Ok(())
+}
+
+/// Assumed floor read rate in MB/s. Rejects zero: as a read rate it means an
+/// unbounded timeout, which is exactly the hang the timeout exists to prevent.
+pub fn set_min_read_rate(home: &Path, mb_s: u64) -> Result<()> {
+    if mb_s == 0 {
+        bail!("min read rate must be greater than 0 MB/s");
+    }
+    set_int_key(home, "min_read_rate_mb_s", mb_s as i64)
+}
+
+pub fn unset_min_read_rate(home: &Path) -> Result<()> {
+    unset_key(home, "min_read_rate_mb_s")
 }
 
 pub fn set_default_model(home: &Path, model_id: &str) -> Result<()> {
@@ -373,5 +433,76 @@ mod tests {
         assert_eq!(config.default_db, None);
         assert_eq!(config.default_path, Some(PathBuf::from("/tmp/photos")));
         let _ = std::fs::remove_dir_all(&home);
+    }
+}
+
+#[cfg(test)]
+mod read_rate_tests {
+    use super::*;
+
+    fn home() -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "videre-rate-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_rate_round_trips_as_a_number_not_a_string() {
+        // Stored as a TOML string it would parse back as the wrong type and
+        // the key would silently do nothing.
+        let h = home();
+        set_min_read_rate(&h, 50).unwrap();
+        let raw = std::fs::read_to_string(config_path(&h)).unwrap();
+        assert!(raw.contains("min_read_rate_mb_s = 50"), "got: {raw}");
+        assert_eq!(load_config(&h).unwrap().min_read_rate_mb_s, Some(50));
+        let _ = std::fs::remove_dir_all(&h);
+    }
+
+    #[test]
+    fn zero_is_refused_rather_than_written() {
+        // A zero rate means an unbounded timeout, which is the hang the
+        // timeout exists to prevent.
+        let h = home();
+        assert!(set_min_read_rate(&h, 0).is_err());
+        let _ = std::fs::remove_dir_all(&h);
+    }
+
+    #[test]
+    fn a_zero_already_in_the_file_is_rejected_on_read() {
+        // Hand-edited configs exist; the reader cannot trust the writer.
+        let h = home();
+        std::fs::write(config_path(&h), "min_read_rate_mb_s = 0\n").unwrap();
+        assert!(load_config(&h).is_err());
+        let _ = std::fs::remove_dir_all(&h);
+    }
+
+    #[test]
+    fn a_non_integer_is_rejected_with_a_clear_error() {
+        let h = home();
+        std::fs::write(config_path(&h), "min_read_rate_mb_s = \"fast\"\n").unwrap();
+        let e = load_config(&h).unwrap_err().to_string();
+        assert!(e.contains("must be an integer"), "got: {e}");
+        let _ = std::fs::remove_dir_all(&h);
+    }
+
+    #[test]
+    fn absent_means_the_built_in_default_applies() {
+        let h = home();
+        assert_eq!(load_config(&h).unwrap().min_read_rate_mb_s, None);
+        let _ = std::fs::remove_dir_all(&h);
+    }
+
+    #[test]
+    fn unset_removes_it() {
+        let h = home();
+        set_min_read_rate(&h, 33).unwrap();
+        unset_min_read_rate(&h).unwrap();
+        assert_eq!(load_config(&h).unwrap().min_read_rate_mb_s, None);
+        let _ = std::fs::remove_dir_all(&h);
     }
 }

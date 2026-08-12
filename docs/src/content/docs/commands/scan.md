@@ -142,3 +142,21 @@ pairs were within 4 bits 99.1% of the time. Exact equality only held for 53.4%
 of them, which is why near-duplicate grouping uses a distance rather than an
 equality test.
 :::
+
+## Very large files
+
+Reading a file is bounded by a timeout, so a disconnected drive cannot hang a
+scan forever. That bound scales with the size of the file rather than being a
+constant: a multi-gigabyte video legitimately takes longer to read than a
+photo, and a fixed ceiling cannot tell a large file from a stalled one.
+
+The size itself is read first under a short, separate timeout. That is what
+keeps a dead mount failing quickly: it stops there, and the read is never
+started.
+
+If you scan a mount slower than about 20 MB/s and see files reported as
+unreachable, lower the assumed floor rate:
+
+```bash
+videre config set read-rate 5
+```

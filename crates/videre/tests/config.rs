@@ -219,3 +219,46 @@ fn unset_model_removes_the_key_and_leaves_others_alone() {
         "unsetting one key must not drop another: {text}"
     );
 }
+
+#[test]
+fn config_set_read_rate_roundtrips_and_refuses_zero() {
+    let home = tempdir().unwrap();
+    let set = |v: &str| {
+        Command::new(videre_bin())
+            .args(["config", "set", "read-rate", v])
+            .env("VIDERE_HOME", home.path())
+            .output()
+            .expect("failed to run videre config set")
+    };
+
+    assert!(set("50").status.success());
+    let raw = std::fs::read_to_string(home.path().join("config.toml")).unwrap();
+    assert!(
+        raw.contains("min_read_rate_mb_s = 50"),
+        "must be stored as a TOML integer, not a string: {raw}"
+    );
+
+    // Zero would mean an unbounded read timeout, which is precisely the hang
+    // the timeout exists to prevent, so it must be refused at the CLI rather
+    // than written and tripped over later.
+    let zero = set("0");
+    assert!(!zero.status.success(), "read-rate 0 must be rejected");
+    let raw = std::fs::read_to_string(home.path().join("config.toml")).unwrap();
+    assert!(
+        raw.contains("min_read_rate_mb_s = 50"),
+        "a rejected value must not clobber the previous one: {raw}"
+    );
+
+    let bad = set("fast");
+    assert!(!bad.status.success(), "a non-number must be rejected");
+
+    assert!(Command::new(videre_bin())
+        .args(["config", "unset", "read-rate"])
+        .env("VIDERE_HOME", home.path())
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let raw = std::fs::read_to_string(home.path().join("config.toml")).unwrap();
+    assert!(!raw.contains("min_read_rate_mb_s"), "{raw}");
+}

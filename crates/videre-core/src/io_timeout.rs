@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::sync::mpsc;
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -9,6 +10,73 @@ use std::time::{Duration, Instant};
 /// surfacing a stale/disconnected mount point (which otherwise blocks the
 /// underlying syscall forever on macOS) within one command's run.
 pub const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Assumed floor throughput for a whole-file read, in MB/s, used to scale the
+/// timeout to the size of the file.
+///
+/// Deliberately far under real hardware: a USB SSD measured 158 MB/s on the
+/// library that produced this mechanism. It is a floor, not an estimate, so a
+/// degraded link still finishes rather than being declared unreachable.
+pub const MIN_READ_RATE_MB_S_DEFAULT: u64 = 20;
+
+/// Ceiling for a `stat`, which is *not* proportional to file size, so unlike a
+/// read it is correctly bounded by a constant.
+///
+/// This is the liveness check: on a stale or disconnected mount `fs::metadata`
+/// is itself one of the calls that blocks forever, so a mount that answers it
+/// promptly can be trusted to have reported a real size.
+pub const STAT_TIMEOUT: Duration = Duration::from_secs(5);
+
+static MIN_READ_RATE_OVERRIDE: OnceLock<u64> = OnceLock::new();
+
+/// Overrides the assumed floor read rate, from config. Call once at startup,
+/// before any scan begins; later calls are ignored, as with the qlmanage
+/// concurrency override this mirrors.
+pub fn set_min_read_rate_mb_s(rate: u64) {
+    let _ = MIN_READ_RATE_OVERRIDE.set(rate);
+}
+
+/// Pure resolution of the effective rate, split out from the `OnceLock` so the
+/// "override if present, else default" logic is unit-testable without touching
+/// process-wide state. Same split as `heic::resolve_qlmanage_concurrency`.
+fn resolve_min_read_rate(override_val: Option<u64>) -> u64 {
+    match override_val {
+        // A zero rate would mean an unbounded timeout, reintroducing the hang
+        // the whole mechanism exists to prevent. The config layer rejects it;
+        // this refuses it again rather than trusting a single gate.
+        Some(0) | None => MIN_READ_RATE_MB_S_DEFAULT,
+        Some(n) => n,
+    }
+}
+
+pub fn min_read_rate_mb_s() -> u64 {
+    resolve_min_read_rate(MIN_READ_RATE_OVERRIDE.get().copied())
+}
+
+/// How long a whole-file read of `size_bytes` may take before it is considered
+/// stalled rather than merely large.
+///
+/// A constant ceiling cannot tell those apart. Measured 2026-08-12: a healthy
+/// 3.7 GB video on a drive sustaining 158 MB/s needs ~23s, and was being
+/// skipped by a fixed 20s cap with a message blaming the drive. File sizes do
+/// not change, so such a file was skipped on every run, forever.
+///
+/// Never returns less than `DEFAULT_IO_TIMEOUT`, so small files behave exactly
+/// as before. Total by construction: saturating arithmetic (a debug build
+/// panics on overflow, and computing a timeout must never be the thing that
+/// crashes a scan) and a zero rate falls back to the default rather than
+/// dividing by zero or returning an unbounded timeout. The config layer
+/// rejects a zero rate too; this stays total regardless of who calls it.
+pub fn timeout_for_size(size_bytes: u64, rate_mb_s: u64) -> Duration {
+    let rate = if rate_mb_s == 0 {
+        MIN_READ_RATE_MB_S_DEFAULT
+    } else {
+        rate_mb_s
+    };
+    let bytes_per_sec = rate.saturating_mul(1_000_000);
+    let secs = size_bytes / bytes_per_sec.max(1);
+    Duration::from_secs(secs).max(DEFAULT_IO_TIMEOUT)
+}
 
 /// The operation did not complete within the given timeout. The spawned
 /// worker thread is left to run to completion in the background (there is
@@ -30,6 +98,34 @@ where
         let _ = tx.send(f());
     });
     rx.recv_timeout(timeout).map_err(|_| TimedOut)
+}
+
+/// Runs `f` with a timeout scaled to the size of `path`.
+///
+/// For operations that read a file *whole*, where duration really is
+/// proportional to size. Not for decoding: a QuickLook poster frame reads a
+/// fraction of a video, so scaling by full size would hand a multi-GB file
+/// minutes for work that should take a second, and QuickLook hanging on a
+/// container with no video track is a known failure mode this project already
+/// had to bound.
+///
+/// The `stat` is bounded separately and *first*, by a constant. That ordering
+/// is the safety property: a dead mount fails there, in `STAT_TIMEOUT`, and the
+/// read is never attempted, so a large file on a dead mount cannot hang for its
+/// scaled timeout. A failed or timed-out `stat` is reported as `TimedOut`
+/// rather than guessed around.
+pub fn run_with_timeout_for_path<T, F>(path: &Path, f: F) -> Result<T, TimedOut>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let owned = path.to_path_buf();
+    let size = run_with_timeout(STAT_TIMEOUT, move || {
+        std::fs::metadata(&owned).map(|m| m.len()).ok()
+    })
+    .map_err(|_| TimedOut)?
+    .ok_or(TimedOut)?;
+    run_with_timeout(timeout_for_size(size, min_read_rate_mb_s()), f)
 }
 
 /// Outcome of waiting on a child process with a deadline.
@@ -185,5 +281,76 @@ mod tests {
             WaitOutcome::TimedOut
         );
         assert!(start.elapsed() < Duration::from_secs(2));
+    }
+}
+
+#[cfg(test)]
+mod size_timeout_tests {
+    use super::*;
+
+    #[test]
+    fn a_small_file_gets_exactly_the_old_constant() {
+        // Nothing may get *less* time than before this existed.
+        assert_eq!(timeout_for_size(0, 20), DEFAULT_IO_TIMEOUT);
+        assert_eq!(timeout_for_size(1_000_000, 20), DEFAULT_IO_TIMEOUT);
+        // The crossover: below 400 MB at 20 MB/s the default still wins.
+        assert_eq!(timeout_for_size(399_000_000, 20), DEFAULT_IO_TIMEOUT);
+    }
+
+    #[test]
+    fn the_file_that_produced_this_bug_now_gets_enough_time() {
+        // 3.7 GB, skipped on a drive measured at 158 MB/s where a full read
+        // needs ~23s, against a fixed 20s cap.
+        let t = timeout_for_size(3_700_000_000, 20);
+        assert_eq!(t.as_secs(), 185);
+        assert!(t.as_secs() > 23, "must exceed the real read time");
+    }
+
+    #[test]
+    fn the_largest_file_in_the_measured_library_is_bounded_and_finite() {
+        assert_eq!(timeout_for_size(5_720_000_000, 20).as_secs(), 286);
+    }
+
+    #[test]
+    fn a_zero_rate_falls_back_rather_than_dividing_by_zero() {
+        // An unbounded timeout would reintroduce the hang this prevents.
+        assert_eq!(timeout_for_size(3_700_000_000, 0).as_secs(), 185);
+    }
+
+    #[test]
+    fn absurd_sizes_neither_panic_nor_overflow() {
+        // A debug build panics on overflowing arithmetic, and computing a
+        // timeout must never be the thing that crashes a scan.
+        let t = timeout_for_size(u64::MAX, 1);
+        assert!(t >= DEFAULT_IO_TIMEOUT);
+        assert_eq!(timeout_for_size(u64::MAX, u64::MAX), DEFAULT_IO_TIMEOUT);
+    }
+
+    #[test]
+    fn resolve_uses_the_override_but_refuses_zero() {
+        assert_eq!(resolve_min_read_rate(Some(50)), 50);
+        assert_eq!(resolve_min_read_rate(None), MIN_READ_RATE_MB_S_DEFAULT);
+        assert_eq!(resolve_min_read_rate(Some(0)), MIN_READ_RATE_MB_S_DEFAULT);
+    }
+
+    #[test]
+    fn a_dead_path_fails_at_the_stat_rather_than_running_the_body() {
+        // The safety property: no size means no read, so a large file on a
+        // dead mount cannot hang for its scaled timeout.
+        let r = run_with_timeout_for_path(
+            std::path::Path::new("/nonexistent/videre/definitely-not-here"),
+            || 42,
+        );
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn a_real_file_runs_the_body() {
+        let d = std::env::temp_dir().join(format!("videre-sz-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("x.bin");
+        std::fs::write(&f, b"hello").unwrap();
+        assert_eq!(run_with_timeout_for_path(&f, || 42).ok(), Some(42));
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
