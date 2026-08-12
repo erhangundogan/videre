@@ -8,6 +8,7 @@ pub mod geocode;
 pub mod heic;
 pub mod hf_cache;
 pub mod home;
+pub mod import_location;
 pub mod io_timeout;
 pub mod library_stats;
 pub mod location;
