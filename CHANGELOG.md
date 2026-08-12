@@ -13,6 +13,37 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.13.2] - 2026-08-12
+
+### Fixed
+
+- **Large files are no longer skipped as "unreachable".** `videre scan` bounded
+  every file read with a flat 20-second timeout, so a big file on a healthy
+  drive was indistinguishable from a hung one and was dropped with a message
+  blaming the drive. Measured on a real library: a 3.7 GB video on a drive
+  sustaining 158 MB/s needs about 23 seconds to read. File sizes do not change,
+  so the same files were skipped on every run, and they are by definition the
+  longest videos in a library. No row was written at all, so they were simply
+  absent from the database.
+
+  The read timeout now scales with file size, never dropping below the previous
+  20 seconds, so small files are unaffected. The `stat` that reads the size is
+  bounded separately by a short constant, and that ordering is the safety
+  property: a disconnected or stale mount still fails there in about five
+  seconds and the read is never attempted, so a large file on a dead mount
+  cannot hang for its scaled timeout.
+
+  This applies to whole-file reads only. Decoding is left alone: a QuickLook
+  poster frame reads a fraction of a video, so scaling by full file size would
+  turn a known QuickLook hang from 20 seconds into minutes.
+
+### Added
+
+- **`videre config set read-rate <MB/s>`**, the assumed floor read rate used to
+  scale that timeout. Defaults to 20 MB/s, which is far under real hardware and
+  only worth changing for a slower mount. Zero is rejected: as a read rate it
+  means an unbounded timeout, which is the hang the mechanism exists to prevent.
+
 ## [0.13.1] - 2026-08-12
 
 ### Changed

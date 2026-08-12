@@ -47,9 +47,25 @@ enum Command {
     Stats(commands::stats::StatsArgs),
 }
 
+/// Pushes the configured floor read rate into `io_timeout` before any command
+/// runs, since the timeout is resolved process-wide rather than threaded
+/// through `hash_file`'s 13 call sites. A missing or unreadable config is not
+/// an error: the built-in default applies, exactly as it did before this key
+/// existed.
+fn apply_configured_read_rate() {
+    if let Ok(home) = videre_core::home::videre_home() {
+        if let Ok(cfg) = videre_core::home::load_config(&home) {
+            if let Some(rate) = cfg.min_read_rate_mb_s {
+                videre_core::io_timeout::set_min_read_rate_mb_s(rate);
+            }
+        }
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
     videre_core::thumb_cache::migrate_legacy_dupe_cache();
+    apply_configured_read_rate();
     let result = match cli.command {
         Command::Dedupe(args) => commands::dedupe::run(args),
         Command::Report(args) => commands::report::run(args),
