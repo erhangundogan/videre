@@ -132,6 +132,64 @@ pub(crate) fn survey(files: &[PathBuf]) -> Survey {
     out
 }
 
+/// What one sidecar says about its photo.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct SidecarMeta {
+    /// Unix seconds from `photoTakenTime`. `None` when the field is absent or
+    /// unparseable, which leaves the file untouched.
+    pub taken_unix: Option<i64>,
+    /// Latitude and longitude, absent at exactly `0.0, 0.0`.
+    pub gps: Option<(f64, f64)>,
+}
+
+/// Only the fields that are read. Everything else in a sidecar (title,
+/// descriptions, people, view counts) is ignored rather than modelled.
+#[derive(serde::Deserialize)]
+struct RawSidecar {
+    #[serde(rename = "photoTakenTime")]
+    photo_taken_time: Option<RawStamp>,
+    #[serde(rename = "geoData")]
+    geo_data: Option<RawGeo>,
+}
+
+#[derive(serde::Deserialize)]
+struct RawStamp {
+    /// Unix seconds **as a string**, which is how Google writes it.
+    timestamp: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct RawGeo {
+    latitude: Option<f64>,
+    longitude: Option<f64>,
+}
+
+/// Reads a sidecar's JSON.
+///
+/// **`photoTakenTime`, never `creationTime`.** `creationTime` is when the file
+/// was uploaded to Google Photos, which for a migrated library is years after
+/// the photo was taken, so it is not read at all rather than used as a
+/// fallback: an import that silently applies upload dates looks exactly like
+/// one that worked.
+pub(crate) fn parse_sidecar(json: &str) -> anyhow::Result<SidecarMeta> {
+    let raw: RawSidecar = serde_json::from_str(json)?;
+    let taken_unix = raw
+        .photo_taken_time
+        .and_then(|s| s.timestamp)
+        .and_then(|t| t.trim().parse::<i64>().ok());
+    let gps = match raw.geo_data {
+        Some(g) => match (g.latitude, g.longitude) {
+            // Exactly zero is Takeout's way of saying "no location". Taken
+            // literally it is Null Island, and importing it would put a
+            // spurious cluster there for every photo without GPS.
+            (Some(lat), Some(lon)) if lat != 0.0 || lon != 0.0 => Some((lat, lon)),
+            _ => None,
+        },
+        None => None,
+    };
+    Ok(SidecarMeta { taken_unix, gps })
+}
+
 /// Deliberately three-valued. Ambiguous is not the same as missing: it means
 /// the rules found more than one plausible answer, which is a signal that the
 /// export names something in a way videre does not yet handle, and the summary
@@ -378,6 +436,71 @@ mod tests {
             "album and account JSON must be excluded before matching"
         );
         assert!(match_sidecar(&index, "a.jpg").is_none());
+    }
+
+    #[test]
+    fn the_capture_time_is_photo_taken_time_never_creation_time() {
+        // creationTime is when the file was uploaded to Google, which for a
+        // migrated library is years after the photo was taken. Preferring it
+        // is the single most common way other tools get this wrong, and the
+        // field names actively invite the mistake.
+        let meta = parse_sidecar(
+            r#"{
+                "title": "IMG_1234.jpg",
+                "photoTakenTime": { "timestamp": "1546344000", "formatted": "1 Jan 2019" },
+                "creationTime":   { "timestamp": "1600000000", "formatted": "13 Sep 2020" }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(meta.taken_unix, Some(1_546_344_000));
+    }
+
+    #[test]
+    fn the_timestamp_is_parsed_from_a_string() {
+        // Google writes Unix seconds as a JSON string, not a number.
+        let meta = parse_sidecar(r#"{"photoTakenTime":{"timestamp":"1546344000"}}"#).unwrap();
+        assert_eq!(meta.taken_unix, Some(1_546_344_000));
+    }
+
+    #[test]
+    fn geo_data_at_exactly_zero_means_absent() {
+        // Takeout writes 0.0, 0.0 when there is no location rather than
+        // omitting the field. Taken literally that is a point in the Gulf of
+        // Guinea, and importing it would put a spurious cluster there for
+        // every photo without GPS.
+        let none = parse_sidecar(
+            r#"{"photoTakenTime":{"timestamp":"1"},
+                "geoData":{"latitude":0.0,"longitude":0.0,"altitude":0.0}}"#,
+        )
+        .unwrap();
+        assert_eq!(none.gps, None);
+
+        let some = parse_sidecar(
+            r#"{"photoTakenTime":{"timestamp":"1"},
+                "geoData":{"latitude":52.37,"longitude":4.89,"altitude":2.0}}"#,
+        )
+        .unwrap();
+        assert_eq!(some.gps, Some((52.37, 4.89)));
+    }
+
+    #[test]
+    fn a_missing_photo_taken_time_yields_no_date_at_all() {
+        let meta = parse_sidecar(r#"{"creationTime":{"timestamp":"1600000000"}}"#).unwrap();
+        assert_eq!(
+            meta.taken_unix, None,
+            "creationTime must never serve as a fallback"
+        );
+    }
+
+    #[test]
+    fn an_unparseable_timestamp_yields_no_date_rather_than_a_wrong_one() {
+        let meta = parse_sidecar(r#"{"photoTakenTime":{"timestamp":"not a number"}}"#).unwrap();
+        assert_eq!(meta.taken_unix, None);
+    }
+
+    #[test]
+    fn malformed_json_is_an_error_the_caller_can_report_and_continue_from() {
+        assert!(parse_sidecar("{ this is not json").is_err());
     }
 
     #[test]
