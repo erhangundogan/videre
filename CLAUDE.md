@@ -175,6 +175,28 @@ show artificially low numbers despite being well covered.
 
 The expensive-to-rediscover things. Each was measured, not assumed.
 
+### Import locates files through one shared contract
+
+`videre_core::import_location` owns the ladder every `videre import` source
+uses: an optional provider database, then known folder layouts, then asking the
+user. `videre_core::import_providers` is the data, a static table of descriptors
+plus structural detection.
+
+**The default never opens a provider database.** Apple is read purely from the
+filesystem, because Apple's schema changes between macOS releases and its folder
+layout does not: `originals/` (Photos 5+), `Masters/` (iPhoto 9), `Originals/`
+(early iPhoto). Lightroom is the one source starting on the database rung, and
+there it is not optional, since its files live in arbitrary user folders with no
+layout to fall back to.
+
+A new source declares which rung it starts on and supplies only the
+provider-specific part. It must not invent its own discovery scheme. If adding a
+provider ever requires editing `import_location.rs`, the design has failed.
+
+Asking a catalog *where to look* is not the same as asking it *what is there*.
+Location may come from a database; content and metadata always come from the
+files.
+
 ### `videre embed --batch` silently corrupts above ~121
 
 `videre_ml::model::MAX_SAFE_BATCH` is 96. Above a threshold measured between 121

@@ -13,7 +13,95 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.13.0] - 2026-08-12
+
+### Added
+
+- **`videre import`**, bringing photos in from another tool. Point it at a
+  folder, a library package, or an export and it works out the rest:
+
+  ```bash
+  videre import ~/Pictures        # find whatever is in there
+  videre import ~/Takeout         # a Google Takeout export
+  videre import                   # search the usual places
+  ```
+
+- **Google Takeout.** Restores the capture dates Takeout leaves in `.json`
+  sidecars rather than in the files. Handles Google's truncated sidecar names
+  (`photo.jpg.supplemental-metadata.json` arriving as `photo.jpg.s.json`), `(1)`
+  duplicate counters, and `-edited` versions. Uses `photoTakenTime`, never
+  `creationTime`, which is the upload date and the most common way other tools
+  get this wrong. An ambiguous name applies no date at all, since a wrong date is
+  worse than a missing one.
+
+- **Apple Photos and iPhoto.** Reads `originals/`, `Masters/` or `Originals/`
+  directly, covering all three layouts Apple has used. Prints a pre-flight
+  checklist first, led by "Download Originals to this Mac", because importing
+  iCloud placeholders as though they were originals is the one failure here that
+  destroys data. Warns when the library's median file size suggests optimised
+  storage, and detects a referenced library.
+
+- **Adobe Lightroom.** Reads `.lrcat` to find which folders hold the photos,
+  which is the one thing a filesystem scan cannot tell you. The catalog is copied
+  before reading, never opened in place. Root folders on disconnected drives are
+  reported as offline rather than treated as missing files.
+
+- **A shared location contract** in `videre-core`, used by every source: an
+  optional provider database, then known folder layouts, then asking the user.
+  The default never opens a provider database. `--originals <dir>` overrides
+  every step, so the feature keeps working by hand on the day a vendor changes
+  their structure rather than after videre ships a fix. Each run reports which
+  step found the files.
+
+### Notes
+
+- Import modifies file timestamps, like `fix-dates`, so it asks for confirmation
+  and supports `--dry-run`. Only the modification time changes.
+- Import comes **before** `scan`, since dates must be corrected before `scan`
+  records them.
+- `--into`, for copying into a clean destination tree, is accepted but not yet
+  implemented; it exits with a message rather than being silently ignored.
+
 ## [Unreleased]
+
+### Fixed
+
+Found by running `videre import` against a real 36GB Google Takeout export and
+a real Photos library, rather than against fixtures.
+
+- **Takeout detection missed `Google Photos/`**, the folder people are most
+  likely to point at. A real export keeps only album directories there, with
+  the sidecars one level inside them, so probing the immediate directory alone
+  reported a genuine export as ordinary photos. Detection now looks one level
+  down, bounded so it stays a recognition step rather than a deep walk.
+
+- **A permission failure was reported as a missing library.** Layout probing
+  goes through `Path::is_dir`, which answers false for "blocked" exactly as it
+  does for "absent", so a macOS-protected `.photoslibrary` produced advice
+  about Apple changing their structure. It now names Full Disk Access and the
+  need to restart the program, which is the actual fix.
+
+- **An empty `originals/` was asserted to be a referenced library.** On disk
+  that is indistinguishable from one whose originals iCloud has evicted,
+  including when iCloud was switched off with "Remove from Mac". Photos keeps
+  displaying every picture from the previews it retained, so nothing looks
+  wrong until an original is needed. Both causes are now offered, the one that
+  loses data first.
+
+- **A kept-originals backup was not detected at all.** Apple detection required
+  `database/Photos.sqlite` beside the originals, so a backup where only
+  `originals/` was copied off a library went unrecognised. The `0`-`F` hex
+  fan-out is the signature that survives such a copy, and is specific enough
+  not to fire on an ordinary folder that merely happens to be called
+  `originals`.
+
+- **`videre scan --similar` computed no perceptual hash for HEIC**, silently
+  skipping the default iPhone format in near-duplicate detection. `PHASH_MIMES`
+  omitted `image/heic` and the underlying `image` crate cannot decode it. HEIC
+  now converts through QuickLook exactly as video already did, asking for a
+  64px rendition since the hash resizes to 9x8 - measured at 3 seconds per 20
+  files against 2 for JPEG. macOS-only, as QuickLook is.
+
 
 ## [0.12.0] - 2026-08-11
 
