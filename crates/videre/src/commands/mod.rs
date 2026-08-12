@@ -6,6 +6,7 @@ pub mod faces;
 pub mod fix_dates;
 pub mod import;
 pub mod import_apple;
+pub mod import_lightroom;
 pub mod import_takeout;
 pub mod locations;
 pub mod mcp;

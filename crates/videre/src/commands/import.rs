@@ -131,14 +131,18 @@ fn import_one(
 
     // Only the database rung needs a provider-specific reader, and reading a
     // vendor catalog is command-level work rather than core's.
-    let db_roots = None;
+    let db_roots = if provider.id == "lightroom" {
+        lightroom_roots(root, args)
+    } else {
+        None
+    };
 
     let (roots, via) = match locate_with_database(provider, root, &opts, db_roots)? {
         Located::Found { roots, via } => (roots, via.describe()),
         Located::NotFound { tried } => match self_rooted_export(root, provider) {
             Some(found) => found,
             None => {
-                report_not_found(root, &tried);
+                report_not_found(root, provider, &tried);
                 return Ok(None);
             }
         },
@@ -195,16 +199,61 @@ fn import_one(
     apply_dates(&pending, &mut summary, args);
 
     if !args.silent {
-        eprintln!(
-            "Next:\n  videre scan {}",
-            roots
-                .first()
-                .map(|r| r.display().to_string())
-                .unwrap_or_default()
-        );
+        // Every located root, since a Lightroom catalog routinely has several
+        // and the useful output there is "these are your folders".
+        eprintln!("Next:");
+        for r in &roots {
+            eprintln!("  videre scan {}", r.display());
+        }
     }
 
     Ok(Some(summary))
+}
+
+/// The Lightroom catalog rung: which folders the catalog points at.
+///
+/// `None` means the catalog could not be read, which for Lightroom drops
+/// straight to asking the user: there is no folder layout to fall through to,
+/// because the files live wherever the user put them.
+fn lightroom_roots(root: &Path, args: &ImportArgs) -> Option<Vec<PathBuf>> {
+    use super::import_lightroom;
+
+    let catalog = match import_lightroom::find_catalog(root) {
+        Some(c) => c,
+        None => {
+            eprintln!("Could not find a .lrcat catalog at {}.", root.display());
+            return None;
+        }
+    };
+    let roots = match import_lightroom::read_root_folders(&catalog) {
+        Ok(roots) => roots,
+        Err(e) => {
+            eprintln!("Could not read the catalog: {e}");
+            return None;
+        }
+    };
+
+    let classified = import_lightroom::classify(roots);
+    if !args.silent {
+        eprintln!("Catalog references {} root folder(s):", classified.len());
+        for r in &classified {
+            eprintln!(
+                "  {:<50} {}",
+                r.path.display(),
+                if r.online { "online" } else { "OFFLINE" }
+            );
+        }
+        if classified.iter().any(|r| !r.online) {
+            // Offline is a normal state of a Lightroom catalog, not an error
+            // and not a missing file.
+            eprintln!(
+                "Using online folders only. Reconnect the others and re-run to include them."
+            );
+        }
+    }
+
+    let online = import_lightroom::online_paths(&classified);
+    (!online.is_empty()).then_some(online)
 }
 
 /// The Apple pre-flight: the checklist, then the two filesystem warnings.
@@ -381,12 +430,23 @@ fn report_takeout_survey(s: &Summary, folders: usize) {
     eprintln!("  {} ambiguous, left untouched", s.ambiguous);
 }
 
-fn report_not_found(root: &Path, tried: &[String]) {
+fn report_not_found(root: &Path, provider: &ProviderDescriptor, tried: &[String]) {
     eprintln!("Could not locate the files in this library.");
     for line in tried {
         eprintln!("  Tried {line}");
     }
     eprintln!();
+    if provider.layouts.is_empty() {
+        // Lightroom and anything else with no folder layout: there is nothing
+        // below the catalog rung, so say why rather than implying a guess is
+        // still possible.
+        eprintln!(
+            "  {} stores photos in folders you chose, so videre cannot guess",
+            provider.display
+        );
+        eprintln!("  where they are.");
+        eprintln!();
+    }
     eprintln!("  This usually means the application changed its structure in a version");
     eprintln!("  newer than this build of videre knows about.");
     eprintln!();
