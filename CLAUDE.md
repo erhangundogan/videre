@@ -289,6 +289,29 @@ embeddable and DNG is not decodable, so `ext = 'dng'` explicitly vetoes
 embeddability. Routing on mime alone revives the bug fixed 2026-08-01, where
 every DNG was queried as pending and failed to decode on every single run.
 
+### The read timeout scales with file size; the stat timeout does not
+
+`DEFAULT_IO_TIMEOUT` (20s) is a floor, not a ceiling.
+`io_timeout::timeout_for_size` scales a whole-file read by
+`MIN_READ_RATE_MB_S_DEFAULT` (20 MB/s), because a constant cannot tell a large
+file from a stalled one. Measured 2026-08-12: a healthy 3.7GB video on a drive
+sustaining 158 MB/s needs ~23s and was being skipped with a message blaming the
+drive. Sizes do not change, so such files were skipped on **every** run, no row
+was written at all, and they are by definition the library's longest videos.
+Configurable via `videre config set read-rate`.
+
+The `stat` that reads the size keeps a short *constant* timeout, and that
+ordering is the safety property: `fs::metadata` is itself one of the calls a
+stale mount blocks forever, so a dead mount fails there and the read is never
+attempted. Without that, a large file on a dead mount would hang for its scaled
+timeout.
+
+:warning: **This applies to whole-file reads only.** `hash_file` reads every
+byte, so duration really is proportional to size. The decode paths do not:
+`decode_via_quicklook` extracts a poster frame from a fraction of a video, so
+scaling those by full file size would turn the known "QuickLook hangs on a
+container with no video track" failure from 20s into minutes.
+
 ### Probe videos before invoking QuickLook
 
 `qlmanage -t` does not fail on a container with no video track, it **hangs**, so
