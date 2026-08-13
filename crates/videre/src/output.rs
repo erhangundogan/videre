@@ -125,6 +125,8 @@ mod tests {
             gps_lon: None,
             width: None,
             height: None,
+            duration_secs: None,
+            codec: None,
         }
     }
 

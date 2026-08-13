@@ -152,10 +152,54 @@ videre search --before 2020-01-01    # everything before (exclusive)
 `--date` is shorthand and conflicts with `--after`/`--before`. `--before` is
 exclusive so adjacent ranges never both claim the boundary.
 
-Dates match the **EXIF capture date when the file has one, otherwise its
-modification time**, so screenshots and videos without EXIF are still reachable.
-That fallback can mix "when taken" with "when last written"; see the
-[guide](/guides/compositional-search/) for what that means in practice.
+Dates match the **capture date when the file has one, otherwise its
+modification time**, so screenshots and anything without embedded metadata are
+still reachable. That fallback can mix "when taken" with "when last written";
+see the [guide](/guides/compositional-search/) for what that means in practice.
+
+Videos carry their own capture date and coordinates, so they match date and
+location filters like photos do. See [videos](#videos) below.
+
+## Videos
+
+Since v0.14.0 videre reads each video's capture date, coordinates, duration and
+codec, so **videos appear in date and location results alongside photos**. No
+separate flag: the same filters cover both.
+
+```bash
+videre search --location "Los Angeles, USA" --radius 30 --date 2024-12
+```
+
+On a real library that returns 349 photos and 6 videos together. Before v0.14.0
+the videos could not have matched either half, because neither field existed for
+them.
+
+:::caution[Older libraries need a re-scan]
+Video dates and coordinates only appear after the library has been scanned with
+v0.14.0 or later. `--retry-incomplete` will not pick them up, since it looks for
+files with no recorded type and these have one:
+
+```bash
+videre scan ~/Pictures
+```
+:::
+
+### Capture date, not file date
+
+The date a video matches is when it was **recorded**, not when the file was
+written. Those often differ by years: a clip exported or copied last week still
+matches the month it was shot.
+
+If a result looks misplaced, compare Finder's "Created" against the capture
+date; Finder shows the filesystem timestamp, videre uses the capture time
+embedded in the file.
+
+### Not every video has coordinates
+
+A clip recorded with location services off carries none, and no amount of
+scanning invents them. On one real library 16 of 260 were in that position.
+Those videos are fully searchable by date and text, they simply cannot appear in
+`--location` results.
 
 ## Sorting
 
