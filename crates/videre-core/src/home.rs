@@ -122,20 +122,58 @@ pub fn load_config(home: &Path) -> Result<Config> {
     })
 }
 
+/// Whether the home came from `VIDERE_HOME` rather than the built-in default.
+///
+/// The distinction decides whether a config's `default_db` applies: see
+/// `resolve_db`.
+pub fn home_is_explicit() -> bool {
+    std::env::var_os("VIDERE_HOME").is_some()
+}
+
 /// Resolution for a given home: config default_db, else <home>/hashes.db.
+///
+/// Does not consider `VIDERE_HOME`; callers wanting the full precedence rule
+/// want `resolve_db`.
 pub fn resolve_db_in(home: &Path) -> Result<PathBuf> {
     Ok(load_config(home)?
         .default_db
         .unwrap_or_else(|| home.join("hashes.db")))
 }
 
-/// Full chain: explicit CLI path > config default_db > <home>/hashes.db.
-/// Explicit paths are used verbatim and never consult home or config.
+/// Full chain: explicit CLI path > `VIDERE_HOME` > config `default_db` >
+/// `<home>/hashes.db`.
+///
+/// **`VIDERE_HOME` outranks the config file**, which is the ordinary
+/// precedence for an environment variable against persisted settings, and it
+/// was not always so. Before 0.14.1 the config won, so a home whose
+/// `config.toml` named an absolute `default_db` wrote there no matter what
+/// `VIDERE_HOME` said. That silently defeats the isolation the variable exists
+/// to provide: every copied home carries the original's absolute path, so
+/// pointing `VIDERE_HOME` at a copy still wrote into the source database.
+/// Reported after a 428GB scan aimed at one home landed in another.
+///
+/// A divergence is announced rather than applied silently, so a deliberate
+/// `default_db` is not quietly ignored either.
 pub fn resolve_db(explicit: Option<&Path>) -> Result<PathBuf> {
-    match explicit {
-        Some(p) => Ok(p.to_path_buf()),
-        None => resolve_db_in(&videre_home()?),
+    if let Some(p) = explicit {
+        // An explicit path is used verbatim and never consults home or config.
+        return Ok(p.to_path_buf());
     }
+    let home = videre_home()?;
+    if !home_is_explicit() {
+        return resolve_db_in(&home);
+    }
+    let in_home = home.join("hashes.db");
+    if let Some(configured) = load_config(&home)?.default_db {
+        if configured != in_home {
+            eprintln!("videre: VIDERE_HOME is set, using {}", in_home.display());
+            eprintln!(
+                "  ignoring default_db = {} from that home's config.toml; pass --db to override",
+                configured.display()
+            );
+        }
+    }
+    Ok(in_home)
 }
 
 /// Write one string-valued key into <home>/config.toml, creating the home
@@ -504,5 +542,62 @@ mod read_rate_tests {
         unset_min_read_rate(&h).unwrap();
         assert_eq!(load_config(&h).unwrap().min_read_rate_mb_s, None);
         let _ = std::fs::remove_dir_all(&h);
+    }
+}
+
+#[cfg(test)]
+mod db_precedence_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// `VIDERE_HOME` is process-global, so these must not run concurrently.
+    static ENV: Mutex<()> = Mutex::new(());
+
+    fn home_with_db(db: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("videre-prec-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(config_path(&d), format!("default_db = \"{db}\"\n")).unwrap();
+        d
+    }
+
+    #[test]
+    fn videre_home_outranks_a_config_default_db() {
+        let _g = ENV.lock().unwrap();
+        // The reported bug: a home copied from another carries the original's
+        // absolute default_db, so pointing VIDERE_HOME at the copy still wrote
+        // into the source. A 428GB scan landed in the wrong database this way.
+        let home = home_with_db("/somewhere/else/hashes.db");
+        unsafe { std::env::set_var("VIDERE_HOME", &home) };
+        assert_eq!(resolve_db(None).unwrap(), home.join("hashes.db"));
+        unsafe { std::env::remove_var("VIDERE_HOME") };
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn an_explicit_db_flag_still_beats_everything() {
+        let _g = ENV.lock().unwrap();
+        let home = home_with_db("/somewhere/else/hashes.db");
+        unsafe { std::env::set_var("VIDERE_HOME", &home) };
+        assert_eq!(
+            resolve_db(Some(Path::new("/x/y.db"))).unwrap(),
+            PathBuf::from("/x/y.db")
+        );
+        unsafe { std::env::remove_var("VIDERE_HOME") };
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn without_the_env_var_the_config_still_wins() {
+        let _g = ENV.lock().unwrap();
+        // Unchanged for anyone not using VIDERE_HOME: `videre config set db`
+        // must keep working exactly as before.
+        let home = home_with_db("/somewhere/else/hashes.db");
+        unsafe { std::env::remove_var("VIDERE_HOME") };
+        assert_eq!(
+            resolve_db_in(&home).unwrap(),
+            PathBuf::from("/somewhere/else/hashes.db")
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 }
