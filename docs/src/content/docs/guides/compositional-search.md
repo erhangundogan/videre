@@ -163,6 +163,23 @@ The biggest videos from a year:
 videre search --date 2023 --sort size -k 20 --scores
 ```
 
+Everything from one trip, videos included:
+
+```bash
+videre search --location "Los Angeles, USA" --radius 30 --date 2024-12 -k 500
+```
+
+Since v0.14.0 videos carry their own capture date and coordinates, so a query
+like that returns photos and clips together rather than quietly dropping the
+video. On one real library it returns 349 photos and 6 videos.
+
+Narrowing the same trip to a single day, then ordering by when things happened:
+
+```bash
+videre search --location "Los Angeles, USA" --radius 30 \
+  --date 2024-12-12 --sort date --sort-order asc
+```
+
 Photos of a person, ranked by how well they match a description:
 
 ```bash
@@ -177,6 +194,28 @@ videre search --category document --date 2025 --json \
 ```
 
 ## Caveats
+
+### An empty result is usually correct
+
+Composing filters narrows fast, and zero results normally means the combination
+genuinely has nothing, not that something is broken. Two real examples from the
+same library:
+
+```bash
+videre search --location "Los Angeles, USA" --radius 30 --date 2024-11   # 0
+videre search --location "Los Angeles, USA" --radius 30 --date 2024-12   # 355
+```
+
+All that library's Los Angeles material was shot in December. Before assuming a
+bug, widen one axis at a time: drop the date, or raise `--radius`, and see which
+one was doing the excluding.
+
+### Video dates are capture dates
+
+A video matches the month it was **recorded**, not when its file was written.
+Copying or re-exporting a clip changes the file timestamp Finder shows while
+leaving the capture date alone, so a video shot in December 2024 still answers
+to `--date 2024-12` even if its file was created last week.
 
 **Filters make search faster, not slower.** Narrowing happens before ranking, so
 the model scores only the survivors. A composed query does less work than an
