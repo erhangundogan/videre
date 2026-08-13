@@ -210,6 +210,16 @@ All that library's Los Angeles material was shot in December. Before assuming a
 bug, widen one axis at a time: drop the date, or raise `--radius`, and see which
 one was doing the excluding.
 
+### A location filter excludes files with no coordinates
+
+`--location` narrows to files that have GPS and fall inside the radius. Files
+with no coordinates drop out entirely, so adding a location to a query can cut
+the result far more than the geography suggests - screenshots, received images
+and photos taken with location services off carry none.
+
+That is correct behaviour rather than a gap: asking for a place is asking for
+files known to have been there.
+
 ### Video dates are capture dates
 
 A video matches the month it was **recorded**, not when its file was written.
