@@ -233,6 +233,43 @@ module that knows this layout.
   any table exists, since SQLite silently ignores it afterwards and needs a full
   `VACUUM` to apply.
 
+### Every filter goes through `videre_core::selection`
+
+One layer, two shapes. `RowSelection` filters rows that exist in the database
+and resolves to a hash set; `PathSelection` filters a filesystem walk and is
+pure. A command declares its vocabulary by flattening only the clap groups in
+`commands/selection_args.rs` it can answer, so an unanswerable request fails to
+parse rather than at runtime.
+
+The gaps are load-bearing, not unfinished:
+
+- **`scan`/`watch` take path-side flags only.** A walk has not opened the file,
+  so it cannot answer `--date` or `--location`. Offering them would mean
+  accepting a request answerable only by doing the expensive work the flag
+  exists to avoid.
+- **`embed`/`faces` omit `--person`/`--category`.** Both are derived from the
+  data those commands produce, so selecting their input by one is circular.
+- **`locations` takes no selection at all.** Its recompute drops every cluster
+  and clears every `location_cluster_id` before rebuilding, so a scoped run
+  would not do less work, it would leave everything outside the scope
+  permanently unclustered. A partial recompute of a global partition is data
+  loss wearing a filter's clothes.
+
+A selection **narrows** an existing set, it never redefines it: each command
+intersects the resolved hashes with its own eligibility query rather than
+replacing it. And every scoped run prints `N of M`, because a filter matching
+nothing is not an error, so without the denominator a wrong filter and an empty
+library are indistinguishable.
+
+:warning: **`PathSelection` keeps both the given and canonical form of each
+root.** The walk is rooted where the user pointed it, so canonicalising the root
+alone made `--path` under any symlink (every macOS tempdir, `/tmp`, `/var`)
+match nothing and report success.
+
+Missing data excludes. A file with no GPS never matches `--location`, one with
+no date never matches `--date`. Dates fall back to `modified_at` first (see
+`EFFECTIVE_DATE_SQL` below); only a file with neither is excluded.
+
 ### Search predicates live in one place, used by two surfaces
 
 `videre_core::query` owns every search filter: `by_date`, `by_person`,
