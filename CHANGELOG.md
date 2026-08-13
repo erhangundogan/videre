@@ -13,6 +13,29 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.14.1] - 2026-08-13
+
+### Fixed
+
+- **`VIDERE_HOME` now outranks a config file's `default_db`.** Setting
+  `VIDERE_HOME` and then having the run write to a different database was
+  possible, and did happen: a scan aimed at one home wrote 70,601 records into
+  another, because that home's `config.toml` named an absolute `default_db`.
+
+  Environment variables are expected to beat persisted settings, and this one
+  did not. The effect was worse than a surprise, because it silently defeats the
+  isolation `VIDERE_HOME` exists to provide: a copied home carries the
+  original's absolute path, so pointing `VIDERE_HOME` at a copy still wrote into
+  the source.
+
+  Precedence is now `--db` > `VIDERE_HOME` > `config.toml` > built-in default.
+  When the environment variable and the config disagree, videre says which it is
+  using rather than choosing silently, so a deliberate `default_db` is not
+  quietly ignored either.
+
+  Nothing changes for anyone not setting `VIDERE_HOME`: `videre config set db`
+  behaves exactly as before.
+
 ## [0.14.0] - 2026-08-13
 
 ### Added
