@@ -11,6 +11,14 @@ pub struct ScanArgs {
     /// Directory to scan recursively (default: 'path' from videre config)
     directory: Option<PathBuf>,
 
+    /// Narrow the walk. Path-side only: a walk has not read the file, so it
+    /// cannot filter on anything the contents would tell us, like a date.
+    #[command(flatten)]
+    media: super::selection_args::MediaArgs,
+
+    #[command(flatten)]
+    paths: super::selection_args::PathArgs,
+
     /// JSONL output file (appended). Bare --output targets ~/.videre/hashes.jsonl.
     /// Note: place a bare --output AFTER the directory. Cannot be used with --db
     #[arg(long, num_args = 0..=1, conflicts_with = "db")]
@@ -116,9 +124,30 @@ fn gather_records(
     args: &ScanArgs,
     directory: &std::path::Path,
     completed: &std::collections::HashSet<String>,
+    selection: &videre_core::selection::PathSelection,
 ) -> (Vec<videre::types::FileRecord>, usize, usize) {
     let all_paths = scanner::scan(directory);
     let walked = all_paths.len();
+    // Filtered after the walk rather than during it, so `walked` stays the
+    // honest denominator: a scoped run reports what it passed over, which is
+    // the only thing distinguishing it from a run that found nothing.
+    let all_paths: Vec<_> = if selection.is_empty() {
+        all_paths
+    } else {
+        let kept: Vec<_> = all_paths
+            .into_iter()
+            .filter(|p| selection.accepts(p))
+            .collect();
+        if !args.silent {
+            eprintln!(
+                "Scanning {} of {} file(s) found ({})",
+                kept.len(),
+                walked,
+                selection.describe()
+            );
+        }
+        kept
+    };
     let paths: Vec<_> = all_paths
         .into_iter()
         .filter(|p| !completed.contains(&p.to_string_lossy().to_string()))
@@ -250,7 +279,8 @@ fn run_text(args: ScanArgs) -> anyhow::Result<()> {
     super::maybe_adopt_default_path(args.directory.as_deref(), args.silent);
 
     let completed = completed_paths(&args);
-    let (records, skipped, walked) = gather_records(&args, &directory, &completed);
+    let selection = super::selection_args::path_selection(Some(&args.media), Some(&args.paths))?;
+    let (records, skipped, walked) = gather_records(&args, &directory, &completed, &selection);
 
     if args.retry_incomplete && !args.silent {
         eprintln!("{}", format_retry_summary(walked, &records, skipped));
@@ -317,7 +347,8 @@ fn run_json(args: &ScanArgs) -> anyhow::Result<ScanJson> {
     super::maybe_adopt_default_path(args.directory.as_deref(), args.silent);
 
     let completed = completed_paths(args);
-    let (records, skipped, walked) = gather_records(args, &directory, &completed);
+    let selection = super::selection_args::path_selection(Some(&args.media), Some(&args.paths))?;
+    let (records, skipped, walked) = gather_records(args, &directory, &completed, &selection);
 
     if args.retry_incomplete && !args.silent {
         eprintln!("{}", format_retry_summary(walked, &records, skipped));
