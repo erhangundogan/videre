@@ -436,14 +436,26 @@ impl PathSelection {
         true
     }
 
-    /// Canonicalise the roots once, so `accepts` stays cheap across a walk of
-    /// tens of thousands of entries.
+    /// Add each root's canonical form alongside the one given, once, so
+    /// `accepts` stays cheap across a walk of tens of thousands of entries.
+    ///
+    /// Both forms are kept rather than the canonical one alone, because the
+    /// walk is rooted at the directory the user typed and yields paths in
+    /// *that* form. On macOS a tempdir, `/tmp`, `/var`, and any symlinked photo
+    /// directory all canonicalise to something with a different prefix, so
+    /// replacing the root would make a perfectly correct `--path` match nothing
+    /// at all - silently, since matching nothing is not an error.
     pub fn canonicalised(mut self) -> Self {
-        self.paths = self
-            .paths
-            .iter()
-            .map(|r| std::fs::canonicalize(r).unwrap_or_else(|_| r.clone()))
-            .collect();
+        let mut roots = Vec::with_capacity(self.paths.len() * 2);
+        for r in &self.paths {
+            roots.push(r.clone());
+            if let Ok(c) = std::fs::canonicalize(r) {
+                if c != *r {
+                    roots.push(c);
+                }
+            }
+        }
+        self.paths = roots;
         self
     }
 
@@ -533,6 +545,28 @@ mod path_selection_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_symlinked_root_matches_paths_in_either_form() {
+        // The failure this guards is silent: a --path under a symlink (every
+        // macOS tempdir, /tmp, /var) canonicalises to a different prefix than
+        // the walk produces, so the selection would match nothing and report
+        // success.
+        let dir = tempfile::tempdir().unwrap();
+        let given = dir.path().join("sub");
+        std::fs::create_dir(&given).unwrap();
+        let canonical = std::fs::canonicalize(&given).unwrap();
+
+        let sel = PathSelection {
+            paths: vec![given.clone()],
+            ..Default::default()
+        }
+        .canonicalised();
+
+        assert!(sel.accepts(&given.join("a.jpg")), "the form the user typed");
+        assert!(sel.accepts(&canonical.join("a.jpg")), "the canonical form");
+        assert!(!sel.accepts(&dir.path().join("outside.jpg")));
+    }
+
     use super::*;
     use std::path::Path;
 

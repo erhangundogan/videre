@@ -12,6 +12,13 @@ pub struct WatchArgs {
     /// Directory to scan recursively (default: 'path' from videre config)
     directory: Option<PathBuf>,
 
+    /// Narrow the walk, exactly as on `videre scan`. Path-side only.
+    #[command(flatten)]
+    media: super::selection_args::MediaArgs,
+
+    #[command(flatten)]
+    paths: super::selection_args::PathArgs,
+
     /// SQLite database to populate (same file videre report reads).
     /// Default: resolved from ~/.videre; see 'videre config'
     ///
@@ -406,8 +413,23 @@ fn run_scan_stage(
     db: &std::path::Path,
 ) -> Result<()> {
     let conn = db::open_wal(db)?;
+    let selection = super::selection_args::path_selection(Some(&args.media), Some(&args.paths))?;
     videre_core::pipeline_runs::track(&conn, db, "scan", || {
         let paths = scanner::scan(directory);
+        let walked = paths.len();
+        let paths: Vec<_> = if selection.is_empty() {
+            paths
+        } else {
+            paths.into_iter().filter(|p| selection.accepts(p)).collect()
+        };
+        if !selection.is_empty() && !args.silent {
+            eprintln!(
+                "videre watch: scan stage considering {} of {} file(s) ({})",
+                paths.len(),
+                walked,
+                selection.describe()
+            );
+        }
         let records: Vec<types::FileRecord> = paths
             .par_iter()
             .filter_map(|path| hasher::hash_file(path).ok())
