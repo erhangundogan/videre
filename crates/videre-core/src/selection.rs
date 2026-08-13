@@ -701,6 +701,56 @@ mod resolve_tests {
     }
 
     #[test]
+    fn distances_survive_intersection_with_another_predicate() {
+        // Ported from query.rs when Filters was retired. The regression it
+        // guards is specific: an intersection that keeps the right hashes but
+        // drops their distances leaves `--sort distance` with nothing to sort
+        // by, and the failure is silent.
+        let c = db();
+        c.execute_batch(
+            "UPDATE file_hashes SET gps_lat = 52.5200, gps_lon = 13.4050 WHERE hash = 'h_jpg';
+             UPDATE file_hashes SET gps_lat = 48.8566, gps_lon = 2.3522   WHERE hash = 'h_mov';",
+        )
+        .unwrap();
+
+        let mut s = sel();
+        s.kinds = vec![MediaKind::Image];
+        s.place = Some(PlaceQuery::Coords(crate::query::GeoFilter {
+            lat: 52.5200,
+            lon: 13.4050,
+            radius_km: 10.0,
+        }));
+        let r = s.resolve(&c, &SelectionCtx::default()).unwrap();
+
+        let h = r.hashes.unwrap();
+        assert_eq!(h.len(), 1, "only the Berlin image");
+        assert!(h.contains("h_jpg"));
+        let d = r
+            .distances
+            .expect("a place was given, so distances must exist");
+        assert!(d.contains_key("h_jpg"), "distances kept for survivors");
+        assert!(!d.contains_key("h_mov"), "and dropped for the excluded");
+    }
+
+    #[test]
+    fn a_place_alone_still_yields_distances() {
+        let c = db();
+        c.execute_batch(
+            "UPDATE file_hashes SET gps_lat = 52.5200, gps_lon = 13.4050 WHERE hash = 'h_jpg';",
+        )
+        .unwrap();
+        let mut s = sel();
+        s.place = Some(PlaceQuery::Coords(crate::query::GeoFilter {
+            lat: 52.5200,
+            lon: 13.4050,
+            radius_km: 10.0,
+        }));
+        let r = s.resolve(&c, &SelectionCtx::default()).unwrap();
+        assert_eq!(r.hashes.unwrap().len(), 1);
+        assert!(r.distances.unwrap().contains_key("h_jpg"));
+    }
+
+    #[test]
     fn describe_round_trips_the_flags_a_user_typed() {
         let mut s = sel();
         s.kinds = vec![MediaKind::Video];
