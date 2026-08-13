@@ -13,6 +13,60 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.15.0] - 2026-08-13
+
+### Added
+
+- **Scoping filters on the long-running commands.** `videre embed`, `faces`,
+  `classify`, `scan` and `watch` now take the same filter flags `videre search`
+  has, so a run can cover part of a library instead of all of it: `videre embed
+  --type video`, `videre faces --date 2024-07`, `videre scan ~/Photos --path
+  ~/Photos/2024`. On a large library this is the difference between an
+  afternoon and a few minutes.
+
+  `--type`, `--ext` and `--mime` are repeatable and accept comma-separated
+  lists. Combining flags narrows further: every condition must hold.
+
+- **`videre search` gained `--type`, `--ext`, `--mime` and `--path`**, the same
+  four the walk-based commands take, and the MCP `search` tool gained the
+  matching parameters so an agent can ask for them too.
+
+- **A [scoping guide](https://docs.videre.sh/guides/scoping-a-run/)** covering
+  the shared vocabulary, which commands accept which flags and why the gaps
+  exist, and the rule that a file missing the data a filter needs is excluded
+  rather than assumed.
+
+### Changed
+
+- **Every filter now lives in one place** (`videre_core::selection`) rather than
+  being reimplemented per command. `search` and the MCP server already shared
+  their predicates; that sharing now extends to every command that filters, so
+  a fix to a predicate reaches all of them at once.
+
+- **A scoped run reports what it passed over**, as `412 of 70,601`. A filter
+  that matches nothing is not an error, so without the denominator a wrong
+  filter and an empty library look identical.
+
+- **`videre search` reports truncation.** Showing 20 results out of thousands
+  with nothing to say so was indistinguishable from having found only 20. The
+  JSON output gained `total_matches`.
+
+### Fixed
+
+- **`--path` under a symlink matched nothing.** Roots were canonicalised while
+  the walk yielded paths rooted where the user pointed it, so on macOS a
+  `--path` under `/tmp`, `/var`, or any symlinked photo folder silently selected
+  no files and reported success. Both forms are now accepted.
+
+### Notes
+
+- `videre locations` deliberately takes no filters. It rebuilds every cluster
+  from scratch per run, so a scoped run would not do less work, it would leave
+  everything outside the scope unclustered.
+- `videre embed` and `videre faces` deliberately omit `--person` and
+  `--category`. Both are derived from the data those commands produce, so
+  selecting their input by one is circular.
+
 ## [0.14.1] - 2026-08-13
 
 ### Fixed
