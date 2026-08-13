@@ -333,46 +333,6 @@ fn resolve_dates(args: &SearchArgs) -> Result<(Option<String>, Option<String>)> 
     }
 }
 
-/// Narrows `cands` to what is within `radius_km` of `place`, recording each
-/// survivor's distance.
-///
-/// Applied after the database-only predicates rather than inside
-/// `candidates_with_model`, because geocoding can reach the network: a filter
-/// that has already matched nothing must not pay for a lookup whose answer
-/// cannot change the result.
-fn apply_location(
-    conn: &Connection,
-    cands: &mut Candidates,
-    place: &str,
-    radius_km: f64,
-) -> Result<()> {
-    if cands.hashes.as_ref().is_some_and(|h| h.is_empty()) {
-        cands.distances = Some(HashMap::new());
-        return Ok(());
-    }
-    videre_core::geocode::ensure_geocode_cache_table(conn)?;
-    let (lat, lon) = videre_core::geocode::forward_geocode_cached(conn, place)
-        .with_context(|| format!("could not geocode {place:?}"))?;
-
-    let within = query::by_location(conn, lat, lon, radius_km)?;
-    let keep: HashSet<String> = match &cands.hashes {
-        Some(existing) => within
-            .keys()
-            .filter(|h| existing.contains(*h))
-            .cloned()
-            .collect(),
-        None => within.keys().cloned().collect(),
-    };
-    cands.distances = Some(
-        within
-            .into_iter()
-            .filter(|(h, _)| keep.contains(h))
-            .collect(),
-    );
-    cands.hashes = Some(keep);
-    Ok(())
-}
-
 /// Every file in the library as `(path, hash, effective date, size)`.
 ///
 /// One scan rather than a `paths_for_hash` per surviving hash: the date and

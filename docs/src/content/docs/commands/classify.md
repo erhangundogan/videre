@@ -18,6 +18,17 @@ videre classify --type image           # only images
 videre classify --person Ada           # only photos of a labelled person
 ```
 
+Classify takes every filter, so a run can be narrowed by anything already known
+about a file:
+
+```bash
+videre classify --type image --after 2025-01-01     # this year's photos only
+videre classify --path ~/Photos/Inbox               # one folder
+videre classify --location "Berlin, Germany"        # photos taken near a place
+videre classify --person "Alice" --reprocess        # re-label one person's photos
+videre classify --ext heic --type image --date 2024 # composed: format, kind, year
+```
+
 :::tip
 These filters work the same way across commands, and combine. See
 [scoping a run](/guides/scoping-a-run/).
