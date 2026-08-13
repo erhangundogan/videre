@@ -14,6 +14,7 @@ pub mod prune;
 pub mod report;
 pub mod scan;
 pub mod search;
+pub mod selection_args;
 pub mod stats;
 pub mod watch;
 
