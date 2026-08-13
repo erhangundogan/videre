@@ -88,7 +88,12 @@ jobs:
       # VIDERE_TEST_REQUIRE_MODELS turns a cold-cache skip into a failure. A
       # skip here would mean the cache silently stopped working and the
       # model-backed tests quietly stopped running.
+      # --no-fail-fast for the same reason the matrix sets fail-fast: false.
+      # Without it cargo stops at the first failing test binary, so one failure
+      # hides every later one: a Linux-only failure in videre-core's lib tests
+      # meant the videre integration tests never ran on Linux at all, and their
+      # result was unknown rather than green.
       - name: Test
         env:
           VIDERE_TEST_REQUIRE_MODELS: 1
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast

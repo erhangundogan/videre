@@ -53,10 +53,17 @@ version number and are released together.
 
 ### Fixed
 
-- **`--path` under a symlink matched nothing.** Roots were canonicalised while
-  the walk yielded paths rooted where the user pointed it, so on macOS a
-  `--path` under `/tmp`, `/var`, or any symlinked photo folder silently selected
-  no files and reported success. Both forms are now accepted.
+- **`--path` under a symlink matched nothing, on both surfaces.** Each root was
+  replaced by its canonical form while the other side of the comparison was not
+  canonicalised: the walk yields paths rooted where the user pointed it, and a
+  stored row holds whatever path the scan recorded. So `--path` under a
+  symlinked directory silently selected nothing and reported success. On Linux
+  that included `/lib`, which resolves to `/usr/lib`; on macOS, anything under
+  `/tmp` or `/var`.
+
+  Both forms of each root are now matched, from one shared helper, so the walk
+  side and the row side cannot drift apart again. Per-row canonicalisation would
+  cost a stat per row and is deliberately not done.
 
 ### Notes
 
