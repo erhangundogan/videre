@@ -17,7 +17,14 @@ videre watch ~/Photos --prune          # also clean stale entries (off by defaul
 videre watch ~/Photos --interval 60    # seconds between cycles (default 300)
 videre watch ~/Photos --silent         # no per-cycle output
 videre watch ~/Photos --db ~/photos.db # use a specific database
+videre watch ~/Photos --type image     # only watch for new images
+videre watch ~/Photos --path ~/Photos/Inbox # only watch one subfolder
 ```
+
+:::tip
+These filters work the same way across commands, and combine. See
+[scoping a run](/guides/scoping-a-run/).
+:::
 
 `--output-sqlite` still works as an alias for `--db`, the name it had
 originally. Existing scripts do not need changing.

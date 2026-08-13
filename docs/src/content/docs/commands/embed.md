@@ -13,7 +13,14 @@ videre embed --model <model-id>        # prepare with a specific model, kept sep
 videre embed --batch 64                # images per inference batch (default 32, max 96)
 videre embed --chunk 1000              # rows saved per transaction (default 500)
 videre embed --silent                  # no per-image progress
+videre embed --type video              # only videos
+videre embed --after 2024-01-01        # only files from this year on
 ```
+
+:::tip
+These filters work the same way across commands, and combine. See
+[scoping a run](/guides/scoping-a-run/).
+:::
 
 ## A first run on a real library
 
