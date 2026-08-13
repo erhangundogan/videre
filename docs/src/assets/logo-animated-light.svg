@@ -22,17 +22,19 @@
       <line x1="0" y1="-64" x2="0" y2="-190"/>
       <circle cx="0" cy="-246" r="24" stroke="none"/>
       <animateTransform attributeName="transform" type="rotate"
-                        values="0;-45" keyTimes="0;1"
-                        calcMode="spline" keySplines="0.65 0 0.35 1"
-                        begin="0.4s" dur="2s" fill="freeze"/>
+                        values="-45;-45;0;0;-45" keyTimes="0;0.12;0.42;0.5;1"
+                        calcMode="spline"
+                        keySplines="0 0 1 1; 0.6 0 0.4 1; 0 0 1 1; 0.22 1 0.36 1"
+                        dur="2.6s" fill="freeze"/>
     </g>
     <g transform="rotate(45)">
       <line x1="0" y1="-64" x2="0" y2="-190"/>
       <circle cx="0" cy="-246" r="24" stroke="none"/>
       <animateTransform attributeName="transform" type="rotate"
-                        values="0;45" keyTimes="0;1"
-                        calcMode="spline" keySplines="0.65 0 0.35 1"
-                        begin="0.4s" dur="2s" fill="freeze"/>
+                        values="45;45;0;0;45" keyTimes="0;0.12;0.42;0.5;1"
+                        calcMode="spline"
+                        keySplines="0 0 1 1; 0.6 0 0.4 1; 0 0 1 1; 0.22 1 0.36 1"
+                        dur="2.6s" fill="freeze"/>
     </g>
     <circle cx="0" cy="0" r="32" stroke="none"/>
   </g>
