@@ -220,6 +220,12 @@ and photos taken with location services off carry none.
 That is correct behaviour rather than a gap: asking for a place is asking for
 files known to have been there.
 
+The general rule across every filter is that it matches on the best evidence
+available and excludes a file only when there is none. Location, `--person` and
+`--category` have no fallback, so files lacking that data drop out. Dates do
+have one - every file has a modification time - so nothing is excluded for
+want of a capture date; the weaker evidence is used instead.
+
 ### Video dates are capture dates
 
 A video matches the month it was **recorded**, not when its file was written.
