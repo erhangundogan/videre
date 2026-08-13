@@ -350,19 +350,39 @@ fn by_mimes(conn: &Connection, mimes: &[String]) -> anyhow::Result<HashSet<Strin
     Ok(out)
 }
 
+/// Each root, plus its canonical form when that differs.
+///
+/// Used by both selection shapes, which is the point: a root must be matched in
+/// *either* form, because the two sides of the comparison are canonicalised
+/// inconsistently and neither side can be normalised cheaply. Stored paths are
+/// whatever was walked, and canonicalising them at match time would cost a stat
+/// per row. Replacing the root with its canonical form instead is what broke
+/// both shapes independently: on Linux `/lib` canonicalises to `/usr/lib`, so a
+/// `--path /lib` matched none of the rows stored under `/lib`, silently and
+/// while reporting success.
+///
+/// A root that cannot be canonicalised (it may not exist) is kept as given
+/// rather than treated as an error, since selecting a missing directory
+/// legitimately matches nothing.
+fn roots_in_both_forms(roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut out = Vec::with_capacity(roots.len() * 2);
+    for r in roots {
+        out.push(r.clone());
+        if let Ok(c) = std::fs::canonicalize(r) {
+            if c != *r {
+                out.push(c);
+            }
+        }
+    }
+    out
+}
+
 /// Hashes whose path lies under any of `roots`.
 ///
 /// Compares **path components**, not string prefixes, so `/Pictures/2024` does
-/// not also match `/Pictures/2024-old`. Both sides are canonicalised where
-/// possible so a symlinked or relative selection still matches; a root that
-/// cannot be canonicalised (it may not exist) is used as given rather than
-/// treated as an error, since selecting a missing directory legitimately
-/// matches nothing.
+/// not also match `/Pictures/2024-old`.
 fn by_paths(conn: &Connection, roots: &[PathBuf]) -> anyhow::Result<HashSet<String>> {
-    let roots: Vec<PathBuf> = roots
-        .iter()
-        .map(|r| std::fs::canonicalize(r).unwrap_or_else(|_| r.clone()))
-        .collect();
+    let roots = roots_in_both_forms(roots);
     let mut stmt = conn.prepare("SELECT hash, path FROM file_hashes")?;
     let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
     let mut out = HashSet::new();
@@ -446,16 +466,7 @@ impl PathSelection {
     /// replacing the root would make a perfectly correct `--path` match nothing
     /// at all - silently, since matching nothing is not an error.
     pub fn canonicalised(mut self) -> Self {
-        let mut roots = Vec::with_capacity(self.paths.len() * 2);
-        for r in &self.paths {
-            roots.push(r.clone());
-            if let Ok(c) = std::fs::canonicalize(r) {
-                if c != *r {
-                    roots.push(c);
-                }
-            }
-        }
-        self.paths = roots;
+        self.paths = roots_in_both_forms(&self.paths);
         self
     }
 
@@ -703,6 +714,72 @@ mod resolve_tests {
             .unwrap();
         assert_eq!(h.len(), 1, "only the July mp4");
         assert!(h.contains("h_mp4"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_root_matches_rows_stored_under_its_target() {
+        // The CI failure this guards, reproduced without depending on a
+        // particular platform's layout. On Linux `/lib` is a symlink to
+        // `/usr/lib`, so canonicalising the root and *replacing* it made a
+        // correct --path match none of the rows stored under the name the user
+        // gave. It passed on macOS only because /lib does not exist there, so
+        // canonicalisation failed and the root survived by accident.
+        let t = tempfile::tempdir().unwrap();
+        let real = t.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = t.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        // Two rows, one stored under each name. Which one a real library holds
+        // depends only on which path the scan was pointed at, so both must
+        // match. The row stored under the *symlink* name is the one that
+        // reproduces the CI failure: canonicalising the root moves it to the
+        // target, away from the name the row actually holds.
+        let stored_via_link = link.join("a.jpg");
+        let stored_via_real = std::fs::canonicalize(&real).unwrap().join("b.jpg");
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE file_hashes (
+                path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
+                created_at TEXT, modified_at TEXT, ext TEXT, mime TEXT, phash INTEGER,
+                exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER);",
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO file_hashes (path, hash, ext) VALUES (?1, 'h_link', 'jpg')",
+            [stored_via_link.to_str().unwrap()],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO file_hashes (path, hash, ext) VALUES (?1, 'h_real', 'jpg')",
+            [stored_via_real.to_str().unwrap()],
+        )
+        .unwrap();
+
+        // ...and the user selects it by the symlink they actually type.
+        let mut s = sel();
+        s.paths = vec![link.clone()];
+        let h = s
+            .resolve(&c, &SelectionCtx::default())
+            .unwrap()
+            .hashes
+            .unwrap();
+        assert_eq!(
+            h.len(),
+            2,
+            "a symlinked root must match rows stored under either name"
+        );
+
+        // And the plain case still holds: an unrelated root matches nothing.
+        let mut s = sel();
+        s.paths = vec![t.path().join("elsewhere")];
+        let h = s
+            .resolve(&c, &SelectionCtx::default())
+            .unwrap()
+            .hashes
+            .unwrap();
+        assert!(h.is_empty());
     }
 
     #[test]

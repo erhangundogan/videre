@@ -88,7 +88,11 @@ branches type-check on every platform.
 
 `.github/workflows/ci.yml` runs `make fmt-check` plus the full suite on
 `ubuntu-latest` and `macos-latest`, with `fail-fast: false` so one runner's
-failure never hides the other's. Only four tests are macOS-gated.
+failure never hides the other's, and `cargo test --no-fail-fast` so one failing
+test *binary* never hides the later ones. Both were learned the same way: a
+Linux-only failure in `videre-core`'s lib tests stopped the run before the
+`videre` integration tests, whose Linux result was then unknown rather than
+green. Only four tests are macOS-gated.
 
 :warning: **`cargo fmt` has no per-file mode.** Arguments after `--` are rustfmt
 options, not a file filter, so `cargo fmt -p videre -- path/to/one.rs` silently
@@ -261,10 +265,19 @@ replacing it. And every scoped run prints `N of M`, because a filter matching
 nothing is not an error, so without the denominator a wrong filter and an empty
 library are indistinguishable.
 
-:warning: **`PathSelection` keeps both the given and canonical form of each
-root.** The walk is rooted where the user pointed it, so canonicalising the root
-alone made `--path` under any symlink (every macOS tempdir, `/tmp`, `/var`)
-match nothing and report success.
+:warning: **Both selection shapes match each `--path` root in its given *and*
+canonical form**, via the shared `roots_in_both_forms`. Only one side of the
+comparison can be normalised cheaply: the walk is rooted where the user pointed
+it, and a stored row holds whatever the scan recorded, so canonicalising rows at
+match time would cost a stat per row. Replacing the root with its canonical form
+instead broke both shapes independently, each silently: on Linux `/lib` resolves
+to `/usr/lib`, so `--path /lib` matched none of the rows stored under `/lib`;
+on macOS the same happened under any tempdir, `/tmp` or `/var`. The row side
+survived local testing and was caught only by CI, because `/lib` does not exist
+on macOS and the root then survived by accident.
+
+Neither form covers a row stored under a symlink whose root is given as the
+target. That needs per-row canonicalisation and is a deliberate non-goal.
 
 Missing data excludes. A file with no GPS never matches `--location`, one with
 no date never matches `--date`. Dates fall back to `modified_at` first (see
