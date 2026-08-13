@@ -28,6 +28,11 @@ pub fn open_wal(path: &Path) -> rusqlite::Result<Connection> {
 /// embedding databases go through `Connection::open` in `embeddings_db`.
 pub fn ensure_file_hashes_columns(conn: &Connection) {
     let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN mime TEXT;");
+    // Video metadata, 0.14.0. NULL for images, and NULL for every row scanned
+    // before that release: `--retry-incomplete` keys on `mime IS NULL` and does
+    // not catch "scanned before these existed", so only a re-scan fills them.
+    let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN duration_secs REAL;");
+    let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN codec TEXT;");
 }
 
 /// Whether `name` exists as a table in `conn`, used by every reader that

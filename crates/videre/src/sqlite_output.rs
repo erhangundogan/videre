@@ -27,6 +27,8 @@ pub fn write_records(records: &[FileRecord], db_path: &Path) -> Result<()> {
     // location.rs uses for location_name: attempt it, ignore the
     // duplicate-column error.
     let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN mime TEXT;");
+    let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN duration_secs REAL;");
+    let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN codec TEXT;");
 
     let tx = conn.unchecked_transaction()?;
 
@@ -34,8 +36,10 @@ pub fn write_records(records: &[FileRecord], db_path: &Path) -> Result<()> {
         let mut stmt = tx.prepare(
             "INSERT OR REPLACE INTO file_hashes
                 (path, hash, size_bytes, created_at, modified_at, ext, mime,
-                 phash, exif_date, gps_lat, gps_lon, width, height)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                 phash, exif_date, gps_lat, gps_lon, width, height,
+                 duration_secs, codec)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                     ?14, ?15)",
         )?;
 
         for r in records {
@@ -53,6 +57,8 @@ pub fn write_records(records: &[FileRecord], db_path: &Path) -> Result<()> {
                 r.gps_lon,
                 r.width,
                 r.height,
+                r.duration_secs,
+                r.codec,
             ])?;
         }
     }
@@ -67,7 +73,8 @@ pub fn load_records(db_path: &Path) -> Result<Vec<FileRecord>> {
     let conn = videre_core::db::open_wal(db_path)?;
     let mut stmt = conn.prepare(
         "SELECT path, hash, size_bytes, created_at, modified_at, ext, mime,
-                phash, exif_date, gps_lat, gps_lon, width, height
+                phash, exif_date, gps_lat, gps_lon, width, height,
+                duration_secs, codec
          FROM file_hashes",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -85,6 +92,8 @@ pub fn load_records(db_path: &Path) -> Result<Vec<FileRecord>> {
             gps_lon: row.get(10)?,
             width: row.get(11)?,
             height: row.get(12)?,
+            duration_secs: row.get(13)?,
+            codec: row.get(14)?,
         })
     })?;
     rows.collect()
@@ -109,6 +118,8 @@ mod tests {
             gps_lon: Some(2.35),
             width: Some(100),
             height: Some(80),
+            duration_secs: None,
+            codec: None,
         }
     }
 

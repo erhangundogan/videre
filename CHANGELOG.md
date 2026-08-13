@@ -13,6 +13,44 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.14.0] - 2026-08-13
+
+### Added
+
+- **Video now carries dates, locations, dimensions, duration and codec.**
+  Until now videre read no metadata from video at all: the extractor covered
+  jpeg, tiff and heic only, so every `.mov` and `.mp4` was stored with no date
+  and no coordinates. Measured on a real library, that was **13,457 videos, 0
+  dates, 0 GPS**.
+
+  The effect was wider than two empty columns. Every feature keyed on date or
+  place silently excluded video - `--after`/`--before`, `--near`,
+  `videre locations` and any query combining them - which on that library meant
+  19% of the files were missing from results that presented themselves as
+  covering the whole library, with nothing to indicate it.
+
+  Parsing is in-house, walking the container's boxes the way the existing video
+  probe already does, so there is no new dependency and no external process.
+
+  Two new columns, `duration_secs` and `codec`. They are added in the same
+  release deliberately: existing rows cannot pick any of this up incrementally,
+  since `--retry-incomplete` looks for rows with no recorded type and these are
+  not that, so one full re-scan is needed either way. Adding them later would
+  have required a second one.
+
+  :warning: **Libraries scanned before this release need `videre scan` run
+  again** to populate the new fields.
+
+### Notes
+
+- Dates from video are stored as **local wall-clock time**, matching how photo
+  dates are stored, so the two sort and filter together. Apple's containers
+  record both a local time and a UTC one; the local is preferred, and the UTC
+  fallback is used only for files carrying nothing else (10 of 260 on the test
+  corpus, all re-encoded renders rather than camera originals).
+- Verified against `ffprobe` on 260 real videos: **0 mismatches** across date,
+  coordinates and duration.
+
 ## [0.13.2] - 2026-08-12
 
 ### Fixed

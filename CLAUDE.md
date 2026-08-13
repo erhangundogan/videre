@@ -289,6 +289,29 @@ embeddable and DNG is not decodable, so `ext = 'dng'` explicitly vetoes
 embeddability. Routing on mime alone revives the bug fixed 2026-08-01, where
 every DNG was queried as pending and failed to decode on every single run.
 
+### Video dates are local wall-clock, like photo dates
+
+`videre_core::video_meta` prefers `com.apple.quicktime.creationdate` (local
+time with a UTC offset) and stores the wall-clock part, discarding the offset.
+It falls back to `mvhd`'s creation time, which is **UTC**, only when that key is
+absent.
+
+This is not a stylistic choice. `exif_date` holds local wall-clock for photos
+because EXIF carries no timezone, and every date filter, `EFFECTIVE_DATE_SQL`
+and `output::best_date` compares those strings. Storing UTC for video would put
+the two on different clocks in one column: a clip shot at 21:49 local lands on
+the following day, `--on` misses it, and a chronological sort interleaves it
+wrongly against photos taken minutes earlier. Silent and permanent.
+
+Seeing two date sources and picking the standard-looking one is the obvious
+"simplification" here, so the reasoning sits at the parse site as well. Measured
+on a 260-file corpus: 10 carry only the UTC field, all re-encoded renders rather
+than camera originals.
+
+:warning: **Video metadata needs a full re-scan to appear.**
+`--retry-incomplete` keys on `mime IS NULL`, which does not mean "scanned before
+video metadata existed", so an older library shows empty dates until re-scanned.
+
 ### The read timeout scales with file size; the stat timeout does not
 
 `DEFAULT_IO_TIMEOUT` (20s) is a floor, not a ceiling.

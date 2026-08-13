@@ -160,3 +160,28 @@ unreachable, lower the assumed floor rate:
 ```bash
 videre config set read-rate 5
 ```
+
+## Video metadata
+
+Scanning reads each video's own metadata: capture date, GPS coordinates,
+dimensions, duration and codec. Those feed the same features photos already
+use, so [`videre search`](/commands/search/) date and location filters,
+`--near`, and [`videre locations`](/commands/locations/) all cover video.
+
+Dates are stored as local wall-clock time, exactly as photo dates are, so the
+two sort and filter together rather than drifting by a timezone.
+
+:::caution[Libraries scanned before v0.14.0 need re-scanning]
+`--retry-incomplete` only revisits files with no recorded type, which is not the
+same as "scanned before video metadata existed". Run `videre scan` over the
+library again to fill these in:
+
+```bash
+videre scan ~/Pictures
+```
+:::
+
+Not every video carries coordinates - a clip recorded with location services
+off has none, and on one real library 16 of 260 were in that position. Those
+files are still scanned and searchable; they simply do not appear in
+location-filtered results.
