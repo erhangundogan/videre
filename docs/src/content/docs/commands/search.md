@@ -248,11 +248,19 @@ use [`videre locations`](/commands/locations/) instead.
 
 ### Files without coordinates never match
 
-A location search returns only files that **have** GPS coordinates and whose
-coordinates fall within the radius. A file with no coordinates is not a
-near-miss, it is simply not a candidate: asking for a place is asking for files
-known to have been there, and an unknown location is not evidence of being
-anywhere.
+Every filter follows one rule: **it matches on the best evidence available, and
+excludes a file only when there is no evidence at all.**
+
+For location there is no fallback. A file either carries coordinates or it
+carries nothing, so a file without them is not a near-miss, it is not a
+candidate: asking for a place is asking for files known to have been there, and
+an unknown location is not evidence of being anywhere.
+
+Dates are the one axis where a fallback exists, which is why they behave
+differently: every file has a modification time, so there is always *some*
+evidence. The capture date is preferred and the file's timestamp is used only
+when that is all there is. `--person` and `--category` work like location: no
+recorded face or classification means no evidence, so the file is excluded.
 
 This surprises people most often with:
 
