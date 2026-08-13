@@ -18,7 +18,11 @@ export default defineConfig({
 			// Horizontal lockup: the mark and wordmark side by side fit the header
 			// bar far better than the stacked square version, which forced the
 			// header taller to stay legible. The square logos are still used by
-			// scripts/make-og-image.mjs, whose card is laid out around them.
+			// scripts/make-og-image.mjs, whose card is laid out around them, and
+			// they must stay static: sharp rasterises SVG through librsvg, which
+			// does not run SMIL, so an animated source would be captured in its
+			// t=0 state with all three rays stacked on the vertical. The homepage
+			// hero uses the animated pair instead; the OG card keeps these.
 			logo: {
 				light: './src/assets/logo-horizontal-light.svg',
 				dark: './src/assets/logo-horizontal-dark.svg',
