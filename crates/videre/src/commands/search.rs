@@ -4,7 +4,7 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use videre::types::{ErrorJson, SCHEMA_VERSION};
-use videre_core::query::{self, Candidates, Filters, SortField, SortKey, Sortable};
+use videre_core::query::{self, Candidates, SortField, SortKey, Sortable};
 use videre_core::{embeddings, vectors};
 use videre_ml::{device, model, search};
 
@@ -81,6 +81,20 @@ pub struct SearchArgs {
     /// Emit a single JSON object on stdout instead of human-readable text
     #[arg(long)]
     pub(crate) json: bool,
+
+    /// --type / --ext / --mime, from the shared selection vocabulary.
+    ///
+    /// Flattened from the shared groups rather than declared here, so a
+    /// predicate is defined once and every command honouring it agrees. The
+    /// older filters above predate the layer and still declare their own
+    /// flags; they feed the same `RowSelection` and can be folded into the
+    /// shared groups later without any user-visible change.
+    #[command(flatten)]
+    pub(crate) media: super::selection_args::MediaArgs,
+
+    /// --path, from the shared selection vocabulary.
+    #[command(flatten)]
+    pub(crate) paths: super::selection_args::PathArgs,
 }
 
 #[derive(Debug, Serialize)]
@@ -434,17 +448,31 @@ fn collect_hits(args: &SearchArgs, embedder: &dyn QueryEmbedder) -> Result<Outco
 
     let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref())?;
 
-    let filters = Filters {
+    // One selection, resolved in one place. `--location` is part of it rather
+    // than a separate pass: `resolve` geocodes the place name, intersects, and
+    // carries the per-hash distances that `--sort distance` reads.
+    let selection = videre_core::selection::RowSelection {
         person: args.person.clone(),
         category: args.category.clone(),
-        location: None, // applied separately, see apply_location
+        place: args
+            .location
+            .as_ref()
+            .map(|p| videre_core::selection::PlaceQuery::Named {
+                place: p.clone(),
+                radius_km: args.radius,
+            }),
         after: dates.0.clone(),
         before: dates.1.clone(),
+        kinds: args.media.kinds()?,
+        exts: args.media.ext.clone(),
+        mimes: args.media.mime.clone(),
+        paths: args.paths.path.clone(),
     };
     anyhow::ensure!(
-        is_ranked(args) || filters.any_active() || args.location.is_some(),
+        is_ranked(args) || !selection.is_empty(),
         "provide a text query, --image <path>, or at least one filter \
-         (--person, --category, --location, --date, --after, --before)"
+         (--person, --category, --location, --date, --after, --before, \
+          --type, --ext, --mime, --path)"
     );
 
     // Only a ranking query reads vectors. Attaching for a pure filter query
@@ -456,10 +484,16 @@ fn collect_hits(args: &SearchArgs, embedder: &dyn QueryEmbedder) -> Result<Outco
         videre_core::embeddings_db::attach_for_read(&conn, &db, &model_id)?;
     }
 
-    let mut cands = query::candidates_with_model(&conn, &filters, &model_id)?;
-    if let Some(place) = &args.location {
-        apply_location(&conn, &mut cands, place, args.radius)?;
-    }
+    let resolved = selection.resolve(
+        &conn,
+        &videre_core::selection::SelectionCtx {
+            model_id: Some(model_id.clone()),
+        },
+    )?;
+    let cands = query::Candidates {
+        hashes: resolved.hashes,
+        distances: resolved.distances,
+    };
 
     let scores = is_ranked(args)
         .then(|| rank(args, &conn, &db, &model_id, &cands, &sort_keys, embedder))

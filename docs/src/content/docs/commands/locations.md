@@ -16,6 +16,13 @@ videre locations --silent              # no summary
 videre locations --db ~/photos.db      # use a specific database
 ```
 
+:::note
+Unlike other long-running commands, `videre locations` takes no
+[scoping filters](/guides/scoping-a-run/). It rebuilds every cluster from
+scratch on each run, so restricting it to part of the library would not do less
+work, it would leave everything outside that part unclustered.
+:::
+
 ## The workflow
 
 ```bash

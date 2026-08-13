@@ -88,7 +88,11 @@ branches type-check on every platform.
 
 `.github/workflows/ci.yml` runs `make fmt-check` plus the full suite on
 `ubuntu-latest` and `macos-latest`, with `fail-fast: false` so one runner's
-failure never hides the other's. Only four tests are macOS-gated.
+failure never hides the other's, and `cargo test --no-fail-fast` so one failing
+test *binary* never hides the later ones. Both were learned the same way: a
+Linux-only failure in `videre-core`'s lib tests stopped the run before the
+`videre` integration tests, whose Linux result was then unknown rather than
+green. Only four tests are macOS-gated.
 
 :warning: **`cargo fmt` has no per-file mode.** Arguments after `--` are rustfmt
 options, not a file filter, so `cargo fmt -p videre -- path/to/one.rs` silently
@@ -232,6 +236,52 @@ module that knows this layout.
 - Created with `page_size = 16384`, set on the empty file before WAL and before
   any table exists, since SQLite silently ignores it afterwards and needs a full
   `VACUUM` to apply.
+
+### Every filter goes through `videre_core::selection`
+
+One layer, two shapes. `RowSelection` filters rows that exist in the database
+and resolves to a hash set; `PathSelection` filters a filesystem walk and is
+pure. A command declares its vocabulary by flattening only the clap groups in
+`commands/selection_args.rs` it can answer, so an unanswerable request fails to
+parse rather than at runtime.
+
+The gaps are load-bearing, not unfinished:
+
+- **`scan`/`watch` take path-side flags only.** A walk has not opened the file,
+  so it cannot answer `--date` or `--location`. Offering them would mean
+  accepting a request answerable only by doing the expensive work the flag
+  exists to avoid.
+- **`embed`/`faces` omit `--person`/`--category`.** Both are derived from the
+  data those commands produce, so selecting their input by one is circular.
+- **`locations` takes no selection at all.** Its recompute drops every cluster
+  and clears every `location_cluster_id` before rebuilding, so a scoped run
+  would not do less work, it would leave everything outside the scope
+  permanently unclustered. A partial recompute of a global partition is data
+  loss wearing a filter's clothes.
+
+A selection **narrows** an existing set, it never redefines it: each command
+intersects the resolved hashes with its own eligibility query rather than
+replacing it. And every scoped run prints `N of M`, because a filter matching
+nothing is not an error, so without the denominator a wrong filter and an empty
+library are indistinguishable.
+
+:warning: **Both selection shapes match each `--path` root in its given *and*
+canonical form**, via the shared `roots_in_both_forms`. Only one side of the
+comparison can be normalised cheaply: the walk is rooted where the user pointed
+it, and a stored row holds whatever the scan recorded, so canonicalising rows at
+match time would cost a stat per row. Replacing the root with its canonical form
+instead broke both shapes independently, each silently: on Linux `/lib` resolves
+to `/usr/lib`, so `--path /lib` matched none of the rows stored under `/lib`;
+on macOS the same happened under any tempdir, `/tmp` or `/var`. The row side
+survived local testing and was caught only by CI, because `/lib` does not exist
+on macOS and the root then survived by accident.
+
+Neither form covers a row stored under a symlink whose root is given as the
+target. That needs per-row canonicalisation and is a deliberate non-goal.
+
+Missing data excludes. A file with no GPS never matches `--location`, one with
+no date never matches `--date`. Dates fall back to `modified_at` first (see
+`EFFECTIVE_DATE_SQL` below); only a file with neither is excluded.
 
 ### Search predicates live in one place, used by two surfaces
 
