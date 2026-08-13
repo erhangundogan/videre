@@ -88,6 +88,14 @@ pub(crate) struct SearchJson {
     pub(crate) schema_version: u32,
     pub(crate) query: QueryJson,
     pub(crate) count: usize,
+    /// How many matched before `-k` truncated. Equal to `count` when nothing
+    /// was dropped.
+    ///
+    /// Without this an agent cannot tell a complete answer from a truncated
+    /// one: a filter-only query has no ranker, so the `count` it receives is an
+    /// arbitrary slice with nothing to indicate more exist. The text path says
+    /// so on stderr; JSON has no stderr to read.
+    pub(crate) total_matches: usize,
     pub(crate) results: Vec<SearchHitJson>,
 }
 
@@ -116,6 +124,8 @@ pub(crate) struct SearchHitJson {
 /// caller needs to render them.
 struct Outcome {
     query: QueryJson,
+    /// Match count before truncation; see `SearchJson::total_matches`.
+    total_matches: usize,
     /// Already filtered, sorted and truncated. Carries every sortable field,
     /// which is what lets `--scores` prepend whichever one drove the order.
     rows: Vec<Sortable>,
@@ -200,6 +210,7 @@ pub(crate) fn run_json(args: &SearchArgs, embedder: &dyn QueryEmbedder) -> Resul
         schema_version: SCHEMA_VERSION,
         query: outcome.query,
         count: results.len(),
+        total_matches: outcome.total_matches,
         results,
     })
 }
@@ -477,7 +488,24 @@ fn collect_hits(args: &SearchArgs, embedder: &dyn QueryEmbedder) -> Result<Outco
     }
 
     query::apply_sort(&mut rows, &sort_keys);
+
+    // Say so when results are being dropped. Without this, a filter-only query
+    // silently returns an arbitrary `-k` slice of a larger set: there is no
+    // ranker to make "top 20" meaningful, so the 20 shown are simply the first
+    // 20 in sort order and nothing indicates the other 27 exist. Reported as
+    // "not working" on a real library, where a location+date query matched 47
+    // files including 3 videos and the default 20 happened to contain none.
+    let total_matches = rows.len();
     rows.truncate(args.top_k);
+    if total_matches > rows.len() && !args.json {
+        // stderr, so a piped stdout stays exactly the list of paths.
+        eprintln!(
+            "showing {} of {} matches; pass -k {} to see them all",
+            rows.len(),
+            total_matches,
+            total_matches
+        );
+    }
 
     let query = describe_query(args, &dates);
     if query.kind == "person" {
@@ -499,6 +527,7 @@ fn collect_hits(args: &SearchArgs, embedder: &dyn QueryEmbedder) -> Result<Outco
 
     Ok(Outcome {
         query,
+        total_matches,
         rows,
         hashes,
         primary,
@@ -555,6 +584,7 @@ mod tests {
                 value: "sunset".to_string(),
             },
             count: 1,
+            total_matches: 1,
             results: vec![SearchHitJson {
                 path: "/a.jpg".to_string(),
                 hash: Some("abc".to_string()),
@@ -580,6 +610,7 @@ mod tests {
                 value: "Alice".to_string(),
             },
             count: 1,
+            total_matches: 1,
             results: vec![SearchHitJson {
                 path: "/a.jpg".to_string(),
                 hash: None,
@@ -603,6 +634,7 @@ mod tests {
                 value: "screenshot".to_string(),
             },
             count: 1,
+            total_matches: 1,
             results: vec![SearchHitJson {
                 path: "/a.png".to_string(),
                 hash: Some("abc".to_string()),

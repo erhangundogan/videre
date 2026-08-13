@@ -559,3 +559,58 @@ fn a_bad_date_is_rejected_with_the_accepted_forms() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("YYYY"), "{err}");
 }
+
+/// Truncation must be visible. A filter-only query has no ranker, so `-k` cuts
+/// an arbitrary slice of a larger set; without a count the user reads the short
+/// list as the whole answer. Reported as "broken" on a real library where a
+/// location+date query matched 47 files including 3 videos and the default 20
+/// happened to contain none of them.
+#[test]
+fn truncated_results_report_the_total_on_stderr_and_in_json() {
+    let (_dir, db) = fixture_db_with_dates();
+
+    let out = Command::new(videre_bin())
+        .args(["search", "--date", "2025", "-k", "1", "--db"])
+        .arg(&db)
+        .output()
+        .expect("failed to run videre search");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(stdout.lines().count(), 1, "one result was requested");
+    assert!(
+        stderr.contains("showing 1 of 2"),
+        "the dropped result must be reported: {stderr}"
+    );
+    assert!(
+        !stdout.contains("showing"),
+        "the notice belongs on stderr so a piped stdout stays a bare path list"
+    );
+
+    // Nothing dropped: no notice, or every piped invocation gains noise.
+    let full = Command::new(videre_bin())
+        .args(["search", "--date", "2025", "-k", "50", "--db"])
+        .arg(&db)
+        .output()
+        .unwrap();
+    let full_err = String::from_utf8_lossy(&full.stderr);
+    assert!(
+        !full_err.contains("showing"),
+        "no notice when nothing was truncated: {full_err}"
+    );
+
+    // JSON has no stderr to read, so an agent needs the total in the document
+    // itself or it cannot tell a complete answer from a truncated one.
+    let js = Command::new(videre_bin())
+        .args(["search", "--date", "2025", "-k", "1", "--json", "--db"])
+        .arg(&db)
+        .output()
+        .unwrap();
+    let doc: serde_json::Value = serde_json::from_slice(&js.stdout).unwrap();
+    assert_eq!(doc["count"], 1);
+    assert_eq!(doc["total_matches"], 2);
+    assert!(
+        String::from_utf8_lossy(&js.stderr).is_empty(),
+        "json mode keeps stderr clean for agents"
+    );
+}
