@@ -6,6 +6,22 @@ description: Combine filters and dates in one query, and control the order of re
 Every filter on [`videre search`](/commands/search/) composes. Give several and
 they AND together, each one narrowing further.
 
+## The filters you can combine
+
+| Flag | Selects |
+|---|---|
+| `--person` | who is in it |
+| `--category` | how `videre classify` labelled it |
+| `--location`, `--radius` | where it was taken |
+| `--after`, `--before`, `--date` | when it was taken |
+| `--type`, `--ext`, `--mime` | what kind of file it is |
+| `--path` | which folder it is in |
+
+Every condition must hold, so adding a flag can only narrow the result.
+
+The same vocabulary narrows the *work* on the long-running commands, not just
+the results of a search: see [scoping a run](/guides/scoping-a-run/).
+
 ## The one idea
 
 **Filters narrow. A ranker orders what survives.**
