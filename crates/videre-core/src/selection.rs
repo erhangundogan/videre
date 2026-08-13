@@ -387,6 +387,150 @@ fn under(path: &Path, root: &Path) -> bool {
     true
 }
 
+/// What a *walking* command was asked to work on.
+///
+/// Deliberately smaller than `RowSelection` and a separate type: a walk decides
+/// whether to read a file before reading it, so it cannot answer questions
+/// about dates, coordinates, people or true mime type. Excluding those from the
+/// vocabulary is what makes the flags they share safe to name identically -
+/// a `scan --after` meaning "re-scan known rows in this range" while
+/// `embed --after` means "restrict to these files" would be one flag with two
+/// meanings, one command apart.
+#[derive(Debug, Clone, Default)]
+pub struct PathSelection {
+    pub kinds: Vec<MediaKind>,
+    pub exts: Vec<String>,
+    pub paths: Vec<PathBuf>,
+}
+
+impl PathSelection {
+    pub fn is_empty(&self) -> bool {
+        self.kinds.is_empty() && self.exts.is_empty() && self.paths.is_empty()
+    }
+
+    /// Whether the walk should keep this path.
+    ///
+    /// Pure: no database, and no I/O beyond the canonicalisation the roots
+    /// already had. An empty selection accepts everything, so a command with no
+    /// flags behaves exactly as before.
+    pub fn accepts(&self, path: &Path) -> bool {
+        if self.is_empty() {
+            return true;
+        }
+        if !self.kinds.is_empty() && !self.kinds.iter().any(|k| path_matches_kind(*k, path)) {
+            return false;
+        }
+        if !self.exts.is_empty() {
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(normalise_ext)
+                .unwrap_or_default();
+            if !self.exts.iter().any(|e| normalise_ext(e) == ext) {
+                return false;
+            }
+        }
+        if !self.paths.is_empty() && !self.paths.iter().any(|r| under(path, r)) {
+            return false;
+        }
+        true
+    }
+
+    /// Canonicalise the roots once, so `accepts` stays cheap across a walk of
+    /// tens of thousands of entries.
+    pub fn canonicalised(mut self) -> Self {
+        self.paths = self
+            .paths
+            .iter()
+            .map(|r| std::fs::canonicalize(r).unwrap_or_else(|_| r.clone()))
+            .collect();
+        self
+    }
+
+    pub fn describe(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        for k in &self.kinds {
+            parts.push(format!("--type {}", k.as_str()));
+        }
+        if !self.exts.is_empty() {
+            parts.push(format!("--ext {}", self.exts.join(",")));
+        }
+        for p in &self.paths {
+            parts.push(format!("--path {}", p.display()));
+        }
+        parts.join(" ")
+    }
+}
+
+#[cfg(test)]
+mod path_selection_tests {
+    use super::*;
+
+    #[test]
+    fn an_empty_selection_accepts_everything() {
+        // A command with no flags must walk exactly as it did before.
+        let s = PathSelection::default();
+        assert!(s.accepts(Path::new("/a/b.jpg")));
+        assert!(s.accepts(Path::new("/a/b.mov")));
+    }
+
+    #[test]
+    fn kinds_and_exts_and_paths_all_narrow() {
+        let s = PathSelection {
+            kinds: vec![MediaKind::Video],
+            ..Default::default()
+        };
+        assert!(s.accepts(Path::new("/a/b.mov")));
+        assert!(!s.accepts(Path::new("/a/b.jpg")));
+
+        let s = PathSelection {
+            exts: vec![".MOV".into()],
+            ..Default::default()
+        };
+        assert!(s.accepts(Path::new("/a/b.mov")), "case and dot normalise");
+
+        let s = PathSelection {
+            paths: vec![PathBuf::from("/lib")],
+            ..Default::default()
+        };
+        assert!(s.accepts(Path::new("/lib/a.jpg")));
+        assert!(
+            !s.accepts(Path::new("/library/a.jpg")),
+            "components, not prefix"
+        );
+    }
+
+    #[test]
+    fn axes_intersect() {
+        let s = PathSelection {
+            kinds: vec![MediaKind::Video],
+            paths: vec![PathBuf::from("/lib")],
+            ..Default::default()
+        };
+        assert!(s.accepts(Path::new("/lib/a.mov")));
+        assert!(!s.accepts(Path::new("/lib/a.jpg")), "wrong kind");
+        assert!(!s.accepts(Path::new("/other/a.mov")), "wrong place");
+    }
+
+    #[test]
+    fn type_here_is_by_extension_and_that_differs_from_rows() {
+        // Asserted on purpose. A walk has not read the file, so a .mov whose
+        // bytes are really a JPEG is accepted by `scan --type video` and
+        // rejected by `search --type video`. Inherent to filtering before
+        // reading; not a bug to "fix" into agreement.
+        let s = PathSelection {
+            kinds: vec![MediaKind::Video],
+            ..Default::default()
+        };
+        assert!(s.accepts(Path::new("/a/mislabelled.mov")));
+        assert!(!row_matches_kind(
+            MediaKind::Video,
+            Some("image/jpeg"),
+            "mov"
+        ));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
