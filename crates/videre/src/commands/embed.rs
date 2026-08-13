@@ -16,6 +16,21 @@ pub struct EmbedArgs {
     #[arg(long)]
     model: Option<String>,
 
+    /// Which files to embed. No selection means every pending file, as before.
+    ///
+    /// `--person`/`--category` are deliberately absent: selecting by person for
+    /// a run that produces the very vectors person search needs is circular,
+    /// and category is model-scoped in a way that would need the model resolved
+    /// before the selection.
+    #[command(flatten)]
+    media: super::selection_args::MediaArgs,
+    #[command(flatten)]
+    dates: super::selection_args::DateArgs,
+    #[command(flatten)]
+    place: super::selection_args::PlaceArgs,
+    #[command(flatten)]
+    paths: super::selection_args::PathArgs,
+
     /// Inference batch size (clamped to videre_ml::model::MAX_SAFE_BATCH)
     #[arg(long, default_value_t = 32)]
     batch: usize,
@@ -73,6 +88,52 @@ fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection, model_id: &str) -> R
     if pending.is_empty() {
         if !args.silent {
             eprintln!("Nothing to embed: all hashes already have embeddings.");
+        }
+        return Ok(());
+    }
+
+    // Scope intersects with the pending set; it never replaces the eligibility
+    // and backfill rules above, which know things this layer does not (the DNG
+    // veto, what is already embedded under this model).
+    let selection = super::selection_args::row_selection(
+        Some(&args.media),
+        Some(&args.dates),
+        Some(&args.place),
+        None,
+        Some(&args.paths),
+    )?;
+    let eligible = pending.len();
+    let pending = if selection.is_empty() {
+        pending
+    } else {
+        let sel = selection.resolve(
+            conn,
+            &videre_core::selection::SelectionCtx {
+                model_id: Some(model_id.to_string()),
+            },
+        )?;
+        match sel.hashes {
+            None => pending,
+            Some(h) => pending
+                .into_iter()
+                .filter(|p| h.contains(&p.hash))
+                .collect(),
+        }
+    };
+    if !selection.is_empty() && !args.silent {
+        // Say what was scoped to, before the work. A command that processes a
+        // fraction of the library without saying so is the truncation bug of
+        // 0.14.1 with a much longer feedback loop.
+        eprintln!(
+            "Embedding {} of {} pending file(s) ({})",
+            pending.len(),
+            eligible,
+            selection.describe()
+        );
+    }
+    if pending.is_empty() {
+        if !args.silent {
+            eprintln!("Nothing to embed: the selection matched no pending files.");
         }
         return Ok(());
     }
