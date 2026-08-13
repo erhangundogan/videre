@@ -8,6 +8,20 @@ use videre_ml::pipeline::{
 
 #[derive(clap::Args)]
 pub struct FacesArgs {
+    /// Which files to detect faces in. No selection means every eligible file.
+    ///
+    /// `--person` is deliberately absent: selecting by a person the run has not
+    /// detected yet is circular, and `--category` needs a model id this command
+    /// does not have.
+    #[command(flatten)]
+    media: super::selection_args::MediaArgs,
+    #[command(flatten)]
+    dates: super::selection_args::DateArgs,
+    #[command(flatten)]
+    place: super::selection_args::PlaceArgs,
+    #[command(flatten)]
+    paths: super::selection_args::PathArgs,
+
     /// SQLite database (default: resolved from ~/.videre; see 'videre config')
     #[arg(long)]
     db: Option<PathBuf>,
@@ -104,6 +118,37 @@ pub fn run(args: FacesArgs) -> Result<()> {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows
     };
+
+    // Scope narrows what the eligibility query above returned; it does not
+    // replace it. `faces` has no model id, so no `--category`.
+    let selection = super::selection_args::row_selection(
+        Some(&args.media),
+        Some(&args.dates),
+        Some(&args.place),
+        None,
+        Some(&args.paths),
+    )?;
+    let eligible = all_paths.len();
+    let all_paths = if selection.is_empty() {
+        all_paths
+    } else {
+        let sel = selection.resolve(&conn, &videre_core::selection::SelectionCtx::default())?;
+        match sel.hashes {
+            None => all_paths,
+            Some(h) => all_paths
+                .into_iter()
+                .filter(|(_, hash)| h.contains(hash))
+                .collect(),
+        }
+    };
+    if !selection.is_empty() && !args.silent {
+        eprintln!(
+            "Detecting faces in {} of {} eligible file(s) ({})",
+            all_paths.len(),
+            eligible,
+            selection.describe()
+        );
+    }
 
     // Skip anything already scanned. The marker (`faces_scanned`) records every
     // processed hash including images with zero faces, which is what makes reruns

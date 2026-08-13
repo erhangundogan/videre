@@ -96,6 +96,12 @@ fn run_locations(args: &LocationsArgs, conn: &Connection) -> Result<Vec<ClusterJ
     location_cluster::ensure_location_clusters_table(&tx)?;
     location_cluster::ensure_location_cluster_id_column(&tx);
 
+    // Deliberately takes no selection, unlike the other database commands.
+    // The recompute below is global: it drops every cluster and clears every
+    // location_cluster_id first, so clustering a scoped subset would not narrow
+    // the work, it would leave every file outside the scope permanently
+    // unclustered. A partial recompute of a global partition is data loss, not
+    // a filter.
     let coords: Vec<(f64, f64)> = {
         let mut stmt = tx.prepare(
             "SELECT DISTINCT gps_lat, gps_lon FROM file_hashes \
