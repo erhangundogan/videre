@@ -310,6 +310,11 @@ fn build_search(
     );
 
     let args = SearchArgs {
+        // MCP exposes the older filters only for now; the media and path axes
+        // are added to the tool schema in their own change so the CLI and the
+        // tool are widened together rather than drifting apart.
+        media: Default::default(),
+        paths: Default::default(),
         // Both bound at startup, so a call cannot retarget the server.
         db: Some(db.to_path_buf()),
         model: Some(model_id.to_string()),
