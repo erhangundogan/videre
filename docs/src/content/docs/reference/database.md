@@ -263,3 +263,10 @@ real BLAKE3 of the file at `path`, and [`videre prune`](/commands/prune/)
 deletes embeddings and cached thumbnails whose hash no longer appears in
 `file_hashes`. Deleting rows by hand therefore discards the derived work for
 those photos too.
+
+## Video columns
+
+`duration_secs` (seconds, fractional) and `codec` (the container's format tag,
+such as `avc1` or `hvc1`) are populated for video and left empty for images.
+Both arrived in v0.14.0, so rows written by an earlier version have them empty
+until the library is scanned again.

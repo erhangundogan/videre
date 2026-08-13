@@ -22,4 +22,5 @@ pub mod query;
 pub mod semaphore;
 pub mod thumb_cache;
 pub mod vectors;
+pub mod video_meta;
 pub mod video_probe;

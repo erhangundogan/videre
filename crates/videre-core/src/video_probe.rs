@@ -53,7 +53,7 @@ fn read_header<R: Read + Seek>(r: &mut R, end: u64) -> Option<(u64, [u8; 4], u64
 ///
 /// Seeks rather than reads, so a 991 MB file costs a few seeks. Position
 /// independent: `moov` may sit before or after `mdat`.
-fn read_moov<R: Read + Seek>(r: &mut R, end: u64) -> Option<Vec<u8>> {
+pub(crate) fn read_moov<R: Read + Seek>(r: &mut R, end: u64) -> Option<Vec<u8>> {
     loop {
         let start = r.stream_position().ok()?;
         if start >= end {

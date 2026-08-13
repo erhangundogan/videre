@@ -25,6 +25,14 @@ pub struct FileRecord {
     pub width: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub height: Option<u32>,
+    /// Video only: length in seconds, fractional. NULL for images and for rows
+    /// written before 0.14.0.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_secs: Option<f64>,
+    /// Video only: the container's format tag (`avc1`, `hvc1`), not a friendly
+    /// codec name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codec: Option<String>,
 }
 
 #[derive(Debug)]
@@ -159,6 +167,8 @@ mod tests {
             gps_lon: None,
             width: None,
             height: None,
+            duration_secs: None,
+            codec: None,
         };
         let json = serde_json::to_string(&record).unwrap();
         assert!(json.contains("\"path\":\"/photos/img.jpg\""));
@@ -190,6 +200,8 @@ mod tests {
             gps_lon: Some(2.35),
             width: Some(100),
             height: Some(80),
+            duration_secs: None,
+            codec: None,
         };
         let json = serde_json::to_string(&record).unwrap();
         assert!(json.contains("\"exif_date\":\"2023-08-15T14:30:00\""));
@@ -215,6 +227,8 @@ mod tests {
             gps_lon: None,
             width: None,
             height: None,
+            duration_secs: None,
+            codec: None,
         };
         let json = serde_json::to_string(&record).unwrap();
         assert!(!json.contains("exif_date"));
@@ -239,6 +253,8 @@ mod tests {
             gps_lon: None,
             width: None,
             height: None,
+            duration_secs: None,
+            codec: None,
         }
     }
 
