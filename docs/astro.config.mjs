@@ -94,6 +94,7 @@ export default defineConfig({
 						{ label: 'Leaving Google Photos', slug: 'guides/leaving-google-photos' },
 						{ label: 'Browsing and labeling', slug: 'guides/browsing' },
 						{ label: 'Compositional searches', slug: 'guides/compositional-search' },
+						{ label: 'Scoping a run', slug: 'guides/scoping-a-run' },
 						{ label: 'Long-running jobs', slug: 'guides/long-running-jobs' },
 						{ label: 'Keeping libraries separate', slug: 'guides/multiple-libraries' },
 						{ label: 'Using several search models', slug: 'guides/multiple-models' },

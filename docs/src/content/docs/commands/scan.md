@@ -17,7 +17,15 @@ videre scan ~/Photos --output out.jsonl           # write JSONL to a specific fi
 videre scan ~/Photos --retry-incomplete           # only files an earlier scan didn't finish
 videre scan ~/Photos --silent                     # no progress output
 videre scan ~/Photos --json                       # print one JSON summary object instead
+videre scan ~/Photos --type video                 # only videos
+videre scan ~/Photos --ext heic,mov               # only these formats
+videre scan ~/Photos --path ~/Photos/2024         # only this subfolder
 ```
+
+:::tip
+These filters work the same way across commands, and combine. See
+[scoping a run](/guides/scoping-a-run/).
+:::
 
 Re-running is safe and idempotent, since existing entries are updated in place.
 
