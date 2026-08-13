@@ -154,18 +154,42 @@ pub fn resolve_db_in(home: &Path) -> Result<PathBuf> {
 ///
 /// A divergence is announced rather than applied silently, so a deliberate
 /// `default_db` is not quietly ignored either.
+/// Pure precedence decision, split out so it is testable without touching the
+/// process-global `VIDERE_HOME`.
+///
+/// Mutating that variable in a test corrupts every *other* test that resolves a
+/// home concurrently - a `Mutex` protects such tests from each other but not
+/// from the rest of the suite, which is exactly how an unrelated
+/// `embeddings_db` test started failing. Same split as
+/// `heic::resolve_qlmanage_concurrency`.
+///
+/// Returns the database to use, and the configured path being overridden when
+/// there is one to report.
+pub(crate) fn decide_db(
+    home: &Path,
+    home_is_explicit: bool,
+    configured: Option<PathBuf>,
+) -> (PathBuf, Option<PathBuf>) {
+    let in_home = home.join("hashes.db");
+    match (home_is_explicit, configured) {
+        // The env var is the more immediate signal and outranks the file.
+        (true, Some(c)) if c != in_home => (in_home, Some(c)),
+        (true, _) => (in_home, None),
+        (false, Some(c)) => (c, None),
+        (false, None) => (in_home, None),
+    }
+}
+
 pub fn resolve_db(explicit: Option<&Path>) -> Result<PathBuf> {
     if let Some(p) = explicit {
         // An explicit path is used verbatim and never consults home or config.
         return Ok(p.to_path_buf());
     }
     let home = videre_home()?;
-    if !home_is_explicit() {
-        return resolve_db_in(&home);
-    }
-    let in_home = home.join("hashes.db");
-    if let Some(configured) = load_config(&home)?.default_db {
-        if configured != in_home {
+    let (chosen, overridden) = decide_db(&home, home_is_explicit(), load_config(&home)?.default_db);
+    {
+        let in_home = chosen.clone();
+        if let Some(configured) = overridden {
             eprintln!("videre: VIDERE_HOME is set, using {}", in_home.display());
             eprintln!(
                 "  ignoring default_db = {} from that home's config.toml; pass --db to override",
@@ -173,7 +197,7 @@ pub fn resolve_db(explicit: Option<&Path>) -> Result<PathBuf> {
             );
         }
     }
-    Ok(in_home)
+    Ok(chosen)
 }
 
 /// Write one string-valued key into <home>/config.toml, creating the home
@@ -548,56 +572,52 @@ mod read_rate_tests {
 #[cfg(test)]
 mod db_precedence_tests {
     use super::*;
-    use std::sync::Mutex;
 
-    /// `VIDERE_HOME` is process-global, so these must not run concurrently.
-    static ENV: Mutex<()> = Mutex::new(());
-
-    fn home_with_db(db: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("videre-prec-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        std::fs::write(config_path(&d), format!("default_db = \"{db}\"\n")).unwrap();
-        d
-    }
+    // These test `decide_db` rather than setting VIDERE_HOME, deliberately.
+    // The variable is process-global, so mutating it from a test corrupts every
+    // other test resolving a home at the same moment; an earlier version of
+    // this module did exactly that and made an unrelated embeddings_db test
+    // fail. A pure function needs no such coordination.
 
     #[test]
     fn videre_home_outranks_a_config_default_db() {
-        let _g = ENV.lock().unwrap();
         // The reported bug: a home copied from another carries the original's
         // absolute default_db, so pointing VIDERE_HOME at the copy still wrote
         // into the source. A 428GB scan landed in the wrong database this way.
-        let home = home_with_db("/somewhere/else/hashes.db");
-        unsafe { std::env::set_var("VIDERE_HOME", &home) };
-        assert_eq!(resolve_db(None).unwrap(), home.join("hashes.db"));
-        unsafe { std::env::remove_var("VIDERE_HOME") };
-        let _ = std::fs::remove_dir_all(&home);
-    }
-
-    #[test]
-    fn an_explicit_db_flag_still_beats_everything() {
-        let _g = ENV.lock().unwrap();
-        let home = home_with_db("/somewhere/else/hashes.db");
-        unsafe { std::env::set_var("VIDERE_HOME", &home) };
+        let home = Path::new("/homes/copy");
+        let configured = Some(PathBuf::from("/homes/original/hashes.db"));
+        let (chosen, overridden) = decide_db(home, true, configured.clone());
+        assert_eq!(chosen, home.join("hashes.db"));
         assert_eq!(
-            resolve_db(Some(Path::new("/x/y.db"))).unwrap(),
-            PathBuf::from("/x/y.db")
+            overridden, configured,
+            "the ignored setting must be reportable"
         );
-        unsafe { std::env::remove_var("VIDERE_HOME") };
-        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
     fn without_the_env_var_the_config_still_wins() {
-        let _g = ENV.lock().unwrap();
         // Unchanged for anyone not using VIDERE_HOME: `videre config set db`
-        // must keep working exactly as before.
-        let home = home_with_db("/somewhere/else/hashes.db");
-        unsafe { std::env::remove_var("VIDERE_HOME") };
-        assert_eq!(
-            resolve_db_in(&home).unwrap(),
-            PathBuf::from("/somewhere/else/hashes.db")
-        );
-        let _ = std::fs::remove_dir_all(&home);
+        // behaves exactly as before.
+        let home = Path::new("/homes/default");
+        let configured = Some(PathBuf::from("/elsewhere/hashes.db"));
+        let (chosen, overridden) = decide_db(home, false, configured);
+        assert_eq!(chosen, PathBuf::from("/elsewhere/hashes.db"));
+        assert!(overridden.is_none(), "nothing was overridden");
+    }
+
+    #[test]
+    fn no_config_falls_back_to_the_home_either_way() {
+        let home = Path::new("/homes/x");
+        assert_eq!(decide_db(home, true, None).0, home.join("hashes.db"));
+        assert_eq!(decide_db(home, false, None).0, home.join("hashes.db"));
+    }
+
+    #[test]
+    fn a_config_naming_the_home_database_is_not_a_divergence() {
+        // Nothing to report when both agree, or every command would print a
+        // notice about a setting that changes nothing.
+        let home = Path::new("/homes/x");
+        let same = Some(home.join("hashes.db"));
+        assert!(decide_db(home, true, same).1.is_none());
     }
 }
