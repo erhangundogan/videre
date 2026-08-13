@@ -14,6 +14,53 @@ struct ExifData {
     height: Option<u32>,
 }
 
+/// What `hash_file` records about a file's contents, from whichever extractor
+/// applies.
+///
+/// A struct rather than the tuple this replaced: at seven fields, positional
+/// returns are where a later edit silently swaps `width` and `height`, or
+/// `gps_lat` and `gps_lon`, with nothing to catch it. Named fields cost one
+/// `From` impl each.
+#[derive(Default)]
+struct ExtractedMeta {
+    date: Option<String>,
+    gps_lat: Option<f64>,
+    gps_lon: Option<f64>,
+    width: Option<u32>,
+    height: Option<u32>,
+    duration_secs: Option<f64>,
+    codec: Option<String>,
+}
+
+impl From<ExifData> for ExtractedMeta {
+    fn from(d: ExifData) -> Self {
+        Self {
+            date: d.exif_date,
+            gps_lat: d.gps_lat,
+            gps_lon: d.gps_lon,
+            width: d.width,
+            height: d.height,
+            // Images have neither; the columns stay NULL.
+            duration_secs: None,
+            codec: None,
+        }
+    }
+}
+
+impl From<videre_core::video_meta::VideoMeta> for ExtractedMeta {
+    fn from(v: videre_core::video_meta::VideoMeta) -> Self {
+        Self {
+            date: v.date,
+            gps_lat: v.gps_lat,
+            gps_lon: v.gps_lon,
+            width: v.width,
+            height: v.height,
+            duration_secs: v.duration_secs,
+            codec: v.codec,
+        }
+    }
+}
+
 fn rational_to_f64(r: &exif::Rational) -> f64 {
     if r.denom == 0 {
         0.0
@@ -172,15 +219,16 @@ fn hash_file_inner(path: &Path) -> io::Result<FileRecord> {
         .unwrap_or("")
         .to_lowercase();
 
-    let (exif_date, gps_lat, gps_lon, width, height) =
-        if videre_core::mime_probe::effective_mime(mime.as_deref(), &ext)
-            .is_some_and(|m| videre_core::mime_probe::EXIF_MIMES.contains(&m))
-        {
-            let d = extract_exif(path);
-            (d.exif_date, d.gps_lat, d.gps_lon, d.width, d.height)
-        } else {
-            (None, None, None, None, None)
-        };
+    let meta = match videre_core::mime_probe::effective_mime(mime.as_deref(), &ext) {
+        Some(m) if videre_core::mime_probe::EXIF_MIMES.contains(&m) => extract_exif(path).into(),
+        // QuickTime atoms are not EXIF, so `EXIF_MIMES` is deliberately not
+        // widened to cover video; it would be a lie the next reader has to
+        // unpick. See `videre_core::video_meta`.
+        Some(m) if videre_core::mime_probe::is_video_mime(m) => {
+            videre_core::video_meta::read(path).into()
+        }
+        _ => ExtractedMeta::default(),
+    };
 
     Ok(FileRecord {
         path: path.to_string_lossy().to_string(),
@@ -191,11 +239,13 @@ fn hash_file_inner(path: &Path) -> io::Result<FileRecord> {
         ext,
         mime,
         phash: None,
-        exif_date,
-        gps_lat,
-        gps_lon,
-        width,
-        height,
+        exif_date: meta.date,
+        gps_lat: meta.gps_lat,
+        gps_lon: meta.gps_lon,
+        width: meta.width,
+        height: meta.height,
+        duration_secs: meta.duration_secs,
+        codec: meta.codec,
     })
 }
 
