@@ -95,6 +95,62 @@ If `--location "Berlin, Germany"` covers fewer files than you expected, the
 missing ones are the ones without coordinates; scan them or fill in their
 metadata rather than loosening the radius.
 
+## Worked examples
+
+**Get a new library searchable in stages.** Embedding everything takes hours;
+this gets the recent material usable first and leaves the backlog for overnight.
+
+```bash
+videre scan ~/Photos                       # cheap, do it all at once
+videre embed --after 2025-01-01            # this year first
+videre embed --type video                  # then the videos
+videre embed                               # then the rest, skipping both above
+```
+
+**Only the part of the disk that changed.** A folder you just imported into,
+without rewalking a library of tens of thousands of files.
+
+```bash
+videre scan ~/Photos --path ~/Photos/2026-01-import
+videre embed --path ~/Photos/2026-01-import
+videre faces --path ~/Photos/2026-01-import
+```
+
+**Faces from one event.** Detection is the expensive stage, so bounding it by
+date and place is the difference between minutes and an afternoon.
+
+```bash
+videre faces --location "Rome" --radius 10 --after 2024-06-01 --before 2024-07-01
+```
+
+**Re-label one slice after changing your mind about categories.**
+
+```bash
+videre classify --type image --path ~/Photos/screenshots --reprocess
+```
+
+**Skip formats that are slow and rarely worth it.** HEIC decoding goes through
+QuickLook and dominates a run; this does the cheap formats first.
+
+```bash
+videre embed --ext jpg,png,mp4             # fast formats now
+videre embed --ext heic                    # the slow ones separately
+```
+
+**Watch only what matters.** An inbox folder, images only, leaving the archive
+alone.
+
+```bash
+videre watch ~/Photos --path ~/Photos/Inbox --type image
+```
+
+**Find it afterwards, with the same vocabulary.**
+
+```bash
+videre search "birthday" --person "Alice" --type image \
+  --location "Berlin, Germany" --date 2025-05
+```
+
 ## Narrowing a job you have already started
 
 Scoping composes with resumability rather than replacing it. Commands already

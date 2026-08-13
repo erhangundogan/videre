@@ -13,6 +13,28 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.15.1] - 2026-08-13
+
+### Documentation
+
+- **The scoping filters are documented on the pages people actually read.**
+  0.15.0 added `--type`, `--ext`, `--mime` and `--path` to `videre search`, but
+  neither the search page nor the compositional-search guide mentioned them, so
+  the four newest filters were discoverable only from `--help`.
+
+- Worked, end-to-end examples for composing filters: staging a large library
+  through `embed` in slices, bounding `faces` to one trip, re-labelling a single
+  folder with `classify`, and watching only an inbox. Every example in the docs
+  was verified to parse against the real binary.
+
+### Fixed
+
+- Two compiler warnings that only ever appeared during `cargo publish`, which is
+  the one build in the pipeline that compiles from a clean target directory and
+  so re-emits what a cached local build stays silent about. `apply_location` in
+  `search.rs` was left unused when the selection layer took over location
+  filtering; a closure in `selection.rs` was needlessly `mut`.
+
 ## [0.15.0] - 2026-08-13
 
 ### Added

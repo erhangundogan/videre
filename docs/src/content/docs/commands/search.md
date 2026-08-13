@@ -18,6 +18,10 @@ videre search "a dog" --model <model-id>   # search a specific model's data
 videre search --date 2019-09               # only that month
 videre search --after 2020-01-01           # inclusive lower bound
 videre search --before 2020-01-01          # exclusive upper bound
+videre search --type video                 # only videos
+videre search --ext mov,mp4                # only these extensions
+videre search --mime video/quicktime       # an exact type
+videre search --path ~/Photos/2024         # only files under a folder
 videre search --sort=distance,date         # order, with tie-breaks
 ```
 
@@ -122,18 +126,63 @@ videre search "kids playing in snow" --scores --model google/siglip2-base-patch1
 Asking for a model you have not prepared gives an error naming the ones you do
 have, rather than silently returning nothing.
 
+## Narrowing by kind, format or folder
+
+Four filters need no metadata beyond the file itself:
+
+| Flag | Selects |
+|---|---|
+| `--type` | `image` or `video` |
+| `--ext` | file extension, e.g. `mov` |
+| `--mime` | exact type, e.g. `video/quicktime` |
+| `--path` | files under a folder |
+
+`--type`, `--ext` and `--mime` are repeatable and accept comma-separated lists,
+so `--ext mov,avi` and `--ext mov --ext avi` are the same request. `--type` is
+the broad one: it covers every image or video format rather than a named list.
+
+```bash
+videre search "sunset" --type video
+videre search "birthday" --ext heic --path ~/Photos/2024
+```
+
+These same four work on [`videre scan`](/commands/scan/),
+[`watch`](/commands/watch/), [`embed`](/commands/embed/),
+[`faces`](/commands/faces/) and [`classify`](/commands/classify/), where they
+narrow the *work* rather than the results. See
+[scoping a run](/guides/scoping-a-run/).
+
 ## Filters compose
 
-`--person`, `--category`, `--location` and the date bounds are **filters**: give
-any combination and they AND together, each narrowing further.
+`--person`, `--category`, `--location`, `--type`, `--ext`, `--mime`, `--path`
+and the date bounds are **filters**: give any combination and they AND together,
+each narrowing further.
 
 A text query or `--image` is a **ranker**: at most one, and it orders whatever
 the filters left.
 
 ```bash
-videre search --category document --date 2025-05 --location "Istanbul" --radius 5
-videre search "birthday cake" --person "Alice" --after 2024-01-01
+# every axis at once: what it is, who is in it, where and when
+videre search "cake" --category photo --person "Alice" \
+  --location "Istanbul" --radius 5 --date 2025-05 --type image
+
+# the videos from one trip, newest first
+videre search --type video --location "Rome" --after 2024-06-01 \
+  --before 2024-07-01 --sort date:desc
+
+# a visual match, restricted to originals rather than exports
+videre search --image ~/Desktop/reference.jpg --ext heic --path ~/Photos/originals
+
+# documents photographed in one city, best match first
+videre search "receipt" --category document --location "Berlin, Germany" --radius 10
+
+# clips only, from one folder, ignoring everything re-encoded to mp4
+videre search "beach" --ext mov --path ~/Photos/2024 -k 50
 ```
+
+Order does not matter, and neither does how many you give. Filtering happens
+before ranking, so a heavily filtered query scores fewer vectors and returns
+faster than an unfiltered one.
 
 `-k` truncates the result of all of it, and `--sort` decides the order. See
 [compositional searches](/guides/compositional-search/) for the full model,
