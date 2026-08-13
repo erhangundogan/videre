@@ -246,6 +246,41 @@ filter that writes to the database, including when it is used through
 For grouping photos by places already in your library, with no network at all,
 use [`videre locations`](/commands/locations/) instead.
 
+### Files without coordinates never match
+
+Every filter follows one rule: **it matches on the best evidence available, and
+excludes a file only when there is no evidence at all.**
+
+For location there is no fallback. A file either carries coordinates or it
+carries nothing, so a file without them is not a near-miss, it is not a
+candidate: asking for a place is asking for files known to have been there, and
+an unknown location is not evidence of being anywhere.
+
+Dates are the one axis where a fallback exists, which is why they behave
+differently: every file has a modification time, so there is always *some*
+evidence. The capture date is preferred and the file's timestamp is used only
+when that is all there is. `--person` and `--category` work like location: no
+recorded face or classification means no evidence, so the file is excluded.
+
+This surprises people most often with:
+
+- **Screenshots, downloads and received images**, which carry no GPS at all
+- **Photos taken with location services off**, which are ordinary photos in
+  every other respect
+- **Videos scanned before v0.14.0**, which had no coordinates recorded even
+  when the file contained them; a re-scan fixes those
+
+So a result count smaller than you expect usually means part of the library has
+no coordinates rather than that the radius is too small. To see how much of your
+library can participate at all:
+
+```bash
+videre stats
+```
+
+Widening `--radius` cannot bring in a file that has no coordinates, however
+large you make it.
+
 ## Caveats
 
 **`-k` now applies to `--person` and `--category`.** They previously returned

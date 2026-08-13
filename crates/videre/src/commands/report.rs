@@ -2827,6 +2827,10 @@ mod tests {
     }
 
     fn test_state(conn: Connection, serve_faces_ui: bool) -> Arc<AppState> {
+        // Every test here goes through this constructor before deriving any
+        // cache path, which is what makes it the one place that can guarantee
+        // `VIDERE_HOME` is already set. See `test_home`.
+        test_home();
         Arc::new(AppState {
             conn: Mutex::new(conn),
             shutdown_tx: Mutex::new(None),
@@ -2848,16 +2852,35 @@ mod tests {
     /// concurrent `getenv`. Each call gets a distinct database filename
     /// instead, which is enough because the layout keys on the database's
     /// canonical path.
-    fn add_embeddings_table(conn: &Connection) {
+    /// The one place `VIDERE_HOME` is set for this test binary.
+    ///
+    /// Called from `test_state`, so every test that builds a state has already
+    /// resolved this before deriving any path. That placement is the point: the
+    /// variable is set exactly once, but "once" still means it flips from unset
+    /// to set at some point during the run, and a test that reads a derived
+    /// path on both sides of that flip gets two different directories: it
+    /// writes a fixture into one and the handler looks in the other. That is
+    /// how the cached-original test failed intermittently, and only in the full
+    /// suite. Calling this before computing any path makes the flip already
+    /// have happened, for every test at once rather than the one that happened
+    /// to be noticed failing.
+    ///
+    /// It also keeps these tests out of the developer's real `~/.videre`, which
+    /// is where the cache fixture landed whenever this test won the race.
+    fn test_home() -> &'static std::path::Path {
         static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let home = HOME.get_or_init(|| {
+        HOME.get_or_init(|| {
             let dir =
                 std::env::temp_dir().join(format!("videre-report-emb-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             unsafe { std::env::set_var("VIDERE_HOME", &dir) };
             dir
-        });
+        })
+    }
+
+    fn add_embeddings_table(conn: &Connection) {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let home = test_home();
         let i = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let lib = home.join(format!("report-{i}.db"));
         std::fs::write(&lib, b"").unwrap();

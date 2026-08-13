@@ -5,6 +5,18 @@ use videre_ml::{classify as classify_ml, device, model};
 
 #[derive(clap::Args)]
 pub struct ClassifyArgs {
+    /// Which files to classify. No selection means every eligible file.
+    #[command(flatten)]
+    media: super::selection_args::MediaArgs,
+    #[command(flatten)]
+    dates: super::selection_args::DateArgs,
+    #[command(flatten)]
+    place: super::selection_args::PlaceArgs,
+    #[command(flatten)]
+    people: super::selection_args::PeopleArgs,
+    #[command(flatten)]
+    paths: super::selection_args::PathArgs,
+
     /// SQLite database (default: resolved from ~/.videre; see 'videre config')
     #[arg(long)]
     db: Option<PathBuf>,
@@ -62,6 +74,44 @@ fn run_classify(args: &ClassifyArgs, conn: &rusqlite::Connection, model_id: &str
     if hashes.is_empty() {
         if !args.silent {
             eprintln!("Nothing to classify: all embedded hashes already classified.");
+        }
+        return Ok(());
+    }
+
+    // Scope narrows the pending set; eligibility and staleness stay above.
+    let selection = super::selection_args::row_selection(
+        Some(&args.media),
+        Some(&args.dates),
+        Some(&args.place),
+        Some(&args.people),
+        Some(&args.paths),
+    )?;
+    let eligible = hashes.len();
+    let hashes: Vec<String> = if selection.is_empty() {
+        hashes
+    } else {
+        let sel = selection.resolve(
+            conn,
+            &videre_core::selection::SelectionCtx {
+                model_id: Some(model_id.to_string()),
+            },
+        )?;
+        match sel.hashes {
+            None => hashes,
+            Some(h) => hashes.into_iter().filter(|x| h.contains(x)).collect(),
+        }
+    };
+    if !selection.is_empty() && !args.silent {
+        eprintln!(
+            "Classifying {} of {} pending hash(es) ({})",
+            hashes.len(),
+            eligible,
+            selection.describe()
+        );
+    }
+    if hashes.is_empty() {
+        if !args.silent {
+            eprintln!("Nothing to classify: the selection matched no pending hashes.");
         }
         return Ok(());
     }

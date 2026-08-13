@@ -782,3 +782,47 @@ fn db_still_conflicts_with_jsonl_output() {
     assert!(stderr.contains("--db"), "{stderr}");
     assert!(stderr.contains("--output"), "{stderr}");
 }
+
+/// The walk is narrowed by the selection, and only by the selection: a scoped
+/// run must write fewer rows without ever writing a row an unscoped run would
+/// not have written.
+#[test]
+fn a_scoped_scan_writes_a_subset_of_what_an_unscoped_scan_writes() {
+    let scan_dir = tempdir().unwrap();
+    let out = tempdir().unwrap();
+    let sub = scan_dir.path().join("sub");
+    fs::create_dir(&sub).unwrap();
+    fs::write(scan_dir.path().join("photo.jpg"), b"a").unwrap();
+    fs::write(scan_dir.path().join("clip.mp4"), b"b").unwrap();
+    fs::write(sub.join("nested.mov"), b"c").unwrap();
+
+    let count = |db: &std::path::Path, args: &[&str]| -> i64 {
+        let status = Command::new(videre_bin())
+            .arg("scan")
+            .arg("--silent")
+            .arg(scan_dir.path())
+            .arg("--db")
+            .arg(db)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let conn = rusqlite::Connection::open(db).unwrap();
+        conn.query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
+            .unwrap()
+    };
+
+    assert_eq!(count(&out.path().join("all.db"), &[]), 3);
+    assert_eq!(count(&out.path().join("vid.db"), &["--type", "video"]), 2);
+    assert_eq!(count(&out.path().join("img.db"), &["--type", "image"]), 1);
+    assert_eq!(count(&out.path().join("ext.db"), &["--ext", "mov"]), 1);
+    // A --path root under a macOS tempdir only matches once both the given
+    // and canonical forms are roots; before that this silently returned 0.
+    assert_eq!(
+        count(
+            &out.path().join("sub.db"),
+            &["--path", sub.to_str().unwrap()]
+        ),
+        1
+    );
+}

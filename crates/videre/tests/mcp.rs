@@ -465,3 +465,47 @@ fn search_top_k_truncates_a_filter_only_query() {
 
     client.shutdown();
 }
+
+/// The CLI and the MCP tool must resolve the same filters identically. They are
+/// two surfaces over one vocabulary, and they have drifted before, which is why
+/// CLAUDE.md carries a rule about it.
+#[test]
+fn media_filters_agree_between_the_cli_and_the_mcp_tool() {
+    let dir = tempdir().unwrap();
+    let db = make_dated_db(dir.path());
+
+    let cli = std::process::Command::new(common::videre_bin())
+        .args(["search", "--ext", "png", "-k", "100", "--json", "--db"])
+        .arg(&db)
+        .output()
+        .expect("failed to run videre search");
+    assert!(
+        cli.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli.stderr)
+    );
+    let cli_doc: serde_json::Value = serde_json::from_slice(&cli.stdout).unwrap();
+    let mut cli_paths: Vec<String> = cli_doc["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["path"].as_str().unwrap().to_string())
+        .collect();
+    cli_paths.sort();
+    assert!(!cli_paths.is_empty(), "fixture must have png rows");
+
+    let mut client = McpClient::start(&db);
+    let resp = client.call_tool(20, "search", json!({"ext": ["png"], "top_k": 100}));
+    assert_ne!(resp["result"]["isError"], json!(true), "{resp}");
+    let doc = &resp["result"]["structuredContent"];
+    let mut mcp_paths: Vec<String> = doc["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["path"].as_str().unwrap().to_string())
+        .collect();
+    mcp_paths.sort();
+    client.shutdown();
+
+    assert_eq!(cli_paths, mcp_paths, "one vocabulary, two surfaces");
+}

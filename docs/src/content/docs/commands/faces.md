@@ -15,7 +15,14 @@ videre faces --dry-run                 # detect but write nothing
 videre faces --profile                 # print per-stage timing when finished
 videre faces --silent                  # no per-image progress
 videre faces --db ~/photos.db          # use a specific database
+videre faces --ext heic                # only HEIC photos
+videre faces --date 2024-07            # only that month
 ```
+
+:::tip
+These filters work the same way across commands, and combine. See
+[scoping a run](/guides/scoping-a-run/).
+:::
 
 The first run downloads about 180 MB, separate from the search model.
 
