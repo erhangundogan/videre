@@ -123,3 +123,19 @@ or `--model`. The only environment variables that affect behaviour are
 ## More detail
 
 - [Keeping libraries separate](/guides/multiple-libraries/) covers using these settings for more than one collection.
+
+## Which database a command uses
+
+Resolved in this order, first match wins:
+
+1. `--db <path>` on the command line
+2. `$VIDERE_HOME/hashes.db`, when `VIDERE_HOME` is set
+3. `default_db` from `config.toml`
+4. `~/.videre/hashes.db`
+
+`VIDERE_HOME` deliberately outranks `default_db`, so pointing it at a directory
+keeps a run inside that directory. This matters when the home is a *copy* of
+another: the copied `config.toml` carries the original's absolute `default_db`,
+and before v0.14.1 that path won, so the run wrote back into the source library.
+
+When the two disagree, videre prints which one it is using.

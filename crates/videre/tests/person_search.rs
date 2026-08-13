@@ -246,7 +246,7 @@ fn search_json_missing_default_db_yields_json_error() {
 }
 
 #[test]
-fn config_default_db_redirects_bare_search_and_explicit_db_wins() {
+fn videre_home_outranks_config_default_db_and_explicit_db_wins() {
     let dir = tempdir().unwrap();
     let db = make_db(dir.path());
     let home = tempdir().unwrap();
@@ -261,7 +261,9 @@ fn config_default_db_redirects_bare_search_and_explicit_db_wins() {
         .unwrap();
     assert!(set.success());
 
-    // bare search resolves the configured db
+    // VIDERE_HOME outranks the configured db (0.14.1). Before that the config
+    // won, so a home copied from another wrote back into the source library.
+    // The divergence must be announced, not applied silently.
     let out = Command::new(bin())
         .arg("search")
         .arg("--person")
@@ -269,12 +271,15 @@ fn config_default_db_redirects_bare_search_and_explicit_db_wins() {
         .env("VIDERE_HOME", home.path())
         .output()
         .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
+        stderr.contains("VIDERE_HOME is set"),
+        "the ignored default_db must be reported: {stderr}"
     );
-    assert!(String::from_utf8_lossy(&out.stdout).contains("/tmp/alice1.jpg"));
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("/tmp/alice1.jpg"),
+        "the configured db must not be consulted when VIDERE_HOME is set"
+    );
 
     // explicit --db wins for one invocation and does not modify config
     let cfg_before = std::fs::read_to_string(home.path().join("config.toml")).unwrap();
