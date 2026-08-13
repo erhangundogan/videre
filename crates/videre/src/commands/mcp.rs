@@ -234,6 +234,21 @@ struct SearchParams {
     /// YYYY-MM-DD. Mutually exclusive with after/before.
     #[serde(default)]
     date: Option<String>,
+    /// Filter: media kind, "image" or "video". Repeatable as a list; several
+    /// kinds match any of them.
+    #[serde(default)]
+    media_type: Vec<String>,
+    /// Filter: file extension without the dot, e.g. "mov". Several extensions
+    /// match any of them.
+    #[serde(default)]
+    ext: Vec<String>,
+    /// Filter: exact mime type, e.g. "video/quicktime". Note this is not
+    /// interchangeable with media_type: DNG files report image/tiff.
+    #[serde(default)]
+    mime: Vec<String>,
+    /// Filter: only files under these directories.
+    #[serde(default)]
+    path: Vec<String>,
     /// Result order: comma-separated field[:asc|desc] over relevance, distance,
     /// date and size, e.g. "distance:asc,date:desc". Defaults are relevance,
     /// date and size descending and distance ascending. relevance needs a
@@ -296,25 +311,39 @@ fn build_search(
         !(params.query.is_some() && params.image_path.is_some()),
         "provide at most one ranker: 'query' or 'image_path', not both"
     );
+    // Hand-maintained, and it must not fall behind the vocabulary: forgetting a
+    // new axis here rejects a valid query rather than running it, which is the
+    // visible failure. The CLI derives the same check from the selection
+    // itself, so this is the one place a predicate can be missed.
     let any_filter = params.person.is_some()
         || params.category.is_some()
         || params.location.is_some()
         || params.after.is_some()
         || params.before.is_some()
-        || params.date.is_some();
+        || params.date.is_some()
+        || !params.media_type.is_empty()
+        || !params.ext.is_empty()
+        || !params.mime.is_empty()
+        || !params.path.is_empty();
     anyhow::ensure!(
         params.query.is_some() || params.image_path.is_some() || any_filter,
         "provide at least one of 'query', 'image_path', 'person', 'category', \
-         'location', 'after', 'before' or 'date'; an unfiltered search would \
-         return the whole library"
+         'location', 'after', 'before', 'date', 'media_type', 'ext', 'mime' \
+         or 'path'; an unfiltered search would return the whole library"
     );
 
     let args = SearchArgs {
-        // MCP exposes the older filters only for now; the media and path axes
-        // are added to the tool schema in their own change so the CLI and the
-        // tool are widened together rather than drifting apart.
-        media: Default::default(),
-        paths: Default::default(),
+        // Built from the same flag groups the CLI flattens, so the two surfaces
+        // resolve through one vocabulary rather than drifting apart, which is
+        // the rule in CLAUDE.md that exists because they have drifted before.
+        media: super::selection_args::MediaArgs {
+            media_type: params.media_type.clone(),
+            ext: params.ext.clone(),
+            mime: params.mime.clone(),
+        },
+        paths: super::selection_args::PathArgs {
+            path: params.path.iter().map(std::path::PathBuf::from).collect(),
+        },
         // Both bound at startup, so a call cannot retarget the server.
         db: Some(db.to_path_buf()),
         model: Some(model_id.to_string()),
