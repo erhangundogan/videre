@@ -1,53 +1,52 @@
-<svg width="432" height="470" viewBox="0 -6 432 470" fill="none" xmlns="http://www.w3.org/2000/svg">
+<svg width="432" height="482" viewBox="0 -18 432 482" fill="none" xmlns="http://www.w3.org/2000/svg">
   <!--
-    viewBox starts at y=-6, not 0. This geometry reaches y=-2 at the top:
-    the main circle sits at y=268, the end circle centre is 246 above it
-    at y=22, and its radius is 24. The original static logo cleared y=0
-    only because its rays were fractionally shorter (244) and its end
-    circles fractionally smaller (23.5), putting its top edge at y=0.5.
-    Six units of headroom covers the overflow with margin to spare, and
-    extending the box rather than moving the mark keeps its spacing to
-    the wordmark exactly as drawn. It matters on every ray, not just the
-    vertical one: mid-fold all three end circles stack on that point.
+    viewBox starts at y=-18. The rays reach 257.78 from a centre at 268
+    and their circles have r=23.5, putting the top edge at -13.3, and
+    mid-fold all three stack on that point. Extending the box rather than
+    moving the mark keeps its spacing to the wordmark as drawn.
   -->
   <!--
-    Animated mark. Geometry per spec, with the main circle at the origin and
-    rays pointing up; translate(216,268) drops that origin exactly where the
-    static logo's main circle sits, so the wordmark below needs no adjustment.
+    Animated mark, built to match the static logo rather than to a clean 45.
 
-      main circle  r=32
-      ray          52 from centre (32 + 20 gap), 150 long, 24 thick -> ends 202
-                   drawn 64..190 because a round cap adds 12 per end
-      end circle   r=24, centred 246 from centre (202 + 20 + 24)
+    Every ray is one shape rotated about the main circle, which a fan needs, and
+    that shape is the ORIGINAL DIAGONAL ray: line drawn 72..198 from centre
+    (126 long, 150 with its round caps), end circle r=23.5 centred at 257.78,
+    main circle r=31.5. At +/-48.14 those end circles land on (24,96) and
+    (408,96), exactly where the static logo puts them, so the silhouette width
+    matches to within a unit.
 
-    The diagonals are the vertical ray rotated, which is what lets them fan out
-    around the shared centre.
+    The static logo is not radially symmetric: its vertical ray stops at 244
+    while its diagonals reach 257.78, and its diagonals do not even pass through
+    the centre, sitting about 18 off-axis. Congruent rays are what make the fold
+    land cleanly on top of itself, so matching all three exactly is not
+    available. The cost is paid on the vertical ray, whose circle sits 13.8
+    higher here than in the static logo.
   -->
   <g transform="translate(216,268)" stroke="black" fill="black"
      stroke-width="24" stroke-linecap="round">
     <g>
-      <line x1="0" y1="-64" x2="0" y2="-190"/>
-      <circle cx="0" cy="-246" r="24" stroke="none"/>
+      <line x1="0" y1="-72" x2="0" y2="-198"/>
+      <circle cx="0" cy="-257.78" r="23.5" stroke="none"/>
     </g>
-    <g transform="rotate(-45)">
-      <line x1="0" y1="-64" x2="0" y2="-190"/>
-      <circle cx="0" cy="-246" r="24" stroke="none"/>
+    <g transform="rotate(-48.14)">
+      <line x1="0" y1="-72" x2="0" y2="-198"/>
+      <circle cx="0" cy="-257.78" r="23.5" stroke="none"/>
       <animateTransform attributeName="transform" type="rotate"
-                        values="-45;-45;0;0;-45" keyTimes="0;0.12;0.42;0.5;1"
+                        values="-48.14;-48.14;0;0;-48.14" keyTimes="0;0.12;0.42;0.5;1"
                         calcMode="spline"
                         keySplines="0 0 1 1; 0.6 0 0.4 1; 0 0 1 1; 0.22 1 0.36 1"
                         dur="2.6s" fill="freeze"/>
     </g>
-    <g transform="rotate(45)">
-      <line x1="0" y1="-64" x2="0" y2="-190"/>
-      <circle cx="0" cy="-246" r="24" stroke="none"/>
+    <g transform="rotate(48.14)">
+      <line x1="0" y1="-72" x2="0" y2="-198"/>
+      <circle cx="0" cy="-257.78" r="23.5" stroke="none"/>
       <animateTransform attributeName="transform" type="rotate"
-                        values="45;45;0;0;45" keyTimes="0;0.12;0.42;0.5;1"
+                        values="48.14;48.14;0;0;48.14" keyTimes="0;0.12;0.42;0.5;1"
                         calcMode="spline"
                         keySplines="0 0 1 1; 0.6 0 0.4 1; 0 0 1 1; 0.22 1 0.36 1"
                         dur="2.6s" fill="freeze"/>
     </g>
-    <circle cx="0" cy="0" r="32" stroke="none"/>
+    <circle cx="0" cy="0" r="31.5" stroke="none"/>
   </g>
 <mask id="path-8-outside-1_11_2" maskUnits="userSpaceOnUse" x="73" y="348" width="288" height="85" fill="black">
 <rect fill="white" x="73" y="348" width="288" height="85"/>
