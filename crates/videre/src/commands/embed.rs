@@ -13,7 +13,7 @@ pub struct EmbedArgs {
     /// Embedding model to use (default: 'videre config set model', else the
     /// built-in default). Each model gets its own database under
     /// ~/.videre/embeddings/, so models never overwrite each other.
-    #[arg(long)]
+    #[arg(long, value_parser = super::parse_model_id)]
     model: Option<String>,
 
     /// Which files to embed. No selection means every pending file, as before.
@@ -55,29 +55,6 @@ pub fn run(args: EmbedArgs) -> Result<()> {
     videre_core::embeddings_db::attach(&conn, &db, &model_id, true)?;
 
     videre_core::pipeline_runs::track(&conn, &db, "embed", || run_embed(&args, &conn, &model_id))
-}
-
-/// Clamps `--batch` into the range known to produce correct embeddings, and
-/// rejects the degenerate 0 (`slice::chunks(0)` panics).
-///
-/// Warns unconditionally rather than honoring `--silent`: this guards against
-/// silently corrupting the embeddings table, which is closer to an error than
-/// to progress output.
-pub(crate) fn clamp_batch(requested: usize) -> usize {
-    if requested == 0 {
-        eprintln!("warning: --batch 0 is not valid; using 1");
-        return 1;
-    }
-    let max = model::MAX_SAFE_BATCH;
-    if requested > max {
-        eprintln!(
-            "warning: --batch {requested} exceeds the safe maximum of {max}; using {max} instead. \
-             Larger batches silently produce incorrect embeddings on this inference path (no error \
-             is raised, so this cap is the only thing preventing a corrupt embeddings table)."
-        );
-        return max;
-    }
-    requested
 }
 
 /// The actual embedding work, wrapped by `track()` above.
@@ -138,7 +115,7 @@ fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection, model_id: &str) -> R
         return Ok(());
     }
 
-    let batch = clamp_batch(args.batch);
+    let batch = model::clamp_batch(args.batch, Some(model::MAX_SAFE_BATCH));
     // `slice::chunks` panics on 0, so a bare `--chunk 0` would abort the run.
     let chunk_size = args.chunk.max(1);
 
@@ -225,31 +202,6 @@ mod tests {
     fn format_summary_with_skips() {
         let summary = format_summary(230, 4, std::time::Duration::from_secs(41));
         assert_eq!(summary, "230 image(s) embedded, 4 skipped, done in 41s");
-    }
-
-    #[test]
-    fn clamp_batch_leaves_safe_values_alone() {
-        assert_eq!(clamp_batch(1), 1);
-        assert_eq!(clamp_batch(32), 32, "the default must never be altered");
-        assert_eq!(clamp_batch(model::MAX_SAFE_BATCH), model::MAX_SAFE_BATCH);
-    }
-
-    #[test]
-    fn clamp_batch_caps_values_above_the_safe_maximum() {
-        assert_eq!(
-            clamp_batch(model::MAX_SAFE_BATCH + 1),
-            model::MAX_SAFE_BATCH
-        );
-        assert_eq!(clamp_batch(128), model::MAX_SAFE_BATCH);
-        assert_eq!(clamp_batch(256), model::MAX_SAFE_BATCH);
-        assert_eq!(clamp_batch(usize::MAX), model::MAX_SAFE_BATCH);
-    }
-
-    #[test]
-    fn clamp_batch_rejects_zero_which_would_panic_slice_chunks() {
-        // `slice::chunks(0)` panics, so 0 has to become something usable
-        // rather than reaching the loop.
-        assert_eq!(clamp_batch(0), 1);
     }
 
     #[test]

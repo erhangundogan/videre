@@ -155,28 +155,21 @@ fn extract_exif(path: &Path) -> ExifData {
 /// hanging the scan forever on one file.
 pub fn hash_file(path: &Path) -> io::Result<FileRecord> {
     let owned = path.to_path_buf();
-    videre_core::io_timeout::run_with_timeout_for_path(path, move || hash_file_inner(&owned))
-        .unwrap_or_else(|_| {
-            // Report the timeout actually applied, not a constant: a 3.7GB file
-            // gets minutes, and saying "after 20s" against a 185s wait would
-            // send the reader looking for the wrong problem.
-            let allowed = std::fs::metadata(path)
-                .map(|m| {
-                    videre_core::io_timeout::timeout_for_size(
-                        m.len(),
-                        videre_core::io_timeout::min_read_rate_mb_s(),
-                    )
-                })
-                .unwrap_or(videre_core::io_timeout::DEFAULT_IO_TIMEOUT);
-            Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!(
-                    "timed out reading {} after {}s (file may be unreachable - is its drive connected?)",
-                    path.display(),
-                    allowed.as_secs()
-                ),
-            ))
-        })
+    // The timeout that was applied comes back with the failure. It used to be
+    // re-derived here by calling std::fs::metadata **unbounded** on the path
+    // that had just timed out - and on a stale mount metadata is precisely the
+    // call that never returns, so the error handler hung in the one scenario
+    // this whole subsystem exists to survive. Nothing in this error path may
+    // touch the filesystem.
+    videre_core::io_timeout::run_with_timeout_for_path_detailed(path, move || {
+        hash_file_inner(&owned)
+    })
+    .unwrap_or_else(|timed_out| {
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            timed_out.describe(path),
+        ))
+    })
 }
 
 fn hash_file_inner(path: &Path) -> io::Result<FileRecord> {

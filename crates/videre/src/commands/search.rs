@@ -21,7 +21,7 @@ pub struct SearchArgs {
     /// Embedding model to search against (default: 'videre config set model', else
     /// the built-in default). Must already have been embedded; run
     /// 'videre stats' to see which models this library has.
-    #[arg(long)]
+    #[arg(long, value_parser = super::parse_model_id)]
     pub(crate) model: Option<String>,
 
     /// Text query, e.g. "sunset on beach" (omit when using --image)
