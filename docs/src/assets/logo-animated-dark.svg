@@ -1,4 +1,15 @@
-<svg width="432" height="464" viewBox="0 0 432 464" fill="none" xmlns="http://www.w3.org/2000/svg">
+<svg width="432" height="470" viewBox="0 -6 432 470" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    viewBox starts at y=-6, not 0. This geometry reaches y=-2 at the top:
+    the main circle sits at y=268, the end circle centre is 246 above it
+    at y=22, and its radius is 24. The original static logo cleared y=0
+    only because its rays were fractionally shorter (244) and its end
+    circles fractionally smaller (23.5), putting its top edge at y=0.5.
+    Six units of headroom covers the overflow with margin to spare, and
+    extending the box rather than moving the mark keeps its spacing to
+    the wordmark exactly as drawn. It matters on every ray, not just the
+    vertical one: mid-fold all three end circles stack on that point.
+  -->
   <!--
     Animated mark. Geometry per spec, with the main circle at the origin and
     rays pointing up; translate(216,268) drops that origin exactly where the
