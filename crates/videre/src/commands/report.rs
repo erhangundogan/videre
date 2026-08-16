@@ -34,7 +34,7 @@ pub struct ReportArgs {
 
     /// Embedding model backing the in-page similarity search under --all
     /// (default: 'videre config set model', else the built-in default).
-    #[arg(long)]
+    #[arg(long, value_parser = super::parse_model_id)]
     model: Option<String>,
 
     /// Start a local face-labeling HTTP server on port 7878

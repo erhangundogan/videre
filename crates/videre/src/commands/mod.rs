@@ -146,3 +146,16 @@ pub(crate) fn maybe_adopt_default_path(explicit: Option<&std::path::Path>, silen
         );
     }
 }
+
+/// Validate `--model` at parse time, so a typo fails before anything opens a
+/// database or loads a model.
+///
+/// The value is validated again inside `resolve_model_id`, which is the real
+/// guard - this one exists so the error arrives when the user typed it rather
+/// than after an unrelated "no database found". `search` already treats
+/// `--sort` this way.
+pub(crate) fn parse_model_id(s: &str) -> Result<String, String> {
+    videre_core::embeddings::validate_model_id(s)
+        .map(|_| s.to_string())
+        .map_err(|e| e.to_string())
+}

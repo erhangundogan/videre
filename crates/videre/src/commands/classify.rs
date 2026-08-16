@@ -33,7 +33,7 @@ pub struct ClassifyArgs {
     /// Embedding model whose vectors to classify (default:
     /// 'videre config set model', else the built-in default). Classifications are
     /// stored per model, so two models classify independently.
-    #[arg(long)]
+    #[arg(long, value_parser = super::parse_model_id)]
     model: Option<String>,
 
     /// Suppress per-image progress output on stderr (errors always shown)
