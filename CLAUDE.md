@@ -237,6 +237,42 @@ module that knows this layout.
   any table exists, since SQLite silently ignores it afterwards and needs a full
   `VACUUM` to apply.
 
+### Input validation belongs where every entrance passes
+
+Two panics reachable from ordinary CLI input, both the same shape: a guard
+placed at one of several entrances to the same function.
+
+- **Model ids** are validated by `videre_core::embeddings::validate_model_id`,
+  called from `resolve_model_id_in`. It used to be private to
+  `commands/config.rs`, so `videre config set` was guarded and `--model` was
+  not, and `videre embed --model foo` hit
+  `split_once('/').expect("model id is owner/name")` in `videre-ml`. `--model`
+  also has a clap `value_parser`, so a typo fails at parse time rather than
+  after an unrelated "no database found".
+- **Batch sizes** go through `videre_ml::model::clamp_batch`, because
+  `slice::chunks(0)` panics. `embed` guarded it, `faces` did not.
+
+:warning: **`clamp_batch`'s upper cap is a parameter, not a constant.**
+`MAX_SAFE_BATCH` exists because *this inference path* silently corrupts
+embeddings above ~121. That is a fact about embedding, not about face detection,
+so `faces` passes `None` and gets the zero-guard only. Do not "tidy" the two
+callers into sharing one cap.
+
+### The timeout error path must not touch the filesystem
+
+`hash_file`'s timeout handler called `std::fs::metadata` **unbounded** on the
+path that had just timed out, only to name the timeout in its message. On a
+stale mount `metadata` is the call that never returns, so the handler hung in
+the exact scenario the timeout exists to survive - the protection defeated by
+its own error reporting.
+
+`io_timeout::run_with_timeout_for_path_detailed` returns `TimedOutAfter`, which
+carries the timeout that was applied and which phase used it. Format from that.
+Anything in this path that consults the filesystem reintroduces the bug.
+
+It also made the message honest: a dead drive reports that the `stat` never
+answered, instead of claiming a read took 20s when nothing was read.
+
 ### Every filter goes through `videre_core::selection`
 
 One layer, two shapes. `RowSelection` filters rows that exist in the database

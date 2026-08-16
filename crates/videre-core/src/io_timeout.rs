@@ -119,13 +119,64 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
+    run_with_timeout_for_path_detailed(path, f).map_err(|_| TimedOut)
+}
+
+/// Which phase ran out of time, and how long it was given.
+///
+/// Exists so a caller can describe the failure without asking the filesystem
+/// again. `hash_file` used to format its message by calling `std::fs::metadata`
+/// **unbounded** on the very path that had just timed out - on a stale mount
+/// that is the call that blocks forever, so the error handler hung in exactly
+/// the scenario the timeout was protecting against.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum TimedOutAfter {
+    /// The `stat` never returned: the path is unreachable, not merely slow.
+    Stat(Duration),
+    /// `stat` succeeded and the work itself overran its size-scaled budget.
+    Read(Duration),
+}
+
+impl TimedOutAfter {
+    pub fn duration(self) -> Duration {
+        match self {
+            TimedOutAfter::Stat(d) | TimedOutAfter::Read(d) => d,
+        }
+    }
+
+    /// Phrasing that distinguishes "the drive did not answer" from "this was
+    /// slow", which the single old message could not.
+    pub fn describe(self, path: &Path) -> String {
+        match self {
+            TimedOutAfter::Stat(d) => format!(
+                "could not read {} after {}s (the drive did not respond - is it connected?)",
+                path.display(),
+                d.as_secs()
+            ),
+            TimedOutAfter::Read(d) => format!(
+                "timed out reading {} after {}s (file may be unreachable - is its drive connected?)",
+                path.display(),
+                d.as_secs()
+            ),
+        }
+    }
+}
+
+/// `run_with_timeout_for_path`, reporting which phase timed out and after how
+/// long, so the caller never has to touch the filesystem to explain itself.
+pub fn run_with_timeout_for_path_detailed<T, F>(path: &Path, f: F) -> Result<T, TimedOutAfter>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
     let owned = path.to_path_buf();
     let size = run_with_timeout(STAT_TIMEOUT, move || {
         std::fs::metadata(&owned).map(|m| m.len()).ok()
     })
-    .map_err(|_| TimedOut)?
-    .ok_or(TimedOut)?;
-    run_with_timeout(timeout_for_size(size, min_read_rate_mb_s()), f)
+    .map_err(|_| TimedOutAfter::Stat(STAT_TIMEOUT))?
+    .ok_or(TimedOutAfter::Stat(STAT_TIMEOUT))?;
+    let budget = timeout_for_size(size, min_read_rate_mb_s());
+    run_with_timeout(budget, f).map_err(|_| TimedOutAfter::Read(budget))
 }
 
 /// Outcome of waiting on a child process with a deadline.
@@ -352,5 +403,37 @@ mod size_timeout_tests {
         std::fs::write(&f, b"hello").unwrap();
         assert_eq!(run_with_timeout_for_path(&f, || 42).ok(), Some(42));
         let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[cfg(test)]
+mod timeout_reporting_tests {
+    use super::*;
+
+    #[test]
+    fn an_unreachable_path_reports_the_stat_phase_not_a_read() {
+        // A path that cannot be stat'd fails in the stat phase. The old code
+        // reported every failure as "timed out reading ... after 20s", which
+        // named the wrong phase and the wrong duration.
+        let missing = Path::new("/nonexistent-videre-test/definitely/not/here");
+        let r = run_with_timeout_for_path_detailed(missing, || 1u8);
+        assert_eq!(r.unwrap_err(), TimedOutAfter::Stat(STAT_TIMEOUT));
+    }
+
+    #[test]
+    fn the_reported_duration_is_the_one_that_was_applied() {
+        assert_eq!(TimedOutAfter::Stat(STAT_TIMEOUT).duration(), STAT_TIMEOUT);
+        let d = Duration::from_secs(185);
+        assert_eq!(TimedOutAfter::Read(d).duration(), d);
+    }
+
+    #[test]
+    fn describe_distinguishes_a_dead_drive_from_a_slow_file() {
+        let p = Path::new("/some/file.mov");
+        let stat = TimedOutAfter::Stat(STAT_TIMEOUT).describe(p);
+        let read = TimedOutAfter::Read(Duration::from_secs(185)).describe(p);
+        assert!(stat.contains("did not respond"), "{stat}");
+        assert!(read.contains("185s"), "{read}");
+        assert_ne!(stat, read);
     }
 }

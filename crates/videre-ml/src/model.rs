@@ -77,6 +77,37 @@ pub fn image_size_for(model_id: &str) -> usize {
 /// it; see `batched_embeddings_match_one_at_a_time`.
 pub const MAX_SAFE_BATCH: usize = 96;
 
+/// Clamp a `--batch` argument into a range that will not panic or corrupt.
+///
+/// `max` is the upper cap, and it is per command rather than universal:
+/// `MAX_SAFE_BATCH` exists because this inference path silently produces wrong
+/// embeddings above roughly 121, which is a fact about embedding, not about
+/// face detection. `faces` passes `None` and gets the zero-guard only.
+///
+/// The zero-guard is the shared part, and the reason this is here rather than
+/// in one command: `slice::chunks(0)` panics, `embed` had guarded it and
+/// `faces` had not, so `videre faces --batch 0` aborted the process.
+///
+/// Warns unconditionally rather than honoring `--silent`: a silently corrupted
+/// embeddings table is closer to an error than to progress output.
+pub fn clamp_batch(requested: usize, max: Option<usize>) -> usize {
+    if requested == 0 {
+        eprintln!("warning: --batch 0 is not valid; using 1");
+        return 1;
+    }
+    match max {
+        Some(max) if requested > max => {
+            eprintln!(
+                "warning: --batch {requested} exceeds the safe maximum of {max}; using {max} instead. \
+                 Larger batches silently produce incorrect embeddings on this inference path (no error \
+                 is raised, so this cap is the only thing preventing a corrupt embeddings table)."
+            );
+            max
+        }
+        _ => requested,
+    }
+}
+
 /// Fraction of `MAX_SAFE_BATCH` at or above which a batch is self-checked.
 ///
 /// The check costs one extra forward pass, so it is worth ~1/N of a batch of
@@ -1066,5 +1097,52 @@ mod metal_matmul_probe {
                 ),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod clamp_tests {
+    use super::*;
+
+    #[test]
+    fn safe_values_are_left_alone() {
+        assert_eq!(clamp_batch(1, Some(MAX_SAFE_BATCH)), 1);
+        assert_eq!(
+            clamp_batch(32, Some(MAX_SAFE_BATCH)),
+            32,
+            "the default must never be altered"
+        );
+        assert_eq!(
+            clamp_batch(MAX_SAFE_BATCH, Some(MAX_SAFE_BATCH)),
+            MAX_SAFE_BATCH
+        );
+    }
+
+    #[test]
+    fn values_above_the_safe_maximum_are_capped() {
+        assert_eq!(
+            clamp_batch(MAX_SAFE_BATCH + 1, Some(MAX_SAFE_BATCH)),
+            MAX_SAFE_BATCH
+        );
+        assert_eq!(clamp_batch(256, Some(MAX_SAFE_BATCH)), MAX_SAFE_BATCH);
+        assert_eq!(
+            clamp_batch(usize::MAX, Some(MAX_SAFE_BATCH)),
+            MAX_SAFE_BATCH
+        );
+    }
+
+    #[test]
+    fn zero_becomes_one_because_slice_chunks_panics_on_it() {
+        // The whole reason this is shared: embed guarded 0 and faces did not,
+        // so `videre faces --batch 0` reached slice::chunks(0) and aborted.
+        assert_eq!(clamp_batch(0, Some(MAX_SAFE_BATCH)), 1);
+        assert_eq!(clamp_batch(0, None), 1);
+    }
+
+    #[test]
+    fn no_cap_leaves_large_values_alone() {
+        // faces passes None: the safe maximum is a fact about this embedding
+        // path, not about face detection, so it must not be imposed there.
+        assert_eq!(clamp_batch(MAX_SAFE_BATCH * 4, None), MAX_SAFE_BATCH * 4);
     }
 }

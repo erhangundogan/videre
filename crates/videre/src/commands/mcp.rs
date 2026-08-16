@@ -22,7 +22,7 @@ pub struct McpArgs {
     /// Embedding model to serve searches from (default: 'videre config set model',
     /// else the built-in default). Bound once at startup, like --db, so a
     /// bad value fails before the server accepts a single call.
-    #[arg(long)]
+    #[arg(long, value_parser = super::parse_model_id)]
     model: Option<String>,
 }
 

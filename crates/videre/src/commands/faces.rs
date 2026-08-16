@@ -224,7 +224,10 @@ fn run_detection_and_clustering(
     let result = run_face_pipeline(
         conn,
         to_process,
-        args.batch,
+        // Shared with embed: 0 would reach slice::chunks(0) and panic. No upper
+        // cap here - MAX_SAFE_BATCH is about embedding correctness on the SigLIP
+        // path, not about face detection.
+        videre_ml::model::clamp_batch(args.batch, None),
         args.dry_run,
         args.silent,
         if args.profile {
