@@ -13,6 +13,40 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.15.2] - 2026-08-16
+
+### Fixed
+
+- **`--model` with a malformed id panicked instead of erroring.**
+  `videre embed --model foo` aborted with `thread 'main' panicked ... model id
+  is owner/name`. A validator existed but lived in the `config` command and so
+  guarded only `videre config set`; the flag reached the loader's `expect`
+  directly. An invariant enforced on one of two entrances to the same function
+  is not enforced.
+
+  Validation now lives in `videre-core` beside the resolver, so both the flag
+  and a hand-edited `config.toml` go through it, and `--model` is additionally
+  checked when the argument is parsed - a typo now fails immediately rather than
+  after an unrelated "no database found".
+
+- **`videre faces --batch 0` panicked.** It reached `slice::chunks(0)`. `embed`
+  had guarded exactly this and `faces` had not, so the guard moved next to
+  `MAX_SAFE_BATCH` where both commands reach it. The upper cap stays specific to
+  embedding: it exists because that inference path silently corrupts embeddings
+  above roughly 121, which is not a fact about face detection, so `faces` takes
+  the zero-guard only.
+
+- **The read-timeout handler could hang on the drive it was reporting about.**
+  After a timeout, `hash_file` called `std::fs::metadata` **unbounded** on the
+  same path, purely to name the timeout in its message. On a stale mount that is
+  the call that never returns, so the error path blocked in precisely the
+  scenario the timeout exists to survive.
+
+  The applied timeout now comes back with the failure, so the message needs no
+  filesystem access. It also names the phase: a dead drive reports that the
+  `stat` never answered, rather than claiming a read took 20 seconds when
+  nothing was ever read.
+
 ## [0.15.1] - 2026-08-13
 
 ### Documentation

@@ -156,10 +156,41 @@ fn set_model_persists_and_is_shown() {
     assert!(stdout.contains("[from config.toml]"), "{stdout}");
 }
 
+/// The flag path, which the config-set test below did not cover. `videre embed
+/// --model foo` used to abort with "thread 'main' panicked ... model id is
+/// owner/name", because validation lived in `commands/config.rs` and guarded
+/// only `config set` - one of the two entrances to the same function.
+#[test]
+fn a_malformed_model_flag_is_an_error_not_a_panic() {
+    let home = tempdir().unwrap();
+    for cmd in ["embed", "search", "classify"] {
+        let mut c = Command::new(videre_bin());
+        c.env("VIDERE_HOME", home.path()).arg(cmd);
+        if cmd == "search" {
+            c.arg("anything");
+        }
+        let out = c.args(["--model", "foo"]).output().unwrap();
+        assert!(!out.status.success(), "{cmd} must reject a bare model name");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("owner/name"),
+            "{cmd} must explain the shape, got: {stderr}"
+        );
+        assert!(
+            !stderr.contains("panicked"),
+            "{cmd} must not panic, got: {stderr}"
+        );
+    }
+}
+
 #[test]
 fn set_model_rejects_an_id_without_an_owner() {
     // Embedder::load does split_once('/').expect(...), so an id with no slash
     // panics at load time. Rejecting it here makes that unreachable.
+    //
+    // This covered `config set` only, which is why the --model flag went on
+    // reaching the panic: the same invariant enforced on one entrance and not
+    // the other. See a_malformed_model_flag_is_an_error_not_a_panic above.
     let home = tempdir().unwrap();
     let out = Command::new(videre_bin())
         .env("VIDERE_HOME", home.path())

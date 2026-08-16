@@ -25,29 +25,6 @@ enum ConfigAction {
     },
 }
 
-/// Reject anything that is not `owner/name`.
-///
-/// Not cosmetic: `videre_ml::model::Embedder::load` does
-/// `split_once('/').expect("model id is owner/name")`, so a bare model name
-/// with the owner omitted panics at load time. Validating here means that
-/// panic is unreachable from configuration.
-///
-/// Validation stops at shape. A well-formed id for a model that has never been
-/// embedded is legitimate: setting the default before running
-/// `videre embed --model` on it is a reasonable order of operations, and the
-/// readers already error clearly, naming the models that do exist.
-fn validate_model_id(id: &str) -> Result<()> {
-    match id.split_once('/') {
-        Some((owner, name)) if !owner.is_empty() && !name.is_empty() && !name.contains('/') => {
-            Ok(())
-        }
-        _ => anyhow::bail!(
-            "invalid model id {id:?}: expected owner/name, \
-             e.g. google/siglip-base-patch16-224"
-        ),
-    }
-}
-
 pub fn run(args: ConfigArgs) -> Result<()> {
     let home = home::videre_home()?;
     match args.action {
@@ -62,7 +39,7 @@ pub fn run(args: ConfigArgs) -> Result<()> {
                 home::set_min_read_rate(&home, mb_s)
             }
             "model" => {
-                validate_model_id(&value)?;
+                videre_core::embeddings::validate_model_id(&value)?;
                 home::set_default_model(&home, &value)
             }
             _ => unreachable!("clap restricts keys to CONFIG_KEYS"),

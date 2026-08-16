@@ -62,12 +62,43 @@ pub fn resolve_model_id_in(
     home: &std::path::Path,
     explicit: Option<&str>,
 ) -> anyhow::Result<String> {
-    if let Some(id) = explicit {
-        return Ok(id.to_string());
+    let id = match explicit {
+        Some(id) => id.to_string(),
+        None => crate::home::load_config(home)?
+            .default_model
+            .unwrap_or_else(|| DEFAULT_MODEL_ID.to_string()),
+    };
+    validate_model_id(&id)?;
+    Ok(id)
+}
+
+/// Reject anything that is not `owner/name`.
+///
+/// Not cosmetic: `videre_ml::model::Embedder::load` does
+/// `split_once('/').expect("model id is owner/name")`, so an id without a slash
+/// panics at load time.
+///
+/// This lives here, beside the resolver, because that is the one place every
+/// model id passes through. It used to be private to `commands/config.rs` and
+/// so guarded only `videre config set`, leaving `--model` to reach the panic
+/// directly - `videre embed --model foo` aborted with a Rust panic message
+/// rather than an error. An invariant enforced on one of two entrances to the
+/// same function is not enforced.
+///
+/// Validation stops at shape. A well-formed id for a model that has never been
+/// embedded is legitimate: setting the default before running
+/// `videre embed --model` on it is a reasonable order of operations, and the
+/// readers already error clearly, naming the models that do exist.
+pub fn validate_model_id(id: &str) -> anyhow::Result<()> {
+    match id.split_once('/') {
+        Some((owner, name)) if !owner.is_empty() && !name.is_empty() && !name.contains('/') => {
+            Ok(())
+        }
+        _ => anyhow::bail!(
+            "invalid model id {id:?}: expected owner/name, \
+             e.g. google/siglip-base-patch16-224"
+        ),
     }
-    Ok(crate::home::load_config(home)?
-        .default_model
-        .unwrap_or_else(|| DEFAULT_MODEL_ID.to_string()))
 }
 
 /// `resolve_model_id_in` against the resolved videre home.
@@ -470,5 +501,39 @@ mod tests {
         assert!(is_video_ext("Mov"));
         assert!(!is_video_ext("jpg"));
         assert!(!is_video_ext(""));
+    }
+}
+
+#[cfg(test)]
+mod model_id_tests {
+    use super::*;
+
+    #[test]
+    fn an_id_without_a_slash_is_rejected() {
+        // videre_ml::model::Embedder::load does split_once('/').expect(...), so
+        // anything reaching it without a slash panics the process.
+        assert!(validate_model_id("foo").is_err());
+        assert!(validate_model_id("").is_err());
+        assert!(validate_model_id("/name").is_err());
+        assert!(validate_model_id("owner/").is_err());
+        assert!(validate_model_id("a/b/c").is_err());
+    }
+
+    #[test]
+    fn a_well_formed_id_passes_even_if_never_embedded() {
+        assert!(validate_model_id("google/siglip-base-patch16-224").is_ok());
+        assert!(validate_model_id("someone/a-model-nobody-has-run").is_ok());
+    }
+
+    #[test]
+    fn the_explicit_flag_is_validated_not_just_the_config_file() {
+        // The bug: validation lived in commands/config.rs and guarded only
+        // `videre config set`, so --model reached the panic directly.
+        let dir = tempfile::tempdir().unwrap();
+        assert!(resolve_model_id_in(dir.path(), Some("foo")).is_err());
+        assert_eq!(
+            resolve_model_id_in(dir.path(), Some("owner/name")).unwrap(),
+            "owner/name"
+        );
     }
 }
