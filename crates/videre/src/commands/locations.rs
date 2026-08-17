@@ -124,7 +124,33 @@ fn run_locations(args: &LocationsArgs, conn: &Connection) -> Result<Vec<ClusterJ
         return Ok(Vec::new());
     }
 
+    // Everything below is silent for minutes without this. The clustering maths
+    // is sub-second; the cost is the per-coordinate UPDATE further down, which
+    // is unindexable and runs once per distinct coordinate. On a 70k-file
+    // library that is ~5,500 full-table updates and about eight minutes, during
+    // which the command printed nothing at all and read as a hang.
+    //
+    // Progress is counted in coordinates rather than clusters because that is
+    // where the time actually goes: one cluster may hold thousands of
+    // coordinates and another may hold one.
+    let quiet = args.silent || args.json || args.geojson;
+    if !quiet {
+        eprintln!(
+            "Clustering {} distinct coordinate(s) at radius {}km...",
+            coords.len(),
+            args.radius
+        );
+    }
+
     let member_groups = location_cluster::cluster_by_distance(&coords, args.radius);
+
+    if !quiet {
+        eprintln!(
+            "{} cluster(s); naming them and assigning photos",
+            member_groups.len()
+        );
+    }
+    let progress = videre_core::progress::Progress::new(coords.len() as u64, quiet);
 
     let mut clusters = Vec::with_capacity(member_groups.len());
     for members in &member_groups {
@@ -148,6 +174,7 @@ fn run_locations(args: &LocationsArgs, conn: &Connection) -> Result<Vec<ClusterJ
                 rusqlite::params![id, lat, lon],
             )?;
             photo_count += affected as i64;
+            progress.tick();
         }
 
         tx.execute(
@@ -163,6 +190,7 @@ fn run_locations(args: &LocationsArgs, conn: &Connection) -> Result<Vec<ClusterJ
             photo_count,
         });
     }
+    progress.finish();
 
     clusters.sort_by(|a, b| b.photo_count.cmp(&a.photo_count));
     tx.commit()?;
