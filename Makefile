@@ -22,9 +22,13 @@ build: ## Build the release binary (target/release/videre)
 build-dev: ## Build the debug binary (target/debug/videre)
 	cargo build
 
+# --no-fail-fast to match CI. Without it cargo stops at the first failing test
+# binary, so one failure hides every later one - which is how a Linux-only
+# failure in videre-core once masked whether the videre integration tests
+# passed at all.
 .PHONY: test
-test: ## Run the full workspace test suite
-	cargo test --workspace
+test: ## Run the full workspace test suite (as CI does)
+	cargo test --workspace --no-fail-fast
 
 .PHONY: fmt
 fmt: ## Format all Rust code
