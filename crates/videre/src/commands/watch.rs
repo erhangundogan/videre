@@ -475,3 +475,155 @@ mod publish_thumb_tests {
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 }
+
+#[cfg(test)]
+mod stage_query_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn db_with(rows: &[(&str, &str, &str)]) -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE file_hashes (
+                path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
+                created_at TEXT, modified_at TEXT, ext TEXT, mime TEXT, phash INTEGER,
+                exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER);",
+        )
+        .unwrap();
+        for (path, hash, ext) in rows {
+            c.execute(
+                "INSERT INTO file_hashes (path, hash, ext) VALUES (?1, ?2, ?3)",
+                rusqlite::params![path, hash, ext],
+            )
+            .unwrap();
+        }
+        c
+    }
+
+    #[test]
+    fn table_check_distinguishes_a_missing_table_from_an_empty_one() {
+        // watch runs against a database another command may not have created
+        // yet, so "no table" has to be survivable rather than an error.
+        let empty = Connection::open_in_memory().unwrap();
+        assert!(!file_hashes_table_exists(&empty).unwrap());
+        assert!(file_hashes_table_exists(&db_with(&[])).unwrap());
+    }
+
+    #[test]
+    fn the_faces_filter_takes_images_including_heic_and_no_video() {
+        let c = db_with(&[
+            ("/a.jpg", "h1", "jpg"),
+            ("/b.heic", "h2", "heic"),
+            ("/c.png", "h3", "png"),
+            ("/d.mov", "h4", "mov"),
+            ("/e.mp4", "h5", "mp4"),
+            ("/f.dng", "h6", "dng"),
+        ]);
+        let got = dedup_paths_by_hash(&c, PathExtFilter::Faces).unwrap();
+        let mut exts: Vec<_> = got
+            .iter()
+            .map(|(p, _)| p.rsplit('.').next().unwrap())
+            .collect();
+        exts.sort();
+        assert_eq!(
+            exts,
+            vec!["heic", "jpg", "png"],
+            "video and raw must not reach face detection"
+        );
+    }
+
+    #[test]
+    fn the_heic_filter_takes_only_heic() {
+        let c = db_with(&[("/a.jpg", "h1", "jpg"), ("/b.heic", "h2", "heic")]);
+        let got = dedup_paths_by_hash(&c, PathExtFilter::HeicOnly).unwrap();
+        assert_eq!(got.len(), 1);
+        assert!(got[0].0.ends_with(".heic"));
+    }
+
+    #[test]
+    fn duplicates_collapse_to_one_path_per_hash() {
+        // The point of the dedup: three copies of one photo cost one decode,
+        // not three. Whichever path wins, the hash must appear once.
+        let c = db_with(&[
+            ("/one.jpg", "same", "jpg"),
+            ("/two.jpg", "same", "jpg"),
+            ("/three.jpg", "same", "jpg"),
+            ("/other.jpg", "different", "jpg"),
+        ]);
+        let got = dedup_paths_by_hash(&c, PathExtFilter::Faces).unwrap();
+        assert_eq!(got.len(), 2);
+        let mut hashes: Vec<_> = got.iter().map(|(_, h)| h.as_str()).collect();
+        hashes.sort();
+        assert_eq!(hashes, vec!["different", "same"]);
+    }
+
+    #[test]
+    fn an_empty_library_yields_no_work_rather_than_an_error() {
+        let c = db_with(&[]);
+        assert!(dedup_paths_by_hash(&c, PathExtFilter::Faces)
+            .unwrap()
+            .is_empty());
+        assert!(dedup_paths_by_hash(&c, PathExtFilter::HeicOnly)
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[cfg(test)]
+mod scoping_tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Wrap {
+        #[command(flatten)]
+        args: WatchArgs,
+    }
+
+    fn parse(extra: &[&str]) -> WatchArgs {
+        let mut v = vec!["watch", "/tmp"];
+        v.extend_from_slice(extra);
+        Wrap::parse_from(v).args
+    }
+
+    #[test]
+    fn watch_accepts_the_path_side_flags_only() {
+        // A walk has not opened the file, so it cannot answer --date or
+        // --location. Those must fail to parse rather than fail at runtime.
+        let a = parse(&["--type", "image", "--ext", "heic", "--path", "/tmp/x"]);
+        let sel =
+            super::super::selection_args::path_selection(Some(&a.media), Some(&a.paths)).unwrap();
+        assert!(!sel.is_empty());
+
+        for bad in [
+            vec!["watch", "/tmp", "--date", "2024"],
+            vec!["watch", "/tmp", "--location", "Berlin"],
+            vec!["watch", "/tmp", "--person", "Alice"],
+            vec!["watch", "/tmp", "--category", "screenshot"],
+        ] {
+            assert!(
+                Wrap::try_parse_from(&bad).is_err(),
+                "watch must reject {:?}: a walk cannot answer it",
+                bad[2]
+            );
+        }
+    }
+
+    #[test]
+    fn no_flags_means_an_empty_selection_that_accepts_everything() {
+        let a = parse(&[]);
+        let sel =
+            super::super::selection_args::path_selection(Some(&a.media), Some(&a.paths)).unwrap();
+        assert!(sel.is_empty(), "an unscoped watch must not filter the walk");
+        assert!(sel.accepts(std::path::Path::new("/anything/at/all.mov")));
+    }
+
+    #[test]
+    fn a_type_filter_narrows_the_walk_the_same_way_scan_does() {
+        let a = parse(&["--type", "video"]);
+        let sel =
+            super::super::selection_args::path_selection(Some(&a.media), Some(&a.paths)).unwrap();
+        assert!(sel.accepts(std::path::Path::new("/x/clip.mov")));
+        assert!(!sel.accepts(std::path::Path::new("/x/photo.jpg")));
+    }
+}
