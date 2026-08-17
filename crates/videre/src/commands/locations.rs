@@ -143,7 +143,22 @@ fn run_locations(args: &LocationsArgs, conn: &Connection) -> Result<Vec<ClusterJ
         );
     }
 
-    let member_groups = location_cluster::cluster_by_distance(&coords, args.radius);
+    // The matrix build dominates: ~n^2/2 haversine calls behind an n*n*8 byte
+    // allocation. Reported per row, because a caller staring at a single
+    // "clustering..." line for a minute cannot tell it from a hang.
+    if !quiet {
+        let gb = (coords.len() as f64).powi(2) * 8.0 / 1_073_741_824.0;
+        if gb >= 1.0 {
+            eprintln!("Building the distance matrix (~{gb:.1}GB, this is the slow part)");
+        }
+    }
+    let matrix =
+        videre_core::progress::Progress::new_counting(coords.len() as u64, quiet, "coordinates");
+    let member_groups =
+        location_cluster::cluster_by_distance_reporting(&coords, args.radius, |_, _| {
+            matrix.tick();
+        });
+    matrix.finish();
 
     if !quiet {
         eprintln!(
@@ -151,7 +166,8 @@ fn run_locations(args: &LocationsArgs, conn: &Connection) -> Result<Vec<ClusterJ
             member_groups.len()
         );
     }
-    let progress = videre_core::progress::Progress::new(coords.len() as u64, quiet);
+    let progress =
+        videre_core::progress::Progress::new_counting(coords.len() as u64, quiet, "coordinates");
 
     let mut clusters = Vec::with_capacity(member_groups.len());
     for members in &member_groups {
