@@ -95,6 +95,7 @@ fn run_locations(args: &LocationsArgs, conn: &Connection) -> Result<Vec<ClusterJ
 
     location_cluster::ensure_location_clusters_table(&tx)?;
     location_cluster::ensure_location_cluster_id_column(&tx);
+    location_cluster::ensure_gps_index(&tx);
 
     // Deliberately takes no selection, unlike the other database commands.
     // The recompute below is global: it drops every cluster and clears every
@@ -168,9 +169,23 @@ fn run_locations(args: &LocationsArgs, conn: &Connection) -> Result<Vec<ClusterJ
         let mut photo_count = 0i64;
         for &idx in members {
             let (lat, lon) = coords[idx];
+            // Exact equality, not ROUND(). Two reasons, and they are the same
+            // line of SQL:
+            //
+            // Correctness. `coords` comes from SELECT DISTINCT gps_lat, gps_lon,
+            // so these are the exact stored values and matching them back
+            // exactly returns exactly the rows they came from. ROUND matched
+            // more than that: two coordinates differing past the 6th decimal
+            // round to the same value, so both cluster assignments claimed the
+            // same photo and photo_count double-counted it. Real, not
+            // hypothetical - 52.5536,13.4300 matched 178 rows exactly and 179
+            // under ROUND in a 70,601-file library.
+            //
+            // Speed. A function call on a column makes an index unusable, so
+            // this ran as a full table scan once per distinct coordinate.
             let affected = tx.execute(
                 "UPDATE file_hashes SET location_cluster_id = ?1 \
-                 WHERE ROUND(gps_lat, 6) = ROUND(?2, 6) AND ROUND(gps_lon, 6) = ROUND(?3, 6)",
+                 WHERE gps_lat = ?2 AND gps_lon = ?3",
                 rusqlite::params![id, lat, lon],
             )?;
             photo_count += affected as i64;

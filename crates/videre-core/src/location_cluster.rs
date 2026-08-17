@@ -143,9 +143,100 @@ pub fn ensure_location_cluster_id_column(conn: &Connection) {
     let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN location_cluster_id INTEGER");
 }
 
+/// Index the GPS columns, so assigning photos to a cluster is a lookup rather
+/// than a table scan.
+///
+/// The recompute runs one UPDATE per distinct coordinate. Without this index
+/// each of those scans the whole table: measured at 412s for 26,744 coordinates
+/// against 70,601 rows.
+///
+/// The index is only usable because the UPDATE matches coordinates *exactly*.
+/// It previously matched `ROUND(gps_lat, 6) = ROUND(?, 6)`, and a function call
+/// on the column makes any index unusable no matter what is created here.
+pub fn ensure_gps_index(conn: &Connection) {
+    let _ = conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_file_hashes_gps ON file_hashes(gps_lat, gps_lon)",
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_gps_index_exists_and_serves_an_exact_match() {
+        // The whole performance fix rests on this: an exact predicate can use
+        // the index, and the ROUND() form it replaced never could, whatever
+        // index exists.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (
+                path TEXT PRIMARY KEY, hash TEXT NOT NULL, gps_lat REAL, gps_lon REAL);",
+        )
+        .unwrap();
+        ensure_gps_index(&conn);
+        ensure_gps_index(&conn); // idempotent, like its neighbours
+
+        let exact: String = conn
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT 1 FROM file_hashes WHERE gps_lat = 1.0 AND gps_lon = 2.0",
+                [],
+                |r| r.get(3),
+            )
+            .unwrap();
+        assert!(
+            exact.contains("idx_file_hashes_gps"),
+            "an exact match must use the index, got: {exact}"
+        );
+
+        let rounded: String = conn
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT 1 FROM file_hashes \
+                 WHERE ROUND(gps_lat, 6) = ROUND(1.0, 6) AND ROUND(gps_lon, 6) = ROUND(2.0, 6)",
+                [],
+                |r| r.get(3),
+            )
+            .unwrap();
+        assert!(
+            rounded.contains("SCAN"),
+            "ROUND() on the column must still scan - this is why it was removed: {rounded}"
+        );
+    }
+
+    #[test]
+    fn two_coordinates_that_round_alike_stay_separate() {
+        // BUGS.md item 7. These differ past the 6th decimal, so ROUND(x, 6)
+        // makes them equal and each cluster's UPDATE claimed both rows - the
+        // same photo counted twice across two clusters.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (
+                path TEXT PRIMARY KEY, hash TEXT NOT NULL, gps_lat REAL, gps_lon REAL);
+             INSERT INTO file_hashes VALUES
+               ('/a.jpg','a', 52.55360000001, 13.43),
+               ('/b.jpg','b', 52.55360000002, 13.43);",
+        )
+        .unwrap();
+
+        let exact: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_hashes WHERE gps_lat = 52.55360000001 AND gps_lon = 13.43",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(exact, 1, "exact matching claims only its own row");
+
+        let rounded: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_hashes \
+                 WHERE ROUND(gps_lat, 6) = ROUND(52.55360000001, 6) AND ROUND(gps_lon, 6) = ROUND(13.43, 6)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rounded, 2, "ROUND claims both - the double-count");
+    }
 
     #[test]
     fn haversine_zero_distance_for_identical_points() {
