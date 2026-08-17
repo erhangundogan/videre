@@ -123,6 +123,30 @@ CI caches `~/.cache/huggingface` keyed on `face_models.rs` and `embeddings.rs`,
 so changing the model invalidates it rather than reusing weights for a different
 one.
 
+:warning: **A test that downloads does not just break "tests never download",
+it changes which *other* tests run.** The warm-up step fetches SigLIP on macOS
+only, so on Linux `siglip_ready()` is false and
+`cpu_batch_matches_single_image_baseline` skips in milliseconds - it had never
+once run there. `argument_robustness.rs` then scanned an `a.jpg` and ran
+`videre embed` against it, which loads the model and pulls 777MB; the cache
+saved those weights, and from the next run the batch test found a warm cache
+and began really running. 28 minutes, then 35, with nothing failing, which is
+why it read as a hang rather than a slow test.
+
+Two fixes, both worth keeping. That library holds a `.dng`, which is scanned
+and stored like anything else but explicitly vetoed as non-embeddable, so
+`embed` and `classify` return before loading a model; `HF_HOME` points into the
+test's temp dir and a guard asserts the sweep leaves it at zero bytes. And
+`[profile.dev.package."*"] opt-level = 3` optimizes dependencies in dev and
+test builds: `cargo test` is a debug build, and unoptimized candle measured
+**9.41s per 224px forward pass against 0.168s in release, 56x**. Workspace
+members stay unoptimized, so they still compile fast, and `rust-cache` means
+the codegen cost lands once per cache key.
+
+The remaining hole is that this test skips silently rather than calling
+`skip_without_models`, so `VIDERE_TEST_REQUIRE_MODELS=1` - which exists to turn
+exactly this into a failure - never fires for it.
+
 Clippy is not in CI yet: it reports 31 warnings as of 2026-08-16 (18 when
 first counted), so a lint job would need `--allow`-ing them or a cleanup
 pass first. `make lint` runs it. The count drifts upward precisely because
@@ -469,13 +493,40 @@ depends on. Verified on 58,555 real faces: 19m27s to 8m48s with a
 `PruneArgs::for_watch_stage` pins both the bulk-deletion and repeated-failure
 guards to false, and a unit test asserts it. It runs unattended and cannot ask.
 
-### `videre locations` is a full recompute that is not cheap
+### `videre locations` is a full recompute, and the cost moved
 
-The clustering maths is sub-second, but the per-coordinate `file_hashes` UPDATE
-(matched via the unindexable `ROUND(gps_lat, 6) = ROUND(?, 6)` against the whole
-table) measured ~8 minutes on a 70k-file library. The whole recompute runs in
-one transaction, so it holds the single WAL writer lock for that entire window
-and a concurrent `watch` write blocks.
+Measured on a 70,601-file library with 26,744 distinct coordinates: **412s
+before, 86s after** indexing the GPS columns. The whole recompute runs in one
+transaction, so it holds the single WAL writer lock for that entire window and
+a concurrent `watch` write blocks.
+
+The per-coordinate `file_hashes` UPDATE used to match
+`ROUND(gps_lat, 6) = ROUND(?, 6)`. A function call on a column makes any index
+unusable and there was no GPS index anyway, so each update scanned every row.
+It matches exactly now, against `idx_file_hashes_gps`. `coords` comes from
+`SELECT DISTINCT gps_lat, gps_lon`, so those are the exact stored values and
+matching them back exactly returns exactly the rows they came from.
+
+The same `ROUND` also over-matched: two coordinates differing past the sixth
+decimal both claimed the same photo, and `photo_count` counted it twice. **181
+photos were double-counted**, 179 in Berlin. A test pins both halves, including
+that `EXPLAIN QUERY PLAN` still says SCAN for the `ROUND` form, so nobody adds
+an index and wonders why nothing got faster.
+
+:warning: **The dominant cost is now `cluster_by_distance`, not the UPDATE.**
+It builds a dense `vec![vec![0.0; n]; n]`: at 26,744 coordinates that is ~5.3GB
+claimed before any work plus ~357 million haversine calls. This file called it
+"sub-second", measured when the library had 5,512 coordinates; the video
+re-scan that gave 11,985 videos dates and GPS made every one a coordinate to
+assign. Believing the stale note is what put the first progress bar on the
+wrong phase, whose 4.8x speedup then made the *unmeasured* phase the whole
+wait - reported twice as a freeze. **Time the phases before instrumenting.**
+
+Both phases report progress now, and `cluster_by_distance_reporting` takes a
+per-row callback (n calls, not n^2/2). Progress counts coordinates, not images:
+`Progress::new_counting` exists because the non-TTY line hardcoded "images
+processed", which for 26,744 coordinates in a 70,601-file library was three
+numbers no reader could reconcile.
 
 ### `pipeline_runs` tracks exactly 8 commands
 

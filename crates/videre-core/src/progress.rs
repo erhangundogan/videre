@@ -22,6 +22,11 @@ pub struct Progress {
     total: u64,
     done: AtomicU64,
     mode: Mode,
+    /// What is being counted, for the non-TTY line. "images" for most
+    /// callers, but `videre locations` counts coordinates and clusters, and
+    /// a log claiming "26744/26744 images processed" for a 70,601-file
+    /// library is a number a reader cannot reconcile with anything.
+    noun: &'static str,
 }
 
 enum Mode {
@@ -56,6 +61,16 @@ impl Progress {
             total,
             done: AtomicU64::new(0),
             mode,
+            noun: "images",
+        }
+    }
+
+    /// `new`, counting something other than images. Affects only the
+    /// non-TTY text line; the bar renders a percentage either way.
+    pub fn new_counting(total: u64, silent: bool, noun: &'static str) -> Self {
+        Progress {
+            noun,
+            ..Progress::new(total, silent)
         }
     }
 
@@ -80,7 +95,7 @@ impl Progress {
             Mode::Bar(bar) => bar.set_position(after),
             Mode::Plain => {
                 if after / LOG_INTERVAL != before / LOG_INTERVAL || after == self.total {
-                    eprintln!("{}/{} images processed", after, self.total);
+                    eprintln!("{}/{} {} processed", after, self.total, self.noun);
                 }
             }
             Mode::Silent => {}
@@ -145,6 +160,16 @@ mod tests {
         p.tick_by(40);
         p.tick_by(60);
         p.finish();
+    }
+
+    #[test]
+    fn a_caller_can_count_something_other_than_images() {
+        // Regression guard for a real wrong-noun bug: `videre locations`
+        // counts coordinates, and printed "26744/26744 images processed"
+        // for a library with 70,601 files and 37,767 photos with GPS.
+        let p = Progress::new_counting(10, true, "coordinates");
+        assert_eq!(p.noun, "coordinates");
+        assert_eq!(Progress::new(10, true).noun, "images");
     }
 
     #[test]
