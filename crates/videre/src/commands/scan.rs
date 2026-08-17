@@ -52,6 +52,12 @@ pub struct ScanArgs {
 }
 
 pub fn run(args: ScanArgs) -> anyhow::Result<()> {
+    // Resolve the destination before walking anything. output_target is called
+    // again later where the records are written, but by then the scan has
+    // already run - and the failure this catches means the scan ran against the
+    // wrong directory entirely, so discovering it afterwards is too late to be
+    // useful. Cheap to do twice; the second call is pure.
+    output_target(&args)?;
     if args.json {
         match run_json(&args) {
             Ok(doc) => {
@@ -244,7 +250,32 @@ fn output_target(args: &ScanArgs) -> anyhow::Result<OutputTarget> {
         return Ok(OutputTarget::Sqlite(db.clone()));
     }
     match &args.output {
-        Some(Some(path)) => Ok(OutputTarget::Jsonl(path.clone())),
+        Some(Some(path)) => {
+            // A directory here almost always means the argument-order trap:
+            // `--output` takes an optional value, so `videre scan --output
+            // ~/Photos` binds ~/Photos as the *output file* and leaves the
+            // directory unset, which then falls back to the configured
+            // default_path. The scan silently runs against a different library
+            // and only the final write fails.
+            //
+            // Failing here costs nothing; failing after the walk costs the whole
+            // scan. Worse, had the swallowed path been a file rather than a
+            // directory, the write would have succeeded and put one library's
+            // records into it with no error at all.
+            if path.is_dir() {
+                anyhow::bail!(
+                    "--output {} is a directory, not a file.\n  \
+                     A bare --output must come AFTER the directory: \
+                     'videre scan {} --output'.\n  \
+                     As written, {} was taken as the output file and the \
+                     directory to scan fell back to the configured default.",
+                    path.display(),
+                    path.display(),
+                    path.display()
+                );
+            }
+            Ok(OutputTarget::Jsonl(path.clone()))
+        }
         Some(None) => {
             let path = videre_core::home::default_jsonl()?;
             if let Some(parent) = path.parent() {
