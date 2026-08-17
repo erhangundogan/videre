@@ -123,8 +123,10 @@ CI caches `~/.cache/huggingface` keyed on `face_models.rs` and `embeddings.rs`,
 so changing the model invalidates it rather than reusing weights for a different
 one.
 
-Clippy is not in CI yet: it reports 18 warnings, so a lint job would need
-`--allow`-ing them or a cleanup pass first.
+Clippy is not in CI yet: it reports 31 warnings as of 2026-08-16 (18 when
+first counted), so a lint job would need `--allow`-ing them or a cleanup
+pass first. `make lint` runs it. The count drifts upward precisely because
+nothing enforces it, which is the argument for adding the job.
 
 ## Testing conventions
 
