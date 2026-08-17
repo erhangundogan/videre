@@ -18,11 +18,25 @@ use tempfile::{tempdir, TempDir};
 
 /// A scanned library, so commands get past their "no database" guard and the
 /// arguments themselves are what gets exercised.
+///
+/// The one file is a **`.dng` on purpose**. This file spawns `videre embed`
+/// and `videre classify` to check their argument handling, and with an
+/// embeddable file present both get past their "nothing to do" branch and load
+/// SigLIP - which downloads 777MB on a cold cache, breaking the invariant that
+/// tests never download. `.dng` is scanned and stored like any other file, so
+/// the row these tests need still exists, but it is explicitly vetoed as
+/// non-embeddable (it reports `image/tiff` yet cannot be decoded), so both
+/// commands return before loading any model.
+///
+/// This is not hypothetical tidiness. With `a.jpg` here, CI's model cache
+/// picked up SigLIP weights it is not supposed to have on Linux, which made
+/// `cpu_batch_matches_single_image_baseline` stop skipping and start running
+/// for real - taking the Ubuntu job past 35 minutes.
 fn library() -> (TempDir, std::path::PathBuf) {
     let dir = tempdir().unwrap();
     let pics = dir.path().join("pics");
     fs::create_dir_all(&pics).unwrap();
-    fs::write(pics.join("a.jpg"), b"a").unwrap();
+    fs::write(pics.join("a.dng"), b"a").unwrap();
     let db = dir.path().join("t.db");
     let ok = Command::new(videre_bin())
         .env("VIDERE_HOME", dir.path())
@@ -43,7 +57,14 @@ fn run(home: &std::path::Path, db: &std::path::Path, args: &[&str]) -> (bool, St
         "search" | "embed" | "faces" | "classify" | "dedupe" | "prune" | "stats" | "locations"
     );
     let mut c = Command::new(videre_bin());
-    c.env("VIDERE_HOME", home).args(args);
+    // Point the weights cache at the temp dir too. Nothing here should reach a
+    // model load, and the guard below asserts it; this makes a regression cost
+    // a failing test rather than silently filling the developer's real cache
+    // (and, on CI, the cached artifact that decides whether the slow
+    // CPU-inference test skips).
+    c.env("VIDERE_HOME", home)
+        .env("HF_HOME", home.join("hf"))
+        .args(args);
     if needs_db && !args.contains(&"--db") {
         c.arg("--db").arg(db);
     }
@@ -214,6 +235,64 @@ fn odd_but_harmless_input_is_tolerated() {
         let (_, text) = run(dir.path(), &db, &args);
         assert_no_panic(&label, &text);
     }
+}
+
+#[test]
+fn sweeping_the_argument_surface_downloads_no_model_weights() {
+    // The guard for the trap this file fell into: `videre embed` on a library
+    // with one embeddable file loads SigLIP, and loading it downloads 777MB.
+    //
+    // That is worth a test rather than a comment because the failure is
+    // invisible locally - a developer's cache is already warm, so the download
+    // never happens and nothing looks wrong. It only shows up on CI, as a
+    // cached artifact that quietly changes which *other* tests skip.
+    let (dir, db) = library();
+    let hf = dir.path().join("hf");
+
+    for args in [
+        vec!["embed"],
+        vec!["embed", "--batch", "96"],
+        vec!["classify"],
+        vec!["faces"],
+        vec!["search", "anything"],
+    ] {
+        let label = args.join(" ");
+        let (_, text) = run(dir.path(), &db, &args);
+        assert_no_panic(&label, &text);
+    }
+
+    let downloaded: u64 = walk_size(&hf);
+    assert_eq!(
+        downloaded,
+        0,
+        "the argument sweep downloaded {downloaded} bytes of model weights into {}. \
+         Tests never download: give library() a file the model-backed commands \
+         will not process, rather than warming a cache as a side effect.",
+        hf.display()
+    );
+}
+
+/// Total bytes under `p`, 0 when it does not exist.
+fn walk_size(p: &std::path::Path) -> u64 {
+    if !p.exists() {
+        return 0;
+    }
+    let mut total = 0;
+    let mut stack = vec![p.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&d) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let Ok(md) = e.metadata() else { continue };
+            if md.is_dir() {
+                stack.push(e.path());
+            } else {
+                total += md.len();
+            }
+        }
+    }
+    total
 }
 
 #[test]
