@@ -13,6 +13,47 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.15.3] - 2026-08-16
+
+### Fixed
+
+- **`videre scan --output <directory>` scanned the wrong library.** `--output`
+  takes an optional value, so `videre scan --output ~/Photos` bound `~/Photos`
+  as the output *file* and left the directory unset, which then fell back to the
+  configured `default_path`. The scan ran end to end against a different library
+  and only the final write failed.
+
+  The severity is the near-miss: had the swallowed path been an existing *file*
+  rather than a directory, the write would have **succeeded**, putting one
+  library's records into it with no error at all. It now fails before walking
+  anything, with a message naming both the cause and the fix.
+
+### Testing
+
+- **An argument-robustness sweep** across all fifteen subcommands: unknown
+  flags, flags a command cannot answer, conflicting pairs, degenerate values,
+  hostile strings and odd-but-harmless input. It asserts the weakest useful
+  property - no panic, ever - rather than pinning messages, and separately
+  asserts the library survives SQL-shaped input, which a `format!`-built query
+  would fail while passing everything else.
+
+  72 nonsense invocations were run by hand first: zero panics, zero hangs, and
+  the database intact after every injection attempt.
+
+- **Coverage on the two least-tested commands.** `classify.rs` 4.7% -> 78.9%,
+  `watch.rs` 7.5% -> 38.2%, workspace 82.5% -> 83.8%. Both are where the
+  selection layer was wired in most recently, so the newest logic had been
+  sitting in the least-tested files.
+
+- `--mime` had no coverage anywhere in the suite and `--path` had one use; both
+  are axes 0.15.0 added, and both bugs that shipped in that release were here.
+
+### Changed
+
+- `make test` now passes `--no-fail-fast`, matching CI. Without it one failing
+  test binary hides every later one, so `make verify` was no longer "what CI
+  gates on".
+
 ## [0.15.2] - 2026-08-16
 
 ### Fixed
