@@ -51,6 +51,28 @@ impl PartialOrd for HeapEntry {
 /// point ends up in some cluster, since a GPS coordinate is always valid
 /// data. Returns the member index-lists of every resulting cluster.
 pub fn cluster_by_distance(points: &[(f64, f64)], radius_km: f64) -> Vec<Vec<usize>> {
+    cluster_by_distance_reporting(points, radius_km, |_, _| {})
+}
+
+/// `cluster_by_distance`, calling `on_row(done, total)` as the distance matrix
+/// is filled.
+///
+/// The matrix build is the slow phase and it used to run silently. At 26,744
+/// coordinates it is ~357 million haversine calls behind a
+/// `vec![vec![0.0; n]; n]` allocation of about 5.7GB, and a caller that printed
+/// "clustering..." and then said nothing for a minute was indistinguishable
+/// from a hang - which is exactly how this was reported.
+///
+/// Reported per outer row rather than per pair: n callbacks instead of n^2/2,
+/// so the reporting cannot itself become the cost.
+pub fn cluster_by_distance_reporting<F>(
+    points: &[(f64, f64)],
+    radius_km: f64,
+    mut on_row: F,
+) -> Vec<Vec<usize>>
+where
+    F: FnMut(usize, usize),
+{
     let n = points.len();
     if n == 0 {
         return Vec::new();
@@ -59,6 +81,7 @@ pub fn cluster_by_distance(points: &[(f64, f64)], radius_km: f64) -> Vec<Vec<usi
     let mut dist: Vec<Vec<f64>> = vec![vec![0.0; n]; n];
     let mut heap: BinaryHeap<HeapEntry> = BinaryHeap::new();
     for i in 0..n {
+        on_row(i, n);
         for j in (i + 1)..n {
             let d = haversine_km(points[i].0, points[i].1, points[j].0, points[j].1);
             dist[i][j] = d;
