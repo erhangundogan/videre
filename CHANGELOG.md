@@ -13,6 +13,44 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.15.4] - 2026-08-18
+
+### Fixed
+
+- **`videre locations` took seven minutes and looked frozen.** The recompute
+  runs one UPDATE per distinct coordinate, and that UPDATE matched
+  `ROUND(gps_lat, 6) = ROUND(?, 6)` - a function call on a column, so no index
+  could be used, and there was no index on the GPS columns anyway. Each of
+  26,744 updates scanned all 70,601 rows. It now matches exactly against a new
+  index: **412s to 86s** on that library.
+
+- **Location `photo_count` counted some photos twice.** The same `ROUND`
+  over-matched, so two coordinates differing past the sixth decimal both
+  claimed the same photo. 181 photos were double-counted on a real library,
+  179 of them in one city.
+
+### Changed
+
+- **`videre locations` reports progress.** It previously printed nothing until
+  the final list, which for a multi-minute recompute is indistinguishable from
+  a hang. Both slow phases now report: the distance matrix build (which at
+  26,744 coordinates allocates ~5.3GB before any work) and the per-coordinate
+  assignment. Suppressed under `--silent`, `--json` and `--geojson`.
+
+- Progress output counts what a command actually processes. The non-TTY line
+  said "images processed" for every command, including ones counting
+  coordinates.
+
+### Internal
+
+- Dependencies are now optimized in dev and test builds. `cargo test` is a
+  debug build, where one CPU inference pass measured 9.41s against 0.168s in
+  release; a CPU batch-correctness test consequently ran for 28 minutes on CI.
+  Workspace crates stay unoptimized and keep compiling quickly.
+
+- The argument-robustness tests no longer download model weights (777MB) as a
+  side effect of exercising `videre embed`.
+
 ## [0.15.3] - 2026-08-16
 
 ### Fixed
