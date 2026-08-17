@@ -826,3 +826,111 @@ fn a_scoped_scan_writes_a_subset_of_what_an_unscoped_scan_writes() {
         1
     );
 }
+
+/// `--output` takes an optional value, so `videre scan --output ~/Photos` binds
+/// ~/Photos as the output *file* and leaves the directory unset - which then
+/// falls back to the configured default_path. Before the guard, that scanned a
+/// different library end to end and only failed on the final write. Had the
+/// swallowed path been a file rather than a directory, the write would have
+/// succeeded and put one library's records into it silently.
+#[test]
+fn output_given_a_directory_fails_before_scanning_anything() {
+    let home = tempdir().unwrap();
+    let target = tempdir().unwrap();
+    let other = tempdir().unwrap();
+    fs::write(target.path().join("wanted.jpg"), b"a").unwrap();
+    fs::write(other.path().join("unwanted1.jpg"), b"b").unwrap();
+    fs::write(other.path().join("unwanted2.jpg"), b"c").unwrap();
+    fs::write(
+        home.path().join("config.toml"),
+        format!("default_path = {:?}\n", other.path().to_str().unwrap()),
+    )
+    .unwrap();
+
+    let out = Command::new(videre_bin())
+        .env("VIDERE_HOME", home.path())
+        .args(["scan", "--output"])
+        .arg(target.path())
+        .output()
+        .unwrap();
+
+    assert!(!out.status.success(), "must not proceed");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("is a directory"), "{stderr}");
+    assert!(
+        stderr.contains("must come AFTER the directory"),
+        "the message has to say how to fix it: {stderr}"
+    );
+    assert!(
+        !stderr.contains("images processed") && !stderr.contains("Wrote"),
+        "nothing may be scanned before this is caught: {stderr}"
+    );
+}
+
+#[test]
+fn the_three_legitimate_output_forms_all_still_work() {
+    let home = tempdir().unwrap();
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("a.jpg"), b"a").unwrap();
+
+    // bare --output after the directory -> default jsonl in VIDERE_HOME
+    let ok = Command::new(videre_bin())
+        .env("VIDERE_HOME", home.path())
+        .args(["scan"])
+        .arg(dir.path())
+        .args(["--output", "--silent"])
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    assert!(home.path().join("hashes.jsonl").exists());
+
+    // explicit jsonl file
+    let jsonl = home.path().join("explicit.jsonl");
+    let ok = Command::new(videre_bin())
+        .env("VIDERE_HOME", home.path())
+        .args(["scan"])
+        .arg(dir.path())
+        .arg("--output")
+        .arg(&jsonl)
+        .arg("--silent")
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    assert_eq!(fs::read_to_string(&jsonl).unwrap().lines().count(), 1);
+
+    // --db
+    let db = home.path().join("x.db");
+    let ok = Command::new(videre_bin())
+        .env("VIDERE_HOME", home.path())
+        .args(["scan"])
+        .arg(dir.path())
+        .arg("--db")
+        .arg(&db)
+        .arg("--silent")
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    assert!(db.exists());
+}
+
+#[test]
+fn a_nonexistent_output_path_is_fine_it_is_created() {
+    // Only an existing directory is the trap. A path that does not exist yet is
+    // the normal case and must not be rejected.
+    let home = tempdir().unwrap();
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("a.jpg"), b"a").unwrap();
+    let out = home.path().join("nested").join("new.jsonl");
+    fs::create_dir_all(out.parent().unwrap()).unwrap();
+    let ok = Command::new(videre_bin())
+        .env("VIDERE_HOME", home.path())
+        .args(["scan"])
+        .arg(dir.path())
+        .arg("--output")
+        .arg(&out)
+        .arg("--silent")
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    assert!(out.exists());
+}

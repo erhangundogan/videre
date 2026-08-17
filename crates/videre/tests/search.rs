@@ -614,3 +614,155 @@ fn truncated_results_report_the_total_on_stderr_and_in_json() {
         "json mode keeps stderr clean for agents"
     );
 }
+
+/// Mixed media, so the axes added in 0.15.0 have something to discriminate:
+/// two photos, two videos, one HEIC, spread across two folders and two months.
+fn fixture_db_with_mixed_media() -> (TempDir, PathBuf) {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("m.db");
+    let conn = videre_core::db::open_wal(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS file_hashes (
+            path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
+            created_at TEXT, modified_at TEXT, ext TEXT, mime TEXT, phash INTEGER,
+            exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER);
+         INSERT INTO file_hashes (path, hash, size_bytes, modified_at, exif_date, ext, mime)
+         VALUES ('/a/photo1.jpg','p1',10,'2025-05-01T10:00:00','2025-05-01T10:00:00','jpg','image/jpeg'),
+                ('/a/photo2.heic','p2',10,'2025-05-02T10:00:00','2025-05-02T10:00:00','heic','image/heic'),
+                ('/b/clip1.mov','v1',10,'2025-06-01T10:00:00','2025-06-01T10:00:00','mov','video/quicktime'),
+                ('/b/clip2.mp4','v2',10,'2025-06-02T10:00:00','2025-06-02T10:00:00','mp4','video/mp4');
+         CREATE TABLE IF NOT EXISTS classifications (
+            model_id TEXT NOT NULL, hash TEXT NOT NULL, category TEXT NOT NULL,
+            confidence REAL NOT NULL, classified_at TEXT NOT NULL,
+            PRIMARY KEY (model_id, hash));",
+    )
+    .unwrap();
+    (dir, db)
+}
+
+fn search_paths(db: &PathBuf, args: &[&str]) -> Vec<String> {
+    let out = Command::new(videre_bin())
+        .arg("search")
+        .args(args)
+        .arg("--db")
+        .arg(db)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| l.starts_with('/'))
+        .map(|s| s.to_string())
+        .collect()
+}
+
+#[test]
+fn mime_selects_one_exact_type() {
+    // --mime had zero coverage anywhere in the suite before this.
+    let (_d, db) = fixture_db_with_mixed_media();
+    let got = search_paths(&db, &["--mime", "video/quicktime"]);
+    assert_eq!(
+        got,
+        vec!["/b/clip1.mov"],
+        "an exact mime must not match its neighbours"
+    );
+
+    let got = search_paths(&db, &["--mime", "image/heic"]);
+    assert_eq!(got, vec!["/a/photo2.heic"]);
+}
+
+#[test]
+fn mime_is_repeatable_and_comma_separated() {
+    let (_d, db) = fixture_db_with_mixed_media();
+    let a = search_paths(&db, &["--mime", "video/quicktime,video/mp4"]);
+    let b = search_paths(&db, &["--mime", "video/quicktime", "--mime", "video/mp4"]);
+    assert_eq!(a.len(), 2);
+    assert_eq!(a, b, "a comma list and repeated flags are the same request");
+}
+
+#[test]
+fn type_covers_a_family_that_no_single_extension_does() {
+    let (_d, db) = fixture_db_with_mixed_media();
+    let vids = search_paths(&db, &["--type", "video"]);
+    assert_eq!(vids.len(), 2, "mov and mp4 are both video");
+    let imgs = search_paths(&db, &["--type", "image"]);
+    assert_eq!(imgs.len(), 2, "jpeg and heic are both image");
+}
+
+#[test]
+fn ext_is_narrower_than_type() {
+    let (_d, db) = fixture_db_with_mixed_media();
+    assert_eq!(search_paths(&db, &["--ext", "mov"]), vec!["/b/clip1.mov"]);
+    assert_eq!(search_paths(&db, &["--ext", "mov,mp4"]).len(), 2);
+}
+
+#[test]
+fn path_restricts_to_a_subtree() {
+    let (_d, db) = fixture_db_with_mixed_media();
+    let got = search_paths(&db, &["--path", "/b"]);
+    assert_eq!(got.len(), 2, "only the /b subtree");
+    assert!(got.iter().all(|p| p.starts_with("/b/")));
+}
+
+#[test]
+fn the_new_axes_compose_with_the_old_ones() {
+    let (_d, db) = fixture_db_with_mixed_media();
+    // video AND June -> both clips; video AND May -> none, without being an error
+    assert_eq!(
+        search_paths(&db, &["--type", "video", "--date", "2025-06"]).len(),
+        2
+    );
+    assert!(search_paths(&db, &["--type", "video", "--date", "2025-05"]).is_empty());
+    // three axes at once
+    assert_eq!(
+        search_paths(&db, &["--type", "video", "--ext", "mov", "--path", "/b"]),
+        vec!["/b/clip1.mov"]
+    );
+    // contradictory axes are empty, not an error
+    assert!(search_paths(&db, &["--type", "image", "--ext", "mov"]).is_empty());
+}
+
+#[test]
+fn a_media_filter_reports_its_total_in_json() {
+    let (_d, db) = fixture_db_with_mixed_media();
+    let out = Command::new(videre_bin())
+        .args(["search", "--type", "video", "--json", "-k", "1"])
+        .arg("--db")
+        .arg(&db)
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json output must parse");
+    assert_eq!(v["total_matches"], 2, "total is before truncation");
+    assert_eq!(v["results"].as_array().unwrap().len(), 1, "-k truncates");
+}
+
+/// KNOWN BUG - see BUGS.md item 4. `search --json` describes a media- or
+/// path-only query as a date query, because the QueryJson fallback chain checks
+/// text, image, person, category and location and then drops through to
+/// `kind: "date"` unconditionally. The four axes added in 0.15.0 are not in that
+/// chain, so `--type video --json` reports `{"kind":"date","value":".."}`.
+///
+/// Ignored rather than deleted: it fails today on purpose, and un-ignoring it is
+/// the check that the fix actually worked. Silent and machine-facing, which is
+/// why an audit found it rather than the suite.
+#[test]
+#[ignore = "BUG:4 - QueryJson mislabels media/path-only queries as date"]
+fn json_names_the_axis_that_actually_filtered() {
+    let (_d, db) = fixture_db_with_mixed_media();
+    let out = Command::new(videre_bin())
+        .args(["search", "--type", "video", "--json"])
+        .arg("--db")
+        .arg(&db)
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_ne!(
+        v["query"]["kind"], "date",
+        "a --type query is not a date query: {}",
+        v["query"]
+    );
+}

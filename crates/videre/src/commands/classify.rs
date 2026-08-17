@@ -165,6 +165,136 @@ fn format_summary(done: usize, elapsed: std::time::Duration) -> String {
 mod tests {
     use super::*;
 
+    /// `VIDERE_HOME` is set once per test binary, and every test here calls this
+    /// before deriving any path from it. Setting it per test races every
+    /// concurrent getenv; deriving a path on both sides of the one flip is how
+    /// the report tests failed intermittently for days.
+    fn test_home() -> &'static std::path::Path {
+        static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+        HOME.get_or_init(|| {
+            let dir = std::env::temp_dir().join(format!("videre-classify-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            unsafe { std::env::set_var("VIDERE_HOME", &dir) };
+            dir
+        })
+    }
+
+    /// A library with one embedded jpeg, nothing classified yet.
+    fn library_with_one_pending_image() -> rusqlite::Connection {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let home = test_home();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (
+                path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
+                created_at TEXT, modified_at TEXT, ext TEXT, mime TEXT, phash INTEGER,
+                exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER);
+             INSERT INTO file_hashes (path, hash, ext, mime)
+               VALUES ('/lib/a.jpg', 'h_jpg', 'jpg', 'image/jpeg');",
+        )
+        .unwrap();
+        let i = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let lib = home.join(format!("classify-{i}.db"));
+        std::fs::write(&lib, b"").unwrap();
+        videre_core::embeddings_db::attach(
+            &conn,
+            &lib,
+            videre_core::embeddings::DEFAULT_MODEL_ID,
+            true,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO emb.embeddings (hash, model_id, embedding, embedded_at)
+             VALUES ('h_jpg', ?1, X'0000', datetime('now'))",
+            [videre_core::embeddings::DEFAULT_MODEL_ID],
+        )
+        .unwrap();
+        conn
+    }
+
+    fn parse(extra: &[&str]) -> ClassifyArgs {
+        #[derive(clap::Parser)]
+        struct Wrap {
+            #[command(flatten)]
+            args: ClassifyArgs,
+        }
+        let mut v = vec!["classify"];
+        v.extend_from_slice(extra);
+        <Wrap as clap::Parser>::parse_from(v).args
+    }
+
+    #[test]
+    fn a_selection_matching_nothing_returns_before_loading_a_model() {
+        // The model load sits after both early returns, so reaching one at all
+        // proves no weights were touched. That matters: loading SigLIP is
+        // ~0.8GB and minutes on a cold cache, and a scoped run that matches
+        // nothing must not pay it.
+        let conn = library_with_one_pending_image();
+        let args = parse(&["--type", "video", "--silent"]);
+        let r = run_classify(&args, &conn, videre_core::embeddings::DEFAULT_MODEL_ID);
+        assert!(r.is_ok(), "a scope matching nothing is not an error: {r:?}");
+        let classified: i64 = conn
+            .query_row("SELECT COUNT(*) FROM classifications", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(classified, 0, "nothing may be written when nothing matched");
+    }
+
+    #[test]
+    fn an_already_classified_library_also_returns_early() {
+        let conn = library_with_one_pending_image();
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS classifications (
+                hash TEXT NOT NULL, model_id TEXT NOT NULL, category TEXT NOT NULL,
+                confidence REAL, classified_at TEXT, PRIMARY KEY (hash, model_id));
+             INSERT INTO classifications (hash, model_id, category, confidence, classified_at)
+               VALUES ('h_jpg', 'google/siglip-base-patch16-224', 'photo', 0.5, datetime('now'));",
+            [],
+        )
+        .ok();
+        let args = parse(&["--silent"]);
+        assert!(run_classify(&args, &conn, videre_core::embeddings::DEFAULT_MODEL_ID).is_ok());
+    }
+
+    #[test]
+    fn classify_takes_every_filter_including_the_ones_embed_and_faces_refuse() {
+        // classify has a model, so --category and --person resolve against real
+        // data. embed and faces omit them because selecting their input by a
+        // label they produce is circular.
+        for ok in [
+            vec!["classify", "--person", "Alice"],
+            vec!["classify", "--category", "screenshot"],
+            vec!["classify", "--location", "Berlin"],
+            vec!["classify", "--date", "2024"],
+            vec!["classify", "--type", "image"],
+            vec!["classify", "--path", "/tmp"],
+        ] {
+            #[derive(clap::Parser)]
+            struct Wrap {
+                #[command(flatten)]
+                args: ClassifyArgs,
+            }
+            assert!(
+                <Wrap as clap::Parser>::try_parse_from(&ok).is_ok(),
+                "classify must accept {:?}",
+                ok[1]
+            );
+        }
+    }
+
+    #[test]
+    fn an_unscoped_run_builds_an_empty_selection() {
+        let a = parse(&[]);
+        let sel = super::super::selection_args::row_selection(
+            Some(&a.media),
+            Some(&a.dates),
+            Some(&a.place),
+            Some(&a.people),
+            Some(&a.paths),
+        )
+        .unwrap();
+        assert!(sel.is_empty(), "no flags must not narrow anything");
+    }
+
     #[test]
     fn format_summary_reads_naturally() {
         assert_eq!(
