@@ -135,11 +135,31 @@ pub fn normalize(raw: &str) -> Option<String> {
 /// `"Ahmet Ari"`, and caps length the same way the labeling UI does. Case,
 /// diacritics and punctuation are all preserved: this is what a reader sees.
 pub fn display_name(raw: &str) -> Option<String> {
-    let collapsed = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let filtered: String = raw
+        .chars()
+        .filter(|c| !c.is_control() && !is_disallowed_format_char(*c))
+        .collect();
+    let collapsed = filtered.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.is_empty() {
         return None;
     }
     Some(collapsed.chars().take(60).collect())
+}
+
+/// Bidi and zero-width format characters that let a name reorder or hide the
+/// text around it when rendered.
+///
+/// U+200C (ZWNJ) and U+200D (ZWJ) are deliberately kept: Persian and Indic text
+/// require them, and emoji ZWJ sequences are built from them.
+fn is_disallowed_format_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200B}'
+            | '\u{200E}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2069}'
+            | '\u{FEFF}'
+    )
 }
 
 /// Every identity a typed name should match.
@@ -391,5 +411,26 @@ mod tests {
         sorted.sort();
         sorted.dedup();
         assert_eq!(sorted.len(), ids.len(), "{ids:?}");
+    }
+    #[test]
+    fn display_name_strips_bidi_and_control_characters() {
+        // This lived only in `videre-api`'s sanitizer, so a display name
+        // written by the migration kept an override character that the same
+        // name typed into the UI would have lost. One idea, two behaviours,
+        // differing on exactly the part that matters.
+        assert_eq!(display_name("A\u{202E}lice").as_deref(), Some("Alice"));
+        // Tab is a control character, so it is filtered out entirely rather
+        // than collapsed to a space.
+        assert_eq!(display_name("A\u{0007}li\tce").as_deref(), Some("Alice"));
+        assert_eq!(display_name("\u{200B}").as_deref(), None);
+    }
+
+    #[test]
+    fn display_name_keeps_joiners_that_real_scripts_need() {
+        // ZWNJ and ZWJ are required for Persian and Indic text and for emoji
+        // sequences, so they are not "invisible junk" to strip.
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+        assert_eq!(display_name(family).as_deref(), Some(family));
+        assert_eq!(display_name("\u{200C}a").as_deref(), Some("\u{200C}a"));
     }
 }
