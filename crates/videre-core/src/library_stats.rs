@@ -269,3 +269,40 @@ mod tests {
         assert_eq!(stats.people_named, 0);
     }
 }
+
+/// What the library is made of, by file type.
+///
+/// `stats` could say how many files there were and how big they were in total,
+/// but not what they *are* - and "70,601 files, 480GB" answers a different
+/// question from "12,000 of those are HEIC and they are 22GB of it".
+///
+/// Grouped by extension rather than mime, with the mime shown alongside,
+/// because extension is what a user recognises and types into `--ext`.
+pub struct TypeBreakdown {
+    pub ext: String,
+    pub mime: String,
+    pub files: i64,
+    pub bytes: i64,
+}
+
+pub fn by_type(conn: &rusqlite::Connection, limit: usize) -> rusqlite::Result<Vec<TypeBreakdown>> {
+    let mut stmt = conn.prepare(
+        "SELECT LOWER(COALESCE(NULLIF(ext,''),'(none)')),
+                COALESCE(NULLIF(mime,''),'(unknown)'),
+                COUNT(*), COALESCE(SUM(size_bytes),0)
+           FROM file_hashes
+          GROUP BY 1, 2
+          ORDER BY 4 DESC",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(TypeBreakdown {
+            ext: r.get(0)?,
+            mime: r.get(1)?,
+            files: r.get(2)?,
+            bytes: r.get(3)?,
+        })
+    })?;
+    let mut out: Vec<TypeBreakdown> = rows.collect::<rusqlite::Result<_>>()?;
+    out.truncate(limit);
+    Ok(out)
+}

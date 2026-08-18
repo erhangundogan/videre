@@ -97,13 +97,74 @@ fn run_text(args: &StatsArgs) -> anyhow::Result<()> {
         }
     }
     println!();
+    println!("By type:");
+    let types = videre_core::library_stats::by_type(&conn, 12)?;
+    if types.is_empty() {
+        println!("  nothing scanned yet");
+    } else {
+        for ty in &types {
+            println!(
+                "  {:8} {:24} {:>8} {:>10}",
+                ty.ext,
+                ty.mime,
+                ty.files,
+                videre_core::disk::human_bytes(ty.bytes.max(0) as u64),
+            );
+        }
+    }
+
+    println!();
+    println!("Disk use:");
+    // Both locations are resolved here and passed in, never looked up inside
+    // `usage`. The thumbnail cache does not always live under the home
+    // directory, and embeddings are per library rather than per home
+    // (`<home>/embeddings/<db stem>-<hash16>`), so a helper that guessed either
+    // would report another library's vectors as this one's.
+    let usage = match videre_core::home::videre_home() {
+        Ok(h) => {
+            let lib = videre_core::embeddings_db::library_dir(&db).ok();
+            videre_core::disk::usage(
+                &h,
+                Some(&db),
+                &videre_core::thumb_cache::cache_dir(),
+                lib.as_deref(),
+            )
+        }
+        Err(_) => Vec::new(),
+    };
+    if usage.is_empty() {
+        println!("  nothing stored yet");
+    } else {
+        let total: u64 = usage.iter().map(|u| u.bytes).sum();
+        let rebuildable: u64 = usage
+            .iter()
+            .filter(|u| u.rebuildable)
+            .map(|u| u.bytes)
+            .sum();
+        for u in &usage {
+            println!(
+                "  {:18} {:>10}  {}",
+                u.label,
+                videre_core::disk::human_bytes(u.bytes),
+                if u.rebuildable { "(rebuildable)" } else { "" },
+            );
+        }
+        println!(
+            "  {:18} {:>10}  ({} of it rebuildable)",
+            "total",
+            videre_core::disk::human_bytes(total),
+            videre_core::disk::human_bytes(rebuildable),
+        );
+    }
+
+    println!();
     println!("Pipeline status:");
     for p in &pipelines {
         let last_run = p.last_run_at.as_deref().unwrap_or("never run");
         let status = p.status.as_deref().unwrap_or("-");
         let duration = p
             .duration_ms
-            .map(|d| format!("{d}ms"))
+            .map(|d| videre_core::progress::human_duration_ms(d as u64))
             .unwrap_or_else(|| "-".to_string());
         let running_note = if p.currently_running {
             "  (running now)"

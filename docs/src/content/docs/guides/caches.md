@@ -41,9 +41,15 @@ and reusing one is roughly 70x faster than decoding again (~108 ms against
 ### Managing it
 
 ```bash
-du -sh ~/.cache/videre/thumbnails/          # how big
+videre stats                                # how big, alongside everything else
 rm -rf ~/.cache/videre/thumbnails/          # safe, regenerates on demand
 ```
+
+[`videre stats`](/commands/stats/) has a **Disk use** section listing every store
+largest first and marking which are rebuildable, so you can see whether the cache
+is actually the thing worth clearing before clearing it. It also knows where the
+cache is, which `du` needs telling - the path differs depending on whether
+`VIDERE_HOME` is set.
 
 Deleting it is genuinely safe. Every file is derived, and the only cost is
 re-conversion the next time something needs the image.
