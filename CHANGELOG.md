@@ -13,6 +13,24 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [Unreleased]
+
+### Changed
+
+- **`embed`, `classify` and `faces` now word their progress and "nothing to do"
+  lines the same way.** All three previously counted different things in
+  different words - "pending file(s)", "pending hash(es)", "eligible file(s)" -
+  for what is one idea; they all say `pending item(s)` now. If you grep videre's
+  stderr in a script, this is the change that affects you.
+
+### Internal
+
+- The three commands share one implementation of "work out what is pending,
+  narrow it by the selection, and stop if nothing is left". The model load now
+  sits inside that shared path, so a command cannot reach it with nothing to
+  process. A wrong copy of that guard is what let a unit test download 778MB of
+  model weights.
+
 ## [0.15.6] - 2026-08-18
 
 ### Fixed

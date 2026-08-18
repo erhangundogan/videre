@@ -91,6 +91,10 @@ pub fn image_to_tensor(path: &Path, size: usize, device: &Device) -> Result<Tens
 /// the largest real files measured, not just typical ones.
 const QLMANAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
+// Sibling: `videre_core::heic::heic_via_quicklook` does nearly the same thing
+// for the scan path. See the note there for why the two are separate; a change
+// to the qlmanage invocation, the timeout, or the temp-file handling probably
+// belongs in both.
 pub fn decode_via_quicklook(path: &Path, size: usize, tag: &str) -> Result<image::DynamicImage> {
     if !cfg!(target_os = "macos") {
         // Long explanation once per run; short reason per file. Callers already
