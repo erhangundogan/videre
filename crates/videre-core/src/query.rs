@@ -102,30 +102,46 @@ pub fn normalise_bound(spec: &str) -> Result<String> {
 
 /// Hashes with at least one confirmed face labelled `name`.
 pub fn by_person(conn: &Connection, name: &str) -> Result<HashSet<String>> {
-    // Normalize the query the same way the label was normalized when stored,
-    // so `--person "Ahmet Arı"` finds faces stored as `ahmet_ari`. Without
-    // this, migrating the labels would silently break every person search
-    // while the labeling UI kept showing the person - a failure with no
-    // visible cause.
     // Matches either form of a person's name, because both are things a user
-    // reasonably types. The identity (`erhan`) is what the face rows hold; the
-    // display name (`Erhan Gündoğan`) is what they see in the UI and what they
-    // will copy. Those two stop agreeing the moment someone adds a surname -
+    // reasonably types: the identity from the URL, and the display name from
+    // the screen. They stop agreeing the moment someone renames a person -
     // `Erhan Gündoğan` normalizes to `erhan_gundogan`, not `erhan` - so
-    // matching only the normalized query would fail on exactly the name shown
-    // on screen.
+    // matching only the normalized query would fail on exactly the name shown.
+    //
+    // :warning: The display-name comparison happens **in Rust, not SQL**.
+    // SQLite's `LOWER()` is ASCII-only: it leaves `Ö` alone while Rust's
+    // `to_lowercase` produces `ö`, so `LOWER(full_name) = ?` silently never
+    // matched any name containing a Turkish character. That is most of the
+    // names in the library this was built for, and it only surfaced after a
+    // rename, when the two forms first disagree.
     let normalized = crate::person::normalize(name).unwrap_or_else(|| name.to_string());
     let typed = name.trim().to_lowercase();
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT f.hash FROM faces f \
-         LEFT JOIN people p ON p.name = f.person_label \
-         WHERE f.confirmed = 1 AND ( \
-             f.person_label = ?1 \
-             OR LOWER(p.full_name) = ?2 \
-             OR LOWER(p.full_name) = ?1 \
-         )",
-    )?;
-    let rows = stmt.query_map(rusqlite::params![normalized, typed], |r| {
+
+    // `people` is small - one row per person - so reading it whole costs
+    // nothing and keeps the comparison in a language that understands Unicode.
+    let mut identities: Vec<String> = vec![normalized.clone()];
+    if crate::db::table_exists(conn, "people").unwrap_or(false) {
+        let mut stmt = conn.prepare("SELECT name, full_name FROM people")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        for row in rows {
+            let (id, full) = row?;
+            let matches_display = full.trim().to_lowercase() == typed
+                || crate::person::normalize(&full).as_deref() == Some(normalized.as_str());
+            if matches_display && !identities.contains(&id) {
+                identities.push(id);
+            }
+        }
+    }
+
+    let placeholders = std::iter::repeat_n("?", identities.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT DISTINCT hash FROM faces \
+         WHERE confirmed = 1 AND person_label IN ({placeholders})"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(identities.iter()), |r| {
         r.get::<_, String>(0)
     })?;
     Ok(rows.collect::<rusqlite::Result<HashSet<String>>>()?)
@@ -783,6 +799,52 @@ mod person_matching_tests {
         let c = db();
         assert_eq!(by_person(&c, "ahmet_ari").unwrap().len(), 2);
         assert_eq!(by_person(&c, "Ahmet Arı").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_renamed_person_is_found_by_a_turkish_display_name() {
+        // The trap: SQLite's LOWER() is ASCII-only, so `LOWER(full_name) = ?`
+        // left `Ö` untouched while Rust's to_lowercase produced `ö`, and the
+        // two never matched. Every Turkish display name was affected, and only
+        // after a rename - when identity and display first disagree - so it
+        // passed every check until someone renamed a person.
+        let c = db();
+        c.execute(
+            "UPDATE people SET full_name = 'Özgür' WHERE name = 'erhan'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(by_person(&c, "Özgür").unwrap().len(), 1, "as displayed");
+        assert_eq!(by_person(&c, "özgür").unwrap().len(), 1, "lowercased");
+        assert_eq!(by_person(&c, "ÖZGÜR").unwrap().len(), 1, "uppercased");
+        assert_eq!(by_person(&c, "erhan").unwrap().len(), 1, "identity still");
+    }
+
+    #[test]
+    fn two_people_sharing_a_display_name_are_both_returned() {
+        // They remain separate people - the identity is the key - but a search
+        // for the name they share cannot tell them apart, so it returns both.
+        // Silent merging is why an explicit "which people matched" is worth
+        // having; recorded as a separate feature.
+        let c = db();
+        c.execute(
+            "INSERT INTO people (name, full_name) VALUES ('ozgur_tamer','Özgür')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "UPDATE people SET full_name = 'Özgür' WHERE name = 'erhan'",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO faces (id, hash, person_label, confirmed) VALUES (7,'h7','ozgur_tamer',1)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(by_person(&c, "Özgür").unwrap().len(), 2, "both people");
+        assert_eq!(by_person(&c, "erhan").unwrap().len(), 1, "identity narrows");
+        assert_eq!(by_person(&c, "ozgur_tamer").unwrap().len(), 1);
     }
 
     #[test]
