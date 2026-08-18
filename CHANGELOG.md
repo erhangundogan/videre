@@ -13,7 +13,7 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
-## [Unreleased]
+## [0.15.8] - 2026-08-18
 
 ### Fixed
 
