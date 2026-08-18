@@ -26,10 +26,14 @@ pub struct ScanArgs {
 
     /// SQLite database to write (upserted by path). Without this, and without
     /// --output, records go to the resolved default db.
-    ///
-    /// `--output-sqlite` is the original name, kept working: this command
-    /// predates the `--db` every reader uses, from when JSONL and SQLite were
-    /// peer output *formats* rather than one destination and one opt-out.
+    //
+    // `--output-sqlite` is the original name and still works, from when JSONL
+    // and SQLite were peer output *formats* rather than one destination and one
+    // opt-out. Kept as a plain comment rather than a doc comment on purpose: it
+    // is history a maintainer needs and a paragraph every reader of `--help`
+    // does not. The alias itself is already hidden from the flag list; this
+    // stops it being prominent in prose too. Documented under Legacy names on
+    // the scan page.
     #[arg(long, alias = "output-sqlite")]
     db: Option<PathBuf>,
 

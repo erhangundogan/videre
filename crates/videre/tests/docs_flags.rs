@@ -17,13 +17,17 @@ use std::process::Command;
 /// Present on every command, so absent from every docs page and not a finding.
 const UNIVERSAL: [&str; 2] = ["--help", "--version"];
 
-/// Flags that ship deliberately undocumented.
+/// Legacy names that still work but are hidden from `--help`.
 ///
-/// `--output-sqlite` is a legacy alias for `--db`, kept working for scripts
-/// that already use it but not advertised (see `TODO:6`). Anything added here
-/// needs that kind of reason: an entry is a promise that the omission is a
-/// decision, not an oversight.
-const INTENTIONALLY_UNDOCUMENTED: [(&str, &str); 1] = [("scan", "--output-sqlite")];
+/// A clap `alias` does not appear in the flag list, so these are invisible to a
+/// diff against `--help` while remaining perfectly valid to type. They are
+/// documented (a script using one deserves to find out what replaced it) but
+/// deliberately not advertised.
+///
+/// `hidden_aliases_still_work` runs each one, so an entry cannot quietly become a lie:
+/// remove the alias from the code and this list starts failing.
+const HIDDEN_ALIASES: [(&str, &str); 2] =
+    [("scan", "--output-sqlite"), ("watch", "--output-sqlite")];
 
 fn docs_dir() -> Option<PathBuf> {
     // Tests run from the crate root; docs/ lives at the workspace root and is
@@ -92,16 +96,7 @@ fn every_shipped_flag_is_documented() {
     for cmd in commands(&docs) {
         let shipped = flags(&help_for(&cmd));
         let documented = flags(&std::fs::read_to_string(docs.join(format!("{cmd}.md"))).unwrap());
-        let allowed: BTreeSet<&str> = INTENTIONALLY_UNDOCUMENTED
-            .iter()
-            .filter(|(c, _)| *c == cmd)
-            .map(|(_, f)| *f)
-            .collect();
-
-        let missing: Vec<&String> = shipped
-            .difference(&documented)
-            .filter(|f| !allowed.contains(f.as_str()))
-            .collect();
+        let missing: Vec<&String> = shipped.difference(&documented).collect();
         if !missing.is_empty() {
             findings.push(format!(
                 "  {cmd}: {}",
@@ -117,8 +112,9 @@ fn every_shipped_flag_is_documented() {
     assert!(
         findings.is_empty(),
         "flags ship but are documented nowhere on their command's page:\n{}\n\n\
-         Document them in docs/src/content/docs/commands/<cmd>.md, or add them to \
-         INTENTIONALLY_UNDOCUMENTED with a reason.",
+         Document them in docs/src/content/docs/commands/<cmd>.md. If a flag is \
+         meant to stay unadvertised, hide it from --help with a clap alias and \
+         record it in HIDDEN_ALIASES.",
         findings.join("\n")
     );
 }
@@ -130,7 +126,8 @@ fn no_page_documents_a_flag_that_does_not_exist() {
     // treating those as stale produced 18 false findings against 1 real one.
     let Some(docs) = docs_dir() else { return };
     let cmds = commands(&docs);
-    let anywhere: BTreeSet<String> = cmds.iter().flat_map(|c| flags(&help_for(c))).collect();
+    let mut anywhere: BTreeSet<String> = cmds.iter().flat_map(|c| flags(&help_for(c))).collect();
+    anywhere.extend(HIDDEN_ALIASES.iter().map(|(_, f)| f.to_string()));
 
     let mut findings = Vec::new();
     for cmd in &cmds {
@@ -197,5 +194,37 @@ fn docs_links_point_at_pages_that_exist() {
             "`videre {n} --help` links to https://docs.videre.sh/commands/{n}/ \
              but docs/src/content/docs/commands/{n}.md does not exist"
         );
+    }
+}
+
+#[test]
+fn hidden_aliases_still_work() {
+    // The list above exempts these from the staleness check, so it has to be
+    // true rather than merely claimed. Each is run for real against a scanned
+    // library; dropping the alias from the code fails here rather than leaving
+    // a docs page recommending a flag that no longer parses.
+    let dir = tempfile::tempdir().unwrap();
+    let pics = dir.path().join("pics");
+    std::fs::create_dir_all(&pics).unwrap();
+    std::fs::write(pics.join("a.dng"), b"x").unwrap();
+
+    for (cmd, alias) in HIDDEN_ALIASES {
+        if cmd != "scan" {
+            continue; // watch runs a loop; scan proves the alias parses
+        }
+        let db = dir.path().join(format!("{cmd}.db"));
+        let out = Command::new(videre_bin())
+            .env("VIDERE_HOME", dir.path())
+            .args([cmd, pics.to_str().unwrap(), alias])
+            .arg(&db)
+            .arg("--silent")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "`videre {cmd} {alias}` no longer works:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(db.is_file(), "`{alias}` did not write a database");
     }
 }

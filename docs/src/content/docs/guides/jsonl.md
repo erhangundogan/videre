@@ -7,6 +7,22 @@ description: Scan to a text stream instead of a database, and what you give up.
 database. It is a way to get scan results into other tools without touching
 SQLite.
 
+## Two outputs, two jobs
+
+They are not competing formats, and neither is the lesser one:
+
+| | For |
+|---|---|
+| **SQLite** (`--db`) | the *library*. Everything that accumulates - embeddings, faces, classifications, location clusters - and everything that reads them: `search`, `report`, `dedupe`, the MCP server. |
+| **JSONL** (`--output`) | *composability*. One line per file, straight into `jq`, `awk`, a spreadsheet or another program, with no SQLite dependency and no schema to learn. |
+
+Use SQLite when videre is your library. Use JSONL when videre is one step in a
+pipeline you are building. A scan writes one or the other, never both, because
+`--output` and `--db` are mutually exclusive.
+
+What JSONL gives up is everything that comes *after* a scan: it holds the facts
+about each file and nothing else, so no command reads it back.
+
 ```bash
 videre scan ~/Photos --output              # writes ~/.videre/hashes.jsonl
 videre scan ~/Photos --output out.jsonl    # writes a specific file
@@ -16,8 +32,6 @@ videre scan ~/Photos --output out.jsonl    # writes a specific file
 `videre scan --output ~/Photos` treats `~/Photos` as the *filename*, because
 `--output` takes an optional value. Put the folder first.
 :::
-
-`--output` and `--db` are mutually exclusive: one scan writes one destination.
 
 ## The format
 
