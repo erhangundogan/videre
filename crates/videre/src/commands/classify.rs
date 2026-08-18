@@ -71,13 +71,6 @@ fn run_classify(args: &ClassifyArgs, conn: &rusqlite::Connection, model_id: &str
         classify_core::pending_hashes(conn, model_id)?
     };
 
-    if hashes.is_empty() {
-        if !args.silent {
-            eprintln!("Nothing to classify: all embedded hashes already classified.");
-        }
-        return Ok(());
-    }
-
     // Scope narrows the pending set; eligibility and staleness stay above.
     let selection = super::selection_args::row_selection(
         Some(&args.media),
@@ -86,72 +79,61 @@ fn run_classify(args: &ClassifyArgs, conn: &rusqlite::Connection, model_id: &str
         Some(&args.people),
         Some(&args.paths),
     )?;
-    let eligible = hashes.len();
-    let hashes: Vec<String> = if selection.is_empty() {
-        hashes
-    } else {
-        let sel = selection.resolve(
-            conn,
-            &videre_core::selection::SelectionCtx {
-                model_id: Some(model_id.to_string()),
-            },
-        )?;
-        match sel.hashes {
-            None => hashes,
-            Some(h) => hashes.into_iter().filter(|x| h.contains(x)).collect(),
-        }
-    };
-    if !selection.is_empty() && !args.silent {
-        eprintln!(
-            "Classifying {} of {} pending hash(es) ({})",
-            hashes.len(),
-            eligible,
-            selection.describe()
-        );
-    }
-    if hashes.is_empty() {
-        if !args.silent {
-            eprintln!("Nothing to classify: the selection matched no pending hashes.");
-        }
-        return Ok(());
-    }
+    let work = videre_core::work::narrow(
+        hashes,
+        |h| h.as_str(),
+        &selection,
+        conn,
+        &videre_core::selection::SelectionCtx {
+            model_id: Some(model_id.to_string()),
+        },
+        videre_core::work::Words::new("classify", "Classifying"),
+        args.silent,
+    )?;
 
-    let started = std::time::Instant::now();
-    let embedder = model::Embedder::load(device::best_device(), model_id)?;
+    // Everything below runs only when there is work, which is what keeps the
+    // model load unreachable on an already-classified library. Reaching it with
+    // nothing to do is what downloaded 778MB from inside a unit test.
+    videre_core::work::with_work(work, args.silent, |work| {
+        let hashes = work.items;
+        let started = std::time::Instant::now();
+        let embedder = model::Embedder::load(device::best_device(), model_id)?;
 
-    // Embed each category prompt once; reused for every image below.
-    let prompt_vecs: Vec<(&'static str, Vec<f32>)> = classify_ml::CATEGORY_PROMPTS
-        .iter()
-        .map(|(name, prompt)| Ok((*name, embedder.embed_text(prompt)?)))
-        .collect::<Result<_>>()?;
-
-    let progress = videre_core::progress::Progress::new(hashes.len() as u64, args.silent);
-    let mut rows: Vec<(String, &str, f32)> = Vec::with_capacity(hashes.len());
-    for hash in &hashes {
-        let Some(blob) = all_embeddings.get(hash) else {
-            progress.println(&format!("skipping {hash}: embedding vanished mid-run"));
-            progress.tick();
-            continue;
-        };
-        let vec = vectors::from_f16_bytes(blob);
-        let scores: Vec<(&'static str, f32)> = prompt_vecs
+        // Embed each category prompt once; reused for every image below.
+        let prompt_vecs: Vec<(&'static str, Vec<f32>)> = classify_ml::CATEGORY_PROMPTS
             .iter()
-            .map(|(name, prompt_vec)| {
-                let dot: f32 = vec.iter().zip(prompt_vec.iter()).map(|(a, b)| a * b).sum();
-                (*name, dot)
-            })
-            .collect();
-        let (category, confidence) = classify_ml::classify_from_scores(&scores, args.margin);
-        rows.push((hash.clone(), category, confidence));
-        progress.tick();
-    }
-    progress.finish();
+            .map(|(name, prompt)| Ok((*name, embedder.embed_text(prompt)?)))
+            .collect::<Result<_>>()?;
 
-    classify_core::insert_classifications(conn, model_id, &rows)?;
+        let progress = videre_core::progress::Progress::new(hashes.len() as u64, args.silent);
+        let mut rows: Vec<(String, &str, f32)> = Vec::with_capacity(hashes.len());
+        for hash in &hashes {
+            let Some(blob) = all_embeddings.get(hash) else {
+                progress.println(&format!("skipping {hash}: embedding vanished mid-run"));
+                progress.tick();
+                continue;
+            };
+            let vec = vectors::from_f16_bytes(blob);
+            let scores: Vec<(&'static str, f32)> = prompt_vecs
+                .iter()
+                .map(|(name, prompt_vec)| {
+                    let dot: f32 = vec.iter().zip(prompt_vec.iter()).map(|(a, b)| a * b).sum();
+                    (*name, dot)
+                })
+                .collect();
+            let (category, confidence) = classify_ml::classify_from_scores(&scores, args.margin);
+            rows.push((hash.clone(), category, confidence));
+            progress.tick();
+        }
+        progress.finish();
 
-    if !args.silent {
-        eprintln!("{}", format_summary(rows.len(), started.elapsed()));
-    }
+        classify_core::insert_classifications(conn, model_id, &rows)?;
+
+        if !args.silent {
+            eprintln!("{}", format_summary(rows.len(), started.elapsed()));
+        }
+        Ok(())
+    })?;
     Ok(())
 }
 
