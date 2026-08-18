@@ -750,7 +750,7 @@ fn a_media_filter_reports_its_total_in_json() {
 /// the check that the fix actually worked. Silent and machine-facing, which is
 /// why an audit found it rather than the suite.
 #[test]
-#[ignore = "BUG:4 - QueryJson mislabels media/path-only queries as date"]
+#[ignore = "known bug: QueryJson mislabels media/path-only queries as date"]
 fn json_names_the_axis_that_actually_filtered() {
     let (_d, db) = fixture_db_with_mixed_media();
     let out = Command::new(videre_bin())
