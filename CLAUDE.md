@@ -371,6 +371,32 @@ off and videre never sets it, so `REFERENCES` would be documentation rather than
 a constraint - and with `ON UPDATE CASCADE` declared but unenforced, a rename
 would silently orphan every face row.
 
+**One resolver, and a test that all surfaces use it.**
+`person::resolve_identities` turns a typed name into every identity it could
+mean, and `by_person` and `search_by_person` both call it. They did not always:
+each normalized its own argument, the two drifted, and the labeling UI stopped
+finding anyone whose display name had been edited while the CLI still found
+them.
+
+:warning: **SQLite's `LOWER()` is ASCII-only, so the display-name comparison
+must stay in Rust.** `LOWER('Ö')` is `'Ö'` while Rust gives `'ö'`, so
+`LOWER(full_name) = ?` matched no name containing a Turkish character - 15 of
+86 people in the library this was built against. Pushing that comparison back
+into SQL for tidiness silently breaks most of the library.
+
+`crates/videre-api/tests/person_surfaces.rs` exercises every lookup and display
+surface against one person whose **display name does not normalize back to
+their identity** (`ozgur_demirtas` shown as `Özgür`). The divergence is the
+point: while the two agree, the identity path satisfies every assertion alone
+and the display path is never exercised, which is how tests passed while two
+surfaces were broken. Each of the three bugs was replayed against this file and
+each one fails it. A new surface belongs there; one that cannot be added is not
+going through the resolver.
+
+:warning: **Fixtures in this area must use non-ASCII names.** Every fixture
+here was `Alice`/`Bob`, and `Alice` cannot expose an ASCII-only `LOWER()`. The
+test data has to look like the library.
+
 ### Every filter goes through `videre_core::selection`
 
 One layer, two shapes. `RowSelection` filters rows that exist in the database
