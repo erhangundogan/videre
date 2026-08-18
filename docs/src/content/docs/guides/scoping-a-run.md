@@ -69,8 +69,11 @@ unclustered.
 Every scoped command reports what it passed over:
 
 ```
-Embedding 412 of 70,601 pending file(s) (--type video)
+Embedding 412 of 70,601 pending item(s) (--type video)
 ```
+
+`embed`, `classify` and `faces` all word this the same way, differing only in
+the verb.
 
 Filtering narrows an existing set, it does not redefine it. `videre embed
 --type video` still only considers files that were pending anyway, so the

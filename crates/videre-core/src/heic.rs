@@ -106,6 +106,12 @@ pub fn warn_quicklook_unavailable_once() {
 /// (see `face_detect.rs`), so shrinking that decode would silently corrupt
 /// every later full-res thumbnail crop and the `--min-face-size` quality
 /// gate, which measures bbox size in that same (assumed-full-res) space.
+// Sibling: `videre_ml::preprocess::decode_via_quicklook` does nearly the same
+// thing for the inference path. The two are near-identical and known to be, but
+// they are not merged: this one returns `Option` and swallows failures because a
+// scan must continue past an unreadable file, while that one returns `Result`
+// because a failed decode is a failed embedding. A change to the qlmanage
+// invocation, the timeout, or the temp-file handling probably belongs in both.
 pub fn heic_via_quicklook(path: &str, tag: &str, max_size: Option<u32>) -> Option<DynamicImage> {
     if !cfg!(target_os = "macos") {
         warn_quicklook_unavailable_once();
