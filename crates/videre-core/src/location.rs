@@ -11,8 +11,17 @@ use std::sync::OnceLock;
 /// already correct - so the only fix is to supply different data.
 ///
 /// Built from `cities1000` using column 2 (`name`) instead of column 3
-/// (`asciiname`): 170,761 rows, of which **21% contain a non-ASCII character**.
+/// (`asciiname`): 170,749 rows, of which **21% contain a non-ASCII character**.
 /// This is not a Turkish edge case, it is a fifth of the planet.
+///
+/// Twelve rows are dropped: numbered administrative slices such as
+/// `Sector 1, RO` (six of Bucharest's) and `Ward 3, MM`. GeoNames files them as
+/// PPLX, "section of populated place", and their centroids can sit closer to a
+/// photo than the city's own entry - a Bucharest cluster came back as
+/// "Sector 1, RO" rather than "Bucharest, RO". Only these numbered ones go:
+/// PPLX as a class holds 9,426 entries and most are names people use
+/// (Rutherford, Werribee South), so excluding the class would lose more than it
+/// fixed.
 ///
 /// `admin1` and `admin2` are deliberately empty. `location_name` formats only
 /// `name` and `cc`, nothing in videre reads the other two, and dropping them
@@ -27,7 +36,7 @@ pub fn ensure_location_column(conn: &Connection) {
 }
 
 /// Process-wide, lazily-built reverse geocoder. Building one parses the whole
-/// 170,761-row CSV and constructs a KD-tree, which is expensive to redo per
+/// 170,749-row CSV and constructs a KD-tree, which is expensive to redo per
 /// lookup. Built once per process and reused by every caller (both the
 /// single-call `location_name` below and any bulk caller using `geocoder()`
 /// directly).
@@ -156,6 +165,32 @@ mod tests {
             let got = location_name(lat, lon).unwrap();
             assert!(got.starts_with(want), "expected {want}, got {got}");
             assert!(!got.contains(mangled), "still ASCII-mangled: {got}");
+        }
+    }
+
+    #[test]
+    fn a_city_is_named_rather_than_one_of_its_administrative_slices() {
+        // Reported against 0.15.5: a Bucharest cluster came back as
+        // "Sector 1, RO". GeoNames lists Bucharest's six sectors as PPLX
+        // entries, and a sector centroid can sit closer to the photos than the
+        // city's own entry, so nearest-match picked the slice.
+        let got = location_name(44.4897, 26.0884).unwrap();
+        assert!(
+            got.starts_with("Bucharest"),
+            "expected Bucharest, got {got}"
+        );
+    }
+
+    #[test]
+    fn numbered_administrative_slices_are_absent_from_the_data() {
+        // Guards the generation step rather than one lookup: rebuilding the CSV
+        // without the filter would put all twelve back, and only the Bucharest
+        // coordinate above would notice.
+        for slice in ["Sector 1", "Sector 6", "Ward 3", "Zona 179"] {
+            assert!(
+                !CITIES_CSV.contains(&format!(",{slice},")),
+                "{slice} is back in the dataset; regenerate with the filter in data/README.md"
+            );
         }
     }
 

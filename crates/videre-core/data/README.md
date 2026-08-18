@@ -25,14 +25,26 @@ Source: <https://download.geonames.org/export/dump/cities1000.zip>
 curl -sLO https://download.geonames.org/export/dump/cities1000.zip
 unzip -o cities1000.zip
 python3 - <<'PY'
-import csv
+import csv, re
+
+# Numbered administrative slices, not place names. GeoNames files them as PPLX
+# ("section of populated place") and a slice centroid can sit closer to a photo
+# than the city's own entry: a Bucharest cluster came back as "Sector 1, RO".
+# Twelve rows match - Bucharest's six sectors, five Myanmar wards, one Italian
+# zone. Only the numbered ones: PPLX as a class holds 9,426 entries, most of
+# them names people actually use (Rutherford, Werribee South).
+SLICE = re.compile(
+    r'^(Sector|Sektor|Sectorul|District|Districto|Distrito|Ward|Zone|Zona|'
+    r'Arrondissement|Region|Subdistrict|Borough)\s*[-\u2013]?\s*(\d+|[IVXLC]+)$',
+    re.I)
+
 rows = []
 for line in open("cities1000.txt", encoding="utf-8"):
     p = line.rstrip("\n").split("\t")
     if len(p) < 9:
         continue
     name, lat, lon, cc = p[1], p[4], p[5], p[8]
-    if name and cc:
+    if name and cc and not SLICE.match(name):
         rows.append((lat, lon, name, "", "", cc))
 with open("cities.csv", "w", encoding="utf-8", newline="") as f:
     w = csv.writer(f, lineterminator="\r\n")
@@ -42,9 +54,11 @@ print(len(rows), "rows")
 PY
 ```
 
-`the_bundled_data_is_actually_unicode` in `src/location.rs` fails if a
-regenerated file drops below 30,000 non-ASCII rows, which is what building from
-field 3 by mistake looks like.
+Two tests in `src/location.rs` guard a regeneration:
+`the_bundled_data_is_actually_unicode` fails if the file drops below 30,000
+non-ASCII rows (what building from field 3 by mistake looks like), and
+`numbered_administrative_slices_are_absent_from_the_data` fails if the filter
+above was skipped.
 
 **Updating the data does not update anyone's library.** `location_name` is
 resolved at write time, so `file_hashes.location_name` and
