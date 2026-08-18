@@ -20,16 +20,46 @@ Faces: 98 detected, 0 people named
 Embeddings:
   google/siglip-base-patch16-224              196   768-dim     400 KB
 
+By type:
+  jpeg     image/jpeg                     151      1.2 GB
+  mov      video/quicktime                 48    612.4 MB
+  heic     image/heic                       4     18.2 MB
+  mp4      video/mp4                        1     11.9 MB
+
+Disk use:
+  thumbnails             48.6 MB  (rebuildable)
+  database                2.1 MB
+  embeddings              400 KB
+  place names            11.4 MB  (rebuildable)
+  total                  62.5 MB  (60.0 MB of it rebuildable)
+
 Pipeline status:
   scan       success      last_run=2026-08-09 22:21:31  duration=1ms
-  faces      success      last_run=2026-08-09 22:16:25  duration=34596ms
-  embed      success      last_run=2026-08-09 22:17:59  duration=12692ms
+  faces      success      last_run=2026-08-09 22:16:25  duration=34.6s
+  embed      success      last_run=2026-08-09 22:17:59  duration=12.7s
   classify   success      last_run=2026-08-09 22:18:33  duration=921ms
   dedupe     success      last_run=2026-08-09 22:21:31  duration=0ms
   fix-dates  success      last_run=2026-08-09 22:16:04  duration=2ms
   prune      success      last_run=2026-08-09 22:17:39  duration=2ms
   locations  success      last_run=2026-08-09 22:18:38  duration=66ms
 ```
+
+**By type** groups the library by file extension, with the mime type beside it
+and the largest first. These are the values `--ext` and `--mime` take, so this is
+where to look before scoping a run. Extension and mime can disagree - a `.mov`
+holding MP4 video is common - and both are shown rather than reconciled.
+
+**Disk use** is what videre itself stores, not your photos. Entries marked
+`(rebuildable)` cost only time to recreate: thumbnails are re-converted on
+demand, place names ship with videre. The database and embeddings are not - an
+embedding run takes hours, and the database cannot be rebuilt without rescanning.
+
+:::note[Embeddings are counted per library]
+They live in a separate directory per database, so `stats` reports only the ones
+belonging to the database you asked about. If other libraries share the same
+[`VIDERE_HOME`](/guides/multiple-libraries/), theirs appear as a separate
+`embeddings (other libraries)` row - real disk use, but not this library's.
+:::
 
 **Duplicates** counts exact, byte-identical copies only. "Wasted" is what you
 would reclaim by deleting all but one of each group, which is what
