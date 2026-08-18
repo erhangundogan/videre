@@ -13,6 +13,16 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.15.6] - 2026-08-18
+
+### Fixed
+
+- **A city's administrative sector could be named instead of the city.** A
+  Bucharest cluster was labelled `Sector 1, RO`. GeoNames lists such numbered
+  slices as populated places, and one can sit closer to your photos than the
+  city's own entry. Twelve of them are now excluded, so that cluster reads
+  `Bucharest, RO`. Requires a `videre locations` re-run to take effect.
+
 ## [0.15.5] - 2026-08-18
 
 ### Fixed
