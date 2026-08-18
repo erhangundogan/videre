@@ -161,7 +161,10 @@ fn format_summary(done: usize, failed: usize, elapsed: std::time::Duration) -> S
             elapsed.as_secs()
         )
     } else {
-        format!("{done} image(s) embedded, done in {}s", elapsed.as_secs())
+        format!(
+            "{done} image(s) embedded, done in {}",
+            videre_core::progress::human_duration(elapsed)
+        )
     }
 }
 

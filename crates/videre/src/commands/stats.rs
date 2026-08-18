@@ -103,7 +103,7 @@ fn run_text(args: &StatsArgs) -> anyhow::Result<()> {
         let status = p.status.as_deref().unwrap_or("-");
         let duration = p
             .duration_ms
-            .map(|d| format!("{d}ms"))
+            .map(|d| videre_core::progress::human_duration_ms(d as u64))
             .unwrap_or_else(|| "-".to_string());
         let running_note = if p.currently_running {
             "  (running now)"

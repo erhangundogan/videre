@@ -140,7 +140,10 @@ fn run_classify(args: &ClassifyArgs, conn: &rusqlite::Connection, model_id: &str
 /// Assembles the single consolidated summary line printed after
 /// classification finishes.
 fn format_summary(done: usize, elapsed: std::time::Duration) -> String {
-    format!("{done} image(s) classified, done in {}s", elapsed.as_secs())
+    format!(
+        "{done} image(s) classified, done in {}",
+        videre_core::progress::human_duration(elapsed)
+    )
 }
 
 #[cfg(test)]
@@ -296,7 +299,8 @@ mod tests {
     fn format_summary_reads_naturally() {
         assert_eq!(
             format_summary(42, std::time::Duration::from_secs(3)),
-            "42 image(s) classified, done in 3s"
+            // Tenths below 10s, because at 3s they are a tenth of the runtime.
+            "42 image(s) classified, done in 3.0s"
         );
     }
 }
