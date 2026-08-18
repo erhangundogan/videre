@@ -133,15 +133,24 @@ saved those weights, and from the next run the batch test found a warm cache
 and began really running. 28 minutes, then 35, with nothing failing, which is
 why it read as a hang rather than a slow test.
 
-Two fixes, both worth keeping. That library holds a `.dng`, which is scanned
-and stored like anything else but explicitly vetoed as non-embeddable, so
-`embed` and `classify` return before loading a model; `HF_HOME` points into the
-test's temp dir and a guard asserts the sweep leaves it at zero bytes. And
-`[profile.dev.package."*"] opt-level = 3` optimizes dependencies in dev and
-test builds: `cargo test` is a debug build, and unoptimized candle measured
-**9.41s per 224px forward pass against 0.168s in release, 56x**. Workspace
-members stay unoptimized, so they still compile fast, and `rust-cache` means
-the codegen cost lands once per cache key.
+The fix is the `.dng` in that test library: scanned and stored like anything
+else but explicitly vetoed as non-embeddable, so `embed` and `classify` return
+before loading a model. `HF_HOME` points into the test's temp dir and a guard
+asserts the sweep leaves it at zero bytes.
+
+:warning: **Optimizing dependencies in the test build was the wrong fix, and
+was reverted.** `[profile.dev.package."*"] opt-level = 3` did make the woken
+test bearable (2287s to 66s, since unoptimized candle measures **9.41s per
+224px forward pass against 0.168s in release, 56x**), but it put release-grade
+codegen in every test build: Ubuntu's Build step went 35s to 660s and did *not*
+amortize per cache key as predicted. Wall clock stayed ~4x worse than before
+0.15.3. Removing the weights instead lets the test skip in milliseconds, which
+is what it did for its whole life. Deleting a cached artifact beat optimizing
+the work it caused.
+
+The salt in the model cache key (`hf-v2-`) exists because the key hashes
+`face_models.rs` and `embeddings.rs`, neither of which changed, so the poisoned
+cache would otherwise be restored forever.
 
 The remaining hole is that this test skips silently rather than calling
 `skip_without_models`, so `VIDERE_TEST_REQUIRE_MODELS=1` - which exists to turn
