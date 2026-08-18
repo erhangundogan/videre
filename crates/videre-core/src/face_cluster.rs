@@ -7,6 +7,28 @@ use std::collections::BinaryHeap;
 /// above the different-person ceiling.
 pub const DEFAULT_MERGE_SIM: f32 = 0.35;
 
+/// Ceiling on the average-linkage distance between two clusters the centroid
+/// pass is willing to merge.
+///
+/// Centroid similarity on its own is a weak signal: two tight groups that are
+/// far apart can still have centroids pointing in a similar direction, and the
+/// pass will happily join them. That is not hypothetical - it merged two
+/// different people on this project's real library, whose centroids were 0.370
+/// similar (clearing `DEFAULT_MERGE_SIM` by 0.02) while their average-linkage
+/// distance was **0.841**, far outside any `--eps` anyone would run.
+///
+/// Measured over the 14 largest clusters of that library, the two populations
+/// do not overlap:
+///
+/// | | average-linkage |
+/// |---|---|
+/// | clusters holding two people | 0.813 - 0.912 |
+/// | clusters holding one person | 0.557 - 0.764 |
+///
+/// 0.79 is the midpoint of that gap. It is a backstop, not a tuning knob:
+/// anything this far apart was never one person, whatever the centroids say.
+pub const MAX_MERGE_LINKAGE: f32 = 0.79;
+
 /// Default minimum face bbox side (pixels) for a face to take part in
 /// clustering. Faces smaller than this embed into near-degenerate ArcFace
 /// vectors that cluster together regardless of identity; they are held out of
@@ -427,6 +449,27 @@ fn merge_by_centroid(
     mut clusters: Vec<Vec<usize>>,
     merge_sim: f32,
 ) -> Vec<Vec<usize>> {
+    /// Average-linkage distance between two clusters, in the same algebraic
+    /// form `agglomerate_average` uses: `1 - (sumA . sumB) / (|A| * |B|)`,
+    /// exact for L2-normalized embeddings.
+    fn linkage(points: &[(i64, Vec<f32>)], a: &[usize], b: &[usize]) -> f32 {
+        let dim = points[a[0]].1.len();
+        let mut sa = vec![0.0f32; dim];
+        let mut sb = vec![0.0f32; dim];
+        for &i in a {
+            for (s, v) in sa.iter_mut().zip(&points[i].1) {
+                *s += v;
+            }
+        }
+        for &i in b {
+            for (s, v) in sb.iter_mut().zip(&points[i].1) {
+                *s += v;
+            }
+        }
+        let d: f32 = sa.iter().zip(&sb).map(|(x, y)| x * y).sum();
+        1.0 - d / (a.len() as f32 * b.len() as f32)
+    }
+
     let mut centroids: Vec<Vec<f32>> = clusters.iter().map(|c| centroid(points, c)).collect();
 
     // Cache every pairwise centroid similarity once, instead of rescanning
@@ -462,6 +505,16 @@ fn merge_by_centroid(
         let Some((s, i, j)) = best else { break };
         if s < merge_sim {
             break;
+        }
+
+        // Similar centroids are not enough. Two tight groups far apart can point
+        // the same way, which is how two different people ended up in one
+        // cluster on a real library. Reject the pair and carry on rather than
+        // stopping: a later pair may still be a legitimate merge.
+        if linkage(points, &clusters[i], &clusters[j]) > MAX_MERGE_LINKAGE {
+            sim[i][j] = f32::NEG_INFINITY;
+            sim[j][i] = f32::NEG_INFINITY;
+            continue;
         }
 
         // Merge j into i, drop j (swap_remove keeps indices tidy), recompute i's centroid.
@@ -678,6 +731,125 @@ pub fn cluster_faces(
 
 #[cfg(test)]
 mod tests {
+    /// Two *spread* groups whose centroids point in a similar direction.
+    ///
+    /// This is the shape that merged two different people on a real library:
+    /// centroid similarity 0.370 against a `merge_sim` of 0.35, while their
+    /// average-linkage distance was 0.841.
+    ///
+    /// The algebra is why it needs spread rather than tight groups. For
+    /// L2-normalized points, average linkage is
+    /// `1 - |mean_A| * |mean_B| * (centroid_A . centroid_B)`, so two *tight*
+    /// groups (mean magnitude ~1) at centroid similarity 0.37 would sit at
+    /// linkage 0.63 and be a legitimate merge. Only when each group is spread,
+    /// shrinking its mean magnitude, do similar centroids coexist with a large
+    /// linkage distance. The real cluster showed exactly that: within-group
+    /// spread of 0.32 and 0.37.
+    ///
+    /// Built in 4D so the third and fourth clusters used by
+    /// `a_rejected_pair_does_not_stop_the_pass` can sit on an axis orthogonal
+    /// to both groups and cannot interact with them.
+    fn two_spread_groups_with_similar_centroids() -> (Vec<(i64, Vec<f32>)>, Vec<Vec<usize>>) {
+        // cos/sin of the spread half-angle: mean magnitude becomes 0.55.
+        const C: f32 = 0.55;
+        const S: f32 = 0.835_2;
+        // Group B's axis, 0.37 cosine from group A's (1,0,0,0).
+        const BX: f32 = 0.37;
+        const BY: f32 = 0.929_0;
+
+        let mut pts: Vec<(i64, Vec<f32>)> = Vec::new();
+        for k in 0..4 {
+            let s = if k % 2 == 0 { S } else { -S };
+            pts.push((k, vec![C, 0.0, s, 0.0]));
+        }
+        for k in 4..8 {
+            let s = if k % 2 == 0 { S } else { -S };
+            pts.push((k as i64, vec![C * BX, C * BY, s, 0.0]));
+        }
+        let clusters = vec![
+            (0..4).collect::<Vec<usize>>(),
+            (4..8).collect::<Vec<usize>>(),
+        ];
+        (pts, clusters)
+    }
+
+    #[test]
+    fn the_centroid_pass_refuses_a_merge_that_is_far_apart_in_linkage() {
+        let (pts, clusters) = two_spread_groups_with_similar_centroids();
+        let ca = super::centroid(&pts, &clusters[0]);
+        let cb = super::centroid(&pts, &clusters[1]);
+        let sim: f32 = ca.iter().zip(&cb).map(|(x, y)| x * y).sum();
+
+        // Precondition: without the guard, the centroid test alone merges these.
+        assert!(
+            sim >= super::DEFAULT_MERGE_SIM,
+            "fixture is wrong: centroid similarity {sim} must clear the merge threshold"
+        );
+
+        let out = super::merge_by_centroid(&pts, clusters, super::DEFAULT_MERGE_SIM);
+        assert_eq!(
+            out.len(),
+            2,
+            "similar centroids but far apart in linkage: these must stay separate"
+        );
+    }
+
+    #[test]
+    fn a_genuinely_fragmented_person_is_still_merged() {
+        // The guard must not disable the pass it protects. Two halves of one
+        // tight group: similar centroids and a small linkage distance, so the
+        // merge is legitimate and must still happen.
+        let mut pts: Vec<(i64, Vec<f32>)> = Vec::new();
+        for k in 0..4 {
+            let y = 0.05 + k as f32 * 0.01;
+            let n = (1.0f32 + y * y).sqrt();
+            pts.push((k, vec![1.0 / n, y / n, 0.0, 0.0]));
+        }
+        for k in 4..8 {
+            let y = -0.05 - (k - 4) as f32 * 0.01;
+            let n = (1.0f32 + y * y).sqrt();
+            pts.push((k as i64, vec![1.0 / n, y / n, 0.0, 0.0]));
+        }
+        let clusters = vec![
+            (0..4).collect::<Vec<usize>>(),
+            (4..8).collect::<Vec<usize>>(),
+        ];
+        let out = super::merge_by_centroid(&pts, clusters, super::DEFAULT_MERGE_SIM);
+        assert_eq!(out.len(), 1, "one person's fragments must still reunite");
+    }
+
+    #[test]
+    fn a_rejected_pair_does_not_stop_the_pass() {
+        // The guard `continue`s rather than breaking, so a legitimate merge
+        // later in the list still happens. Breaking instead would silently
+        // leave every remaining fragment unmerged.
+        let (mut pts, mut clusters) = two_spread_groups_with_similar_centroids();
+        // A third and fourth cluster that are genuinely one person, on the
+        // fourth axis so they are orthogonal to both groups above and cannot be
+        // pulled into either.
+        let base = pts.len() as i64;
+        for k in 0..4 {
+            let y = 0.02 * k as f32;
+            let n = (1.0f32 + y * y).sqrt();
+            pts.push((base + k, vec![0.0, y / n, 0.0, 1.0 / n]));
+        }
+        for k in 4..8 {
+            let y = -0.02 * (k - 4) as f32;
+            let n = (1.0f32 + y * y).sqrt();
+            pts.push((base + k, vec![0.0, y / n, 0.0, 1.0 / n]));
+        }
+        let n = pts.len();
+        clusters.push(((n - 8)..(n - 4)).collect());
+        clusters.push(((n - 4)..n).collect());
+
+        let out = super::merge_by_centroid(&pts, clusters, super::DEFAULT_MERGE_SIM);
+        assert_eq!(
+            out.len(),
+            3,
+            "the rejected pair must stay split while the legitimate pair merges"
+        );
+    }
+
     use super::*;
 
     fn l2(v: Vec<f32>) -> Vec<f32> {
