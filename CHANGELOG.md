@@ -13,6 +13,21 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.15.5] - 2026-08-18
+
+### Fixed
+
+- **Place names lost their accents: `Üsküdar, TR` appeared as `UEskuedar, TR`.**
+  The offline reverse geocoder read GeoNames' `asciiname` column, which is ASCII
+  by definition and expands umlauts German-style. videre now ships its own
+  GeoNames extract built from the real `name` column, so `Üsküdar`, `Malmö` and
+  `Hôtel-de-Ville` come out as written. 21% of the 170,761 place names in the
+  dataset contain a non-ASCII character, so this affects far more than one
+  language.
+
+  Existing libraries keep the old names until `videre locations` is re-run:
+  location names are resolved when they are written, not when they are shown.
+
 ## [0.15.4] - 2026-08-18
 
 ### Fixed
