@@ -102,9 +102,32 @@ pub fn normalise_bound(spec: &str) -> Result<String> {
 
 /// Hashes with at least one confirmed face labelled `name`.
 pub fn by_person(conn: &Connection, name: &str) -> Result<HashSet<String>> {
-    let mut stmt =
-        conn.prepare("SELECT DISTINCT hash FROM faces WHERE person_label = ?1 AND confirmed = 1")?;
-    let rows = stmt.query_map(rusqlite::params![name], |r| r.get::<_, String>(0))?;
+    // Normalize the query the same way the label was normalized when stored,
+    // so `--person "Ahmet Arı"` finds faces stored as `ahmet_ari`. Without
+    // this, migrating the labels would silently break every person search
+    // while the labeling UI kept showing the person - a failure with no
+    // visible cause.
+    // Matches either form of a person's name, because both are things a user
+    // reasonably types. The identity (`erhan`) is what the face rows hold; the
+    // display name (`Erhan Gündoğan`) is what they see in the UI and what they
+    // will copy. Those two stop agreeing the moment someone adds a surname -
+    // `Erhan Gündoğan` normalizes to `erhan_gundogan`, not `erhan` - so
+    // matching only the normalized query would fail on exactly the name shown
+    // on screen.
+    let normalized = crate::person::normalize(name).unwrap_or_else(|| name.to_string());
+    let typed = name.trim().to_lowercase();
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT f.hash FROM faces f \
+         LEFT JOIN people p ON p.name = f.person_label \
+         WHERE f.confirmed = 1 AND ( \
+             f.person_label = ?1 \
+             OR LOWER(p.full_name) = ?2 \
+             OR LOWER(p.full_name) = ?1 \
+         )",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![normalized, typed], |r| {
+        r.get::<_, String>(0)
+    })?;
     Ok(rows.collect::<rusqlite::Result<HashSet<String>>>()?)
 }
 
@@ -476,6 +499,8 @@ mod tests {
         conn.execute_batch(
             "CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL,
                 person_label TEXT, confirmed INTEGER DEFAULT 0);
+             CREATE TABLE IF NOT EXISTS people (name TEXT PRIMARY KEY, full_name TEXT NOT NULL);
+             INSERT INTO people (name, full_name) VALUES ('alice','Alice');
              CREATE TABLE classifications (model_id TEXT NOT NULL, hash TEXT NOT NULL,
                 category TEXT NOT NULL, confidence REAL NOT NULL,
                 classified_at TEXT NOT NULL, PRIMARY KEY (model_id, hash));",
@@ -489,7 +514,7 @@ mod tests {
         let conn = db_with_faces_and_classes();
         conn.execute_batch(
             "INSERT INTO faces (hash, person_label, confirmed) VALUES
-                ('h1','Alice',1), ('h2','Alice',0), ('h3','Bob',1);",
+                ('h1','alice',1), ('h2','alice',0), ('h3','Bob',1);",
         )
         .unwrap();
         let got = by_person(&conn, "Alice").unwrap();

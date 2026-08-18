@@ -12,21 +12,27 @@ pub fn faces_list(conn: &Connection) -> Result<FacesData> {
     let mut people: HashMap<String, PersonData> = HashMap::new();
     {
         let mut stmt = conn.prepare(
-            "SELECT id, hash, person_label FROM faces \
-             WHERE confirmed = 1 AND person_label IS NOT NULL \
-             ORDER BY person_label, is_primary DESC, id ASC",
+            // LEFT JOIN, not JOIN: a face labelled before the people table
+            // existed still has to appear, showing its raw label until the
+            // migration gives it a row.
+            "SELECT f.id, f.hash, f.person_label, COALESCE(p.full_name, f.person_label) \
+             FROM faces f LEFT JOIN people p ON p.name = f.person_label \
+             WHERE f.confirmed = 1 AND f.person_label IS NOT NULL \
+             ORDER BY f.person_label, f.is_primary DESC, f.id ASC",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
             ))
         })?;
         for row in rows {
-            let (id, hash, label) = row?;
+            let (id, hash, label, full_name) = row?;
             let person = people.entry(label.clone()).or_insert(PersonData {
                 label: label.clone(),
+                full_name,
                 face_ids: vec![],
                 representative_id: id,
                 hashes: vec![],
@@ -92,7 +98,7 @@ pub fn faces_list(conn: &Connection) -> Result<FacesData> {
     // the big clusters are worth the most and are the easiest to recognise.
     // cluster_id breaks ties so the order is total, not merely sorted.
     let mut people: Vec<PersonData> = people.into_values().collect();
-    people.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
+    people.sort_by(|a, b| a.full_name.to_lowercase().cmp(&b.full_name.to_lowercase()));
     let mut clusters: Vec<ClusterData> = cluster_map.into_values().collect();
     clusters.sort_by(|a, b| {
         b.face_ids
@@ -129,6 +135,11 @@ pub fn cluster_detail(conn: &Connection, cluster_id: i64) -> Result<ClusterDetai
 
 /// Every confirmed face for one person, primary first and flagged.
 pub fn person_detail(conn: &Connection, name: &str) -> Result<PersonDetail> {
+    // Reads normalize too, so `/person/Erhan`, `/person/erhan` and the original
+    // spelling all reach the same person. That is what keeps existing links
+    // working across the migration without a redirect table.
+    let name = videre_core::person::normalize(name).unwrap_or_else(|| name.to_string());
+    let name = name.as_str();
     let mut stmt = conn.prepare(
         "SELECT f.id, f.hash, fh.path, f.is_primary FROM faces f \
          JOIN file_hashes fh ON f.hash = fh.hash \
@@ -162,7 +173,15 @@ pub fn search_person(conn: &Connection, name: &str) -> Result<Vec<String>> {
 /// Assign faces to an existing/new person: sets person_label + confirmed.
 /// Rejects an empty label after sanitizing.
 pub fn assign(conn: &Connection, face_ids: &[i64], person_label: &str) -> Result<()> {
-    let label = crate::label::sanitize_person_label(person_label).ok_or(Error::Invalid)?;
+    // What was typed becomes the display name; its normalized form is the
+    // identity written to every face row. Upserting keeps `people` complete
+    // without a separate "create person" step.
+    let display = crate::label::sanitize_person_label(person_label).ok_or(Error::Invalid)?;
+    let label = videre_core::person::normalize(&display).ok_or(Error::Invalid)?;
+    conn.execute(
+        "INSERT INTO people (name, full_name) VALUES (?1, ?2) ON CONFLICT(name) DO NOTHING",
+        rusqlite::params![&label, &display],
+    )?;
     for id in face_ids {
         conn.execute(
             "UPDATE faces SET person_label = ?1, confirmed = 1 WHERE id = ?2",
@@ -200,7 +219,28 @@ pub fn dissolve_cluster(conn: &Connection, cluster_id: i64) -> Result<()> {
 /// Reset every face of a person back to unassigned. Deliberately does NOT touch
 /// cluster_id, so a face rejoins its cluster's unassigned group rather than
 /// scattering to singletons.
+/// Change only what a person is shown as, never their identity.
+///
+/// A separate operation from `rename_person` on purpose. Intent cannot be
+/// inferred from the new string: `Erhan` to `Erhan Gündoğan` is a display
+/// correction, yet its normalized form changes too, so a single function would
+/// have to guess which the caller meant. One row, no face touched, and the URL
+/// keeps working - which is the whole reason identity and display are separate.
+pub fn set_full_name(conn: &Connection, name: &str, full_name: &str) -> Result<()> {
+    let display = crate::label::sanitize_person_label(full_name).ok_or(Error::Invalid)?;
+    let name = videre_core::person::normalize(name).ok_or(Error::Invalid)?;
+    let n = conn.execute(
+        "UPDATE people SET full_name = ?1 WHERE name = ?2",
+        rusqlite::params![display, name],
+    )?;
+    if n == 0 {
+        return Err(Error::NotFound);
+    }
+    Ok(())
+}
+
 pub fn delete_person(conn: &Connection, label: &str) -> Result<()> {
+    let label = videre_core::person::normalize(label).unwrap_or_else(|| label.to_string());
     conn.execute(
         "UPDATE faces SET person_label = NULL, confirmed = 0, is_primary = 0 WHERE person_label = ?1",
         rusqlite::params![label],
@@ -213,6 +253,8 @@ pub fn delete_person(conn: &Connection, label: &str) -> Result<()> {
 /// remains. The target update is guarded by person_label so it can't steal a
 /// face from another person.
 pub fn set_primary(conn: &Connection, face_id: i64, person_label: &str) -> Result<()> {
+    let person_label =
+        videre_core::person::normalize(person_label).unwrap_or_else(|| person_label.to_string());
     conn.execute_batch("BEGIN")?;
     let result = (|| -> rusqlite::Result<()> {
         conn.execute(
@@ -241,12 +283,16 @@ pub fn set_primary(conn: &Connection, face_id: i64, person_label: &str) -> Resul
 /// `new_label` (after sanitizing) already belongs to a different person;
 /// `Invalid` if the new label sanitizes to empty.
 pub fn rename_person(conn: &Connection, old_label: &str, new_label: &str) -> Result<()> {
-    let sanitized = crate::label::sanitize_person_label(new_label).ok_or(Error::Invalid)?;
+    // Both sides normalize, so renaming works whether the caller passes an
+    // identity (`erhan`) or what a human sees (`Erhan Gündoğan`).
+    let display = crate::label::sanitize_person_label(new_label).ok_or(Error::Invalid)?;
+    let new_name = videre_core::person::normalize(&display).ok_or(Error::Invalid)?;
+    let old_name = videre_core::person::normalize(old_label).ok_or(Error::Invalid)?;
 
     let old_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM faces WHERE person_label = ?1",
-            rusqlite::params![old_label],
+            rusqlite::params![&old_name],
             |row| row.get(0),
         )
         .unwrap_or(0);
@@ -254,21 +300,47 @@ pub fn rename_person(conn: &Connection, old_label: &str, new_label: &str) -> Res
         return Err(Error::NotFound);
     }
 
+    // Changing only the spelling - `Erhan` to `Erhan Gündoğan` - leaves the
+    // identity alone, so it is a one-row update and can never collide. That is
+    // the common rename, and the whole reason display and identity are separate.
+    if new_name == old_name {
+        conn.execute(
+            "INSERT INTO people (name, full_name) VALUES (?1, ?2) \
+             ON CONFLICT(name) DO UPDATE SET full_name = excluded.full_name",
+            rusqlite::params![&new_name, &display],
+        )?;
+        return Ok(());
+    }
+
     let collision_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM faces WHERE person_label = ?1",
-            rusqlite::params![sanitized],
+            rusqlite::params![&new_name],
             |row| row.get(0),
         )
         .unwrap_or(0);
-    if collision_count > 0 && sanitized != old_label {
+    if collision_count > 0 {
         return Err(Error::Conflict);
     }
 
-    conn.execute(
-        "UPDATE faces SET person_label = ?1 WHERE person_label = ?2",
-        rusqlite::params![sanitized, old_label],
+    // An identity rename moves both the people row and every face pointing at
+    // it. Two statements in one transaction, which is what this did before the
+    // people table existed too.
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "INSERT INTO people (name, full_name) VALUES (?1, ?2) \
+         ON CONFLICT(name) DO UPDATE SET full_name = excluded.full_name",
+        rusqlite::params![&new_name, &display],
     )?;
+    tx.execute(
+        "UPDATE faces SET person_label = ?1 WHERE person_label = ?2",
+        rusqlite::params![&new_name, &old_name],
+    )?;
+    tx.execute(
+        "DELETE FROM people WHERE name = ?1",
+        rusqlite::params![&old_name],
+    )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -289,9 +361,14 @@ mod tests {
             "CREATE TABLE file_hashes (hash TEXT PRIMARY KEY, path TEXT);
              INSERT INTO file_hashes VALUES ('h1','/p/1.jpg'),('h2','/p/2.jpg'),
                 ('h3','/p/3.jpg'),('h4','/p/4.jpg'),('h5','/p/5.jpg');
+             -- Labels are stored in identity form, as `assign` writes them and
+             -- as the migration leaves them; `people` carries what a reader
+             -- sees. Seeding raw 'Alice' would test a state the application no
+             -- longer produces.
+             INSERT INTO people (name, full_name) VALUES ('alice','Alice');
              INSERT INTO faces (id,hash,bbox,embedding,cluster_id,person_label,confirmed,is_primary) VALUES
-                (1,'h1','0,0,9,9',X'0000',NULL,'Alice',1,1),
-                (2,'h2','0,0,9,9',X'0000',NULL,'Alice',1,0),
+                (1,'h1','0,0,9,9',X'0000',NULL,'alice',1,1),
+                (2,'h2','0,0,9,9',X'0000',NULL,'alice',1,0),
                 (3,'h3','0,0,9,9',X'0000',7,NULL,0,0),
                 (4,'h4','0,0,9,9',X'0000',7,NULL,0,0),
                 (5,'h5','0,0,9,9',X'0000',NULL,NULL,0,0);",
@@ -363,7 +440,9 @@ mod tests {
         let conn = seed();
         let d = faces_list(&conn).unwrap();
         assert_eq!(d.people.len(), 1);
-        assert_eq!(d.people[0].label, "Alice");
+        // Identity is the normalized form; what a reader sees is separate.
+        assert_eq!(d.people[0].label, "alice");
+        assert_eq!(d.people[0].full_name, "Alice");
         assert_eq!(
             d.people[0].representative_id, 1,
             "primary face is representative"
@@ -463,7 +542,7 @@ mod tests {
         set_primary(&conn, 2, "Alice").unwrap();
         let primaries: Vec<i64> = {
             let mut s = conn
-                .prepare("SELECT id FROM faces WHERE person_label='Alice' AND is_primary=1")
+                .prepare("SELECT id FROM faces WHERE person_label='alice' AND is_primary=1")
                 .unwrap();
             s.query_map([], |r| r.get(0))
                 .unwrap()
@@ -498,6 +577,31 @@ mod tests {
         rename_person(&conn, "Alice", "Alicia").unwrap();
         assert_eq!(person_detail(&conn, "Alicia").unwrap().faces.len(), 2);
         assert_eq!(person_detail(&conn, "Alice").unwrap().faces.len(), 0);
+        // The identity moved with it, so the old people row is gone.
+        let names: Vec<String> = conn
+            .prepare("SELECT name FROM people ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(names, vec!["alicia".to_string()]);
+    }
+
+    #[test]
+    fn renaming_only_the_spelling_keeps_the_identity() {
+        // The common rename: correcting or extending what is shown, which must
+        // not change the URL or touch a single face row.
+        let conn = seed();
+        set_full_name(&conn, "alice", "Alice Smith").unwrap();
+        let (name, full): (String, String) = conn
+            .query_row("SELECT name, full_name FROM people", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(name, "alice", "identity is unchanged");
+        assert_eq!(full, "Alice Smith", "only the display name moved");
+        assert_eq!(person_detail(&conn, "alice").unwrap().faces.len(), 2);
     }
 
     #[test]

@@ -1442,7 +1442,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       // Sort by name (case-insensitive) so cards keep a stable position while
       // you drag clusters onto them, count-sort reshuffled them mid-assign.
       const sorted = [...people].sort((a, b) =>
-        a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
+        a.full_name.localeCompare(b.full_name, undefined, { sensitivity: 'base' }));
       grid.innerHTML = sorted.map(p => {
         const url = `/person/${encodeURIComponent(p.label)}`;
         const extra = p.face_ids.length > 1
@@ -1456,7 +1456,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
           <a href="${url}">
             <div style="margin-bottom:6px">${faceImg(p.representative_id, 140, 140)}</div>
           </a>
-          <a class="cluster-link" href="${url}" title="${escHtml(p.label)}">${escHtml(p.label)}</a>
+          <a class="cluster-link" href="${url}" title="${escHtml(p.full_name)}">${escHtml(p.full_name)}</a>
           ${extra}
         </div>
       `;
@@ -1806,7 +1806,7 @@ const CLUSTER_HTML: &str = r##"<!DOCTYPE html>
         mainData = mainRes.ok ? await mainRes.json() : { people: [] };
         facesData = clusterData.faces;
         const dl = document.getElementById('people-list');
-        dl.innerHTML = mainData.people.map(p => `<option value="${escHtml(p.label)}">`).join('');
+        dl.innerHTML = mainData.people.map(p => `<option value="${escHtml(p.full_name)}">`).join('');
         document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
         render();
       } catch(e) {
@@ -1865,7 +1865,7 @@ const CLUSTER_HTML: &str = r##"<!DOCTYPE html>
     function openAssignModal(faceId) {
       assignModalFaceId = faceId;
       document.getElementById('assign-people-list').innerHTML =
-        mainData.people.map(p => `<option value="${escHtml(p.label)}">`).join('');
+        mainData.people.map(p => `<option value="${escHtml(p.full_name)}">`).join('');
       document.getElementById('assignModal').classList.add('on');
       document.getElementById('assignInput').value = '';
       document.getElementById('assignInput').focus();
@@ -2614,6 +2614,17 @@ async fn serve_faces_async(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let conn = videre_core::db::open_wal(db)?;
     videre_core::location::ensure_location_column(&conn);
+    // The labeling server writes person labels, so it is a writer and migrates
+    // like the other writers do. Without this, a user who only ever labels
+    // through the UI would keep the old mixed-case labels and never get the
+    // case-insensitive behaviour.
+    match videre_core::face_db::migrate_person_labels(&conn) {
+        Ok((people, merged)) if merged > 0 => {
+            eprintln!("Merged {merged} name(s) differing only in spelling; {people} people now");
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!("warning: could not migrate person names: {e}"),
+    }
     // Only --all needs vectors. A missing model database disables the
     // similarity search with a note rather than failing the whole report,
     // which works perfectly well without embeddings.
@@ -2822,6 +2833,9 @@ mod tests {
              is_primary INTEGER DEFAULT 0);",
         )
         .unwrap();
+        // Production creates this in `db::open_wal`; this fixture builds its
+        // tables by hand, so it has to as well - person operations write here.
+        videre_core::face_db::ensure_people_table(&conn);
         videre_core::db::ensure_file_hashes_columns(&conn);
         conn
     }
@@ -3042,7 +3056,7 @@ mod tests {
         // People sorted by name, the top/right sidebar toggle (persisted), and
         // singleton multi-select with a bulk action bar.
         assert!(
-            FACES_HTML.contains("a.label.localeCompare(b.label"),
+            FACES_HTML.contains("a.full_name.localeCompare(b.full_name"),
             "People must be sorted by name"
         );
         assert!(
@@ -3079,7 +3093,7 @@ mod tests {
         let conn = mem_db_with_faces();
         conn.execute(
             "INSERT INTO faces (id, hash, bbox, embedding, cluster_id, person_label, confirmed, is_primary) \
-             VALUES (1, 'h1', '0,0,10,10', X'0000', 5, 'Alice', 1, 1)",
+             VALUES (1, 'h1', '0,0,10,10', X'0000', 5, 'alice', 1, 1)",
             [],
         )
         .unwrap();
@@ -3144,13 +3158,13 @@ mod tests {
         let conn = mem_db_with_faces();
         conn.execute(
             "INSERT INTO faces (id, hash, bbox, embedding, cluster_id, person_label, confirmed, is_primary) \
-             VALUES (1, 'h1', '0,0,10,10', X'0000', 5, 'Alice', 1, 1)",
+             VALUES (1, 'h1', '0,0,10,10', X'0000', 5, 'alice', 1, 1)",
             [],
         )
         .unwrap();
         conn.execute(
             "INSERT INTO faces (id, hash, bbox, embedding, cluster_id, person_label, confirmed, is_primary) \
-             VALUES (2, 'h2', '0,0,10,10', X'0000', NULL, 'Alice', 1, 0)",
+             VALUES (2, 'h2', '0,0,10,10', X'0000', NULL, 'alice', 1, 0)",
             [],
         )
         .unwrap();
@@ -3202,7 +3216,7 @@ mod tests {
         let conn = mem_db_with_faces();
         conn.execute(
             "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
-             VALUES (1, 'h1', '0,0,10,10', X'0000', 'Alice', 1)",
+             VALUES (1, 'h1', '0,0,10,10', X'0000', 'alice', 1)",
             [],
         )
         .unwrap();
@@ -3222,7 +3236,7 @@ mod tests {
                 r.get(0)
             })
             .unwrap();
-        assert_eq!(label, "Alicia");
+        assert_eq!(label, "alicia", "stored in identity form");
     }
 
     #[tokio::test]
@@ -3230,13 +3244,13 @@ mod tests {
         let conn = mem_db_with_faces();
         conn.execute(
             "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
-             VALUES (1, 'h1', '0,0,10,10', X'0000', 'Alice', 1)",
+             VALUES (1, 'h1', '0,0,10,10', X'0000', 'alice', 1)",
             [],
         )
         .unwrap();
         conn.execute(
             "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
-             VALUES (2, 'h2', '0,0,10,10', X'0000', 'Bob', 1)",
+             VALUES (2, 'h2', '0,0,10,10', X'0000', 'bob', 1)",
             [],
         )
         .unwrap();
@@ -3256,7 +3270,7 @@ mod tests {
                 r.get(0)
             })
             .unwrap();
-        assert_eq!(label, "Alice", "rename must not have applied on collision");
+        assert_eq!(label, "alice", "rename must not have applied on collision");
     }
 
     #[tokio::test]
