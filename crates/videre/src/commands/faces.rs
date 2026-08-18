@@ -128,27 +128,37 @@ pub fn run(args: FacesArgs) -> Result<()> {
         None,
         Some(&args.paths),
     )?;
-    let eligible = all_paths.len();
-    let all_paths = if selection.is_empty() {
-        all_paths
-    } else {
-        let sel = selection.resolve(&conn, &videre_core::selection::SelectionCtx::default())?;
-        match sel.hashes {
-            None => all_paths,
-            Some(h) => all_paths
-                .into_iter()
-                .filter(|(_, hash)| h.contains(hash))
-                .collect(),
+    // Shares `narrow` with embed and classify: same filtering, same "N of M"
+    // line, one implementation.
+    //
+    // It does NOT use `with_work`, unlike those two, and that is deliberate.
+    // Clustering runs on every path through this command - including when there
+    // is nothing new to detect - so gating the whole tail on "is there work"
+    // would silently stop it. Detection is the optional part here, not the
+    // command. `faces` also loads its models inside `run_detection_and_
+    // clustering`, which the `to_process.is_empty()` branch below already sits
+    // in front of.
+    let all_paths = match videre_core::work::narrow(
+        all_paths,
+        |(_, hash)| hash.as_str(),
+        &selection,
+        &conn,
+        &videre_core::selection::SelectionCtx::default(),
+        videre_core::work::Words::new("detect faces in", "Detecting faces in"),
+        args.silent,
+    )? {
+        videre_core::work::Work::Some(p) => p.items,
+        videre_core::work::Work::Nothing(_) => {
+            // The message is dropped on purpose. `narrow` has already printed
+            // the "N of M" line when a selection was given, and the branch
+            // below prints "All hashes already processed." for this same state;
+            // showing both said the same thing twice in different words.
+            //
+            // Fall through with nothing to detect rather than returning:
+            // clustering still has to run.
+            Vec::new()
         }
     };
-    if !selection.is_empty() && !args.silent {
-        eprintln!(
-            "Detecting faces in {} of {} eligible file(s) ({})",
-            all_paths.len(),
-            eligible,
-            selection.describe()
-        );
-    }
 
     // Skip anything already scanned. The marker (`faces_scanned`) records every
     // processed hash including images with zero faces, which is what makes reruns
