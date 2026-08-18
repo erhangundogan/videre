@@ -53,11 +53,22 @@ jobs:
       # decide which weights are fetched, so changing the buffalo_l repo or
       # DEFAULT_MODEL_ID invalidates the cache rather than silently reusing
       # weights for a different model.
+      #
+      # The v2 salt exists to discard a poisoned artifact. Until 0.15.6 the
+      # argument-robustness tests ran `videre embed`, which downloaded SigLIP on
+      # the Linux runner even though the warm-up step deliberately fetches it on
+      # macOS only. This cache then kept those weights, and
+      # cpu_batch_matches_single_image_baseline - which skips when weights are
+      # absent, and had done so since it was written - started running: the
+      # Ubuntu job went from ~3 minutes to nearly 40. The download is fixed, but
+      # the key hashes two files that did not change, so the bad artifact would
+      # be restored forever without this. Bump the salt again if weights ever
+      # get in that should not be there.
       - id: models
         uses: actions/cache@v6
         with:
           path: ~/.cache/huggingface
-          key: hf-${{ runner.os }}-${{ hashFiles('crates/videre-ml/src/face_models.rs', 'crates/videre-core/src/embeddings.rs') }}
+          key: hf-v2-${{ runner.os }}-${{ hashFiles('crates/videre-ml/src/face_models.rs', 'crates/videre-core/src/embeddings.rs') }}
 
       - name: Build
         run: cargo build --workspace --tests
