@@ -108,3 +108,34 @@ jobs:
         env:
           VIDERE_TEST_REQUIRE_MODELS: 1
         run: cargo test --workspace --no-fail-fast
+
+      # Tests never download model weights, and this is what enforces it rather
+      # than trusting it.
+      #
+      # Linux only, because it is the platform where the claim is checkable: the
+      # warm-up step above fetches SigLIP on macOS deliberately, so its presence
+      # there proves nothing. On Linux nothing should ever put it here, so if it
+      # exists, a test pulled it.
+      #
+      # This is not hypothetical. A unit test in classify.rs downloaded 778MB of
+      # SigLIP because its "already classified" fixture never actually inserted
+      # the row. The weights landed in this cache, which woke
+      # cpu_batch_matches_single_image_baseline - a test that skips when weights
+      # are absent and had skipped since the day it was written - and the job
+      # went from ~3 minutes to nearly 40. Nothing failed, so it read as a hang
+      # for days. A build failure here would have said it in one line.
+      #
+      # Runs even when the tests fail, since a failing test can still have
+      # downloaded on its way to failing.
+      - name: Assert the tests downloaded no embedding weights
+        if: always() && runner.os == 'Linux'
+        run: |
+          found=$(find ~/.cache/huggingface -maxdepth 3 -type d -name 'models--*siglip*' 2>/dev/null || true)
+          if [ -n "$found" ]; then
+            echo "::error::A test downloaded SigLIP weights. Tests never download."
+            du -sh $found
+            echo "Find it with: HF_HOME=\$(mktemp -d) cargo test -p videre --bins"
+            echo "(--bins matters: the last one hid in the binary target, not tests/)"
+            exit 1
+          fi
+          echo "no embedding weights present, as expected"
