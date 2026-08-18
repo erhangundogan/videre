@@ -181,18 +181,14 @@ The server on `localhost:7878` is reachable only from your machine.
 
 ## Performance
 
-Detection runs across `--workers` threads, defaulting to twice your core count.
-That oversubscription is deliberate: HEIC decoding waits on an external
-subprocess rather than the CPU, so other workers use the cores meanwhile.
+| Flag | Does |
+|---|---|
+| `--workers` | detection threads (default: twice your core count) |
+| `--profile` | print per-stage timings: load, detect, align, embed, db write |
 
-Measured on a 10-core machine: about 3.23x faster than a single worker, and
-raising the HEIC conversion limit from 3 to 6 added another 1.23x, for roughly
-4.48x overall. Raising it past 6 buys only a few percent while per-image detect
-time creeps up, so 6 is the default.
-
-`--profile` prints per-stage timings (load, detect, align, embed, db write),
-which is the quickest way to see whether a slow run is bound by decoding or by
-inference.
+`--profile` is the quickest way to see whether a slow run is bound by decoding
+or by inference. Why the default oversubscribes your cores, and the measured
+4.48x it is worth, are in [tuning](/guides/tuning/#face-detection).
 
 ## Scoping the run
 

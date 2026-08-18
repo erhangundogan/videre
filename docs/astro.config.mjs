@@ -105,6 +105,7 @@ export default defineConfig({
 						{ label: 'Caches and disk use', slug: 'guides/caches' },
 						{ label: 'Backing up', slug: 'guides/backup' },
 						{ label: 'JSONL output', slug: 'guides/jsonl' },
+						{ label: 'Tuning', slug: 'guides/tuning' },
 					],
 				},
 				{

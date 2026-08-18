@@ -173,14 +173,9 @@ equality test.
 
 ## Very large files
 
-Reading a file is bounded by a timeout, so a disconnected drive cannot hang a
-scan forever. That bound scales with the size of the file rather than being a
-constant: a multi-gigabyte video legitimately takes longer to read than a
-photo, and a fixed ceiling cannot tell a large file from a stalled one.
-
-The size itself is read first under a short, separate timeout. That is what
-keeps a dead mount failing quickly: it stops there, and the read is never
-started.
+Reading a file is bounded by a timeout that scales with the file's size, so a
+disconnected drive cannot hang a scan while a legitimately large video still
+gets the time it needs.
 
 If you scan a mount slower than about 20 MB/s and see files reported as
 unreachable, lower the assumed floor rate:
@@ -188,6 +183,9 @@ unreachable, lower the assumed floor rate:
 ```bash
 videre config set read-rate 5
 ```
+
+Why it scales, and why the same files fail on every run until you change this,
+are in [tuning](/guides/tuning/#slow-drives-and-large-files).
 
 ## Video metadata
 
