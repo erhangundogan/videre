@@ -1,30 +1,11 @@
-/// Trim, collapse internal whitespace, and cap length (60 code points) so a
-/// caller that bypasses UI sanitization can't stretch layout or bloat the DB.
-/// Returns None when nothing usable remains. Filters control and bidi/
-/// zero-width format characters but deliberately keeps U+200C (ZWNJ) and
-/// U+200D (ZWJ), which are required for Persian/Indic text and emoji ZWJ
-/// sequences. Not homoglyph-proof, and the cap truncates by code point.
+/// The display form of a person's name.
+///
+/// Thin alias for `videre_core::person::display_name`, which is the single
+/// implementation. This existed first and diverged from it: the core copy
+/// did not filter bidi characters, so the same name kept an override when
+/// written by the migration and lost it when typed into the UI.
 pub fn sanitize_person_label(raw: &str) -> Option<String> {
-    let filtered: String = raw
-        .chars()
-        .filter(|c| !c.is_control() && !is_disallowed_format_char(*c))
-        .collect();
-    let collapsed = filtered.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.is_empty() {
-        return None;
-    }
-    Some(collapsed.chars().take(60).collect())
-}
-
-fn is_disallowed_format_char(c: char) -> bool {
-    matches!(
-        c,
-        '\u{200B}'
-        | '\u{200E}'..='\u{200F}'
-        | '\u{202A}'..='\u{202E}'
-        | '\u{2060}'..='\u{2069}'
-        | '\u{FEFF}'
-    )
+    videre_core::person::display_name(raw)
 }
 
 #[cfg(test)]

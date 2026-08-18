@@ -92,6 +92,29 @@ stored as raw f16, so 1024 bytes. `cluster_id` is assigned by grouping;
 [`search --person`](/commands/search/) reads.
 
 ```sql
+CREATE TABLE people (
+    name       TEXT PRIMARY KEY,
+    full_name  TEXT NOT NULL
+);
+```
+
+A person has two names. **`name` is who they are**: lowercase, ASCII, spaces as
+underscores, punctuation removed. It is what `faces.person_label` holds and what
+appears in the URL, `/person/isil_ozyegin`. **`full_name` is what you see**:
+exactly what was typed, so `Işıl Özyeğin` keeps its spelling.
+
+That split is why `Alice` and `alice` are one person rather than two, and why
+adding a surname later changes nothing but the label on screen.
+
+Accented letters are folded rather than dropped, so `Şefik` becomes `sefik`, not
+`efik`. Names differing only in case or accent therefore share an identity, which
+is the intent; the primary key on `name` is what makes that guaranteed rather
+than merely likely.
+
+Libraries created before this table are migrated on the first run of a command
+that writes faces, keeping the original spelling as `full_name`.
+
+```sql
 CREATE TABLE faces_scanned (
     hash        TEXT PRIMARY KEY,
     scanned_at  TEXT DEFAULT (datetime('now'))

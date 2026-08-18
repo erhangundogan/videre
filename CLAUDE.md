@@ -334,6 +334,69 @@ sentence per state. A command needing different wording passes it in via
 `Words::saying` rather than printing its own, which is how three names for one
 idea appeared in the first place.
 
+### A person has an identity and a display name
+
+`videre_core::person::normalize` produces the identity - trim, fold diacritics
+to ASCII, lowercase, spaces to `_`, drop punctuation - and it is what
+`faces.person_label` stores and what the URL uses. `people(name PRIMARY KEY,
+full_name)` holds what a reader sees. `alice` and `Alice` are one person by
+construction rather than by a comparison rule every call site must remember.
+
+**Folding, not stripping.** Dropping a diacritic turns `Şefik` into `efik` and
+`Çağdaş` into `ada`, eating the first letter of any name starting with one - 14
+of 85 names in the library this was built against. Turkish `I` is mapped
+explicitly because `to_lowercase` is Unicode-default, not locale-aware: `İ`
+lowercases to `i` plus a combining mark. A test pins the whole set
+`öÖüÜıIiİşŞçÇğĞ`.
+
+:warning: **`normalize` must stay idempotent.** Reads normalize too, so it runs
+on values that are already identities. The first version dropped `_` as
+non-alphanumeric, so `isil_ozyegin` became `isilozyegin` and every multi-word
+person URL would have resolved to nothing. `_` is a separator on input as well
+as output, and a test asserts the fixed point.
+
+**`by_person` matches either form**, because both are things a user types: the
+identity from the URL, and the display name from the screen. They stop agreeing
+as soon as someone adds a surname.
+
+:warning: **Any entry point taking a person name must normalize**, and there are
+more than expected: `assign`, `set_primary`, `delete_person`, `rename_person`,
+`person_detail`, `person_search`, plus `query::by_person` which funnels
+`search --person`, the selection layer and the MCP tool. Migrating labels
+without this made `videre search --person "Ahmet Arı"` return nothing while the
+labeling UI still showed the person.
+
+No foreign key from `faces.person_label`: SQLite leaves `PRAGMA foreign_keys`
+off and videre never sets it, so `REFERENCES` would be documentation rather than
+a constraint - and with `ON UPDATE CASCADE` declared but unenforced, a rename
+would silently orphan every face row.
+
+**One resolver, and a test that all surfaces use it.**
+`person::resolve_identities` turns a typed name into every identity it could
+mean, and `by_person` and `search_by_person` both call it. They did not always:
+each normalized its own argument, the two drifted, and the labeling UI stopped
+finding anyone whose display name had been edited while the CLI still found
+them.
+
+:warning: **SQLite's `LOWER()` is ASCII-only, so the display-name comparison
+must stay in Rust.** `LOWER('Ö')` is `'Ö'` while Rust gives `'ö'`, so
+`LOWER(full_name) = ?` matched no name containing a Turkish character - 15 of
+86 people in the library this was built against. Pushing that comparison back
+into SQL for tidiness silently breaks most of the library.
+
+`crates/videre-api/tests/person_surfaces.rs` exercises every lookup and display
+surface against one person whose **display name does not normalize back to
+their identity** (`ozgur_demirtas` shown as `Özgür`). The divergence is the
+point: while the two agree, the identity path satisfies every assertion alone
+and the display path is never exercised, which is how tests passed while two
+surfaces were broken. Each of the three bugs was replayed against this file and
+each one fails it. A new surface belongs there; one that cannot be added is not
+going through the resolver.
+
+:warning: **Fixtures in this area must use non-ASCII names.** Every fixture
+here was `Alice`/`Bob`, and `Alice` cannot expose an ASCII-only `LOWER()`. The
+test data has to look like the library.
+
 ### Every filter goes through `videre_core::selection`
 
 One layer, two shapes. `RowSelection` filters rows that exist in the database

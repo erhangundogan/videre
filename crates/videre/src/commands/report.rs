@@ -1358,6 +1358,9 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     .singleton-card .drag-handle:hover .drag-dots, .singleton-card .drag-handle:hover .drag-hint { color: var(--orange-text); }
     .cluster-link { color: var(--blue-hover); text-decoration: none; font-weight: bold; display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .cluster-link:hover { text-decoration: underline; }
+    /* Says an entered name will join an existing person rather than create one.
+       Amber, not red: merging is usually what was meant. */
+    .merge-note { color: #b58900; font-size: 12px; margin-left: 8px; }
     .extra-count { font-size: 11px; margin-top: 2px; }
     .person-card .extra-count { color: var(--blue-text); }
     .cluster-card .extra-count { color: var(--green-text); }
@@ -1442,7 +1445,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       // Sort by name (case-insensitive) so cards keep a stable position while
       // you drag clusters onto them, count-sort reshuffled them mid-assign.
       const sorted = [...people].sort((a, b) =>
-        a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
+        a.full_name.localeCompare(b.full_name, undefined, { sensitivity: 'base' }));
       grid.innerHTML = sorted.map(p => {
         const url = `/person/${encodeURIComponent(p.label)}`;
         const extra = p.face_ids.length > 1
@@ -1456,7 +1459,7 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
           <a href="${url}">
             <div style="margin-bottom:6px">${faceImg(p.representative_id, 140, 140)}</div>
           </a>
-          <a class="cluster-link" href="${url}" title="${escHtml(p.label)}">${escHtml(p.label)}</a>
+          <a class="cluster-link" href="${url}" title="${escHtml(p.full_name)}">${escHtml(p.full_name)}</a>
           ${extra}
         </div>
       `;
@@ -1469,6 +1472,32 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     // characters, and cap length by code point (not UTF-16 code unit) so a
     // pasted wall of text or a spoofed name can't stretch card layout,
     // corrupt display order, or bloat the DB.
+    // Mirror of `videre_core::person::normalize`, so the page can say "this
+    // will add to an existing person" before posting - which needs the same
+    // identity the server will compute. Kept small and labelled as a mirror:
+    // if the two disagree the warning misfires, which is visible, rather than
+    // the assignment landing somewhere unexpected, which is not.
+    const TURKISH_FOLD = { 'ı':'i','İ':'i','ğ':'g','Ğ':'g','ş':'s','Ş':'s',
+                           'ö':'o','Ö':'o','ü':'u','Ü':'u','ç':'c','Ç':'c' };
+    function personIdentity(raw) {
+      const folded = Array.from(String(raw).trim())
+        .map(ch => TURKISH_FOLD[ch] || ch).join('')
+        .toLowerCase().normalize('NFKD');
+      let out = '', lastSep = true;
+      for (const ch of folded) {
+        if (/[\\s_]/.test(ch)) { if (!lastSep) { out += '_'; lastSep = true; } continue; }
+        if (/[a-z0-9]/.test(ch)) { out += ch; lastSep = false; }
+      }
+      return out.replace(/_+$/, '');
+    }
+
+    // The person an entered name would land on, or null for a new one.
+    function existingPersonFor(typed) {
+      const id = personIdentity(typed);
+      if (!id || !mainData || !mainData.people) return null;
+      return mainData.people.find(p => p.label === id) || null;
+    }
+
     function sanitizeName(raw) {
       const filtered = Array.from(raw).filter(function(ch) {
         const cp = ch.codePointAt(0);
@@ -1602,11 +1631,29 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       if (selectedSingletons.size === 0) return;
       const bar = document.getElementById('sel-bar');
       bar.innerHTML =
-        `<input type="text" id="sel-np-input" placeholder="Person name" maxlength="${MAX_NAME_LEN}">` +
-        `<button onclick="submitSelectionPerson()">Create</button>` +
-        `<button onclick="rebuildSelBar()">Cancel</button>`;
+        `<input type="text" id="sel-np-input" placeholder="Person name" maxlength="${MAX_NAME_LEN}" list="people-list">` +
+        `<button id="sel-np-go" onclick="submitSelectionPerson()">Create</button>` +
+        `<button onclick="rebuildSelBar()">Cancel</button>` +
+        `<span id="sel-np-note" class="merge-note"></span>`;
       const inp = document.getElementById('sel-np-input');
       inp.focus();
+      // Say what will happen before it happens. Typing a name that already
+      // exists adds to that person rather than creating one - usually what is
+      // meant, and previously indistinguishable from creating until afterwards.
+      // The `list` attribute is the other half: this input was the only one of
+      // the three without the autocomplete the others already had.
+      inp.addEventListener('input', function() {
+        const hit = existingPersonFor(inp.value);
+        const note = document.getElementById('sel-np-note');
+        const go = document.getElementById('sel-np-go');
+        if (hit) {
+          note.textContent = `adds to ${hit.full_name}, ${hit.face_ids.length} face(s)`;
+          go.textContent = `Add to ${hit.full_name}`;
+        } else {
+          note.textContent = '';
+          go.textContent = 'Create';
+        }
+      });
       inp.addEventListener('keydown', function(e) {
         if (e.key === 'Enter') { e.preventDefault(); submitSelectionPerson(); }
       });
@@ -1806,7 +1853,7 @@ const CLUSTER_HTML: &str = r##"<!DOCTYPE html>
         mainData = mainRes.ok ? await mainRes.json() : { people: [] };
         facesData = clusterData.faces;
         const dl = document.getElementById('people-list');
-        dl.innerHTML = mainData.people.map(p => `<option value="${escHtml(p.label)}">`).join('');
+        dl.innerHTML = mainData.people.map(p => `<option value="${escHtml(p.full_name)}">`).join('');
         document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
         render();
       } catch(e) {
@@ -1865,7 +1912,7 @@ const CLUSTER_HTML: &str = r##"<!DOCTYPE html>
     function openAssignModal(faceId) {
       assignModalFaceId = faceId;
       document.getElementById('assign-people-list').innerHTML =
-        mainData.people.map(p => `<option value="${escHtml(p.label)}">`).join('');
+        mainData.people.map(p => `<option value="${escHtml(p.full_name)}">`).join('');
       document.getElementById('assignModal').classList.add('on');
       document.getElementById('assignInput').value = '';
       document.getElementById('assignInput').focus();
@@ -2003,12 +2050,21 @@ const PERSON_HTML: &str = r##"<!DOCTYPE html>
 
     async function load() {
       try {
-        document.getElementById('person-title').textContent = personName;
         document.title = personName;
-        document.getElementById('renameInput').value = personName;
         const r = await fetch(`/api/person/${encodeURIComponent(personName)}`);
         if (!r.ok) throw new Error('person fetch failed');
         const data = await r.json();
+        // After the fetch, not before: `data` is a `const` declared here, and
+        // reading it earlier threw a ReferenceError that aborted the whole
+        // function, so the page showed an error and no photos at all.
+        //
+        // The heading and the rename box show the display name; the URL and
+        // every request keep using the identity.
+        const shown = data.full_name || personName;
+        document.getElementById('person-title').textContent = shown;
+        document.title = shown;
+        const ri = document.getElementById('renameInput');
+        if (ri) ri.value = shown;
         facesData = data.faces;
         document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
         render();
@@ -2077,16 +2133,20 @@ const PERSON_HTML: &str = r##"<!DOCTYPE html>
       window.location.href = '/';
     }
 
+    // Edits how the person is shown - adding a surname, fixing a spelling -
+    // without touching their identity, so the URL and every face row are
+    // untouched and no link breaks. Changing the identity is a different
+    // operation and deliberately not offered here.
     async function submitRename() {
-      const newLabel = sanitizeName(document.getElementById('renameInput').value);
-      if (!newLabel) return;
-      const r = await fetch('/api/rename-person', {
+      const newName = sanitizeName(document.getElementById('renameInput').value);
+      if (!newName) return;
+      const r = await fetch('/api/set-full-name', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ old_label: personName, new_label: newLabel })
+        body: JSON.stringify({ name: personName, full_name: newName })
       });
-      if (r.status === 409) { alert('A person named "' + newLabel + '" already exists.'); return; }
-      if (!r.ok) { alert('Rename failed.'); return; }
-      window.location.href = '/person/' + encodeURIComponent(newLabel);
+      if (!r.ok) { alert('Could not save the name.'); return; }
+      document.getElementById('person-title').textContent = newName;
+      document.getElementById('status').textContent = 'Saved';
     }
 
     load();
@@ -2139,6 +2199,17 @@ struct DeletePersonRequest {
 struct RenamePersonRequest {
     old_label: String,
     new_label: String,
+}
+
+/// Changing what a person is shown as, without touching their identity.
+///
+/// Separate from rename because intent cannot be read from the new string:
+/// `Erhan` to `Erhan Gündoğan` is a display correction whose normalized form
+/// also changes, so one endpoint would have to guess which was meant.
+#[derive(Deserialize)]
+struct SetFullNameRequest {
+    name: String,
+    full_name: String,
 }
 
 #[derive(Deserialize)]
@@ -2308,6 +2379,19 @@ async fn handle_delete_person(
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     videre_api::delete_person(&conn, &req.label)
+        .map(|_| StatusCode::OK)
+        .map_err(api_status)
+}
+
+async fn handle_set_full_name(
+    State(state): State<Arc<AppState>>,
+    AxumJson(req): AxumJson<SetFullNameRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    videre_api::set_full_name(&conn, &req.name, &req.full_name)
         .map(|_| StatusCode::OK)
         .map_err(api_status)
 }
@@ -2614,6 +2698,17 @@ async fn serve_faces_async(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let conn = videre_core::db::open_wal(db)?;
     videre_core::location::ensure_location_column(&conn);
+    // The labeling server writes person labels, so it is a writer and migrates
+    // like the other writers do. Without this, a user who only ever labels
+    // through the UI would keep the old mixed-case labels and never get the
+    // case-insensitive behaviour.
+    match videre_core::face_db::migrate_person_labels(&conn) {
+        Ok((people, merged)) if merged > 0 => {
+            eprintln!("Merged {merged} name(s) differing only in spelling; {people} people now");
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!("warning: could not migrate person names: {e}"),
+    }
     // Only --all needs vectors. A missing model database disables the
     // similarity search with a note rather than failing the whole report,
     // which works perfectly well without embeddings.
@@ -2654,6 +2749,7 @@ async fn serve_faces_async(
             .route("/api/remove-face", post(handle_remove_face))
             .route("/api/delete-person", post(handle_delete_person))
             .route("/api/rename-person", post(handle_rename_person))
+            .route("/api/set-full-name", post(handle_set_full_name))
             .route("/api/dissolve-cluster", post(handle_dissolve_cluster))
             .route("/api/set-primary", post(handle_set_primary));
     }
@@ -2822,6 +2918,9 @@ mod tests {
              is_primary INTEGER DEFAULT 0);",
         )
         .unwrap();
+        // Production creates this in `db::open_wal`; this fixture builds its
+        // tables by hand, so it has to as well - person operations write here.
+        videre_core::face_db::ensure_people_table(&conn);
         videre_core::db::ensure_file_hashes_columns(&conn);
         conn
     }
@@ -3042,7 +3141,7 @@ mod tests {
         // People sorted by name, the top/right sidebar toggle (persisted), and
         // singleton multi-select with a bulk action bar.
         assert!(
-            FACES_HTML.contains("a.label.localeCompare(b.label"),
+            FACES_HTML.contains("a.full_name.localeCompare(b.full_name"),
             "People must be sorted by name"
         );
         assert!(
@@ -3057,6 +3156,80 @@ mod tests {
                 && FACES_HTML.contains("newPersonFromSelection"),
             "Singleton multi-select and bulk assign must be wired"
         );
+    }
+
+    #[test]
+    fn the_person_page_reads_its_data_after_declaring_it() {
+        // A `const` read before its declaration throws a ReferenceError that
+        // aborts the whole function, so the page showed "can't access lexical
+        // declaration 'data' before initialization" and no photos at all - even
+        // though the person and their 15 faces were perfectly fine in the
+        // database. Shipped once; asserted from now on.
+        let decl = PERSON_HTML
+            .find("const data = await r.json()")
+            .expect("load() must fetch into `data`");
+        let first_use = PERSON_HTML
+            .find("data.full_name")
+            .expect("the heading must come from the fetched person");
+        assert!(
+            decl < first_use,
+            "`data` is used at {first_use} but only declared at {decl}, which throws \
+             at runtime and leaves the page empty"
+        );
+    }
+
+    #[test]
+    fn the_person_page_shows_the_display_name_and_links_by_identity() {
+        assert!(
+            PERSON_HTML.contains("const shown = data.full_name || personName;"),
+            "the heading falls back to the identity when there is no display name"
+        );
+        // Requests keep using the identity, which is what the URL carries.
+        assert!(PERSON_HTML.contains("/api/person/${encodeURIComponent(personName)}"));
+        assert!(
+            PERSON_HTML.contains("/api/set-full-name"),
+            "Save edits the display name, not the identity"
+        );
+    }
+
+    #[test]
+    fn the_new_person_input_warns_before_merging() {
+        // Typing an existing name adds to that person rather than creating one.
+        // That is usually what is meant, and was previously indistinguishable
+        // from creating until after the fact.
+        assert!(
+            FACES_HTML.contains("function existingPersonFor"),
+            "the page must be able to resolve a typed name to an existing person"
+        );
+        assert!(
+            FACES_HTML.contains("adds to ${hit.full_name}"),
+            "it must say which person, by the name a reader recognises"
+        );
+        assert!(
+            FACES_HTML.contains("Add to ${hit.full_name}"),
+            "the button must say what it will do"
+        );
+        // The plain inconsistency behind the complaint: this input was the only
+        // one of the three without the autocomplete the others already had.
+        assert!(
+            FACES_HTML.contains(r#"id="sel-np-input""#)
+                && FACES_HTML.contains(r#"maxlength="${MAX_NAME_LEN}" list="people-list""#),
+            "the New Person input needs the same datalist as the assign inputs"
+        );
+    }
+
+    #[test]
+    fn the_pages_identity_function_mirrors_the_servers() {
+        // A mirror in JavaScript, so the warning can be shown before posting.
+        // If the two drift the warning misfires, which is visible; these cases
+        // are the ones where a naive implementation would differ.
+        assert!(FACES_HTML.contains("function personIdentity"));
+        for needed in ["TURKISH_FOLD", "normalize('NFKD')", "replace(/_+$/"] {
+            assert!(
+                FACES_HTML.contains(needed),
+                "the mirror is missing {needed}, so it will disagree with the server"
+            );
+        }
     }
 
     #[test]
@@ -3079,7 +3252,7 @@ mod tests {
         let conn = mem_db_with_faces();
         conn.execute(
             "INSERT INTO faces (id, hash, bbox, embedding, cluster_id, person_label, confirmed, is_primary) \
-             VALUES (1, 'h1', '0,0,10,10', X'0000', 5, 'Alice', 1, 1)",
+             VALUES (1, 'h1', '0,0,10,10', X'0000', 5, 'alice', 1, 1)",
             [],
         )
         .unwrap();
@@ -3144,13 +3317,13 @@ mod tests {
         let conn = mem_db_with_faces();
         conn.execute(
             "INSERT INTO faces (id, hash, bbox, embedding, cluster_id, person_label, confirmed, is_primary) \
-             VALUES (1, 'h1', '0,0,10,10', X'0000', 5, 'Alice', 1, 1)",
+             VALUES (1, 'h1', '0,0,10,10', X'0000', 5, 'alice', 1, 1)",
             [],
         )
         .unwrap();
         conn.execute(
             "INSERT INTO faces (id, hash, bbox, embedding, cluster_id, person_label, confirmed, is_primary) \
-             VALUES (2, 'h2', '0,0,10,10', X'0000', NULL, 'Alice', 1, 0)",
+             VALUES (2, 'h2', '0,0,10,10', X'0000', NULL, 'alice', 1, 0)",
             [],
         )
         .unwrap();
@@ -3198,11 +3371,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn setting_a_full_name_leaves_the_identity_and_url_alone() {
+        // The point of splitting the two fields: correcting how a person is
+        // shown must not move their page. Renaming through this route and then
+        // finding them by the *old* identity is the whole contract.
+        let conn = mem_db_with_faces();
+        conn.execute(
+            "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
+             VALUES (1, 'h1', '0,0,10,10', X'0000', 'ozgur_demirtas', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO people (name, full_name) VALUES ('ozgur_demirtas','Özgür Demirtaş')",
+            [],
+        )
+        .unwrap();
+        // The search below joins faces to files, so the face needs one.
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash) VALUES ('/a.jpg', 'h1')",
+            [],
+        )
+        .unwrap();
+        let state = test_state(conn, true);
+        let result = handle_set_full_name(
+            State(state.clone()),
+            AxumJson(SetFullNameRequest {
+                name: "ozgur_demirtas".to_string(),
+                full_name: "Özgür".to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(result, Ok(StatusCode::OK));
+
+        let conn = state.conn.lock().unwrap();
+        let (id, full): (String, String) = conn
+            .query_row("SELECT name, full_name FROM people", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(
+            id, "ozgur_demirtas",
+            "identity unchanged, so /person/ still resolves"
+        );
+        assert_eq!(full, "Özgür", "display name updated");
+        let label: String = conn
+            .query_row("SELECT person_label FROM faces WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            label, "ozgur_demirtas",
+            "faces keep pointing at the identity"
+        );
+
+        // And the shortened display name still finds them, which is the case
+        // that broke the UI search before the two lookups were unified.
+        assert_eq!(
+            videre_core::person_search::search_by_person(&conn, "Özgür", None)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn rename_person_updates_label() {
         let conn = mem_db_with_faces();
         conn.execute(
             "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
-             VALUES (1, 'h1', '0,0,10,10', X'0000', 'Alice', 1)",
+             VALUES (1, 'h1', '0,0,10,10', X'0000', 'alice', 1)",
             [],
         )
         .unwrap();
@@ -3222,7 +3460,7 @@ mod tests {
                 r.get(0)
             })
             .unwrap();
-        assert_eq!(label, "Alicia");
+        assert_eq!(label, "alicia", "stored in identity form");
     }
 
     #[tokio::test]
@@ -3230,13 +3468,13 @@ mod tests {
         let conn = mem_db_with_faces();
         conn.execute(
             "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
-             VALUES (1, 'h1', '0,0,10,10', X'0000', 'Alice', 1)",
+             VALUES (1, 'h1', '0,0,10,10', X'0000', 'alice', 1)",
             [],
         )
         .unwrap();
         conn.execute(
             "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
-             VALUES (2, 'h2', '0,0,10,10', X'0000', 'Bob', 1)",
+             VALUES (2, 'h2', '0,0,10,10', X'0000', 'bob', 1)",
             [],
         )
         .unwrap();
@@ -3256,7 +3494,7 @@ mod tests {
                 r.get(0)
             })
             .unwrap();
-        assert_eq!(label, "Alice", "rename must not have applied on collision");
+        assert_eq!(label, "alice", "rename must not have applied on collision");
     }
 
     #[tokio::test]

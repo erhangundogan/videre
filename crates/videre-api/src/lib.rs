@@ -14,7 +14,7 @@ mod types;
 pub use error::{Error, Result};
 pub use faces::{
     assign, cluster_detail, delete_person, dissolve_cluster, faces_list, new_person, person_detail,
-    remove_face, rename_person, search_person, set_primary,
+    remove_face, rename_person, search_person, set_full_name, set_primary,
 };
 pub use images::{
     face_bytes_from_lookup, face_image_bytes, face_lookup, make_face_thumb, mime_for_ext,

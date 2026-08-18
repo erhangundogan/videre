@@ -16,6 +16,7 @@ pub mod library_stats;
 pub mod location;
 pub mod location_cluster;
 pub mod mime_probe;
+pub mod person;
 pub mod person_search;
 pub mod pipeline_runs;
 pub mod progress;

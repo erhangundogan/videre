@@ -102,9 +102,20 @@ pub fn normalise_bound(spec: &str) -> Result<String> {
 
 /// Hashes with at least one confirmed face labelled `name`.
 pub fn by_person(conn: &Connection, name: &str) -> Result<HashSet<String>> {
-    let mut stmt =
-        conn.prepare("SELECT DISTINCT hash FROM faces WHERE person_label = ?1 AND confirmed = 1")?;
-    let rows = stmt.query_map(rusqlite::params![name], |r| r.get::<_, String>(0))?;
+    // Both forms of a person's name resolve here; see `person::resolve_identities`.
+    let identities = crate::person::resolve_identities(conn, name)?;
+
+    let placeholders = std::iter::repeat_n("?", identities.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT DISTINCT hash FROM faces \
+         WHERE confirmed = 1 AND person_label IN ({placeholders})"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(identities.iter()), |r| {
+        r.get::<_, String>(0)
+    })?;
     Ok(rows.collect::<rusqlite::Result<HashSet<String>>>()?)
 }
 
@@ -476,6 +487,8 @@ mod tests {
         conn.execute_batch(
             "CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL,
                 person_label TEXT, confirmed INTEGER DEFAULT 0);
+             CREATE TABLE IF NOT EXISTS people (name TEXT PRIMARY KEY, full_name TEXT NOT NULL);
+             INSERT INTO people (name, full_name) VALUES ('alice','Alice');
              CREATE TABLE classifications (model_id TEXT NOT NULL, hash TEXT NOT NULL,
                 category TEXT NOT NULL, confidence REAL NOT NULL,
                 classified_at TEXT NOT NULL, PRIMARY KEY (model_id, hash));",
@@ -489,7 +502,7 @@ mod tests {
         let conn = db_with_faces_and_classes();
         conn.execute_batch(
             "INSERT INTO faces (hash, person_label, confirmed) VALUES
-                ('h1','Alice',1), ('h2','Alice',0), ('h3','Bob',1);",
+                ('h1','alice',1), ('h2','alice',0), ('h3','Bob',1);",
         )
         .unwrap();
         let got = by_person(&conn, "Alice").unwrap();
@@ -687,5 +700,144 @@ mod tests {
         ];
         apply_sort(&mut v, &parse_sort("distance,date").unwrap());
         assert_eq!(v[0].path, "/a.jpg", "equal rows keep their input order");
+    }
+}
+
+#[cfg(test)]
+mod person_matching_tests {
+    use super::*;
+
+    /// One person whose identity and display name differ, which is the case
+    /// every assertion here depends on.
+    fn db() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL,
+                person_label TEXT, confirmed INTEGER DEFAULT 0);
+             CREATE TABLE people (name TEXT PRIMARY KEY, full_name TEXT NOT NULL);
+             INSERT INTO people (name, full_name) VALUES
+                ('ahmet_ari','Ahmet Arı'), ('erhan','Erhan Gündoğan');
+             INSERT INTO faces (id, hash, person_label, confirmed) VALUES
+                (1,'h1','ahmet_ari',1), (2,'h2','ahmet_ari',1),
+                (3,'h3','erhan',1),
+                (4,'h4','ahmet_ari',0);",
+        )
+        .unwrap();
+        c
+    }
+
+    #[test]
+    fn the_identity_matches() {
+        assert_eq!(by_person(&db(), "ahmet_ari").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn the_display_name_matches_too() {
+        // What a user sees in the UI and copies out of it.
+        assert_eq!(by_person(&db(), "Ahmet Arı").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_display_name_that_normalizes_differently_still_matches() {
+        // The case that made matching the display name necessary: adding a
+        // surname changes the normalized form, so `Erhan Gündoğan` no longer
+        // normalizes to `erhan`. Searching the name on screen must still work.
+        let c = db();
+        assert_eq!(
+            videre_core_normalize("Erhan Gündoğan").as_deref(),
+            Some("erhan_gundogan"),
+            "precondition: the two forms genuinely disagree"
+        );
+        assert_eq!(by_person(&c, "Erhan Gündoğan").unwrap().len(), 1);
+        assert_eq!(by_person(&c, "erhan").unwrap().len(), 1, "identity too");
+    }
+
+    fn videre_core_normalize(s: &str) -> Option<String> {
+        crate::person::normalize(s)
+    }
+
+    #[test]
+    fn case_and_accents_are_ignored_on_both_forms() {
+        let c = db();
+        for q in ["AHMET ARI", "ahmet arı", "Ahmet_Ari", "ahmet_ari"] {
+            assert_eq!(by_person(&c, q).unwrap().len(), 2, "query {q:?}");
+        }
+    }
+
+    #[test]
+    fn unconfirmed_faces_are_excluded_whichever_form_is_used() {
+        // Face 4 is the same person but unconfirmed. Neither form may include
+        // it: an unreviewed guess is not an answer.
+        let c = db();
+        assert_eq!(by_person(&c, "ahmet_ari").unwrap().len(), 2);
+        assert_eq!(by_person(&c, "Ahmet Arı").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_renamed_person_is_found_by_a_turkish_display_name() {
+        // The trap: SQLite's LOWER() is ASCII-only, so `LOWER(full_name) = ?`
+        // left `Ö` untouched while Rust's to_lowercase produced `ö`, and the
+        // two never matched. Every Turkish display name was affected, and only
+        // after a rename - when identity and display first disagree - so it
+        // passed every check until someone renamed a person.
+        let c = db();
+        c.execute(
+            "UPDATE people SET full_name = 'Özgür' WHERE name = 'erhan'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(by_person(&c, "Özgür").unwrap().len(), 1, "as displayed");
+        assert_eq!(by_person(&c, "özgür").unwrap().len(), 1, "lowercased");
+        assert_eq!(by_person(&c, "ÖZGÜR").unwrap().len(), 1, "uppercased");
+        assert_eq!(by_person(&c, "erhan").unwrap().len(), 1, "identity still");
+    }
+
+    #[test]
+    fn two_people_sharing_a_display_name_are_both_returned() {
+        // They remain separate people - the identity is the key - but a search
+        // for the name they share cannot tell them apart, so it returns both.
+        // Silent merging is why an explicit "which people matched" is worth
+        // having; recorded as a separate feature.
+        let c = db();
+        c.execute(
+            "INSERT INTO people (name, full_name) VALUES ('ozgur_tamer','Özgür')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "UPDATE people SET full_name = 'Özgür' WHERE name = 'erhan'",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO faces (id, hash, person_label, confirmed) VALUES (7,'h7','ozgur_tamer',1)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(by_person(&c, "Özgür").unwrap().len(), 2, "both people");
+        assert_eq!(by_person(&c, "erhan").unwrap().len(), 1, "identity narrows");
+        assert_eq!(by_person(&c, "ozgur_tamer").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn an_unknown_person_is_empty_not_an_error() {
+        assert!(by_person(&db(), "Nobody At All").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_label_with_no_people_row_still_matches_by_identity() {
+        // A library mid-migration, or a label written before the table existed.
+        let c = db();
+        c.execute(
+            "INSERT INTO faces (id, hash, person_label, confirmed) VALUES (9,'h9','orphan',1)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(by_person(&c, "orphan").unwrap().len(), 1);
+        assert_eq!(
+            by_person(&c, "Orphan").unwrap().len(),
+            1,
+            "case-insensitive"
+        );
     }
 }

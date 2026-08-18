@@ -6,25 +6,36 @@ pub fn search_by_person(
     name: &str,
     limit: Option<usize>,
 ) -> rusqlite::Result<Vec<String>> {
+    // The same resolution `query::by_person` uses, so the CLI and the UI agree
+    // on who a typed name refers to. The UI lists display names and searches
+    // with what it listed, so identity-only matching lost anyone whose display
+    // name had been edited.
+    let identities = crate::person::resolve_identities(conn, name)?;
+    let placeholders = std::iter::repeat_n("?", identities.len())
+        .collect::<Vec<_>>()
+        .join(",");
     let limit_sql = limit.map(|n| format!(" LIMIT {n}")).unwrap_or_default();
     let sql = format!(
         "SELECT DISTINCT fh.path
          FROM faces f
          JOIN file_hashes fh ON fh.hash = f.hash
-         WHERE f.person_label = ?1 AND f.confirmed = 1
+         WHERE f.person_label IN ({placeholders}) AND f.confirmed = 1
          ORDER BY fh.path{limit_sql}"
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(rusqlite::params![name], |r| r.get(0))?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(identities.iter()), |r| r.get(0))?;
     rows.collect()
 }
 
 /// All distinct person labels with at least one confirmed face.
 pub fn list_persons(conn: &Connection) -> rusqlite::Result<Vec<String>> {
     let mut stmt = conn.prepare(
-        "SELECT DISTINCT person_label FROM faces
-         WHERE person_label IS NOT NULL AND confirmed = 1
-         ORDER BY person_label",
+        // Shows what a reader recognises. LEFT JOIN so a label with no people
+        // row yet - one written before the table existed - still appears.
+        "SELECT DISTINCT COALESCE(p.full_name, f.person_label) FROM faces f
+         LEFT JOIN people p ON p.name = f.person_label
+         WHERE f.person_label IS NOT NULL AND f.confirmed = 1
+         ORDER BY 1",
     )?;
     let rows = stmt.query_map([], |r| r.get(0))?;
     rows.collect()
@@ -43,11 +54,13 @@ mod tests {
              CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL,
              bbox TEXT NOT NULL, landmark TEXT, embedding BLOB NOT NULL,
              cluster_id INTEGER, person_label TEXT, confirmed INTEGER DEFAULT 0);
+             CREATE TABLE IF NOT EXISTS people (name TEXT PRIMARY KEY, full_name TEXT NOT NULL);
+             INSERT INTO people (name, full_name) VALUES ('alice','Alice'),('bob','Bob');
              INSERT INTO file_hashes VALUES ('/a.jpg','h1',0,NULL,NULL,'jpg',NULL,NULL,NULL,NULL,NULL,NULL);
              INSERT INTO file_hashes VALUES ('/b.jpg','h2',0,NULL,NULL,'jpg',NULL,NULL,NULL,NULL,NULL,NULL);
              INSERT INTO file_hashes VALUES ('/c.jpg','h3',0,NULL,NULL,'jpg',NULL,NULL,NULL,NULL,NULL,NULL);
-             INSERT INTO faces VALUES (1,'h1','0,0,50,50',NULL,X'0000',0,'Alice',1);
-             INSERT INTO faces VALUES (2,'h2','0,0,50,50',NULL,X'0000',0,'Alice',0);
+             INSERT INTO faces VALUES (1,'h1','0,0,50,50',NULL,X'0000',0,'alice',1);
+             INSERT INTO faces VALUES (2,'h2','0,0,50,50',NULL,X'0000',0,'alice',0);
              INSERT INTO faces VALUES (3,'h2','60,0,50,50',NULL,X'0000',1,'Bob',1);
              INSERT INTO faces VALUES (4,'h3','0,0,50,50',NULL,X'0000',NULL,NULL,0);"
         ).unwrap();
@@ -73,12 +86,14 @@ mod tests {
              CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL,
              bbox TEXT NOT NULL, landmark TEXT, embedding BLOB NOT NULL,
              cluster_id INTEGER, person_label TEXT, confirmed INTEGER DEFAULT 0);
+             CREATE TABLE IF NOT EXISTS people (name TEXT PRIMARY KEY, full_name TEXT NOT NULL);
+             INSERT INTO people (name, full_name) VALUES ('alice','Alice'),('bob','Bob');
              INSERT INTO file_hashes VALUES ('/x.jpg','hx',0,NULL,NULL,'jpg',NULL,NULL,NULL,NULL,NULL,NULL);
              INSERT INTO file_hashes VALUES ('/y.jpg','hy',0,NULL,NULL,'jpg',NULL,NULL,NULL,NULL,NULL,NULL);
              INSERT INTO file_hashes VALUES ('/z.jpg','hz',0,NULL,NULL,'jpg',NULL,NULL,NULL,NULL,NULL,NULL);
-             INSERT INTO faces VALUES (1,'hx','0,0,10,10',NULL,X'0000',0,'Alice',1);
-             INSERT INTO faces VALUES (2,'hy','0,0,10,10',NULL,X'0000',0,'Alice',1);
-             INSERT INTO faces VALUES (3,'hz','0,0,10,10',NULL,X'0000',0,'Alice',1);"
+             INSERT INTO faces VALUES (1,'hx','0,0,10,10',NULL,X'0000',0,'alice',1);
+             INSERT INTO faces VALUES (2,'hy','0,0,10,10',NULL,X'0000',0,'alice',1);
+             INSERT INTO faces VALUES (3,'hz','0,0,10,10',NULL,X'0000',0,'alice',1);"
         ).unwrap();
         crate::db::ensure_file_hashes_columns(&conn);
         let paths = search_by_person(&conn, "Alice", Some(2)).unwrap();
@@ -98,5 +113,28 @@ mod tests {
         setup(&conn);
         let names = list_persons(&conn).unwrap();
         assert_eq!(names, vec!["Alice", "Bob"]);
+    }
+    #[test]
+    fn a_renamed_display_name_still_finds_the_person() {
+        // The UI lists display names and searches with what it listed, so a
+        // person renamed to something that no longer normalizes to their
+        // identity became unfindable from the very list that offered them.
+        let conn = Connection::open_in_memory().unwrap();
+        setup(&conn);
+        conn.execute(
+            "UPDATE people SET full_name = 'Özgür' WHERE name = 'alice'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            search_by_person(&conn, "Özgür", None).unwrap().len(),
+            1,
+            "as listed in the UI"
+        );
+        assert_eq!(
+            search_by_person(&conn, "alice", None).unwrap().len(),
+            1,
+            "identity still works"
+        );
     }
 }
