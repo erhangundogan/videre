@@ -27,10 +27,14 @@ fn make_db(dir: &std::path::Path) -> std::path::PathBuf {
            ('/tmp/alice1_copy.jpg', 'hash1', 10, '2024-01-01T00:00:00+00:00', 'jpg'),
            ('/tmp/alice2.jpg', 'hash2', 10, '2021-01-01T00:00:00+00:00', 'jpg'),
            ('/tmp/bob.jpg', 'hash3', 10, '2022-01-01T00:00:00+00:00', 'jpg');
+         -- Faces hold the identity form; `people` holds what a reader sees,
+         -- which is what the stats tool lists.
+         CREATE TABLE IF NOT EXISTS people (name TEXT PRIMARY KEY, full_name TEXT NOT NULL);
+         INSERT INTO people (name, full_name) VALUES ('alice','Alice'),('bob','Bob');
          INSERT INTO faces (hash, bbox, embedding, person_label, confirmed) VALUES
-           ('hash1', '0,0,50,50', X'0000', 'Alice', 1),
-           ('hash2', '0,0,50,50', X'0000', 'Alice', 1),
-           ('hash3', '0,0,50,50', X'0000', 'Bob', 1);",
+           ('hash1', '0,0,50,50', X'0000', 'alice', 1),
+           ('hash2', '0,0,50,50', X'0000', 'alice', 1),
+           ('hash3', '0,0,50,50', X'0000', 'bob', 1);",
     )
     .unwrap();
     videre_core::db::ensure_file_hashes_columns(&conn);
@@ -61,8 +65,8 @@ fn make_dated_db(dir: &std::path::Path) -> std::path::PathBuf {
            ('/tmp/june.png',  'd3', 10, '2025-06-01T00:00:00', '2025-06-01T00:00:00', 'png'),
            ('/tmp/may-photo.png', 'd4', 10, '2025-05-11T00:00:00', '2025-05-11T00:00:00', 'png');
          INSERT INTO faces (hash, bbox, embedding, person_label, confirmed) VALUES
-           ('d1', '0,0,50,50', X'0000', 'Alice', 1),
-           ('d3', '0,0,50,50', X'0000', 'Alice', 1);",
+           ('d1', '0,0,50,50', X'0000', 'alice', 1),
+           ('d3', '0,0,50,50', X'0000', 'alice', 1);",
     )
     .unwrap();
     conn.execute(

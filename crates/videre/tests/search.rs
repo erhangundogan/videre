@@ -38,7 +38,7 @@ fn fixture_db_with_people() -> (TempDir, PathBuf) {
             bbox TEXT NOT NULL, landmark TEXT, embedding BLOB NOT NULL, cluster_id INTEGER,
             person_label TEXT, confirmed INTEGER DEFAULT 0, is_primary INTEGER DEFAULT 0);
          INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
-         VALUES ('h1','[]',x'00','Alice',1), ('h2','[]',x'00','Alice',1);",
+         VALUES ('h1','[]',x'00','alice',1), ('h2','[]',x'00','alice',1);",
     )
     .unwrap();
     (dir, db)

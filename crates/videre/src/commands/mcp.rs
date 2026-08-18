@@ -161,14 +161,12 @@ fn build_stats(db: &std::path::Path) -> anyhow::Result<StatsJson> {
 
     let (faces_count, people) = if videre_core::db::table_exists(&conn, "faces")? {
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM faces", [], |r| r.get(0))?;
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT person_label FROM faces
-             WHERE confirmed = 1 AND person_label IS NOT NULL
-             ORDER BY person_label",
-        )?;
-        let people: Vec<String> = stmt
-            .query_map([], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
+        // This was a second copy of the query in `person_search::list_persons`.
+        // Sharing it is not tidiness: the copy returned raw labels, so once
+        // labels became identities it would have reported `alice` where the
+        // labeling UI shows `Alice`, and only this surface would have been
+        // wrong.
+        let people = videre_core::person_search::list_persons(&conn)?;
         (count as u64, people)
     } else {
         (0, Vec::new())

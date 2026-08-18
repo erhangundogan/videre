@@ -22,11 +22,11 @@ fn make_db(dir: &std::path::Path) -> std::path::PathBuf {
          INSERT INTO file_hashes (path, hash, ext) VALUES ('/tmp/alice2.jpg', 'hash2', 'jpg');
          INSERT INTO file_hashes (path, hash, ext) VALUES ('/tmp/bob.jpg', 'hash3', 'jpg');
          INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
-           VALUES ('hash1', '0,0,50,50', X'0000', 'Alice', 1);
+           VALUES ('hash1', '0,0,50,50', X'0000', 'alice', 1);
          INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
-           VALUES ('hash2', '0,0,50,50', X'0000', 'Alice', 1);
+           VALUES ('hash2', '0,0,50,50', X'0000', 'alice', 1);
          INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
-           VALUES ('hash3', '0,0,50,50', X'0000', 'Bob', 1);",
+           VALUES ('hash3', '0,0,50,50', X'0000', 'bob', 1);",
     )
     .unwrap();
     videre_core::db::ensure_file_hashes_columns(&conn);

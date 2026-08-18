@@ -4,7 +4,11 @@ use serde::Serialize;
 /// (the primary, or lowest id) used as the card thumbnail.
 #[derive(Serialize, Clone)]
 pub struct PersonData {
+    /// Identity: normalized, what URLs and actions use.
     pub label: String,
+    /// What a reader sees. Falls back to `label` for a person whose row
+    /// predates the people table.
+    pub full_name: String,
     pub face_ids: Vec<i64>,
     pub representative_id: i64,
     pub hashes: Vec<String>,

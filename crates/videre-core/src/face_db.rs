@@ -44,6 +44,12 @@ pub fn ensure_people_table(conn: &Connection) {
 
 pub fn create_faces_table(conn: &Connection) -> rusqlite::Result<()> {
     ensure_people_table(conn);
+    // Writers migrate; readers do not. `open_wal` only creates the empty table,
+    // because `stats` and `search` open databases they must not write to - a
+    // read-only mount or another process holding the writer lock would turn a
+    // report into a failure. This runs from the commands that already write
+    // faces, and is a single COUNT once the migration has happened.
+    let _ = migrate_person_labels(conn);
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS faces (
             id            INTEGER PRIMARY KEY,
@@ -515,5 +521,204 @@ mod tests {
         assert_eq!(h1.len(), 1, "unconfirmed/unlabeled face must be excluded");
         assert_eq!(h1[0].1, "Alice");
         assert_eq!(map["h2"][0].1, "Bob");
+    }
+}
+
+/// One-off: give every existing `person_label` an identity and a display name.
+///
+/// Before this, a person was a single string on every face row, compared with
+/// `=`. `alice` and `Alice` were two people. Afterwards `faces.person_label`
+/// holds the identity form and `people` holds what to show.
+///
+/// Idempotent and guarded: it runs only when `people` is empty and labelled
+/// faces exist, so a second call does nothing. It is the one irreversible step
+/// in this change, so it reports what it did rather than working silently.
+///
+/// Returns `(people, merged)` - how many people exist afterwards, and how many
+/// labels collapsed into an existing one.
+pub fn migrate_person_labels(conn: &Connection) -> rusqlite::Result<(usize, usize)> {
+    ensure_people_table(conn);
+
+    let already: i64 = conn.query_row("SELECT COUNT(*) FROM people", [], |r| r.get(0))?;
+    if already > 0 {
+        return Ok((already as usize, 0));
+    }
+
+    // (label, face count), most-used first: when two labels collapse to one
+    // identity, the more-used spelling wins the display name. A tie falls to
+    // the one containing an uppercase letter, which is more likely to be the
+    // proper noun someone typed deliberately.
+    let mut labels: Vec<(String, i64)> = {
+        let mut stmt = conn.prepare(
+            "SELECT person_label, COUNT(*) FROM faces \
+             WHERE person_label IS NOT NULL AND person_label <> '' \
+             GROUP BY person_label",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    if labels.is_empty() {
+        return Ok((0, 0));
+    }
+    labels.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then(
+                b.0.chars()
+                    .any(|c| c.is_uppercase())
+                    .cmp(&a.0.chars().any(|c| c.is_uppercase())),
+            )
+            .then(a.0.cmp(&b.0))
+    });
+
+    let mut chosen: Vec<(String, String, String)> = Vec::new(); // (old label, name, full_name)
+    let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut merged = 0usize;
+
+    for (label, _) in &labels {
+        let Some(name) = crate::person::normalize(label) else {
+            // Nothing usable: leave the label alone rather than inventing an
+            // identity, so a human can look at it.
+            continue;
+        };
+        let full = crate::person::display_name(label).unwrap_or_else(|| label.clone());
+        if seen.contains_key(&name) {
+            merged += 1;
+        } else {
+            seen.insert(name.clone(), full.clone());
+        }
+        chosen.push((label.clone(), name, full));
+    }
+
+    let tx = conn.unchecked_transaction()?;
+    for (name, full) in &seen {
+        tx.execute(
+            "INSERT INTO people (name, full_name) VALUES (?1, ?2) \
+             ON CONFLICT(name) DO NOTHING",
+            rusqlite::params![name, full],
+        )?;
+    }
+    for (old, name, _) in &chosen {
+        if old != name {
+            tx.execute(
+                "UPDATE faces SET person_label = ?1 WHERE person_label = ?2",
+                rusqlite::params![name, old],
+            )?;
+        }
+    }
+    tx.commit()?;
+
+    Ok((seen.len(), merged))
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    fn db() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        create_faces_table(&c).unwrap();
+        c
+    }
+
+    fn label(c: &Connection, id: i64, label: &str) {
+        c.execute(
+            "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
+             VALUES (?1, ?2, '0,0,9,9', X'0000', ?3, 1)",
+            rusqlite::params![id, format!("h{id}"), label],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn labels_become_identities_and_display_names() {
+        let c = db();
+        label(&c, 1, "Işıl Özyeğin");
+        label(&c, 2, "Erhan");
+        let (people, merged) = migrate_person_labels(&c).unwrap();
+        assert_eq!((people, merged), (2, 0));
+
+        let rows: Vec<(String, String)> = c
+            .prepare("SELECT name, full_name FROM people ORDER BY name")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("erhan".to_string(), "Erhan".to_string()),
+                ("isil_ozyegin".to_string(), "Işıl Özyeğin".to_string()),
+            ]
+        );
+
+        let labels: Vec<String> = c
+            .prepare("SELECT person_label FROM faces ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(labels, vec!["isil_ozyegin", "erhan"]);
+    }
+
+    #[test]
+    fn case_variants_merge_keeping_the_more_used_spelling() {
+        // The bug being fixed: these were two people. Afterwards they are one,
+        // displayed with the spelling that appeared on more faces.
+        let c = db();
+        label(&c, 1, "alice");
+        label(&c, 2, "Alice");
+        label(&c, 3, "Alice");
+        let (people, merged) = migrate_person_labels(&c).unwrap();
+        assert_eq!((people, merged), (1, 1));
+
+        let full: String = c
+            .query_row("SELECT full_name FROM people", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(full, "Alice", "the spelling on more faces wins");
+        let distinct: i64 = c
+            .query_row("SELECT COUNT(DISTINCT person_label) FROM faces", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(distinct, 1, "one identity now");
+    }
+
+    #[test]
+    fn running_it_twice_changes_nothing() {
+        let c = db();
+        label(&c, 1, "Erhan");
+        let first = migrate_person_labels(&c).unwrap();
+        let second = migrate_person_labels(&c).unwrap();
+        assert_eq!(first, (1, 0));
+        assert_eq!(second.0, 1, "second run is a no-op, not a re-migration");
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM people", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn an_empty_library_is_not_an_error() {
+        let c = db();
+        assert_eq!(migrate_person_labels(&c).unwrap(), (0, 0));
+    }
+
+    #[test]
+    fn a_label_with_no_usable_identity_is_left_alone() {
+        // "!!!" normalizes to nothing. Inventing an identity would be worse
+        // than leaving it for a human to look at.
+        let c = db();
+        label(&c, 1, "!!!");
+        label(&c, 2, "Erhan");
+        let (people, _) = migrate_person_labels(&c).unwrap();
+        assert_eq!(people, 1);
+        let kept: String = c
+            .query_row("SELECT person_label FROM faces WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(kept, "!!!", "untouched rather than erased");
     }
 }
