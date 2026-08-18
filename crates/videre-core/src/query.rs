@@ -102,36 +102,8 @@ pub fn normalise_bound(spec: &str) -> Result<String> {
 
 /// Hashes with at least one confirmed face labelled `name`.
 pub fn by_person(conn: &Connection, name: &str) -> Result<HashSet<String>> {
-    // Matches either form of a person's name, because both are things a user
-    // reasonably types: the identity from the URL, and the display name from
-    // the screen. They stop agreeing the moment someone renames a person -
-    // `Erhan Gündoğan` normalizes to `erhan_gundogan`, not `erhan` - so
-    // matching only the normalized query would fail on exactly the name shown.
-    //
-    // :warning: The display-name comparison happens **in Rust, not SQL**.
-    // SQLite's `LOWER()` is ASCII-only: it leaves `Ö` alone while Rust's
-    // `to_lowercase` produces `ö`, so `LOWER(full_name) = ?` silently never
-    // matched any name containing a Turkish character. That is most of the
-    // names in the library this was built for, and it only surfaced after a
-    // rename, when the two forms first disagree.
-    let normalized = crate::person::normalize(name).unwrap_or_else(|| name.to_string());
-    let typed = name.trim().to_lowercase();
-
-    // `people` is small - one row per person - so reading it whole costs
-    // nothing and keeps the comparison in a language that understands Unicode.
-    let mut identities: Vec<String> = vec![normalized.clone()];
-    if crate::db::table_exists(conn, "people").unwrap_or(false) {
-        let mut stmt = conn.prepare("SELECT name, full_name FROM people")?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-        for row in rows {
-            let (id, full) = row?;
-            let matches_display = full.trim().to_lowercase() == typed
-                || crate::person::normalize(&full).as_deref() == Some(normalized.as_str());
-            if matches_display && !identities.contains(&id) {
-                identities.push(id);
-            }
-        }
-    }
+    // Both forms of a person's name resolve here; see `person::resolve_identities`.
+    let identities = crate::person::resolve_identities(conn, name)?;
 
     let placeholders = std::iter::repeat_n("?", identities.len())
         .collect::<Vec<_>>()
