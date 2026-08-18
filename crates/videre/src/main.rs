@@ -62,8 +62,35 @@ fn apply_configured_read_rate() {
     }
 }
 
+/// Appends `Full documentation: https://docs.videre.sh/commands/<name>/` to
+/// every subcommand's `--help`.
+///
+/// Derived from the subcommand name rather than written on each `Args` struct,
+/// because fifteen hand-written URLs are fifteen chances to paste the wrong one
+/// and one more thing to forget when a command is added. The docs site uses the
+/// subcommand name as its page slug, so the mapping is total by construction;
+/// `docs_links_point_at_pages_that_exist` in `tests/docs_flags.rs` asserts a
+/// page exists for each.
+fn with_docs_links(cmd: clap::Command) -> clap::Command {
+    let names: Vec<String> = cmd
+        .get_subcommands()
+        .map(|s| s.get_name().to_string())
+        .collect();
+    names.into_iter().fold(cmd, |c, name| {
+        let url = format!("Full documentation: https://docs.videre.sh/commands/{name}/");
+        c.mut_subcommand(name, |s| s.after_help(url))
+    })
+}
+
 fn main() {
-    let cli = Cli::parse();
+    let cli = {
+        use clap::{CommandFactory, FromArgMatches};
+        let matches = with_docs_links(Cli::command()).get_matches();
+        match Cli::from_arg_matches(&matches) {
+            Ok(c) => c,
+            Err(e) => e.exit(),
+        }
+    };
     videre_core::thumb_cache::migrate_legacy_dupe_cache();
     apply_configured_read_rate();
     let result = match cli.command {

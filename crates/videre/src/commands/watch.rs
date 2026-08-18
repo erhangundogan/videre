@@ -21,9 +21,9 @@ pub struct WatchArgs {
 
     /// SQLite database to populate (same file videre report reads).
     /// Default: resolved from ~/.videre; see 'videre config'
-    ///
-    /// `--output-sqlite` is the original name, kept working: inherited from
-    /// `videre scan`, which predates the `--db` every reader uses.
+    //
+    // `--output-sqlite` is the original name, inherited from `videre scan`, and
+    // still works. Demoted from a doc comment for the same reason as there.
     #[arg(long, alias = "output-sqlite")]
     db: Option<PathBuf>,
 
