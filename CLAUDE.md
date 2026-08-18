@@ -308,6 +308,32 @@ Anything in this path that consults the filesystem reintroduces the bug.
 It also made the message honest: a dead drive reports that the `stat` never
 answered, instead of claiming a read took 20s when nothing was read.
 
+### A model is loaded inside `with_work`, never before it
+
+`videre_core::work` owns "compute what is pending, narrow it by the selection,
+stop if nothing is left". `embed` and `classify` run their whole tail inside
+`with_work`, so `Embedder::load` is unreachable when there is nothing to
+process. That is structural, not a convention: there is no code path from
+`Work::Nothing` to the closure, and a unit test asserts the closure does not
+run.
+
+It exists because the convention failed. All three commands hand-wrote the same
+guard, `classify`'s copy was wrong, and it downloaded **778MB of SigLIP from
+inside a unit test**. On CI those weights entered the model cache and woke
+`cpu_batch_matches_single_image_baseline`, which skips when weights are absent
+and had skipped since the day it was written; the Ubuntu job went from ~3
+minutes to nearly 40. Three copies meant no single test could cover it.
+
+:warning: **`faces` shares `narrow` but not `with_work`, deliberately.**
+Clustering runs on every path through that command, including when there is
+nothing new to detect, so gating the tail on "is there work" would silently stop
+it. Detection is the optional part there, not the command.
+
+Messages are unified rather than per-command: `pending item(s)` everywhere, one
+sentence per state. A command needing different wording passes it in via
+`Words::saying` rather than printing its own, which is how three names for one
+idea appeared in the first place.
+
 ### Every filter goes through `videre_core::selection`
 
 One layer, two shapes. `RowSelection` filters rows that exist in the database
