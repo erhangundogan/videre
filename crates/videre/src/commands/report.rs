@@ -2050,15 +2050,21 @@ const PERSON_HTML: &str = r##"<!DOCTYPE html>
 
     async function load() {
       try {
-        // The heading is what a reader recognises; the URL stays the identity.
-        document.getElementById('person-title').textContent = data.full_name || personName;
-        const ri = document.getElementById('renameInput');
-        if (ri && !ri.value) ri.value = data.full_name || personName;
         document.title = personName;
-        document.getElementById('renameInput').value = personName;
         const r = await fetch(`/api/person/${encodeURIComponent(personName)}`);
         if (!r.ok) throw new Error('person fetch failed');
         const data = await r.json();
+        // After the fetch, not before: `data` is a `const` declared here, and
+        // reading it earlier threw a ReferenceError that aborted the whole
+        // function, so the page showed an error and no photos at all.
+        //
+        // The heading and the rename box show the display name; the URL and
+        // every request keep using the identity.
+        const shown = data.full_name || personName;
+        document.getElementById('person-title').textContent = shown;
+        document.title = shown;
+        const ri = document.getElementById('renameInput');
+        if (ri) ri.value = shown;
         facesData = data.faces;
         document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
         render();
@@ -3149,6 +3155,40 @@ mod tests {
                 && FACES_HTML.contains("toggleSingleton")
                 && FACES_HTML.contains("newPersonFromSelection"),
             "Singleton multi-select and bulk assign must be wired"
+        );
+    }
+
+    #[test]
+    fn the_person_page_reads_its_data_after_declaring_it() {
+        // A `const` read before its declaration throws a ReferenceError that
+        // aborts the whole function, so the page showed "can't access lexical
+        // declaration 'data' before initialization" and no photos at all - even
+        // though the person and their 15 faces were perfectly fine in the
+        // database. Shipped once; asserted from now on.
+        let decl = PERSON_HTML
+            .find("const data = await r.json()")
+            .expect("load() must fetch into `data`");
+        let first_use = PERSON_HTML
+            .find("data.full_name")
+            .expect("the heading must come from the fetched person");
+        assert!(
+            decl < first_use,
+            "`data` is used at {first_use} but only declared at {decl}, which throws \
+             at runtime and leaves the page empty"
+        );
+    }
+
+    #[test]
+    fn the_person_page_shows_the_display_name_and_links_by_identity() {
+        assert!(
+            PERSON_HTML.contains("const shown = data.full_name || personName;"),
+            "the heading falls back to the identity when there is no display name"
+        );
+        // Requests keep using the identity, which is what the URL carries.
+        assert!(PERSON_HTML.contains("/api/person/${encodeURIComponent(personName)}"));
+        assert!(
+            PERSON_HTML.contains("/api/set-full-name"),
+            "Save edits the display name, not the identity"
         );
     }
 

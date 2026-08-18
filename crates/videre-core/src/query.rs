@@ -714,3 +714,96 @@ mod tests {
         assert_eq!(v[0].path, "/a.jpg", "equal rows keep their input order");
     }
 }
+
+#[cfg(test)]
+mod person_matching_tests {
+    use super::*;
+
+    /// One person whose identity and display name differ, which is the case
+    /// every assertion here depends on.
+    fn db() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL,
+                person_label TEXT, confirmed INTEGER DEFAULT 0);
+             CREATE TABLE people (name TEXT PRIMARY KEY, full_name TEXT NOT NULL);
+             INSERT INTO people (name, full_name) VALUES
+                ('ahmet_ari','Ahmet Arı'), ('erhan','Erhan Gündoğan');
+             INSERT INTO faces (id, hash, person_label, confirmed) VALUES
+                (1,'h1','ahmet_ari',1), (2,'h2','ahmet_ari',1),
+                (3,'h3','erhan',1),
+                (4,'h4','ahmet_ari',0);",
+        )
+        .unwrap();
+        c
+    }
+
+    #[test]
+    fn the_identity_matches() {
+        assert_eq!(by_person(&db(), "ahmet_ari").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn the_display_name_matches_too() {
+        // What a user sees in the UI and copies out of it.
+        assert_eq!(by_person(&db(), "Ahmet Arı").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_display_name_that_normalizes_differently_still_matches() {
+        // The case that made matching the display name necessary: adding a
+        // surname changes the normalized form, so `Erhan Gündoğan` no longer
+        // normalizes to `erhan`. Searching the name on screen must still work.
+        let c = db();
+        assert_eq!(
+            videre_core_normalize("Erhan Gündoğan").as_deref(),
+            Some("erhan_gundogan"),
+            "precondition: the two forms genuinely disagree"
+        );
+        assert_eq!(by_person(&c, "Erhan Gündoğan").unwrap().len(), 1);
+        assert_eq!(by_person(&c, "erhan").unwrap().len(), 1, "identity too");
+    }
+
+    fn videre_core_normalize(s: &str) -> Option<String> {
+        crate::person::normalize(s)
+    }
+
+    #[test]
+    fn case_and_accents_are_ignored_on_both_forms() {
+        let c = db();
+        for q in ["AHMET ARI", "ahmet arı", "Ahmet_Ari", "ahmet_ari"] {
+            assert_eq!(by_person(&c, q).unwrap().len(), 2, "query {q:?}");
+        }
+    }
+
+    #[test]
+    fn unconfirmed_faces_are_excluded_whichever_form_is_used() {
+        // Face 4 is the same person but unconfirmed. Neither form may include
+        // it: an unreviewed guess is not an answer.
+        let c = db();
+        assert_eq!(by_person(&c, "ahmet_ari").unwrap().len(), 2);
+        assert_eq!(by_person(&c, "Ahmet Arı").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn an_unknown_person_is_empty_not_an_error() {
+        assert!(by_person(&db(), "Nobody At All").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_label_with_no_people_row_still_matches_by_identity() {
+        // A library mid-migration, or a label written before the table existed.
+        let c = db();
+        c.execute(
+            "INSERT INTO faces (id, hash, person_label, confirmed) VALUES (9,'h9','orphan',1)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(by_person(&c, "orphan").unwrap().len(), 1);
+        assert_eq!(
+            by_person(&c, "Orphan").unwrap().len(),
+            1,
+            "case-insensitive"
+        );
+    }
+}

@@ -722,3 +722,118 @@ mod migration_tests {
         assert_eq!(kept, "!!!", "untouched rather than erased");
     }
 }
+
+#[cfg(test)]
+mod people_table_tests {
+    use super::*;
+
+    #[test]
+    fn ensure_people_table_is_idempotent_and_keeps_rows() {
+        // It runs on every open, so a second call must not disturb what is
+        // there - the same property `ensure_file_hashes_columns` relies on.
+        let c = Connection::open_in_memory().unwrap();
+        ensure_people_table(&c);
+        c.execute(
+            "INSERT INTO people (name, full_name) VALUES ('erhan','Erhan')",
+            [],
+        )
+        .unwrap();
+        ensure_people_table(&c);
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM people", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "an existing row survives a second ensure");
+    }
+
+    #[test]
+    fn two_people_cannot_share_an_identity() {
+        // The primary key is what makes this a guarantee rather than something
+        // each write path has to remember to check.
+        let c = Connection::open_in_memory().unwrap();
+        ensure_people_table(&c);
+        c.execute(
+            "INSERT INTO people (name, full_name) VALUES ('erhan','Erhan')",
+            [],
+        )
+        .unwrap();
+        let second = c.execute(
+            "INSERT INTO people (name, full_name) VALUES ('erhan','Erhan Gündoğan')",
+            [],
+        );
+        assert!(second.is_err(), "the database refuses, not the caller");
+    }
+
+    #[test]
+    fn a_tie_on_face_count_prefers_the_capitalised_spelling() {
+        // Two spellings, one face each: `Alice` is likelier to be the name
+        // someone typed deliberately than `alice`.
+        let c = Connection::open_in_memory().unwrap();
+        create_faces_table(&c).unwrap();
+        for (id, label) in [(1, "alice"), (2, "Alice")] {
+            c.execute(
+                "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
+                 VALUES (?1, ?2, '0,0,9,9', X'0000', ?3, 1)",
+                rusqlite::params![id, format!("h{id}"), label],
+            )
+            .unwrap();
+        }
+        let (people, merged) = migrate_person_labels(&c).unwrap();
+        assert_eq!((people, merged), (1, 1));
+        let full: String = c
+            .query_row("SELECT full_name FROM people", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(full, "Alice");
+    }
+
+    #[test]
+    fn accented_and_unaccented_spellings_become_one_person() {
+        // `Şefik` and `Sefik` fold to the same identity. That is the intent -
+        // and the reason the display name is kept separately, so the accented
+        // spelling is not lost.
+        let c = Connection::open_in_memory().unwrap();
+        create_faces_table(&c).unwrap();
+        for (id, label) in [(1, "Şefik"), (2, "Şefik"), (3, "Sefik")] {
+            c.execute(
+                "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
+                 VALUES (?1, ?2, '0,0,9,9', X'0000', ?3, 1)",
+                rusqlite::params![id, format!("h{id}"), label],
+            )
+            .unwrap();
+        }
+        let (people, merged) = migrate_person_labels(&c).unwrap();
+        assert_eq!((people, merged), (1, 1));
+        let (name, full): (String, String) = c
+            .query_row("SELECT name, full_name FROM people", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(name, "sefik");
+        assert_eq!(full, "Şefik", "the accented spelling had more faces");
+    }
+
+    #[test]
+    fn every_migrated_face_points_at_a_person_row() {
+        // The invariant worth asserting on a real library: no face left holding
+        // a label that `people` does not know about.
+        let c = Connection::open_in_memory().unwrap();
+        create_faces_table(&c).unwrap();
+        for (id, label) in [(1, "Işıl Özyeğin"), (2, "Ahmet Arı"), (3, "erhan")] {
+            c.execute(
+                "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
+                 VALUES (?1, ?2, '0,0,9,9', X'0000', ?3, 1)",
+                rusqlite::params![id, format!("h{id}"), label],
+            )
+            .unwrap();
+        }
+        migrate_person_labels(&c).unwrap();
+        let orphans: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM faces f LEFT JOIN people p ON p.name = f.person_label \
+                 WHERE f.person_label IS NOT NULL AND p.name IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(orphans, 0);
+    }
+}
