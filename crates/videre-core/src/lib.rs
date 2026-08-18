@@ -1,5 +1,6 @@
 pub mod classify;
 pub mod db;
+pub mod disk;
 pub mod embeddings;
 pub mod embeddings_db;
 pub mod face_cluster;

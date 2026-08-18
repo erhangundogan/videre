@@ -97,6 +97,56 @@ fn run_text(args: &StatsArgs) -> anyhow::Result<()> {
         }
     }
     println!();
+    println!("By type:");
+    let types = videre_core::library_stats::by_type(&conn, 12)?;
+    if types.is_empty() {
+        println!("  nothing scanned yet");
+    } else {
+        for ty in &types {
+            println!(
+                "  {:8} {:24} {:>8} {:>10}",
+                ty.ext,
+                ty.mime,
+                ty.files,
+                videre_core::disk::human_bytes(ty.bytes.max(0) as u64),
+            );
+        }
+    }
+
+    println!();
+    println!("Disk use:");
+    // The thumbnail cache is passed in rather than looked up inside `usage`,
+    // because it does not always live under the home directory.
+    let usage = match videre_core::home::videre_home() {
+        Ok(h) => videre_core::disk::usage(&h, Some(&db), &videre_core::thumb_cache::cache_dir()),
+        Err(_) => Vec::new(),
+    };
+    if usage.is_empty() {
+        println!("  nothing stored yet");
+    } else {
+        let total: u64 = usage.iter().map(|u| u.bytes).sum();
+        let rebuildable: u64 = usage
+            .iter()
+            .filter(|u| u.rebuildable)
+            .map(|u| u.bytes)
+            .sum();
+        for u in &usage {
+            println!(
+                "  {:18} {:>10}  {}",
+                u.label,
+                videre_core::disk::human_bytes(u.bytes),
+                if u.rebuildable { "(rebuildable)" } else { "" },
+            );
+        }
+        println!(
+            "  {:18} {:>10}  ({} of it rebuildable)",
+            "total",
+            videre_core::disk::human_bytes(total),
+            videre_core::disk::human_bytes(rebuildable),
+        );
+    }
+
+    println!();
     println!("Pipeline status:");
     for p in &pipelines {
         let last_run = p.last_run_at.as_deref().unwrap_or("never run");
