@@ -192,3 +192,97 @@ mod tests {
         assert_eq!(progress.done.load(Ordering::Relaxed), 1000);
     }
 }
+
+/// Formats a duration the way a person reads one.
+///
+/// `stats` printed raw milliseconds, so a run that took an hour and a half read
+/// as `5412000ms`, and every finished-in line elsewhere printed whole seconds,
+/// so a two-hour `faces` run said `done in 7284s`. Both are technically the
+/// number and neither is the answer to "how long did that take".
+///
+/// Lives here rather than in `stats` because four commands print elapsed time -
+/// `embed`, `classify`, `faces` and `locations` - and each had rolled its own.
+///
+/// Sub-second keeps milliseconds, since that is the resolution that matters
+/// when something is fast. Above a minute the seconds are dropped from the
+/// hours form: nobody reads `2h 14m 7s`.
+pub fn human_duration(d: std::time::Duration) -> String {
+    let ms = d.as_millis();
+    if ms < 1000 {
+        return format!("{ms}ms");
+    }
+    let secs = d.as_secs();
+    match secs {
+        0..=9 => {
+            // One decimal only while it still carries information: at 3.2s the
+            // tenths are a tenth of the runtime, at 41s they are noise.
+            let s = d.as_millis() as f64 / 1000.0;
+            format!("{s:.1}s")
+        }
+        10..=59 => format!("{secs}s"),
+        60..=3599 => {
+            let (m, s) = (secs / 60, secs % 60);
+            if s == 0 {
+                format!("{m}m")
+            } else {
+                format!("{m}m {s}s")
+            }
+        }
+        _ => {
+            let (h, m) = (secs / 3600, (secs % 3600) / 60);
+            if m == 0 {
+                format!("{h}h")
+            } else {
+                format!("{h}h {m}m")
+            }
+        }
+    }
+}
+
+/// `human_duration` for a millisecond count, which is how `pipeline_runs`
+/// stores what it recorded.
+pub fn human_duration_ms(ms: u64) -> String {
+    human_duration(std::time::Duration::from_millis(ms))
+}
+
+#[cfg(test)]
+mod duration_tests {
+    use super::{human_duration, human_duration_ms};
+    use std::time::Duration;
+
+    #[test]
+    fn reads_the_way_a_person_would_say_it() {
+        let cases = [
+            (Duration::from_millis(0), "0ms"),
+            (Duration::from_millis(840), "840ms"),
+            (Duration::from_millis(1000), "1.0s"),
+            (Duration::from_millis(3240), "3.2s"),
+            (Duration::from_secs(41), "41s"),
+            (Duration::from_secs(59), "59s"),
+            (Duration::from_secs(60), "1m"),
+            (Duration::from_secs(95), "1m 35s"),
+            (Duration::from_secs(3599), "59m 59s"),
+            (Duration::from_secs(3600), "1h"),
+            (Duration::from_secs(8040), "2h 14m"),
+        ];
+        for (d, want) in cases {
+            assert_eq!(human_duration(d), want, "for {d:?}");
+        }
+    }
+
+    #[test]
+    fn the_millisecond_form_matches() {
+        // What `stats` has: pipeline_runs stores duration_ms.
+        assert_eq!(human_duration_ms(0), "0ms");
+        assert_eq!(human_duration_ms(5_412_000), "1h 30m");
+    }
+
+    #[test]
+    fn no_unit_is_ever_shown_as_zero() {
+        // "2h 0m" and "1m 0s" are noise; the shorter form says the same thing.
+        for secs in [3600, 7200, 60, 120, 600] {
+            let s = human_duration(Duration::from_secs(secs));
+            assert!(!s.contains(" 0m") && !s.contains(" 0s"), "{secs}s gave {s}");
+        }
+    }
+}

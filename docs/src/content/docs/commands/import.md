@@ -110,7 +110,7 @@ date is worse than a missing one.
 
 ### Apple Photos and iPhoto
 
-:::danger[Grant Full Disk Access first]
+:::caution[Grant Full Disk Access first]
 macOS protects a `.photoslibrary`, so by default videre cannot read inside it
 at all and the import reports that it could not find your files.
 

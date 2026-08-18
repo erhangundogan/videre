@@ -315,7 +315,10 @@ pub(crate) fn format_summary(
             c.clustered_faces, c.total_faces, c.cluster_count, eps
         ));
     }
-    s.push_str(&format!(", done in {}s", elapsed.as_secs()));
+    s.push_str(&format!(
+        ", done in {}",
+        videre_core::progress::human_duration(elapsed)
+    ));
     let error_count = result.write_errors + result.detect_errors;
     if error_count > 0 {
         s.push_str(&format!(", {error_count} error(s) (see above)"));
