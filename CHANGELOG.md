@@ -13,6 +13,28 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.15.10] - 2026-08-18
+
+### Added
+
+- **`videre stats` now reports what videre is using on disk**, largest first,
+  marking which stores are safe to delete because they rebuild. Thumbnails and
+  place names regenerate; the database and embeddings do not.
+- **`videre stats` now shows what the library is made of**, by file extension
+  with the mime type alongside. These are the values `--ext` and `--mime` take.
+
+### Changed
+
+- **Durations are readable.** `stats` printed raw milliseconds, so a run of an
+  hour and a half showed as `5412000ms`. Elapsed times across `stats`, `embed`,
+  `classify` and `faces` now read `2h 14m`, `41s`, `3.2s`, `840ms`.
+
+### Fixed
+
+- Embeddings are counted per library rather than per home. Other libraries
+  sharing a `VIDERE_HOME` are reported separately instead of being added to
+  whichever one you asked about.
+
 ## [0.15.9] - 2026-08-18
 
 ### Fixed
