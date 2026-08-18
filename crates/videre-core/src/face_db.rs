@@ -244,9 +244,13 @@ pub type LabeledFacesByHash = HashMap<String, Vec<LabeledFace>>;
 /// report generation without N+1 overhead.
 pub fn labeled_faces_by_hash(conn: &Connection) -> rusqlite::Result<LabeledFacesByHash> {
     let mut stmt = conn.prepare(
-        "SELECT hash, id, bbox, person_label FROM faces \
-         WHERE confirmed = 1 AND person_label IS NOT NULL \
-         ORDER BY hash, id",
+        // The display name, not the identity: this feeds the face overlays in
+        // `report --show-faces`, which a person reads. LEFT JOIN so a label
+        // written before the people table existed still renders, as itself.
+        "SELECT f.hash, f.id, f.bbox, COALESCE(p.full_name, f.person_label) \
+         FROM faces f LEFT JOIN people p ON p.name = f.person_label \
+         WHERE f.confirmed = 1 AND f.person_label IS NOT NULL \
+         ORDER BY f.hash, f.id",
     )?;
     let rows = stmt.query_map([], |r| {
         Ok((
@@ -835,5 +839,49 @@ mod people_table_tests {
             )
             .unwrap();
         assert_eq!(orphans, 0);
+    }
+}
+
+#[cfg(test)]
+mod overlay_label_tests {
+    use super::*;
+
+    fn db() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        create_faces_table(&c).unwrap();
+        c.execute_batch(
+            "INSERT INTO people (name, full_name) VALUES ('ozgur_demirtas','Özgür Demirtaş');
+             INSERT INTO faces (id,hash,bbox,embedding,person_label,confirmed) VALUES
+               (1,'h1','10,10,60,60',X'0000','ozgur_demirtas',1),
+               (2,'h2','10,10,60,60',X'0000','no_row_yet',1),
+               (3,'h3','10,10,60,60',X'0000','ozgur_demirtas',0);",
+        )
+        .unwrap();
+        c
+    }
+
+    #[test]
+    fn face_overlays_show_the_display_name() {
+        // `report --show-faces` draws these on the photo, so they must read the
+        // way a person wrote them - `Özgür Demirtaş`, not `ozgur_demirtas`.
+        let m = labeled_faces_by_hash(&db()).unwrap();
+        let (_, name, _) = &m.get("h1").unwrap()[0];
+        assert_eq!(name, "Özgür Demirtaş");
+    }
+
+    #[test]
+    fn a_label_with_no_people_row_still_renders_as_itself() {
+        // Mid-migration, or written before the table existed: showing nothing
+        // would be worse than showing the raw label.
+        let m = labeled_faces_by_hash(&db()).unwrap();
+        let (_, name, _) = &m.get("h2").unwrap()[0];
+        assert_eq!(name, "no_row_yet");
+    }
+
+    #[test]
+    fn unconfirmed_faces_are_not_labelled_on_photos() {
+        // An unreviewed guess must not appear as a caption on someone's photo.
+        let m = labeled_faces_by_hash(&db()).unwrap();
+        assert!(!m.contains_key("h3"));
     }
 }
