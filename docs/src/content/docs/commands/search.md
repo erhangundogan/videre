@@ -36,6 +36,17 @@ videre search --sort=distance,date         # order, with tie-breaks
 
 Matching paths print to stdout, all duplicate paths for each matched file.
 
+:::note[`--person` ignores case, accents and spacing]
+`--person alice`, `--person Alice` and `--person ALICE` are the same query, and
+`--person "Işıl Özyeğin"` works whether you type the accents or not. Both the
+name shown in the labeling UI and the short form in the URL are accepted, so
+`--person "Ahmet Arı"` and `--person ahmet_ari` find the same photos.
+
+It still matches a *whole* person, not a part of one: `--person Erhan` will not
+find `Erhan Gündoğan`, because those are two different people as far as videre
+is concerned.
+:::
+
 ## Writing queries that work
 
 The model matches images to *descriptions of what is visible*. Plain descriptive
