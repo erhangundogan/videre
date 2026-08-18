@@ -204,6 +204,33 @@ mod tests {
         }
     }
 
+    /// The full Turkish set, given as reference by the user 2026-08-18:
+    /// `öÖüÜıIiİşŞçÇğĞ`.
+    ///
+    /// It includes plain `I` and `i` on purpose, because Turkish pairs them
+    /// differently from English: `I` is the capital of dotless `ı`, and `İ` is
+    /// the capital of dotted `i`. Those two pairs are the only reason this
+    /// function maps letters explicitly instead of trusting `to_lowercase`.
+    #[test]
+    fn the_whole_turkish_alphabet_folds_to_ascii() {
+        assert_eq!(
+            normalize("öÖüÜıIiİşŞçÇğĞ").as_deref(),
+            Some("oouuiiiissccgg")
+        );
+        // Each pair on its own, so a failure says which letter broke.
+        for (input, want) in [
+            ("öÖ", "oo"),
+            ("üÜ", "uu"),
+            ("ıI", "ii"),
+            ("iİ", "ii"),
+            ("şŞ", "ss"),
+            ("çÇ", "cc"),
+            ("ğĞ", "gg"),
+        ] {
+            assert_eq!(normalize(input).as_deref(), Some(want), "pair {input:?}");
+        }
+    }
+
     #[test]
     fn case_differences_collapse_to_one_identity() {
         // The bug this exists to fix.
