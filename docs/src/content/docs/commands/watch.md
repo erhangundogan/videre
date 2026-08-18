@@ -153,6 +153,26 @@ together.
 **A crash is visible, not silent.** If a stage fails, `videre stats` shows the
 command as failed or crashed, which is what `--check` is for.
 
+## Scoping the run
+
+Every flag below narrows an existing set, never widens it, and they combine:
+each condition must hold.
+
+| Flag | Selects |
+|---|---|
+| `--type` | `image` or `video`. Repeatable, or comma-separated |
+| `--ext` | file extension, e.g. `mov`. Repeatable, or comma-separated |
+| `--mime` | exact type, e.g. `video/quicktime`. Repeatable, or comma-separated |
+| `--path` | only files under this directory. Repeatable |
+
+`--date` and `--location` are deliberately absent: this walks the filesystem and
+has not opened the file yet, so it cannot answer them without doing the
+expensive work the filter exists to avoid.
+
+A scoped run prints `N of M`, so a filter that matches nothing is
+distinguishable from an empty library. Full detail, including how missing data
+excludes a file, is in [scoping a run](/guides/scoping-a-run/).
+
 ## More detail
 
 - [Long-running jobs](/guides/long-running-jobs/) covers what is safe to run while this is going.

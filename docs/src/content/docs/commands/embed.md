@@ -137,6 +137,30 @@ on pure JPEG/PNG, 7% on a realistic mix, with no meaningful quality change. It
 is opt-in because 7% did not justify perturbing an existing library, and it
 does not affect vectors already written.
 
+## Scoping the run
+
+Every flag below narrows an existing set, never widens it, and they combine:
+each condition must hold.
+
+| Flag | Selects |
+|---|---|
+| `--type` | `image` or `video`. Repeatable, or comma-separated |
+| `--ext` | file extension, e.g. `mov`. Repeatable, or comma-separated |
+| `--mime` | exact type, e.g. `video/quicktime`. Repeatable, or comma-separated |
+| `--after` | date on or after this (inclusive) |
+| `--before` | date before this (exclusive) |
+| `--date` | a whole year, month or day: `YYYY`, `YYYY-MM`, `YYYY-MM-DD` |
+| `--location` | within `--radius` km of a place, e.g. `"Berlin, Germany"` |
+| `--radius` | radius in km for `--location` (default 20) |
+| `--path` | only files under this directory. Repeatable |
+
+`--person` and `--category` are deliberately absent: both are derived from data
+this command produces, so selecting its input by one would be circular.
+
+A scoped run prints `N of M`, so a filter that matches nothing is
+distinguishable from an empty library. Full detail, including how missing data
+excludes a file, is in [scoping a run](/guides/scoping-a-run/).
+
 ## More detail
 
 - [Long-running jobs](/guides/long-running-jobs/) covers what is safe to run alongside this, and what an interrupt costs.
