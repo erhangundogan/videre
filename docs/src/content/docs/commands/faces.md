@@ -80,6 +80,17 @@ videre faces --recluster --min-cluster-size 2  # allow smaller groups
 | Too many singletons, few groups | Lower `--min-cluster-size` to 2 |
 | A group full of unrelated faces | Raise `--min-face-size`, lower `--max-generic-sim` |
 
+:::note[Two people should not merge in the first place]
+Merging two groups now requires more than similar averages: they must also be
+close *overall*, not merely pointing the same way. Two tight groups that sit far
+apart are refused however similar their averages look.
+
+This was added after two different people ended up in one group on a real
+library, at an average similarity of 0.370 against a threshold of 0.35. If you
+hit that on an older version, `--merge-sim` is still the knob - raise it - but
+you should need it far less often now.
+:::
+
 Change one value at a time and look at the result. These interact, and a
 combination that fixes one library often overfits it.
 

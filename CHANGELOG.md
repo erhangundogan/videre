@@ -13,6 +13,22 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [Unreleased]
+
+### Fixed
+
+- **Two different people could end up in one face group.** After clustering,
+  videre merges groups whose average embeddings point in a similar direction,
+  and that test alone is too weak: two tight groups that sit far apart can still
+  have similar averages. Merging now also requires the groups to be close
+  overall. On a real library this separated every mixed group among the fourteen
+  largest, at the default settings, and left all labels intact.
+
+- **`videre faces --help` described `--merge-sim` backwards.** It said `0 =
+  identical direction required`; 0 in fact merges everything into one group.
+  Read literally it sent you the wrong way when two people had merged. The docs
+  page always had this right.
+
 ## [0.15.7] - 2026-08-18
 
 ### Changed
