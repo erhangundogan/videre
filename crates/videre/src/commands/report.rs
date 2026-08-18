@@ -1358,6 +1358,9 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     .singleton-card .drag-handle:hover .drag-dots, .singleton-card .drag-handle:hover .drag-hint { color: var(--orange-text); }
     .cluster-link { color: var(--blue-hover); text-decoration: none; font-weight: bold; display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .cluster-link:hover { text-decoration: underline; }
+    /* Says an entered name will join an existing person rather than create one.
+       Amber, not red: merging is usually what was meant. */
+    .merge-note { color: #b58900; font-size: 12px; margin-left: 8px; }
     .extra-count { font-size: 11px; margin-top: 2px; }
     .person-card .extra-count { color: var(--blue-text); }
     .cluster-card .extra-count { color: var(--green-text); }
@@ -1469,6 +1472,32 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
     // characters, and cap length by code point (not UTF-16 code unit) so a
     // pasted wall of text or a spoofed name can't stretch card layout,
     // corrupt display order, or bloat the DB.
+    // Mirror of `videre_core::person::normalize`, so the page can say "this
+    // will add to an existing person" before posting - which needs the same
+    // identity the server will compute. Kept small and labelled as a mirror:
+    // if the two disagree the warning misfires, which is visible, rather than
+    // the assignment landing somewhere unexpected, which is not.
+    const TURKISH_FOLD = { 'ı':'i','İ':'i','ğ':'g','Ğ':'g','ş':'s','Ş':'s',
+                           'ö':'o','Ö':'o','ü':'u','Ü':'u','ç':'c','Ç':'c' };
+    function personIdentity(raw) {
+      const folded = Array.from(String(raw).trim())
+        .map(ch => TURKISH_FOLD[ch] || ch).join('')
+        .toLowerCase().normalize('NFKD');
+      let out = '', lastSep = true;
+      for (const ch of folded) {
+        if (/[\\s_]/.test(ch)) { if (!lastSep) { out += '_'; lastSep = true; } continue; }
+        if (/[a-z0-9]/.test(ch)) { out += ch; lastSep = false; }
+      }
+      return out.replace(/_+$/, '');
+    }
+
+    // The person an entered name would land on, or null for a new one.
+    function existingPersonFor(typed) {
+      const id = personIdentity(typed);
+      if (!id || !mainData || !mainData.people) return null;
+      return mainData.people.find(p => p.label === id) || null;
+    }
+
     function sanitizeName(raw) {
       const filtered = Array.from(raw).filter(function(ch) {
         const cp = ch.codePointAt(0);
@@ -1602,11 +1631,29 @@ const FACES_HTML: &str = r##"<!DOCTYPE html>
       if (selectedSingletons.size === 0) return;
       const bar = document.getElementById('sel-bar');
       bar.innerHTML =
-        `<input type="text" id="sel-np-input" placeholder="Person name" maxlength="${MAX_NAME_LEN}">` +
-        `<button onclick="submitSelectionPerson()">Create</button>` +
-        `<button onclick="rebuildSelBar()">Cancel</button>`;
+        `<input type="text" id="sel-np-input" placeholder="Person name" maxlength="${MAX_NAME_LEN}" list="people-list">` +
+        `<button id="sel-np-go" onclick="submitSelectionPerson()">Create</button>` +
+        `<button onclick="rebuildSelBar()">Cancel</button>` +
+        `<span id="sel-np-note" class="merge-note"></span>`;
       const inp = document.getElementById('sel-np-input');
       inp.focus();
+      // Say what will happen before it happens. Typing a name that already
+      // exists adds to that person rather than creating one - usually what is
+      // meant, and previously indistinguishable from creating until afterwards.
+      // The `list` attribute is the other half: this input was the only one of
+      // the three without the autocomplete the others already had.
+      inp.addEventListener('input', function() {
+        const hit = existingPersonFor(inp.value);
+        const note = document.getElementById('sel-np-note');
+        const go = document.getElementById('sel-np-go');
+        if (hit) {
+          note.textContent = `adds to ${hit.full_name}, ${hit.face_ids.length} face(s)`;
+          go.textContent = `Add to ${hit.full_name}`;
+        } else {
+          note.textContent = '';
+          go.textContent = 'Create';
+        }
+      });
       inp.addEventListener('keydown', function(e) {
         if (e.key === 'Enter') { e.preventDefault(); submitSelectionPerson(); }
       });
@@ -3071,6 +3118,46 @@ mod tests {
                 && FACES_HTML.contains("newPersonFromSelection"),
             "Singleton multi-select and bulk assign must be wired"
         );
+    }
+
+    #[test]
+    fn the_new_person_input_warns_before_merging() {
+        // Typing an existing name adds to that person rather than creating one.
+        // That is usually what is meant, and was previously indistinguishable
+        // from creating until after the fact.
+        assert!(
+            FACES_HTML.contains("function existingPersonFor"),
+            "the page must be able to resolve a typed name to an existing person"
+        );
+        assert!(
+            FACES_HTML.contains("adds to ${hit.full_name}"),
+            "it must say which person, by the name a reader recognises"
+        );
+        assert!(
+            FACES_HTML.contains("Add to ${hit.full_name}"),
+            "the button must say what it will do"
+        );
+        // The plain inconsistency behind the complaint: this input was the only
+        // one of the three without the autocomplete the others already had.
+        assert!(
+            FACES_HTML.contains(r#"id="sel-np-input""#)
+                && FACES_HTML.contains(r#"maxlength="${MAX_NAME_LEN}" list="people-list""#),
+            "the New Person input needs the same datalist as the assign inputs"
+        );
+    }
+
+    #[test]
+    fn the_pages_identity_function_mirrors_the_servers() {
+        // A mirror in JavaScript, so the warning can be shown before posting.
+        // If the two drift the warning misfires, which is visible; these cases
+        // are the ones where a naive implementation would differ.
+        assert!(FACES_HTML.contains("function personIdentity"));
+        for needed in ["TURKISH_FOLD", "normalize('NFKD')", "replace(/_+$/"] {
+            assert!(
+                FACES_HTML.contains(needed),
+                "the mirror is missing {needed}, so it will disagree with the server"
+            );
+        }
     }
 
     #[test]
