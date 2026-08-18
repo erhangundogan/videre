@@ -62,12 +62,6 @@ fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection, model_id: &str) -> R
     embeddings::ensure_embeddings_index(conn)?;
 
     let pending = embeddings::pending_images(conn, model_id)?;
-    if pending.is_empty() {
-        if !args.silent {
-            eprintln!("Nothing to embed: all hashes already have embeddings.");
-        }
-        return Ok(());
-    }
 
     // Scope intersects with the pending set; it never replaces the eligibility
     // and backfill rules above, which know things this layer does not (the DNG
@@ -79,97 +73,80 @@ fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection, model_id: &str) -> R
         None,
         Some(&args.paths),
     )?;
-    let eligible = pending.len();
-    let pending = if selection.is_empty() {
-        pending
-    } else {
-        let sel = selection.resolve(
-            conn,
-            &videre_core::selection::SelectionCtx {
-                model_id: Some(model_id.to_string()),
-            },
-        )?;
-        match sel.hashes {
-            None => pending,
-            Some(h) => pending
-                .into_iter()
-                .filter(|p| h.contains(&p.hash))
-                .collect(),
-        }
-    };
-    if !selection.is_empty() && !args.silent {
-        // Say what was scoped to, before the work. A command that processes a
-        // fraction of the library without saying so is the truncation bug of
-        // 0.14.1 with a much longer feedback loop.
-        eprintln!(
-            "Embedding {} of {} pending file(s) ({})",
-            pending.len(),
-            eligible,
-            selection.describe()
-        );
-    }
-    if pending.is_empty() {
-        if !args.silent {
-            eprintln!("Nothing to embed: the selection matched no pending files.");
-        }
-        return Ok(());
-    }
+    let work = videre_core::work::narrow(
+        pending,
+        |p| p.hash.as_str(),
+        &selection,
+        conn,
+        &videre_core::selection::SelectionCtx {
+            model_id: Some(model_id.to_string()),
+        },
+        videre_core::work::Words::new("embed", "Embedding"),
+        args.silent,
+    )?;
 
-    let batch = model::clamp_batch(args.batch, Some(model::MAX_SAFE_BATCH));
-    // `slice::chunks` panics on 0, so a bare `--chunk 0` would abort the run.
-    let chunk_size = args.chunk.max(1);
+    // Everything below runs only when there is work, which is what keeps the
+    // model load unreachable on an up-to-date library.
+    videre_core::work::with_work(work, args.silent, |work| {
+        let pending = work.items;
+        let batch = model::clamp_batch(args.batch, Some(model::MAX_SAFE_BATCH));
+        // `slice::chunks` panics on 0, so a bare `--chunk 0` would abort the run.
+        let chunk_size = args.chunk.max(1);
 
-    let started = std::time::Instant::now();
-    let dev = device::best_device();
-    let embedder = model::Embedder::load(dev.clone(), model_id)?;
+        let started = std::time::Instant::now();
+        let dev = device::best_device();
+        let embedder = model::Embedder::load(dev.clone(), model_id)?;
 
-    let progress = videre_core::progress::Progress::new(pending.len() as u64, args.silent);
+        let progress = videre_core::progress::Progress::new(pending.len() as u64, args.silent);
 
-    let mut done = 0usize;
-    let mut failed = 0usize;
-    for chunk in pending.chunks(chunk_size) {
-        // Decode in parallel; None = unreadable, logged and skipped.
-        let decoded: Vec<Option<(String, candle_core::Tensor)>> = chunk
-            .par_iter()
-            .map(|p| {
-                match preprocess::image_to_tensor(
-                    std::path::Path::new(&p.path),
-                    model::image_size_for(model_id),
-                    &candle_core::Device::Cpu, // decode on CPU, move to device in batch
-                ) {
-                    Ok(t) => Some((p.hash.clone(), t)),
-                    Err(e) => {
-                        progress.println(&format!("skip {}: {e:#}", p.path));
-                        None
+        let mut done = 0usize;
+        let mut failed = 0usize;
+        for chunk in pending.chunks(chunk_size) {
+            // Decode in parallel; None = unreadable, logged and skipped.
+            let decoded: Vec<Option<(String, candle_core::Tensor)>> = chunk
+                .par_iter()
+                .map(|p| {
+                    match preprocess::image_to_tensor(
+                        std::path::Path::new(&p.path),
+                        model::image_size_for(model_id),
+                        &candle_core::Device::Cpu, // decode on CPU, move to device in batch
+                    ) {
+                        Ok(t) => Some((p.hash.clone(), t)),
+                        Err(e) => {
+                            progress.println(&format!("skip {}: {e:#}", p.path));
+                            None
+                        }
                     }
-                }
-            })
-            .collect();
-        let decoded: Vec<(String, candle_core::Tensor)> = decoded.into_iter().flatten().collect();
-        failed += chunk.len() - decoded.len();
+                })
+                .collect();
+            let decoded: Vec<(String, candle_core::Tensor)> =
+                decoded.into_iter().flatten().collect();
+            failed += chunk.len() - decoded.len();
 
-        let mut rows: Vec<(String, Vec<u8>)> = Vec::with_capacity(decoded.len());
-        for group in decoded.chunks(batch) {
-            let tensors: Vec<candle_core::Tensor> = group
-                .iter()
-                .map(|(_, t)| t.to_device(&dev))
-                .collect::<candle_core::Result<_>>()?;
-            let vecs = embedder.embed_images(&tensors)?;
-            for ((hash, _), v) in group.iter().zip(vecs) {
-                rows.push((hash.clone(), vectors::to_f16_bytes(&v)));
+            let mut rows: Vec<(String, Vec<u8>)> = Vec::with_capacity(decoded.len());
+            for group in decoded.chunks(batch) {
+                let tensors: Vec<candle_core::Tensor> = group
+                    .iter()
+                    .map(|(_, t)| t.to_device(&dev))
+                    .collect::<candle_core::Result<_>>()?;
+                let vecs = embedder.embed_images(&tensors)?;
+                for ((hash, _), v) in group.iter().zip(vecs) {
+                    rows.push((hash.clone(), vectors::to_f16_bytes(&v)));
+                }
             }
+
+            embeddings::insert_embeddings(conn, model_id, &rows)?;
+            done += rows.len();
+            progress.tick_by(chunk.len() as u64);
         }
 
-        embeddings::insert_embeddings(conn, model_id, &rows)?;
-        done += rows.len();
-        progress.tick_by(chunk.len() as u64);
-    }
+        progress.finish();
 
-    progress.finish();
-
-    if !args.silent {
-        eprintln!("{}", format_summary(done, failed, started.elapsed()));
-    }
+        if !args.silent {
+            eprintln!("{}", format_summary(done, failed, started.elapsed()));
+        }
+        Ok(())
+    })?;
     Ok(())
 }
 
