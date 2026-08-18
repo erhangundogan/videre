@@ -56,11 +56,26 @@ videre scan --db ~/work.db ~/WorkShoots
 `VIDERE_HOME` relocates everything: database, settings, locks, embeddings and
 cache.
 
+For a single command, prefix it:
+
 ```bash
-export VIDERE_HOME=~/videre-work
+env VIDERE_HOME=~/videre-work videre stats
+```
+
+For a whole session, export it:
+
+```bash
+export VIDERE_HOME=~/videre-work     # bash, zsh
+set -x VIDERE_HOME ~/videre-work     # fish
+
 videre scan ~/WorkShoots             # own db, own config, own cache
 videre config                        # shows the work home's settings
 ```
+
+`videre config` prints the active home on its first line, which is the quickest
+way to confirm you are pointed where you think. Full detail, including what
+`--db` still overrides, is in
+[where your data lives](/reference/paths/#videre_home).
 
 Each home has its own `config.toml`, so defaults set in one are invisible in the
 other. That is the point: two setups that share nothing.

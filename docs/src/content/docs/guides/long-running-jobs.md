@@ -37,7 +37,7 @@ from stacking up when a run takes longer than its interval.
 
 ## What is allowed but a bad idea
 
-:::danger[Do not run two HEIC-converting jobs at once]
+:::caution[Do not run two HEIC-converting jobs at once]
 [`embed`](/commands/embed/), [`faces`](/commands/faces/) and
 [`watch`](/commands/watch/)'s faces and HEIC stages all convert HEIC and video
 through the same macOS QuickLook service. Each limits its own concurrency, but
