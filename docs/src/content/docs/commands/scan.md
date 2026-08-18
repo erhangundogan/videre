@@ -111,6 +111,26 @@ cause is fixed.
 is the dominant cost, and it is why `--retry-incomplete` exists. Nothing is
 written to your files at any point.
 
+## Scoping the run
+
+Every flag below narrows an existing set, never widens it, and they combine:
+each condition must hold.
+
+| Flag | Selects |
+|---|---|
+| `--type` | `image` or `video`. Repeatable, or comma-separated |
+| `--ext` | file extension, e.g. `mov`. Repeatable, or comma-separated |
+| `--mime` | exact type, e.g. `video/quicktime`. Repeatable, or comma-separated |
+| `--path` | only files under this directory. Repeatable |
+
+`--date` and `--location` are deliberately absent: this walks the filesystem and
+has not opened the file yet, so it cannot answer them without doing the
+expensive work the filter exists to avoid.
+
+A scoped run prints `N of M`, so a filter that matches nothing is
+distinguishable from an empty library. Full detail, including how missing data
+excludes a file, is in [scoping a run](/guides/scoping-a-run/).
+
 ## More detail
 
 - [JSONL output](/guides/jsonl/) covers `--output` and what it gives up.
@@ -153,14 +173,9 @@ equality test.
 
 ## Very large files
 
-Reading a file is bounded by a timeout, so a disconnected drive cannot hang a
-scan forever. That bound scales with the size of the file rather than being a
-constant: a multi-gigabyte video legitimately takes longer to read than a
-photo, and a fixed ceiling cannot tell a large file from a stalled one.
-
-The size itself is read first under a short, separate timeout. That is what
-keeps a dead mount failing quickly: it stops there, and the read is never
-started.
+Reading a file is bounded by a timeout that scales with the file's size, so a
+disconnected drive cannot hang a scan while a legitimately large video still
+gets the time it needs.
 
 If you scan a mount slower than about 20 MB/s and see files reported as
 unreachable, lower the assumed floor rate:
@@ -169,12 +184,15 @@ unreachable, lower the assumed floor rate:
 videre config set read-rate 5
 ```
 
+Why it scales, and why the same files fail on every run until you change this,
+are in [tuning](/guides/tuning/#slow-drives-and-large-files).
+
 ## Video metadata
 
 Scanning reads each video's own metadata: capture date, GPS coordinates,
 dimensions, duration and codec. Those feed the same features photos already
-use, so [`videre search`](/commands/search/) date and location filters,
-`--near`, and [`videre locations`](/commands/locations/) all cover video.
+use, so [`videre search`](/commands/search/) date and location filters and
+[`videre locations`](/commands/locations/) all cover video.
 
 Dates are stored as local wall-clock time, exactly as photo dates are, so the
 two sort and filter together rather than drifting by a timezone.

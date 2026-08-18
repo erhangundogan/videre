@@ -2,17 +2,21 @@
 resolver = "2"
 members = ["crates/videre", "crates/videre-api", "crates/videre-core", "crates/videre-ml"]
 
-# Optimize dependencies even in dev/test builds. Our own crates stay
-# unoptimized, so they still compile fast and debug normally.
+# No `[profile.dev.package."*"] opt-level` here, deliberately.
 #
-# candle runs inference through gemm; unoptimized, one 224px forward pass
-# measured 9.41s against 0.168s in release, 56x. `cargo test --workspace` is a
-# debug build, so cpu_batch_matches_single_image_baseline - 48 images batched
-# plus 5 single re-runs - spent about 8 minutes per CI run tripping libtest's
-# "has been running for over 60 seconds" notice. The same cost is why that test
-# is #[cfg]'d off macOS.
+# 0.15.4 added one so that cpu_batch_matches_single_image_baseline, which runs
+# CPU inference, would stop taking 38 minutes on CI. It worked - 2287s to 66s -
+# but optimizing every dependency put release-grade codegen in the test build:
+# Build went from ~35s to 660s on Ubuntu, and it did not amortize the way a
+# per-cache-key cost should. Net, ~600s was paid on most runs to save a test
+# that had never actually run on Linux until a download bug woke it.
 #
-# Applies to dependencies only ("*" excludes workspace members), so the
-# compile-time cost lands once per rust-cache key rather than per run.
-[profile.dev.package."*"]
-opt-level = 3
+# The real fix was upstream of both: that test skips when SigLIP weights are
+# absent, the warm-up step fetches them on macOS only, and the weights only
+# reached Linux because the argument sweep downloaded them (fixed in 0.15.6,
+# with the cache key salted to discard the artifact). With them gone the test
+# skips again in milliseconds and there is nothing to optimize for.
+#
+# So: do not add this back to make one inference test bearable. If a test needs
+# release-speed inference, run it in release, in its own job.
+

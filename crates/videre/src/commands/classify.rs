@@ -242,15 +242,30 @@ mod tests {
     #[test]
     fn an_already_classified_library_also_returns_early() {
         let conn = library_with_one_pending_image();
-        conn.execute(
+        // `execute_batch`, not `execute`: the latter runs only the first
+        // statement, so the INSERT silently never happened and `.ok()` hid the
+        // error. The library was therefore *not* already classified, this test
+        // did not take the early return it is named for, and it loaded SigLIP -
+        // downloading 778MB on a cold cache from inside a unit test.
+        //
+        // On CI that landed in the cached weights, which woke
+        // `cpu_batch_matches_single_image_baseline` in videre-ml: it skips when
+        // weights are absent, and had done so since it was written. The Ubuntu
+        // job went from ~3 minutes to nearly 40.
+        conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS classifications (
                 hash TEXT NOT NULL, model_id TEXT NOT NULL, category TEXT NOT NULL,
                 confidence REAL, classified_at TEXT, PRIMARY KEY (hash, model_id));
              INSERT INTO classifications (hash, model_id, category, confidence, classified_at)
                VALUES ('h_jpg', 'google/siglip-base-patch16-224', 'photo', 0.5, datetime('now'));",
-            [],
         )
-        .ok();
+        .expect("seeding the classified row must succeed");
+
+        let already: i64 = conn
+            .query_row("SELECT COUNT(*) FROM classifications", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(already, 1, "the row this test depends on was not written");
+
         let args = parse(&["--silent"]);
         assert!(run_classify(&args, &conn, videre_core::embeddings::DEFAULT_MODEL_ID).is_ok());
     }

@@ -181,18 +181,38 @@ The server on `localhost:7878` is reachable only from your machine.
 
 ## Performance
 
-Detection runs across `--workers` threads, defaulting to twice your core count.
-That oversubscription is deliberate: HEIC decoding waits on an external
-subprocess rather than the CPU, so other workers use the cores meanwhile.
+| Flag | Does |
+|---|---|
+| `--workers` | detection threads (default: twice your core count) |
+| `--profile` | print per-stage timings: load, detect, align, embed, db write |
 
-Measured on a 10-core machine: about 3.23x faster than a single worker, and
-raising the HEIC conversion limit from 3 to 6 added another 1.23x, for roughly
-4.48x overall. Raising it past 6 buys only a few percent while per-image detect
-time creeps up, so 6 is the default.
+`--profile` is the quickest way to see whether a slow run is bound by decoding
+or by inference. Why the default oversubscribes your cores, and the measured
+4.48x it is worth, are in [tuning](/guides/tuning/#face-detection).
 
-`--profile` prints per-stage timings (load, detect, align, embed, db write),
-which is the quickest way to see whether a slow run is bound by decoding or by
-inference.
+## Scoping the run
+
+Every flag below narrows an existing set, never widens it, and they combine:
+each condition must hold.
+
+| Flag | Selects |
+|---|---|
+| `--type` | `image` or `video`. Repeatable, or comma-separated |
+| `--ext` | file extension, e.g. `mov`. Repeatable, or comma-separated |
+| `--mime` | exact type, e.g. `video/quicktime`. Repeatable, or comma-separated |
+| `--after` | date on or after this (inclusive) |
+| `--before` | date before this (exclusive) |
+| `--date` | a whole year, month or day: `YYYY`, `YYYY-MM`, `YYYY-MM-DD` |
+| `--location` | within `--radius` km of a place, e.g. `"Berlin, Germany"` |
+| `--radius` | radius in km for `--location` (default 20) |
+| `--path` | only files under this directory. Repeatable |
+
+`--person` and `--category` are deliberately absent: both are derived from data
+this command produces, so selecting its input by one would be circular.
+
+A scoped run prints `N of M`, so a filter that matches nothing is
+distinguishable from an empty library. Full detail, including how missing data
+excludes a file, is in [scoping a run](/guides/scoping-a-run/).
 
 ## More detail
 
