@@ -115,10 +115,21 @@ fn run_text(args: &StatsArgs) -> anyhow::Result<()> {
 
     println!();
     println!("Disk use:");
-    // The thumbnail cache is passed in rather than looked up inside `usage`,
-    // because it does not always live under the home directory.
+    // Both locations are resolved here and passed in, never looked up inside
+    // `usage`. The thumbnail cache does not always live under the home
+    // directory, and embeddings are per library rather than per home
+    // (`<home>/embeddings/<db stem>-<hash16>`), so a helper that guessed either
+    // would report another library's vectors as this one's.
     let usage = match videre_core::home::videre_home() {
-        Ok(h) => videre_core::disk::usage(&h, Some(&db), &videre_core::thumb_cache::cache_dir()),
+        Ok(h) => {
+            let lib = videre_core::embeddings_db::library_dir(&db).ok();
+            videre_core::disk::usage(
+                &h,
+                Some(&db),
+                &videre_core::thumb_cache::cache_dir(),
+                lib.as_deref(),
+            )
+        }
         Err(_) => Vec::new(),
     };
     if usage.is_empty() {
