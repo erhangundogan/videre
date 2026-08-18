@@ -44,7 +44,9 @@ pub struct FacesArgs {
     min_cluster_size: usize,
     /// Centroid-merge similarity: after clustering, clusters whose mean embeddings
     /// are at least this cosine-similar are merged (reunites one person's fragmented
-    /// clusters). 0 = identical direction required, 1 = disables merging. Default 0.35.
+    /// clusters). RAISE it to merge less and keep people apart, lower it to merge
+    /// more. 1 = no merging at all, 0 = merge everything into one cluster.
+    /// Default 0.35.
     #[arg(long, default_value = "0.35")]
     merge_sim: f32,
     /// Minimum face size (smaller bbox side, px) to take part in clustering. Smaller
