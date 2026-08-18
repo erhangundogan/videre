@@ -13,6 +13,16 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.15.9] - 2026-08-18
+
+### Fixed
+
+- **The face-labeling UI reshuffled its lists on every reload.** People and
+  unassigned clusters came back in a different arbitrary order each time the
+  page fetched them, so after assigning one cluster the next one you had lined
+  up had moved, and so had the person you were dragging it onto. People are now
+  ordered by name, and clusters largest first.
+
 ## [0.15.8] - 2026-08-18
 
 ### Fixed
