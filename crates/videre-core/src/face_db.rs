@@ -13,7 +13,37 @@ pub struct FaceRow {
     pub is_primary: i64,
 }
 
+/// Creates the `people` table if it is missing.
+///
+/// Called from `db::open_wal`, so it runs on **every** open rather than only
+/// when faces are written. That is the same reason `ensure_file_hashes_columns`
+/// is there: readers query this table - the labeling UI lists people, and
+/// `--person` resolves through it - and a library whose last `videre faces` run
+/// predates this table would otherwise fail with "no such table" on commands
+/// that never write faces.
+pub fn ensure_people_table(conn: &Connection) {
+    // One row per person: `name` is the identity form (see
+    // `videre_core::person::normalize`) and `full_name` is what a reader sees.
+    // `faces.person_label` holds the identity form and refers here.
+    //
+    // `name` is the primary key deliberately. It puts "two people cannot share
+    // an identity" in the database rather than in whichever code path remembers
+    // to check - `rename_person` checks by hand today and `assign` does not.
+    //
+    // No foreign key from `faces`: SQLite leaves `PRAGMA foreign_keys` off and
+    // videre never sets it, so a `REFERENCES` clause here would be
+    // documentation rather than a constraint, and code written to trust it
+    // would be wrong. Tracked separately.
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS people (
+            name       TEXT PRIMARY KEY,
+            full_name  TEXT NOT NULL
+        );",
+    );
+}
+
 pub fn create_faces_table(conn: &Connection) -> rusqlite::Result<()> {
+    ensure_people_table(conn);
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS faces (
             id            INTEGER PRIMARY KEY,
@@ -29,6 +59,7 @@ pub fn create_faces_table(conn: &Connection) -> rusqlite::Result<()> {
     )?;
     // Migration for existing tables without is_primary column; ignored if already exists.
     let _ = conn.execute_batch("ALTER TABLE faces ADD COLUMN is_primary INTEGER DEFAULT 0");
+
     // Records every hash whose faces have been scanned, INCLUDING images where
     // zero faces were detected (which leave no `faces` row). This is what makes
     // `videre faces` resumable: the skip set is "already scanned", not merely
