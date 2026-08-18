@@ -55,6 +55,13 @@ pub fn dir_size(path: &Path) -> (u64, u64) {
 /// `db` is passed in because the database is the one piece that does not have
 /// to live under the home directory: `--db` puts it anywhere.
 ///
+/// :warning: **Embeddings are per library, not per home.** They live in
+/// `<home>/embeddings/<db stem>-<hash16>`, so summing the whole `embeddings`
+/// directory attributes every library's vectors to whichever one is being
+/// reported. `lib_embeddings` is this library's directory; anything else under
+/// there is reported separately and labelled as belonging to other libraries,
+/// because it is real disk use but not this library's.
+///
 /// :warning: The thumbnail cache is **not** always under the home directory.
 /// With `VIDERE_HOME` unset it lives in the platform cache directory, so a
 /// report that only walked the home would silently omit the largest deletable
@@ -62,7 +69,12 @@ pub fn dir_size(path: &Path) -> (u64, u64) {
 /// here: `thumb_cache::cache_dir()` reads the environment, and a function whose
 /// result depends on an env var it never mentions cannot be tested or reasoned
 /// about. Callers pass it in.
-pub fn usage(home: &Path, db: Option<&Path>, thumbs: &Path) -> Vec<Usage> {
+pub fn usage(
+    home: &Path,
+    db: Option<&Path>,
+    thumbs: &Path,
+    lib_embeddings: Option<&Path>,
+) -> Vec<Usage> {
     /// Sizes `path` and returns a row for it, or `None` when there is nothing
     /// there.
     ///
@@ -107,7 +119,31 @@ pub fn usage(home: &Path, db: Option<&Path>, thumbs: &Path) -> Vec<Usage> {
             });
         }
     }
-    out.extend(row("embeddings", home.join("embeddings"), false));
+    // This library's vectors, then everything else under `embeddings/` as its
+    // own row: the difference matters because `stats` is reporting one library
+    // while the disk is shared by all of them.
+    let all_embeddings = dir_size(&home.join("embeddings")).0;
+    let mine = match lib_embeddings {
+        Some(dir) => {
+            let r = row("embeddings", dir.to_path_buf(), false);
+            let n = r.as_ref().map(|u| u.bytes).unwrap_or(0);
+            out.extend(r);
+            n
+        }
+        None => {
+            out.extend(row("embeddings", home.join("embeddings"), false));
+            all_embeddings
+        }
+    };
+    if all_embeddings > mine {
+        out.push(Usage {
+            label: "embeddings (other libraries)",
+            path: home.join("embeddings"),
+            bytes: all_embeddings - mine,
+            files: 0,
+            rebuildable: false,
+        });
+    }
     out.extend(row("thumbnails", thumbs.to_path_buf(), true));
     out.extend(row("place names", home.join("geo"), true));
     out.extend(row("locks", home.join("locks"), true));
@@ -174,7 +210,7 @@ mod tests {
         std::fs::create_dir_all(d.path().join("embeddings")).unwrap();
         std::fs::write(d.path().join("embeddings/m.db"), vec![0u8; 8192]).unwrap();
 
-        let u = usage(d.path(), Some(&db), &d.path().join("no-thumbs"));
+        let u = usage(d.path(), Some(&db), &d.path().join("no-thumbs"), None);
         let by = |l: &str| u.iter().find(|x| x.label == l);
 
         // Largest first, so embeddings outranks the smaller database.
@@ -189,9 +225,40 @@ mod tests {
     }
 
     #[test]
+    fn another_librarys_embeddings_are_not_counted_as_this_ones() {
+        // Embeddings live at <home>/embeddings/<stem>-<hash>, so the directory
+        // is shared by every library on the machine. Reporting the whole thing
+        // against one `--db` would inflate it by however many other libraries
+        // exist, which is exactly the kind of number nobody notices is wrong.
+        let d = tempfile::tempdir().unwrap();
+        let db = d.path().join("t.db");
+        std::fs::write(&db, vec![0u8; 16]).unwrap();
+        let mine = d.path().join("embeddings/mine-0000000000000001");
+        let theirs = d.path().join("embeddings/theirs-0000000000000002");
+        std::fs::create_dir_all(&mine).unwrap();
+        std::fs::create_dir_all(&theirs).unwrap();
+        std::fs::write(mine.join("m.db"), vec![0u8; 1000]).unwrap();
+        std::fs::write(theirs.join("m.db"), vec![0u8; 7000]).unwrap();
+
+        let u = usage(
+            d.path(),
+            Some(&db),
+            &d.path().join("no-thumbs"),
+            Some(&mine),
+        );
+        let by = |l: &str| u.iter().find(|x| x.label == l).map(|x| x.bytes);
+        assert_eq!(by("embeddings"), Some(1000), "only this library's vectors");
+        assert_eq!(
+            by("embeddings (other libraries)"),
+            Some(7000),
+            "the rest is still disk use, but it is not this library's"
+        );
+    }
+
+    #[test]
     fn nothing_present_reports_nothing_rather_than_a_row_of_zeroes() {
         let d = tempfile::tempdir().unwrap();
-        let u = usage(d.path(), None, &d.path().join("no-thumbs"));
+        let u = usage(d.path(), None, &d.path().join("no-thumbs"), None);
         assert!(
             u.iter().all(|x| x.bytes > 0 || x.files > 0),
             "empty locations must not be listed"
