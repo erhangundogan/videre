@@ -138,25 +138,28 @@ pub fn run(args: FacesArgs) -> Result<()> {
     // command. `faces` also loads its models inside `run_detection_and_
     // clustering`, which the `to_process.is_empty()` branch below already sits
     // in front of.
-    let all_paths = match videre_core::work::narrow(
+    let (all_paths, already_reported) = match videre_core::work::narrow(
         all_paths,
         |(_, hash)| hash.as_str(),
         &selection,
         &conn,
         &videre_core::selection::SelectionCtx::default(),
-        videre_core::work::Words::new("detect faces in", "Detecting faces in"),
-        args.silent,
+        videre_core::work::Words::new("detect faces in", "Detecting faces in")
+            .saying("No eligible files to scan for faces."),
+        // `--recluster` skips detection entirely, so neither the "N of M" line
+        // nor a complaint about eligible files is worth printing: the user did
+        // not ask to detect anything.
+        args.silent || args.recluster,
     )? {
-        videre_core::work::Work::Some(p) => p.items,
-        videre_core::work::Work::Nothing(_) => {
-            // The message is dropped on purpose. `narrow` has already printed
-            // the "N of M" line when a selection was given, and the branch
-            // below prints "All hashes already processed." for this same state;
-            // showing both said the same thing twice in different words.
-            //
+        videre_core::work::Work::Some(p) => (p.items, false),
+        videre_core::work::Work::Nothing(msg) => {
+            if !args.silent && !args.recluster {
+                eprintln!("{msg}");
+            }
             // Fall through with nothing to detect rather than returning:
-            // clustering still has to run.
-            Vec::new()
+            // clustering still has to run. `already_reported` stops the branch
+            // below saying the same thing again in different words.
+            (Vec::new(), true)
         }
     };
 
@@ -178,7 +181,7 @@ pub fn run(args: FacesArgs) -> Result<()> {
     let to_process = face_db::select_unscanned(&all_paths, &skip_hashes, args.limit);
 
     if args.recluster || to_process.is_empty() {
-        if !args.silent && to_process.is_empty() && !args.recluster {
+        if !args.silent && to_process.is_empty() && !args.recluster && !already_reported {
             eprintln!("All hashes already processed.");
         }
         // Skip detection; jump straight to clustering

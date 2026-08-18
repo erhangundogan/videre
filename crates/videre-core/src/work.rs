@@ -49,11 +49,31 @@ pub struct Words {
     pub verb: &'static str,
     /// Capitalised, as it starts a line: `Embedding`, `Classifying`.
     pub gerund: &'static str,
+    /// Replaces the default "Nothing to <verb>: everything eligible is already
+    /// done." when a command has a state that sentence would describe wrongly.
+    ///
+    /// The default is right for `embed` and `classify`, where an empty pending
+    /// set really does mean "you are up to date". It is wrong for `faces`,
+    /// whose empty set can also mean "nothing here has a face to look for", and
+    /// which has its own established wording. Passing the sentence in beats
+    /// either forcing one wording on every caller or letting callers print
+    /// their own and drift apart again.
+    pub nothing_pending: Option<&'static str>,
 }
 
 impl Words {
     pub const fn new(verb: &'static str, gerund: &'static str) -> Self {
-        Words { verb, gerund }
+        Words {
+            verb,
+            gerund,
+            nothing_pending: None,
+        }
+    }
+
+    /// Supplies this command's own wording for the empty-pending case.
+    pub const fn saying(mut self, nothing_pending: &'static str) -> Self {
+        self.nothing_pending = Some(nothing_pending);
+        self
     }
 }
 
@@ -76,10 +96,13 @@ pub fn narrow<T>(
     silent: bool,
 ) -> Result<Work<T>> {
     if pending.is_empty() {
-        return Ok(Work::Nothing(format!(
-            "Nothing to {}: everything eligible is already done.",
-            words.verb
-        )));
+        return Ok(Work::Nothing(match words.nothing_pending {
+            Some(m) => m.to_string(),
+            None => format!(
+                "Nothing to {}: everything eligible is already done.",
+                words.verb
+            ),
+        }));
     }
 
     let eligible = pending.len();
@@ -218,6 +241,28 @@ mod tests {
                 assert_eq!(p.eligible, 2, "eligible is the count before narrowing");
             }
             Work::Nothing(m) => panic!("unfiltered work was dropped: {m}"),
+        }
+    }
+
+    #[test]
+    fn a_caller_may_supply_its_own_empty_wording() {
+        // The default sentence suits embed and classify. faces needs a
+        // different one, and passing it in keeps the message inside the helper
+        // rather than sending callers back to printing their own.
+        let c = conn();
+        let w = narrow(
+            Vec::<String>::new(),
+            hash,
+            &RowSelection::default(),
+            &c,
+            &SelectionCtx::default(),
+            W.saying("All hashes already processed."),
+            true,
+        )
+        .unwrap();
+        match w {
+            Work::Nothing(m) => assert_eq!(m, "All hashes already processed."),
+            Work::Some(_) => panic!("an empty pending set must not be work"),
         }
     }
 
