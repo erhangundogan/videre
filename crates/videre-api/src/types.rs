@@ -65,6 +65,9 @@ pub struct PersonFaceData {
 /// Person detail: every confirmed face for one person.
 #[derive(Serialize, Clone)]
 pub struct PersonDetail {
+    /// Identity: what the URL and every face row use.
     pub label: String,
+    /// What a reader sees, and what the page lets them edit.
+    pub full_name: String,
     pub faces: Vec<PersonFaceData>,
 }
