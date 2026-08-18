@@ -2050,7 +2050,10 @@ const PERSON_HTML: &str = r##"<!DOCTYPE html>
 
     async function load() {
       try {
-        document.getElementById('person-title').textContent = personName;
+        // The heading is what a reader recognises; the URL stays the identity.
+        document.getElementById('person-title').textContent = data.full_name || personName;
+        const ri = document.getElementById('renameInput');
+        if (ri && !ri.value) ri.value = data.full_name || personName;
         document.title = personName;
         document.getElementById('renameInput').value = personName;
         const r = await fetch(`/api/person/${encodeURIComponent(personName)}`);
@@ -2124,16 +2127,20 @@ const PERSON_HTML: &str = r##"<!DOCTYPE html>
       window.location.href = '/';
     }
 
+    // Edits how the person is shown - adding a surname, fixing a spelling -
+    // without touching their identity, so the URL and every face row are
+    // untouched and no link breaks. Changing the identity is a different
+    // operation and deliberately not offered here.
     async function submitRename() {
-      const newLabel = sanitizeName(document.getElementById('renameInput').value);
-      if (!newLabel) return;
-      const r = await fetch('/api/rename-person', {
+      const newName = sanitizeName(document.getElementById('renameInput').value);
+      if (!newName) return;
+      const r = await fetch('/api/set-full-name', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ old_label: personName, new_label: newLabel })
+        body: JSON.stringify({ name: personName, full_name: newName })
       });
-      if (r.status === 409) { alert('A person named "' + newLabel + '" already exists.'); return; }
-      if (!r.ok) { alert('Rename failed.'); return; }
-      window.location.href = '/person/' + encodeURIComponent(newLabel);
+      if (!r.ok) { alert('Could not save the name.'); return; }
+      document.getElementById('person-title').textContent = newName;
+      document.getElementById('status').textContent = 'Saved';
     }
 
     load();
@@ -2186,6 +2193,17 @@ struct DeletePersonRequest {
 struct RenamePersonRequest {
     old_label: String,
     new_label: String,
+}
+
+/// Changing what a person is shown as, without touching their identity.
+///
+/// Separate from rename because intent cannot be read from the new string:
+/// `Erhan` to `Erhan Gündoğan` is a display correction whose normalized form
+/// also changes, so one endpoint would have to guess which was meant.
+#[derive(Deserialize)]
+struct SetFullNameRequest {
+    name: String,
+    full_name: String,
 }
 
 #[derive(Deserialize)]
@@ -2355,6 +2373,19 @@ async fn handle_delete_person(
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     videre_api::delete_person(&conn, &req.label)
+        .map(|_| StatusCode::OK)
+        .map_err(api_status)
+}
+
+async fn handle_set_full_name(
+    State(state): State<Arc<AppState>>,
+    AxumJson(req): AxumJson<SetFullNameRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    videre_api::set_full_name(&conn, &req.name, &req.full_name)
         .map(|_| StatusCode::OK)
         .map_err(api_status)
 }
@@ -2712,6 +2743,7 @@ async fn serve_faces_async(
             .route("/api/remove-face", post(handle_remove_face))
             .route("/api/delete-person", post(handle_delete_person))
             .route("/api/rename-person", post(handle_rename_person))
+            .route("/api/set-full-name", post(handle_set_full_name))
             .route("/api/dissolve-cluster", post(handle_dissolve_cluster))
             .route("/api/set-primary", post(handle_set_primary));
     }

@@ -156,8 +156,18 @@ pub fn person_detail(conn: &Connection, name: &str) -> Result<PersonDetail> {
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    // Falls back to the identity for a person with no row yet, so a library
+    // opened before the migration still shows something sensible.
+    let full_name: String = conn
+        .query_row(
+            "SELECT full_name FROM people WHERE name = ?1",
+            rusqlite::params![name],
+            |r| r.get(0),
+        )
+        .unwrap_or_else(|_| name.to_string());
     Ok(PersonDetail {
         label: name.to_string(),
+        full_name,
         faces,
     })
 }
