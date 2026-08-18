@@ -623,3 +623,155 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod identity_tests {
+    use super::tests::seed;
+    use super::*;
+
+    fn people(conn: &Connection) -> Vec<(String, String)> {
+        conn.prepare("SELECT name, full_name FROM people ORDER BY name")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn assign_stores_the_identity_and_records_the_display_name() {
+        let conn = seed();
+        assign(&conn, &[3], "Işıl Özyeğin").unwrap();
+
+        let label: String = conn
+            .query_row("SELECT person_label FROM faces WHERE id = 3", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(label, "isil_ozyegin", "faces hold the identity");
+        assert!(
+            people(&conn).contains(&("isil_ozyegin".into(), "Işıl Özyeğin".into())),
+            "and the spelling is kept for display"
+        );
+    }
+
+    #[test]
+    fn assigning_an_existing_name_in_another_case_joins_that_person() {
+        // The bug this whole change exists to fix: this used to create a second
+        // person.
+        let conn = seed();
+        assign(&conn, &[3], "ALICE").unwrap();
+        assert_eq!(people(&conn).len(), 1, "still one person, not two");
+        assert_eq!(person_detail(&conn, "alice").unwrap().faces.len(), 3);
+        assert_eq!(
+            people(&conn)[0].1,
+            "Alice",
+            "the existing spelling is not overwritten by the new casing"
+        );
+    }
+
+    #[test]
+    fn assign_rejects_a_name_with_no_usable_identity() {
+        // Punctuation alone leaves nothing to identify a person by, and an
+        // empty identity would be a person nobody could address.
+        let conn = seed();
+        assert!(matches!(assign(&conn, &[3], "!!!"), Err(Error::Invalid)));
+    }
+
+    #[test]
+    fn person_detail_resolves_every_form_of_the_name() {
+        let conn = seed();
+        for form in ["alice", "Alice", "ALICE", "  alice  "] {
+            assert_eq!(
+                person_detail(&conn, form).unwrap().faces.len(),
+                2,
+                "form {form:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn person_detail_reports_the_display_name() {
+        let d = person_detail(&seed(), "alice").unwrap();
+        assert_eq!(d.label, "alice");
+        assert_eq!(d.full_name, "Alice");
+    }
+
+    #[test]
+    fn person_detail_falls_back_when_there_is_no_people_row() {
+        // A label written before the table existed still has to render.
+        let conn = seed();
+        conn.execute(
+            "INSERT INTO faces (id,hash,bbox,embedding,person_label,confirmed) \
+             VALUES (9,'h9','0,0,9,9',X'0000','orphan',1)",
+            [],
+        )
+        .unwrap();
+        let d = person_detail(&conn, "orphan").unwrap();
+        assert_eq!(d.full_name, "orphan", "falls back to the identity");
+    }
+
+    #[test]
+    fn set_full_name_changes_only_the_display_name() {
+        let conn = seed();
+        set_full_name(&conn, "alice", "Alice Smith").unwrap();
+        assert_eq!(people(&conn), vec![("alice".into(), "Alice Smith".into())]);
+        assert_eq!(
+            person_detail(&conn, "alice").unwrap().faces.len(),
+            2,
+            "no face was touched"
+        );
+    }
+
+    #[test]
+    fn set_full_name_accepts_any_form_of_the_identity() {
+        let conn = seed();
+        set_full_name(&conn, "ALICE", "Alice Smith").unwrap();
+        assert_eq!(people(&conn)[0].1, "Alice Smith");
+    }
+
+    #[test]
+    fn set_full_name_on_a_missing_person_is_not_found() {
+        assert!(matches!(
+            set_full_name(&seed(), "nobody", "Someone"),
+            Err(Error::NotFound)
+        ));
+    }
+
+    #[test]
+    fn set_full_name_rejects_an_empty_display_name() {
+        // A person with no name to show is worse than one shown by identity.
+        assert!(matches!(
+            set_full_name(&seed(), "alice", "   "),
+            Err(Error::Invalid)
+        ));
+    }
+
+    #[test]
+    fn delete_person_accepts_any_form_of_the_name() {
+        let conn = seed();
+        delete_person(&conn, "Alice").unwrap();
+        let left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM faces WHERE person_label IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0, "faces are unassigned whichever form was passed");
+    }
+
+    #[test]
+    fn set_primary_accepts_any_form_of_the_name() {
+        let conn = seed();
+        set_primary(&conn, 2, "ALICE").unwrap();
+        let primary: i64 = conn
+            .query_row(
+                "SELECT id FROM faces WHERE person_label='alice' AND is_primary=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(primary, 2);
+    }
+}
