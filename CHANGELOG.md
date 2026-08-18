@@ -13,6 +13,32 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [Unreleased]
+
+### Fixed
+
+- **`alice` and `Alice` were two different people.** A different capitalisation
+  silently split someone in two, so person search returned half their photos
+  with nothing on screen to explain it. A person now has an identity that
+  ignores case, accents and spacing, and a separate display name that keeps
+  exactly what you typed. `--person alice`, `--person Alice` and
+  `--person "Ahmet Arı"` all find the same person.
+
+  **Existing libraries are migrated automatically** the first time a command
+  that writes faces runs, keeping your original spelling as the display name.
+  Nothing is lost, and names that differed only in case are merged into one
+  person.
+
+### Added
+
+- **The labeling UI says when a name will join an existing person**, instead of
+  merging silently. Typing a name that already exists now shows
+  `adds to Ahmet Arı, 247 face(s)` and the button reads `Add to Ahmet Arı`. The
+  New Person box also gained the autocomplete the other name boxes already had.
+
+- **A person's display name can be edited** without changing their identity, so
+  adding a surname does not break the URL or touch a single photo.
+
 ## [0.15.10] - 2026-08-18
 
 ### Added
