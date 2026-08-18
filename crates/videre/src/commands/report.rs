@@ -3371,6 +3371,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn setting_a_full_name_leaves_the_identity_and_url_alone() {
+        // The point of splitting the two fields: correcting how a person is
+        // shown must not move their page. Renaming through this route and then
+        // finding them by the *old* identity is the whole contract.
+        let conn = mem_db_with_faces();
+        conn.execute(
+            "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
+             VALUES (1, 'h1', '0,0,10,10', X'0000', 'ozgur_demirtas', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO people (name, full_name) VALUES ('ozgur_demirtas','Özgür Demirtaş')",
+            [],
+        )
+        .unwrap();
+        // The search below joins faces to files, so the face needs one.
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash) VALUES ('/a.jpg', 'h1')",
+            [],
+        )
+        .unwrap();
+        let state = test_state(conn, true);
+        let result = handle_set_full_name(
+            State(state.clone()),
+            AxumJson(SetFullNameRequest {
+                name: "ozgur_demirtas".to_string(),
+                full_name: "Özgür".to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(result, Ok(StatusCode::OK));
+
+        let conn = state.conn.lock().unwrap();
+        let (id, full): (String, String) = conn
+            .query_row("SELECT name, full_name FROM people", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(
+            id, "ozgur_demirtas",
+            "identity unchanged, so /person/ still resolves"
+        );
+        assert_eq!(full, "Özgür", "display name updated");
+        let label: String = conn
+            .query_row("SELECT person_label FROM faces WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            label, "ozgur_demirtas",
+            "faces keep pointing at the identity"
+        );
+
+        // And the shortened display name still finds them, which is the case
+        // that broke the UI search before the two lookups were unified.
+        assert_eq!(
+            videre_core::person_search::search_by_person(&conn, "Özgür", None)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn rename_person_updates_label() {
         let conn = mem_db_with_faces();
         conn.execute(

@@ -142,6 +142,46 @@ pub fn display_name(raw: &str) -> Option<String> {
     Some(collapsed.chars().take(60).collect())
 }
 
+/// Every identity a typed name should match.
+///
+/// A person has two names and a user may type either: the identity from the
+/// URL (`erhan_gundogan`) or the display name from the screen
+/// (`Erhan Gündoğan`). They agree until someone renames a person, and after
+/// that only this lookup connects them.
+///
+/// :warning: **The display comparison happens here, in Rust, and must not be
+/// pushed into SQL.** SQLite's `LOWER()` is ASCII-only - it leaves `Ö` alone
+/// while Rust produces `ö` - so `LOWER(full_name) = ?` silently matched no
+/// name containing a Turkish character, which is most of the names this was
+/// built for. It surfaces only after a rename, when the two forms first
+/// disagree, so it passes every check made before one.
+///
+/// Returns the normalized query first, then any identity whose display name
+/// matches it. `people` holds one row per person, so reading it whole is
+/// cheaper than being clever.
+pub fn resolve_identities(
+    conn: &rusqlite::Connection,
+    typed_name: &str,
+) -> rusqlite::Result<Vec<String>> {
+    let normalized = normalize(typed_name).unwrap_or_else(|| typed_name.to_string());
+    let typed = typed_name.trim().to_lowercase();
+
+    let mut identities = vec![normalized.clone()];
+    if crate::db::table_exists(conn, "people").unwrap_or(false) {
+        let mut stmt = conn.prepare("SELECT name, full_name FROM people")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        for row in rows {
+            let (identity, full) = row?;
+            let matches_display = full.trim().to_lowercase() == typed
+                || normalize(&full).as_deref() == Some(normalized.as_str());
+            if matches_display && !identities.contains(&identity) {
+                identities.push(identity);
+            }
+        }
+    }
+    Ok(identities)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,5 +331,65 @@ mod tests {
         );
         assert_eq!(display_name("Anne-Marie").as_deref(), Some("Anne-Marie"));
         assert_eq!(display_name(&"x".repeat(70)).unwrap().chars().count(), 60);
+    }
+    fn people_db() -> rusqlite::Connection {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE people (name TEXT PRIMARY KEY, full_name TEXT NOT NULL);
+             INSERT INTO people VALUES ('erhan_gundogan','Erhan Gündoğan'),
+                                       ('ozgur_demirtas','Özgür'),
+                                       ('ozgur_tamer','Özgür');",
+        )
+        .unwrap();
+        c
+    }
+
+    #[test]
+    fn resolve_matches_the_identity_and_the_display_name() {
+        let c = people_db();
+        assert_eq!(resolve_identities(&c, "erhan_gundogan").unwrap().len(), 1);
+        assert!(resolve_identities(&c, "Erhan Gündoğan")
+            .unwrap()
+            .contains(&"erhan_gundogan".to_string()));
+    }
+
+    #[test]
+    fn resolve_is_case_insensitive_for_non_ascii() {
+        // SQLite's LOWER() cannot do this, which is why it happens in Rust.
+        let c = people_db();
+        for typed in ["Özgür", "özgür", "ÖZGÜR"] {
+            let ids = resolve_identities(&c, typed).unwrap();
+            assert!(ids.contains(&"ozgur_demirtas".to_string()), "{typed}");
+            assert!(ids.contains(&"ozgur_tamer".to_string()), "{typed}");
+        }
+    }
+
+    #[test]
+    fn resolve_returns_both_people_sharing_a_display_name() {
+        let c = people_db();
+        let ids = resolve_identities(&c, "Özgür").unwrap();
+        // Both people, plus the normalized query itself - which matches no
+        // identity here but costs nothing and is what an unmigrated label
+        // would be stored as.
+        assert!(ids.contains(&"ozgur_demirtas".to_string()));
+        assert!(ids.contains(&"ozgur_tamer".to_string()));
+        assert!(ids.contains(&"ozgur".to_string()), "the normalized query");
+    }
+
+    #[test]
+    fn resolve_without_a_people_table_falls_back_to_the_normalized_name() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        assert_eq!(resolve_identities(&c, "Erhan").unwrap(), vec!["erhan"]);
+    }
+
+    #[test]
+    fn resolve_never_returns_duplicates() {
+        let c = people_db();
+        // The normalized query and a display match are the same identity here.
+        let ids = resolve_identities(&c, "Erhan Gündoğan").unwrap();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), ids.len(), "{ids:?}");
     }
 }

@@ -6,20 +6,24 @@ pub fn search_by_person(
     name: &str,
     limit: Option<usize>,
 ) -> rusqlite::Result<Vec<String>> {
-    // Same normalization as `query::by_person`, for the same reason: the UI
-    // passes what a human typed, the database holds the identity form.
-    let name = crate::person::normalize(name).unwrap_or_else(|| name.to_string());
-    let name = name.as_str();
+    // The same resolution `query::by_person` uses, so the CLI and the UI agree
+    // on who a typed name refers to. The UI lists display names and searches
+    // with what it listed, so identity-only matching lost anyone whose display
+    // name had been edited.
+    let identities = crate::person::resolve_identities(conn, name)?;
+    let placeholders = std::iter::repeat_n("?", identities.len())
+        .collect::<Vec<_>>()
+        .join(",");
     let limit_sql = limit.map(|n| format!(" LIMIT {n}")).unwrap_or_default();
     let sql = format!(
         "SELECT DISTINCT fh.path
          FROM faces f
          JOIN file_hashes fh ON fh.hash = f.hash
-         WHERE f.person_label = ?1 AND f.confirmed = 1
+         WHERE f.person_label IN ({placeholders}) AND f.confirmed = 1
          ORDER BY fh.path{limit_sql}"
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(rusqlite::params![name], |r| r.get(0))?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(identities.iter()), |r| r.get(0))?;
     rows.collect()
 }
 
@@ -109,5 +113,28 @@ mod tests {
         setup(&conn);
         let names = list_persons(&conn).unwrap();
         assert_eq!(names, vec!["Alice", "Bob"]);
+    }
+    #[test]
+    fn a_renamed_display_name_still_finds_the_person() {
+        // The UI lists display names and searches with what it listed, so a
+        // person renamed to something that no longer normalizes to their
+        // identity became unfindable from the very list that offered them.
+        let conn = Connection::open_in_memory().unwrap();
+        setup(&conn);
+        conn.execute(
+            "UPDATE people SET full_name = 'Özgür' WHERE name = 'alice'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            search_by_person(&conn, "Özgür", None).unwrap().len(),
+            1,
+            "as listed in the UI"
+        );
+        assert_eq!(
+            search_by_person(&conn, "alice", None).unwrap().len(),
+            1,
+            "identity still works"
+        );
     }
 }
