@@ -80,9 +80,30 @@ pub fn faces_list(conn: &Connection) -> Result<FacesData> {
         }
     }
 
+    // Both maps are HashMaps, whose iteration order is arbitrary and differs
+    // between instances, so collecting straight from them threw away the
+    // ORDER BY the queries above establish. The labeling UI re-fetches this
+    // list after every assignment, so the effect was that people and clusters
+    // reshuffled on each drop: the cluster lined up next moved somewhere else,
+    // and so did the person being dragged onto. `singletons` never had the
+    // problem, and the difference is exactly that it is built as a Vec.
+    //
+    // Clusters are ordered largest first, which is the order people label in:
+    // the big clusters are worth the most and are the easiest to recognise.
+    // cluster_id breaks ties so the order is total, not merely sorted.
+    let mut people: Vec<PersonData> = people.into_values().collect();
+    people.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
+    let mut clusters: Vec<ClusterData> = cluster_map.into_values().collect();
+    clusters.sort_by(|a, b| {
+        b.face_ids
+            .len()
+            .cmp(&a.face_ids.len())
+            .then(a.cluster_id.cmp(&b.cluster_id))
+    });
+
     Ok(FacesData {
-        people: people.into_values().collect(),
-        clusters: cluster_map.into_values().collect(),
+        people,
+        clusters,
         singletons,
     })
 }
@@ -278,6 +299,63 @@ mod tests {
         .unwrap();
         videre_core::db::ensure_file_hashes_columns(&conn);
         conn
+    }
+
+    #[test]
+    fn the_list_comes_back_in_the_same_order_every_time() {
+        // The labeling UI re-fetches after every assignment, so an unstable
+        // order means the cluster lined up next moves, and so does the person
+        // being dragged onto. Both lists were collected straight out of a
+        // HashMap, which discarded the ORDER BY in the queries above.
+        // `singletons` never had the bug, and the only difference is that it is
+        // built as a Vec.
+        let conn = seed();
+        // The seed has one cluster and one person, which cannot show an
+        // ordering problem. Add enough of both to have an order at all, with
+        // sizes deliberately not matching id order.
+        conn.execute_batch(
+            // Columns named explicitly: `seed` runs ensure_file_hashes_columns,
+            // so the table has more than the two it was created with.
+            "INSERT INTO file_hashes (hash, path) VALUES ('h6','/p/6.jpg'),('h7','/p/7.jpg'),
+                ('h8','/p/8.jpg'),('h9','/p/9.jpg'),('h10','/p/10.jpg');
+             INSERT INTO faces (id,hash,bbox,embedding,cluster_id,person_label,confirmed,is_primary) VALUES
+                (6,'h6','0,0,9,9',X'0000',9,NULL,0,0),
+                (7,'h7','0,0,9,9',X'0000',9,NULL,0,0),
+                (8,'h8','0,0,9,9',X'0000',9,NULL,0,0),
+                (9,'h9','0,0,9,9',X'0000',3,NULL,0,0),
+                (10,'h10','0,0,9,9',X'0000',NULL,'Bob',1,0);",
+        )
+        .unwrap();
+
+        // Two calls on one connection: each builds fresh HashMaps, and Rust
+        // seeds them differently, so an unstable order shows up here.
+        let a = faces_list(&conn).unwrap();
+        let b = faces_list(&conn).unwrap();
+
+        let ids = |f: &FacesData| -> Vec<i64> { f.clusters.iter().map(|c| c.cluster_id).collect() };
+        let names =
+            |f: &FacesData| -> Vec<String> { f.people.iter().map(|p| p.label.clone()).collect() };
+        assert!(ids(&a).len() >= 3, "fixture must have several clusters");
+        assert_eq!(
+            ids(&a),
+            ids(&b),
+            "cluster order must not change between calls"
+        );
+        assert_eq!(
+            names(&a),
+            names(&b),
+            "people order must not change between calls"
+        );
+
+        // And the order is the useful one: biggest first, so the cluster worth
+        // the most labelling effort is where it is expected.
+        let sizes: Vec<usize> = a.clusters.iter().map(|c| c.face_ids.len()).collect();
+        let mut want = sizes.clone();
+        want.sort_unstable_by(|x, y| y.cmp(x));
+        assert_eq!(
+            sizes, want,
+            "clusters must be ordered largest first, got {sizes:?}"
+        );
     }
 
     #[test]
