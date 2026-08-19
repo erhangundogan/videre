@@ -13,7 +13,7 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
-## [Unreleased]
+## [0.17.0] - 2026-08-19
 
 ### Removed
 
@@ -900,7 +900,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.16.1...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/erhangundogan/videre/compare/v0.16.1...v0.17.0
 [0.16.1]: https://github.com/erhangundogan/videre/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/erhangundogan/videre/compare/v0.15.10...v0.16.0
 [0.12.0]: https://github.com/erhangundogan/videre/compare/v0.11.5...v0.12.0
