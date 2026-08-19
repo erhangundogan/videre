@@ -1,19 +1,19 @@
 ---
 title: Browsing and labeling in a browser
-description: The three different interfaces videre report produces, and which one you get.
+description: The three different interfaces videre dedupe --html produces, and which one you get.
 ---
 
-`videre report` produces three quite different things depending on its flags:
+`videre dedupe --html` produces three quite different things depending on its flags:
 a static file you can keep, a labeling application, and a live gallery. They
 share a command but are not really the same tool.
 
 | You want to | Command | What you get |
 |---|---|---|
-| Check duplicates before deleting | `videre report` | A file |
-| Browse everything you own | `videre report --all` | A file |
-| Find photos from a trip | `videre report --by-date` | A file |
-| Name people | `videre report --faces` | A local server |
-| Browse with names and places shown | `videre report --show-faces` | A local server |
+| Check duplicates before deleting | `videre dedupe --html` | A file |
+| Browse everything you own | `videre gallery` | A file |
+| Find photos from a trip | `videre gallery` | A file |
+| Name people | `videre gallery` | A local server |
+| Browse with names and places shown | `videre gallery` | A local server |
 
 ## Static file or local server
 
@@ -28,7 +28,7 @@ That is worth internalising, because the flags combine freely and the result is
 not always what the names suggest:
 
 ```bash
-videre report --all --show-faces --heic
+videre gallery --show-faces --heic
 ```
 
 That is **server mode**. `--show-faces` wins, `--all` adds the gallery, and
@@ -55,7 +55,7 @@ instead.
 The default, and the one to run before deleting anything.
 
 ```bash
-videre report
+videre dedupe --html
 ```
 
 Groups are sorted by wasted space, each file badged KEEP or REMOVE, with
@@ -75,7 +75,7 @@ eyeballing, and deliberately never in `dedupe`'s pipeable output.
 
 ```bash
 videre faces                   # detect and group first
-videre report --faces          # then name them
+videre gallery          # then name them
 ```
 
 Opens `http://localhost:7878` with three sections:
@@ -104,7 +104,7 @@ names, because they are stored per face rather than per group.
 ## Live browsing
 
 ```bash
-videre report --show-faces
+videre gallery
 ```
 
 The report itself, but served, with the lightbox showing each photo's named
@@ -113,8 +113,8 @@ faces (clicking one jumps to that person) and a reverse-geocoded place name.
 Combine as you like:
 
 ```bash
-videre report --all --show-faces      # whole library, live metadata
-videre report --faces --show-faces    # report at /, labeling UI at /faces
+videre gallery --show-faces      # whole library, live metadata
+videre gallery    # report at /, labeling UI at /faces
 ```
 
 Route split when combining:
@@ -135,7 +135,7 @@ Warm the cache first and the first click is fast too:
 
 ```bash
 videre watch ~/Photos --heic     # Ctrl-C once counts settle
-videre report --show-faces
+videre gallery
 ```
 
 ## Sharing a report
@@ -147,7 +147,7 @@ image is broken.
 To produce something that travels, embed the images:
 
 ```bash
-videre report --all --heic -o for-sharing.html
+videre gallery --heic -o for-sharing.html
 ```
 
 `--heic` inlines 240px thumbnails; `--heic-original` adds 1200px lightbox

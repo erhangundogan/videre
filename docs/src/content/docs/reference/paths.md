@@ -60,7 +60,7 @@ itself to:
 |---|---|
 | [`dedupe`](/commands/dedupe/) | Every row, so it finds copies **across** folders |
 | [`prune`](/commands/prune/) | Every row, whichever folder it came from |
-| [`report`](/commands/report/), [`search`](/commands/search/), [`stats`](/commands/stats/) | Everything in the database |
+| [`gallery`](/commands/gallery/), [`search`](/commands/search/), [`stats`](/commands/stats/) | Everything in the database |
 
 Cross-folder duplicate detection is usually the reason to combine folders: it is
 how you find that the archive drive holds copies of what is already on your

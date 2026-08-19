@@ -30,7 +30,7 @@ videre search --sort=distance,date         # order, with tie-breaks
 | Mode | Requires |
 |---|---|
 | Text, `--image` | [`videre embed`](/commands/embed/) |
-| `--person` | [`videre faces`](/commands/faces/), then naming via [`report --faces`](/commands/report/) |
+| `--person` | [`videre faces`](/commands/faces/), then naming via [`gallery`](/commands/gallery/) |
 | `--category` | [`videre classify`](/commands/classify/) |
 | `--location` | GPS data in your photos |
 
@@ -72,7 +72,7 @@ Things it is **not**:
 - **Boolean logic.** There is no AND, OR or NOT. "dog not cat" is just a phrase,
   and the negation is ignored.
 - **Names and dates.** It has no idea who Alice is or when a photo was taken.
-  Use `--person` for people, and the [by-date report](/commands/report/) for
+  Use `--person` for people, and the [date view in `gallery`](/commands/gallery/) for
   time.
 
 Every result is a ranked match, so something always comes back even for a query
