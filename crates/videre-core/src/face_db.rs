@@ -28,7 +28,7 @@ pub fn ensure_people_table(conn: &Connection) {
     //
     // `name` is the primary key deliberately. It puts "two people cannot share
     // an identity" in the database rather than in whichever code path remembers
-    // to check - `rename_person` checks by hand today and `assign` does not.
+    // to check.
     //
     // No foreign key from `faces`: SQLite leaves `PRAGMA foreign_keys` off and
     // videre never sets it, so a `REFERENCES` clause here would be

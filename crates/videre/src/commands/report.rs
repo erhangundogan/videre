@@ -2161,7 +2161,6 @@ const PERSON_HTML: &str = r##"<!DOCTYPE html>
 fn api_status(e: videre_api::Error) -> StatusCode {
     match e {
         videre_api::Error::NotFound => StatusCode::NOT_FOUND,
-        videre_api::Error::Conflict => StatusCode::CONFLICT,
         videre_api::Error::Invalid => StatusCode::BAD_REQUEST,
         videre_api::Error::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
         videre_api::Error::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -2193,12 +2192,6 @@ struct DissolveClusterRequest {
 #[derive(Deserialize)]
 struct DeletePersonRequest {
     label: String,
-}
-
-#[derive(Deserialize)]
-struct RenamePersonRequest {
-    old_label: String,
-    new_label: String,
 }
 
 /// Changing what a person is shown as, without touching their identity.
@@ -2392,19 +2385,6 @@ async fn handle_set_full_name(
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     videre_api::set_full_name(&conn, &req.name, &req.full_name)
-        .map(|_| StatusCode::OK)
-        .map_err(api_status)
-}
-
-async fn handle_rename_person(
-    State(state): State<Arc<AppState>>,
-    AxumJson(req): AxumJson<RenamePersonRequest>,
-) -> Result<StatusCode, StatusCode> {
-    let conn = state
-        .conn
-        .lock()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    videre_api::rename_person(&conn, &req.old_label, &req.new_label)
         .map(|_| StatusCode::OK)
         .map_err(api_status)
 }
@@ -2748,7 +2728,6 @@ async fn serve_faces_async(
             .route("/api/new-person", post(handle_new_person))
             .route("/api/remove-face", post(handle_remove_face))
             .route("/api/delete-person", post(handle_delete_person))
-            .route("/api/rename-person", post(handle_rename_person))
             .route("/api/set-full-name", post(handle_set_full_name))
             .route("/api/dissolve-cluster", post(handle_dissolve_cluster))
             .route("/api/set-primary", post(handle_set_primary));
@@ -3433,83 +3412,6 @@ mod tests {
                 .len(),
             1
         );
-    }
-
-    #[tokio::test]
-    async fn rename_person_updates_label() {
-        let conn = mem_db_with_faces();
-        conn.execute(
-            "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
-             VALUES (1, 'h1', '0,0,10,10', X'0000', 'alice', 1)",
-            [],
-        )
-        .unwrap();
-        let state = test_state(conn, true);
-        let result = handle_rename_person(
-            State(state.clone()),
-            AxumJson(RenamePersonRequest {
-                old_label: "Alice".to_string(),
-                new_label: "Alicia".to_string(),
-            }),
-        )
-        .await;
-        assert_eq!(result, Ok(StatusCode::OK));
-        let conn = state.conn.lock().unwrap();
-        let label: String = conn
-            .query_row("SELECT person_label FROM faces WHERE id = 1", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        assert_eq!(label, "alicia", "stored in identity form");
-    }
-
-    #[tokio::test]
-    async fn rename_person_rejects_collision_with_existing_label() {
-        let conn = mem_db_with_faces();
-        conn.execute(
-            "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
-             VALUES (1, 'h1', '0,0,10,10', X'0000', 'alice', 1)",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
-             VALUES (2, 'h2', '0,0,10,10', X'0000', 'bob', 1)",
-            [],
-        )
-        .unwrap();
-        let state = test_state(conn, true);
-        let result = handle_rename_person(
-            State(state.clone()),
-            AxumJson(RenamePersonRequest {
-                old_label: "Alice".to_string(),
-                new_label: "Bob".to_string(),
-            }),
-        )
-        .await;
-        assert_eq!(result, Err(StatusCode::CONFLICT));
-        let conn = state.conn.lock().unwrap();
-        let label: String = conn
-            .query_row("SELECT person_label FROM faces WHERE id = 1", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        assert_eq!(label, "alice", "rename must not have applied on collision");
-    }
-
-    #[tokio::test]
-    async fn rename_person_rejects_nonexistent_old_label() {
-        let conn = mem_db_with_faces();
-        let state = test_state(conn, true);
-        let result = handle_rename_person(
-            State(state.clone()),
-            AxumJson(RenamePersonRequest {
-                old_label: "Ghost".to_string(),
-                new_label: "Someone".to_string(),
-            }),
-        )
-        .await;
-        assert_eq!(result, Err(StatusCode::NOT_FOUND));
     }
 
     #[tokio::test]

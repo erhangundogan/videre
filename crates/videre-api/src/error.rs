@@ -2,11 +2,8 @@
 /// own convention (axum -> StatusCode, other embedders -> their own error type).
 #[derive(Debug)]
 pub enum Error {
-    /// The target row/label does not exist (e.g. rename of an unknown person).
+    /// The target row/label does not exist.
     NotFound,
-    /// The requested change collides with existing state (e.g. rename onto an
-    /// existing person).
-    Conflict,
     /// Caller-supplied input was rejected (e.g. an empty label after sanitizing).
     Invalid,
     /// Underlying database failure.
@@ -32,7 +29,6 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::NotFound => write!(f, "not found"),
-            Error::Conflict => write!(f, "conflict"),
             Error::Invalid => write!(f, "invalid input"),
             Error::Db(e) => write!(f, "database error: {e}"),
             Error::Other(msg) => write!(f, "{msg}"),
@@ -51,7 +47,6 @@ mod tests {
     #[test]
     fn display_matches_each_variant() {
         assert_eq!(Error::NotFound.to_string(), "not found");
-        assert_eq!(Error::Conflict.to_string(), "conflict");
         assert_eq!(Error::Invalid.to_string(), "invalid input");
         assert_eq!(Error::Other("boom".to_string()).to_string(), "boom");
     }
