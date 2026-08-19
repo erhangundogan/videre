@@ -67,7 +67,7 @@ would reclaim by deleting all but one of each group, which is what
 
 **Faces detected** counts individual faces, not photos, so one group shot
 contributes several. **People named** stays at 0 until you assign names in
-[`report --faces`](/commands/report/); detection alone never produces a name.
+[`gallery`](/commands/gallery/); detection alone never produces a name.
 
 **Embeddings** lists one line per [model](/reference/models/) you have prepared,
 with dimensions derived from the stored data rather than a hardcoded table, so

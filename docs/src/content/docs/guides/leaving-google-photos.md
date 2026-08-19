@@ -97,19 +97,19 @@ modified.
 ## 6. Remove the album duplicates
 
 ```bash
-videre report                  # look at what would go
+videre dedupe --html                  # look at what would go
 videre dedupe | xargs trash    # delete it
 videre prune                   # tidy the database afterwards
 ```
 
-`videre report` opens a page in your browser showing every duplicate group, with
+`videre dedupe --html` opens a page in your browser showing every duplicate group, with
 KEEP and REMOVE badges. Look before you delete.
 
 This is where the album duplication disappears. Those copies are byte-identical,
 so removing them loses nothing at all.
 
 :::caution
-`videre dedupe | xargs trash` deletes immediately. Run `videre report` first, or
+`videre dedupe | xargs trash` deletes immediately. Run `videre dedupe --html` first, or
 send the list to a file and read it. See [cautions](/start/cautions/).
 :::
 
@@ -122,7 +122,7 @@ videre embed                   # one-time, downloads about 780 MB
 videre search "sunset over water"
 
 videre faces                   # one-time, downloads about 180 MB
-videre report --faces          # name the people
+videre gallery          # name the people
 videre search --person "Alice"
 ```
 

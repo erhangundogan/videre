@@ -13,7 +13,7 @@ situations that surprise people.
 Its output is the REMOVE side of each duplicate group, so
 `videre dedupe | xargs trash` deletes those files immediately.
 
-Look before you pipe: run [`videre report`](/commands/report/) first and review
+Look before you pipe: run [`videre dedupe --html`](/commands/dedupe/) first and review
 the KEEP/REMOVE badges, or send the list to a file and read it.
 
 Near-duplicate groups from `--similar` are deliberately kept out of this output,

@@ -53,7 +53,7 @@ Preparing a second model does not disturb the first, and switching back and
 forth invalidates nothing.
 
 Asking for a model you have not prepared gives an error listing the ones you do
-have, rather than silently returning no results. [`videre report`](/commands/report/)
+have, rather than silently returning no results. [`videre dedupe --html`](/commands/dedupe/)
 is the exception: a missing model disables its in-page similarity search with a
 note, rather than failing a report that works fine without it.
 

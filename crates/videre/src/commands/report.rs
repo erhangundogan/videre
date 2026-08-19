@@ -1481,7 +1481,24 @@ fn serve_faces(db: &Path, opts: ServeOptions) -> Result<(), Box<dyn std::error::
     rt.block_on(serve_faces_async(db, opts))
 }
 
+/// What to type instead, for the flags actually passed.
+///
+/// A generic "use gallery" would be wrong half the time: `report` with no flags
+/// wrote a duplicate-review file, which is `dedupe --html`, not a server.
+fn replacement_for(args: &ReportArgs) -> &'static str {
+    if args.faces || args.show_faces || args.all || args.by_date {
+        "videre gallery"
+    } else {
+        "videre dedupe --html"
+    }
+}
+
 pub fn run(args: ReportArgs) -> anyhow::Result<()> {
+    eprintln!(
+        "warning: `videre report` is deprecated and will be removed in the next release.\n\
+         warning: use `{}` instead. See https://docs.videre.sh/commands/gallery/",
+        replacement_for(&args)
+    );
     let db = super::resolve_reader_db(args.db.clone())?;
 
     if !db.exists() {

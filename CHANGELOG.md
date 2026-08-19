@@ -13,6 +13,46 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [Unreleased]
+
+### Added
+
+- **`videre gallery`**, one local server for browsing your library, with every
+  view on its own route: `/` for all files, `/people` for face groups, `/date`
+  for a Year/Month/Day drill-down. They link to each other, so a face in the
+  gallery is clickable through to that person's page. `--browse` opens it,
+  `--port` moves it off 7878.
+- **`videre dedupe --html`** and **`videre search --html`** write the set a
+  command just produced to a browsable page you can keep, archive or send.
+
+### Changed
+
+- :warning: **`videre report` is deprecated** and will be removed in the next
+  release. It still works, is hidden from `--help`, and prints the replacement
+  for whatever you asked it to do. `--all`, `--faces`, `--by-date` and
+  `--show-faces` become routes of `videre gallery`; plain `videre report`
+  becomes `videre dedupe --html`.
+
+  `--heic` and `--heic-original` have no equivalent and are not missed: a
+  server converts HEIC on demand, and eager embedding existed only because a
+  file written to disk cannot ask for a thumbnail later.
+
+- **Sizes at or above a terabyte now say TB.** Byte formatting had three
+  implementations that disagreed, two of which stopped at GB, so a 2 TB library
+  rendered as "2048.0 GB". `videre stats` used two of the three in one output.
+
+### Fixed
+
+- **`videre report --by-date` produced a different file on every run** over an
+  unchanged database. Grouping discarded the query's ordering.
+
+### Internal
+
+- The HTML, CSS and JavaScript left Rust string literals for real files rendered
+  with Askama, checked against their structs at compile time.
+  `commands/report.rs` went from 3,494 lines to about 2,200, and output stayed
+  byte-identical throughout.
+
 ## [0.17.0] - 2026-08-19
 
 ### Removed

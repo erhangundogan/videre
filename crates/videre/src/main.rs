@@ -18,6 +18,9 @@ enum Command {
     /// Report duplicate files from the database and print paths to remove
     Dedupe(commands::dedupe::DedupeArgs),
     /// Generate an HTML review page, or serve the live report/labeling UI
+    /// Deprecated in 0.18.0 and removed in the release after. Use `videre
+    /// gallery` to browse; `dedupe` and `search` can each write a page.
+    #[command(hide = true)]
     Report(commands::report::ReportArgs),
     /// Browse the library in a local web UI: all files, people, dates
     Gallery(commands::gallery::GalleryArgs),
