@@ -1275,881 +1275,49 @@ if(typeof KEEPFILES!=='undefined') buildYearView();
 
 // ---- Faces labeling server ----
 
-const FACES_HTML: &str = r##"<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>videre faces labeling</title>
-  <style>
-    :root {
-      --blue-border: #6c8ebf;
-      --blue-bg: #e8f0fe;
-      --blue-text: #4a6da3;
-      --blue-hover: #2a6db5;
-      --green-border: #6cc36c;
-      --green-bg: #eaf7ea;
-      --green-text: #1a7a1a;
-      --orange-border: #e2a03f;
-      --orange-bg: #fdf1df;
-      --orange-text: #8a5a00;
-    }
-    body { font-family: sans-serif; margin: 0; padding: 16px; background: #fff; }
-    h2 { border-bottom: 1px solid #ccc; padding-bottom: 4px; }
-    .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fill, 160px); gap: 12px; margin-bottom: 24px; }
-    .card { background: white; border: 2px solid #ddd; border-radius: 8px; padding: 10px; width: 160px; box-sizing: border-box; cursor: grab; }
-    .card.person-card { cursor: default; border-color: var(--blue-border); background: var(--blue-bg); transition: border-color 0.15s; }
-    .card.person-card:hover { border-color: var(--blue-hover); }
-    .card.drag-over { border-color: var(--blue-hover); background: #d0e4ff; }
-    .card.cluster-card { border-color: var(--green-border); background: var(--green-bg); }
-    .card.singleton-card { border-color: var(--orange-border); background: var(--orange-bg); }
-    .badge { display: inline-flex; align-items: center; vertical-align: middle; border-radius: 12px; padding: 3px 9px; font-size: 12px; line-height: 1; margin-left: 4px; font-weight: 600; border: 1px solid transparent; }
-    .badge-blue { background: var(--blue-bg); border-color: var(--blue-border); color: var(--blue-text); }
-    .badge-green { background: var(--green-bg); border-color: var(--green-border); color: var(--green-text); }
-    .badge-orange { background: var(--orange-bg); border-color: var(--orange-border); color: var(--orange-text); }
-    h2.title-people { color: var(--blue-text); }
-    h2.title-clusters { color: var(--green-text); }
-    h2.title-singletons { color: var(--orange-text); }
-    .new-person-area { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
-    .new-person-area button { flex: 1; }
-    .new-person-area input[type=text] { width: 100%; box-sizing: border-box; }
-    .np-btn-row { display: flex; gap: 4px; }
-    .np-btn-row button { flex: 1; }
-    .new-person-btn { background: #fff; font-weight: 600; transition: background 0.15s, color 0.15s; }
-    .cluster-card .new-person-btn { border-color: var(--green-border); color: var(--green-text); }
-    .cluster-card .new-person-btn:hover { background: var(--green-text); border-color: var(--green-text); color: #fff; }
-    .singleton-card .new-person-btn { border-color: var(--orange-border); color: var(--orange-text); }
-    .singleton-card .new-person-btn:hover { background: var(--orange-text); border-color: var(--orange-text); color: #fff; }
-    .np-create-btn { font-weight: 600; color: #fff; transition: background 0.15s, border-color 0.15s; }
-    .cluster-card .np-create-btn { background: var(--green-border); border-color: var(--green-border); }
-    .cluster-card .np-create-btn:hover { background: var(--green-text); border-color: var(--green-text); }
-    .singleton-card .np-create-btn { background: var(--orange-border); border-color: var(--orange-border); }
-    .singleton-card .np-create-btn:hover { background: var(--orange-text); border-color: var(--orange-text); }
-    .cluster-card .np-input { border-color: var(--green-border); color: var(--green-text); }
-    .cluster-card .np-input:focus { outline: none; border-color: var(--green-text); box-shadow: 0 0 0 2px rgba(108,195,108,0.25); }
-    .singleton-card .np-input { border-color: var(--orange-border); color: var(--orange-text); }
-    .singleton-card .np-input:focus { outline: none; border-color: var(--orange-text); box-shadow: 0 0 0 2px rgba(226,160,63,0.25); }
-    button { cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid #999; background: white; }
-    button.primary { background: var(--blue-hover); color: white; border-color: var(--blue-hover); }
-    input[type=text] { padding: 4px 8px; border: 1px solid #999; border-radius: 4px; width: 120px; }
-    #status { font-size: 13px; color: #555; }
-    /* max-width keeps the fixed-size (140/66px) thumbnails from overflowing a
-       narrower card, e.g. the People cards in right-sidebar mode; aspect-ratio
-       + height:auto keep them square while they scale down. */
-    .face-img { object-fit: cover; border-radius: 3px; background: #ddd; display: block; max-width: 100%; height: auto; aspect-ratio: 1 / 1; }
-    .people-section { position: sticky; top: 0; background: #fff; z-index: 100; padding-bottom: 8px; }
-    .people-scroll { max-height: 45vh; overflow-y: auto; padding-bottom: 4px; }
-    .drag-handle { display: flex; align-items: center; gap: 6px; cursor: grab; color: #aaa; padding: 2px 0 6px; user-select: none; }
-    .drag-handle .drag-dots { font-size: 16px; letter-spacing: 2px; flex-shrink: 0; }
-    .drag-handle .drag-hint { font-size: 10px; color: #bbb; line-height: 1.2; }
-    .drag-handle:hover { color: #777; }
-    .drag-handle:hover .drag-hint { color: #999; }
-    .cluster-card .drag-handle .drag-dots, .cluster-card .drag-handle .drag-hint { color: var(--green-border); }
-    .cluster-card .drag-handle:hover .drag-dots, .cluster-card .drag-handle:hover .drag-hint { color: var(--green-text); }
-    .singleton-card .drag-handle .drag-dots, .singleton-card .drag-handle .drag-hint { color: var(--orange-border); }
-    .singleton-card .drag-handle:hover .drag-dots, .singleton-card .drag-handle:hover .drag-hint { color: var(--orange-text); }
-    .cluster-link { color: var(--blue-hover); text-decoration: none; font-weight: bold; display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .cluster-link:hover { text-decoration: underline; }
-    /* Says an entered name will join an existing person rather than create one.
-       Amber, not red: merging is usually what was meant. */
-    .merge-note { color: #b58900; font-size: 12px; margin-left: 8px; }
-    .extra-count { font-size: 11px; margin-top: 2px; }
-    .person-card .extra-count { color: var(--blue-text); }
-    .cluster-card .extra-count { color: var(--green-text); }
-    .singleton-card .extra-count { color: var(--orange-text); }
-    /* Right-hand People sidebar (toggled, remembered in localStorage). */
-    body.sidebar-mode { padding-right: 316px; }
-    body.sidebar-mode .people-section { position: fixed; top: 0; right: 0; bottom: 0; width: 300px; margin: 0; padding: 16px 12px; overflow-y: auto; border-left: 1px solid #ddd; box-shadow: -2px 0 8px rgba(0,0,0,0.05); z-index: 200; }
-    body.sidebar-mode .people-scroll { max-height: none; overflow: visible; }
-    body.sidebar-mode #people-grid { grid-template-columns: repeat(auto-fill, 132px); gap: 8px; }
-    body.sidebar-mode #people-grid .card { width: 132px; padding: 8px; }
-    /* Singleton multi-select. */
-    .singleton-card.selected { border-color: var(--blue-hover); box-shadow: 0 0 0 2px var(--blue-hover); }
-    .sel-zone { position: relative; cursor: pointer; }
-    .sel-check { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; border-radius: 50%; background: var(--blue-hover); color: #fff; align-items: center; justify-content: center; font-size: 13px; z-index: 5; display: none; }
-    .singleton-card.selected .sel-check { display: flex; }
-    .sel-bar { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--blue-hover); color: #fff; padding: 10px 16px; border-radius: 10px; display: none; gap: 12px; align-items: center; z-index: 300; box-shadow: 0 4px 16px rgba(0,0,0,0.25); flex-wrap: wrap; }
-    .sel-bar.on { display: flex; }
-    .sel-bar .sel-count { font-weight: 600; }
-    .sel-bar .sel-hint { font-size: 12px; opacity: 0.85; }
-    .sel-bar button { background: #fff; color: var(--blue-hover); font-weight: 600; border: none; }
-    .sel-bar input[type=text] { width: 160px; }
-  </style>
-</head>
-<body>
-  <div class="toolbar">
-    <strong>videre faces labeling</strong>
-    <span id="status">Loading...</span>
-    <button id="layout-toggle" onclick="toggleLayout()">People: Top</button>
-    <button class="primary" onclick="saveAndClose()">Save &amp; Close</button>
-  </div>
-
-  <div class="people-section">
-    <h2 class="title-people">People <span id="people-count" class="badge badge-blue">0</span></h2>
-    <div class="people-scroll">
-      <div id="people-grid" class="grid"></div>
-    </div>
-  </div>
-
-  <h2 class="title-clusters">Unassigned Clusters <span id="cluster-count" class="badge badge-green">0</span></h2>
-  <div id="cluster-grid" class="grid"></div>
-
-  <h2 class="title-singletons">Singletons <span id="singleton-count" class="badge badge-orange">0</span></h2>
-  <div id="singleton-grid" class="grid"></div>
-
-  <div class="sel-bar" id="sel-bar"></div>
-
-  <script>
-    let facesData = { people: [], clusters: [], singletons: [] };
-
-    async function loadFaces() {
-      try {
-        const r = await fetch('/api/faces');
-        facesData = await r.json();
-        render();
-        document.getElementById('status').textContent =
-          `${facesData.people.length} people, ${facesData.clusters.length} clusters, ${facesData.singletons.length} singletons`;
-      } catch(e) {
-        document.getElementById('status').textContent = 'Error loading: ' + e;
-      }
-    }
-
-    function faceImg(faceId, w, h) {
-      return `<img class="face-img" src="/api/face-image/${faceId}" width="${w}" height="${h}" title="#${faceId}" onerror="this.removeAttribute('src');this.style.background='#ddd'">`;
-    }
-
-    function thumbGrid(faceIds) {
-      if (faceIds.length === 1) {
-        return `<div style="margin-bottom:6px">${faceImg(faceIds[0], 140, 140)}</div>`;
-      }
-      const visible = faceIds.slice(0, 4);
-      const extra = faceIds.length > 4
-        ? `<div class="extra-count">+${faceIds.length - 4} more</div>` : '';
-      return `
-        <div style="display:grid;grid-template-columns:repeat(2,66px);gap:4px;margin-bottom:6px">
-          ${visible.map(id => faceImg(id, 66, 66)).join('')}
-        </div>${extra}`;
-    }
-
-    function renderPeople(people) {
-      const grid = document.getElementById('people-grid');
-      document.getElementById('people-count').textContent = people.length;
-      // Sort by name (case-insensitive) so cards keep a stable position while
-      // you drag clusters onto them, count-sort reshuffled them mid-assign.
-      const sorted = [...people].sort((a, b) =>
-        a.full_name.localeCompare(b.full_name, undefined, { sensitivity: 'base' }));
-      grid.innerHTML = sorted.map(p => {
-        const url = `/person/${encodeURIComponent(p.label)}`;
-        const extra = p.face_ids.length > 1
-          ? `<div class="extra-count">+${p.face_ids.length - 1} more</div>` : '';
-        return `
-        <div class="card person-card"
-             data-label="${escHtml(p.label)}"
-             ondragover="event.preventDefault(); this.classList.add('drag-over')"
-             ondragleave="this.classList.remove('drag-over')"
-             ondrop="onDropToPerson(event, this.dataset.label); this.classList.remove('drag-over')">
-          <a href="${url}">
-            <div style="margin-bottom:6px">${faceImg(p.representative_id, 140, 140)}</div>
-          </a>
-          <a class="cluster-link" href="${url}" title="${escHtml(p.full_name)}">${escHtml(p.full_name)}</a>
-          ${extra}
-        </div>
-      `;
-      }).join('');
-    }
-
-    const MAX_NAME_LEN = 60;
-
-    // Trim, collapse internal whitespace, strip control/bidi-spoofing
-    // characters, and cap length by code point (not UTF-16 code unit) so a
-    // pasted wall of text or a spoofed name can't stretch card layout,
-    // corrupt display order, or bloat the DB.
-    // Mirror of `videre_core::person::normalize`, so the page can say "this
-    // will add to an existing person" before posting - which needs the same
-    // identity the server will compute. Kept small and labelled as a mirror:
-    // if the two disagree the warning misfires, which is visible, rather than
-    // the assignment landing somewhere unexpected, which is not.
-    const TURKISH_FOLD = { 'ı':'i','İ':'i','ğ':'g','Ğ':'g','ş':'s','Ş':'s',
-                           'ö':'o','Ö':'o','ü':'u','Ü':'u','ç':'c','Ç':'c' };
-    function personIdentity(raw) {
-      const folded = Array.from(String(raw).trim())
-        .map(ch => TURKISH_FOLD[ch] || ch).join('')
-        .toLowerCase().normalize('NFKD');
-      let out = '', lastSep = true;
-      for (const ch of folded) {
-        if (/[\\s_]/.test(ch)) { if (!lastSep) { out += '_'; lastSep = true; } continue; }
-        if (/[a-z0-9]/.test(ch)) { out += ch; lastSep = false; }
-      }
-      return out.replace(/_+$/, '');
-    }
-
-    // The person an entered name would land on, or null for a new one.
-    function existingPersonFor(typed) {
-      const id = personIdentity(typed);
-      if (!id || !mainData || !mainData.people) return null;
-      return mainData.people.find(p => p.label === id) || null;
-    }
-
-    function sanitizeName(raw) {
-      const filtered = Array.from(raw).filter(function(ch) {
-        const cp = ch.codePointAt(0);
-        if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)) return false;
-        if (cp === 0x200B) return false;
-        if (cp === 0x200E || cp === 0x200F) return false;
-        // 0x200C (ZWNJ) and 0x200D (ZWJ) are intentionally allowed,
-        // required for Persian/Indic text and emoji ZWJ sequences.
-        if (cp >= 0x202A && cp <= 0x202E) return false;
-        if (cp >= 0x2060 && cp <= 0x2069) return false;
-        if (cp === 0xFEFF) return false;
-        return true;
-      }).join('');
-      const collapsed = filtered.trim().replace(/\s+/g, ' ');
-      return Array.from(collapsed).slice(0, MAX_NAME_LEN).join('');
-    }
-
-    function renderAssignableCard(faceIds, linkUrl, cardClass, selFaceId) {
-      const faceIdsJson = JSON.stringify(faceIds);
-      // Singletons carry a selection id: clicking the thumbnail toggles
-      // multi-select. The click target is scoped to the thumbnail ("select
-      // zone") rather than the whole card so the drag handle and the New
-      // Person controls, which live outside it, never toggle selection
-      // (they mutate the card, which would break a whole-card click guard).
-      // Clusters (selFaceId undefined) are unaffected.
-      const selectable = selFaceId != null;
-      const inner = thumbGrid(faceIds);
-      let thumb;
-      if (selectable) {
-        thumb = `<div class="sel-zone" onclick="toggleSingleton(${selFaceId})" title="Click to select">`
-          + `<div class="sel-check">&#10003;</div>${inner}</div>`;
-      } else if (linkUrl) {
-        thumb = `<a href="${escHtml(linkUrl)}">${inner}</a>`;
-      } else {
-        thumb = inner;
-      }
-      const selAttr = selectable ? `data-sel-id="${selFaceId}"` : '';
-      return `
-        <div class="card ${cardClass}" ${selAttr}>
-          <div class="drag-handle" draggable="true" ondragstart="onDragStart(event, ${faceIdsJson})" title="Drag to assign to a person">
-            <span class="drag-dots">&#8942;&#8942;&#8942;</span>
-            <span class="drag-hint">Drag on person above</span>
-          </div>
-          ${thumb}
-          <div class="new-person-area">
-            <button class="new-person-btn" onclick="showNewPersonInput(this, ${faceIdsJson})">New Person</button>
-          </div>
-        </div>
-      `;
-    }
-
-    function renderClusters(clusters) {
-      const grid = document.getElementById('cluster-grid');
-      document.getElementById('cluster-count').textContent = clusters.length;
-      const sorted = [...clusters].sort((a, b) => b.face_ids.length - a.face_ids.length);
-      grid.innerHTML = sorted.map(c =>
-        renderAssignableCard(c.face_ids, `/cluster/${c.cluster_id}`, 'cluster-card')
-      ).join('');
-    }
-
-    function renderSingletons(singletons) {
-      const grid = document.getElementById('singleton-grid');
-      document.getElementById('singleton-count').textContent = singletons.length;
-      grid.innerHTML = singletons.map(s =>
-        renderAssignableCard([s.face_id], null, 'singleton-card', s.face_id)
-      ).join('');
-    }
-
-    function render() {
-      renderPeople(facesData.people);
-      renderClusters(facesData.clusters);
-      renderSingletons(facesData.singletons);
-      updateSelectionUI();
-    }
-
-    function escHtml(s) {
-      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-    }
-
-    function onDragStart(event, faceIds) {
-      if (!event.target.closest('.drag-handle')) {
-        event.preventDefault();
-        return;
-      }
-      // Dragging a selected singleton carries the whole current selection, so
-      // one drop assigns every selected face at once.
-      let ids = faceIds;
-      const card = event.target.closest('.card');
-      const selId = card && card.dataset.selId != null ? Number(card.dataset.selId) : null;
-      if (selId != null && selectedSingletons.has(selId) && selectedSingletons.size > 1) {
-        ids = Array.from(selectedSingletons);
-      }
-      event.dataTransfer.setData('application/json', JSON.stringify({ face_ids: ids }));
-    }
-
-    // ---- singleton multi-select ----
-    let selectedSingletons = new Set();
-
-    function toggleSingleton(faceId) {
-      if (selectedSingletons.has(faceId)) selectedSingletons.delete(faceId);
-      else selectedSingletons.add(faceId);
-      updateSelectionUI();
-    }
-
-    function updateSelectionUI() {
-      document.querySelectorAll('.singleton-card').forEach(c => {
-        const id = c.dataset.selId != null ? Number(c.dataset.selId) : null;
-        c.classList.toggle('selected', id != null && selectedSingletons.has(id));
-      });
-      rebuildSelBar();
-    }
-
-    function rebuildSelBar() {
-      const bar = document.getElementById('sel-bar');
-      const n = selectedSingletons.size;
-      bar.classList.toggle('on', n > 0);
-      if (n === 0) { bar.innerHTML = ''; return; }
-      bar.innerHTML =
-        `<span class="sel-count">${n} selected</span>` +
-        `<button onclick="newPersonFromSelection()">New Person</button>` +
-        `<button onclick="clearSelection()">Clear</button>` +
-        `<span class="sel-hint">or drag any selected onto a person</span>`;
-    }
-
-    function clearSelection() {
-      selectedSingletons.clear();
-      updateSelectionUI();
-    }
-
-    function newPersonFromSelection() {
-      if (selectedSingletons.size === 0) return;
-      const bar = document.getElementById('sel-bar');
-      bar.innerHTML =
-        `<input type="text" id="sel-np-input" placeholder="Person name" maxlength="${MAX_NAME_LEN}" list="people-list">` +
-        `<button id="sel-np-go" onclick="submitSelectionPerson()">Create</button>` +
-        `<button onclick="rebuildSelBar()">Cancel</button>` +
-        `<span id="sel-np-note" class="merge-note"></span>`;
-      const inp = document.getElementById('sel-np-input');
-      inp.focus();
-      // Say what will happen before it happens. Typing a name that already
-      // exists adds to that person rather than creating one - usually what is
-      // meant, and previously indistinguishable from creating until afterwards.
-      // The `list` attribute is the other half: this input was the only one of
-      // the three without the autocomplete the others already had.
-      inp.addEventListener('input', function() {
-        const hit = existingPersonFor(inp.value);
-        const note = document.getElementById('sel-np-note');
-        const go = document.getElementById('sel-np-go');
-        if (hit) {
-          note.textContent = `adds to ${hit.full_name}, ${hit.face_ids.length} face(s)`;
-          go.textContent = `Add to ${hit.full_name}`;
-        } else {
-          note.textContent = '';
-          go.textContent = 'Create';
-        }
-      });
-      inp.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') { e.preventDefault(); submitSelectionPerson(); }
-      });
-    }
-
-    async function submitSelectionPerson() {
-      const input = document.getElementById('sel-np-input');
-      if (!input) return;
-      const label = sanitizeName(input.value);
-      if (!label) return;
-      const ids = Array.from(selectedSingletons);
-      const r = await fetch('/api/new-person', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_ids: ids, label: label })
-      });
-      if (!r.ok) {
-        document.getElementById('status').textContent = 'Error: create person failed';
-        return;
-      }
-      clearSelection();
-      await loadFaces();
-    }
-
-    // ---- People placement toggle (top bar vs right sidebar) ----
-    function applyLayout() {
-      const mode = localStorage.getItem('videre_people_layout') || 'top';
-      document.body.classList.toggle('sidebar-mode', mode === 'right');
-      const btn = document.getElementById('layout-toggle');
-      if (btn) btn.textContent = mode === 'right' ? 'People: Right' : 'People: Top';
-    }
-
-    function toggleLayout() {
-      const cur = localStorage.getItem('videre_people_layout') || 'top';
-      localStorage.setItem('videre_people_layout', cur === 'right' ? 'top' : 'right');
-      applyLayout();
-    }
-
-    async function onDropToPerson(event, personLabel) {
-      event.preventDefault();
-      const data = JSON.parse(event.dataTransfer.getData('application/json'));
-      const r = await fetch('/api/assign', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_ids: data.face_ids, person_label: personLabel })
-      });
-      if (!r.ok) {
-        document.getElementById('status').textContent = 'Error: assign failed';
-        return;
-      }
-      clearSelection();
-      await loadFaces();
-    }
-
-    function showNewPersonInput(btn, faceIds) {
-      const area = btn.parentElement;
-      const faceIdsJson = JSON.stringify(faceIds);
-      const inputId = `np-input-${faceIds[0]}`;
-      area.innerHTML = `
-        <input type="text" class="np-input" id="${inputId}" placeholder="Person name" maxlength="${MAX_NAME_LEN}" autofocus>
-        <div class="np-btn-row">
-          <button class="np-create-btn" onclick="submitNewPerson('${inputId}', ${faceIdsJson})">Create</button>
-          <button class="new-person-btn" onclick="loadFaces()">Cancel</button>
-        </div>
-      `;
-      document.getElementById(inputId).addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') { e.preventDefault(); submitNewPerson(inputId, faceIds); }
-      });
-    }
-
-    async function submitNewPerson(inputId, faceIds) {
-      const input = document.getElementById(inputId);
-      const label = sanitizeName(input.value);
-      if (!label) return;
-      const r = await fetch('/api/new-person', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_ids: faceIds, label: label })
-      });
-      if (!r.ok) {
-        document.getElementById('status').textContent = 'Error: create person failed';
-        return;
-      }
-      await loadFaces();
-    }
-
-    async function saveAndClose() {
-      await fetch('/api/quit', { method: 'POST' });
-      document.body.innerHTML = '<div style="padding:32px;font-size:18px">Server stopped. You can close this tab.</div>';
-    }
-
-    applyLayout();
-    loadFaces();
-  </script>
-</body>
-</html>
-"##;
-
-const CLUSTER_HTML: &str = r##"<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Cluster __CLUSTER_ID__</title>
-  <style>
-    body { font-family: sans-serif; margin: 0; padding: 16px; background: #f5f5f5; }
-    .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
-    .toolbar a { color: #2a6db5; text-decoration: none; font-size: 14px; }
-    .assign-bar { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin-bottom: 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fill, 200px); gap: 14px; }
-    .card { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 10px; }
-    .face-img { object-fit: cover; border-radius: 4px; display: block; background: #ddd; }
-    .path { font-size: 11px; color: #666; word-break: break-all; margin-top: 5px; }
-    .face-id { font-size: 11px; color: #999; margin-top: 2px; }
-    .btns { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
-    button { cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid #999; background: white; font-size: 13px; }
-    button.danger { color: #c00; border-color: #fbb; }
-    button.primary { background: #2a6db5; color: white; border-color: #2a6db5; }
-    input[type=text] { padding: 4px 8px; border: 1px solid #999; border-radius: 4px; width: 160px; font-size: 13px; }
-    #status { font-size: 13px; color: #555; }
-    .modal-backdrop { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); align-items: center; justify-content: center; z-index: 100; }
-    .modal-backdrop.on { display: flex; }
-    .modal { background: white; border-radius: 8px; padding: 20px; min-width: 280px; }
-    .modal h3 { margin: 0 0 12px; font-size: 15px; }
-    .modal input { width: 100%; box-sizing: border-box; margin-bottom: 12px; }
-    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
-  </style>
-</head>
-<body>
-  <div class="toolbar">
-    <a href="/">&larr; Back to labeling</a>
-    <strong>Cluster __CLUSTER_ID__</strong>
-    <span id="face-count" style="color:#555;font-size:13px"></span>
-    <span id="status"></span>
-  </div>
-
-  <div class="assign-bar">
-    <strong>Assign all to:</strong>
-    <input type="text" id="person-input" placeholder="Person name" maxlength="60" list="people-list">
-    <datalist id="people-list"></datalist>
-    <button class="primary" onclick="assignAll()">Assign cluster</button>
-    <button class="danger" onclick="dissolveCluster()" style="margin-left:auto">Dissolve cluster (wrong grouping)</button>
-  </div>
-
-  <div id="faces-grid" class="grid"></div>
-
-  <div id="assignModal" class="modal-backdrop">
-    <div class="modal">
-      <h3>Assign to person</h3>
-      <input id="assignInput" list="assign-people-list" placeholder="Person name" maxlength="60">
-      <datalist id="assign-people-list"></datalist>
-      <div class="modal-actions">
-        <button onclick="submitAssignModal()">Assign</button>
-        <button onclick="closeAssignModal()">Cancel</button>
-      </div>
-    </div>
-  </div>
-
-  <script>
-    const clusterId = __CLUSTER_ID__;
-    let facesData = [];
-    let mainData = { people: [] };
-    const MAX_NAME_LEN = 60;
-
-    // Trim, collapse internal whitespace, strip control/bidi-spoofing
-    // characters, and cap length by code point (not UTF-16 code unit) so a
-    // pasted wall of text or a spoofed name can't stretch card layout,
-    // corrupt display order, or bloat the DB.
-    function sanitizeName(raw) {
-      const filtered = Array.from(raw).filter(function(ch) {
-        const cp = ch.codePointAt(0);
-        if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)) return false;
-        if (cp === 0x200B) return false;
-        if (cp === 0x200E || cp === 0x200F) return false;
-        // 0x200C (ZWNJ) and 0x200D (ZWJ) are intentionally allowed,
-        // required for Persian/Indic text and emoji ZWJ sequences.
-        if (cp >= 0x202A && cp <= 0x202E) return false;
-        if (cp >= 0x2060 && cp <= 0x2069) return false;
-        if (cp === 0xFEFF) return false;
-        return true;
-      }).join('');
-      const collapsed = filtered.trim().replace(/\s+/g, ' ');
-      return Array.from(collapsed).slice(0, MAX_NAME_LEN).join('');
-    }
-
-    document.getElementById('person-input').addEventListener('keydown', function(e) {
-      if (e.key === 'Enter') { e.preventDefault(); assignAll(); }
-    });
-
-    async function load() {
-      try {
-        const [clusterRes, mainRes] = await Promise.all([
-          fetch(`/api/cluster/${clusterId}`),
-          fetch('/api/faces')
-        ]);
-        if (!clusterRes.ok) throw new Error('cluster fetch failed');
-        const clusterData = await clusterRes.json();
-        mainData = mainRes.ok ? await mainRes.json() : { people: [] };
-        facesData = clusterData.faces;
-        const dl = document.getElementById('people-list');
-        dl.innerHTML = mainData.people.map(p => `<option value="${escHtml(p.full_name)}">`).join('');
-        document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
-        render();
-      } catch(e) {
-        document.getElementById('status').textContent = 'Error: ' + e;
-      }
-    }
-
-    function render() {
-      const grid = document.getElementById('faces-grid');
-      grid.innerHTML = facesData.map(f => `
-        <div class="card" id="card-${f.face_id}">
-          <img class="face-img" src="/api/face-image/${f.face_id}" width="180" height="180"
-               onerror="this.removeAttribute('src');this.style.background='#ddd'">
-          <div class="path" title="${escHtml(f.path)}">${escHtml(basename(f.path))}</div>
-          <div class="face-id">#${f.face_id}</div>
-          <div class="btns">
-            <button class="danger" onclick="removeFace(${f.face_id})">Remove</button>
-            <button onclick="assignOne(${f.face_id})">Assign</button>
-          </div>
-        </div>
-      `).join('');
-    }
-
-    function basename(p) { return p.split('/').pop() || p; }
-
-    function escHtml(s) {
-      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-    }
-
-    async function removeFace(faceId) {
-      const r = await fetch('/api/remove-face', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_id: faceId })
-      });
-      if (!r.ok) { document.getElementById('status').textContent = 'Error: remove failed'; return; }
-      document.getElementById(`card-${faceId}`)?.remove();
-      facesData = facesData.filter(f => f.face_id !== faceId);
-      document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
-    }
-
-    async function assignAll() {
-      const label = sanitizeName(document.getElementById('person-input').value);
-      if (!label) return;
-      const faceIds = facesData.map(f => f.face_id);
-      const r = await fetch('/api/new-person', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_ids: faceIds, label })
-      });
-      if (!r.ok) { document.getElementById('status').textContent = 'Error: assign failed'; return; }
-      document.getElementById('status').textContent = `Assigned ${faceIds.length} face(s) to "${label}"`;
-      setTimeout(() => { window.location.href = '/'; }, 800);
-    }
-
-    let assignModalFaceId = null;
-
-    function openAssignModal(faceId) {
-      assignModalFaceId = faceId;
-      document.getElementById('assign-people-list').innerHTML =
-        mainData.people.map(p => `<option value="${escHtml(p.full_name)}">`).join('');
-      document.getElementById('assignModal').classList.add('on');
-      document.getElementById('assignInput').value = '';
-      document.getElementById('assignInput').focus();
-    }
-
-    function closeAssignModal() {
-      document.getElementById('assignModal').classList.remove('on');
-      assignModalFaceId = null;
-    }
-
-    async function submitAssignModal() {
-      const label = sanitizeName(document.getElementById('assignInput').value);
-      if (!label) return;
-      const faceId = assignModalFaceId;
-      const r = await fetch('/api/assign', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_ids: [faceId], person_label: label })
-      });
-      if (!r.ok) { document.getElementById('status').textContent = 'Error: assign failed'; return; }
-      closeAssignModal();
-      document.getElementById(`card-${faceId}`)?.remove();
-      facesData = facesData.filter(f => f.face_id !== faceId);
-      document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
-    }
-
-    document.getElementById('assignInput').addEventListener('keydown', function(e) {
-      if (e.key === 'Enter') { e.preventDefault(); submitAssignModal(); }
-    });
-
-    document.addEventListener('keydown', function(e) {
-      if (e.key === 'Escape') closeAssignModal();
-    });
-    document.getElementById('assignModal').addEventListener('click', function(e) {
-      if (e.target === this) closeAssignModal();
-    });
-
-    async function dissolveCluster() {
-      if (!confirm(`Dissolve cluster ${clusterId}? Its ${facesData.length} face(s) will become unassigned singletons (not deleted).`)) return;
-      const r = await fetch('/api/dissolve-cluster', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cluster_id: clusterId })
-      });
-      if (!r.ok) { document.getElementById('status').textContent = 'Error: dissolve failed'; return; }
-      document.getElementById('status').textContent = 'Cluster dissolved';
-      setTimeout(() => { window.location.href = '/'; }, 500);
-    }
-
-    function assignOne(faceId) {
-      openAssignModal(faceId);
-    }
-
-    load();
-  </script>
-</body>
-</html>
-"##;
-
-const PERSON_HTML: &str = r##"<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Person</title>
-  <style>
-    body { font-family: sans-serif; margin: 0; padding: 16px; background: #f5f5f5; }
-    .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
-    .toolbar a { color: #2a6db5; text-decoration: none; font-size: 14px; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fill, 200px); gap: 14px; }
-    .card { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 10px; }
-    .face-img { object-fit: cover; border-radius: 4px; display: block; background: #ddd; }
-    .path { font-size: 11px; color: #666; word-break: break-all; margin-top: 5px; }
-    .face-id { font-size: 11px; color: #999; margin-top: 2px; }
-    .btns { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
-    button { cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid #999; background: white; font-size: 13px; }
-    button.danger { color: #c00; border-color: #fbb; }
-    button:disabled { cursor: default; opacity: 0.6; }
-    .card { position: relative; }
-    .default-badge { position: absolute; top: 6px; left: 6px; background: #2a6db5; color: #fff; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; z-index: 2; }
-    .card.is-default { border-color: #2a6db5; box-shadow: 0 0 0 2px #2a6db5; }
-    #status { font-size: 13px; color: #555; }
-  </style>
-</head>
-<body>
-  <div class="toolbar">
-    <a id="backLink" href="/">&larr; Back to labeling</a>
-    <strong id="person-title">Person</strong>
-    <span id="face-count" style="color:#555;font-size:13px"></span>
-    <span id="status"></span>
-    <span id="renameArea" style="display:none">
-      <input type="text" id="renameInput" maxlength="60">
-      <button onclick="submitRename()">Save</button>
-    </span>
-    <button id="removeBtn" class="danger" style="display:none;margin-left:auto" onclick="removePerson()">Remove person</button>
-  </div>
-
-  <div id="faces-grid" class="grid"></div>
-
-  <script>
-    const personName = decodeURIComponent(window.location.pathname.split('/').pop());
-    const FACES_UI_ENABLED = __FACES_UI_ENABLED__;
-    const MAX_NAME_LEN = 60;
-    let facesData = [];
-
-    (function() {
-      const params = new URLSearchParams(location.search);
-      if (params.get('from') === 'lightbox') {
-        const link = document.getElementById('backLink');
-        link.textContent = '← Back';
-        link.href = '#';
-        link.onclick = function(e) { e.preventDefault(); history.back(); };
-      }
-    })();
-
-    if (FACES_UI_ENABLED) {
-      document.getElementById('removeBtn').style.display = 'inline-block';
-      document.getElementById('renameArea').style.display = 'inline-flex';
-    }
-
-    // Trim, collapse internal whitespace, strip control/bidi-spoofing
-    // characters, and cap length by code point, mirrors the sanitization in
-    // FACES_HTML/CLUSTER_HTML.
-    function sanitizeName(raw) {
-      const filtered = Array.from(raw).filter(function(ch) {
-        const cp = ch.codePointAt(0);
-        if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)) return false;
-        if (cp === 0x200B) return false;
-        if (cp === 0x200E || cp === 0x200F) return false;
-        if (cp >= 0x202A && cp <= 0x202E) return false;
-        if (cp >= 0x2060 && cp <= 0x2069) return false;
-        if (cp === 0xFEFF) return false;
-        return true;
-      }).join('');
-      const collapsed = filtered.trim().replace(/\s+/g, ' ');
-      return Array.from(collapsed).slice(0, MAX_NAME_LEN).join('');
-    }
-
-    async function load() {
-      try {
-        document.title = personName;
-        const r = await fetch(`/api/person/${encodeURIComponent(personName)}`);
-        if (!r.ok) throw new Error('person fetch failed');
-        const data = await r.json();
-        // After the fetch, not before: `data` is a `const` declared here, and
-        // reading it earlier threw a ReferenceError that aborted the whole
-        // function, so the page showed an error and no photos at all.
-        //
-        // The heading and the rename box show the display name; the URL and
-        // every request keep using the identity.
-        const shown = data.full_name || personName;
-        document.getElementById('person-title').textContent = shown;
-        document.title = shown;
-        const ri = document.getElementById('renameInput');
-        if (ri) ri.value = shown;
-        facesData = data.faces;
-        document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
-        render();
-      } catch(e) {
-        document.getElementById('status').textContent = 'Error: ' + e;
-      }
-    }
-
-    function render() {
-      const grid = document.getElementById('faces-grid');
-      grid.innerHTML = facesData.map(f => `
-        <div class="card${f.is_primary ? ' is-default' : ''}" id="card-${f.face_id}">
-          ${f.is_primary ? '<span class="default-badge">&#9733; Default</span>' : ''}
-          <a href="/api/original-image/${f.face_id}" target="_blank" title="Open original image">
-            <img class="face-img" src="/api/face-image/${f.face_id}" width="180" height="180"
-                 onerror="this.removeAttribute('src');this.style.background='#ddd'">
-          </a>
-          <div class="path" title="${escHtml(f.path)}">${escHtml(basename(f.path))}</div>
-          <div class="face-id">#${f.face_id}</div>
-          <div class="btns">
-            <button class="danger" onclick="removeFace(${f.face_id})">Remove</button>
-            <button onclick="setDefault(${f.face_id})" ${f.is_primary ? 'disabled title="Already the default photo"' : 'title="Show this photo for this person on the labeling page"'}>Set Default</button>
-          </div>
-        </div>
-      `).join('');
-    }
-
-    function basename(p) { return p.split('/').pop() || p; }
-
-    function escHtml(s) {
-      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-    }
-
-    async function removeFace(faceId) {
-      const r = await fetch('/api/remove-face', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_id: faceId })
-      });
-      if (!r.ok) { document.getElementById('status').textContent = 'Error: remove failed'; return; }
-      document.getElementById(`card-${faceId}`)?.remove();
-      facesData = facesData.filter(f => f.face_id !== faceId);
-      document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
-    }
-
-    async function setDefault(faceId) {
-      const r = await fetch('/api/set-primary', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_id: faceId, person_label: personName })
-      });
-      if (!r.ok) { document.getElementById('status').textContent = 'Error: set default failed'; return; }
-      // Move the flag locally and re-render so the badge and disabled state
-      // follow, without a full round-trip; the labeling page picks up the new
-      // primary on its next load.
-      facesData.forEach(f => { f.is_primary = (f.face_id === faceId); });
-      render();
-      document.getElementById('status').textContent = 'Default photo updated';
-    }
-
-    async function removePerson() {
-      if (!confirm('Remove ' + personName + '? Their ' + facesData.length + ' photo(s) will become unassigned.')) return;
-      const r = await fetch('/api/delete-person', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label: personName })
-      });
-      if (!r.ok) { alert('Failed to remove person.'); return; }
-      window.location.href = '/';
-    }
-
-    // Edits how the person is shown - adding a surname, fixing a spelling -
-    // without touching their identity, so the URL and every face row are
-    // untouched and no link breaks. Changing the identity is a different
-    // operation and deliberately not offered here.
-    async function submitRename() {
-      const newName = sanitizeName(document.getElementById('renameInput').value);
-      if (!newName) return;
-      const r = await fetch('/api/set-full-name', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: personName, full_name: newName })
-      });
-      if (!r.ok) { alert('Could not save the name.'); return; }
-      document.getElementById('person-title').textContent = newName;
-      document.getElementById('status').textContent = 'Saved';
-    }
-
-    load();
-  </script>
-</body>
-</html>
-"##;
-
 /// Maps a `videre-api` facade error to the HTTP status code the axum
 /// handlers return, preserving the exact 400/404/409/500 behavior the
 /// handlers had before delegating to the facade.
+/// The three server pages. Markup lives in `crates/videre/templates/`, CSS and
+/// JavaScript in `crates/videre/static/`, all compiled into the binary.
+///
+/// They were 866 lines of string literal in this file until 0.18.0. Askama
+/// checks the templates against these structs at compile time, so a renamed
+/// field fails the build rather than rendering a blank page.
+mod pages {
+    use askama::Template;
+
+    #[derive(Template)]
+    #[template(path = "faces.html")]
+    pub struct Faces {
+        pub css: &'static str,
+        pub js: &'static str,
+    }
+
+    #[derive(Template)]
+    #[template(path = "cluster.html")]
+    pub struct Cluster {
+        pub css: &'static str,
+        pub js: &'static str,
+        pub cluster_id: i64,
+    }
+
+    #[derive(Template)]
+    #[template(path = "person.html")]
+    pub struct Person {
+        pub css: &'static str,
+        pub js: &'static str,
+        pub faces_ui_enabled: bool,
+    }
+
+    pub const FACES_CSS: &str = include_str!("../../static/faces.css");
+    pub const FACES_JS: &str = include_str!("../../static/faces.js");
+    pub const CLUSTER_CSS: &str = include_str!("../../static/cluster.css");
+    pub const CLUSTER_JS: &str = include_str!("../../static/cluster.js");
+    pub const PERSON_CSS: &str = include_str!("../../static/person.css");
+    pub const PERSON_JS: &str = include_str!("../../static/person.js");
+}
+
 fn api_status(e: videre_api::Error) -> StatusCode {
     match e {
         videre_api::Error::NotFound => StatusCode::NOT_FOUND,
@@ -2220,7 +1388,12 @@ struct AppState {
 }
 
 async fn handle_root() -> impl axum::response::IntoResponse {
-    axum::response::Html(FACES_HTML)
+    use askama::Template;
+    let page = pages::Faces {
+        css: pages::FACES_CSS,
+        js: pages::FACES_JS,
+    };
+    axum::response::Html(page.render().expect("faces template"))
 }
 
 /// Live-server equivalent of the static `--all`/`--by-date` HTML report,
@@ -2432,7 +1605,13 @@ async fn handle_quit(State(state): State<Arc<AppState>>) -> StatusCode {
 async fn handle_cluster_page(
     axum::extract::Path(cluster_id): axum::extract::Path<i64>,
 ) -> impl axum::response::IntoResponse {
-    axum::response::Html(CLUSTER_HTML.replace("__CLUSTER_ID__", &cluster_id.to_string()))
+    use askama::Template;
+    let page = pages::Cluster {
+        css: pages::CLUSTER_CSS,
+        js: pages::CLUSTER_JS,
+        cluster_id,
+    };
+    axum::response::Html(page.render().expect("cluster template"))
 }
 
 async fn handle_cluster_api(
@@ -2449,15 +1628,13 @@ async fn handle_cluster_api(
 }
 
 async fn handle_person_page(State(state): State<Arc<AppState>>) -> axum::response::Html<String> {
-    let html = PERSON_HTML.replace(
-        "__FACES_UI_ENABLED__",
-        if state.serve_faces_ui {
-            "true"
-        } else {
-            "false"
-        },
-    );
-    axum::response::Html(html)
+    use askama::Template;
+    let page = pages::Person {
+        css: pages::PERSON_CSS,
+        js: pages::PERSON_JS,
+        faces_ui_enabled: state.serve_faces_ui,
+    };
+    axum::response::Html(page.render().expect("person template"))
 }
 
 async fn handle_person_api(
@@ -2844,6 +2021,23 @@ pub fn run(args: ReportArgs) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The full source of each server page: markup, styles and script.
+    ///
+    /// These were single `const` string literals in this file until the three
+    /// pages moved to `templates/` and `static/`. The assertions below ask
+    /// whether a behaviour is wired up, and should not care which of the three
+    /// files a given string ended up in, so the page is reassembled here.
+    const FACES_HTML: &str = concat!(
+        include_str!("../../templates/faces.html"),
+        include_str!("../../static/faces.css"),
+        include_str!("../../static/faces.js"),
+    );
+    const PERSON_HTML: &str = concat!(
+        include_str!("../../templates/person.html"),
+        include_str!("../../static/person.css"),
+        include_str!("../../static/person.js"),
+    );
     use super::*;
 
     fn row(path: &str, hash: &str, ext: &str) -> FileRow {
@@ -3443,7 +2637,10 @@ mod tests {
         let conn = mem_db_with_faces();
         let state = test_state(conn, true);
         let axum::response::Html(html) = handle_person_page(State(state)).await;
-        assert!(html.contains("const FACES_UI_ENABLED = true;"), "{html}");
+        // The page sets the flag; `person.js` reads it. It was a
+        // `__FACES_UI_ENABLED__` placeholder substituted into the script until
+        // the page moved to a template.
+        assert!(html.contains("window.FACES_UI_ENABLED = true;"), "{html}");
     }
 
     #[tokio::test]
@@ -3451,7 +2648,7 @@ mod tests {
         let conn = mem_db_with_faces();
         let state = test_state(conn, false);
         let axum::response::Html(html) = handle_person_page(State(state)).await;
-        assert!(html.contains("const FACES_UI_ENABLED = false;"), "{html}");
+        assert!(html.contains("window.FACES_UI_ENABLED = false;"), "{html}");
     }
 
     #[test]
