@@ -30,7 +30,7 @@ videre search --sort=distance,date         # order, with tie-breaks
 | Mode | Requires |
 |---|---|
 | Text, `--image` | [`videre embed`](/commands/embed/) |
-| `--person` | [`videre faces`](/commands/faces/), then naming via [`report --faces`](/commands/report/) |
+| `--person` | [`videre faces`](/commands/faces/), then naming via [`gallery`](/commands/gallery/) |
 | `--category` | [`videre classify`](/commands/classify/) |
 | `--location` | GPS data in your photos |
 
@@ -72,7 +72,7 @@ Things it is **not**:
 - **Boolean logic.** There is no AND, OR or NOT. "dog not cat" is just a phrase,
   and the negation is ignored.
 - **Names and dates.** It has no idea who Alice is or when a photo was taken.
-  Use `--person` for people, and the [by-date report](/commands/report/) for
+  Use `--person` for people, and the [date view in `gallery`](/commands/gallery/) for
   time.
 
 Every result is a ranked match, so something always comes back even for a query
@@ -376,3 +376,18 @@ the drive unplugged; the paths it prints just will not resolve.
 - [Compositional searches](/guides/compositional-search/) covers combining filters, dates and sorting, with worked examples.
 
 - [Using several search models](/guides/multiple-models/) covers comparing models on your own queries.
+
+## A page you can keep
+
+`--html` writes the results to a browsable file, in the order they were ranked.
+
+```bash
+videre search "sunset over water" --html            # writes <db>_search.html
+videre search --person "Ahmet" --html ~/ahmet.html  # somewhere specific
+```
+
+Matching paths still go to stdout, so piping is unaffected.
+
+:::caution
+Place a bare `--html` after the query, or the query is read as its value.
+:::

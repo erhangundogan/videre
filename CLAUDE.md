@@ -36,8 +36,23 @@ docs/              the Astro Starlight site published at docs.videre.sh
 `videre-ml` and `videre-api` have no binaries. Every user-facing entry point is
 a subcommand in `videre`.
 
-Anything needed by two or more subcommands belongs in `videre-core`. Check there
-for existing or adjacent helpers before adding to a command module.
+Anything needed by two or more subcommands belongs somewhere shared. Check for an
+existing or adjacent helper before adding to a command module.
+
+:warning: **Shared does not automatically mean `videre-core`.** It is the root of
+the dependency graph: `videre-api` and `videre-ml` both depend on it, and all
+four crates are published. So a dependency added there is compiled by the
+inference crate too, and anything public becomes API that a version bump has to
+respect.
+
+| the thing is | put it in |
+|---|---|
+| needed by another **crate** | `videre-core` |
+| needed by several **subcommands**, and nothing outside the binary | a shared module under `crates/videre/src/` |
+
+The second case keeps heavy dependencies out of crates that have no use for
+them, and leaves the type free to change shape without a semver event. Promoting
+a module to a crate later is easy; demoting a published crate is not.
 
 ## Key crates
 

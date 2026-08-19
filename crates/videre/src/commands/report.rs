@@ -55,7 +55,7 @@ pub struct ReportArgs {
     show_faces: bool,
 }
 
-struct FileRow {
+pub(crate) struct FileRow {
     path: String,
     hash: String,
     size_bytes: i64,
@@ -69,7 +69,7 @@ struct FileRow {
     height: Option<i32>,
 }
 
-struct Stats {
+pub(crate) struct Stats {
     total_files: i64,
     duplicate_groups: i64,
     duplicate_files: i64,
@@ -233,18 +233,6 @@ fn parse_bbox(bbox: &str) -> Option<[f32; 4]> {
         return None;
     }
     Some([parts[0], parts[1], parts[0] + parts[2], parts[1] + parts[3]])
-}
-
-pub(crate) fn format_bytes(bytes: i64) -> String {
-    if bytes >= 1_073_741_824 {
-        format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
-    } else if bytes >= 1_048_576 {
-        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
-    } else if bytes >= 1024 {
-        format!("{:.0} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{} B", bytes)
-    }
 }
 
 fn esc(s: &str) -> String {
@@ -415,7 +403,7 @@ fn group_to_json(
     )
 }
 
-fn query_stats(conn: &Connection) -> Stats {
+pub(crate) fn query_stats(conn: &Connection) -> Stats {
     let s = videre_core::library_stats::compute(conn).unwrap_or_default();
     Stats {
         total_files: s.total_files,
@@ -425,7 +413,7 @@ fn query_stats(conn: &Connection) -> Stats {
     }
 }
 
-fn query_groups(conn: &Connection) -> Vec<Vec<FileRow>> {
+pub(crate) fn query_groups(conn: &Connection) -> Vec<Vec<FileRow>> {
     let mut stmt = conn
         .prepare(
             "SELECT path, hash, size_bytes, COALESCE(ext,''), created_at, modified_at, exif_date, \
@@ -512,20 +500,101 @@ fn query_all_files(conn: &Connection) -> Vec<FileRow> {
 fn query_keep_files(conn: &Connection) -> Vec<FileRow> {
     let rows = query_all_files(conn);
 
+    // :warning: Grouping must not lose the query's `ORDER BY path`. An earlier
+    // version collected into a `HashMap` and returned `into_values()`, and
+    // Rust seeds that hasher randomly per process, so two runs of
+    // `report --by-date` over one unchanged database produced the same files in
+    // a different order. Keeping first-seen order restores the SQL ordering.
+    let mut order: Vec<String> = Vec::new();
     let mut map: HashMap<String, Vec<FileRow>> = HashMap::new();
     for row in rows {
-        map.entry(row.hash.clone()).or_default().push(row);
+        let hash = row.hash.clone();
+        if !map.contains_key(&hash) {
+            order.push(hash.clone());
+        }
+        map.entry(hash).or_default().push(row);
     }
 
-    map.into_values()
-        .map(|mut group| {
+    order
+        .into_iter()
+        .filter_map(|hash| {
+            let mut group = map.remove(&hash)?;
             group.sort_by(|a, b| best_date(a).cmp(best_date(b)));
-            group.into_iter().next().expect("group is never empty")
+            group.into_iter().next()
         })
         .collect()
 }
 
-fn generate_html(
+#[derive(askama::Template)]
+#[template(path = "gallery.html")]
+struct GalleryPage<'a> {
+    css: &'static str,
+    js: &'static str,
+    /// The `var GROUPS=[...]` script block. Built in Rust because it is
+    /// serialisation, not markup; the template only decides where it goes.
+    data: &'a str,
+    /// Pre-escaped by `esc`, so the template must not escape it again.
+    db: String,
+    generated_at: &'a str,
+    total_files: i64,
+    has_groups: bool,
+    duplicate_groups: i64,
+    duplicate_files: i64,
+    wasted: String,
+    embedded: Option<usize>,
+    all_files_count: Option<usize>,
+    has_keep_files: bool,
+}
+
+/// The rows behind a list of paths, in the order given.
+///
+/// `search --html` arrives holding paths and hashes rather than rows: it ranked
+/// them, so it knows *which* files, not everything about them. One query fills
+/// in the rest, and the ranking order is preserved because the caller's order
+/// is the answer.
+pub(crate) fn rows_for_paths(conn: &Connection, paths: &[String]) -> Vec<FileRow> {
+    let mut by_path: HashMap<String, FileRow> = HashMap::new();
+    for row in query_all_files(conn) {
+        by_path.insert(row.path.clone(), row);
+    }
+    paths.iter().filter_map(|p| by_path.remove(p)).collect()
+}
+
+/// Render a set to a self-contained page and write it.
+///
+/// Shared by `dedupe --html` and `search --html`. `groups` renders a
+/// duplicate-review page; `flat` renders a gallery of a result set. Both go
+/// through the same renderer the live gallery uses, with `live: false`, so a
+/// file references originals on disk and embeds only what a browser cannot
+/// display.
+pub(crate) fn write_static_page(
+    conn: &Connection,
+    output: &Path,
+    groups: &[Vec<FileRow>],
+    flat: Option<&[FileRow]>,
+) -> anyhow::Result<()> {
+    let stats = query_stats(conn);
+    let faces_by_hash = videre_core::face_db::labeled_faces_by_hash(conn).unwrap_or_default();
+    let db_path = conn.path().map(|p| p.to_string()).unwrap_or_default();
+    let html = generate_html(
+        &db_path,
+        &stats,
+        groups,
+        flat,
+        None,
+        None,
+        false,
+        false,
+        &faces_by_hash,
+        false,
+    );
+    std::fs::write(output, &html)
+        .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", output.display()))?;
+    eprintln!("Wrote {} ({} KB)", output.display(), html.len() / 1024);
+    Ok(())
+}
+
+pub(crate) fn generate_html(
     db_path: &str,
     stats: &Stats,
     groups: &[Vec<FileRow>],
@@ -537,259 +606,61 @@ fn generate_html(
     faces_by_hash: &videre_core::face_db::LabeledFacesByHash,
     live: bool,
 ) -> String {
+    use askama::Template;
     use chrono::Utc;
     let now = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
 
-    // In server mode, HEIC thumbnails are converted lazily per-request via
-    // /api/raw (see handle_raw_file) instead of eagerly here, eagerly
-    // converting every HEIC file with QuickLook before returning any
-    // response made server mode take minutes on a collection with many
-    // HEIC files. Static mode keeps the eager --heic/--heic-original
-    // behavior, since it only pays that cost once at generation time.
+    // In server mode HEIC thumbnails are converted lazily per request via
+    // /api/raw (see handle_raw_file). Converting every HEIC eagerly here made
+    // server startup take minutes on a collection with many of them; the static
+    // path pays that cost once at generation time instead.
     let heic = heic && !live;
     let heic_original = heic_original && !live;
 
-    let mut out = String::with_capacity(512 * 1024);
+    let data = build_data_block(
+        groups,
+        all_files,
+        keep_files,
+        vectors,
+        heic,
+        heic_original,
+        faces_by_hash,
+        live,
+    );
 
-    out.push_str(concat!(
-        "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n",
-        "<meta charset=\"UTF-8\">\n",
-        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n",
-        "<title>videre report</title>\n<style>\n",
-        "*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}\n",
-        "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;",
-        "background:#f4f4f5;color:#18181b;font-size:14px;line-height:1.5}\n",
-        ".header{background:#18181b;color:#fff;padding:24px 32px}\n",
-        ".header h1{font-size:20px;font-weight:700;margin-bottom:2px}\n",
-        ".subtitle{color:#71717a;font-size:12px;font-family:monospace;margin-bottom:20px}\n",
-        ".stats{display:flex;gap:16px;flex-wrap:wrap}\n",
-        ".stat{background:#27272a;border-radius:8px;padding:12px 20px;min-width:130px}\n",
-        ".num{font-size:22px;font-weight:700;display:block}\n",
-        ".label{font-size:11px;color:#a1a1aa;text-transform:uppercase;letter-spacing:.06em}\n",
-        ".stat.warn .num{color:#fbbf24}\n",
-        ".toolbar{padding:10px 32px;background:#fff;border-bottom:1px solid #e4e4e7;",
-        "display:flex;gap:8px;align-items:center;position:sticky;top:0;z-index:10;",
-        "box-shadow:0 1px 3px rgba(0,0,0,.06)}\n",
-        "button{padding:5px 12px;border:1px solid #d4d4d8;background:#fff;",
-        "border-radius:6px;cursor:pointer;font-size:12px;color:#3f3f46}\n",
-        "button:hover{background:#f4f4f5;border-color:#a1a1aa}\n",
-        ".sort-label{font-size:12px;color:#3f3f46;display:flex;align-items:center;gap:6px}\n",
-        ".sort-label select{padding:4px 8px;border:1px solid #d4d4d8;border-radius:6px;",
-        "font-size:12px;background:#fff;color:#3f3f46;cursor:pointer}\n",
-        ".info{margin-left:auto;color:#a1a1aa;font-size:12px}\n",
-        ".groups{padding:16px 32px;display:flex;flex-direction:column;gap:10px}\n",
-        ".group{background:#fff;border-radius:10px;border:1px solid #e4e4e7;overflow:hidden}\n",
-        ".group-header{padding:12px 16px;cursor:pointer;display:flex;align-items:center;",
-        "gap:10px;user-select:none}\n",
-        ".group-header:hover{background:#fafafa}\n",
-        ".arrow{font-size:9px;color:#a1a1aa;transition:transform .15s;display:inline-block;",
-        "width:10px;flex-shrink:0}\n",
-        ".group.open .arrow{transform:rotate(90deg)}\n",
-        ".hash{font-family:monospace;font-size:12px;background:#f4f4f5;",
-        "padding:2px 8px;border-radius:4px;color:#52525b;flex-shrink:0}\n",
-        ".group-meta{font-size:13px;color:#71717a}\n",
-        ".waste{margin-left:auto;font-size:12px;font-weight:600;color:#dc2626;flex-shrink:0}\n",
-        ".group-body{display:none;border-top:1px solid #f4f4f5;overflow-x:auto}\n",
-        ".group.open .group-body{display:block}\n",
-        "table{width:100%;border-collapse:collapse;font-size:13px}\n",
-        "th{background:#fafafa;padding:7px 12px;text-align:left;font-size:11px;",
-        "font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#71717a;",
-        "border-bottom:1px solid #e4e4e7;white-space:nowrap}\n",
-        "td{padding:8px 12px;border-bottom:1px solid #f4f4f5;vertical-align:middle}\n",
-        "tr:last-child td{border-bottom:none}\n",
-        "tr.keep td{background:#f0fdf4}\n",
-        "tr.remove:hover td{background:#fef2f2}\n",
-        ".badge span{padding:2px 7px;border-radius:4px;font-size:11px;font-weight:700;",
-        "letter-spacing:.04em;white-space:nowrap}\n",
-        ".keep-badge{background:#dcfce7;color:#166534}\n",
-        ".remove-badge{background:#fee2e2;color:#991b1b}\n",
-        ".filename{font-weight:500;white-space:nowrap;max-width:220px;overflow:hidden;",
-        "text-overflow:ellipsis}\n",
-        ".path-cell{font-family:monospace;font-size:11px;max-width:380px;",
-        "white-space:nowrap;overflow:hidden;text-overflow:ellipsis}\n",
-        ".path-text{color:#3f3f46}\n",
-        ".copy-btn{margin-left:4px;padding:1px 5px;font-size:11px;vertical-align:middle;",
-        "opacity:.5;border-radius:4px}\n",
-        ".copy-btn:hover{opacity:1}\n",
-        ".dim{color:#a1a1aa;font-size:12px}\n",
-        ".gps a{color:#3b82f6;text-decoration:none;font-size:12px}\n",
-        ".gps a:hover{text-decoration:underline}\n",
-        ".no-dupes{padding:48px;text-align:center;color:#71717a}\n",
-        "td.preview{width:130px;text-align:center;vertical-align:middle;padding:6px 10px}\n",
-        "th.preview-th{width:130px}\n",
-        ".thumb{max-width:120px;max-height:120px;object-fit:contain;border-radius:6px;",
-        "display:block;margin:0 auto;cursor:zoom-in;transition:transform .15s}\n",
-        ".thumb:hover{transform:scale(1.05)}\n",
-        ".no-prev{color:#a1a1aa;font-size:11px;display:block;text-align:center}\n",
-        ".lightbox{display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);",
-        "z-index:1000;align-items:center;justify-content:center;cursor:zoom-out}\n",
-        ".lightbox.on{display:flex}\n",
-        ".lightbox img,.lightbox video{max-width:90vw;max-height:90vh;object-fit:contain;",
-        "border-radius:8px;box-shadow:0 8px 40px rgba(0,0,0,.6)}\n",
-        ".lb-meta{position:absolute;bottom:0;left:0;right:0;background:rgba(24,24,27,.85);",
-        "padding:10px 16px;display:none;gap:12px;align-items:flex-start;flex-wrap:wrap}\n",
-        ".lb-meta.on{display:flex}\n",
-        ".lb-face{text-align:center;font-size:11px;color:#fff}\n",
-        ".lb-face img{width:48px;height:48px;border-radius:50%;object-fit:cover;display:block;margin-bottom:4px}\n",
-        ".lb-face a{color:#fff;text-decoration:underline}\n",
-        ".lb-location{color:#e4e4e7;font-size:12px;align-self:center}\n",
-        "#sort-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);",
-        "z-index:2000;align-items:center;justify-content:center}\n",
-        ".sort-card{background:#fff;border-radius:12px;padding:22px 36px;",
-        "display:flex;align-items:center;gap:14px;",
-        "box-shadow:0 8px 32px rgba(0,0,0,.28);font-size:15px;font-weight:600;color:#3f3f46}\n",
-        ".spinner{width:22px;height:22px;border:3px solid #e4e4e7;",
-        "border-top-color:#3b82f6;border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}\n",
-        "@keyframes spin{to{transform:rotate(360deg)}}\n",
-        ".more-wrap{text-align:center;padding:16px 0 32px}\n",
-        "#more-btn{padding:8px 28px;font-size:13px;display:none}\n",
-        ".results-panel{margin:16px 32px;padding:14px 16px;background:#fff;",
-        "border:1px solid #e4e4e7;border-radius:10px;scroll-margin-top:56px}\n",
-        ".results-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}\n",
-        ".results-head h2{font-size:14px}\n",
-        ".results-strip{display:flex;gap:10px;overflow-x:auto;padding-bottom:6px}\n",
-        ".rcard{flex:0 0 auto;width:132px;text-align:center;position:relative}\n",
-        ".rcard .thumb{max-width:120px;max-height:120px}\n",
-        ".rcard.query{border-right:2px solid #e4e4e7;padding-right:10px;margin-right:4px}\n",
-        ".score{position:absolute;top:4px;left:8px;background:rgba(24,24,27,.75);color:#fff;",
-        "font-size:10px;padding:1px 5px;border-radius:4px}\n",
-        ".copies{position:absolute;top:4px;right:8px;background:#fbbf24;color:#18181b;",
-        "font-size:10px;font-weight:700;padding:1px 5px;border-radius:4px}\n",
-        ".rname{font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;",
-        "color:#52525b;margin-top:2px}\n",
-        ".gallery-head{padding:20px 32px 4px;display:flex;align-items:baseline;gap:12px}\n",
-        ".gallery-head h2{font-size:16px}\n",
-        ".gallery{padding:12px 32px;display:grid;",
-        "grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}\n",
-        ".card{background:#fff;border:1px solid #e4e4e7;border-radius:10px;padding:8px;",
-        "text-align:center;position:relative}\n",
-        ".card .thumb{max-width:100%;max-height:130px}\n",
-        ".card-meta{font-size:11px;color:#71717a;margin-top:4px;white-space:nowrap;",
-        "overflow:hidden;text-overflow:ellipsis}\n",
-        ".similar-btn{margin-top:6px;padding:2px 10px;font-size:11px}\n",
-        ".date-view{padding:24px 32px}\n",
-        ".date-breadcrumb{margin-bottom:16px;font-size:13px;color:#71717a}\n",
-        ".date-breadcrumb a{color:#3f3f46;cursor:pointer;text-decoration:underline}\n",
-        ".date-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}\n",
-        ".date-card{background:#fff;border-radius:8px;overflow:hidden;cursor:pointer;",
-        "box-shadow:0 1px 3px rgba(0,0,0,.08)}\n",
-        ".date-card img{width:100%;aspect-ratio:1;object-fit:cover;display:block}\n",
-        ".date-card .date-card-label{padding:8px;font-size:13px;font-weight:600}\n",
-        ".date-card .date-card-count{padding:0 8px 8px;font-size:11px;color:#71717a}\n",
-        // Shimmer placeholder for HEIC thumbnails while /api/raw converts
-        // them lazily (server mode), cleared via onload once the image
-        // paints, so the animation never runs behind a loaded image.
-        "img.heic-loading{display:block;width:100%;aspect-ratio:1;object-fit:cover;",
-        "background:linear-gradient(90deg,#e4e4e7 25%,#f4f4f5 37%,#e4e4e7 63%);",
-        "background-size:400% 100%;animation:heicShimmer 1.4s ease infinite}\n",
-        "@keyframes heicShimmer{0%{background-position:100% 0}100%{background-position:0 0}}\n",
-        "</style>\n</head>\n<body>\n",
-        "<div id=\"sort-overlay\"><div class=\"sort-card\">",
-        "<div class=\"spinner\"></div>Sorting&hellip;</div></div>\n",
-        "<div class=\"lightbox\" id=\"lb\" onclick=\"closeLb()\">\n",
-        "  <img id=\"lb-img\" src=\"\" alt=\"\" onclick=\"event.stopPropagation()\">\n",
-        "  <video id=\"lb-vid\" src=\"\" controls autoplay onclick=\"event.stopPropagation()\" style=\"display:none\"></video>\n",
-        "  <div class=\"lb-meta\" id=\"lbMeta\" onclick=\"event.stopPropagation()\"></div>\n",
-        "</div>\n",
-    ));
-
-    // Header
-    let embedded_stat = match vectors {
-        Some(vb) => format!(
-            "<div class=\"stat\"><span class=\"num\">{}</span><span class=\"label\">Embedded</span></div>",
-            vb.hashes.len()
-        ),
-        None => String::new(),
+    let page = GalleryPage {
+        css: include_str!("../../static/gallery.css"),
+        js: include_str!("../../static/gallery.js"),
+        data: &data,
+        db: esc(db_path),
+        generated_at: &now,
+        total_files: stats.total_files,
+        has_groups: !groups.is_empty(),
+        duplicate_groups: stats.duplicate_groups,
+        duplicate_files: stats.duplicate_files,
+        wasted: videre_core::disk::human_bytes(stats.wasted_bytes.max(0) as u64),
+        embedded: vectors.map(|vb| vb.hashes.len()),
+        all_files_count: all_files.map(|f| f.len()),
+        has_keep_files: keep_files.is_some(),
     };
-    // The three duplicate-related tiles are only useful when there's
-    // something to report, an all-zero "Duplicate groups / Duplicate files
-    // / Wasted space" row is noise on a collection with no duplicates,
-    // especially alongside --by-date/--all.
-    let dupe_stats = if groups.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "<div class=\"stat warn\"><span class=\"num\">{groups}</span><span class=\"label\">Duplicate groups</span></div>\
-             <div class=\"stat warn\"><span class=\"num\">{dups}</span><span class=\"label\">Duplicate files</span></div>\
-             <div class=\"stat warn\"><span class=\"num\">{wasted}</span><span class=\"label\">Wasted space</span></div>",
-            groups = stats.duplicate_groups,
-            dups   = stats.duplicate_files,
-            wasted = format_bytes(stats.wasted_bytes),
-        )
-    };
-    out.push_str(&format!(
-        "<div class=\"header\">\
-          <h1>videre report</h1>\
-          <p class=\"subtitle\">{db} &mdash; {now}</p>\
-          <div class=\"stats\">\
-            <div class=\"stat\"><span class=\"num\">{total}</span><span class=\"label\">Files scanned</span></div>\
-            {dupe_stats}\
-            {embedded_stat}\
-          </div>\
-        </div>\n",
-        db     = esc(db_path),
-        now    = now,
-        total  = stats.total_files,
-        dupe_stats = dupe_stats,
-        embedded_stat = embedded_stat,
-    ));
+    page.render().expect("gallery template")
+}
 
-    // Toolbar + groups list: skip entirely when there's nothing to review.
-    // An empty "0 groups" toolbar with working Expand/Collapse/Sort controls
-    // is just noise, especially alongside --by-date/--all which have their
-    // own reason to exist regardless of duplicate count.
-    if !groups.is_empty() {
-        out.push_str(&format!(
-            "<div class=\"toolbar\">\
-              <button onclick=\"expandAll()\">Expand all</button>\
-              <button onclick=\"collapseAll()\">Collapse all</button>\
-              <label class=\"sort-label\">Sort by\
-                <select id=\"sort-select\" onchange=\"sortGroups(this.value)\">\
-                  <option value=\"waste\">Wasted space</option>\
-                  <option value=\"date-asc\">Date kept (oldest first)</option>\
-                  <option value=\"date-desc\">Date kept (newest first)</option>\
-                </select>\
-              </label>\
-              <span class=\"info\" id=\"shown-info\">{} groups</span>\
-            </div>\n",
-            stats.duplicate_groups,
-        ));
-
-        // Empty groups container, JS fills it
-        out.push_str("<div class=\"groups\" id=\"groups-container\"></div>\n");
-        out.push_str("<div class=\"more-wrap\"><button id=\"more-btn\" onclick=\"showMore()\"></button></div>\n");
-    }
-
-    if all_files.is_some() {
-        out.push_str("<div class=\"results-panel\" id=\"results\" style=\"display:none\"></div>\n");
-    }
-
-    if let Some(files) = all_files {
-        out.push_str(&format!(
-            "<div class=\"gallery-head\"><h2>All files</h2><span class=\"info\" id=\"gallery-info\">{} files</span></div>\n\
-             <div class=\"gallery\" id=\"gallery\"></div>\n\
-             <div class=\"more-wrap\"><button id=\"gallery-more\" onclick=\"showMoreGallery()\"></button></div>\n",
-            files.len()
-        ));
-    }
-
-    if keep_files.is_some() {
-        out.push_str(concat!(
-            "<div class=\"date-view\" id=\"dateView\">\n",
-            "<h2>Browse by date</h2>\n",
-            "<div class=\"date-breadcrumb\" id=\"dateBreadcrumb\"></div>\n",
-            "<div class=\"date-grid\" id=\"dateGrid\"></div>\n",
-            "</div>\n",
-        ));
-    }
-
-    // In server mode (--show-faces), thumbnails/lightbox point at
-    // /api/raw?path=... instead of file://, since browsers refuse to load a
-    // file:// subresource from an http://-served page. Static mode keeps
-    // file:// links, since the report itself is opened via file:// there.
+/// Everything the page needs as JavaScript values, up to but not including the
+/// closing `</script>`, which the template supplies after the rendering script.
+#[allow(clippy::too_many_arguments)]
+fn build_data_block(
+    groups: &[Vec<FileRow>],
+    all_files: Option<&[FileRow]>,
+    keep_files: Option<&[FileRow]>,
+    vectors: Option<&VectorBlock>,
+    heic: bool,
+    heic_original: bool,
+    faces_by_hash: &videre_core::face_db::LabeledFacesByHash,
+    live: bool,
+) -> String {
+    let mut out = String::with_capacity(256 * 1024);
     out.push_str(&format!("<script>\nvar LIVE_SERVER={};\n</script>\n", live));
-
-    // Embed all group data as JSON
     out.push_str("<script>\nvar GROUPS=[\n");
     for (i, group) in groups.iter().enumerate() {
         if i > 0 {
@@ -799,7 +670,6 @@ fn generate_html(
         out.push_str(&group_to_json(group, heic, heic_original, faces_by_hash));
     }
     out.push_str("\n];\n");
-
     // All-files gallery data and similarity vectors (--all only).
     // Without --all nothing is emitted so the page is unchanged.
     if let Some(files) = all_files {
@@ -860,1304 +730,54 @@ fn generate_html(
         out.push_str("\n];\n");
     }
 
-    // All rendering JS using raw string to avoid escaping hell
-    out.push_str(r#"
-var PAGE=100,sorted=GROUPS.slice(),shown=0;
-
-function escA(s){
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-function escH(s){
-  return s?String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'):'';
-}
-function fmtB(b){
-  if(b>=1073741824)return(b/1073741824).toFixed(1)+' GB';
-  if(b>=1048576)return(b/1048576).toFixed(1)+' MB';
-  if(b>=1024)return Math.round(b/1024)+' KB';
-  return b+' B';
-}
-function rawUrl(path){
-  return LIVE_SERVER ? '/api/raw?path='+encodeURIComponent(path) : 'file://'+path;
-}
-function buildPreview(f){
-  var ext=f.ext,path=f.path;
-  var metaAttr=escA(JSON.stringify(f.meta));
-  if(ext==='jpg'||ext==='jpeg'||ext==='png'||ext==='gif'||ext==='webp'||ext==='bmp'){
-    var url=rawUrl(path);
-    return '<a href="'+escA(url)+'" target="_blank" data-lb-url="'+escA(url)+'" data-lb-type="image" '+
-      'data-lb-meta="'+metaAttr+'">'+
-      '<img src="'+escA(url)+'" class="thumb" loading="lazy" '+
-      'onerror="this.parentElement.innerHTML=\'<span class=no-prev>no preview</span>\'"></a>';
-  }
-  if(ext==='heic'){
-    if(LIVE_SERVER){
-      var thumbUrl=rawUrl(path)+'&size=240';
-      var lbUrl=rawUrl(path)+'&size=1200';
-      return '<img src="'+escA(thumbUrl)+'" class="thumb heic-loading" loading="lazy" data-lb-url="'+escA(lbUrl)+'" '+
-        'data-lb-type="image" data-lb-meta="'+metaAttr+'" '+
-        'onload="this.classList.remove(\'heic-loading\')" '+
-        'onerror="this.parentElement.innerHTML=\'<span class=no-prev>no preview</span>\'">';
-    }
-    if(f.tb){
-      var src='data:image/jpeg;base64,'+f.tb;
-      var lb=f.fb?'data:image/jpeg;base64,'+f.fb:src;
-      return '<img src="'+src+'" class="thumb" data-lb-url="'+escA(lb)+'" data-lb-type="image" '+
-        'data-lb-meta="'+metaAttr+'">';
-    }
-    return '<span class="no-prev">HEIC</span>';
-  }
-  if(ext==='tiff')return '<span class="no-prev">TIFF</span>';
-  if(ext==='dng') return '<span class="no-prev">DNG</span>';
-  if(ext==='mov'||ext==='mp4'){
-    var url=rawUrl(path);
-    return '<video src="'+escA(url)+'" class="thumb" preload="metadata" muted playsinline '+
-      'data-lb-url="'+escA(url)+'" data-lb-type="video" '+
-      'data-lb-meta="'+metaAttr+'" '+
-      'onerror="this.outerHTML=\'<span class=no-prev>no preview</span>\'"></video>';
-  }
-  return '<span class="no-prev">&mdash;</span>';
-}
-function buildRow(f,isKeep){
-  var rc=isKeep?'keep':'remove';
-  var bc=isKeep?'keep-badge':'remove-badge';
-  var bt=isKeep?'KEEP':'REMOVE';
-  var fname=f.path.split('/').pop()||f.path;
-  var cr=f.cr||'<span class="dim">—</span>';
-  var mo=f.mo||'<span class="dim">—</span>';
-  var ex=f.ex||'<span class="dim">—</span>';
-  var gps='<span class="dim">—</span>';
-  if(f.lat!=null&&f.lon!=null){
-    gps='<div class="gps"><a href="https://maps.google.com/?q='+f.lat.toFixed(6)+','+f.lon.toFixed(6)+
-      '" target="_blank" rel="noopener">'+Math.abs(f.lat).toFixed(4)+'&deg;'+(f.lat>=0?'N':'S')+' '+
-      Math.abs(f.lon).toFixed(4)+'&deg;'+(f.lon>=0?'E':'W')+'</a></div>';
-  }
-  var dims=(f.w&&f.h)?f.w+'×'+f.h:'<span class="dim">—</span>';
-  return '<tr class="'+rc+'">'+
-    '<td class="preview">'+buildPreview(f)+'</td>'+
-    '<td class="badge"><span class="'+bc+'">'+bt+'</span>'+similarBtn(f.hash)+'</td>'+
-    '<td class="filename" title="'+escA(fname)+'">'+escH(fname)+'</td>'+
-    '<td class="path-cell"><span class="path-text">'+escH(f.path)+'</span>'+
-    '<button class="copy-btn" data-path="'+escA(f.path)+'" title="Copy path">&#x2398;</button></td>'+
-    '<td>'+fmtB(f.size)+'</td>'+
-    '<td class="dim">'+cr+'</td>'+
-    '<td class="dim">'+mo+'</td>'+
-    '<td class="dim">'+ex+'</td>'+
-    '<td>'+gps+'</td>'+
-    '<td class="dim">'+dims+'</td>'+
-    '</tr>';
-}
-function buildGroup(g,idx){
-  var rows=g.files.map(function(f,j){return buildRow(f,j===0);}).join('');
-  return '<div class="group" id="g'+idx+'">'+
-    '<div class="group-header">'+
-    '<span class="arrow">&#9654;</span>'+
-    '<code class="hash">'+escH(g.hash)+'</code>'+
-    '<span class="group-meta">'+g.files.length+' copies &middot; '+fmtB(g.files[0].size)+' each</span>'+
-    '<span class="waste">&minus;'+fmtB(g.waste)+' wasted</span>'+
-    '</div>'+
-    '<div class="group-body">'+
-    '<table><thead><tr>'+
-    '<th class="preview-th">Preview</th>'+
-    '<th>Status</th><th>Filename</th><th>Path</th>'+
-    '<th>Size</th><th>Created</th><th>Modified</th><th>EXIF date</th>'+
-    '<th>GPS</th><th>Dimensions</th>'+
-    '</tr></thead><tbody>'+rows+'</tbody></table></div></div>';
-}
-function render(reset){
-  var overlay=document.getElementById('sort-overlay');
-  var container=document.getElementById('groups-container');
-  if(!container){if(overlay)overlay.style.display='none';return;}
-  if(reset){shown=0;container.innerHTML='';}
-  var end=Math.min(shown+PAGE,sorted.length);
-  var html='';
-  for(var i=shown;i<end;i++)html+=buildGroup(sorted[i],i);
-  var tmp=document.createElement('div');
-  tmp.innerHTML=html;
-  while(tmp.firstChild)container.appendChild(tmp.firstChild);
-  shown=end;
-  updateBtn();
-  overlay.style.display='none';
-}
-function updateBtn(){
-  var btn=document.getElementById('more-btn');
-  if(!btn)return;
-  var rem=sorted.length-shown;
-  if(rem>0){btn.style.display='inline-block';btn.textContent='Show more ('+rem+' remaining)';}
-  else btn.style.display='none';
-}
-function showMore(){render(false);}
-function toggle(id){
-  var g=document.getElementById(id);
-  g.classList.toggle('open');
-  if(g.classList.contains('open')){
-    g.querySelectorAll('img').forEach(function(img){if(img.loading==='lazy')img.loading='eager';});
-    g.querySelectorAll('video').forEach(function(v){if(v.preload==='metadata')v.preload='auto';});
-  }
-}
-function expandAll(){
-  document.querySelectorAll('.group').forEach(function(g){
-    g.classList.add('open');
-    g.querySelectorAll('img').forEach(function(img){if(img.loading==='lazy')img.loading='eager';});
-    g.querySelectorAll('video').forEach(function(v){if(v.preload==='metadata')v.preload='auto';});
-  });
-}
-function collapseAll(){document.querySelectorAll('.group').forEach(function(g){g.classList.remove('open');});}
-function copyPath(p){
-  navigator.clipboard.writeText(p).catch(function(){
-    var t=document.createElement('textarea');t.value=p;
-    document.body.appendChild(t);t.select();document.execCommand('copy');
-    document.body.removeChild(t);
-  });
-}
-function renderMetaPanel(meta){
-  var el = document.getElementById('lbMeta');
-  if(!meta || (!meta.faces.length && !meta.location)){
-    el.classList.remove('on'); el.innerHTML=''; return;
-  }
-  var parts = [];
-  if(meta.faces.length){
-    parts.push(meta.faces.map(function(fc){
-      return '<div class="lb-face"><img src="'+escA(fc.thumb)+'">'+
-        '<a href="/person/'+encodeURIComponent(fc.name)+'?from=lightbox">'+escH(fc.name)+'</a></div>';
-    }).join(''));
-  }
-  if(meta.location){
-    var locId = 'lbLoc'+Math.random().toString(36).slice(2);
-    parts.push('<div class="lb-location" id="'+locId+'">Loading location...</div>');
-    fetch('/api/location?lat='+meta.location.lat+'&lon='+meta.location.lon)
-      .then(function(r){ return r.json(); })
-      .then(function(d){
-        var n = document.getElementById(locId);
-        if(n) n.textContent = d.name || 'Unknown location';
-      })
-      .catch(function(){
-        var n = document.getElementById(locId);
-        if(n) n.textContent = 'Location unavailable';
-      });
-  }
-  el.innerHTML = parts.join('');
-  el.classList.add('on');
-}
-function openLb(url,type,metaJson){
-  var meta = null;
-  try { meta = metaJson ? JSON.parse(metaJson) : null; } catch(e) {}
-  renderMetaPanel(meta);
-  var img=document.getElementById('lb-img');
-  var vid=document.getElementById('lb-vid');
-  if(type==='video'){
-    img.style.display='none';vid.style.display='block';
-    vid.src=url;vid.play();
-  } else {
-    vid.style.display='none';img.style.display='block';img.src=url;
-  }
-  document.getElementById('lb').classList.add('on');
-}
-function closeLb(){
-  var vid=document.getElementById('lb-vid');
-  vid.pause();vid.src='';
-  document.getElementById('lb-img').src='';
-  document.getElementById('lb').classList.remove('on');
-}
-function sortGroups(by){
-  var overlay=document.getElementById('sort-overlay');
-  overlay.style.display='flex';
-  requestAnimationFrame(function(){
-    requestAnimationFrame(function(){
-      sorted.sort(function(a,b){
-        if(by==='waste')return b.waste-a.waste;
-        var da=a.date||'￿',db=b.date||'￿';
-        return by==='date-asc'?da.localeCompare(db):db.localeCompare(da);
-      });
-      render(true);
-    });
-  });
-}
-function bestDateBucket(f){
-  var d = bestDateJs(f);
-  if(!d) return null;
-  return {year: d.slice(0,4), month: d.slice(0,7), day: d.slice(0,10)};
-}
-var dateState = {level:'year', year:null, month:null};
-function dateKeepFiles(){ return (typeof KEEPFILES!=='undefined') ? KEEPFILES : []; }
-function buildYearView(){
-  dateState = {level:'year', year:null, month:null};
-  var byYear = {};
-  dateKeepFiles().forEach(function(f){
-    var b = bestDateBucket(f); if(!b) return;
-    (byYear[b.year] = byYear[b.year] || []).push(f);
-  });
-  var years = Object.keys(byYear).sort().reverse();
-  var grid = document.getElementById('dateGrid');
-  grid.innerHTML = years.map(function(y){
-    var files = byYear[y];
-    return '<div class="date-card" data-year="'+y+'" onclick="buildMonthView(\''+y+'\')">'+
-      buildPreview(files[0])+
-      '<div class="date-card-label">'+y+'</div>'+
-      '<div class="date-card-count">'+files.length+' files</div></div>';
-  }).join('');
-  document.getElementById('dateBreadcrumb').innerHTML = '';
-}
-function buildMonthView(year){
-  dateState = {level:'month', year:year, month:null};
-  var byMonth = {};
-  dateKeepFiles().forEach(function(f){
-    var b = bestDateBucket(f); if(!b || b.year!==year) return;
-    (byMonth[b.month] = byMonth[b.month] || []).push(f);
-  });
-  var months = Object.keys(byMonth).sort().reverse();
-  var grid = document.getElementById('dateGrid');
-  grid.innerHTML = months.map(function(m){
-    var files = byMonth[m];
-    return '<div class="date-card" data-month="'+m+'" onclick="buildDayView(\''+m+'\')">'+
-      buildPreview(files[0])+
-      '<div class="date-card-label">'+m+'</div>'+
-      '<div class="date-card-count">'+files.length+' files</div></div>';
-  }).join('');
-  document.getElementById('dateBreadcrumb').innerHTML =
-    '<a onclick="buildYearView()">'+year+'</a>';
-}
-function buildDayView(month){
-  dateState = {level:'day', year:dateState.year, month:month};
-  var byDay = {};
-  dateKeepFiles().forEach(function(f){
-    var b = bestDateBucket(f); if(!b || b.month!==month) return;
-    (byDay[b.day] = byDay[b.day] || []).push(f);
-  });
-  var days = Object.keys(byDay).sort().reverse();
-  var grid = document.getElementById('dateGrid');
-  grid.innerHTML = days.map(function(d){
-    var files = byDay[d];
-    return '<div class="date-card" data-day="'+d+'" onclick="buildDayGallery(\''+d+'\')">'+
-      buildPreview(files[0])+
-      '<div class="date-card-label">'+d+'</div>'+
-      '<div class="date-card-count">'+files.length+' files</div></div>';
-  }).join('');
-  document.getElementById('dateBreadcrumb').innerHTML =
-    '<a onclick="buildYearView()">'+dateState.year+'</a> &gt; '+
-    '<a onclick="buildMonthView(\''+dateState.year+'\')">'+month+'</a>';
-}
-function buildDayGallery(day){
-  var files = dateKeepFiles().filter(function(f){
-    var b = bestDateBucket(f); return b && b.day===day;
-  });
-  var grid = document.getElementById('dateGrid');
-  grid.innerHTML = files.map(function(f){ return buildCard(f); }).join('');
-  document.getElementById('dateBreadcrumb').innerHTML =
-    '<a onclick="buildYearView()">'+dateState.year+'</a> &gt; '+
-    '<a onclick="buildMonthView(\''+dateState.year+'\')">'+dateState.month+'</a> &gt; '+day;
-}
-// Event delegation: toggle, lightbox, copy. One listener for all dynamic content
-document.addEventListener('click',function(e){
-  var lb=e.target.closest('[data-lb-url]');
-  if(lb){e.preventDefault();e.stopPropagation();openLb(lb.dataset.lbUrl,lb.dataset.lbType||'image',lb.dataset.lbMeta);return;}
-  var cp=e.target.closest('[data-path]');
-  if(cp){copyPath(cp.dataset.path);return;}
-  var hdr=e.target.closest('.group-header');
-  if(hdr){toggle(hdr.closest('.group').id);return;}
-});
-document.addEventListener('keydown',function(e){if(e.key==='Escape')closeLb();});
-document.getElementById('lb').addEventListener('click',function(e){
-  if(e.target===this)closeLb();
-});
-"#);
-
-    out.push_str(r#"
-// ---- All-files gallery and similarity search (active only with --all) ----
-var GPAGE=200,gShown=0,HASH_FILES={},VECS=null,VEC_INDEX={};
-function decodeVecs(b64,n,dim){
-  var bin=atob(b64);
-  var out=new Float32Array(n*dim);
-  for(var i=0;i<n*dim;i++){
-    var lo=bin.charCodeAt(i*2),hi=bin.charCodeAt(i*2+1);
-    var h=(hi<<8)|lo;
-    var s=(h&0x8000)?-1:1,e=(h>>10)&0x1f,f=h&0x3ff;
-    if(e===0)out[i]=s*f*Math.pow(2,-24);
-    else if(e===31)out[i]=f?NaN:s*Infinity;
-    else out[i]=s*(1+f/1024)*Math.pow(2,e-15);
-  }
-  return out;
-}
-function bestDateJs(f){
-  if(f.ex&&f.ex.indexOf('0000')!==0)return f.ex;
-  if(f.cr&&f.mo)return f.cr<f.mo?f.cr:f.mo;
-  return f.cr||f.mo||'';
-}
-function similarBtn(hash){
-  if(!VECS||VEC_INDEX[hash]==null)return '';
-  return '<button class="similar-btn" data-similar="'+escA(hash)+'">Similar</button>';
-}
-function buildCard(f){
-  var fname=f.path.split('/').pop()||f.path;
-  var copies=HASH_FILES[f.hash]&&HASH_FILES[f.hash].length>1?
-    '<span class="copies">x'+HASH_FILES[f.hash].length+'</span>':'';
-  return '<div class="card" data-hash="'+escA(f.hash)+'">'+copies+
-    buildPreview(f)+
-    '<div class="card-meta" title="'+escA(f.path)+'">'+escH(fname)+'</div>'+
-    '<div class="card-meta">'+fmtB(f.size)+(bestDateJs(f)?' &middot; '+escH(bestDateJs(f)):'')+'</div>'+
-    similarBtn(f.hash)+
-    '</div>';
-}
-function renderGallery(){
-  if(typeof ALLFILES==='undefined')return;
-  var g=document.getElementById('gallery');
-  var end=Math.min(gShown+GPAGE,ALLFILES.length);
-  var html='';
-  for(var i=gShown;i<end;i++)html+=buildCard(ALLFILES[i]);
-  var tmp=document.createElement('div');
-  tmp.innerHTML=html;
-  while(tmp.firstChild)g.appendChild(tmp.firstChild);
-  gShown=end;
-  var btn=document.getElementById('gallery-more');
-  var rem=ALLFILES.length-gShown;
-  if(rem>0){btn.style.display='inline-block';btn.textContent='Show more ('+rem+' remaining)';}
-  else btn.style.display='none';
-}
-function showMoreGallery(){renderGallery();}
-function findSimilar(hash){
-  var qi=VEC_INDEX[hash];
-  if(qi==null||!VECS)return;
-  var q=VECS.subarray(qi*VEC_DIM,(qi+1)*VEC_DIM);
-  var scores=[];
-  for(var i=0;i<VEC_HASHES.length;i++){
-    if(i===qi)continue;
-    var v=VECS.subarray(i*VEC_DIM,(i+1)*VEC_DIM);
-    var dot=0;
-    for(var d=0;d<VEC_DIM;d++)dot+=q[d]*v[d];
-    if(isFinite(dot))scores.push([i,dot]);
-  }
-  scores.sort(function(a,b){return b[1]-a[1];});
-  renderResults(hash,scores.slice(0,24));
-}
-function resultCard(hash,score,isQuery){
-  var files=HASH_FILES[hash];
-  if(!files||!files.length)return '';
-  var f=files[0];
-  var fname=f.path.split('/').pop()||f.path;
-  var badge=isQuery?'':'<span class="score">'+score.toFixed(3)+'</span>';
-  var copies=files.length>1?'<span class="copies">x'+files.length+'</span>':'';
-  return '<div class="rcard'+(isQuery?' query':'')+'" data-hash="'+escA(hash)+'">'+
-    badge+copies+buildPreview(f)+
-    '<div class="rname" title="'+escA(f.path)+'">'+(isQuery?'query: ':'')+escH(fname)+'</div>'+
-    '</div>';
-}
-function renderResults(qHash,scored){
-  var panel=document.getElementById('results');
-  var html='<div class="results-head"><h2>Similar images</h2>'+
-    '<button onclick="clearResults()">Clear</button></div>'+
-    '<div class="results-strip">'+resultCard(qHash,1,true);
-  for(var i=0;i<scored.length;i++){
-    html+=resultCard(VEC_HASHES[scored[i][0]],scored[i][1],false);
-  }
-  html+='</div>';
-  panel.innerHTML=html;
-  panel.style.display='block';
-  panel.querySelectorAll('img').forEach(function(img){if(img.loading==='lazy')img.loading='eager';});
-  panel.scrollIntoView({behavior:'smooth',block:'start'});
-}
-function clearResults(){
-  var panel=document.getElementById('results');
-  panel.style.display='none';
-  panel.innerHTML='';
-}
-if(typeof ALLFILES!=='undefined'){
-  ALLFILES.forEach(function(f){
-    (HASH_FILES[f.hash]=HASH_FILES[f.hash]||[]).push(f);
-  });
-  if(VEC_HASHES.length>0){
-    VECS=decodeVecs(VEC_B64,VEC_HASHES.length,VEC_DIM);
-    for(var vi=0;vi<VEC_HASHES.length;vi++)VEC_INDEX[VEC_HASHES[vi]]=vi;
-  }
-  renderGallery();
-}
-document.addEventListener('click',function(e){
-  var sb=e.target.closest('[data-similar]');
-  if(sb){e.preventDefault();e.stopPropagation();findSimilar(sb.dataset.similar);}
-});
-render(true);
-if(typeof KEEPFILES!=='undefined') buildYearView();
-"#);
-
-    out.push_str("</script>\n</body>\n</html>");
     out
 }
 
 // ---- Faces labeling server ----
 
-const FACES_HTML: &str = r##"<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>videre faces labeling</title>
-  <style>
-    :root {
-      --blue-border: #6c8ebf;
-      --blue-bg: #e8f0fe;
-      --blue-text: #4a6da3;
-      --blue-hover: #2a6db5;
-      --green-border: #6cc36c;
-      --green-bg: #eaf7ea;
-      --green-text: #1a7a1a;
-      --orange-border: #e2a03f;
-      --orange-bg: #fdf1df;
-      --orange-text: #8a5a00;
-    }
-    body { font-family: sans-serif; margin: 0; padding: 16px; background: #fff; }
-    h2 { border-bottom: 1px solid #ccc; padding-bottom: 4px; }
-    .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fill, 160px); gap: 12px; margin-bottom: 24px; }
-    .card { background: white; border: 2px solid #ddd; border-radius: 8px; padding: 10px; width: 160px; box-sizing: border-box; cursor: grab; }
-    .card.person-card { cursor: default; border-color: var(--blue-border); background: var(--blue-bg); transition: border-color 0.15s; }
-    .card.person-card:hover { border-color: var(--blue-hover); }
-    .card.drag-over { border-color: var(--blue-hover); background: #d0e4ff; }
-    .card.cluster-card { border-color: var(--green-border); background: var(--green-bg); }
-    .card.singleton-card { border-color: var(--orange-border); background: var(--orange-bg); }
-    .badge { display: inline-flex; align-items: center; vertical-align: middle; border-radius: 12px; padding: 3px 9px; font-size: 12px; line-height: 1; margin-left: 4px; font-weight: 600; border: 1px solid transparent; }
-    .badge-blue { background: var(--blue-bg); border-color: var(--blue-border); color: var(--blue-text); }
-    .badge-green { background: var(--green-bg); border-color: var(--green-border); color: var(--green-text); }
-    .badge-orange { background: var(--orange-bg); border-color: var(--orange-border); color: var(--orange-text); }
-    h2.title-people { color: var(--blue-text); }
-    h2.title-clusters { color: var(--green-text); }
-    h2.title-singletons { color: var(--orange-text); }
-    .new-person-area { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
-    .new-person-area button { flex: 1; }
-    .new-person-area input[type=text] { width: 100%; box-sizing: border-box; }
-    .np-btn-row { display: flex; gap: 4px; }
-    .np-btn-row button { flex: 1; }
-    .new-person-btn { background: #fff; font-weight: 600; transition: background 0.15s, color 0.15s; }
-    .cluster-card .new-person-btn { border-color: var(--green-border); color: var(--green-text); }
-    .cluster-card .new-person-btn:hover { background: var(--green-text); border-color: var(--green-text); color: #fff; }
-    .singleton-card .new-person-btn { border-color: var(--orange-border); color: var(--orange-text); }
-    .singleton-card .new-person-btn:hover { background: var(--orange-text); border-color: var(--orange-text); color: #fff; }
-    .np-create-btn { font-weight: 600; color: #fff; transition: background 0.15s, border-color 0.15s; }
-    .cluster-card .np-create-btn { background: var(--green-border); border-color: var(--green-border); }
-    .cluster-card .np-create-btn:hover { background: var(--green-text); border-color: var(--green-text); }
-    .singleton-card .np-create-btn { background: var(--orange-border); border-color: var(--orange-border); }
-    .singleton-card .np-create-btn:hover { background: var(--orange-text); border-color: var(--orange-text); }
-    .cluster-card .np-input { border-color: var(--green-border); color: var(--green-text); }
-    .cluster-card .np-input:focus { outline: none; border-color: var(--green-text); box-shadow: 0 0 0 2px rgba(108,195,108,0.25); }
-    .singleton-card .np-input { border-color: var(--orange-border); color: var(--orange-text); }
-    .singleton-card .np-input:focus { outline: none; border-color: var(--orange-text); box-shadow: 0 0 0 2px rgba(226,160,63,0.25); }
-    button { cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid #999; background: white; }
-    button.primary { background: var(--blue-hover); color: white; border-color: var(--blue-hover); }
-    input[type=text] { padding: 4px 8px; border: 1px solid #999; border-radius: 4px; width: 120px; }
-    #status { font-size: 13px; color: #555; }
-    /* max-width keeps the fixed-size (140/66px) thumbnails from overflowing a
-       narrower card, e.g. the People cards in right-sidebar mode; aspect-ratio
-       + height:auto keep them square while they scale down. */
-    .face-img { object-fit: cover; border-radius: 3px; background: #ddd; display: block; max-width: 100%; height: auto; aspect-ratio: 1 / 1; }
-    .people-section { position: sticky; top: 0; background: #fff; z-index: 100; padding-bottom: 8px; }
-    .people-scroll { max-height: 45vh; overflow-y: auto; padding-bottom: 4px; }
-    .drag-handle { display: flex; align-items: center; gap: 6px; cursor: grab; color: #aaa; padding: 2px 0 6px; user-select: none; }
-    .drag-handle .drag-dots { font-size: 16px; letter-spacing: 2px; flex-shrink: 0; }
-    .drag-handle .drag-hint { font-size: 10px; color: #bbb; line-height: 1.2; }
-    .drag-handle:hover { color: #777; }
-    .drag-handle:hover .drag-hint { color: #999; }
-    .cluster-card .drag-handle .drag-dots, .cluster-card .drag-handle .drag-hint { color: var(--green-border); }
-    .cluster-card .drag-handle:hover .drag-dots, .cluster-card .drag-handle:hover .drag-hint { color: var(--green-text); }
-    .singleton-card .drag-handle .drag-dots, .singleton-card .drag-handle .drag-hint { color: var(--orange-border); }
-    .singleton-card .drag-handle:hover .drag-dots, .singleton-card .drag-handle:hover .drag-hint { color: var(--orange-text); }
-    .cluster-link { color: var(--blue-hover); text-decoration: none; font-weight: bold; display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .cluster-link:hover { text-decoration: underline; }
-    /* Says an entered name will join an existing person rather than create one.
-       Amber, not red: merging is usually what was meant. */
-    .merge-note { color: #b58900; font-size: 12px; margin-left: 8px; }
-    .extra-count { font-size: 11px; margin-top: 2px; }
-    .person-card .extra-count { color: var(--blue-text); }
-    .cluster-card .extra-count { color: var(--green-text); }
-    .singleton-card .extra-count { color: var(--orange-text); }
-    /* Right-hand People sidebar (toggled, remembered in localStorage). */
-    body.sidebar-mode { padding-right: 316px; }
-    body.sidebar-mode .people-section { position: fixed; top: 0; right: 0; bottom: 0; width: 300px; margin: 0; padding: 16px 12px; overflow-y: auto; border-left: 1px solid #ddd; box-shadow: -2px 0 8px rgba(0,0,0,0.05); z-index: 200; }
-    body.sidebar-mode .people-scroll { max-height: none; overflow: visible; }
-    body.sidebar-mode #people-grid { grid-template-columns: repeat(auto-fill, 132px); gap: 8px; }
-    body.sidebar-mode #people-grid .card { width: 132px; padding: 8px; }
-    /* Singleton multi-select. */
-    .singleton-card.selected { border-color: var(--blue-hover); box-shadow: 0 0 0 2px var(--blue-hover); }
-    .sel-zone { position: relative; cursor: pointer; }
-    .sel-check { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; border-radius: 50%; background: var(--blue-hover); color: #fff; align-items: center; justify-content: center; font-size: 13px; z-index: 5; display: none; }
-    .singleton-card.selected .sel-check { display: flex; }
-    .sel-bar { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--blue-hover); color: #fff; padding: 10px 16px; border-radius: 10px; display: none; gap: 12px; align-items: center; z-index: 300; box-shadow: 0 4px 16px rgba(0,0,0,0.25); flex-wrap: wrap; }
-    .sel-bar.on { display: flex; }
-    .sel-bar .sel-count { font-weight: 600; }
-    .sel-bar .sel-hint { font-size: 12px; opacity: 0.85; }
-    .sel-bar button { background: #fff; color: var(--blue-hover); font-weight: 600; border: none; }
-    .sel-bar input[type=text] { width: 160px; }
-  </style>
-</head>
-<body>
-  <div class="toolbar">
-    <strong>videre faces labeling</strong>
-    <span id="status">Loading...</span>
-    <button id="layout-toggle" onclick="toggleLayout()">People: Top</button>
-    <button class="primary" onclick="saveAndClose()">Save &amp; Close</button>
-  </div>
-
-  <div class="people-section">
-    <h2 class="title-people">People <span id="people-count" class="badge badge-blue">0</span></h2>
-    <div class="people-scroll">
-      <div id="people-grid" class="grid"></div>
-    </div>
-  </div>
-
-  <h2 class="title-clusters">Unassigned Clusters <span id="cluster-count" class="badge badge-green">0</span></h2>
-  <div id="cluster-grid" class="grid"></div>
-
-  <h2 class="title-singletons">Singletons <span id="singleton-count" class="badge badge-orange">0</span></h2>
-  <div id="singleton-grid" class="grid"></div>
-
-  <div class="sel-bar" id="sel-bar"></div>
-
-  <script>
-    let facesData = { people: [], clusters: [], singletons: [] };
-
-    async function loadFaces() {
-      try {
-        const r = await fetch('/api/faces');
-        facesData = await r.json();
-        render();
-        document.getElementById('status').textContent =
-          `${facesData.people.length} people, ${facesData.clusters.length} clusters, ${facesData.singletons.length} singletons`;
-      } catch(e) {
-        document.getElementById('status').textContent = 'Error loading: ' + e;
-      }
-    }
-
-    function faceImg(faceId, w, h) {
-      return `<img class="face-img" src="/api/face-image/${faceId}" width="${w}" height="${h}" title="#${faceId}" onerror="this.removeAttribute('src');this.style.background='#ddd'">`;
-    }
-
-    function thumbGrid(faceIds) {
-      if (faceIds.length === 1) {
-        return `<div style="margin-bottom:6px">${faceImg(faceIds[0], 140, 140)}</div>`;
-      }
-      const visible = faceIds.slice(0, 4);
-      const extra = faceIds.length > 4
-        ? `<div class="extra-count">+${faceIds.length - 4} more</div>` : '';
-      return `
-        <div style="display:grid;grid-template-columns:repeat(2,66px);gap:4px;margin-bottom:6px">
-          ${visible.map(id => faceImg(id, 66, 66)).join('')}
-        </div>${extra}`;
-    }
-
-    function renderPeople(people) {
-      const grid = document.getElementById('people-grid');
-      document.getElementById('people-count').textContent = people.length;
-      // Sort by name (case-insensitive) so cards keep a stable position while
-      // you drag clusters onto them, count-sort reshuffled them mid-assign.
-      const sorted = [...people].sort((a, b) =>
-        a.full_name.localeCompare(b.full_name, undefined, { sensitivity: 'base' }));
-      grid.innerHTML = sorted.map(p => {
-        const url = `/person/${encodeURIComponent(p.label)}`;
-        const extra = p.face_ids.length > 1
-          ? `<div class="extra-count">+${p.face_ids.length - 1} more</div>` : '';
-        return `
-        <div class="card person-card"
-             data-label="${escHtml(p.label)}"
-             ondragover="event.preventDefault(); this.classList.add('drag-over')"
-             ondragleave="this.classList.remove('drag-over')"
-             ondrop="onDropToPerson(event, this.dataset.label); this.classList.remove('drag-over')">
-          <a href="${url}">
-            <div style="margin-bottom:6px">${faceImg(p.representative_id, 140, 140)}</div>
-          </a>
-          <a class="cluster-link" href="${url}" title="${escHtml(p.full_name)}">${escHtml(p.full_name)}</a>
-          ${extra}
-        </div>
-      `;
-      }).join('');
-    }
-
-    const MAX_NAME_LEN = 60;
-
-    // Trim, collapse internal whitespace, strip control/bidi-spoofing
-    // characters, and cap length by code point (not UTF-16 code unit) so a
-    // pasted wall of text or a spoofed name can't stretch card layout,
-    // corrupt display order, or bloat the DB.
-    // Mirror of `videre_core::person::normalize`, so the page can say "this
-    // will add to an existing person" before posting - which needs the same
-    // identity the server will compute. Kept small and labelled as a mirror:
-    // if the two disagree the warning misfires, which is visible, rather than
-    // the assignment landing somewhere unexpected, which is not.
-    const TURKISH_FOLD = { 'ı':'i','İ':'i','ğ':'g','Ğ':'g','ş':'s','Ş':'s',
-                           'ö':'o','Ö':'o','ü':'u','Ü':'u','ç':'c','Ç':'c' };
-    function personIdentity(raw) {
-      const folded = Array.from(String(raw).trim())
-        .map(ch => TURKISH_FOLD[ch] || ch).join('')
-        .toLowerCase().normalize('NFKD');
-      let out = '', lastSep = true;
-      for (const ch of folded) {
-        if (/[\\s_]/.test(ch)) { if (!lastSep) { out += '_'; lastSep = true; } continue; }
-        if (/[a-z0-9]/.test(ch)) { out += ch; lastSep = false; }
-      }
-      return out.replace(/_+$/, '');
-    }
-
-    // The person an entered name would land on, or null for a new one.
-    function existingPersonFor(typed) {
-      const id = personIdentity(typed);
-      if (!id || !mainData || !mainData.people) return null;
-      return mainData.people.find(p => p.label === id) || null;
-    }
-
-    function sanitizeName(raw) {
-      const filtered = Array.from(raw).filter(function(ch) {
-        const cp = ch.codePointAt(0);
-        if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)) return false;
-        if (cp === 0x200B) return false;
-        if (cp === 0x200E || cp === 0x200F) return false;
-        // 0x200C (ZWNJ) and 0x200D (ZWJ) are intentionally allowed,
-        // required for Persian/Indic text and emoji ZWJ sequences.
-        if (cp >= 0x202A && cp <= 0x202E) return false;
-        if (cp >= 0x2060 && cp <= 0x2069) return false;
-        if (cp === 0xFEFF) return false;
-        return true;
-      }).join('');
-      const collapsed = filtered.trim().replace(/\s+/g, ' ');
-      return Array.from(collapsed).slice(0, MAX_NAME_LEN).join('');
-    }
-
-    function renderAssignableCard(faceIds, linkUrl, cardClass, selFaceId) {
-      const faceIdsJson = JSON.stringify(faceIds);
-      // Singletons carry a selection id: clicking the thumbnail toggles
-      // multi-select. The click target is scoped to the thumbnail ("select
-      // zone") rather than the whole card so the drag handle and the New
-      // Person controls, which live outside it, never toggle selection
-      // (they mutate the card, which would break a whole-card click guard).
-      // Clusters (selFaceId undefined) are unaffected.
-      const selectable = selFaceId != null;
-      const inner = thumbGrid(faceIds);
-      let thumb;
-      if (selectable) {
-        thumb = `<div class="sel-zone" onclick="toggleSingleton(${selFaceId})" title="Click to select">`
-          + `<div class="sel-check">&#10003;</div>${inner}</div>`;
-      } else if (linkUrl) {
-        thumb = `<a href="${escHtml(linkUrl)}">${inner}</a>`;
-      } else {
-        thumb = inner;
-      }
-      const selAttr = selectable ? `data-sel-id="${selFaceId}"` : '';
-      return `
-        <div class="card ${cardClass}" ${selAttr}>
-          <div class="drag-handle" draggable="true" ondragstart="onDragStart(event, ${faceIdsJson})" title="Drag to assign to a person">
-            <span class="drag-dots">&#8942;&#8942;&#8942;</span>
-            <span class="drag-hint">Drag on person above</span>
-          </div>
-          ${thumb}
-          <div class="new-person-area">
-            <button class="new-person-btn" onclick="showNewPersonInput(this, ${faceIdsJson})">New Person</button>
-          </div>
-        </div>
-      `;
-    }
-
-    function renderClusters(clusters) {
-      const grid = document.getElementById('cluster-grid');
-      document.getElementById('cluster-count').textContent = clusters.length;
-      const sorted = [...clusters].sort((a, b) => b.face_ids.length - a.face_ids.length);
-      grid.innerHTML = sorted.map(c =>
-        renderAssignableCard(c.face_ids, `/cluster/${c.cluster_id}`, 'cluster-card')
-      ).join('');
-    }
-
-    function renderSingletons(singletons) {
-      const grid = document.getElementById('singleton-grid');
-      document.getElementById('singleton-count').textContent = singletons.length;
-      grid.innerHTML = singletons.map(s =>
-        renderAssignableCard([s.face_id], null, 'singleton-card', s.face_id)
-      ).join('');
-    }
-
-    function render() {
-      renderPeople(facesData.people);
-      renderClusters(facesData.clusters);
-      renderSingletons(facesData.singletons);
-      updateSelectionUI();
-    }
-
-    function escHtml(s) {
-      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-    }
-
-    function onDragStart(event, faceIds) {
-      if (!event.target.closest('.drag-handle')) {
-        event.preventDefault();
-        return;
-      }
-      // Dragging a selected singleton carries the whole current selection, so
-      // one drop assigns every selected face at once.
-      let ids = faceIds;
-      const card = event.target.closest('.card');
-      const selId = card && card.dataset.selId != null ? Number(card.dataset.selId) : null;
-      if (selId != null && selectedSingletons.has(selId) && selectedSingletons.size > 1) {
-        ids = Array.from(selectedSingletons);
-      }
-      event.dataTransfer.setData('application/json', JSON.stringify({ face_ids: ids }));
-    }
-
-    // ---- singleton multi-select ----
-    let selectedSingletons = new Set();
-
-    function toggleSingleton(faceId) {
-      if (selectedSingletons.has(faceId)) selectedSingletons.delete(faceId);
-      else selectedSingletons.add(faceId);
-      updateSelectionUI();
-    }
-
-    function updateSelectionUI() {
-      document.querySelectorAll('.singleton-card').forEach(c => {
-        const id = c.dataset.selId != null ? Number(c.dataset.selId) : null;
-        c.classList.toggle('selected', id != null && selectedSingletons.has(id));
-      });
-      rebuildSelBar();
-    }
-
-    function rebuildSelBar() {
-      const bar = document.getElementById('sel-bar');
-      const n = selectedSingletons.size;
-      bar.classList.toggle('on', n > 0);
-      if (n === 0) { bar.innerHTML = ''; return; }
-      bar.innerHTML =
-        `<span class="sel-count">${n} selected</span>` +
-        `<button onclick="newPersonFromSelection()">New Person</button>` +
-        `<button onclick="clearSelection()">Clear</button>` +
-        `<span class="sel-hint">or drag any selected onto a person</span>`;
-    }
-
-    function clearSelection() {
-      selectedSingletons.clear();
-      updateSelectionUI();
-    }
-
-    function newPersonFromSelection() {
-      if (selectedSingletons.size === 0) return;
-      const bar = document.getElementById('sel-bar');
-      bar.innerHTML =
-        `<input type="text" id="sel-np-input" placeholder="Person name" maxlength="${MAX_NAME_LEN}" list="people-list">` +
-        `<button id="sel-np-go" onclick="submitSelectionPerson()">Create</button>` +
-        `<button onclick="rebuildSelBar()">Cancel</button>` +
-        `<span id="sel-np-note" class="merge-note"></span>`;
-      const inp = document.getElementById('sel-np-input');
-      inp.focus();
-      // Say what will happen before it happens. Typing a name that already
-      // exists adds to that person rather than creating one - usually what is
-      // meant, and previously indistinguishable from creating until afterwards.
-      // The `list` attribute is the other half: this input was the only one of
-      // the three without the autocomplete the others already had.
-      inp.addEventListener('input', function() {
-        const hit = existingPersonFor(inp.value);
-        const note = document.getElementById('sel-np-note');
-        const go = document.getElementById('sel-np-go');
-        if (hit) {
-          note.textContent = `adds to ${hit.full_name}, ${hit.face_ids.length} face(s)`;
-          go.textContent = `Add to ${hit.full_name}`;
-        } else {
-          note.textContent = '';
-          go.textContent = 'Create';
-        }
-      });
-      inp.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') { e.preventDefault(); submitSelectionPerson(); }
-      });
-    }
-
-    async function submitSelectionPerson() {
-      const input = document.getElementById('sel-np-input');
-      if (!input) return;
-      const label = sanitizeName(input.value);
-      if (!label) return;
-      const ids = Array.from(selectedSingletons);
-      const r = await fetch('/api/new-person', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_ids: ids, label: label })
-      });
-      if (!r.ok) {
-        document.getElementById('status').textContent = 'Error: create person failed';
-        return;
-      }
-      clearSelection();
-      await loadFaces();
-    }
-
-    // ---- People placement toggle (top bar vs right sidebar) ----
-    function applyLayout() {
-      const mode = localStorage.getItem('videre_people_layout') || 'top';
-      document.body.classList.toggle('sidebar-mode', mode === 'right');
-      const btn = document.getElementById('layout-toggle');
-      if (btn) btn.textContent = mode === 'right' ? 'People: Right' : 'People: Top';
-    }
-
-    function toggleLayout() {
-      const cur = localStorage.getItem('videre_people_layout') || 'top';
-      localStorage.setItem('videre_people_layout', cur === 'right' ? 'top' : 'right');
-      applyLayout();
-    }
-
-    async function onDropToPerson(event, personLabel) {
-      event.preventDefault();
-      const data = JSON.parse(event.dataTransfer.getData('application/json'));
-      const r = await fetch('/api/assign', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_ids: data.face_ids, person_label: personLabel })
-      });
-      if (!r.ok) {
-        document.getElementById('status').textContent = 'Error: assign failed';
-        return;
-      }
-      clearSelection();
-      await loadFaces();
-    }
-
-    function showNewPersonInput(btn, faceIds) {
-      const area = btn.parentElement;
-      const faceIdsJson = JSON.stringify(faceIds);
-      const inputId = `np-input-${faceIds[0]}`;
-      area.innerHTML = `
-        <input type="text" class="np-input" id="${inputId}" placeholder="Person name" maxlength="${MAX_NAME_LEN}" autofocus>
-        <div class="np-btn-row">
-          <button class="np-create-btn" onclick="submitNewPerson('${inputId}', ${faceIdsJson})">Create</button>
-          <button class="new-person-btn" onclick="loadFaces()">Cancel</button>
-        </div>
-      `;
-      document.getElementById(inputId).addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') { e.preventDefault(); submitNewPerson(inputId, faceIds); }
-      });
-    }
-
-    async function submitNewPerson(inputId, faceIds) {
-      const input = document.getElementById(inputId);
-      const label = sanitizeName(input.value);
-      if (!label) return;
-      const r = await fetch('/api/new-person', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_ids: faceIds, label: label })
-      });
-      if (!r.ok) {
-        document.getElementById('status').textContent = 'Error: create person failed';
-        return;
-      }
-      await loadFaces();
-    }
-
-    async function saveAndClose() {
-      await fetch('/api/quit', { method: 'POST' });
-      document.body.innerHTML = '<div style="padding:32px;font-size:18px">Server stopped. You can close this tab.</div>';
-    }
-
-    applyLayout();
-    loadFaces();
-  </script>
-</body>
-</html>
-"##;
-
-const CLUSTER_HTML: &str = r##"<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Cluster __CLUSTER_ID__</title>
-  <style>
-    body { font-family: sans-serif; margin: 0; padding: 16px; background: #f5f5f5; }
-    .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
-    .toolbar a { color: #2a6db5; text-decoration: none; font-size: 14px; }
-    .assign-bar { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin-bottom: 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fill, 200px); gap: 14px; }
-    .card { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 10px; }
-    .face-img { object-fit: cover; border-radius: 4px; display: block; background: #ddd; }
-    .path { font-size: 11px; color: #666; word-break: break-all; margin-top: 5px; }
-    .face-id { font-size: 11px; color: #999; margin-top: 2px; }
-    .btns { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
-    button { cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid #999; background: white; font-size: 13px; }
-    button.danger { color: #c00; border-color: #fbb; }
-    button.primary { background: #2a6db5; color: white; border-color: #2a6db5; }
-    input[type=text] { padding: 4px 8px; border: 1px solid #999; border-radius: 4px; width: 160px; font-size: 13px; }
-    #status { font-size: 13px; color: #555; }
-    .modal-backdrop { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); align-items: center; justify-content: center; z-index: 100; }
-    .modal-backdrop.on { display: flex; }
-    .modal { background: white; border-radius: 8px; padding: 20px; min-width: 280px; }
-    .modal h3 { margin: 0 0 12px; font-size: 15px; }
-    .modal input { width: 100%; box-sizing: border-box; margin-bottom: 12px; }
-    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
-  </style>
-</head>
-<body>
-  <div class="toolbar">
-    <a href="/">&larr; Back to labeling</a>
-    <strong>Cluster __CLUSTER_ID__</strong>
-    <span id="face-count" style="color:#555;font-size:13px"></span>
-    <span id="status"></span>
-  </div>
-
-  <div class="assign-bar">
-    <strong>Assign all to:</strong>
-    <input type="text" id="person-input" placeholder="Person name" maxlength="60" list="people-list">
-    <datalist id="people-list"></datalist>
-    <button class="primary" onclick="assignAll()">Assign cluster</button>
-    <button class="danger" onclick="dissolveCluster()" style="margin-left:auto">Dissolve cluster (wrong grouping)</button>
-  </div>
-
-  <div id="faces-grid" class="grid"></div>
-
-  <div id="assignModal" class="modal-backdrop">
-    <div class="modal">
-      <h3>Assign to person</h3>
-      <input id="assignInput" list="assign-people-list" placeholder="Person name" maxlength="60">
-      <datalist id="assign-people-list"></datalist>
-      <div class="modal-actions">
-        <button onclick="submitAssignModal()">Assign</button>
-        <button onclick="closeAssignModal()">Cancel</button>
-      </div>
-    </div>
-  </div>
-
-  <script>
-    const clusterId = __CLUSTER_ID__;
-    let facesData = [];
-    let mainData = { people: [] };
-    const MAX_NAME_LEN = 60;
-
-    // Trim, collapse internal whitespace, strip control/bidi-spoofing
-    // characters, and cap length by code point (not UTF-16 code unit) so a
-    // pasted wall of text or a spoofed name can't stretch card layout,
-    // corrupt display order, or bloat the DB.
-    function sanitizeName(raw) {
-      const filtered = Array.from(raw).filter(function(ch) {
-        const cp = ch.codePointAt(0);
-        if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)) return false;
-        if (cp === 0x200B) return false;
-        if (cp === 0x200E || cp === 0x200F) return false;
-        // 0x200C (ZWNJ) and 0x200D (ZWJ) are intentionally allowed,
-        // required for Persian/Indic text and emoji ZWJ sequences.
-        if (cp >= 0x202A && cp <= 0x202E) return false;
-        if (cp >= 0x2060 && cp <= 0x2069) return false;
-        if (cp === 0xFEFF) return false;
-        return true;
-      }).join('');
-      const collapsed = filtered.trim().replace(/\s+/g, ' ');
-      return Array.from(collapsed).slice(0, MAX_NAME_LEN).join('');
-    }
-
-    document.getElementById('person-input').addEventListener('keydown', function(e) {
-      if (e.key === 'Enter') { e.preventDefault(); assignAll(); }
-    });
-
-    async function load() {
-      try {
-        const [clusterRes, mainRes] = await Promise.all([
-          fetch(`/api/cluster/${clusterId}`),
-          fetch('/api/faces')
-        ]);
-        if (!clusterRes.ok) throw new Error('cluster fetch failed');
-        const clusterData = await clusterRes.json();
-        mainData = mainRes.ok ? await mainRes.json() : { people: [] };
-        facesData = clusterData.faces;
-        const dl = document.getElementById('people-list');
-        dl.innerHTML = mainData.people.map(p => `<option value="${escHtml(p.full_name)}">`).join('');
-        document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
-        render();
-      } catch(e) {
-        document.getElementById('status').textContent = 'Error: ' + e;
-      }
-    }
-
-    function render() {
-      const grid = document.getElementById('faces-grid');
-      grid.innerHTML = facesData.map(f => `
-        <div class="card" id="card-${f.face_id}">
-          <img class="face-img" src="/api/face-image/${f.face_id}" width="180" height="180"
-               onerror="this.removeAttribute('src');this.style.background='#ddd'">
-          <div class="path" title="${escHtml(f.path)}">${escHtml(basename(f.path))}</div>
-          <div class="face-id">#${f.face_id}</div>
-          <div class="btns">
-            <button class="danger" onclick="removeFace(${f.face_id})">Remove</button>
-            <button onclick="assignOne(${f.face_id})">Assign</button>
-          </div>
-        </div>
-      `).join('');
-    }
-
-    function basename(p) { return p.split('/').pop() || p; }
-
-    function escHtml(s) {
-      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-    }
-
-    async function removeFace(faceId) {
-      const r = await fetch('/api/remove-face', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_id: faceId })
-      });
-      if (!r.ok) { document.getElementById('status').textContent = 'Error: remove failed'; return; }
-      document.getElementById(`card-${faceId}`)?.remove();
-      facesData = facesData.filter(f => f.face_id !== faceId);
-      document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
-    }
-
-    async function assignAll() {
-      const label = sanitizeName(document.getElementById('person-input').value);
-      if (!label) return;
-      const faceIds = facesData.map(f => f.face_id);
-      const r = await fetch('/api/new-person', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_ids: faceIds, label })
-      });
-      if (!r.ok) { document.getElementById('status').textContent = 'Error: assign failed'; return; }
-      document.getElementById('status').textContent = `Assigned ${faceIds.length} face(s) to "${label}"`;
-      setTimeout(() => { window.location.href = '/'; }, 800);
-    }
-
-    let assignModalFaceId = null;
-
-    function openAssignModal(faceId) {
-      assignModalFaceId = faceId;
-      document.getElementById('assign-people-list').innerHTML =
-        mainData.people.map(p => `<option value="${escHtml(p.full_name)}">`).join('');
-      document.getElementById('assignModal').classList.add('on');
-      document.getElementById('assignInput').value = '';
-      document.getElementById('assignInput').focus();
-    }
-
-    function closeAssignModal() {
-      document.getElementById('assignModal').classList.remove('on');
-      assignModalFaceId = null;
-    }
-
-    async function submitAssignModal() {
-      const label = sanitizeName(document.getElementById('assignInput').value);
-      if (!label) return;
-      const faceId = assignModalFaceId;
-      const r = await fetch('/api/assign', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_ids: [faceId], person_label: label })
-      });
-      if (!r.ok) { document.getElementById('status').textContent = 'Error: assign failed'; return; }
-      closeAssignModal();
-      document.getElementById(`card-${faceId}`)?.remove();
-      facesData = facesData.filter(f => f.face_id !== faceId);
-      document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
-    }
-
-    document.getElementById('assignInput').addEventListener('keydown', function(e) {
-      if (e.key === 'Enter') { e.preventDefault(); submitAssignModal(); }
-    });
-
-    document.addEventListener('keydown', function(e) {
-      if (e.key === 'Escape') closeAssignModal();
-    });
-    document.getElementById('assignModal').addEventListener('click', function(e) {
-      if (e.target === this) closeAssignModal();
-    });
-
-    async function dissolveCluster() {
-      if (!confirm(`Dissolve cluster ${clusterId}? Its ${facesData.length} face(s) will become unassigned singletons (not deleted).`)) return;
-      const r = await fetch('/api/dissolve-cluster', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cluster_id: clusterId })
-      });
-      if (!r.ok) { document.getElementById('status').textContent = 'Error: dissolve failed'; return; }
-      document.getElementById('status').textContent = 'Cluster dissolved';
-      setTimeout(() => { window.location.href = '/'; }, 500);
-    }
-
-    function assignOne(faceId) {
-      openAssignModal(faceId);
-    }
-
-    load();
-  </script>
-</body>
-</html>
-"##;
-
-const PERSON_HTML: &str = r##"<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Person</title>
-  <style>
-    body { font-family: sans-serif; margin: 0; padding: 16px; background: #f5f5f5; }
-    .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
-    .toolbar a { color: #2a6db5; text-decoration: none; font-size: 14px; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fill, 200px); gap: 14px; }
-    .card { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 10px; }
-    .face-img { object-fit: cover; border-radius: 4px; display: block; background: #ddd; }
-    .path { font-size: 11px; color: #666; word-break: break-all; margin-top: 5px; }
-    .face-id { font-size: 11px; color: #999; margin-top: 2px; }
-    .btns { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
-    button { cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid #999; background: white; font-size: 13px; }
-    button.danger { color: #c00; border-color: #fbb; }
-    button:disabled { cursor: default; opacity: 0.6; }
-    .card { position: relative; }
-    .default-badge { position: absolute; top: 6px; left: 6px; background: #2a6db5; color: #fff; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; z-index: 2; }
-    .card.is-default { border-color: #2a6db5; box-shadow: 0 0 0 2px #2a6db5; }
-    #status { font-size: 13px; color: #555; }
-  </style>
-</head>
-<body>
-  <div class="toolbar">
-    <a id="backLink" href="/">&larr; Back to labeling</a>
-    <strong id="person-title">Person</strong>
-    <span id="face-count" style="color:#555;font-size:13px"></span>
-    <span id="status"></span>
-    <span id="renameArea" style="display:none">
-      <input type="text" id="renameInput" maxlength="60">
-      <button onclick="submitRename()">Save</button>
-    </span>
-    <button id="removeBtn" class="danger" style="display:none;margin-left:auto" onclick="removePerson()">Remove person</button>
-  </div>
-
-  <div id="faces-grid" class="grid"></div>
-
-  <script>
-    const personName = decodeURIComponent(window.location.pathname.split('/').pop());
-    const FACES_UI_ENABLED = __FACES_UI_ENABLED__;
-    const MAX_NAME_LEN = 60;
-    let facesData = [];
-
-    (function() {
-      const params = new URLSearchParams(location.search);
-      if (params.get('from') === 'lightbox') {
-        const link = document.getElementById('backLink');
-        link.textContent = '← Back';
-        link.href = '#';
-        link.onclick = function(e) { e.preventDefault(); history.back(); };
-      }
-    })();
-
-    if (FACES_UI_ENABLED) {
-      document.getElementById('removeBtn').style.display = 'inline-block';
-      document.getElementById('renameArea').style.display = 'inline-flex';
-    }
-
-    // Trim, collapse internal whitespace, strip control/bidi-spoofing
-    // characters, and cap length by code point, mirrors the sanitization in
-    // FACES_HTML/CLUSTER_HTML.
-    function sanitizeName(raw) {
-      const filtered = Array.from(raw).filter(function(ch) {
-        const cp = ch.codePointAt(0);
-        if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)) return false;
-        if (cp === 0x200B) return false;
-        if (cp === 0x200E || cp === 0x200F) return false;
-        if (cp >= 0x202A && cp <= 0x202E) return false;
-        if (cp >= 0x2060 && cp <= 0x2069) return false;
-        if (cp === 0xFEFF) return false;
-        return true;
-      }).join('');
-      const collapsed = filtered.trim().replace(/\s+/g, ' ');
-      return Array.from(collapsed).slice(0, MAX_NAME_LEN).join('');
-    }
-
-    async function load() {
-      try {
-        document.title = personName;
-        const r = await fetch(`/api/person/${encodeURIComponent(personName)}`);
-        if (!r.ok) throw new Error('person fetch failed');
-        const data = await r.json();
-        // After the fetch, not before: `data` is a `const` declared here, and
-        // reading it earlier threw a ReferenceError that aborted the whole
-        // function, so the page showed an error and no photos at all.
-        //
-        // The heading and the rename box show the display name; the URL and
-        // every request keep using the identity.
-        const shown = data.full_name || personName;
-        document.getElementById('person-title').textContent = shown;
-        document.title = shown;
-        const ri = document.getElementById('renameInput');
-        if (ri) ri.value = shown;
-        facesData = data.faces;
-        document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
-        render();
-      } catch(e) {
-        document.getElementById('status').textContent = 'Error: ' + e;
-      }
-    }
-
-    function render() {
-      const grid = document.getElementById('faces-grid');
-      grid.innerHTML = facesData.map(f => `
-        <div class="card${f.is_primary ? ' is-default' : ''}" id="card-${f.face_id}">
-          ${f.is_primary ? '<span class="default-badge">&#9733; Default</span>' : ''}
-          <a href="/api/original-image/${f.face_id}" target="_blank" title="Open original image">
-            <img class="face-img" src="/api/face-image/${f.face_id}" width="180" height="180"
-                 onerror="this.removeAttribute('src');this.style.background='#ddd'">
-          </a>
-          <div class="path" title="${escHtml(f.path)}">${escHtml(basename(f.path))}</div>
-          <div class="face-id">#${f.face_id}</div>
-          <div class="btns">
-            <button class="danger" onclick="removeFace(${f.face_id})">Remove</button>
-            <button onclick="setDefault(${f.face_id})" ${f.is_primary ? 'disabled title="Already the default photo"' : 'title="Show this photo for this person on the labeling page"'}>Set Default</button>
-          </div>
-        </div>
-      `).join('');
-    }
-
-    function basename(p) { return p.split('/').pop() || p; }
-
-    function escHtml(s) {
-      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-    }
-
-    async function removeFace(faceId) {
-      const r = await fetch('/api/remove-face', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_id: faceId })
-      });
-      if (!r.ok) { document.getElementById('status').textContent = 'Error: remove failed'; return; }
-      document.getElementById(`card-${faceId}`)?.remove();
-      facesData = facesData.filter(f => f.face_id !== faceId);
-      document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
-    }
-
-    async function setDefault(faceId) {
-      const r = await fetch('/api/set-primary', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_id: faceId, person_label: personName })
-      });
-      if (!r.ok) { document.getElementById('status').textContent = 'Error: set default failed'; return; }
-      // Move the flag locally and re-render so the badge and disabled state
-      // follow, without a full round-trip; the labeling page picks up the new
-      // primary on its next load.
-      facesData.forEach(f => { f.is_primary = (f.face_id === faceId); });
-      render();
-      document.getElementById('status').textContent = 'Default photo updated';
-    }
-
-    async function removePerson() {
-      if (!confirm('Remove ' + personName + '? Their ' + facesData.length + ' photo(s) will become unassigned.')) return;
-      const r = await fetch('/api/delete-person', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label: personName })
-      });
-      if (!r.ok) { alert('Failed to remove person.'); return; }
-      window.location.href = '/';
-    }
-
-    // Edits how the person is shown - adding a surname, fixing a spelling -
-    // without touching their identity, so the URL and every face row are
-    // untouched and no link breaks. Changing the identity is a different
-    // operation and deliberately not offered here.
-    async function submitRename() {
-      const newName = sanitizeName(document.getElementById('renameInput').value);
-      if (!newName) return;
-      const r = await fetch('/api/set-full-name', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: personName, full_name: newName })
-      });
-      if (!r.ok) { alert('Could not save the name.'); return; }
-      document.getElementById('person-title').textContent = newName;
-      document.getElementById('status').textContent = 'Saved';
-    }
-
-    load();
-  </script>
-</body>
-</html>
-"##;
-
 /// Maps a `videre-api` facade error to the HTTP status code the axum
 /// handlers return, preserving the exact 400/404/409/500 behavior the
 /// handlers had before delegating to the facade.
+/// The three server pages. Markup lives in `crates/videre/templates/`, CSS and
+/// JavaScript in `crates/videre/static/`, all compiled into the binary.
+///
+/// They were 866 lines of string literal in this file until 0.18.0. Askama
+/// checks the templates against these structs at compile time, so a renamed
+/// field fails the build rather than rendering a blank page.
+mod pages {
+    use askama::Template;
+
+    #[derive(Template)]
+    #[template(path = "faces.html")]
+    pub struct Faces {
+        pub css: &'static str,
+        pub js: &'static str,
+    }
+
+    #[derive(Template)]
+    #[template(path = "cluster.html")]
+    pub struct Cluster {
+        pub css: &'static str,
+        pub js: &'static str,
+        pub cluster_id: i64,
+    }
+
+    #[derive(Template)]
+    #[template(path = "person.html")]
+    pub struct Person {
+        pub css: &'static str,
+        pub js: &'static str,
+        pub faces_ui_enabled: bool,
+    }
+
+    pub const FACES_CSS: &str = include_str!("../../static/faces.css");
+    pub const FACES_JS: &str = include_str!("../../static/faces.js");
+    pub const CLUSTER_CSS: &str = include_str!("../../static/cluster.css");
+    pub const CLUSTER_JS: &str = include_str!("../../static/cluster.js");
+    pub const PERSON_CSS: &str = include_str!("../../static/person.css");
+    pub const PERSON_JS: &str = include_str!("../../static/person.js");
+}
+
 fn api_status(e: videre_api::Error) -> StatusCode {
     match e {
         videre_api::Error::NotFound => StatusCode::NOT_FOUND,
@@ -2228,20 +848,59 @@ struct AppState {
 }
 
 async fn handle_root() -> impl axum::response::IntoResponse {
-    axum::response::Html(FACES_HTML)
+    use askama::Template;
+    let page = pages::Faces {
+        css: pages::FACES_CSS,
+        js: pages::FACES_JS,
+    };
+    axum::response::Html(page.render().expect("faces template"))
 }
 
 /// Live-server equivalent of the static `--all`/`--by-date` HTML report,
 /// rendered on each request from the current database state (labeled faces
 /// included, since this route only exists when `--show-faces` is set).
 async fn handle_report(State(state): State<Arc<AppState>>) -> impl axum::response::IntoResponse {
+    render_live(&state, state.report_all, state.report_by_date)
+}
+
+/// `videre gallery`'s `/`: every file, with in-page similarity search.
+async fn handle_gallery_all(
+    State(state): State<Arc<AppState>>,
+) -> impl axum::response::IntoResponse {
+    render_live(&state, true, false)
+}
+
+/// `videre gallery`'s `/date`: the year/month/day drill-down over KEEP files.
+async fn handle_gallery_date(
+    State(state): State<Arc<AppState>>,
+) -> impl axum::response::IntoResponse {
+    render_live(&state, false, true)
+}
+
+/// Reserved so the shape of the command is visible before the views exist.
+async fn handle_not_yet() -> impl axum::response::IntoResponse {
+    (
+        StatusCode::NOT_FOUND,
+        axum::response::Html(
+            "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><title>videre</title></head>\
+             <body style=\"font-family:-apple-system,sans-serif;padding:48px\">\
+             <h1>Not built yet</h1>\
+             <p>This view is reserved. See <a href=\"/\">all files</a>.</p>\
+             </body></html>",
+        ),
+    )
+}
+
+/// Which sections a live page renders is a property of the route, not of the
+/// server, so `/` and `/date` can differ within one `gallery`.
+fn render_live(state: &Arc<AppState>, all: bool, by_date: bool) -> axum::response::Html<String> {
     let conn = state.conn.lock().unwrap();
     let stats = query_stats(&conn);
     let groups = query_groups(&conn);
-    let all_files = state.report_all.then(|| query_all_files(&conn));
-    let keep_files = state.report_by_date.then(|| query_keep_files(&conn));
+    let all_files = all.then(|| query_all_files(&conn));
+    let keep_files = by_date.then(|| query_keep_files(&conn));
     let faces_by_hash = videre_core::face_db::labeled_faces_by_hash(&conn).unwrap_or_default();
-    let vectors = if state.report_all {
+    let vectors = if all {
         query_vectors(&conn, &state.model_id)
     } else {
         None
@@ -2440,7 +1099,13 @@ async fn handle_quit(State(state): State<Arc<AppState>>) -> StatusCode {
 async fn handle_cluster_page(
     axum::extract::Path(cluster_id): axum::extract::Path<i64>,
 ) -> impl axum::response::IntoResponse {
-    axum::response::Html(CLUSTER_HTML.replace("__CLUSTER_ID__", &cluster_id.to_string()))
+    use askama::Template;
+    let page = pages::Cluster {
+        css: pages::CLUSTER_CSS,
+        js: pages::CLUSTER_JS,
+        cluster_id,
+    };
+    axum::response::Html(page.render().expect("cluster template"))
 }
 
 async fn handle_cluster_api(
@@ -2457,15 +1122,13 @@ async fn handle_cluster_api(
 }
 
 async fn handle_person_page(State(state): State<Arc<AppState>>) -> axum::response::Html<String> {
-    let html = PERSON_HTML.replace(
-        "__FACES_UI_ENABLED__",
-        if state.serve_faces_ui {
-            "true"
-        } else {
-            "false"
-        },
-    );
-    axum::response::Html(html)
+    use askama::Template;
+    let page = pages::Person {
+        css: pages::PERSON_CSS,
+        js: pages::PERSON_JS,
+        faces_ui_enabled: state.serve_faces_ui,
+    };
+    axum::response::Html(page.render().expect("person template"))
 }
 
 async fn handle_person_api(
@@ -2670,6 +1333,11 @@ struct ServeOptions {
     report_heic: bool,
     report_heic_original: bool,
     model_id: String,
+    /// `videre gallery`: serve every view on its own route rather than one page
+    /// whose content depends on which flags started the server.
+    gallery: bool,
+    port: u16,
+    browse: bool,
 }
 
 async fn serve_faces_async(
@@ -2738,22 +1406,44 @@ async fn serve_faces_async(
     //   --faces alone        -> `/` = labeling UI, no report route at all
     //   --show-faces alone   -> `/` = live report, no `/faces` route
     //   both                 -> `/` = live report, `/faces` = labeling UI
-    router = match (state.serve_faces_ui, opts.show_report) {
-        (true, true) => router
-            .route("/", get(handle_report))
-            .route("/faces", get(handle_root)),
-        (true, false) => router.route("/", get(handle_root)),
-        (false, true) => router.route("/", get(handle_report)),
-        (false, false) => router, // unreachable: serve_faces_async only runs when at least one is set
+    router = if opts.gallery {
+        router
+            .route("/", get(handle_gallery_all))
+            .route("/people", get(handle_root))
+            .route("/date", get(handle_gallery_date))
+            .route("/map", get(handle_not_yet))
+            .route("/events", get(handle_not_yet))
+            .route("/smart", get(handle_not_yet))
+    } else {
+        match (state.serve_faces_ui, opts.show_report) {
+            (true, true) => router
+                .route("/", get(handle_report))
+                .route("/faces", get(handle_root)),
+            (true, false) => router.route("/", get(handle_root)),
+            (false, true) => router.route("/", get(handle_report)),
+            (false, false) => router, // unreachable: serve_faces_async only runs when at least one is set
+        }
     };
 
     let app = router.with_state(state);
 
-    let addr = "127.0.0.1:7878";
+    let addr = format!("127.0.0.1:{}", opts.port);
+    let addr = addr.as_str();
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|e| format!("Cannot bind to {addr}: {e}"))?;
-    eprintln!("Faces labeling server: http://{addr}");
+    if opts.gallery {
+        eprintln!("videre gallery: http://{addr}");
+    } else {
+        eprintln!("Faces labeling server: http://{addr}");
+    }
+    if opts.browse {
+        // After the listener binds, or the browser races it and lands on a
+        // connection refused.
+        let _ = std::process::Command::new("open")
+            .arg(format!("http://{addr}"))
+            .spawn();
+    }
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let _ = shutdown_rx.await;
@@ -2762,12 +1452,53 @@ async fn serve_faces_async(
     Ok(())
 }
 
+/// Entry point for `videre gallery`: the same server, every view on its own
+/// route. Lives here for now because the server does; it moves to `gallery.rs`
+/// when `report` is removed.
+pub(crate) fn serve_gallery(
+    db: &Path,
+    model_id: String,
+    port: u16,
+    browse: bool,
+) -> anyhow::Result<()> {
+    let opts = ServeOptions {
+        serve_faces_ui: true,
+        show_report: false,
+        report_all: true,
+        report_by_date: false,
+        report_heic: false,
+        report_heic_original: false,
+        model_id,
+        gallery: true,
+        port,
+        browse,
+    };
+    serve_faces(db, opts).map_err(|e| anyhow::anyhow!("{e}"))
+}
+
 fn serve_faces(db: &Path, opts: ServeOptions) -> Result<(), Box<dyn std::error::Error>> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(serve_faces_async(db, opts))
 }
 
+/// What to type instead, for the flags actually passed.
+///
+/// A generic "use gallery" would be wrong half the time: `report` with no flags
+/// wrote a duplicate-review file, which is `dedupe --html`, not a server.
+fn replacement_for(args: &ReportArgs) -> &'static str {
+    if args.faces || args.show_faces || args.all || args.by_date {
+        "videre gallery"
+    } else {
+        "videre dedupe --html"
+    }
+}
+
 pub fn run(args: ReportArgs) -> anyhow::Result<()> {
+    eprintln!(
+        "warning: `videre report` is deprecated and will be removed in the next release.\n\
+         warning: use `{}` instead. See https://docs.videre.sh/commands/gallery/",
+        replacement_for(&args)
+    );
     let db = super::resolve_reader_db(args.db.clone())?;
 
     if !db.exists() {
@@ -2784,6 +1515,9 @@ pub fn run(args: ReportArgs) -> anyhow::Result<()> {
             report_heic: args.heic,
             report_heic_original: args.heic_original,
             model_id: videre_core::embeddings::resolve_model_id(args.model.as_deref())?,
+            gallery: false,
+            port: 7878,
+            browse: false,
         };
         if let Err(e) = serve_faces(&db, opts) {
             eprintln!("Error: {e}");
@@ -2844,7 +1578,7 @@ pub fn run(args: ReportArgs) -> anyhow::Result<()> {
         "{} groups · {} duplicate files · {} wasted",
         stats.duplicate_groups,
         stats.duplicate_files,
-        format_bytes(stats.wasted_bytes)
+        videre_core::disk::human_bytes(stats.wasted_bytes.max(0) as u64)
     );
 
     Ok(())
@@ -2852,6 +1586,23 @@ pub fn run(args: ReportArgs) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The full source of each server page: markup, styles and script.
+    ///
+    /// These were single `const` string literals in this file until the three
+    /// pages moved to `templates/` and `static/`. The assertions below ask
+    /// whether a behaviour is wired up, and should not care which of the three
+    /// files a given string ended up in, so the page is reassembled here.
+    const FACES_HTML: &str = concat!(
+        include_str!("../../templates/faces.html"),
+        include_str!("../../static/faces.css"),
+        include_str!("../../static/faces.js"),
+    );
+    const PERSON_HTML: &str = concat!(
+        include_str!("../../templates/person.html"),
+        include_str!("../../static/person.css"),
+        include_str!("../../static/person.js"),
+    );
     use super::*;
 
     fn row(path: &str, hash: &str, ext: &str) -> FileRow {
@@ -3451,7 +2202,10 @@ mod tests {
         let conn = mem_db_with_faces();
         let state = test_state(conn, true);
         let axum::response::Html(html) = handle_person_page(State(state)).await;
-        assert!(html.contains("const FACES_UI_ENABLED = true;"), "{html}");
+        // The page sets the flag; `person.js` reads it. It was a
+        // `__FACES_UI_ENABLED__` placeholder substituted into the script until
+        // the page moved to a template.
+        assert!(html.contains("window.FACES_UI_ENABLED = true;"), "{html}");
     }
 
     #[tokio::test]
@@ -3459,7 +2213,7 @@ mod tests {
         let conn = mem_db_with_faces();
         let state = test_state(conn, false);
         let axum::response::Html(html) = handle_person_page(State(state)).await;
-        assert!(html.contains("const FACES_UI_ENABLED = false;"), "{html}");
+        assert!(html.contains("window.FACES_UI_ENABLED = false;"), "{html}");
     }
 
     #[test]

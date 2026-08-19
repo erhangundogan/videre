@@ -1,0 +1,16 @@
+body { font-family: sans-serif; margin: 0; padding: 16px; background: #f5f5f5; }
+    .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+    .toolbar a { color: #2a6db5; text-decoration: none; font-size: 14px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, 200px); gap: 14px; }
+    .card { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 10px; }
+    .face-img { object-fit: cover; border-radius: 4px; display: block; background: #ddd; }
+    .path { font-size: 11px; color: #666; word-break: break-all; margin-top: 5px; }
+    .face-id { font-size: 11px; color: #999; margin-top: 2px; }
+    .btns { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+    button { cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid #999; background: white; font-size: 13px; }
+    button.danger { color: #c00; border-color: #fbb; }
+    button:disabled { cursor: default; opacity: 0.6; }
+    .card { position: relative; }
+    .default-badge { position: absolute; top: 6px; left: 6px; background: #2a6db5; color: #fff; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; z-index: 2; }
+    .card.is-default { border-color: #2a6db5; box-shadow: 0 0 0 2px #2a6db5; }
+    #status { font-size: 13px; color: #555; }

@@ -15,11 +15,11 @@ and many readers at once. All of these are fine against a live
 ```bash
 videre search "sunset"          # reads stored vectors
 videre stats                    # reads the database
-videre report --show-faces      # serves a live page
+videre gallery      # serves a live page
 sqlite3 ~/.videre/hashes.db "SELECT COUNT(*) FROM file_hashes"
 ```
 
-`videre watch` and `videre report --show-faces` are specifically designed to run
+`videre watch` and `videre gallery` are specifically designed to run
 at the same time.
 
 **Two different commands.** Locks are per command per database, so

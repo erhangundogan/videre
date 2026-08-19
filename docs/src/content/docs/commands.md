@@ -8,7 +8,7 @@ description: Every videre subcommand, what it does, and where to read more.
 | [`videre import`](/commands/import/) | Bring photos in from Google Takeout, Apple Photos, or Lightroom |
 | [`videre scan`](/commands/scan/) | Read a folder and record what's in it. Run this first. |
 | [`videre dedupe`](/commands/dedupe/) | List duplicate copies you could delete |
-| [`videre report`](/commands/report/) | Generate an HTML gallery, or serve the face-naming UI |
+| [`videre gallery`](/commands/gallery/) | Browse the library in a local web UI: files, people, dates |
 | [`videre search`](/commands/search/) | Find photos by description, example image, person, category, or place |
 | [`videre embed`](/commands/embed/) | Prepare photos for search (one-time, resumable) |
 | [`videre faces`](/commands/faces/) | Detect and group faces |
@@ -41,7 +41,7 @@ Most commands share these:
 | `dedupe`, `report`, `fix-dates`, `prune`, `stats`, `locations` | `scan` |
 | `scan`, when coming from another tool | `import` first, so dates are fixed before they are recorded |
 | `search` (text or image) | `embed` |
-| `search --person` | `faces`, then naming via `report --faces` |
+| `search --person` | `faces`, then naming via `videre gallery` |
 | `search --category` | `classify` (which needs `embed`) |
 | `search --location` | GPS data in your photos |
 | `search --date` / `--after` / `--before` | nothing beyond `scan` |

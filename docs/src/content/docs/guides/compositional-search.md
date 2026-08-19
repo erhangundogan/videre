@@ -156,7 +156,7 @@ output yourself:
 
 **A bare search.** With no ranker and no filter there is nothing to narrow, so
 videre asks for at least one rather than returning your whole library. Use
-[`videre report --all`](/commands/report/) to browse everything.
+[`videre gallery`](/commands/gallery/) to browse everything.
 
 ## Recipes
 

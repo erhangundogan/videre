@@ -146,7 +146,7 @@ same time, for the reason above. See
 [scanning more than one folder](/reference/paths/#scanning-more-than-one-folder).
 
 **Reading while it runs is fine.** The database is opened in WAL mode, so
-[`report --show-faces`](/commands/report/), `search`, `stats` and your own
+[`videre gallery`](/commands/gallery/), `search`, `stats` and your own
 `sqlite3` queries all work against a live `watch`. Those two are designed to run
 together.
 
