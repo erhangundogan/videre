@@ -231,11 +231,11 @@ pub fn dissolve_cluster(conn: &Connection, cluster_id: i64) -> Result<()> {
 /// scattering to singletons.
 /// Change only what a person is shown as, never their identity.
 ///
-/// A separate operation from `rename_person` on purpose. Intent cannot be
-/// inferred from the new string: `Erhan` to `Erhan Gündoğan` is a display
-/// correction, yet its normalized form changes too, so a single function would
-/// have to guess which the caller meant. One row, no face touched, and the URL
-/// keeps working - which is the whole reason identity and display are separate.
+/// This is the only rename there is. Identity is permanent: `Erhan` to
+/// `Erhan Gündoğan` is a display correction even though its normalized form
+/// would change too, and there is no way to ask for the other reading. One row,
+/// no face touched, and `/person/<name>` keeps working, which is the whole
+/// reason identity and display are separate.
 pub fn set_full_name(conn: &Connection, name: &str, full_name: &str) -> Result<()> {
     let display = crate::label::sanitize_person_label(full_name).ok_or(Error::Invalid)?;
     let name = videre_core::person::normalize(name).ok_or(Error::Invalid)?;
@@ -287,71 +287,6 @@ pub fn set_primary(conn: &Connection, face_id: i64, person_label: &str) -> Resul
             Err(Error::Db(e))
         }
     }
-}
-
-/// Rename a person. `NotFound` if `old_label` has no faces; `Conflict` if
-/// `new_label` (after sanitizing) already belongs to a different person;
-/// `Invalid` if the new label sanitizes to empty.
-pub fn rename_person(conn: &Connection, old_label: &str, new_label: &str) -> Result<()> {
-    // Both sides normalize, so renaming works whether the caller passes an
-    // identity (`erhan`) or what a human sees (`Erhan Gündoğan`).
-    let display = crate::label::sanitize_person_label(new_label).ok_or(Error::Invalid)?;
-    let new_name = videre_core::person::normalize(&display).ok_or(Error::Invalid)?;
-    let old_name = videre_core::person::normalize(old_label).ok_or(Error::Invalid)?;
-
-    let old_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM faces WHERE person_label = ?1",
-            rusqlite::params![&old_name],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
-    if old_count == 0 {
-        return Err(Error::NotFound);
-    }
-
-    // Changing only the spelling - `Erhan` to `Erhan Gündoğan` - leaves the
-    // identity alone, so it is a one-row update and can never collide. That is
-    // the common rename, and the whole reason display and identity are separate.
-    if new_name == old_name {
-        conn.execute(
-            "INSERT INTO people (name, full_name) VALUES (?1, ?2) \
-             ON CONFLICT(name) DO UPDATE SET full_name = excluded.full_name",
-            rusqlite::params![&new_name, &display],
-        )?;
-        return Ok(());
-    }
-
-    let collision_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM faces WHERE person_label = ?1",
-            rusqlite::params![&new_name],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
-    if collision_count > 0 {
-        return Err(Error::Conflict);
-    }
-
-    // An identity rename moves both the people row and every face pointing at
-    // it. Two statements in one transaction, which is what this did before the
-    // people table existed too.
-    let tx = conn.unchecked_transaction()?;
-    tx.execute(
-        "INSERT INTO people (name, full_name) VALUES (?1, ?2) \
-         ON CONFLICT(name) DO UPDATE SET full_name = excluded.full_name",
-        rusqlite::params![&new_name, &display],
-    )?;
-    tx.execute(
-        "UPDATE faces SET person_label = ?1 WHERE person_label = ?2",
-        rusqlite::params![&new_name, &old_name],
-    )?;
-    tx.execute(
-        "DELETE FROM people WHERE name = ?1",
-        rusqlite::params![&old_name],
-    )?;
-    tx.commit()?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -563,42 +498,6 @@ mod tests {
     }
 
     #[test]
-    fn rename_missing_person_is_not_found() {
-        let conn = seed();
-        assert!(matches!(
-            rename_person(&conn, "Nobody", "X"),
-            Err(Error::NotFound)
-        ));
-    }
-
-    #[test]
-    fn rename_onto_existing_person_conflicts() {
-        let conn = seed();
-        assign(&conn, &[3], "Bob").unwrap(); // Bob now exists
-        assert!(matches!(
-            rename_person(&conn, "Alice", "Bob"),
-            Err(Error::Conflict)
-        ));
-    }
-
-    #[test]
-    fn rename_succeeds() {
-        let conn = seed();
-        rename_person(&conn, "Alice", "Alicia").unwrap();
-        assert_eq!(person_detail(&conn, "Alicia").unwrap().faces.len(), 2);
-        assert_eq!(person_detail(&conn, "Alice").unwrap().faces.len(), 0);
-        // The identity moved with it, so the old people row is gone.
-        let names: Vec<String> = conn
-            .prepare("SELECT name FROM people ORDER BY name")
-            .unwrap()
-            .query_map([], |r| r.get(0))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
-        assert_eq!(names, vec!["alicia".to_string()]);
-    }
-
-    #[test]
     fn renaming_only_the_spelling_keeps_the_identity() {
         // The common rename: correcting or extending what is shown, which must
         // not change the URL or touch a single face row.
@@ -612,15 +511,6 @@ mod tests {
         assert_eq!(name, "alice", "identity is unchanged");
         assert_eq!(full, "Alice Smith", "only the display name moved");
         assert_eq!(person_detail(&conn, "alice").unwrap().faces.len(), 2);
-    }
-
-    #[test]
-    fn rename_to_empty_label_is_invalid() {
-        let conn = seed();
-        assert!(matches!(
-            rename_person(&conn, "Alice", "   "),
-            Err(Error::Invalid)
-        ));
     }
 }
 
