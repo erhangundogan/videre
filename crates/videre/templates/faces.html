@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>videre faces labeling</title>
+  <style>{{ css|safe }}</style>
+</head>
+<body>
+  <div class="toolbar">
+    <strong>videre faces labeling</strong>
+    <span id="status">Loading...</span>
+    <button id="layout-toggle" onclick="toggleLayout()">People: Top</button>
+    <button class="primary" onclick="saveAndClose()">Save &amp; Close</button>
+  </div>
+
+  <div class="people-section">
+    <h2 class="title-people">People <span id="people-count" class="badge badge-blue">0</span></h2>
+    <div class="people-scroll">
+      <div id="people-grid" class="grid"></div>
+    </div>
+  </div>
+
+  <h2 class="title-clusters">Unassigned Clusters <span id="cluster-count" class="badge badge-green">0</span></h2>
+  <div id="cluster-grid" class="grid"></div>
+
+  <h2 class="title-singletons">Singletons <span id="singleton-count" class="badge badge-orange">0</span></h2>
+  <div id="singleton-grid" class="grid"></div>
+
+  <div class="sel-bar" id="sel-bar"></div>
+
+  <script>{{ js|safe }}</script>
+</body>
+</html>
