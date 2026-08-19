@@ -52,6 +52,10 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 	<Card title="Group by place" icon="star">
 		Cluster photos by where they were taken, using GPS already in the files.
 	</Card>
+	<Card title="Get your photos out" icon="download">
+		Bring in a Google Takeout export, an Apple Photos library, or a Lightroom
+		catalog, originals intact and dates put back.
+	</Card>
 	<Card title="Drive it from an AI agent" icon="rocket">
 		`videre mcp` hands search and duplicate review to a model over stdio, with
 		no server to set up.
@@ -66,38 +70,40 @@ cloud. videre is a lens over a folder you already own: point it at a directory
 and you get one SQLite file describing what is there. Stop using it and your
 photos are exactly as they were.
 
+**Nothing to keyword first.** Find a photo by describing it, by who is in it, by
+where it was taken, by an example image, or by category, across files you never
+tagged and never will.
+[Combine those in one query](/guides/compositional-search/) with a date range.
+
 **Nothing leaves your machine.** No account, no upload, no telemetry, no
-background sync. Search, faces and classification all run locally. The single
-exception is [`search --location`](/commands/search/), which resolves a place
-name once and caches it.
+background sync. Search, faces and classification all run on your own hardware.
+The single exception is [`search --location`](/commands/search/), which resolves
+a place name once and caches it.
+
+**Photos come in from wherever they are stuck.**
+[`videre import`](/commands/import/) brings across a Google Takeout export, an
+Apple Photos library, or a Lightroom catalog, leaving you with ordinary files in
+an ordinary folder: originals rather than derivatives, with the dates put back.
 
 **Built for volume.** Routinely run against libraries of 70,000 files and
 400 GB. Face detection parallelises across your cores, the long jobs are
 resumable, and filtering happens before ranking so a narrow query does *less*
 work, not more.
 
-**One binary, no runtime.** `brew install`, or download and run. Written in
-Rust, so there is no interpreter, no virtualenv, no container, and nothing to
-keep running in the background.
-
-**Your data stays legible.** Plain SQLite you can open with any tool and query
-yourself. No proprietary format, no daemon holding it open. The
-[schema is documented](/reference/database/), including example queries.
+**No runtime, and no way to get locked in.** One Rust binary: `brew install`, or
+download and run. No interpreter, no virtualenv, no container, nothing left
+running in the background. What it builds is plain SQLite you can open with any
+tool and [query yourself](/reference/database/).
 
 **The unglamorous work, done properly.** Duplicate detection by content hash and
 by appearance, EXIF date repair, orphan cleanup, and browsable HTML reports.
-This is most of what a photo archive actually needs.
+This is most of what a photo archive actually needs, and it is where most tools
+are thinnest. A library spread over external drives is ordinary here:
+[`videre prune`](/commands/prune/) can tell an unplugged drive from deleted
+photos and leaves those rows alone, naming the volume it could not reach.
 
-**AI search that runs on your own hardware.** Find images by describing them, by
-example, by who is in them, by category, or by place, and
-[combine those in one query](/guides/compositional-search/) with a date range.
-
-**Swap the model.** The default is one line of config away from a larger one,
-and [each keeps its own data](/reference/models/), so you can compare them on
-your own library and switch back freely.
-
-**Drive it from an agent.** [`videre mcp`](/commands/mcp/) exposes search,
-duplicate review and stats over stdio, read-only, with no server to run.
-
-**Documented, not just shipped.** Every command and flag, with the caveats and
-the measured numbers behind the defaults.
+Every command and flag is [documented](/commands/), including the caveats and
+the measured numbers behind the defaults. The default search model is one line
+of config away from a larger one, and
+[each keeps its own data](/reference/models/), so you can compare them on your
+own library and switch back freely.
