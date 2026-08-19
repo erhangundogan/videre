@@ -360,16 +360,29 @@ identity from the URL, and the display name from the screen. They stop agreeing
 as soon as someone adds a surname.
 
 :warning: **Any entry point taking a person name must normalize**, and there are
-more than expected: `assign`, `set_primary`, `delete_person`, `rename_person`,
+more than expected: `assign`, `set_primary`, `delete_person`, `set_full_name`,
 `person_detail`, `person_search`, plus `query::by_person` which funnels
 `search --person`, the selection layer and the MCP tool. Migrating labels
 without this made `videre search --person "Ahmet Arı"` return nothing while the
 labeling UI still showed the person.
 
-No foreign key from `faces.person_label`: SQLite leaves `PRAGMA foreign_keys`
-off and videre never sets it, so `REFERENCES` would be documentation rather than
-a constraint - and with `ON UPDATE CASCADE` declared but unenforced, a rename
-would silently orphan every face row.
+:warning: **An identity is permanent, and that is a design decision, not an
+omission.** `set_full_name` changes what a person is shown as; nothing changes
+the `name` a face row points at or the `/person/<name>` URL. `rename_person` and
+`/api/rename-person` existed, worked, were tested, and were called by no page,
+so they were removed in 0.17.0 rather than given a caller: an endpoint that
+exists eventually gets used, and videre-desktop had already wired it up. To
+correct an identity, delete the person and relabel.
+
+`Error::Conflict` went with it, because that function was the only thing that
+ever constructed it.
+
+No foreign key from `faces.person_label` either: SQLite leaves
+`PRAGMA foreign_keys` off and videre never sets it, so `REFERENCES` would be
+documentation rather than a constraint. The original argument was sharper, that
+an unenforced `ON UPDATE CASCADE` would silently orphan every face row on a
+rename; with renames gone that particular hazard is too, and the pragma reason
+stands on its own.
 
 **One resolver, and a test that all surfaces use it.**
 `person::resolve_identities` turns a typed name into every identity it could
