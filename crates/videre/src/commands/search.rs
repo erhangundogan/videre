@@ -82,6 +82,12 @@ pub struct SearchArgs {
     #[arg(long)]
     pub(crate) json: bool,
 
+    /// Also write these results to a browsable HTML page.
+    /// Bare --html targets <db>_search.html.
+    /// Note: place a bare --html after the query.
+    #[arg(long, num_args = 0..=1)]
+    pub(crate) html: Option<Option<PathBuf>>,
+
     /// --type / --ext / --mime, from the shared selection vocabulary.
     ///
     /// Flattened from the shared groups rather than declared here, so a
@@ -184,6 +190,30 @@ pub fn run(args: SearchArgs) -> Result<()> {
     }
 }
 
+/// `--html`: these results, as a page you can keep.
+///
+/// The hits arrive as ranked paths, because ranking is what search did. The
+/// rows behind them come from one lookup, and the ranking order is preserved:
+/// the order *is* the answer.
+fn write_html(args: &SearchArgs, outcome: &Outcome, arg: Option<&std::path::Path>) -> Result<()> {
+    let db = super::resolve_reader_db_must_exist(args.db.clone())?;
+    let output = if let Some(p) = arg {
+        p.to_path_buf()
+    } else {
+        let stem = db
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let mut p = db.clone();
+        p.set_file_name(format!("{stem}_search.html"));
+        p
+    };
+    let conn = videre_core::db::open_wal(&db)?;
+    let paths: Vec<String> = outcome.rows.iter().map(|r| r.path.clone()).collect();
+    let rows = super::report::rows_for_paths(&conn, &paths);
+    super::report::write_static_page(&conn, &output, &[], Some(&rows))
+}
+
 fn run_text(args: &SearchArgs) -> Result<()> {
     let outcome = collect_hits(args, &FreshEmbedder)?;
     for row in &outcome.rows {
@@ -211,6 +241,9 @@ fn run_text(args: &SearchArgs) -> Result<()> {
                 None => println!("{}", row.path),
             },
         }
+    }
+    if let Some(arg) = args.html.as_ref() {
+        write_html(args, &outcome, arg.as_deref())?;
     }
     Ok(())
 }

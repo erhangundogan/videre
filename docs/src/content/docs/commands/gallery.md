@@ -42,10 +42,15 @@ open from disk, because both need something running to answer.
 
 ## Gallery, or a file you can keep
 
-`gallery` is for looking around, and writes nothing. When you want a page you
-can keep and open later without videre running, use
-[`videre report`](/commands/report/), which builds one from a duplicate review
-or the whole library.
+`gallery` is for looking around, and writes nothing. When you want to keep or
+send what a command just found, ask that command for it:
+
+```bash
+videre dedupe --html            # the duplicate groups, as a file
+videre search "sunset" --html   # these results, as a file
+```
+
+Those write a page you can open later without videre running.
 
 :::note
 The server binds to `127.0.0.1`, so it is reachable only from this machine.

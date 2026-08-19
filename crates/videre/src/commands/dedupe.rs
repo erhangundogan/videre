@@ -19,6 +19,11 @@ pub struct DedupeArgs {
     /// Emit a single JSON object on stdout instead of human-readable text
     #[arg(long)]
     json: bool,
+
+    /// Also write the duplicate groups to a browsable HTML page.
+    /// Bare --html targets <db>_duplicates.html.
+    #[arg(long, num_args = 0..=1)]
+    html: Option<Option<PathBuf>>,
 }
 
 pub fn run(args: DedupeArgs) -> anyhow::Result<()> {
@@ -36,6 +41,31 @@ pub fn run(args: DedupeArgs) -> anyhow::Result<()> {
     } else {
         run_text(args)
     }
+}
+
+/// `--html`: the same duplicate groups, as a page you can keep.
+///
+/// Static on purpose. `videre gallery` is for browsing a library and writes
+/// nothing; this renders the set the command just produced, so it survives the
+/// process and can be archived or opened later.
+fn write_html(
+    conn: &rusqlite::Connection,
+    arg: Option<&std::path::Path>,
+    db: &std::path::Path,
+) -> anyhow::Result<()> {
+    let output = if let Some(p) = arg {
+        p.to_path_buf()
+    } else {
+        let mut p = db.to_path_buf();
+        let stem = db
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        p.set_file_name(format!("{stem}_duplicates.html"));
+        p
+    };
+    let groups = super::report::query_groups(conn);
+    super::report::write_static_page(conn, &output, &groups, None)
 }
 
 fn run_text(args: DedupeArgs) -> anyhow::Result<()> {
@@ -59,6 +89,13 @@ fn run_text(args: DedupeArgs) -> anyhow::Result<()> {
     if let Err(e) = result {
         eprintln!("Error: {e:#}");
         process::exit(1);
+    }
+
+    if let Some(arg) = args.html.as_ref() {
+        if let Err(e) = write_html(&conn, arg.as_deref(), &db) {
+            eprintln!("Error: {e:#}");
+            process::exit(1);
+        }
     }
     Ok(())
 }

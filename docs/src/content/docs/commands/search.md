@@ -376,3 +376,18 @@ the drive unplugged; the paths it prints just will not resolve.
 - [Compositional searches](/guides/compositional-search/) covers combining filters, dates and sorting, with worked examples.
 
 - [Using several search models](/guides/multiple-models/) covers comparing models on your own queries.
+
+## A page you can keep
+
+`--html` writes the results to a browsable file, in the order they were ranked.
+
+```bash
+videre search "sunset over water" --html            # writes <db>_search.html
+videre search --person "Ahmet" --html ~/ahmet.html  # somewhere specific
+```
+
+Matching paths still go to stdout, so piping is unaffected.
+
+:::caution
+Place a bare `--html` after the query, or the query is read as its value.
+:::
