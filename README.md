@@ -127,6 +127,13 @@ More: [docs.videre.sh/start/quickstart](https://docs.videre.sh/start/quickstart/
 Every command takes `--help`. Full reference with every flag:
 [docs.videre.sh/commands](https://docs.videre.sh/commands/)
 
+## Contributing
+
+videre is maintained by one person and its direction is set deliberately. Bug
+reports are always welcome. If you hit a real problem or want a feature you
+would use yourself, so are patches: open an issue first to agree the approach.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE).
