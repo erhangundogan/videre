@@ -13,6 +13,21 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.16.1] - 2026-08-19
+
+### Changed
+
+- **`videre import` is now mentioned where people look for it.** It brings in a
+  Google Takeout export, an Apple Photos library, or a Lightroom catalog,
+  originals rather than derivatives and with dates put back. It was missing from
+  the README's feature list, from the README's command list, and from the
+  documentation home page entirely.
+- The home page now says plainly that search needs no keywording, and that a
+  library spread across external drives is ordinary: `videre prune` tells an
+  unplugged drive from deleted photos and leaves those rows alone.
+
+Documentation only. No behaviour changed.
+
 ## [0.16.0] - 2026-08-19
 
 ### Fixed
@@ -868,7 +883,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.16.1...HEAD
+[0.16.1]: https://github.com/erhangundogan/videre/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/erhangundogan/videre/compare/v0.15.10...v0.16.0
 [0.12.0]: https://github.com/erhangundogan/videre/compare/v0.11.5...v0.12.0
 [0.11.5]: https://github.com/erhangundogan/videre/compare/v0.11.4...v0.11.5
