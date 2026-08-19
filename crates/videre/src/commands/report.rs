@@ -235,18 +235,6 @@ fn parse_bbox(bbox: &str) -> Option<[f32; 4]> {
     Some([parts[0], parts[1], parts[0] + parts[2], parts[1] + parts[3]])
 }
 
-pub(crate) fn format_bytes(bytes: i64) -> String {
-    if bytes >= 1_073_741_824 {
-        format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
-    } else if bytes >= 1_048_576 {
-        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
-    } else if bytes >= 1024 {
-        format!("{:.0} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{} B", bytes)
-    }
-}
-
 fn esc(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -714,7 +702,7 @@ fn generate_html(
              <div class=\"stat warn\"><span class=\"num\">{wasted}</span><span class=\"label\">Wasted space</span></div>",
             groups = stats.duplicate_groups,
             dups   = stats.duplicate_files,
-            wasted = format_bytes(stats.wasted_bytes),
+            wasted = videre_core::disk::human_bytes(stats.wasted_bytes.max(0) as u64),
         )
     };
     out.push_str(&format!(
@@ -870,11 +858,15 @@ function escA(s){
 function escH(s){
   return s?String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'):'';
 }
+// Must agree with videre_core::disk::human_bytes, which formats the same
+// numbers server-side on the same page. A third copy of this lived in Rust
+// and disagreed with both.
 function fmtB(b){
-  if(b>=1073741824)return(b/1073741824).toFixed(1)+' GB';
-  if(b>=1048576)return(b/1048576).toFixed(1)+' MB';
-  if(b>=1024)return Math.round(b/1024)+' KB';
-  return b+' B';
+  const U=['B','KB','MB','GB','TB'];
+  if(b<1024)return b+' B';
+  let v=b,u=0;
+  while(v>=1024&&u<U.length-1){v/=1024;u++;}
+  return v.toFixed(1)+' '+U[u];
 }
 function rawUrl(path){
   return LIVE_SERVER ? '/api/raw?path='+encodeURIComponent(path) : 'file://'+path;
@@ -2844,7 +2836,7 @@ pub fn run(args: ReportArgs) -> anyhow::Result<()> {
         "{} groups · {} duplicate files · {} wasted",
         stats.duplicate_groups,
         stats.duplicate_files,
-        format_bytes(stats.wasted_bytes)
+        videre_core::disk::human_bytes(stats.wasted_bytes.max(0) as u64)
     );
 
     Ok(())
