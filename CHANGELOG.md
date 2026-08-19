@@ -13,6 +13,23 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [Unreleased]
+
+### Removed
+
+- :warning: **A person's identity can no longer be changed, by design.** The
+  name in `/person/<name>` and in every face row is permanent. What a person is
+  *shown* as stays editable, which is what the two fields were separated for:
+  correcting a spelling or adding a surname changes nothing else and breaks no
+  links.
+
+  **Breaking for anyone using `videre-api` as a library**: `rename_person` and
+  the `Error::Conflict` variant are gone. `set_full_name` covers the display
+  rename, and nothing else constructed `Conflict`. The `/api/rename-person`
+  endpoint has been removed with them; no page ever called it.
+
+  To correct an identity, delete the person and relabel.
+
 ## [0.16.1] - 2026-08-19
 
 ### Changed
