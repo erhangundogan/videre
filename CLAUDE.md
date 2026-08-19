@@ -17,7 +17,7 @@ make fmt-check                 # what CI enforces
 cargo test --workspace
 ```
 
-One binary, `videre`, with fourteen subcommands. `main.rs` dispatches to one
+One binary, `videre`, with fifteen subcommands. `main.rs` dispatches to one
 module per subcommand under `src/commands/`.
 
 ## Project structure
