@@ -76,7 +76,7 @@ pub(crate) struct Stats {
     wasted_bytes: i64,
 }
 
-struct VectorBlock {
+pub(crate) struct VectorBlock {
     hashes: Vec<String>,
     b64: String,
     dim: usize,
