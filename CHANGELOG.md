@@ -43,6 +43,13 @@ version number and are released together.
 
 ### Fixed
 
+- **`search --json` described most queries as date queries.** Anything filtered
+  only by `--type`, `--ext`, `--mime` or `--path` reported
+  `{"kind": "date", "value": ".."}`, because "date" was the unconditional
+  fall-through when no text, image, person, category or location was given. It
+  now reports `kind: "filter"` and names every active filter. This is the
+  description an agent reads over MCP to understand its own request.
+
 - **`videre report --by-date` produced a different file on every run** over an
   unchanged database. Grouping discarded the query's ordering.
 

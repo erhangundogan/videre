@@ -412,16 +412,42 @@ fn describe_query(args: &SearchArgs, dates: &(Option<String>, Option<String>)) -
             };
         }
     }
+    // :warning: Only claim "date" when a date was actually asked for. This used
+    // to be the unconditional fall-through, so `--type video` alone reported
+    // itself as a date query with a value of "..", and an agent reading `--json`
+    // was told something untrue about its own request.
+    let (after, before) = dates;
+    if args.date.is_some() || after.is_some() || before.is_some() {
+        return QueryJson {
+            kind: "date",
+            value: args.date.clone().unwrap_or_else(|| {
+                format!(
+                    "{}..{}",
+                    after.as_deref().unwrap_or(""),
+                    before.as_deref().unwrap_or("")
+                )
+            }),
+        };
+    }
+
+    // Whatever media or path filters remain. Several can be active at once, so
+    // the value lists them rather than picking one and hiding the rest.
+    let mut parts: Vec<String> = Vec::new();
+    for (label, values) in [
+        ("type", &args.media.media_type),
+        ("ext", &args.media.ext),
+        ("mime", &args.media.mime),
+    ] {
+        for v in values {
+            parts.push(format!("{label}={v}"));
+        }
+    }
+    for p in &args.paths.path {
+        parts.push(format!("path={}", p.display()));
+    }
     QueryJson {
-        kind: "date",
-        value: args.date.clone().unwrap_or_else(|| {
-            let (after, before) = dates;
-            format!(
-                "{}..{}",
-                after.as_deref().unwrap_or(""),
-                before.as_deref().unwrap_or("")
-            )
-        }),
+        kind: "filter",
+        value: parts.join(" "),
     }
 }
 
@@ -601,6 +627,81 @@ fn rank(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    /// `SearchArgs` derives `Args`, not `Parser`, so parsing one on its own
+    /// needs a command to hang it off.
+    #[derive(Parser)]
+    struct Standalone {
+        #[command(flatten)]
+        inner: SearchArgs,
+    }
+
+    fn parse(argv: &[&str]) -> SearchArgs {
+        Standalone::parse_from(argv).inner
+    }
+
+    /// A `SearchArgs` with nothing set, so each test names only what it is about.
+    fn no_query() -> SearchArgs {
+        parse(&["videre"])
+    }
+
+    #[test]
+    fn a_media_filter_is_not_described_as_a_date_query() {
+        // `--type video` alone used to report `kind: "date", value: ".."`,
+        // because "date" was the unconditional fall-through. An agent reading
+        // `--json` was told something untrue about its own request.
+        for (argv, want) in [
+            (vec!["videre", "--type", "video"], "type=video"),
+            (vec!["videre", "--ext", "mov"], "ext=mov"),
+            (
+                vec!["videre", "--mime", "video/quicktime"],
+                "mime=video/quicktime",
+            ),
+            (
+                vec!["videre", "--path", "/Volumes/Archive"],
+                "path=/Volumes/Archive",
+            ),
+        ] {
+            let args = parse(&argv);
+            let q = describe_query(&args, &(None, None));
+            assert_eq!(q.kind, "filter", "{argv:?}");
+            assert_eq!(q.value, want, "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn several_filters_are_all_named_rather_than_one_hiding_the_rest() {
+        let args = parse(&["videre", "--type", "image", "--ext", "jpg"]);
+        let q = describe_query(&args, &(None, None));
+        assert_eq!(q.kind, "filter");
+        assert_eq!(q.value, "type=image ext=jpg");
+    }
+
+    #[test]
+    fn a_date_query_is_still_a_date_query() {
+        let args = parse(&["videre", "--date", "2024"]);
+        assert_eq!(describe_query(&args, &(None, None)).kind, "date");
+
+        // ...including the range form, which arrives resolved rather than as
+        // `--date`, so the fall-through has to look at both.
+        let ranged = describe_query(
+            &no_query(),
+            &(Some("2019-06-01".into()), Some("2019-09-01".into())),
+        );
+        assert_eq!(ranged.kind, "date");
+        assert_eq!(ranged.value, "2019-06-01..2019-09-01");
+    }
+
+    #[test]
+    fn the_ranking_query_wins_over_any_filter() {
+        // Filters narrow; text and image rank. What produced the *order* is
+        // what the description should name.
+        let args = parse(&["videre", "sunset", "--type", "image"]);
+        let q = describe_query(&args, &(None, None));
+        assert_eq!(q.kind, "text");
+        assert_eq!(q.value, "sunset");
+    }
 
     #[test]
     fn text_hit_serializes_with_hash_and_score() {
