@@ -525,6 +525,27 @@ fn query_keep_files(conn: &Connection) -> Vec<FileRow> {
         .collect()
 }
 
+#[derive(askama::Template)]
+#[template(path = "gallery.html")]
+struct GalleryPage<'a> {
+    css: &'static str,
+    js: &'static str,
+    /// The `var GROUPS=[...]` script block. Built in Rust because it is
+    /// serialisation, not markup; the template only decides where it goes.
+    data: &'a str,
+    /// Pre-escaped by `esc`, so the template must not escape it again.
+    db: String,
+    generated_at: &'a str,
+    total_files: i64,
+    has_groups: bool,
+    duplicate_groups: i64,
+    duplicate_files: i64,
+    wasted: String,
+    embedded: Option<usize>,
+    all_files_count: Option<usize>,
+    has_keep_files: bool,
+}
+
 fn generate_html(
     db_path: &str,
     stats: &Stats,
@@ -537,133 +558,61 @@ fn generate_html(
     faces_by_hash: &videre_core::face_db::LabeledFacesByHash,
     live: bool,
 ) -> String {
+    use askama::Template;
     use chrono::Utc;
     let now = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
 
-    // In server mode, HEIC thumbnails are converted lazily per-request via
-    // /api/raw (see handle_raw_file) instead of eagerly here, eagerly
-    // converting every HEIC file with QuickLook before returning any
-    // response made server mode take minutes on a collection with many
-    // HEIC files. Static mode keeps the eager --heic/--heic-original
-    // behavior, since it only pays that cost once at generation time.
+    // In server mode HEIC thumbnails are converted lazily per request via
+    // /api/raw (see handle_raw_file). Converting every HEIC eagerly here made
+    // server startup take minutes on a collection with many of them; the static
+    // path pays that cost once at generation time instead.
     let heic = heic && !live;
     let heic_original = heic_original && !live;
 
-    let mut out = String::with_capacity(512 * 1024);
+    let data = build_data_block(
+        groups,
+        all_files,
+        keep_files,
+        vectors,
+        heic,
+        heic_original,
+        faces_by_hash,
+        live,
+    );
 
-    out.push_str(concat!(
-        "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n",
-        "<meta charset=\"UTF-8\">\n",
-        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n",
-        "<title>videre report</title>\n<style>\n",
-        include_str!("../../static/gallery.css"),
-        "</style>\n</head>\n<body>\n",
-        "<div id=\"sort-overlay\"><div class=\"sort-card\">",
-        "<div class=\"spinner\"></div>Sorting&hellip;</div></div>\n",
-        "<div class=\"lightbox\" id=\"lb\" onclick=\"closeLb()\">\n",
-        "  <img id=\"lb-img\" src=\"\" alt=\"\" onclick=\"event.stopPropagation()\">\n",
-        "  <video id=\"lb-vid\" src=\"\" controls autoplay onclick=\"event.stopPropagation()\" style=\"display:none\"></video>\n",
-        "  <div class=\"lb-meta\" id=\"lbMeta\" onclick=\"event.stopPropagation()\"></div>\n",
-        "</div>\n",
-    ));
-
-    // Header
-    let embedded_stat = match vectors {
-        Some(vb) => format!(
-            "<div class=\"stat\"><span class=\"num\">{}</span><span class=\"label\">Embedded</span></div>",
-            vb.hashes.len()
-        ),
-        None => String::new(),
+    let page = GalleryPage {
+        css: include_str!("../../static/gallery.css"),
+        js: include_str!("../../static/gallery.js"),
+        data: &data,
+        db: esc(db_path),
+        generated_at: &now,
+        total_files: stats.total_files,
+        has_groups: !groups.is_empty(),
+        duplicate_groups: stats.duplicate_groups,
+        duplicate_files: stats.duplicate_files,
+        wasted: videre_core::disk::human_bytes(stats.wasted_bytes.max(0) as u64),
+        embedded: vectors.map(|vb| vb.hashes.len()),
+        all_files_count: all_files.map(|f| f.len()),
+        has_keep_files: keep_files.is_some(),
     };
-    // The three duplicate-related tiles are only useful when there's
-    // something to report, an all-zero "Duplicate groups / Duplicate files
-    // / Wasted space" row is noise on a collection with no duplicates,
-    // especially alongside --by-date/--all.
-    let dupe_stats = if groups.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "<div class=\"stat warn\"><span class=\"num\">{groups}</span><span class=\"label\">Duplicate groups</span></div>\
-             <div class=\"stat warn\"><span class=\"num\">{dups}</span><span class=\"label\">Duplicate files</span></div>\
-             <div class=\"stat warn\"><span class=\"num\">{wasted}</span><span class=\"label\">Wasted space</span></div>",
-            groups = stats.duplicate_groups,
-            dups   = stats.duplicate_files,
-            wasted = videre_core::disk::human_bytes(stats.wasted_bytes.max(0) as u64),
-        )
-    };
-    out.push_str(&format!(
-        "<div class=\"header\">\
-          <h1>videre report</h1>\
-          <p class=\"subtitle\">{db} &mdash; {now}</p>\
-          <div class=\"stats\">\
-            <div class=\"stat\"><span class=\"num\">{total}</span><span class=\"label\">Files scanned</span></div>\
-            {dupe_stats}\
-            {embedded_stat}\
-          </div>\
-        </div>\n",
-        db     = esc(db_path),
-        now    = now,
-        total  = stats.total_files,
-        dupe_stats = dupe_stats,
-        embedded_stat = embedded_stat,
-    ));
+    page.render().expect("gallery template")
+}
 
-    // Toolbar + groups list: skip entirely when there's nothing to review.
-    // An empty "0 groups" toolbar with working Expand/Collapse/Sort controls
-    // is just noise, especially alongside --by-date/--all which have their
-    // own reason to exist regardless of duplicate count.
-    if !groups.is_empty() {
-        out.push_str(&format!(
-            "<div class=\"toolbar\">\
-              <button onclick=\"expandAll()\">Expand all</button>\
-              <button onclick=\"collapseAll()\">Collapse all</button>\
-              <label class=\"sort-label\">Sort by\
-                <select id=\"sort-select\" onchange=\"sortGroups(this.value)\">\
-                  <option value=\"waste\">Wasted space</option>\
-                  <option value=\"date-asc\">Date kept (oldest first)</option>\
-                  <option value=\"date-desc\">Date kept (newest first)</option>\
-                </select>\
-              </label>\
-              <span class=\"info\" id=\"shown-info\">{} groups</span>\
-            </div>\n",
-            stats.duplicate_groups,
-        ));
-
-        // Empty groups container, JS fills it
-        out.push_str("<div class=\"groups\" id=\"groups-container\"></div>\n");
-        out.push_str("<div class=\"more-wrap\"><button id=\"more-btn\" onclick=\"showMore()\"></button></div>\n");
-    }
-
-    if all_files.is_some() {
-        out.push_str("<div class=\"results-panel\" id=\"results\" style=\"display:none\"></div>\n");
-    }
-
-    if let Some(files) = all_files {
-        out.push_str(&format!(
-            "<div class=\"gallery-head\"><h2>All files</h2><span class=\"info\" id=\"gallery-info\">{} files</span></div>\n\
-             <div class=\"gallery\" id=\"gallery\"></div>\n\
-             <div class=\"more-wrap\"><button id=\"gallery-more\" onclick=\"showMoreGallery()\"></button></div>\n",
-            files.len()
-        ));
-    }
-
-    if keep_files.is_some() {
-        out.push_str(concat!(
-            "<div class=\"date-view\" id=\"dateView\">\n",
-            "<h2>Browse by date</h2>\n",
-            "<div class=\"date-breadcrumb\" id=\"dateBreadcrumb\"></div>\n",
-            "<div class=\"date-grid\" id=\"dateGrid\"></div>\n",
-            "</div>\n",
-        ));
-    }
-
-    // In server mode (--show-faces), thumbnails/lightbox point at
-    // /api/raw?path=... instead of file://, since browsers refuse to load a
-    // file:// subresource from an http://-served page. Static mode keeps
-    // file:// links, since the report itself is opened via file:// there.
+/// Everything the page needs as JavaScript values, up to but not including the
+/// closing `</script>`, which the template supplies after the rendering script.
+#[allow(clippy::too_many_arguments)]
+fn build_data_block(
+    groups: &[Vec<FileRow>],
+    all_files: Option<&[FileRow]>,
+    keep_files: Option<&[FileRow]>,
+    vectors: Option<&VectorBlock>,
+    heic: bool,
+    heic_original: bool,
+    faces_by_hash: &videre_core::face_db::LabeledFacesByHash,
+    live: bool,
+) -> String {
+    let mut out = String::with_capacity(256 * 1024);
     out.push_str(&format!("<script>\nvar LIVE_SERVER={};\n</script>\n", live));
-
-    // Embed all group data as JSON
     out.push_str("<script>\nvar GROUPS=[\n");
     for (i, group) in groups.iter().enumerate() {
         if i > 0 {
@@ -673,7 +622,6 @@ fn generate_html(
         out.push_str(&group_to_json(group, heic, heic_original, faces_by_hash));
     }
     out.push_str("\n];\n");
-
     // All-files gallery data and similarity vectors (--all only).
     // Without --all nothing is emitted so the page is unchanged.
     if let Some(files) = all_files {
@@ -734,10 +682,6 @@ fn generate_html(
         out.push_str("\n];\n");
     }
 
-    // All rendering JS using raw string to avoid escaping hell
-    out.push_str(include_str!("../../static/gallery.js"));
-
-    out.push_str("</script>\n</body>\n</html>");
     out
 }
 
