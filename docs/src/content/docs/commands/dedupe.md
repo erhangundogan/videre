@@ -155,3 +155,20 @@ against without parsing the human-readable summary.
 ## More detail
 
 - [Backing up](/guides/backup/) covers what to keep before deleting in bulk.
+
+## A page you can keep
+
+`--html` writes the same duplicate groups to a browsable file, with thumbnails
+and the group structure, so you can review them away from the terminal or keep
+the list after the run.
+
+```bash
+videre dedupe --html                    # writes <db>_duplicates.html
+videre dedupe --html ~/dupes.html       # somewhere specific
+```
+
+The paths still go to stdout, so piping is unaffected.
+
+For browsing the whole library rather than one result set, use
+[`videre gallery`](/commands/gallery/), which serves it live instead of writing
+a file.

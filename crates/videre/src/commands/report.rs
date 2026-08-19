@@ -55,7 +55,7 @@ pub struct ReportArgs {
     show_faces: bool,
 }
 
-struct FileRow {
+pub(crate) struct FileRow {
     path: String,
     hash: String,
     size_bytes: i64,
@@ -69,7 +69,7 @@ struct FileRow {
     height: Option<i32>,
 }
 
-struct Stats {
+pub(crate) struct Stats {
     total_files: i64,
     duplicate_groups: i64,
     duplicate_files: i64,
@@ -403,7 +403,7 @@ fn group_to_json(
     )
 }
 
-fn query_stats(conn: &Connection) -> Stats {
+pub(crate) fn query_stats(conn: &Connection) -> Stats {
     let s = videre_core::library_stats::compute(conn).unwrap_or_default();
     Stats {
         total_files: s.total_files,
@@ -413,7 +413,7 @@ fn query_stats(conn: &Connection) -> Stats {
     }
 }
 
-fn query_groups(conn: &Connection) -> Vec<Vec<FileRow>> {
+pub(crate) fn query_groups(conn: &Connection) -> Vec<Vec<FileRow>> {
     let mut stmt = conn
         .prepare(
             "SELECT path, hash, size_bytes, COALESCE(ext,''), created_at, modified_at, exif_date, \
@@ -546,7 +546,55 @@ struct GalleryPage<'a> {
     has_keep_files: bool,
 }
 
-fn generate_html(
+/// The rows behind a list of paths, in the order given.
+///
+/// `search --html` arrives holding paths and hashes rather than rows: it ranked
+/// them, so it knows *which* files, not everything about them. One query fills
+/// in the rest, and the ranking order is preserved because the caller's order
+/// is the answer.
+pub(crate) fn rows_for_paths(conn: &Connection, paths: &[String]) -> Vec<FileRow> {
+    let mut by_path: HashMap<String, FileRow> = HashMap::new();
+    for row in query_all_files(conn) {
+        by_path.insert(row.path.clone(), row);
+    }
+    paths.iter().filter_map(|p| by_path.remove(p)).collect()
+}
+
+/// Render a set to a self-contained page and write it.
+///
+/// Shared by `dedupe --html` and `search --html`. `groups` renders a
+/// duplicate-review page; `flat` renders a gallery of a result set. Both go
+/// through the same renderer the live gallery uses, with `live: false`, so a
+/// file references originals on disk and embeds only what a browser cannot
+/// display.
+pub(crate) fn write_static_page(
+    conn: &Connection,
+    output: &Path,
+    groups: &[Vec<FileRow>],
+    flat: Option<&[FileRow]>,
+) -> anyhow::Result<()> {
+    let stats = query_stats(conn);
+    let faces_by_hash = videre_core::face_db::labeled_faces_by_hash(conn).unwrap_or_default();
+    let db_path = conn.path().map(|p| p.to_string()).unwrap_or_default();
+    let html = generate_html(
+        &db_path,
+        &stats,
+        groups,
+        flat,
+        None,
+        None,
+        false,
+        false,
+        &faces_by_hash,
+        false,
+    );
+    std::fs::write(output, &html)
+        .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", output.display()))?;
+    eprintln!("Wrote {} ({} KB)", output.display(), html.len() / 1024);
+    Ok(())
+}
+
+pub(crate) fn generate_html(
     db_path: &str,
     stats: &Stats,
     groups: &[Vec<FileRow>],
