@@ -331,6 +331,8 @@ fn build_search(
     );
 
     let args = SearchArgs {
+        // An agent asks for results, not a file on the server's disk.
+        html: None,
         // Built from the same flag groups the CLI flattens, so the two surfaces
         // resolve through one vocabulary rather than drifting apart, which is
         // the rule in CLAUDE.md that exists because they have drifted before.

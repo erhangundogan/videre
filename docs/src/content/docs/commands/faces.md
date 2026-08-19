@@ -33,7 +33,7 @@ second is fast and manual.
 
 ```bash
 videre faces                  # 1. find faces and group them (slow, resumable)
-videre report --faces         # 2. name the groups in your browser
+videre gallery         # 2. name the groups in your browser
 videre search --person "Alice"
 ```
 

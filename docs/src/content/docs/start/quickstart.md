@@ -21,7 +21,7 @@ run without repeating it. It says so when it happens.
 
 ```bash
 videre dedupe                 # list which copies could go
-videre report                 # ...or review them visually in a browser first
+videre dedupe --html                 # ...or review them visually in a browser first
 videre dedupe | xargs trash   # delete them
 videre prune                  # tidy the database afterwards
 ```
@@ -52,7 +52,7 @@ later, and it picks up where it left off.
 
 ```bash
 videre faces                  # detect and group faces
-videre report --faces         # name the groups in your browser
+videre gallery         # name the groups in your browser
 videre search --person "Alice"
 ```
 
@@ -80,7 +80,7 @@ videre locations                       # group photos by place
 videre search --location "Berlin"
 
 videre fix-dates                       # set file dates from EXIF
-videre report --all                    # browse the whole library
+videre gallery                    # browse the whole library
 videre stats                           # what's in the library
 videre watch ~/Photos                  # keep everything fresh in the background
 ```
@@ -113,7 +113,7 @@ duplicate review to AI agents over stdio:
 - Two different videre commands can run at once against the same database.
   Running the *same* command twice is refused rather than allowed to corrupt
   anything.
-- `videre report --faces` and `--show-faces` start a local web server on
+- `videre gallery` and `--show-faces` start a local web server on
   `localhost:7878`. Nothing leaves your machine.
 - The only feature that touches the network is `videre search --location`, which
   looks up a place name once and caches the result.

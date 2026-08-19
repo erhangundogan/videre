@@ -23,12 +23,12 @@ pipe.
 
 ## The safe way to do it
 
-Review in a browser first. That is what [`videre report`](/commands/report/) is
+Review in a browser first. That is what [`videre dedupe --html`](/commands/dedupe/) is
 for, and it takes one extra command:
 
 ```bash
 videre scan ~/Photos           # 1. record what you have
-videre report                  # 2. review the groups visually
+videre dedupe --html                  # 2. review the groups visually
 videre dedupe | xargs trash    # 3. delete, once you agree
 videre prune                   # 4. tidy the database afterwards
 ```
@@ -84,7 +84,7 @@ copy usually has a later filesystem date, while the EXIF date survives copying.
 :::note[It does not matter which copy survives]
 Members of a group are byte-identical, so whichever is kept, the file you end up
 with is the same file. The only thing that differs is **which path** remains,
-which is why reviewing in `videre report` is worth it: the KEEP copy may be in a
+which is why reviewing in `videre dedupe --html` is worth it: the KEEP copy may be in a
 folder you would not have chosen, especially across
 [multiple scanned folders](/reference/paths/#scanning-more-than-one-folder).
 
@@ -96,7 +96,7 @@ the bytes are the same.
 
 Look-alike groups are deliberately kept out of stdout, so piping into a delete
 command can never act on a mere resemblance. They appear in the summary on
-stderr and in [`videre report`](/commands/report/), where you can look at them.
+stderr and in [`videre dedupe --html`](/commands/dedupe/), where you can look at them.
 
 This needs a prior [`videre scan --similar`](/commands/scan/) to have computed
 the fingerprints.
@@ -136,7 +136,7 @@ removes them. Conversely, deleting one copy of a photo you still have elsewhere
 frees nothing derived, because that work is keyed by content and still in use.
 
 **Output order is by content hash**, which is effectively arbitrary. Use
-`videre report` if you want groups ordered by wasted space.
+`videre dedupe --html` if you want groups ordered by wasted space.
 
 **Empty output means no exact duplicates**, not an error. Try `--similar` to see
 whether you have near-duplicates instead.
@@ -155,3 +155,20 @@ against without parsing the human-readable summary.
 ## More detail
 
 - [Backing up](/guides/backup/) covers what to keep before deleting in bulk.
+
+## A page you can keep
+
+`--html` writes the same duplicate groups to a browsable file, with thumbnails
+and the group structure, so you can review them away from the terminal or keep
+the list after the run.
+
+```bash
+videre dedupe --html                    # writes <db>_duplicates.html
+videre dedupe --html ~/dupes.html       # somewhere specific
+```
+
+The paths still go to stdout, so piping is unaffected.
+
+For browsing the whole library rather than one result set, use
+[`videre gallery`](/commands/gallery/), which serves it live instead of writing
+a file.

@@ -24,23 +24,23 @@ videre scan                  <- everything starts here
   |-- videre fix-dates       correct file dates
   |-- videre locations       group by place
   |-- videre stats           what's in the library
-  |-- videre report          browse and review
+  |-- videre dedupe --html          browse and review
   |
   |-- videre embed           prepare search  (slow, one-time)
   |     |
   |     |-- videre search "..."        by description
   |     |-- videre search --image      by example
-  |     |-- videre report --all        in-page similarity
+  |     |-- videre gallery        in-page similarity
   |     |-- videre classify            tag screenshots/documents/memes
   |           |
   |           |-- videre search --category
   |
   |-- videre faces           detect and group faces  (slow, one-time)
         |
-        |-- videre report --faces      name people (manual step)
+        |-- videre gallery      name people (manual step)
               |
               |-- videre search --person
-              |-- videre report --show-faces
+              |-- videre gallery
 ```
 
 ## What each command needs first
@@ -50,18 +50,18 @@ videre scan                  <- everything starts here
 | Anything at all | [`scan`](/commands/scan/) |
 | [`search`](/commands/search/) (text or `--image`) | [`embed`](/commands/embed/) |
 | [`search --category`](/commands/search/) | [`embed`](/commands/embed/), then [`classify`](/commands/classify/) |
-| [`search --person`](/commands/search/) | [`faces`](/commands/faces/), then naming in [`report --faces`](/commands/report/) |
+| [`search --person`](/commands/search/) | [`faces`](/commands/faces/), then naming in [`gallery`](/commands/gallery/) |
 | [`search --location`](/commands/search/) | GPS in your photos (from `scan`) |
 | [`classify`](/commands/classify/) | [`embed`](/commands/embed/) |
-| [`report --all`](/commands/report/) similarity button | [`embed`](/commands/embed/) |
-| [`report --faces`](/commands/report/) | [`faces`](/commands/faces/) |
-| [`report --show-faces`](/commands/report/) names | [`faces`](/commands/faces/) **and** naming done |
+| the similarity button in [`gallery`](/commands/gallery/) | [`embed`](/commands/embed/) |
+| [`gallery`](/commands/gallery/) | [`faces`](/commands/faces/) |
+| names shown in [`gallery`](/commands/gallery/) | [`faces`](/commands/faces/) **and** naming done |
 | [`dedupe --similar`](/commands/dedupe/) | [`scan --similar`](/commands/scan/) |
 | [`locations`](/commands/locations/) | GPS in your photos (from `scan`) |
 
 The manual naming step is easy to overlook. `videre faces` groups faces but
 gives them no names, so `search --person` and the names in `--show-faces` stay
-empty until you have opened `report --faces` and assigned some.
+empty until you have opened `videre gallery` and assigned some.
 
 ## What to run afterwards
 
@@ -87,7 +87,7 @@ videre embed                   # hours; downloads ~780 MB first
 videre faces                   # hours; downloads ~180 MB first
 videre classify                # minutes; reuses embed's work
 videre locations               # seconds to minutes
-videre report --faces          # name the people you care about
+videre gallery          # name the people you care about
 ```
 
 Only the first is required. Stop wherever you like; each later step adds one
@@ -112,7 +112,7 @@ point it at the library and it works out the rest. See
 
 ```bash
 videre scan ~/Photos
-videre report                  # review groups with KEEP/REMOVE badges
+videre dedupe --html                  # review groups with KEEP/REMOVE badges
 videre dedupe | xargs trash    # delete, once you agree
 videre prune                   # reclaim database rows and derived data
 ```
@@ -135,7 +135,7 @@ videre search "sunset over water"
 ```bash
 videre watch ~/Photos --heic   # optional: makes the next step ~70x faster on HEIC
 videre faces
-videre report --faces          # drag clusters onto people
+videre gallery          # drag clusters onto people
 videre search --person "Alice"
 ```
 

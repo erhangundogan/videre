@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>videre report</title>
+<style>
+{{ css|safe }}</style>
+</head>
+<body>
+<div id="sort-overlay"><div class="sort-card"><div class="spinner"></div>Sorting&hellip;</div></div>
+<div class="lightbox" id="lb" onclick="closeLb()">
+  <img id="lb-img" src="" alt="" onclick="event.stopPropagation()">
+  <video id="lb-vid" src="" controls autoplay onclick="event.stopPropagation()" style="display:none"></video>
+  <div class="lb-meta" id="lbMeta" onclick="event.stopPropagation()"></div>
+</div>
+<div class="header"><h1>videre report</h1><p class="subtitle">{{ db|safe }} &mdash; {{ generated_at }}</p><div class="stats"><div class="stat"><span class="num">{{ total_files }}</span><span class="label">Files scanned</span></div>{% if has_groups %}<div class="stat warn"><span class="num">{{ duplicate_groups }}</span><span class="label">Duplicate groups</span></div><div class="stat warn"><span class="num">{{ duplicate_files }}</span><span class="label">Duplicate files</span></div><div class="stat warn"><span class="num">{{ wasted }}</span><span class="label">Wasted space</span></div>{% endif %}{% if let Some(n) = embedded %}<div class="stat"><span class="num">{{ n }}</span><span class="label">Embedded</span></div>{% endif %}</div></div>
+{% if has_groups %}<div class="toolbar"><button onclick="expandAll()">Expand all</button><button onclick="collapseAll()">Collapse all</button><label class="sort-label">Sort by<select id="sort-select" onchange="sortGroups(this.value)"><option value="waste">Wasted space</option><option value="date-asc">Date kept (oldest first)</option><option value="date-desc">Date kept (newest first)</option></select></label><span class="info" id="shown-info">{{ duplicate_groups }} groups</span></div>
+<div class="groups" id="groups-container"></div>
+<div class="more-wrap"><button id="more-btn" onclick="showMore()"></button></div>
+{% endif %}{% if let Some(n) = all_files_count %}<div class="results-panel" id="results" style="display:none"></div>
+<div class="gallery-head"><h2>All files</h2><span class="info" id="gallery-info">{{ n }} files</span></div>
+<div class="gallery" id="gallery"></div>
+<div class="more-wrap"><button id="gallery-more" onclick="showMoreGallery()"></button></div>
+{% endif %}{% if has_keep_files %}<div class="date-view" id="dateView">
+<h2>Browse by date</h2>
+<div class="date-breadcrumb" id="dateBreadcrumb"></div>
+<div class="date-grid" id="dateGrid"></div>
+</div>
+{% endif %}{{ data|safe }}{{ js|safe }}</script>
+</body>
+</html>

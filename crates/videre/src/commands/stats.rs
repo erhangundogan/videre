@@ -67,7 +67,7 @@ fn run_text(args: &StatsArgs) -> anyhow::Result<()> {
     println!(
         "Library: {} file(s) ({}), {} photo(s), {} video(s)",
         library.total_files,
-        super::report::format_bytes(library.total_size_bytes),
+        videre_core::disk::human_bytes(library.total_size_bytes.max(0) as u64),
         library.total_photos,
         library.total_videos,
     );
@@ -75,7 +75,7 @@ fn run_text(args: &StatsArgs) -> anyhow::Result<()> {
         "Duplicates: {} group(s), {} file(s), {} wasted",
         library.duplicate_group_count,
         library.duplicate_file_count,
-        super::report::format_bytes(library.wasted_bytes),
+        videre_core::disk::human_bytes(library.wasted_bytes.max(0) as u64),
     );
     println!(
         "Faces: {} detected, {} people named",
@@ -92,7 +92,7 @@ fn run_text(args: &StatsArgs) -> anyhow::Result<()> {
                 e.model_id,
                 e.count,
                 e.dims,
-                super::report::format_bytes(e.size_bytes),
+                videre_core::disk::human_bytes(e.size_bytes.max(0) as u64),
             );
         }
     }

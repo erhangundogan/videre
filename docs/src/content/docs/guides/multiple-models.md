@@ -77,7 +77,7 @@ than a hardcoded table, so an unfamiliar model reports honestly.
 
 Asking for a model you have not prepared gives an error listing the ones you do
 have, rather than silently returning nothing.
-[`videre report`](/commands/report/) is the exception: a missing model disables
+[`videre dedupe --html`](/commands/dedupe/) is the exception: a missing model disables
 its similarity button with a note rather than failing a report that is otherwise
 fine.
 
