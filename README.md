@@ -1,8 +1,8 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/logo-light.svg">
-    <img alt="videre logo" src="assets/logo-light.svg" width="216">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-animated-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/logo-animated-light.svg">
+    <img alt="videre logo" src="assets/logo-animated-light.svg" width="216">
   </picture>
 </p>
 
