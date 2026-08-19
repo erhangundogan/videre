@@ -13,6 +13,7 @@ A local-first tool for making sense of a folder full of photos and videos.
 - find and remove duplicates (identical *and* near-identical)
 - search your photos by describing them, like "sunset over water" or "my red car"
 - recognise faces and search by person
+- import from Google Takeout, Apple Photos, or a Lightroom catalog
 - browse everything in a generated HTML gallery
 - fix wrong file dates from the camera's own EXIF data
 - group photos by where they were taken
@@ -27,6 +28,11 @@ their cloud. videre works the other way round: it's a lens over a folder you
 already own. Point it at a directory and you get a single SQLite file describing
 what's there. Stop using it and your photos are exactly as they were.
 
+- **Nothing to keyword first.** Search works on photos you never tagged, by
+  description, by person, by place, or by example image.
+- **Your photos come in from wherever they are stuck.** `videre import` pulls a
+  Google Takeout export, an Apple Photos library, or a Lightroom catalog into an
+  ordinary folder, originals rather than derivatives, dates put back.
 - **It never touches your photos.** Nothing is moved, renamed, copied, or
   re-encoded. The one exception is `videre fix-dates`, which you run
   deliberately, and which only corrects a file's date.
@@ -38,6 +44,10 @@ what's there. Stop using it and your photos are exactly as they were.
   candidates in a browser first.
 - **Naming faces is bulk work, not a chore.** videre groups faces together
   itself, so you name one group of 40 photos rather than tagging 40 photos.
+- **An unplugged drive is not deleted photos.** Libraries spread over external
+  drives are ordinary. `videre prune` only drops a row when the file is gone
+  *and* its folder still exists, so cleaning up with a drive detached does not
+  wipe everything on it.
 - **Long jobs are safe to interrupt.** Preparing search or scanning faces can
   take hours on a large library. Ctrl-C is fine; rerunning continues from where
   it stopped.
@@ -111,8 +121,8 @@ More: [docs.videre.sh/start/quickstart](https://docs.videre.sh/start/quickstart/
 
 ## Commands
 
-`scan`, `dedupe`, `report`, `search`, `embed`, `faces`, `classify`, `locations`,
-`fix-dates`, `prune`, `watch`, `stats`, `config`, `mcp`.
+`scan`, `import`, `dedupe`, `report`, `search`, `embed`, `faces`, `classify`,
+`locations`, `fix-dates`, `prune`, `watch`, `stats`, `config`, `mcp`.
 
 Every command takes `--help`. Full reference with every flag:
 [docs.videre.sh/commands](https://docs.videre.sh/commands/)
