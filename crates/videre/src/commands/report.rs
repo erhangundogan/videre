@@ -500,15 +500,27 @@ fn query_all_files(conn: &Connection) -> Vec<FileRow> {
 fn query_keep_files(conn: &Connection) -> Vec<FileRow> {
     let rows = query_all_files(conn);
 
+    // :warning: Grouping must not lose the query's `ORDER BY path`. An earlier
+    // version collected into a `HashMap` and returned `into_values()`, and
+    // Rust seeds that hasher randomly per process, so two runs of
+    // `report --by-date` over one unchanged database produced the same files in
+    // a different order. Keeping first-seen order restores the SQL ordering.
+    let mut order: Vec<String> = Vec::new();
     let mut map: HashMap<String, Vec<FileRow>> = HashMap::new();
     for row in rows {
-        map.entry(row.hash.clone()).or_default().push(row);
+        let hash = row.hash.clone();
+        if !map.contains_key(&hash) {
+            order.push(hash.clone());
+        }
+        map.entry(hash).or_default().push(row);
     }
 
-    map.into_values()
-        .map(|mut group| {
+    order
+        .into_iter()
+        .filter_map(|hash| {
+            let mut group = map.remove(&hash)?;
             group.sort_by(|a, b| best_date(a).cmp(best_date(b)));
-            group.into_iter().next().expect("group is never empty")
+            group.into_iter().next()
         })
         .collect()
 }
