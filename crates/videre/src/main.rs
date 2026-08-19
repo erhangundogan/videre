@@ -19,6 +19,8 @@ enum Command {
     Dedupe(commands::dedupe::DedupeArgs),
     /// Generate an HTML review page, or serve the live report/labeling UI
     Report(commands::report::ReportArgs),
+    /// Browse the library in a local web UI: all files, people, dates
+    Gallery(commands::gallery::GalleryArgs),
     /// Scan a directory, hash every image, and populate the database
     Scan(commands::scan::ScanArgs),
     /// Set each file's mtime to its EXIF shoot date
@@ -96,6 +98,7 @@ fn main() {
     let result = match cli.command {
         Command::Dedupe(args) => commands::dedupe::run(args),
         Command::Report(args) => commands::report::run(args),
+        Command::Gallery(args) => commands::gallery::run(args),
         Command::Scan(args) => commands::scan::run(args),
         Command::FixDates(args) => commands::fix_dates::run(args),
         Command::Import(args) => commands::import::run(args),

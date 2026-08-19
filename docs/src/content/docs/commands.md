@@ -9,6 +9,7 @@ description: Every videre subcommand, what it does, and where to read more.
 | [`videre scan`](/commands/scan/) | Read a folder and record what's in it. Run this first. |
 | [`videre dedupe`](/commands/dedupe/) | List duplicate copies you could delete |
 | [`videre report`](/commands/report/) | Generate an HTML gallery, or serve the face-naming UI |
+| [`videre gallery`](/commands/gallery/) | Browse the library in a local web UI: files, people, dates |
 | [`videre search`](/commands/search/) | Find photos by description, example image, person, category, or place |
 | [`videre embed`](/commands/embed/) | Prepare photos for search (one-time, resumable) |
 | [`videre faces`](/commands/faces/) | Detect and group faces |

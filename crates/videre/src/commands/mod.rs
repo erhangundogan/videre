@@ -4,6 +4,7 @@ pub mod dedupe;
 pub mod embed;
 pub mod faces;
 pub mod fix_dates;
+pub mod gallery;
 pub mod import;
 pub mod import_apple;
 pub mod import_lightroom;

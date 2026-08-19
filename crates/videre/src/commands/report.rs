@@ -812,13 +812,47 @@ async fn handle_root() -> impl axum::response::IntoResponse {
 /// rendered on each request from the current database state (labeled faces
 /// included, since this route only exists when `--show-faces` is set).
 async fn handle_report(State(state): State<Arc<AppState>>) -> impl axum::response::IntoResponse {
+    render_live(&state, state.report_all, state.report_by_date)
+}
+
+/// `videre gallery`'s `/`: every file, with in-page similarity search.
+async fn handle_gallery_all(
+    State(state): State<Arc<AppState>>,
+) -> impl axum::response::IntoResponse {
+    render_live(&state, true, false)
+}
+
+/// `videre gallery`'s `/date`: the year/month/day drill-down over KEEP files.
+async fn handle_gallery_date(
+    State(state): State<Arc<AppState>>,
+) -> impl axum::response::IntoResponse {
+    render_live(&state, false, true)
+}
+
+/// Reserved so the shape of the command is visible before the views exist.
+async fn handle_not_yet() -> impl axum::response::IntoResponse {
+    (
+        StatusCode::NOT_FOUND,
+        axum::response::Html(
+            "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><title>videre</title></head>\
+             <body style=\"font-family:-apple-system,sans-serif;padding:48px\">\
+             <h1>Not built yet</h1>\
+             <p>This view is reserved. See <a href=\"/\">all files</a>.</p>\
+             </body></html>",
+        ),
+    )
+}
+
+/// Which sections a live page renders is a property of the route, not of the
+/// server, so `/` and `/date` can differ within one `gallery`.
+fn render_live(state: &Arc<AppState>, all: bool, by_date: bool) -> axum::response::Html<String> {
     let conn = state.conn.lock().unwrap();
     let stats = query_stats(&conn);
     let groups = query_groups(&conn);
-    let all_files = state.report_all.then(|| query_all_files(&conn));
-    let keep_files = state.report_by_date.then(|| query_keep_files(&conn));
+    let all_files = all.then(|| query_all_files(&conn));
+    let keep_files = by_date.then(|| query_keep_files(&conn));
     let faces_by_hash = videre_core::face_db::labeled_faces_by_hash(&conn).unwrap_or_default();
-    let vectors = if state.report_all {
+    let vectors = if all {
         query_vectors(&conn, &state.model_id)
     } else {
         None
@@ -1251,6 +1285,11 @@ struct ServeOptions {
     report_heic: bool,
     report_heic_original: bool,
     model_id: String,
+    /// `videre gallery`: serve every view on its own route rather than one page
+    /// whose content depends on which flags started the server.
+    gallery: bool,
+    port: u16,
+    browse: bool,
 }
 
 async fn serve_faces_async(
@@ -1319,28 +1358,74 @@ async fn serve_faces_async(
     //   --faces alone        -> `/` = labeling UI, no report route at all
     //   --show-faces alone   -> `/` = live report, no `/faces` route
     //   both                 -> `/` = live report, `/faces` = labeling UI
-    router = match (state.serve_faces_ui, opts.show_report) {
-        (true, true) => router
-            .route("/", get(handle_report))
-            .route("/faces", get(handle_root)),
-        (true, false) => router.route("/", get(handle_root)),
-        (false, true) => router.route("/", get(handle_report)),
-        (false, false) => router, // unreachable: serve_faces_async only runs when at least one is set
+    router = if opts.gallery {
+        router
+            .route("/", get(handle_gallery_all))
+            .route("/people", get(handle_root))
+            .route("/date", get(handle_gallery_date))
+            .route("/map", get(handle_not_yet))
+            .route("/events", get(handle_not_yet))
+            .route("/smart", get(handle_not_yet))
+    } else {
+        match (state.serve_faces_ui, opts.show_report) {
+            (true, true) => router
+                .route("/", get(handle_report))
+                .route("/faces", get(handle_root)),
+            (true, false) => router.route("/", get(handle_root)),
+            (false, true) => router.route("/", get(handle_report)),
+            (false, false) => router, // unreachable: serve_faces_async only runs when at least one is set
+        }
     };
 
     let app = router.with_state(state);
 
-    let addr = "127.0.0.1:7878";
+    let addr = format!("127.0.0.1:{}", opts.port);
+    let addr = addr.as_str();
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|e| format!("Cannot bind to {addr}: {e}"))?;
-    eprintln!("Faces labeling server: http://{addr}");
+    if opts.gallery {
+        eprintln!("videre gallery: http://{addr}");
+    } else {
+        eprintln!("Faces labeling server: http://{addr}");
+    }
+    if opts.browse {
+        // After the listener binds, or the browser races it and lands on a
+        // connection refused.
+        let _ = std::process::Command::new("open")
+            .arg(format!("http://{addr}"))
+            .spawn();
+    }
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let _ = shutdown_rx.await;
         })
         .await?;
     Ok(())
+}
+
+/// Entry point for `videre gallery`: the same server, every view on its own
+/// route. Lives here for now because the server does; it moves to `gallery.rs`
+/// when `report` is removed.
+pub(crate) fn serve_gallery(
+    db: &Path,
+    model_id: String,
+    port: u16,
+    browse: bool,
+) -> anyhow::Result<()> {
+    let opts = ServeOptions {
+        serve_faces_ui: true,
+        show_report: false,
+        report_all: true,
+        report_by_date: false,
+        report_heic: false,
+        report_heic_original: false,
+        model_id,
+        gallery: true,
+        port,
+        browse,
+    };
+    serve_faces(db, opts).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 fn serve_faces(db: &Path, opts: ServeOptions) -> Result<(), Box<dyn std::error::Error>> {
@@ -1365,6 +1450,9 @@ pub fn run(args: ReportArgs) -> anyhow::Result<()> {
             report_heic: args.heic,
             report_heic_original: args.heic_original,
             model_id: videre_core::embeddings::resolve_model_id(args.model.as_deref())?,
+            gallery: false,
+            port: 7878,
+            browse: false,
         };
         if let Err(e) = serve_faces(&db, opts) {
             eprintln!("Error: {e}");
