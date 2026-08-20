@@ -10,7 +10,7 @@ sidebar:
 One command, no Rust toolchain, nothing to compile:
 
 ```bash
-curl -fsSL https://docs.videre.sh/install | sh
+curl -fsSL https://videre.sh/install | sh
 ```
 
 It works out your platform, downloads the matching release, **verifies it
@@ -28,19 +28,45 @@ prints the line to add. It never edits your shell profile.
 Pass options after `-s --`:
 
 ```bash
-curl -fsSL https://docs.videre.sh/install | sh -s -- --version 0.18.0
+curl -fsSL https://videre.sh/install | sh -s -- --version 0.20.1
 ```
 
-:::note[Upgrades are manual]
-The script does not upgrade videre for you. Run it again to move to a newer
-release; it overwrites in place. If you would rather something managed the
-version for you, use Homebrew below.
+:::note[`-s --` is the same in every shell]
+Everything after the pipe is parsed by `sh`, not by the shell you typed the line
+into, so `-s --` behaves identically in **fish, zsh and bash**. `-s` tells `sh`
+to read the script from the pipe, and `--` ends `sh`'s own options so the rest
+reach the installer.
 :::
+
+### Upgrading
+
+Run the same command again:
+
+```bash
+curl -fsSL https://videre.sh/install | sh
+```
+
+It fetches the newest release and **overwrites the binary in place**. There is
+nothing to uninstall first, and your library, settings and downloaded models are
+untouched. Check it took with `videre --version`.
+
+:::caution[Nothing tells you an update exists]
+The script never checks for one and videre does not phone home, so upgrading is
+something you do rather than something you are prompted about. If you would
+rather not think about it, [Homebrew](#homebrew) handles upgrades:
+`brew upgrade videre`.
+:::
+
+Going back is the same command with a version:
+
+```bash
+curl -fsSL https://videre.sh/install | sh -s -- --version 0.20.0
+```
 
 ### Removing it
 
 ```bash
-curl -fsSL https://docs.videre.sh/install | sh -s -- --uninstall
+curl -fsSL https://videre.sh/install | sh -s -- --uninstall
 ```
 
 This removes **one file**, the binary the script installed. Your library and
