@@ -717,9 +717,35 @@ invocations**, which today are zero. Anything that can be a file in
 friends arrive that way), which is how a non-Astro file gets served at a fixed
 path.
 
-**The apex `videre.sh` is registered** on Cloudflare and separate from
-`docs.videre.sh`. It is reserved for a landing page and deliberately has no
-apex record yet, so it does not resolve.
+### The install script and the apex
+
+`docs/public/install` is the shell installer, served at
+<https://docs.videre.sh/install> as an ordinary static asset. It is also
+reachable at <https://videre.sh/install>, which is a **Workers route** on the
+`videre-docs` Worker rather than a redirect, so both addresses serve the same
+bytes.
+
+The apex zone is separate from `docs.videre.sh` and carries a proxied
+placeholder `AAAA @ -> 100::` (the IPv6 discard prefix), which is what lets
+Cloudflare answer for the hostname at all when there is no origin behind it.
+
+:warning: **`https://videre.sh/` itself returns 522, and that is expected.**
+Only `/install` is routed; every other path reaches the placeholder and fails.
+The root is reserved for a landing page. Do not "fix" the 522 by pointing the
+apex at the docs Worker, because that would silently make the docs site the
+landing page.
+
+:warning: **The script's own `--help` prints the `docs.videre.sh` address on
+purpose.** That is where the file actually lives; the apex is a route that can
+be removed in the dashboard without touching this repo. A script that advertises
+an address it does not depend on keeps working if the route disappears.
+
+Changing the asset naming in `.github/workflows/release.yml` breaks the
+installer, and nothing else connects the two.
+`.github/scripts/test-install.sh` is what catches it, run by
+`.github/workflows/install.yml` on both platforms and by `make test-install`.
+It caught exactly that on its first run: the checksum asset replaces the
+`.tar.gz` extension rather than extending it.
 
 ```bash
 yarn --cwd docs install
