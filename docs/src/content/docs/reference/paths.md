@@ -131,40 +131,14 @@ This is what makes a separate library genuinely separate: pointing
 independent default database, and independent locks. Work done under one home
 does not affect the other.
 
-### Using it for one command
-
-Either form works, in `bash`, `zsh` and `fish` alike:
-
-```bash
-env VIDERE_HOME=$HOME/.another videre stats     # explicit, works everywhere
-VIDERE_HOME=$HOME/.another videre stats         # shorter prefix form
-```
-
-`env` is the safer habit: it is unambiguous, it reads clearly in scripts and
-documentation, and it never depends on your shell supporting the prefix form.
-
-### Using it for a whole session
-
-```bash
-export VIDERE_HOME=$HOME/.another   # bash, zsh
-set -x VIDERE_HOME $HOME/.another   # fish
-```
-
-Or make it permanent for one library with a wrapper on your `PATH`:
-
-```bash
-#!/bin/sh
-VIDERE_HOME="$HOME/.another" exec videre "$@"
-```
+**Setting it** is covered in
+[keeping libraries separate](/guides/multiple-libraries/#separate-homes): the
+one-command prefix, exporting it for a session in bash, zsh or fish, and a
+wrapper script that pins one library permanently.
 
 ### Checking which home is in use
 
-`videre config` prints it first, which is the quickest way to confirm a command
-is pointed where you think:
-
-```bash
-env VIDERE_HOME=$HOME/.another videre config
-```
+`videre config` prints it on the first line:
 
 ```
 home:          /Users/you/.another
