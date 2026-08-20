@@ -17,6 +17,11 @@ version number and are released together.
 
 ### Fixed
 
+- **`videre gallery --port 0` announced a port you could not connect to.** Asking
+  the OS to pick a free port worked, but the startup line printed the port that
+  was *requested* rather than the one bound, so the server reported
+  `http://127.0.0.1:0` and `--browse` opened the same dead address.
+
 - **`make coverage` had stopped building at all.** It pinned itself to `stable`
   while everything else moved to the toolchain in `rust-toolchain.toml`, and a
   dependency began requiring a language feature `stable` did not have yet. The
