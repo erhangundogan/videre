@@ -25,16 +25,17 @@ fn make_db_with_faces(dir: &std::path::Path) -> std::path::PathBuf {
 #[test]
 fn get_faces_returns_singletons() {
     let _dir = tempdir().unwrap();
-    // Verify --faces appears in help output, confirming the flag is registered
+    // People are a first-class view of the gallery rather than a flag on it,
+    // which is what replaced `report --faces` in 0.18.0.
     let out = Command::new(env!("CARGO_BIN_EXE_videre"))
-        .arg("report")
+        .arg("gallery")
         .arg("--help")
         .output()
-        .expect("failed to run videre report");
+        .expect("failed to run videre gallery");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("faces"),
-        "Expected --faces in help output, got: {stdout}"
+        stdout.contains("people"),
+        "Expected the people view in help output, got: {stdout}"
     );
 }
 
@@ -57,39 +58,40 @@ fn make_db_with_faces_creates_valid_schema() {
 }
 
 #[test]
-fn help_documents_show_faces_starts_server() {
+fn help_documents_the_port_it_listens_on() {
     let out = Command::new(env!("CARGO_BIN_EXE_videre"))
-        .arg("report")
+        .arg("gallery")
         .arg("--help")
         .output()
-        .expect("failed to run videre report");
+        .expect("failed to run videre gallery");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("show-faces"));
+    // `report --show-faces` was the old way to get a live backend. It is now
+    // simply what `gallery` is, so what needs documenting is where it listens.
+    assert!(stdout.contains("--port"), "gallery --help must document --port");
 }
 
 #[test]
-fn show_faces_alone_is_accepted_by_cli_parser() {
-    // Smoke test: dupe-report should not error out on flag parsing when
-    // --show-faces is passed (it will still try to bind port 7878 and
-    // block, so this test only checks the process starts without an
-    // immediate clap parse error, full server behavior is verified
-    // manually per Task 11).
+fn gallery_starts_and_keeps_serving() {
+    // The server must survive startup rather than exiting on a parse or bind
+    // error. It binds a port and blocks, so this checks it is still alive a
+    // moment later rather than waiting on a request.
     let dir = tempdir().unwrap();
     let db = make_db_with_faces(dir.path());
     let mut child = Command::new(env!("CARGO_BIN_EXE_videre"))
-        .arg("report")
+        .arg("gallery")
         .arg("--db")
         .arg(&db)
-        .arg("--show-faces")
+        .arg("--port")
+        .arg("7893")
         .spawn()
-        .expect("failed to spawn videre report --show-faces");
+        .expect("failed to spawn videre gallery");
     std::thread::sleep(std::time::Duration::from_millis(300));
     let still_running = child.try_wait().unwrap().is_none();
     child.kill().ok();
     child.wait().ok();
     assert!(
         still_running,
-        "videre report --show-faces should still be running (serving), not have exited/errored"
+        "videre gallery should still be serving, not have exited"
     );
 }
 

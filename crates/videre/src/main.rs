@@ -17,11 +17,6 @@ struct Cli {
 enum Command {
     /// Report duplicate files from the database and print paths to remove
     Dedupe(commands::dedupe::DedupeArgs),
-    /// Generate an HTML review page, or serve the live report/labeling UI
-    /// Deprecated in 0.18.0 and removed in the release after. Use `videre
-    /// gallery` to browse; `dedupe` and `search` can each write a page.
-    #[command(hide = true)]
-    Report(commands::report::ReportArgs),
     /// Browse the library in a local web UI: all files, people, dates
     Gallery(commands::gallery::GalleryArgs),
     /// Scan a directory, hash every image, and populate the database
@@ -100,7 +95,6 @@ fn main() {
     apply_configured_read_rate();
     let result = match cli.command {
         Command::Dedupe(args) => commands::dedupe::run(args),
-        Command::Report(args) => commands::report::run(args),
         Command::Gallery(args) => commands::gallery::run(args),
         Command::Scan(args) => commands::scan::run(args),
         Command::FixDates(args) => commands::fix_dates::run(args),
