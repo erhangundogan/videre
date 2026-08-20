@@ -21,15 +21,19 @@
 TOOLCHAIN := $(shell sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
 CARGO := cargo +$(TOOLCHAIN)
 
-# cargo-llvm-cov must run through the rustup-managed toolchain, not the
-# default `cargo` on PATH. This machine's default cargo/rustc are a separate
-# Homebrew Rust install with no rustup component support, while
-# llvm-tools-preview only installs into a rustup toolchain. Mixing the two
-# pairs mismatched LLVM versions and produces invalid coverage data. See the
-# "Test coverage" section in CLAUDE.md for the full explanation.
-# Overridable so this works off an Apple-Silicon Mac, e.g.
+# Coverage runs on the pinned toolchain like everything else, and needs
+# llvm-tools-preview installed into it:
+#
+#   rustup component add llvm-tools-preview --toolchain <channel>
+#
+# :warning: It used to default to `stable`, which silently rotted. `stable` is
+# 1.93.0 here, and libsqlite3-sys 0.38.1 needs `cfg_select!`, stabilised in
+# 1.96.0, so coverage failed to build at all while the test suite was green.
+# Pinning it to the same channel as everything else is what stops coverage and
+# the build drifting apart again.
+# Overridable for another host, e.g.
 #   make coverage COVERAGE_TOOLCHAIN=stable-x86_64-unknown-linux-gnu
-COVERAGE_TOOLCHAIN ?= stable-aarch64-apple-darwin
+COVERAGE_TOOLCHAIN ?= $(TOOLCHAIN)
 
 .PHONY: help
 help: ## Show this help
