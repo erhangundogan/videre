@@ -193,7 +193,7 @@ Narrowing the same trip to a single day, then ordering by when things happened:
 
 ```bash
 videre search --location "Los Angeles, USA" --radius 30 \
-  --date 2024-12-12 --sort date --sort-order asc
+  --date 2024-12-12 --sort date:asc
 ```
 
 Photos of a person, ranked by how well they match a description:

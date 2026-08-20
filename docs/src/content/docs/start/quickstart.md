@@ -5,14 +5,27 @@ sidebar:
   order: 2
 ---
 
-Start here. Everything else reads from what this creates.
+Start here. Five minutes from nothing to searching your own photos.
+
+## Install it
+
+```bash
+curl -fsSL https://videre.sh/install | sh
+```
+
+No Rust toolchain, nothing to compile. On macOS, `brew install
+erhangundogan/tap/videre` works too and handles upgrades for you. Both are
+covered in [install](/start/install/), along with building from source and the
+platform notes.
+
+## Scan a folder
 
 ```bash
 videre scan ~/Photos
 ```
 
-That builds a database at `~/.videre/hashes.db` describing what you have. It
-does not change your photos.
+That builds a database at `~/.videre/hashes.db` describing what you have, and
+everything below reads from it. **It does not change your photos.**
 
 It also remembers `~/Photos` as your default folder, so later commands can be
 run without repeating it. It says so when it happens.
@@ -20,10 +33,10 @@ run without repeating it. It says so when it happens.
 ## Clean up duplicates
 
 ```bash
-videre dedupe                 # list which copies could go
-videre dedupe --html                 # ...or review them visually in a browser first
-videre dedupe | xargs trash   # delete them
-videre prune                  # tidy the database afterwards
+videre dedupe                # list which copies could go
+videre dedupe --html         # ...or review them in a browser first
+videre dedupe | xargs trash  # delete them
+videre prune                 # tidy the database afterwards
 ```
 
 `videre dedupe` never deletes anything itself. It prints a list for you to
@@ -113,7 +126,7 @@ duplicate review to AI agents over stdio:
 - Two different videre commands can run at once against the same database.
   Running the *same* command twice is refused rather than allowed to corrupt
   anything.
-- `videre gallery` and `--show-faces` start a local web server on
+- `videre gallery` starts a local web server on
   `localhost:7878`. Nothing leaves your machine.
 - The only feature that touches the network is `videre search --location`, which
   looks up a place name once and caches the result.
