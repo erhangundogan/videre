@@ -59,13 +59,20 @@ locally" and "it passes in CI" were different claims about different compilers,
 and one rustfmt failure took a CI round trip to see. Resolved by
 `brew uninstall rust`, leaving rustup as the only Rust.
 
-:warning: **One incident from that era is still unexplained**, recorded on the
-board: `make fmt-check` exited 0 on a file CI's rustfmt then rejected, and the
-same command failed locally afterwards on unchanged bytes. Version skew was
-tested and **ruled out**, since both rustfmt versions rejected the line
-identically. If a local formatting pass ever disagrees with CI again, treat CI
-as authoritative, run `cargo fmt --all`, and note it there rather than
-re-deriving this.
+:warning: **Do not verify formatting with `fmt-check` before committing. Run
+`cargo fmt --all`.**
+
+`make fmt-check` has twice reported clean on a tree CI's rustfmt then rejected,
+2026-08-20, both times on a branch adding a new test file. Checking out the exact
+rejected commit and re-running locally finds **the same diffs**, so local and CI
+agree about the bytes and the fault is in the invocation rather than the
+toolchain. The mechanism is still unknown; five hypotheses have been eliminated
+and are listed on the board item, including version skew and stale cargo
+metadata.
+
+`cargo fmt --all` is idempotent and cannot report a false pass, so it sidesteps
+the question entirely. Never wrap the check in something that asserts success
+from an exit code alone.
 
 Coverage is the one command that still names a toolchain of its own; see the
 coverage section for why.

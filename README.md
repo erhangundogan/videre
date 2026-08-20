@@ -102,14 +102,14 @@ does not change your photos.
 
 ```bash
 videre dedupe                 # list which copies could go
-videre report                 # ...or review them visually in a browser first
+videre dedupe --html          # ...or review them visually in a browser first
 videre dedupe | xargs trash   # delete them, once you have looked
 
 videre embed                  # one-time: prepares photos for search
 videre search "golden gate bridge at sunset"
 
 videre faces                  # detect and group faces
-videre report --faces         # name the groups in your browser
+videre gallery                # name the groups in your browser
 videre search --person "Alice"
 ```
 
