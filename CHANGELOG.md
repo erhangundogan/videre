@@ -37,7 +37,23 @@ version number and are released together.
   This matters most on ARM64 Linux, where building from source needs
   `-C target-feature=+fp16` and a prebuilt binary does not.
 
+- **A Troubleshooting page**, organised by the symptom you see rather than by
+  which command produced it: an old copy on your `PATH` winning, search
+  returning nothing, files skipped on a slow drive, HEIC skipped on Linux, a
+  command waiting on the writer lock, and resuming an interrupted job.
+
+### Changed
+
+- **Cautions moved from "Start here" to Reference.** It warns about commands you
+  have not run yet, which is not a thing to read before starting. The old
+  address redirects.
+
 ### Fixed
+
+- **`videre gallery` was missing from the documentation sidebar**, so the
+  command added in 0.18.0 had a page that nothing linked to, while the
+  deprecated `videre report` it replaced was still listed. The two have swapped
+  places; report's page is still reachable by address.
 
 - **Two sections of this changelog were both headed `Unreleased`**, and the
   0.18.0 release renamed both. The older one, five `videre import` fixes, was

@@ -10,6 +10,13 @@ export default defineConfig({
 	// Used for canonical URLs and the Pagefind search index. Must match the
 	// deployed origin, or sitemap and social links point at the wrong host.
 	site: SITE,
+
+	// Cautions moved from "Start here" to Reference on 2026-08-20. The old URL
+	// was published and may be linked from outside, so it redirects rather than
+	// 404ing.
+	redirects: {
+		'/start/cautions/': '/reference/cautions/',
+	},
 	integrations: [
 		starlight({
 			title: 'videre',
@@ -68,7 +75,6 @@ export default defineConfig({
 						{ label: 'Install', slug: 'start/install' },
 						{ label: 'Quickstart', slug: 'start/quickstart' },
 						{ label: 'Workflows', slug: 'start/workflows' },
-						{ label: 'Cautions', slug: 'start/cautions' },
 					],
 				},
 				{
@@ -78,7 +84,7 @@ export default defineConfig({
 						{ label: 'import', slug: 'commands/import' },
 						{ label: 'scan', slug: 'commands/scan' },
 						{ label: 'dedupe', slug: 'commands/dedupe' },
-						{ label: 'report', slug: 'commands/report' },
+						{ label: 'gallery', slug: 'commands/gallery' },
 						{ label: 'search', slug: 'commands/search' },
 						{ label: 'embed', slug: 'commands/embed' },
 						{ label: 'faces', slug: 'commands/faces' },
@@ -111,6 +117,8 @@ export default defineConfig({
 				{
 					label: 'Reference',
 					items: [
+						{ label: 'Troubleshooting', slug: 'reference/troubleshooting' },
+						{ label: 'Cautions', slug: 'reference/cautions' },
 						{ label: 'Where your data lives', slug: 'reference/paths' },
 						{ label: 'The database', slug: 'reference/database' },
 						{ label: 'Platform support', slug: 'reference/platforms' },
