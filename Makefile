@@ -1,5 +1,21 @@
 .DEFAULT_GOAL := help
 
+# Every Rust command goes through the toolchain pinned in rust-toolchain.toml,
+# never a bare `cargo`.
+#
+# :warning: A bare `cargo` here IGNORES rust-toolchain.toml. rustup honours it
+# through its shims, but this machine has no rustup shim on PATH:
+# /opt/homebrew/bin/cargo is a symlink straight into Homebrew's Cellar, and
+# ~/.cargo/bin holds only cargo extensions. Verified by pinning a different
+# version and watching Homebrew's cargo report its own regardless. So calling
+# `cargo` directly silently uses whatever Homebrew last installed, which is how
+# a local check and CI came to disagree.
+#
+# The channel is read from rust-toolchain.toml so the version lives in exactly
+# one place. Change it there.
+TOOLCHAIN := $(shell sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+CARGO := rustup run $(TOOLCHAIN) cargo
+
 # cargo-llvm-cov must run through the rustup-managed toolchain, not the
 # default `cargo` on PATH. This machine's default cargo/rustc are a separate
 # Homebrew Rust install with no rustup component support, while
@@ -16,11 +32,11 @@ help: ## Show this help
 
 .PHONY: build
 build: ## Build the release binary (target/release/videre)
-	cargo build --release
+	$(CARGO) build --release
 
 .PHONY: build-dev
 build-dev: ## Build the debug binary (target/debug/videre)
-	cargo build
+	$(CARGO) build
 
 # --no-fail-fast to match CI. Without it cargo stops at the first failing test
 # binary, so one failure hides every later one - which is how a Linux-only
@@ -28,7 +44,7 @@ build-dev: ## Build the debug binary (target/debug/videre)
 # passed at all.
 .PHONY: test
 test: ## Run the full workspace test suite (as CI does)
-	cargo test --workspace --no-fail-fast
+	$(CARGO) test --workspace --no-fail-fast
 
 # Not part of `test`, because it downloads real published releases over the
 # network. CI runs it only when the script or its test changes.
@@ -38,15 +54,15 @@ test-install: ## Exercise docs/public/install end to end (needs network)
 
 .PHONY: fmt
 fmt: ## Format all Rust code
-	cargo fmt --all
+	$(CARGO) fmt --all
 
 .PHONY: fmt-check
 fmt-check: ## Check formatting without modifying files
-	cargo fmt --all -- --check
+	$(CARGO) fmt --all -- --check
 
 .PHONY: lint
 lint: ## Run clippy across the workspace
-	cargo clippy --workspace --all-targets
+	$(CARGO) clippy --workspace --all-targets
 
 .PHONY: coverage
 coverage: ## Print per-file unit-test coverage (cargo-llvm-cov)
@@ -81,8 +97,8 @@ docs-og: ## Regenerate the social card at docs/public/og.png
 # with `which videre`, and `cargo uninstall videre` to undo.
 .PHONY: install
 install: ## Install to ~/.cargo/bin (warning: shadows a Homebrew install, see comment)
-	cargo install --path crates/videre --force
+	$(CARGO) install --path crates/videre --force
 
 .PHONY: clean
 clean: ## Remove build artifacts (cargo clean)
-	cargo clean
+	$(CARGO) clean

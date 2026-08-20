@@ -26,12 +26,21 @@ jobs:
       # workspace pulling in candle and ONNX Runtime, and why it needs no
       # dependency cache.
       #
-      # Uses the runner's preinstalled Rust rather than pinning a toolchain.
-      # Formatting under the default config is stable across versions: the two
-      # installed locally (1.8.0-stable and 1.9.0) were checked and produce
-      # byte-identical output. If a future rustfmt ever disagrees, this job
-      # fails loudly with the exact diff rather than silently reformatting
-      # anything.
+      # The version comes from rust-toolchain.toml, which is the only place it
+      # is written. Before it existed this job used the runner's preinstalled
+      # Rust while the development machine used a Homebrew one, so "it passes
+      # locally" and "it passes in CI" were different claims.
+      #
+      # Installed explicitly rather than relied on: `make fmt-check` shells out
+      # to `rustup run`, which does not install a missing toolchain on every
+      # rustup version. The bare `cargo` in the test job below does auto-install
+      # from the file, but being explicit costs one line and removes the
+      # dependency on which behaviour this runner has.
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install --profile minimal --component rustfmt \
+            "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
+
       - name: Check formatting
         run: make fmt-check
 
@@ -69,6 +78,11 @@ jobs:
         with:
           path: ~/.cache/huggingface
           key: hf-v2-${{ runner.os }}-${{ hashFiles('crates/videre-ml/src/face_models.rs', 'crates/videre-core/src/embeddings.rs') }}
+
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install --profile minimal --component clippy \
+            "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
 
       - name: Build
         run: cargo build --workspace --tests
