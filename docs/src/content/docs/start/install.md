@@ -94,16 +94,17 @@ xattr -d com.apple.quarantine videre
 Homebrew installs are not quarantined, so `brew install` avoids this entirely.
 :::
 
-:::caution[An old `cargo install` will shadow a newer Homebrew install]
-If you previously ran `cargo install videre`, that copy lives in `~/.cargo/bin`,
-which usually comes first on `PATH`. It will keep winning even after you install
-a newer version with Homebrew, and `videre --version` will quietly report the
-old one.
+:::caution[More than one videre will shadow itself]
+If you have installed videre more than one way, whichever copy comes first on
+your `PATH` wins, and `videre --version` quietly reports that one. An old
+`cargo install videre` in `~/.cargo/bin` is the usual culprit.
 
 ```bash
 which videre          # check which copy you are actually running
-cargo uninstall videre
 ```
+
+[Troubleshooting](/reference/troubleshooting/) lists where each install method
+puts the binary and how to remove each one properly.
 :::
 
 ## From source
