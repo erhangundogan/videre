@@ -110,7 +110,7 @@ so removing them loses nothing at all.
 
 :::caution
 `videre dedupe | xargs trash` deletes immediately. Run `videre dedupe --html` first, or
-send the list to a file and read it. See [cautions](/start/cautions/).
+send the list to a file and read it. See [cautions](/reference/cautions/).
 :::
 
 ## 7. Make it searchable

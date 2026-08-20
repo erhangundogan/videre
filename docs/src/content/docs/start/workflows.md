@@ -166,7 +166,7 @@ That covers scanning, faces, HEIC caching and place names on a loop. It does
 batch of photos.
 
 Do not run a manual `embed` or `faces` while `watch` is running its faces or
-HEIC stages. See the [caveats](/start/cautions/).
+HEIC stages. See the [caveats](/reference/cautions/).
 
 ### Reclaim disk space
 
