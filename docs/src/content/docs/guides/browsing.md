@@ -17,23 +17,18 @@ share a command but are not really the same tool.
 
 ## Static file or local server
 
-One rule decides it:
+The command decides it, not a flag:
 
-:::note[`--faces` or `--show-faces` means server. Anything else means a file.]
-Either flag starts a server on `localhost:7878` and writes nothing. Without
-both, you get a self-contained HTML file and no server.
+:::note[`gallery` is a server. `--html` writes a file.]
+[`videre gallery`](/commands/gallery/) serves on `localhost:7878` and writes
+nothing. [`dedupe --html`](/commands/dedupe/) and
+[`search --html`](/commands/search/) write a self-contained page and start
+nothing.
 :::
 
-That is worth internalising, because the flags combine freely and the result is
-not always what the names suggest:
-
-```bash
-videre gallery --show-faces --heic
-```
-
-That is **server mode**. `--show-faces` wins, `--all` adds the gallery, and
-`--heic` is silently ignored, since server mode converts HEIC lazily per request
-instead of embedding it up front.
+Until 0.18.0 this was decided by which combination of flags you passed to one
+command, and combining them needed a table to explain which won. Splitting them
+into separate commands is what removed that question.
 
 ### Why the difference exists
 
@@ -42,7 +37,7 @@ nothing running. That makes it portable and permanent, but it cannot show
 anything computed on demand.
 
 Named faces and place names are looked up per photo, so they need a backend.
-That is the whole reason `--show-faces` starts a server rather than baking
+That is the whole reason `gallery` is a server rather than something that bakes
 results into a file.
 
 It also changes how images load. A static report links to your files with
@@ -107,23 +102,19 @@ names, because they are stored per face rather than per group.
 videre gallery
 ```
 
-The report itself, but served, with the lightbox showing each photo's named
-faces (clicking one jumps to that person) and a reverse-geocoded place name.
+One server, every view on its own route. The lightbox shows each photo's named
+faces, clicking one jumps to that person, and places are reverse-geocoded on
+demand.
 
-Combine as you like:
+| Route | Shows |
+|---|---|
+| `/` | Every file |
+| `/people` | Face groups, and where you name them |
+| `/date` | Year, month, day drill-down |
 
-```bash
-videre gallery --show-faces      # whole library, live metadata
-videre gallery    # report at /, labeling UI at /faces
-```
-
-Route split when combining:
-
-| Flags | `/` serves | `/faces` |
-|---|---|---|
-| `--faces` | Labeling UI | not routed |
-| `--show-faces` | Live report | not routed |
-| Both | Live report | Labeling UI |
+Those used to be flags on a single page, and combining them needed a table to
+explain which one won. Routes need no such explanation, which is why they
+replaced the flags in 0.18.0.
 
 ### HEIC is faster here than it looks
 
@@ -147,18 +138,18 @@ image is broken.
 To produce something that travels, embed the images:
 
 ```bash
-videre gallery --heic -o for-sharing.html
+videre dedupe --html for-sharing.html
 ```
 
-`--heic` inlines 240px thumbnails; `--heic-original` adds 1200px lightbox
-versions. Both make the file substantially larger, since everything is base64
-encoded, and both are macOS only. That size is the price of a page that works
-anywhere with nothing running.
+The page links to your files by path, so it is small but only complete on the
+machine holding them. Embedding the images instead is not currently offered:
+`report --heic` used to do it, and went with that command in 0.20.0.
 
 ## Caveats
 
-**One server at a time.** Both `--faces` and `--show-faces` bind port 7878, so a
-second invocation fails while the first is running.
+**One server at a time.** `gallery` binds port 7878 by default, so a second
+invocation fails while the first is running. Give it `--port` to run two at
+once, against different libraries.
 
 **Served image bytes come from an allowlist.** The endpoint only serves paths
 already recorded in the database, so it is not a general file server. It does
@@ -168,11 +159,14 @@ running.
 **A static report is a snapshot.** It reflects the database when generated.
 After deleting duplicates, regenerate it.
 
-**Files missing from disk are excluded** at generation time, without changing the
-database. [`videre prune`](/commands/prune/) removes those rows for good.
+**Files missing from disk are still listed.** A static page reads the database,
+so a photo deleted outside videre appears until
+[`videre prune`](/commands/prune/) removes its row.
 
-**The similarity button needs [`videre embed`](/commands/embed/).** Without it,
-`--all` still works and the button is disabled with a note rather than failing.
+**Similarity search needs [`videre embed`](/commands/embed/), and lives only in
+`gallery`.** A static page cannot carry it: matching a query against every
+vector needs the database, which an exported file does not have. Without
+embeddings, `gallery` still serves every view and says so rather than failing.
 
-**Nothing leaves your machine.** Both server modes bind locally, and the pages
+**Nothing leaves your machine.** The server binds to `127.0.0.1`, and the pages
 make no external requests.

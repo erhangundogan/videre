@@ -29,6 +29,38 @@ const UNIVERSAL: [&str; 2] = ["--help", "--version"];
 const HIDDEN_ALIASES: [(&str, &str); 2] =
     [("scan", "--output-sqlite"), ("watch", "--output-sqlite")];
 
+/// Flags of the **install script**, not of `videre` itself. The install and
+/// troubleshooting pages document them correctly; they are simply another
+/// program's command line, so `videre --help` will never list them.
+const INSTALLER_FLAGS: [&str; 4] = ["--uninstall", "--to", "--release", "--version"];
+
+/// Every `.md` under the docs tree, not just `commands/`.
+///
+/// :warning: The per-command check below only reads `commands/`, which left the
+/// guides unguarded. `guides/browsing.md` went on documenting `--faces`,
+/// `--show-faces` and `--all` for two releases after they were removed, teaching
+/// a command line that no longer parsed. Found by reading, which is what these
+/// tests exist to replace.
+fn all_docs_pages() -> Vec<PathBuf> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/src/content/docs");
+    let mut out = Vec::new();
+    let mut stack = vec![root];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|x| x == "md" || x == "mdx") {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
 fn docs_dir() -> Option<PathBuf> {
     // Tests run from the crate root; docs/ lives at the workspace root and is
     // excluded from the published package, so a consumer running `cargo test`
@@ -43,7 +75,16 @@ fn flags(text: &str) -> BTreeSet<String> {
     let bytes = text.as_bytes();
     let mut i = 0;
     while i + 2 < bytes.len() {
-        if bytes[i] == b'-' && bytes[i + 1] == b'-' && bytes[i + 2].is_ascii_alphanumeric() {
+        // :warning: A flag starts a word. Without this, the Hugging Face
+        // cache layout `models--google--siglip-base-patch16-224` reads as
+        // the flags `--google` and `--siglip-base-patch16-224`, and the
+        // docs pages that legitimately show that path fail the check.
+        let starts_word = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
+        if starts_word
+            && bytes[i] == b'-'
+            && bytes[i + 1] == b'-'
+            && bytes[i + 2].is_ascii_alphanumeric()
+        {
             let start = i;
             i += 2;
             while i < bytes.len()
@@ -227,4 +268,45 @@ fn hidden_aliases_still_work() {
         );
         assert!(db.is_file(), "`{alias}` did not write a database");
     }
+}
+
+/// The same rule as `no_page_documents_a_flag_that_does_not_exist`, applied to
+/// every page rather than only the command reference.
+///
+/// Scoped identically: a flag accepted by *no* command is stale wherever it
+/// appears. A flag documented on the "wrong" page is not a finding, because
+/// guides legitimately show several commands working together.
+#[test]
+fn no_page_anywhere_names_a_flag_that_does_not_exist() {
+    let Some(docs) = docs_dir() else { return };
+    let cmds = commands(&docs);
+    let mut anywhere: BTreeSet<String> = cmds.iter().flat_map(|c| flags(&help_for(c))).collect();
+    anywhere.extend(HIDDEN_ALIASES.iter().map(|(_, f)| f.to_string()));
+    anywhere.extend(INSTALLER_FLAGS.iter().map(|f| f.to_string()));
+
+    let mut findings = Vec::new();
+    for page in all_docs_pages() {
+        let Ok(text) = std::fs::read_to_string(&page) else {
+            continue;
+        };
+        let dead: Vec<String> = flags(&text)
+            .difference(&anywhere)
+            .map(|s| s.to_string())
+            .collect();
+        if !dead.is_empty() {
+            let name = page
+                .strip_prefix(
+                    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/src/content/docs"),
+                )
+                .unwrap_or(&page);
+            findings.push(format!("  {}: {}", name.display(), dead.join(" ")));
+        }
+    }
+
+    findings.sort();
+    assert!(
+        findings.is_empty(),
+        "docs name flags that no videre command accepts:\n{}",
+        findings.join("\n")
+    );
 }
