@@ -13,46 +13,69 @@ videre stats --db ~/photos.db          # use a specific database
 ## Reading the output
 
 ```
-Library: 204 file(s) (1.9 GB), 151 photo(s), 52 video(s)
-Duplicates: 3 group(s), 7 file(s), 10.4 MB wasted
-Faces: 98 detected, 0 people named
+Library: 70601 file(s) (398.9 GB), 57142 photo(s), 13459 video(s)
+Duplicates: 0 group(s), 0 file(s), 0 B wasted
+Faces: 58555 detected, 86 people named
 
 Embeddings:
-  google/siglip-base-patch16-224              196   768-dim     400 KB
+  google/siglip-base-patch16-224            70588   768-dim   128.3 MB
+  google/siglip-so400m-patch14-384          70587  1152-dim   189.6 MB
+  google/siglip2-base-patch16-384           70588   768-dim   128.3 MB
 
 By type:
-  jpeg     image/jpeg                     151      1.2 GB
-  mov      video/quicktime                 48    612.4 MB
-  heic     image/heic                       4     18.2 MB
-  mp4      video/mp4                        1     11.9 MB
+  mov      video/quicktime             12564   165.4 GB
+  jpeg     image/jpeg                  43524   142.4 GB
+  mp4      video/mp4                     643    62.0 GB
+  heic     image/heic                  10395    20.8 GB
+  png      image/png                    3211     6.5 GB
+  mov      video/mp4                     251   909.5 MB
+  mp4      video/quicktime                 1   462.5 MB
+  dng      image/tiff                      9   433.9 MB
+  gif      image/gif                       2     4.8 MB
+  png      image/jpeg                      1    43.7 KB
 
 Disk use:
-  thumbnails             48.6 MB  (rebuildable)
-  database                2.1 MB
-  embeddings              400 KB
-  place names            11.4 MB  (rebuildable)
-  total                  62.5 MB  (60.0 MB of it rebuildable)
+  embeddings           446.3 MB
+  database             161.8 MB
+  thumbnails            84.1 MB  (rebuildable)
+  place names           11.4 MB  (rebuildable)
+  database journal      32.0 KB  (rebuildable)
+  total                703.7 MB  (95.6 MB of it rebuildable)
 
 Pipeline status:
-  scan       success      last_run=2026-08-09 22:21:31  duration=1ms
-  faces      success      last_run=2026-08-09 22:16:25  duration=34.6s
-  embed      success      last_run=2026-08-09 22:17:59  duration=12.7s
-  classify   success      last_run=2026-08-09 22:18:33  duration=921ms
-  dedupe     success      last_run=2026-08-09 22:21:31  duration=0ms
-  fix-dates  success      last_run=2026-08-09 22:16:04  duration=2ms
-  prune      success      last_run=2026-08-09 22:17:39  duration=2ms
-  locations  success      last_run=2026-08-09 22:18:38  duration=66ms
+  scan       success      last_run=2026-08-09 16:17:43  duration=0ms
+  faces      interrupted  last_run=2026-08-03 10:11:45  duration=9m 6s
+  embed      success      last_run=2026-08-17 13:29:01  duration=21s
+  classify   success      last_run=2026-08-17 13:29:30  duration=1.5s
+  dedupe     success      last_run=2026-08-05 11:35:38  duration=132ms
+  fix-dates  success      last_run=2026-07-31 10:33:15  duration=50ms
+  prune      success      last_run=2026-07-31 21:02:36  duration=479ms
+  locations  success      last_run=2026-08-18 09:32:47  duration=1m 17s
 ```
+
+Real output from a 70,000-file library, so the awkward rows are the interesting
+ones.
 
 **By type** groups the library by file extension, with the mime type beside it
 and the largest first. These are the values `--ext` and `--mime` take, so this is
-where to look before scoping a run. Extension and mime can disagree - a `.mov`
-holding MP4 video is common - and both are shown rather than reconciled.
+where to look before scoping a run.
 
-**Disk use** is what videre itself stores, not your photos. Entries marked
-`(rebuildable)` cost only time to recreate: thumbnails are re-converted on
-demand, place names ship with videre. The database and embeddings are not - an
-embedding run takes hours, and the database cannot be rebuilt without rescanning.
+**Extension and mime disagree more often than people expect**, and both are shown
+rather than reconciled. Three rows above are the same file types filed under a
+different name: 251 `.mov` files holding MP4 video, one `.mp4` holding QuickTime,
+and one `.png` that is really a JPEG. Reconciling them would mean choosing which
+of the two to lie about, so `--ext mov` and `--mime video/quicktime` select
+genuinely different sets.
+
+**Disk use** is what videre itself stores, not your photos, largest first.
+Entries marked `(rebuildable)` cost only time to recreate: thumbnails are
+re-converted on demand, place names ship with videre, and the database journal is
+transient. The database and embeddings are not rebuildable - an embedding run
+takes hours, and the database cannot be recreated without rescanning.
+
+Note the proportions above: 703.7 MB of videre data describing 398.9 GB of
+photos, and only 95.6 MB of it disposable. **Embeddings dominate** because that
+library has three models prepared.
 
 :::note[Embeddings are counted per library]
 They live in a separate directory per database, so `stats` reports only the ones
@@ -66,12 +89,18 @@ would reclaim by deleting all but one of each group, which is what
 [`videre dedupe`](/commands/dedupe/) proposes.
 
 **Faces detected** counts individual faces, not photos, so one group shot
-contributes several. **People named** stays at 0 until you assign names in
-[`gallery`](/commands/gallery/); detection alone never produces a name.
+contributes several - 58,555 faces across 57,142 photos above. **People named**
+stays at 0 until you assign names in [`gallery`](/commands/gallery/); detection
+alone never produces a name, however many faces it finds.
 
-**Embeddings** lists one line per [model](/reference/models/) you have prepared,
-with dimensions derived from the stored data rather than a hardcoded table, so
-an unfamiliar model still reports honestly.
+**Embeddings** lists one line per [model](/reference/models/) you have prepared.
+The dimensions come from the stored data rather than a hardcoded table, so an
+unfamiliar model still reports honestly - which is why the 1152-dimension
+`so400m` line above needs no special-casing to appear correctly.
+
+The counts differ slightly between models (70588, 70587, 70588) because each run
+skipped whatever it could not decode at the time. A count below the library total
+is normal, not a sign of a failed run.
 
 ## Numbers that look wrong but are not
 
@@ -95,10 +124,33 @@ rather than failing outright.
 
 ## Checking on things
 
-`never run` marks a command that has not executed against this database, and
-`(running now)` appears when its lock is currently held by a live process. That
-makes this the way to see whether a background [`watch`](/commands/watch/) is
-actually working:
+Every tracked command reports one of:
+
+| status | meaning |
+|---|---|
+| `success` | finished, whatever it did or did not find |
+| `failed` | returned an error |
+| `interrupted` | stopped part-way, usually Ctrl-C or a machine going to sleep |
+| `crashed` | claimed to be running, but no live process holds its lock |
+| `-` | has never executed against this database, and `last_run` reads `never run` |
+
+`(running now)` is appended to the line, not a status: it means the command's
+lock is held by a live process at this moment.
+
+The `faces interrupted` line in the sample above is the ordinary case: a long
+run was stopped part-way. **Nothing is lost when that happens.** Every long job
+records what it already processed, so running it again resumes rather than
+restarting. The status is there to tell you the work is unfinished, not that it
+is broken.
+
+:::note[Per-item errors do not make a run `failed`]
+`fix-dates` and `faces` can skip individual files and still record `success`,
+because one unreadable photo is not a failed run. `failed` means the command
+itself returned an error.
+:::
+
+Because `(running now)` reflects a live lock, this is the way to see whether a
+background [`watch`](/commands/watch/) is actually working:
 
 ```bash
 videre stats | grep -E 'scan|faces'
