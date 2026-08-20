@@ -6,12 +6,14 @@
 # symptom is a check passing locally and failing in CI, which is expensive to
 # diagnose precisely because it looks like flakiness.
 #
-# :warning: A bare `cargo` on the development machine DOES NOT read this file.
-# rustup honours it through its shims, but `/opt/homebrew/bin/cargo` is a real
-# cargo rather than a shim, and it is first on PATH. Verified: with this file
-# pinning a different version, Homebrew's cargo still reported its own. That is
-# why the Makefile invokes `rustup run` explicitly instead of calling `cargo`.
-# GitHub runners install Rust through rustup, so there this file is enough.
+# Read by rustup shims, which is what `cargo` is on the development machine and
+# on GitHub runners alike.
+#
+# :warning: Only a *shim* honours this file. A real cargo binary ignores it
+# completely. That was this machine until 2026-08-20, when a Homebrew `rust`
+# formula owned /opt/homebrew/bin/cargo and silently used its own version no
+# matter what was pinned here. It is why the Makefile calls `rustup run` rather
+# than `cargo`: correct either way, and cheap.
 #
 # To move versions: change `channel` here, and nowhere else.
 
