@@ -702,6 +702,25 @@ for `cargo install videre`.
 `docs/` is an Astro Starlight site published at <https://docs.videre.sh>,
 deployed automatically from `main` by Cloudflare.
 
+**It is a Cloudflare Worker**, configured by `docs/wrangler.jsonc` and named
+`videre-docs`. Specifically an **assets-only Worker: there is no `main` entry
+point**, so Cloudflare serves the built `dist/` directly and no script runs on
+the request path. `not_found_handling` is `404-page`, so unknown paths get
+Starlight's own 404 rather than a bare Cloudflare error.
+
+:warning: **Adding a `main` changes the billing model.** Static asset requests
+are free and unlimited; the free plan's 100,000/day cap counts **Worker
+invocations**, which today are zero. Anything that can be a file in
+`docs/public/` should be, rather than a route in a script.
+
+`docs/public/` is copied to `dist/` verbatim (`robots.txt`, `favicon.svg` and
+friends arrive that way), which is how a non-Astro file gets served at a fixed
+path.
+
+**The apex `videre.sh` is registered** on Cloudflare and separate from
+`docs.videre.sh`. It is reserved for a landing page and deliberately has no
+apex record yet, so it does not resolve.
+
 ```bash
 yarn --cwd docs install
 yarn --cwd docs dev       # http://localhost:4321
