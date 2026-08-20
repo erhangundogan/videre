@@ -1,8 +1,6 @@
 ---
 title: Cautions
 description: The parts of videre that change something, and the situations that surprise people.
-sidebar:
-  order: 3
 ---
 
 Most of videre is read-only. These are the parts that are not, plus the

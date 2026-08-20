@@ -32,7 +32,7 @@ those are reported for review only, never included in the delete list.
 
 :::caution
 `videre dedupe | xargs trash` deletes immediately. Look before you pipe. See
-[cautions](/start/cautions/).
+[cautions](/reference/cautions/).
 :::
 
 ## Search your photos
