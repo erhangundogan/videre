@@ -20,6 +20,39 @@ cargo test --workspace
 One binary, `videre`, with fifteen subcommands. `main.rs` dispatches to one
 module per subcommand under `src/commands/`.
 
+### :warning: This machine has two Rust toolchains, and `PATH` picks the wrong one
+
+`cargo` and `rustc` on `PATH` are a **Homebrew** Rust install. There is also a
+rustup-managed toolchain. They are different versions and rustup components are
+installed only into the rustup one.
+
+```
+/opt/homebrew/bin/cargo     Homebrew, first on PATH, rustfmt 1.9.0
+rustup run stable-aarch64-apple-darwin ...   rustfmt 1.8.0-stable
+```
+
+Nothing pins a toolchain: there is no `rust-toolchain.toml`, so every bare
+`cargo` command gets Homebrew's, while CI gets the runner's preinstalled Rust.
+
+**Known consequences, both real:**
+
+- **Coverage must use rustup explicitly.** `llvm-tools-preview` installs only
+  into a rustup toolchain, so a bare `cargo llvm-cov` pairs an LLVM-22 rustc
+  with LLVM-21 coverage tools and produces incompatible profile data. See the
+  coverage section.
+- **`make fmt-check` runs Homebrew's rustfmt, not CI's.** The two currently
+  agree, and `ci.yml` says so, but that is **a measurement, not a guarantee**: a
+  Homebrew bump can diverge from the runner with no warning, and the symptom is
+  a local pass followed by a CI rustfmt failure.
+
+:warning: **A local `make fmt-check` pass is evidence, not proof.** On
+2026-08-20 it exited 0 on a file CI's rustfmt then rejected, and the same
+command failed locally afterwards on unchanged bytes. Version skew was tested
+and ruled out as the cause; both rustfmt versions reject the offending line
+identically, so that incident is still unexplained. **Treat the CI result as
+authoritative and just run `cargo fmt --all`** rather than re-litigating a local
+pass.
+
 ## Project structure
 
 ```
@@ -211,11 +244,11 @@ and skips when they are not.
 ## Test coverage
 
 `cargo-llvm-cov` must be invoked through the rustup-managed toolchain
-explicitly, not plain `cargo llvm-cov`. This machine's default `cargo`/`rustc`
-on `PATH` are a separate Homebrew Rust install with no rustup component support,
-while `llvm-tools-preview` only installs into a rustup toolchain; mixing them
-pairs an LLVM-22 rustc with LLVM-21 coverage tools and produces incompatible
-profile data.
+explicitly, not plain `cargo llvm-cov`. This is one instance of the
+[two-toolchain problem](#warning-this-machine-has-two-rust-toolchains-and-path-picks-the-wrong-one)
+above: `llvm-tools-preview` installs only into a rustup toolchain, so mixing
+them pairs an LLVM-22 rustc with LLVM-21 coverage tools and produces
+incompatible profile data.
 
 ```bash
 rustup run stable-aarch64-apple-darwin cargo llvm-cov --workspace --summary-only
