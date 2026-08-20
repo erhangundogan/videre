@@ -1,0 +1,23 @@
+# The one place the Rust version is decided, for this repo and for CI.
+#
+# Pinned because the toolchain was previously whatever each machine happened to
+# have. Locally that is a Homebrew Rust; on GitHub it is the runner's
+# preinstalled Rust; they were different versions and nothing noticed. The
+# symptom is a check passing locally and failing in CI, which is expensive to
+# diagnose precisely because it looks like flakiness.
+#
+# Read by rustup shims, which is what `cargo` is on the development machine and
+# on GitHub runners alike.
+#
+# :warning: Only a *shim* honours this file. A real cargo binary ignores it
+# completely. That was this machine until 2026-08-20, when a Homebrew `rust`
+# formula owned /opt/homebrew/bin/cargo and silently used its own version no
+# matter what was pinned here. It is why the Makefile calls `rustup run` rather
+# than `cargo`: correct either way, and cheap.
+#
+# To move versions: change `channel` here, and nowhere else.
+
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
