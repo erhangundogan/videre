@@ -99,7 +99,7 @@ fn an_unknown_flag_is_rejected_by_every_subcommand() {
         "classify",
         "dedupe",
         "prune",
-        "report",
+        "gallery",
         "import",
         "stats",
         "locations",

@@ -13,6 +13,20 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [Unreleased]
+
+### Removed
+
+- :warning: **`videre report` is gone**, as 0.18.0 said it would be. Use
+  [`videre gallery`](https://docs.videre.sh/commands/gallery/) to browse the
+  library, `videre dedupe --html` to write a duplicate-review page, and
+  `videre search ... --html` to write a page of search results.
+
+  Two of its modes have no static equivalent on purpose. `--all` and
+  `--by-date` are now routes of `videre gallery`, which is a live server,
+  because in-page similarity search needs a backend that an exported file
+  cannot have.
+
 ## [0.19.0] - 2026-08-20
 
 ### Added
@@ -997,6 +1011,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.19.0...HEAD
 [0.19.0]: https://github.com/erhangundogan/videre/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/erhangundogan/videre/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/erhangundogan/videre/compare/v0.16.1...v0.17.0
