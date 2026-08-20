@@ -94,7 +94,7 @@ fn crop_face_square(img: &image::DynamicImage, bbox: [f32; 4]) -> image::Dynamic
 /// rotation, so no separate orientation step is needed. For JPEG/PNG/etc:
 /// detection ran on raw pixels; apply EXIF orientation after crop.
 ///
-/// `pub` (unlike the three helpers above it): `videre report`'s static-report
+/// `pub` (unlike the three helpers above it): the static-page
 /// base64 thumbnail path (`face_thumb_b64` in `report.rs`) also needs this
 /// exact crop+orientation logic, so it calls through here instead of keeping
 /// its own duplicate copy.

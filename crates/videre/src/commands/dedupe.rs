@@ -123,7 +123,7 @@ fn run_dedupe_text(args: &DedupeArgs, db: &std::path::Path) -> anyhow::Result<()
         let similar = videre::output::find_similar_groups(&records, 10);
         if !args.silent && !similar.is_empty() {
             eprintln!(
-                "{} visually similar group(s) found: review with videre report before deleting.",
+                "{} visually similar group(s) found: review with videre dedupe --html before deleting.",
                 similar.len()
             );
         }

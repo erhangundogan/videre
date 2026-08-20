@@ -1407,8 +1407,14 @@ async fn serve_faces_async(
 }
 
 /// Entry point for `videre gallery`: the same server, every view on its own
-/// route. Lives here for now because the server does; it moves to `gallery.rs`
-/// when `report` is removed.
+/// route.
+///
+/// :warning: This file is named `report.rs` for a command that no longer
+/// exists. `videre report` was removed in 0.20.0; what remains here is the
+/// shared renderer and server that `gallery`, `dedupe --html` and
+/// `search --html` all use. Renaming it, and moving this function to
+/// `gallery.rs`, is tracked separately: it is a large mechanical move and does
+/// not belong in the same change as the removal.
 pub(crate) fn serve_gallery(
     db: &Path,
     model_id: String,

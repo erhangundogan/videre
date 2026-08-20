@@ -10,7 +10,7 @@ and runs on Linux, with one functional gap.
 
 | | macOS | Linux |
 |-|-------|-------|
-| `scan`, `dedupe`, `report`, `fix-dates`, `prune`, `locations`, `stats`, `mcp`, `config` | yes | yes |
+| `scan`, `dedupe`, `gallery`, `fix-dates`, `prune`, `locations`, `stats`, `mcp`, `config` | yes | yes |
 | `embed`, `search` | yes (GPU) | yes (CPU only) |
 | `faces` | yes | yes |
 | `watch` | yes | yes (`--heic` stage unavailable) |

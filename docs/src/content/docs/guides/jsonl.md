@@ -13,7 +13,7 @@ They are not competing formats, and neither is the lesser one:
 
 | | For |
 |---|---|
-| **SQLite** (`--db`) | the *library*. Everything that accumulates - embeddings, faces, classifications, location clusters - and everything that reads them: `search`, `report`, `dedupe`, the MCP server. |
+| **SQLite** (`--db`) | the *library*. Everything that accumulates - embeddings, faces, classifications, location clusters - and everything that reads them: `search`, `gallery`, `dedupe`, the MCP server. |
 | **JSONL** (`--output`) | *composability*. One line per file, straight into `jq`, `awk`, a spreadsheet or another program, with no SQLite dependency and no schema to learn. |
 
 Use SQLite when videre is your library. Use JSONL when videre is one step in a
@@ -79,7 +79,7 @@ JSONL is scan output only. Nothing else reads it:
 
 | Command | Works from JSONL? |
 |---|---|
-| `dedupe`, `report`, `prune`, `stats`, `locations` | No, they need the database |
+| `dedupe`, `gallery`, `prune`, `stats`, `locations` | No, they need the database |
 | `embed`, `faces`, `classify`, `search` | No |
 | `scan --retry-incomplete` | No, it needs a database to consult |
 
