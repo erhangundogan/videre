@@ -124,7 +124,10 @@ fn a_static_page_carries_no_vectors_or_gallery_shell() {
     let dir = tempdir().unwrap();
     let (db, _) = fixture_db(dir.path(), true);
     let html = run_dedupe_html(&db);
-    assert!(!html.contains("var VEC_B64="), "static export must not embed vectors");
+    assert!(
+        !html.contains("var VEC_B64="),
+        "static export must not embed vectors"
+    );
     assert!(!html.contains("var ALLFILES="));
     assert!(!html.contains("id=\"gallery\""));
     assert!(!html.contains("id=\"results\""));
@@ -167,7 +170,10 @@ fn search_html_writes_a_page() {
     let (db, _) = fixture_db(dir.path(), false);
     // A filter query needs no embeddings, so this works on the plain fixture.
     let html = run_search_html(&db, "jpg");
-    assert!(html.contains("<html") || html.contains("<!doctype"), "not an HTML document");
+    assert!(
+        html.contains("<html") || html.contains("<!doctype"),
+        "not an HTML document"
+    );
 }
 
 #[test]
@@ -179,6 +185,9 @@ fn html_flag_is_documented_on_both_commands() {
             .output()
             .expect("failed to run --help");
         let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(stdout.contains("--html"), "{cmd} --help does not mention --html");
+        assert!(
+            stdout.contains("--html"),
+            "{cmd} --help does not mention --html"
+        );
     }
 }
