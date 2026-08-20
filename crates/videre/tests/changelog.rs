@@ -47,7 +47,11 @@ fn no_version_appears_twice() {
     for h in headings(&s) {
         *seen.entry(h).or_default() += 1;
     }
-    let dupes: Vec<_> = seen.iter().filter(|(_, &n)| n > 1).map(|(v, n)| format!("{v} x{n}")).collect();
+    let dupes: Vec<_> = seen
+        .iter()
+        .filter(|(_, &n)| n > 1)
+        .map(|(v, n)| format!("{v} x{n}"))
+        .collect();
     assert!(
         dupes.is_empty(),
         "these headings appear more than once in CHANGELOG.md: {}.\n\
