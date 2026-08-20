@@ -60,7 +60,7 @@ videre scan                  <- everything starts here
 | [`locations`](/commands/locations/) | GPS in your photos (from `scan`) |
 
 The manual naming step is easy to overlook. `videre faces` groups faces but
-gives them no names, so `search --person` and the names in `--show-faces` stay
+gives them no names, so `search --person` and the names in `videre gallery` stay
 empty until you have opened `videre gallery` and assigned some.
 
 ## What to run afterwards

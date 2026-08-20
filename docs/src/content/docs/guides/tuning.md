@@ -52,7 +52,7 @@ detect time creeps up, so 6 is the default.
 `--profile` prints per-stage timings (load, detect, align, embed, db write) and
 is the quickest way to see whether a slow run is bound by decoding or inference.
 
-`--eps` and `--min-samples` control how faces are grouped into people, not how
+`--eps` and `--min-cluster-size` control how faces are grouped into people, not how
 fast detection runs. They are covered on the
 [faces page](/commands/faces/#fixing-bad-grouping), since changing them changes
 results rather than speed.

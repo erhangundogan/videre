@@ -13,6 +13,25 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [Unreleased]
+
+### Fixed
+
+- **The docs taught command lines that no longer parse.** `guides/browsing.md`
+  still documented `--faces`, `--show-faces`, `--heic` and `--heic-original`,
+  including a table explaining how they combined, two releases after they were
+  removed. Quickstart and workflows named `--show-faces` too, the tuning guide
+  named `--min-samples` for a flag actually called `--min-cluster-size`, and the
+  compositional search guide showed a `--sort-order` flag that has never
+  existed.
+
+  **The check that should have caught this only read the command reference.** It
+  now reads every page.
+
+- **Quickstart never said how to install videre**, while being the home page's
+  main call to action. Its first instruction was to run a command the reader did
+  not have yet.
+
 ## [0.20.1] - 2026-08-20
 
 ### Fixed
@@ -1031,6 +1050,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.20.1...HEAD
 [0.20.1]: https://github.com/erhangundogan/videre/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/erhangundogan/videre/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/erhangundogan/videre/compare/v0.18.0...v0.19.0
