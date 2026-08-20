@@ -6,7 +6,7 @@ mod commands;
 #[command(
     name = "videre",
     version,
-    about = "Local-first media library toolkit: dedupe, semantic search, faces, and reports over one SQLite database"
+    about = "Local-first media library toolkit: dedupe, semantic search, faces, and browsing over one SQLite database"
 )]
 struct Cli {
     #[command(subcommand)]
