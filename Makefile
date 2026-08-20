@@ -3,18 +3,23 @@
 # Every Rust command goes through the toolchain pinned in rust-toolchain.toml,
 # never a bare `cargo`.
 #
-# :warning: A bare `cargo` here IGNORES rust-toolchain.toml. rustup honours it
-# through its shims, but this machine has no rustup shim on PATH:
-# /opt/homebrew/bin/cargo is a symlink straight into Homebrew's Cellar, and
-# ~/.cargo/bin holds only cargo extensions. Verified by pinning a different
-# version and watching Homebrew's cargo report its own regardless. So calling
-# `cargo` directly silently uses whatever Homebrew last installed, which is how
-# a local check and CI came to disagree.
-#
 # The channel is read from rust-toolchain.toml so the version lives in exactly
 # one place. Change it there.
+#
+# `cargo +<toolchain>` rather than a bare `cargo`, so the version is explicit
+# even if a non-shim cargo is ever first on PATH again. That machine is not
+# hypothetical: until 2026-08-20 a Homebrew `rust` formula owned
+# /opt/homebrew/bin/cargo, and a real cargo binary ignores rust-toolchain.toml
+# entirely. With `+`, such a cargo fails loudly instead of silently building
+# with the wrong compiler.
+#
+# :warning: NOT `rustup run <toolchain> cargo`. That execs the right cargo but
+# does **not** put the toolchain's bin on PATH, so cargo subcommands are not
+# found: `rustup run 1.96.0 cargo fmt` dies with "no such command: fmt". It
+# appeared to work only while Homebrew's cargo-fmt happened to be on PATH, and
+# broke the moment that was uninstalled.
 TOOLCHAIN := $(shell sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
-CARGO := rustup run $(TOOLCHAIN) cargo
+CARGO := cargo +$(TOOLCHAIN)
 
 # cargo-llvm-cov must run through the rustup-managed toolchain, not the
 # default `cargo` on PATH. This machine's default cargo/rustc are a separate
@@ -66,11 +71,11 @@ lint: ## Run clippy across the workspace
 
 .PHONY: coverage
 coverage: ## Print per-file unit-test coverage (cargo-llvm-cov)
-	rustup run $(COVERAGE_TOOLCHAIN) cargo llvm-cov --workspace --summary-only
+	cargo +$(COVERAGE_TOOLCHAIN) llvm-cov --workspace --summary-only
 
 .PHONY: coverage-html
 coverage-html: ## Generate an HTML coverage report at target/llvm-cov/html/index.html
-	rustup run $(COVERAGE_TOOLCHAIN) cargo llvm-cov --workspace --html
+	cargo +$(COVERAGE_TOOLCHAIN) llvm-cov --workspace --html
 
 .PHONY: verify
 verify: fmt-check test docs-build ## Everything CI and a release gate on: formatting, tests, docs

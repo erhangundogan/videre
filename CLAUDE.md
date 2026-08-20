@@ -20,38 +20,55 @@ cargo test --workspace
 One binary, `videre`, with fifteen subcommands. `main.rs` dispatches to one
 module per subcommand under `src/commands/`.
 
-### :warning: This machine has two Rust toolchains, and `PATH` picks the wrong one
+### The Rust version is pinned, in one place
 
-`cargo` and `rustc` on `PATH` are a **Homebrew** Rust install. There is also a
-rustup-managed toolchain. They are different versions and rustup components are
-installed only into the rustup one.
+`rust-toolchain.toml` decides the version, for this repo and for CI. **Change it
+there and nowhere else.** CI installs exactly that toolchain rather than using
+whatever the runner ships.
 
-```
-/opt/homebrew/bin/cargo     Homebrew, first on PATH, rustfmt 1.9.0
-rustup run stable-aarch64-apple-darwin ...   rustfmt 1.8.0-stable
-```
+Locally it works because `cargo` is a **rustup shim**, which reads the file and
+dispatches to the right toolchain. Confirm with `cargo --version` inside the
+repo against `cargo --version` somewhere else.
 
-Nothing pins a toolchain: there is no `rust-toolchain.toml`, so every bare
-`cargo` command gets Homebrew's, while CI gets the runner's preinstalled Rust.
+:warning: **The shims are not in `~/.cargo/bin`.** rustup came from Homebrew,
+which puts them in `/opt/homebrew/opt/rustup/bin` and links nothing into
+`/opt/homebrew/bin`. `~/.cargo/bin` holds only cargo *extensions*
+(`cargo-llvm-cov`, `cargo-audit`, `cargo-watch`), which still work because
+`cargo foo` dispatches to `cargo-foo` on `PATH`. Looking for a `cargo` shim in
+`~/.cargo/bin` and concluding rustup is broken is the wrong conclusion.
 
-**Known consequences, both real:**
+:warning: **The Makefile says `cargo +$(TOOLCHAIN)`, not bare `cargo`.** The
+channel is read out of `rust-toolchain.toml`, so the version is still written
+once. The `+` makes it explicit, so a non-shim `cargo` fails loudly rather than
+silently building with the wrong compiler. That machine is not hypothetical; it
+was this one until 2026-08-20.
 
-- **Coverage must use rustup explicitly.** `llvm-tools-preview` installs only
-  into a rustup toolchain, so a bare `cargo llvm-cov` pairs an LLVM-22 rustc
-  with LLVM-21 coverage tools and produces incompatible profile data. See the
-  coverage section.
-- **`make fmt-check` runs Homebrew's rustfmt, not CI's.** The two currently
-  agree, and `ci.yml` says so, but that is **a measurement, not a guarantee**: a
-  Homebrew bump can diverge from the runner with no warning, and the symptom is
-  a local pass followed by a CI rustfmt failure.
+:warning: **Do not "fix" that to `rustup run <toolchain> cargo`.** It looks
+equivalent and is not: `rustup run` execs the right cargo but does **not** put
+the toolchain's bin on `PATH`, so cargo subcommands are not found and
+`rustup run 1.96.0 cargo fmt` dies with `no such command: fmt`. It was written
+that way first, appeared to work only because Homebrew's `cargo-fmt` was on
+`PATH`, and broke the moment Homebrew's Rust was removed.
 
-:warning: **A local `make fmt-check` pass is evidence, not proof.** On
-2026-08-20 it exited 0 on a file CI's rustfmt then rejected, and the same
-command failed locally afterwards on unchanged bytes. Version skew was tested
-and ruled out as the cause; both rustfmt versions reject the offending line
-identically, so that incident is still unexplained. **Treat the CI result as
-authoritative and just run `cargo fmt --all`** rather than re-litigating a local
-pass.
+**History, because the failure mode is worth recognising.** Until 2026-08-20
+this machine had **two** Rusts: a Homebrew `rust` formula owning
+`/opt/homebrew/bin/{cargo,rustc,rustfmt}` as real binaries, plus rustup. The
+Homebrew one won on `PATH` and, being a real cargo rather than a shim, ignored
+any pin. Meanwhile CI used the runner's preinstalled Rust. So "it passes
+locally" and "it passes in CI" were different claims about different compilers,
+and one rustfmt failure took a CI round trip to see. Resolved by
+`brew uninstall rust`, leaving rustup as the only Rust.
+
+:warning: **One incident from that era is still unexplained**, recorded on the
+board: `make fmt-check` exited 0 on a file CI's rustfmt then rejected, and the
+same command failed locally afterwards on unchanged bytes. Version skew was
+tested and **ruled out**, since both rustfmt versions rejected the line
+identically. If a local formatting pass ever disagrees with CI again, treat CI
+as authoritative, run `cargo fmt --all`, and note it there rather than
+re-deriving this.
+
+Coverage is the one command that still names a toolchain of its own; see the
+coverage section for why.
 
 ## Project structure
 
