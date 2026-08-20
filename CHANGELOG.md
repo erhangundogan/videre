@@ -13,6 +13,16 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [Unreleased]
+
+### Fixed
+
+- **`make coverage` had stopped building at all.** It pinned itself to `stable`
+  while everything else moved to the toolchain in `rust-toolchain.toml`, and a
+  dependency began requiring a language feature `stable` did not have yet. The
+  test suite stayed green throughout, so nothing surfaced it. Coverage now
+  follows the same pin as the build.
+
 ## [0.20.0] - 2026-08-20
 
 ### Removed
@@ -1016,6 +1026,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.20.0...HEAD
 [0.20.0]: https://github.com/erhangundogan/videre/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/erhangundogan/videre/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/erhangundogan/videre/compare/v0.17.0...v0.18.0
