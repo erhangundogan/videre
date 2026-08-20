@@ -32,13 +32,13 @@ Most commands share these:
 | `--db <path>` | Use a specific database instead of the [resolved default](/reference/paths/) |
 | `--silent` | Suppress progress output on stderr |
 | `--json` | Print one JSON object on stdout instead of human-readable text |
-| `--model <id>` | Use a specific [search model](/reference/models/) (`embed`, `search`, `classify`, `report`, `mcp`) |
+| `--model <id>` | Use a specific [search model](/reference/models/) (`embed`, `search`, `classify`, `gallery`, `mcp`) |
 
 ## What needs what
 
 | To run | You first need |
 |---|---|
-| `dedupe`, `report`, `fix-dates`, `prune`, `stats`, `locations` | `scan` |
+| `dedupe`, `gallery`, `fix-dates`, `prune`, `stats`, `locations` | `scan` |
 | `scan`, when coming from another tool | `import` first, so dates are fixed before they are recorded |
 | `search` (text or image) | `embed` |
 | `search --person` | `faces`, then naming via `videre gallery` |

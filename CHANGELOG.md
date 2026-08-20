@@ -22,6 +22,11 @@ version number and are released together.
   library, `videre dedupe --html` to write a duplicate-review page, and
   `videre search ... --html` to write a page of search results.
 
+  Removing it left references behind, now cleaned up. Two were user-visible:
+  `videre dedupe` told you to "review with videre report before deleting", and
+  the gallery page titled itself **videre report** in the browser tab and its
+  own heading.
+
   Two of its modes have no static equivalent on purpose. `--all` and
   `--by-date` are now routes of `videre gallery`, which is a live server,
   because in-page similarity search needs a backend that an exported file

@@ -560,7 +560,7 @@ and a relative path to one lock.
 
 Every subcommand opens through `videre_core::db::open_wal`. WAL persists in the
 file once set, so it is idempotent and safe on every open. This is what lets
-`videre watch` write while a `report --show-faces` server reads.
+`videre watch` write while a `videre gallery` server reads.
 
 ### Resumability uses "already processed", not "has a result"
 

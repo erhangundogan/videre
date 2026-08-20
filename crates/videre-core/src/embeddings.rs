@@ -24,7 +24,7 @@ pub fn is_video_ext(ext: &str) -> bool {
     matches!(ext.to_lowercase().as_str(), "mov" | "mp4")
 }
 
-/// Model id used by `videre embed` / `search` / `report` when neither
+/// Model id used by `videre embed` / `search` / `gallery` when neither
 /// `--model` nor `config.toml` names one. Single source of truth so the report
 /// binary can query embeddings without depending on videre-ml.
 ///
