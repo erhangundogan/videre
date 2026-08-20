@@ -50,6 +50,11 @@ version number and are released together.
 
 ### Fixed
 
+- **`videre --help` still advertised the deprecated `report` command.** Its
+  first line described videre as doing "reports over one SQLite database". It
+  now says "browsing", which covers `gallery` and the `--html` exports without
+  naming a command that can move again.
+
 - **`videre gallery` was missing from the documentation sidebar**, so the
   command added in 0.18.0 had a page that nothing linked to, while the
   deprecated `videre report` it replaced was still listed. The two have swapped
