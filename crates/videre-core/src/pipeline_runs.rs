@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 /// 2026-08-01 (was seven after `prune`'s addition earlier the same day).
 /// It's a clean fit for the same one-shot start/finish model the others
 /// use: `videre locations` is a full-recompute batch pass, not an
-/// interactive per-query command. `report`, `search`, `mcp`, and `config`
+/// interactive per-query command. `gallery`, `search`, `mcp`, and `config`
 /// remain deliberately excluded: `report --faces`/`--show-faces` and `mcp`
 /// are long-running servers with no natural "finished" moment (the same
 /// reason `videre watch` itself is excluded. See below), `search` is an

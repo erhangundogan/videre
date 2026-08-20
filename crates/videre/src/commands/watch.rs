@@ -19,7 +19,7 @@ pub struct WatchArgs {
     #[command(flatten)]
     paths: super::selection_args::PathArgs,
 
-    /// SQLite database to populate (same file videre report reads).
+    /// SQLite database to populate (same file videre gallery reads).
     /// Default: resolved from ~/.videre; see 'videre config'
     //
     // `--output-sqlite` is the original name, inherited from `videre scan`, and
