@@ -7,19 +7,9 @@ Search quality depends on the model, and the only way to know whether a larger
 one helps *your* photos is to try it. videre keeps each model's work separate,
 so trying one costs time but risks nothing.
 
-## The models
-
-| Model | Download | Notes |
-|---|---|---|
-| [`google/siglip-base-patch16-224`](https://huggingface.co/google/siglip-base-patch16-224) | ~780 MB | The default |
-| [`google/siglip2-base-patch16-384`](https://huggingface.co/google/siglip2-base-patch16-384) | ~1.4 GB | Newer, higher resolution |
-| [`google/siglip-so400m-patch14-384`](https://huggingface.co/google/siglip-so400m-patch14-384) | ~3.3 GB | Largest |
-
-Each links to its model card on Hugging Face, where the training data, intended
-use, and limitations are documented by the people who built it.
-
-Higher resolution and more parameters generally mean better matching on fine
-detail, at proportionally more time per image and more disk.
+The three search models, their sizes and dimensions, are listed in
+[search models](/reference/models/). This guide is about deciding between them
+without losing the work you already did.
 
 ## Trying one
 
@@ -116,23 +106,12 @@ Also remove the weights if you are not keeping the model:
 rm -rf ~/.cache/huggingface/hub/models--google--siglip2-base-patch16-384
 ```
 
-## Why they are stored per library
-
-`~/.videre/embeddings/<library>-<hash>/` is keyed by library as well as model,
-even though content hashes would technically allow sharing between libraries.
-
-[`videre prune`](/commands/prune/) cannot see another library's files, so a
-shared layout would let one library's cleanup delete vectors another still
-needed. A thumbnail lost that way costs milliseconds; an embedding costs hours.
-See [caches](/guides/caches/) for the same tradeoff decided the other way.
-
-The library part of the path includes a hash of its canonical path, so two
-databases both named `photos.db` in different folders never collide.
-
 ## Caveats
 
 **Budget the disk.** Each model is roughly 130 MB to 190 MB of vectors per
 70,000 photos, plus its download. Three models is a few GB before any photos.
+They are stored [per library and per model](/reference/models/#where-the-data-is-kept),
+so a second library repeats the cost.
 
 **Do not run two `embed` passes at once.** They both convert HEIC, and
 contending for that makes both dramatically slower. See
@@ -142,6 +121,5 @@ contending for that makes both dramatically slower. See
 path silently produces wrong vectors, so higher values are reduced with a
 warning. See [`videre embed`](/commands/embed/).
 
-**Libraries from before 0.10** kept vectors in the main database. That fallback
-was removed in 0.11, so such a library reports the model as missing. Nothing is
-deleted; rerun `videre embed` to rebuild in the current layout.
+**Libraries from before 0.10** report their model as missing. See
+[upgrading](/reference/models/#upgrading-from-before-010); nothing is deleted.
