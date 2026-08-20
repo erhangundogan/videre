@@ -106,7 +106,7 @@ videre stats | grep -E 'scan|faces'
 
 Tracked commands are `scan`, `faces`, `embed`, `classify`, `dedupe`,
 `fix-dates`, `prune` and `locations`, always in that order, always eight lines.
-`report`, `search`, `mcp` and `config` are deliberately not tracked: they are
+`gallery`, `search`, `mcp` and `config` are deliberately not tracked: they are
 interactive or read-only, so "when did it last run" says nothing useful.
 
 ## `--check` for unattended runs

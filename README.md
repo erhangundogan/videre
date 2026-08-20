@@ -121,7 +121,7 @@ More: [docs.videre.sh/start/quickstart](https://docs.videre.sh/start/quickstart/
 
 ## Commands
 
-`scan`, `import`, `dedupe`, `report`, `search`, `embed`, `faces`, `classify`,
+`scan`, `import`, `dedupe`, `gallery`, `search`, `embed`, `faces`, `classify`,
 `locations`, `fix-dates`, `prune`, `watch`, `stats`, `config`, `mcp`.
 
 Every command takes `--help`. Full reference with every flag:

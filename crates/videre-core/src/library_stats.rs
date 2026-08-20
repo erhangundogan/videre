@@ -1,6 +1,6 @@
 //! Aggregate library statistics for dashboard-style callers.
 //! Plain queries over an open `rusqlite::Connection`, shared source of truth
-//! for `videre report`'s stats tile, `videre stats`, and any other embedder.
+//! for the gallery's stats tile, `videre stats`, and any other embedder.
 //! See docs/superpowers/specs/2026-07-31-dashboard-stats-backend-design.md
 //! (Pass A) for what is and isn't in scope.
 
@@ -114,7 +114,7 @@ pub fn compute(conn: &Connection) -> Result<LibraryStats> {
 /// `compute`, plus the per-model embedding inventory.
 ///
 /// Separate from `compute` because embeddings live outside the connection, in
-/// files addressed by the library's own path. `videre report`'s stats tile
+/// files addressed by the library's own path. The gallery's stats tile
 /// keeps calling `compute` and is unaffected.
 pub fn compute_full(conn: &Connection, db_path: &std::path::Path) -> anyhow::Result<LibraryStats> {
     let mut stats = compute(conn)?;

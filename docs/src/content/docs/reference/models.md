@@ -15,12 +15,12 @@ Both live in the shared Hugging Face cache at `~/.cache/huggingface/hub/`,
 overridable with `HF_HOME`. See
 [what gets downloaded](/start/install/#models-are-not-downloaded-at-install).
 
-`scan`, `dedupe`, `fix-dates`, `prune`, `stats`, `locations`, and `report`
+`scan`, `dedupe`, `fix-dates`, `prune`, `stats`, and `locations`
 without similarity search need **no model at all**.
 
 ## Choosing one
 
-`embed`, `search`, `classify`, `report` and `mcp` all take `--model <id>`,
+`embed`, `search`, `classify`, `gallery` and `mcp` all take `--model <id>`,
 resolved as `--model` first, then `default_model` in your config, then the
 built-in default.
 
