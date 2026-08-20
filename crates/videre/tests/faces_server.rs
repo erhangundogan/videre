@@ -67,7 +67,10 @@ fn help_documents_the_port_it_listens_on() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     // `report --show-faces` was the old way to get a live backend. It is now
     // simply what `gallery` is, so what needs documenting is where it listens.
-    assert!(stdout.contains("--port"), "gallery --help must document --port");
+    assert!(
+        stdout.contains("--port"),
+        "gallery --help must document --port"
+    );
 }
 
 #[test]
