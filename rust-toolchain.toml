@@ -1,0 +1,21 @@
+# The one place the Rust version is decided, for this repo and for CI.
+#
+# Pinned because the toolchain was previously whatever each machine happened to
+# have. Locally that is a Homebrew Rust; on GitHub it is the runner's
+# preinstalled Rust; they were different versions and nothing noticed. The
+# symptom is a check passing locally and failing in CI, which is expensive to
+# diagnose precisely because it looks like flakiness.
+#
+# :warning: A bare `cargo` on the development machine DOES NOT read this file.
+# rustup honours it through its shims, but `/opt/homebrew/bin/cargo` is a real
+# cargo rather than a shim, and it is first on PATH. Verified: with this file
+# pinning a different version, Homebrew's cargo still reported its own. That is
+# why the Makefile invokes `rustup run` explicitly instead of calling `cargo`.
+# GitHub runners install Rust through rustup, so there this file is enough.
+#
+# To move versions: change `channel` here, and nowhere else.
+
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
