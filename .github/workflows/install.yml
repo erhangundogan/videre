@@ -1,0 +1,41 @@
+name: Install script
+
+# The install script hardcodes the release asset naming that release.yml
+# chooses. Nothing else connects the two, so without this job that pairing can
+# drift and break every new user while the Rust suite stays green. It caught
+# exactly that before the script first shipped.
+#
+# It downloads real published releases, so it runs only when the script or its
+# test changes rather than on every push.
+on:
+  push:
+    paths:
+      - "docs/public/install"
+      - ".github/scripts/test-install.sh"
+      - ".github/workflows/install.yml"
+  pull_request:
+    paths:
+      - "docs/public/install"
+      - ".github/scripts/test-install.sh"
+      - ".github/workflows/install.yml"
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    strategy:
+      # One runner failing must not cancel the other: knowing whether this is
+      # macOS-only or both is the whole diagnostic. Same reasoning as ci.yml.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      # Every install in the test goes to a temp directory, and none of them is
+      # put on PATH. This job installs software on a runner; it should leave
+      # nothing a later job could pick up by accident.
+      - name: Run the installer tests
+        run: .github/scripts/test-install.sh

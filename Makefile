@@ -30,6 +30,12 @@ build-dev: ## Build the debug binary (target/debug/videre)
 test: ## Run the full workspace test suite (as CI does)
 	cargo test --workspace --no-fail-fast
 
+# Not part of `test`, because it downloads real published releases over the
+# network. CI runs it only when the script or its test changes.
+.PHONY: test-install
+test-install: ## Exercise docs/public/install end to end (needs network)
+	.github/scripts/test-install.sh
+
 .PHONY: fmt
 fmt: ## Format all Rust code
 	cargo fmt --all
