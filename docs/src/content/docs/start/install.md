@@ -5,9 +5,61 @@ sidebar:
   order: 1
 ---
 
+## Install script
+
+One command, no Rust toolchain, nothing to compile:
+
+```bash
+curl -fsSL https://docs.videre.sh/install | sh
+```
+
+It works out your platform, downloads the matching release, **verifies it
+against the `.sha256` published with that release before unpacking it**, and
+puts the binary in `~/.local/bin`. If that directory is not on your `PATH` it
+prints the line to add. It never edits your shell profile.
+
+| Option | |
+|---|---|
+| `--version X.Y.Z` | Install a specific release rather than the latest |
+| `--to DIR` | Install somewhere other than `~/.local/bin` |
+| `--uninstall` | Remove the binary the script installed |
+| `--help` | Show usage |
+
+Pass options after `-s --`:
+
+```bash
+curl -fsSL https://docs.videre.sh/install | sh -s -- --version 0.18.0
+```
+
+:::note[Upgrades are manual]
+The script does not upgrade videre for you. Run it again to move to a newer
+release; it overwrites in place. If you would rather something managed the
+version for you, use Homebrew below.
+:::
+
+### Removing it
+
+```bash
+curl -fsSL https://docs.videre.sh/install | sh -s -- --uninstall
+```
+
+This removes **one file**, the binary the script installed. Your library and
+the downloaded models are left exactly where they are, and the script prints
+both paths with their sizes so you can remove them yourself if you want to:
+
+- `~/.videre/` holds the database, your config and the search embeddings. An
+  embedding costs hours to recompute, so nothing here is deleted for you.
+- `~/.cache/huggingface/` holds the models, and is shared with any other tool
+  that uses the Hugging Face cache.
+
+If the `videre` it finds was installed by Homebrew or `cargo`, the script
+refuses to delete it and tells you the right command instead. Removing a
+package manager's file behind its back leaves it believing videre is still
+installed.
+
 ## Homebrew
 
-On macOS or Linux:
+**The best option on macOS**, because it handles upgrades:
 
 ```bash
 brew install erhangundogan/tap/videre
@@ -74,6 +126,11 @@ binary does not, since it is already built with it:
 ```bash
 RUSTFLAGS="-C target-feature=+fp16" cargo install videre
 ```
+
+Without it the build fails with `error: instruction requires: fullfp16`. This
+is the main reason to prefer the [install script](#install-script) on ARM64
+Linux: it fetches a binary that already has the flag baked in, so the problem
+never arises.
 
 ## Platform notes
 

@@ -13,6 +13,37 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [Unreleased]
+
+### Added
+
+- **An install script**, so videre can be installed without Homebrew and
+  without a Rust toolchain:
+
+  ```bash
+  curl -fsSL https://docs.videre.sh/install | sh
+  ```
+
+  It works out your platform, verifies the download against the `.sha256`
+  published with each release **before unpacking it**, and installs to
+  `~/.local/bin`. It never edits your shell profile, and it warns when another
+  videre earlier on your `PATH` would keep winning.
+
+  `--uninstall` removes the binary it installed and nothing else. Your library
+  and the downloaded models are reported with their sizes rather than deleted,
+  and a binary belonging to Homebrew or `cargo` is refused with the right
+  command named instead.
+
+  This matters most on ARM64 Linux, where building from source needs
+  `-C target-feature=+fp16` and a prebuilt binary does not.
+
+### Fixed
+
+- **Two sections of this changelog were both headed `Unreleased`**, and the
+  0.18.0 release renamed both. The older one, five `videre import` fixes, was
+  written for 0.13.0 and never filed under it, so it briefly appeared as part
+  of 0.18.0. It is back under 0.13.0 where it belongs.
+
 ## [0.18.0] - 2026-08-20
 
 ### Added
@@ -565,8 +596,6 @@ Documentation only. No behaviour changed.
 - `--into`, for copying into a clean destination tree, is accepted but not yet
   implemented; it exits with a message rather than being silently ignored.
 
-## [0.18.0] - 2026-08-20
-
 ### Fixed
 
 Found by running `videre import` against a real 36GB Google Takeout export and
@@ -947,6 +976,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.18.0...HEAD
 [0.18.0]: https://github.com/erhangundogan/videre/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/erhangundogan/videre/compare/v0.16.1...v0.17.0
 [0.16.1]: https://github.com/erhangundogan/videre/compare/v0.16.0...v0.16.1
