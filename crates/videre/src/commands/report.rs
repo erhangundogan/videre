@@ -1381,11 +1381,22 @@ async fn serve_faces_async(
 
     let app = router.with_state(state);
 
-    let addr = format!("127.0.0.1:{}", opts.port);
-    let addr = addr.as_str();
-    let listener = tokio::net::TcpListener::bind(addr)
+    let requested = format!("127.0.0.1:{}", opts.port);
+    let listener = tokio::net::TcpListener::bind(&requested)
         .await
-        .map_err(|e| format!("Cannot bind to {addr}: {e}"))?;
+        .map_err(|e| format!("Cannot bind to {requested}: {e}"))?;
+
+    // :warning: Report the address that was BOUND, not the one requested. With
+    // `--port 0` the OS picks a free port, and printing the request meant the
+    // server announced `http://127.0.0.1:0`, which is unreachable. Anyone using
+    // 0 to avoid choosing a port then had no way to find the server, and
+    // `--browse` opened the same dead address.
+    let addr = listener
+        .local_addr()
+        .map(|a| a.to_string())
+        .unwrap_or(requested);
+    let addr = addr.as_str();
+
     if opts.gallery {
         eprintln!("videre gallery: http://{addr}");
     } else {

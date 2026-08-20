@@ -18,10 +18,10 @@ mod common;
 use common::isolated_home;
 
 use rusqlite::Connection;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
@@ -241,4 +241,51 @@ fn the_api_the_labeling_ui_depends_on_answers_json() {
     assert_eq!(status, 200, "/api/faces did not return 200");
     serde_json::from_str::<serde_json::Value>(&body)
         .unwrap_or_else(|e| panic!("/api/faces returned invalid JSON: {e}\nbody: {body}"));
+}
+
+/// :warning: `--port 0` must report the port it BOUND, not the one it was asked
+/// for. It used to print `http://127.0.0.1:0`, so a server started that way was
+/// unreachable short of `lsof`, and `--browse` opened the same dead address.
+///
+/// This is also the mechanism that would let `Server::start` above drop its
+/// mutex: with a trustworthy announced port there is no free-port race to
+/// serialise.
+#[test]
+fn port_zero_announces_the_port_it_actually_bound() {
+    let dir = tempdir().unwrap();
+    let db = fixture(dir.path());
+    isolated_home();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_videre"))
+        .arg("gallery")
+        .arg("--db")
+        .arg(&db)
+        .arg("--port")
+        .arg("0")
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn videre gallery --port 0");
+
+    let stderr = BufReader::new(child.stderr.take().unwrap());
+    let mut announced = None;
+    for line in stderr.lines().map_while(Result::ok) {
+        if let Some(rest) = line.split("http://127.0.0.1:").nth(1) {
+            announced = rest.trim().parse::<u16>().ok();
+            break;
+        }
+    }
+    let port = announced.unwrap_or_else(|| {
+        child.kill().ok();
+        panic!("gallery never announced an address");
+    });
+
+    let connected = TcpStream::connect(("127.0.0.1", port)).is_ok();
+    child.kill().ok();
+    child.wait().ok();
+
+    assert_ne!(port, 0, "announced port 0, which cannot be connected to");
+    assert!(
+        connected,
+        "announced port {port} but nothing was listening there"
+    );
 }
