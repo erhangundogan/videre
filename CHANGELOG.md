@@ -15,6 +15,16 @@ version number and are released together.
 
 ## [Unreleased]
 
+### Changed
+
+- **The install docs now cover upgrading**, which they never mentioned. Re-run
+  the same command; it overwrites the binary in place and touches nothing else.
+  They also say plainly that nothing will tell you a new release exists, since
+  the script does not check and videre does not phone home.
+
+- **The docs teach the short `videre.sh/install` address** rather than
+  `docs.videre.sh/install`. Both serve the same file.
+
 ### Fixed
 
 - **The docs taught command lines that no longer parse.** `guides/browsing.md`

@@ -22,7 +22,7 @@ there:
 |---|---|---|
 | `~/.cargo/bin/videre` | `cargo install` or `make install` | `cargo uninstall videre` |
 | `/opt/homebrew/bin/videre` | Homebrew | `brew uninstall videre` |
-| `~/.local/bin/videre` | The [install script](/start/install/) | `curl -fsSL https://docs.videre.sh/install \| sh -s -- --uninstall` |
+| `~/.local/bin/videre` | The [install script](/start/install/) | `curl -fsSL https://videre.sh/install \| sh -s -- --uninstall` |
 
 To list every copy at once:
 
@@ -42,9 +42,16 @@ Same cause as above. The install script warns about this when it runs, naming
 both copies.
 
 If you installed with the script, note that it **does not upgrade you
-automatically**. Run it again to move to a newer release; it overwrites in
-place. Homebrew handles upgrades for you, which is why it is the recommended
-route on macOS.
+automatically**, and nothing tells you a newer release exists. Run the same
+command again to move to one:
+
+```bash
+curl -fsSL https://videre.sh/install | sh
+```
+
+It overwrites the binary in place; nothing else is touched. See
+[upgrading](/start/install/#upgrading). Homebrew handles this for you, which is
+why it is the recommended route on macOS.
 
 ## Search returns nothing
 
