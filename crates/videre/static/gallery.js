@@ -157,8 +157,12 @@ function renderMetaPanel(meta){
   }
   var parts = [];
   if(meta.faces.length){
+    // A live page carries `id` and fetches the crop from the endpoint only when
+    // this lightbox opens. A static export has no server to ask, so it carries
+    // `thumb` as a data URI. Supporting both keeps one renderer for both.
     parts.push(meta.faces.map(function(fc){
-      return '<div class="lb-face"><img src="'+escA(fc.thumb)+'">'+
+      var src = fc.thumb ? escA(fc.thumb) : '/api/face-image/'+encodeURIComponent(fc.id);
+      return '<div class="lb-face"><img src="'+src+'" loading="lazy">'+
         '<a href="/person/'+encodeURIComponent(fc.name)+'?from=lightbox">'+escH(fc.name)+'</a></div>';
     }).join(''));
   }
