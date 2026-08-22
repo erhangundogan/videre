@@ -259,7 +259,6 @@ fn assert_under_ceiling(route: &str) {
 }
 
 #[test]
-#[ignore = "fails until the gallery fetches its rows: BUG:15 phase 3"]
 fn the_all_files_page_does_not_carry_the_library() {
     assert_under_ceiling("/");
 }
