@@ -250,7 +250,7 @@ fn json_str(s: &str) -> String {
 
 #[cfg(test)]
 fn file_to_json(f: &FileRow, heic: bool, heic_original: bool) -> String {
-    file_to_json_with_faces(f, heic, heic_original, &[])
+    file_to_json_with_faces(f, heic, heic_original, &[], false)
 }
 
 /// Like file_to_json(), but also embeds labeled-face thumbnails into
@@ -262,6 +262,7 @@ fn file_to_json_with_faces(
     heic: bool,
     heic_original: bool,
     faces: &[(i64, String, String)],
+    live: bool,
 ) -> String {
     let (tb, fb) = if f.ext == "heic" && heic {
         let thumb = heic_to_b64(&f.path, 240)
@@ -311,9 +312,28 @@ fn file_to_json_with_faces(
         .map(|v| v.to_string())
         .unwrap_or_else(|| "null".to_string());
 
+    // :warning: A live page emits a face id and lets the browser fetch the crop
+    // from `/api/face-image/{id}` when a lightbox opens. Inlining crops instead
+    // means **decoding every original in full** to cut out one face, for every
+    // labelled face in the library, on every single request.
+    //
+    // Measured on a real library: 23,217 labelled faces across 16,572 files, so
+    // one request meant 16,572 full-resolution JPEG decodes off an external
+    // drive. It never returned, and nothing reported an error, because nothing
+    // failed. It was still working.
+    //
+    // A static export has no server to ask, so it keeps the inline crops. That
+    // is the whole reason `live` is threaded down here, and the cost is
+    // acceptable there because an exported page is built once, not per view.
     let faces_json: Vec<String> = faces
         .iter()
         .filter_map(|(id, name, bbox)| {
+            if live {
+                return Some(format!(
+                    "{{\"id\":{id},\"name\":{name}}}",
+                    name = json_str(name),
+                ));
+            }
             let bbox = parse_bbox(bbox)?;
             let thumb = face_thumb_b64(&f.path, bbox, *id)?;
             Some(format!(
@@ -358,6 +378,7 @@ fn group_to_json(
     heic: bool,
     heic_original: bool,
     faces_by_hash: &videre_core::face_db::LabeledFacesByHash,
+    live: bool,
 ) -> String {
     let hash_prefix = &group[0].hash[..group[0].hash.len().min(8)];
     let waste = group[0].size_bytes * (group.len() as i64 - 1);
@@ -378,6 +399,7 @@ fn group_to_json(
                     .get(&f.hash)
                     .map(|v| v.as_slice())
                     .unwrap_or(&[]),
+                live,
             )
         })
         .collect();
@@ -654,7 +676,13 @@ fn build_data_block(
             out.push(',');
         }
         out.push('\n');
-        out.push_str(&group_to_json(group, heic, heic_original, faces_by_hash));
+        out.push_str(&group_to_json(
+            group,
+            heic,
+            heic_original,
+            faces_by_hash,
+            live,
+        ));
     }
     out.push_str("\n];\n");
     // All-files gallery data and similarity vectors (--all only).
@@ -673,6 +701,7 @@ fn build_data_block(
                     .get(&f.hash)
                     .map(|v| v.as_slice())
                     .unwrap_or(&[]),
+                live,
             ));
         }
         out.push_str("\n];\n");
@@ -712,6 +741,7 @@ fn build_data_block(
                     .get(&f.hash)
                     .map(|v| v.as_slice())
                     .unwrap_or(&[]),
+                live,
             ));
         }
         out.push_str("\n];\n");
