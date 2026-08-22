@@ -379,3 +379,80 @@ fn an_unknown_view_falls_back_rather_than_failing() {
     assert_eq!(total, 1);
     assert_eq!(n, 1);
 }
+
+// ---- /api/dates, the tree a page of rows cannot build ----------------------
+
+#[test]
+fn the_date_tree_comes_from_the_whole_library() {
+    let dir = tempdir().unwrap();
+    let db = fixture(dir.path());
+    let server = Server::start(&db);
+
+    let (status, body) = server.get("/api/dates?level=year");
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let buckets = v["buckets"].as_array().expect("buckets");
+    assert_eq!(buckets.len(), 1, "the fixture has one file, so one year");
+    assert_eq!(buckets[0]["key"], "2025");
+    assert_eq!(buckets[0]["count"], 1);
+    // Each card shows a thumbnail, so a bucket without a representative row
+    // would render an empty tile.
+    assert!(
+        buckets[0]["sample"]["path"].is_string(),
+        "a bucket must carry a sample row for its preview"
+    );
+}
+
+#[test]
+fn drilling_down_narrows_the_tree() {
+    let dir = tempdir().unwrap();
+    let db = fixture(dir.path());
+    let server = Server::start(&db);
+
+    for (q, key) in [
+        ("level=month&parent=2025", "2025-06"),
+        ("level=day&parent=2025-06", "2025-06-03"),
+    ] {
+        let (status, body) = server.get(&format!("/api/dates?{q}"));
+        assert_eq!(status, 200, "{q}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["buckets"][0]["key"], key, "{q} returned the wrong bucket");
+    }
+}
+
+// :warning: The count and the rows must describe the same set. Counting a
+// subquery that exposed only `hash` once returned 0 while the page returned
+// rows, because the date expression had no columns to read and the failure was
+// swallowed by a default.
+#[test]
+fn a_dated_page_agrees_with_its_own_total() {
+    let dir = tempdir().unwrap();
+    let db = fixture(dir.path());
+    let server = Server::start(&db);
+
+    let (status, body) = server.get("/api/files?view=date&date=2025-06-03&limit=100");
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let n = v["files"].as_array().unwrap().len() as i64;
+    let total = v["total"].as_i64().unwrap();
+    assert_eq!(n, 1, "the fixture has one file on that day");
+    assert_eq!(
+        total, n,
+        "total ({total}) disagrees with the rows returned ({n})"
+    );
+}
+
+#[test]
+fn a_date_that_matches_nothing_is_empty_rather_than_everything() {
+    // A filter that fails to apply would return the whole library, which reads
+    // as a working day view containing every photo ever taken.
+    let dir = tempdir().unwrap();
+    let db = fixture(dir.path());
+    let server = Server::start(&db);
+
+    let (status, body) = server.get("/api/files?view=date&date=1999-01-01&limit=100");
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["files"].as_array().unwrap().len(), 0);
+    assert_eq!(v["total"], 0);
+}

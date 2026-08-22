@@ -224,72 +224,97 @@ function bestDateBucket(f){
 }
 var dateState = {level:'year', year:null, month:null};
 function dateKeepFiles(){ return (typeof KEEPFILES!=='undefined') ? KEEPFILES : []; }
-function buildYearView(){
-  dateState = {level:'year', year:null, month:null};
-  var byYear = {};
-  dateKeepFiles().forEach(function(f){
-    var b = bestDateBucket(f); if(!b) return;
-    (byYear[b.year] = byYear[b.year] || []).push(f);
-  });
-  var years = Object.keys(byYear).sort().reverse();
-  var grid = document.getElementById('dateGrid');
-  grid.innerHTML = years.map(function(y){
-    var files = byYear[y];
-    return '<div class="date-card" data-year="'+y+'" onclick="buildMonthView(\''+y+'\')">'+
-      buildPreview(files[0])+
-      '<div class="date-card-label">'+y+'</div>'+
-      '<div class="date-card-count">'+files.length+' files</div></div>';
+
+// :warning: The tree comes from /api/dates, not from the rows.
+//
+// Grouping a page of 200 files by year shows a tree that grows as you scroll,
+// which is worse than no tree at all. Counts have to describe the whole library,
+// so the server groups and the client draws. One request per level, so a
+// response is a few dozen buckets rather than a library.
+//
+// An inlined page (a static export, which has no server) still groups locally.
+function dateInlined(){ return typeof KEEPFILES!=='undefined'; }
+
+function dateCards(buckets,onclick){
+  return buckets.map(function(b){
+    return '<div class="date-card" data-key="'+escA(b.key)+'" onclick="'+onclick(b.key)+'">'+
+      buildPreview(b.sample)+
+      '<div class="date-card-label">'+escH(b.key)+'</div>'+
+      '<div class="date-card-count">'+b.count+' files</div></div>';
   }).join('');
-  document.getElementById('dateBreadcrumb').innerHTML = '';
+}
+function fetchBuckets(level,parent,then){
+  var grid=document.getElementById('dateGrid');
+  grid.innerHTML='<p class="muted">Loading\u2026</p>';
+  var q='/api/dates?level='+encodeURIComponent(level);
+  if(parent)q+='&parent='+encodeURIComponent(parent);
+  fetch(q).then(function(r){return r.json();})
+    .then(function(d){ then(d.buckets||[]); })
+    .catch(function(){ grid.innerHTML='<p class="muted">Could not load dates.</p>'; });
+}
+// Groups inlined rows the old way, for a static export.
+function groupInlined(len,parent){
+  var by={};
+  dateKeepFiles().forEach(function(f){
+    var d=bestDateJs(f); if(!d)return;
+    var k=d.slice(0,len);
+    if(parent && d.slice(0,parent.length)!==parent) return;
+    (by[k]=by[k]||[]).push(f);
+  });
+  return Object.keys(by).sort().reverse().map(function(k){
+    return {key:k,count:by[k].length,sample:by[k][0]};
+  });
+}
+
+function buildYearView(){
+  dateState={level:'year',year:null,month:null};
+  document.getElementById('dateBreadcrumb').innerHTML='';
+  var draw=function(b){
+    document.getElementById('dateGrid').innerHTML=
+      dateCards(b,function(k){return "buildMonthView('"+k+"')";});
+  };
+  if(dateInlined())draw(groupInlined(4,null)); else fetchBuckets('year',null,draw);
 }
 function buildMonthView(year){
-  dateState = {level:'month', year:year, month:null};
-  var byMonth = {};
-  dateKeepFiles().forEach(function(f){
-    var b = bestDateBucket(f); if(!b || b.year!==year) return;
-    (byMonth[b.month] = byMonth[b.month] || []).push(f);
-  });
-  var months = Object.keys(byMonth).sort().reverse();
-  var grid = document.getElementById('dateGrid');
-  grid.innerHTML = months.map(function(m){
-    var files = byMonth[m];
-    return '<div class="date-card" data-month="'+m+'" onclick="buildDayView(\''+m+'\')">'+
-      buildPreview(files[0])+
-      '<div class="date-card-label">'+m+'</div>'+
-      '<div class="date-card-count">'+files.length+' files</div></div>';
-  }).join('');
-  document.getElementById('dateBreadcrumb').innerHTML =
-    '<a onclick="buildYearView()">'+year+'</a>';
+  dateState={level:'month',year:year,month:null};
+  document.getElementById('dateBreadcrumb').innerHTML=
+    '<a onclick="buildYearView()">'+escH(year)+'</a>';
+  var draw=function(b){
+    document.getElementById('dateGrid').innerHTML=
+      dateCards(b,function(k){return "buildDayView('"+k+"')";});
+  };
+  if(dateInlined())draw(groupInlined(7,year)); else fetchBuckets('month',year,draw);
 }
 function buildDayView(month){
-  dateState = {level:'day', year:dateState.year, month:month};
-  var byDay = {};
-  dateKeepFiles().forEach(function(f){
-    var b = bestDateBucket(f); if(!b || b.month!==month) return;
-    (byDay[b.day] = byDay[b.day] || []).push(f);
-  });
-  var days = Object.keys(byDay).sort().reverse();
-  var grid = document.getElementById('dateGrid');
-  grid.innerHTML = days.map(function(d){
-    var files = byDay[d];
-    return '<div class="date-card" data-day="'+d+'" onclick="buildDayGallery(\''+d+'\')">'+
-      buildPreview(files[0])+
-      '<div class="date-card-label">'+d+'</div>'+
-      '<div class="date-card-count">'+files.length+' files</div></div>';
-  }).join('');
-  document.getElementById('dateBreadcrumb').innerHTML =
-    '<a onclick="buildYearView()">'+dateState.year+'</a> &gt; '+
-    '<a onclick="buildMonthView(\''+dateState.year+'\')">'+month+'</a>';
+  dateState={level:'day',year:dateState.year||month.slice(0,4),month:month};
+  document.getElementById('dateBreadcrumb').innerHTML=
+    '<a onclick="buildYearView()">'+escH(dateState.year)+'</a> &gt; '+
+    '<a onclick="buildMonthView(\''+dateState.year+'\')">'+escH(month)+'</a>';
+  var draw=function(b){
+    document.getElementById('dateGrid').innerHTML=
+      dateCards(b,function(k){return "buildDayGallery('"+k+"')";});
+  };
+  if(dateInlined())draw(groupInlined(10,month)); else fetchBuckets('day',month,draw);
 }
 function buildDayGallery(day){
-  var files = dateKeepFiles().filter(function(f){
-    var b = bestDateBucket(f); return b && b.day===day;
-  });
-  var grid = document.getElementById('dateGrid');
-  grid.innerHTML = files.map(function(f){ return buildCard(f); }).join('');
-  document.getElementById('dateBreadcrumb').innerHTML =
-    '<a onclick="buildYearView()">'+dateState.year+'</a> &gt; '+
-    '<a onclick="buildMonthView(\''+dateState.year+'\')">'+dateState.month+'</a> &gt; '+day;
+  document.getElementById('dateBreadcrumb').innerHTML=
+    '<a onclick="buildYearView()">'+escH(dateState.year)+'</a> &gt; '+
+    '<a onclick="buildMonthView(\''+dateState.year+'\')">'+escH(dateState.month)+'</a> &gt; '+escH(day);
+  var grid=document.getElementById('dateGrid');
+  if(dateInlined()){
+    var files=dateKeepFiles().filter(function(f){
+      var d=bestDateJs(f); return d && d.slice(0,10)===day;
+    });
+    grid.innerHTML=files.map(function(f){return buildCard(f);}).join('');
+    return;
+  }
+  grid.innerHTML='<p class="muted">Loading\u2026</p>';
+  fetch('/api/files?view=date&date='+encodeURIComponent(day)+'&limit=500')
+    .then(function(r){return r.json();})
+    .then(function(d){
+      grid.innerHTML=(d.files||[]).map(function(f){return buildCard(f);}).join('');
+    })
+    .catch(function(){ grid.innerHTML='<p class="muted">Could not load that day.</p>'; });
 }
 // Event delegation: toggle, lightbox, copy. One listener for all dynamic content
 document.addEventListener('click',function(e){
@@ -464,4 +489,4 @@ document.addEventListener('click',function(e){
   if(sb){e.preventDefault();e.stopPropagation();findSimilar(sb.dataset.similar);}
 });
 render(true);
-if(typeof KEEPFILES!=='undefined') buildYearView();
+if(document.getElementById('dateGrid')) buildYearView();
