@@ -26,7 +26,12 @@ Stop it with `Ctrl-C`.
 | `/events` | Reserved, not built yet |
 | `/smart` | Reserved, not built yet |
 
-They link to each other, which is the point of serving them together: a face in
+**Files**, **Date** and **People** sit in a strip along the top of every page, so
+you switch between them without touching the address bar. The reserved routes are
+deliberately not in it; each one appears when it renders something.
+
+They link to each other in smaller ways too, which is the point of serving them
+together: a face in
 the gallery is clickable through to that person's page, and a photo's location
 is resolved to a place name while you look at it. Neither works in a file you
 open from disk, because both need something running to answer.

@@ -138,31 +138,44 @@ fn query_vectors(conn: &Connection, model_id: &str) -> Option<VectorBlock> {
 fn query_files_page(
     conn: &Connection,
     view: &str,
+    date: Option<&str>,
     offset: i64,
     limit: i64,
 ) -> rusqlite::Result<(Vec<(FileRow, i64)>, i64)> {
-    let effective = videre_core::query::EFFECTIVE_DATE_SQL;
-
     // `view=date` shows one row per hash, the same KEEP set `/date` renders.
     // Choosing it in SQL rather than in Rust is what makes it pageable.
     let (from, total_from) = if view == "date" {
-        (
-            format!(
-                "(SELECT * FROM (SELECT *, ROW_NUMBER() OVER \
-                  (PARTITION BY hash ORDER BY {effective}, path) AS rn \
-                  FROM file_hashes) WHERE rn = 1)"
-            ),
-            "(SELECT DISTINCT hash FROM file_hashes)".to_string(),
-        )
+        // :warning: Counting `SELECT DISTINCT hash` was wrong once a date filter
+        // arrived: that subquery exposes only `hash`, so the date expression had
+        // no columns to read and the count silently came back 0 while the page
+        // returned rows. Counting the keep set itself keeps the columns in scope
+        // and keeps the count and the rows describing the same thing.
+        (keep_set_sql(), keep_set_sql())
     } else {
         ("file_hashes".to_string(), "file_hashes".to_string())
     };
 
+    // A date prefix narrows both the count and the page, so "Show more" counts
+    // what is actually in the day rather than in the library.
+    let effective = videre_core::query::EFFECTIVE_DATE_SQL;
+    let (where_sql, params): (String, Vec<String>) = match date.filter(|d| !d.is_empty()) {
+        Some(d) => (
+            format!(" WHERE substr({effective}, 1, {}) = ?", d.len()),
+            vec![d.to_string()],
+        ),
+        None => (String::new(), Vec::new()),
+    };
+
     let total: i64 = conn
-        .query_row(&format!("SELECT COUNT(*) FROM {total_from}"), [], |r| {
-            r.get(0)
-        })
-        .unwrap_or(0);
+        .query_row(
+            &format!("SELECT COUNT(*) FROM {total_from} AS t{}", where_sql),
+            rusqlite::params_from_iter(params.iter()),
+            |r| r.get(0),
+        )
+        .unwrap_or_else(|e| {
+            eprintln!("videre gallery: /api/files count failed: {e}");
+            -1
+        });
 
     // `copies` is how many files share this hash. The client derived it by
     // scanning the whole array, which is the only reason it needed the whole
@@ -171,7 +184,7 @@ fn query_files_page(
         "SELECT path, hash, size_bytes, COALESCE(ext,''), created_at, modified_at, exif_date, \
                 gps_lat, gps_lon, width, height, \
                 (SELECT COUNT(*) FROM file_hashes c WHERE c.hash = f.hash) AS copies \
-         FROM {from} AS f ORDER BY f.path LIMIT ?1 OFFSET ?2"
+         FROM {from} AS f{where_sql} ORDER BY f.path LIMIT ? OFFSET ?"
     );
     // :warning: A failed query must not read as an empty page. Returning
     // `(vec![], total)` here once hid malformed SQL behind a gallery that looked
@@ -184,8 +197,14 @@ fn query_files_page(
             return Err(rusqlite::Error::InvalidQuery);
         }
     };
+    let mut bound: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    for p in &params {
+        bound.push(Box::new(p.clone()));
+    }
+    bound.push(Box::new(limit));
+    bound.push(Box::new(offset));
     let rows = stmt
-        .query_map([limit, offset], |r| {
+        .query_map(rusqlite::params_from_iter(bound.iter()), |r| {
             Ok((
                 FileRow {
                     path: r.get(0)?,
@@ -213,6 +232,19 @@ fn query_files_page(
 ///
 /// Capped for the same reason `limit` is: this must not become a way to ask for
 /// the library one comma at a time.
+/// The KEEP set: one row per hash, the earliest by effective date.
+///
+/// Extracted because `/api/files?view=date` and `/api/dates` must agree about
+/// which row represents a group. Two definitions would drift, and the symptom
+/// would be a bucket count that disagrees with the files inside it.
+fn keep_set_sql() -> String {
+    format!(
+        "(SELECT * FROM (SELECT *, ROW_NUMBER() OVER \
+          (PARTITION BY hash ORDER BY {}, path) AS rn FROM file_hashes) WHERE rn = 1)",
+        videre_core::query::EFFECTIVE_DATE_SQL
+    )
+}
+
 fn query_files_by_hash(
     conn: &Connection,
     csv: &str,
@@ -677,6 +709,30 @@ fn query_keep_files(conn: &Connection) -> Vec<FileRow> {
         .collect()
 }
 
+/// Which section a page is, for the strip in `templates/nav.html`.
+///
+/// An enum rather than a `&str` because the template asks which one this is on
+/// every entry, and a mistyped string would compile and quietly highlight
+/// nothing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Section {
+    All,
+    Date,
+    People,
+}
+
+impl Section {
+    pub(crate) fn is_all(&self) -> bool {
+        *self == Section::All
+    }
+    pub(crate) fn is_date(&self) -> bool {
+        *self == Section::Date
+    }
+    pub(crate) fn is_people(&self) -> bool {
+        *self == Section::People
+    }
+}
+
 #[derive(askama::Template)]
 #[template(path = "gallery.html")]
 struct GalleryPage<'a> {
@@ -696,6 +752,9 @@ struct GalleryPage<'a> {
     embedded: Option<usize>,
     all_files_count: Option<usize>,
     has_keep_files: bool,
+    /// The current section, or `None` on a page with nowhere to navigate to.
+    /// Read by the included `nav.html`, which documents the rule.
+    nav: Option<Section>,
 }
 
 /// The rows behind a list of paths, in the order given.
@@ -739,6 +798,9 @@ pub(crate) fn write_static_page(
         false,
         &faces_by_hash,
         false,
+        // A static export has no server behind it, so every section link would
+        // be dead the moment the file is opened from `file://`.
+        None,
     );
     std::fs::write(output, &html)
         .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", output.display()))?;
@@ -746,6 +808,8 @@ pub(crate) fn write_static_page(
     Ok(())
 }
 
+/// `nav` names the current section, or is `None` on a page with nowhere to
+/// navigate to. See `templates/nav.html`.
 pub(crate) fn generate_html(
     db_path: &str,
     stats: &Stats,
@@ -757,6 +821,7 @@ pub(crate) fn generate_html(
     heic_original: bool,
     faces_by_hash: &videre_core::face_db::LabeledFacesByHash,
     live: bool,
+    nav: Option<Section>,
 ) -> String {
     use askama::Template;
     use chrono::Utc;
@@ -794,6 +859,7 @@ pub(crate) fn generate_html(
         embedded: vectors.map(|vb| vb.hashes.len()),
         all_files_count: all_files.map(|f| f.len()),
         has_keep_files: keep_files.is_some(),
+        nav,
     };
     page.render().expect("gallery template")
 }
@@ -891,7 +957,9 @@ fn build_data_block(
     }
 
     // Date-grouped KEEP-only file set (--by-date only).
-    if let Some(kf) = keep_files {
+    // A live date view fetches its tree from /api/dates and its rows from
+    // /api/files, so it inlines nothing. A static export still carries them.
+    if let Some(kf) = keep_files.filter(|_| inline_files) {
         out.push_str("var KEEPFILES=[\n");
         for (i, f) in kf.iter().enumerate() {
             if i > 0 {
@@ -933,6 +1001,9 @@ mod pages {
     pub struct Faces {
         pub css: &'static str,
         pub js: &'static str,
+        /// The current section, or `None` when there is nowhere to navigate to.
+        /// See `templates/nav.html`.
+        pub nav: Option<super::Section>,
     }
 
     #[derive(Template)]
@@ -1026,13 +1097,21 @@ struct AppState {
     report_heic: bool,
     report_heic_original: bool,
     serve_faces_ui: bool,
+    /// `videre gallery` rather than a report or labeling server. The one
+    /// configuration where `/`, `/date` and `/people` all exist, so the one
+    /// where a section strip can link to them.
+    gallery: bool,
 }
 
-async fn handle_root() -> impl axum::response::IntoResponse {
+/// The labeling UI. Served as `/people` under `videre gallery`, and as `/` on a
+/// labeling-only server, which is why the nav strip depends on state rather than
+/// on the route: only the former has anywhere to navigate to.
+async fn handle_root(State(state): State<Arc<AppState>>) -> impl axum::response::IntoResponse {
     use askama::Template;
     let page = pages::Faces {
         css: pages::FACES_CSS,
         js: pages::FACES_JS,
+        nav: state.gallery.then_some(super::report::Section::People),
     };
     axum::response::Html(page.render().expect("faces template"))
 }
@@ -1041,21 +1120,22 @@ async fn handle_root() -> impl axum::response::IntoResponse {
 /// rendered on each request from the current database state (labeled faces
 /// included, since this route only exists when `--show-faces` is set).
 async fn handle_report(State(state): State<Arc<AppState>>) -> impl axum::response::IntoResponse {
-    render_live(&state, state.report_all, state.report_by_date)
+    // Not `videre gallery`: this server has `/` and nothing else.
+    render_live(&state, state.report_all, state.report_by_date, None)
 }
 
 /// `videre gallery`'s `/`: every file, with in-page similarity search.
 async fn handle_gallery_all(
     State(state): State<Arc<AppState>>,
 ) -> impl axum::response::IntoResponse {
-    render_live(&state, true, false)
+    render_live(&state, true, false, Some(Section::All))
 }
 
 /// `videre gallery`'s `/date`: the year/month/day drill-down over KEEP files.
 async fn handle_gallery_date(
     State(state): State<Arc<AppState>>,
 ) -> impl axum::response::IntoResponse {
-    render_live(&state, false, true)
+    render_live(&state, false, true, Some(Section::Date))
 }
 
 /// Reserved so the shape of the command is visible before the views exist.
@@ -1074,7 +1154,17 @@ async fn handle_not_yet() -> impl axum::response::IntoResponse {
 
 /// Which sections a live page renders is a property of the route, not of the
 /// server, so `/` and `/date` can differ within one `gallery`.
-fn render_live(state: &Arc<AppState>, all: bool, by_date: bool) -> axum::response::Html<String> {
+///
+/// `nav` is `Some` only under `videre gallery`, which is the one configuration
+/// that routes `/`, `/date` and `/people` together. The other servers reach this
+/// through `/` alone, where a strip of links to routes that do not exist would
+/// 404 on every entry but the one you are on.
+fn render_live(
+    state: &Arc<AppState>,
+    all: bool,
+    by_date: bool,
+    nav: Option<Section>,
+) -> axum::response::Html<String> {
     let conn = state.conn.lock().unwrap();
     let stats = query_stats(&conn);
     let groups = query_groups(&conn);
@@ -1099,6 +1189,7 @@ fn render_live(state: &Arc<AppState>, all: bool, by_date: bool) -> axum::respons
         state.report_heic_original,
         &faces_by_hash,
         true,
+        nav,
     );
     axum::response::Html(html)
 }
@@ -1177,7 +1268,7 @@ async fn handle_files(
         Some(h) if !h.is_empty() => {
             query_files_by_hash(&conn, h).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         }
-        _ => query_files_page(&conn, view, offset, limit)
+        _ => query_files_page(&conn, view, q.date.as_deref(), offset, limit)
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
     };
 
@@ -1212,6 +1303,95 @@ async fn handle_files(
     }
     out.push_str("]}");
 
+    use axum::response::IntoResponse;
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        out,
+    )
+        .into_response())
+}
+
+/// The year/month/day tree, as counts with one representative row per bucket.
+///
+/// :warning: **A page of rows cannot build this.** Grouping 200 files by year
+/// shows a tree that grows as you scroll, which is worse than no tree. The
+/// counts have to come from the whole library, so they come from SQL.
+///
+/// One level at a time, so a response is at most a few dozen buckets: about
+/// fifteen years, twelve months, thirty-one days. The representative row is
+/// included because each card shows a thumbnail, and fetching those separately
+/// would be one request per bucket.
+async fn handle_dates(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<DatesQuery>,
+) -> Result<axum::response::Response, StatusCode> {
+    let (len, parent_len) = match q.level.as_deref() {
+        Some("month") => (7, 4),
+        Some("day") => (10, 7),
+        _ => (4, 0),
+    };
+    let effective = videre_core::query::EFFECTIVE_DATE_SQL;
+    let keep = keep_set_sql();
+
+    let mut sql = format!(
+        "SELECT substr({effective}, 1, {len}) AS k, COUNT(*) AS n, \
+                path, hash, COALESCE(ext,''), width, height, MIN(path) \
+         FROM {keep} AS f \
+         WHERE {effective} IS NOT NULL AND {effective} NOT LIKE '0000%'"
+    );
+    let mut params: Vec<String> = Vec::new();
+    if parent_len > 0 {
+        if let Some(p) = q.parent.as_deref().filter(|p| !p.is_empty()) {
+            sql.push_str(&format!(" AND substr({effective}, 1, {parent_len}) = ?1"));
+            params.push(p.to_string());
+        }
+    }
+    sql.push_str(" GROUP BY k ORDER BY k DESC");
+
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut stmt = conn.prepare(&sql).map_err(|e| {
+        eprintln!("videre gallery: /api/dates query failed: {e}\n  {sql}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    // SQLite picks the bare columns from the row matching MIN(path), which is
+    // what makes the representative deterministic rather than arbitrary.
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(params.iter()), |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, Option<i32>>(5)?,
+                r.get::<_, Option<i32>>(6)?,
+            ))
+        })
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .filter_map(|r| r.ok())
+        .collect::<Vec<_>>();
+    drop(stmt);
+    drop(conn);
+
+    let mut out = String::from("{\"buckets\":[");
+    for (i, (key, n, path, hash, ext, w, h)) in rows.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"key\":{},\"count\":{n},\"sample\":{{\"path\":{},\"hash\":{},\"ext\":{},\"w\":{},\"h\":{}}}}}",
+            json_str(key),
+            json_str(path),
+            json_str(hash),
+            json_str(ext),
+            w.map(|v| v.to_string()).unwrap_or("null".into()),
+            h.map(|v| v.to_string()).unwrap_or("null".into()),
+        ));
+    }
+    out.push_str("]}");
     use axum::response::IntoResponse;
     Ok((
         [(axum::http::header::CONTENT_TYPE, "application/json")],
@@ -1423,6 +1603,15 @@ fn mime_for_ext(ext: &str) -> &'static str {
 }
 
 #[derive(Deserialize)]
+struct DatesQuery {
+    /// `year`, `month` or `day`. Anything else is treated as `year`.
+    level: Option<String>,
+    /// The bucket being drilled into: a year for `month`, a year-month for
+    /// `day`. Absent at the top level.
+    parent: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct FilesQuery {
     /// `all` (default) or `date`. Anything else is treated as `all` rather than
     /// rejected: an unknown view is a client bug, and a 400 here would render as
@@ -1433,6 +1622,10 @@ struct FilesQuery {
     /// Comma-separated hashes. Used by in-page similarity to resolve the rows
     /// behind its results without holding every row to look them up in.
     hashes: Option<String>,
+    /// A date prefix, `YYYY`, `YYYY-MM` or `YYYY-MM-DD`. The date view's leaf
+    /// asks for one day; the prefix form means the same endpoint answers a
+    /// month or a year without a second parameter.
+    date: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1637,6 +1830,7 @@ async fn serve_faces_async(
         report_heic: opts.report_heic,
         report_heic_original: opts.report_heic_original,
         serve_faces_ui: opts.serve_faces_ui,
+        gallery: opts.gallery,
     });
 
     let mut router = Router::new()
@@ -1650,7 +1844,8 @@ async fn serve_faces_async(
         .route("/api/quit", post(handle_quit))
         .route("/api/location", get(handle_location))
         .route("/api/raw", get(handle_raw_file))
-        .route("/api/files", get(handle_files));
+        .route("/api/files", get(handle_files))
+        .route("/api/dates", get(handle_dates));
 
     if state.serve_faces_ui {
         router = router

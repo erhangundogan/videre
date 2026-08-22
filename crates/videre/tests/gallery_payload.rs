@@ -264,7 +264,6 @@ fn the_all_files_page_does_not_carry_the_library() {
 }
 
 #[test]
-#[ignore = "fails until the date view fetches its rows: BUG:15 phase 4"]
 fn the_date_page_does_not_carry_the_library() {
     assert_under_ceiling("/date");
 }

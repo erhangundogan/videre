@@ -8,6 +8,7 @@
 {{ css|safe }}</style>
 </head>
 <body>
+{% include "nav.html" %}
 <div id="sort-overlay"><div class="sort-card"><div class="spinner"></div>Sorting&hellip;</div></div>
 <div class="lightbox" id="lb" onclick="closeLb()">
   <img id="lb-img" src="" alt="" onclick="event.stopPropagation()">
