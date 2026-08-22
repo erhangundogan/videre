@@ -209,6 +209,60 @@ fn query_files_page(
     Ok((rows, total))
 }
 
+/// Rows for a specific set of hashes, for similarity results.
+///
+/// Capped for the same reason `limit` is: this must not become a way to ask for
+/// the library one comma at a time.
+fn query_files_by_hash(
+    conn: &Connection,
+    csv: &str,
+) -> rusqlite::Result<(Vec<(FileRow, i64)>, i64)> {
+    const MAX_HASHES: usize = 100;
+    let wanted: Vec<String> = csv
+        .split(',')
+        .map(|h| h.trim())
+        .filter(|h| !h.is_empty() && h.chars().all(|c| c.is_ascii_hexdigit()))
+        .take(MAX_HASHES)
+        .map(|h| h.to_string())
+        .collect();
+    if wanted.is_empty() {
+        return Ok((Vec::new(), 0));
+    }
+    let placeholders = std::iter::repeat_n("?", wanted.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT path, hash, size_bytes, COALESCE(ext,''), created_at, modified_at, exif_date, \
+                gps_lat, gps_lon, width, height, \
+                (SELECT COUNT(*) FROM file_hashes c WHERE c.hash = f.hash) AS copies \
+         FROM file_hashes AS f WHERE f.hash IN ({placeholders}) ORDER BY f.path"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(wanted.iter()), |r| {
+            Ok((
+                FileRow {
+                    path: r.get(0)?,
+                    hash: r.get(1)?,
+                    size_bytes: r.get(2)?,
+                    ext: r.get(3)?,
+                    created_at: r.get(4)?,
+                    modified_at: r.get(5)?,
+                    exif_date: r.get(6)?,
+                    gps_lat: r.get(7)?,
+                    gps_lon: r.get(8)?,
+                    width: r.get(9)?,
+                    height: r.get(10)?,
+                },
+                r.get::<_, i64>(11)?,
+            ))
+        })?
+        .filter_map(|r| r.ok())
+        .collect::<Vec<_>>();
+    let n = rows.len() as i64;
+    Ok((rows, n))
+}
+
 fn best_date(r: &FileRow) -> &str {
     if let Some(d) = r.exif_date.as_deref() {
         if !d.starts_with("0000") {
@@ -758,7 +812,14 @@ fn build_data_block(
     live: bool,
 ) -> String {
     let mut out = String::with_capacity(256 * 1024);
-    out.push_str(&format!("<script>\nvar LIVE_SERVER={};\n</script>\n", live));
+    // GVIEW tells the client which view to ask /api/files for when it fetches
+    // rather than reading an inlined array. It is the route's own identity, so
+    // the client never has to infer it from the URL.
+    let view = if keep_files.is_some() { "date" } else { "all" };
+    out.push_str(&format!(
+        "<script>\nvar LIVE_SERVER={live};\nvar GVIEW={};\n</script>\n",
+        json_str(view)
+    ));
     out.push_str("<script>\nvar GROUPS=[\n");
     for (i, group) in groups.iter().enumerate() {
         if i > 0 {
@@ -774,9 +835,23 @@ fn build_data_block(
         ));
     }
     out.push_str("\n];\n");
-    // All-files gallery data and similarity vectors (--all only).
-    // Without --all nothing is emitted so the page is unchanged.
-    if let Some(files) = all_files {
+    // All-files gallery data and similarity vectors.
+    //
+    // :warning: **A live page never inlines the file list.** It always fetches
+    // from `/api/files`, whatever the library size.
+    //
+    // Tying this to the vector gate was tried and is wrong: a page that carries
+    // rows whenever it carries vectors can never meet a size ceiling, because
+    // the rows are the larger half for any library below the gate. One rule for
+    // live pages is also simply less to get wrong.
+    //
+    // In-page similarity still works below the gate: it computes neighbours
+    // from the inlined vectors, then asks `/api/files?hashes=` for the rows it
+    // needs to display. It resolves a handful, not a library.
+    //
+    // A static export always inlines, having no server to fetch from.
+    let inline_files = !live;
+    if let Some(files) = all_files.filter(|_| inline_files) {
         out.push_str("var ALLFILES=[\n");
         for (i, f) in files.iter().enumerate() {
             if i > 0 {
@@ -1098,8 +1173,13 @@ async fn handle_files(
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let faces_by_hash = videre_core::face_db::labeled_faces_by_hash(&conn).unwrap_or_default();
-    let (rows, total) = query_files_page(&conn, view, offset, limit)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (rows, total) = match q.hashes.as_deref() {
+        Some(h) if !h.is_empty() => {
+            query_files_by_hash(&conn, h).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        }
+        _ => query_files_page(&conn, view, offset, limit)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+    };
 
     let mut out = String::from("{\"total\":");
     out.push_str(&total.to_string());
@@ -1350,6 +1430,9 @@ struct FilesQuery {
     view: Option<String>,
     offset: Option<i64>,
     limit: Option<i64>,
+    /// Comma-separated hashes. Used by in-page similarity to resolve the rows
+    /// behind its results without holding every row to look them up in.
+    hashes: Option<String>,
 }
 
 #[derive(Deserialize)]

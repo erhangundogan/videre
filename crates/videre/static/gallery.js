@@ -331,8 +331,12 @@ function similarBtn(hash){
 }
 function buildCard(f){
   var fname=f.path.split('/').pop()||f.path;
-  var copies=HASH_FILES[f.hash]&&HASH_FILES[f.hash].length>1?
-    '<span class="copies">x'+HASH_FILES[f.hash].length+'</span>':'';
+  // `copies` arrives on the row from /api/files. An inlined page has no such
+  // field and falls back to counting the array, which is the only reason that
+  // array ever had to be complete.
+  var n = (typeof f.copies==='number') ? f.copies
+        : (HASH_FILES[f.hash] ? HASH_FILES[f.hash].length : 1);
+  var copies = n>1 ? '<span class="copies">x'+n+'</span>' : '';
   return '<div class="card" data-hash="'+escA(f.hash)+'">'+copies+
     buildPreview(f)+
     '<div class="card-meta" title="'+escA(f.path)+'">'+escH(fname)+'</div>'+
@@ -340,20 +344,41 @@ function buildCard(f){
     similarBtn(f.hash)+
     '</div>';
 }
-function renderGallery(){
-  if(typeof ALLFILES==='undefined')return;
+// Appends one page of cards and updates the button. Shared by both paths, so an
+// inlined page and a fetched one render identically.
+function appendCards(files,total){
   var g=document.getElementById('gallery');
-  var end=Math.min(gShown+GPAGE,ALLFILES.length);
   var html='';
-  for(var i=gShown;i<end;i++)html+=buildCard(ALLFILES[i]);
+  for(var i=0;i<files.length;i++)html+=buildCard(files[i]);
   var tmp=document.createElement('div');
   tmp.innerHTML=html;
   while(tmp.firstChild)g.appendChild(tmp.firstChild);
-  gShown=end;
+  gShown+=files.length;
   var btn=document.getElementById('gallery-more');
-  var rem=ALLFILES.length-gShown;
+  var rem=total-gShown;
   if(rem>0){btn.style.display='inline-block';btn.textContent='Show more ('+rem+' remaining)';}
   else btn.style.display='none';
+}
+// Guards a second fetch while one is in flight; a double-click on "Show more"
+// would otherwise append the same page twice.
+var gLoading=false;
+function renderGallery(){
+  if(typeof ALLFILES!=='undefined'){
+    appendCards(ALLFILES.slice(gShown,gShown+GPAGE),ALLFILES.length);
+    return;
+  }
+  if(gLoading)return;
+  gLoading=true;
+  var btn=document.getElementById('gallery-more');
+  if(btn)btn.textContent='Loading\u2026';
+  fetch('/api/files?view='+encodeURIComponent(GVIEW)+'&offset='+gShown+'&limit='+GPAGE)
+    .then(function(r){ return r.json(); })
+    .then(function(d){ gLoading=false; appendCards(d.files||[],d.total||0); })
+    .catch(function(){
+      gLoading=false;
+      // Say so, rather than leaving a button that silently does nothing.
+      if(btn)btn.textContent='Could not load more. Click to retry.';
+    });
 }
 function showMoreGallery(){renderGallery();}
 function findSimilar(hash){
@@ -383,7 +408,26 @@ function resultCard(hash,score,isQuery){
     '<div class="rname" title="'+escA(f.path)+'">'+(isQuery?'query: ':'')+escH(fname)+'</div>'+
     '</div>';
 }
+// :warning: Results are drawn from rows fetched by hash, not from a complete
+// in-memory array. Similarity ranks a few dozen out of the whole library, and
+// requiring every row to be present just to display 24 of them is what made the
+// page carry the library in the first place.
 function renderResults(qHash,scored){
+  var need=[qHash];
+  for(var i=0;i<scored.length;i++)need.push(VEC_HASHES[scored[i][0]]);
+  var missing=need.filter(function(h){return !HASH_FILES[h];});
+  if(missing.length===0){ drawResults(qHash,scored); return; }
+  fetch('/api/files?hashes='+encodeURIComponent(missing.join(',')))
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      (d.files||[]).forEach(function(f){
+        (HASH_FILES[f.hash]=HASH_FILES[f.hash]||[]).push(f);
+      });
+      drawResults(qHash,scored);
+    })
+    .catch(function(){ drawResults(qHash,scored); });
+}
+function drawResults(qHash,scored){
   var panel=document.getElementById('results');
   var html='<div class="results-head"><h2>Similar images</h2>'+
     '<button onclick="clearResults()">Clear</button></div>'+
@@ -410,6 +454,9 @@ if(typeof ALLFILES!=='undefined'){
     VECS=decodeVecs(VEC_B64,VEC_HASHES.length,VEC_DIM);
     for(var vi=0;vi<VEC_HASHES.length;vi++)VEC_INDEX[VEC_HASHES[vi]]=vi;
   }
+  renderGallery();
+}else if(document.getElementById('gallery')){
+  // Nothing inlined: a live page above the vector gate. Fetch the first page.
   renderGallery();
 }
 document.addEventListener('click',function(e){
