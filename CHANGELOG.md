@@ -27,19 +27,27 @@ version number and are released together.
 
 ### Fixed
 
-- :warning: **`videre gallery` was unusable on a large library.** It inlined
-  every embedding into the page as base64, so a 70,601-file library produced a
-  **149 MB page of which 97% was vectors**. The server builds that in under a
-  second, so it looked like a hang in the browser rather than a problem the
-  server could report: the page simply never appeared.
+- :warning: **`videre gallery` never finished loading on a large library.** Two
+  causes, both of them the page carrying data it should have fetched.
 
-  In-page similarity search is now disabled, with a note, once the vectors
-  would exceed 24 MB. The same page is **31 MB** and everything else is
-  unaffected: browsing, people, dates, the lightbox and paging all work. Small
-  libraries keep the feature.
+  **Face crops were decoded and inlined.** For every labelled face on every
+  file, building the page opened the original and decoded the **whole** image to
+  cut out one face. On a library with 23,217 labelled faces across 16,572 files
+  that is 16,572 full-resolution JPEG decodes per request, off external storage.
+  Nothing errored; the request simply never returned. A live page now sends the
+  face id and the browser fetches the crop from `/api/face-image/` when a
+  lightbox opens. Static exports keep inline crops, having no server to ask.
 
-  Serving vectors from an endpoint rather than inlining them is the real fix and
-  is still to come.
+  **Every embedding was inlined as base64**, which was 145 MB of a 149 MB page.
+  Above 24 MB of vectors, in-page similarity search is now switched off with a
+  note explaining why, the same path already taken for a library with no
+  embeddings. Smaller libraries keep it.
+
+  Measured on a real 70,601-file library: **from not returning at all to 28 MB
+  in 0.6 seconds**, with every file present.
+
+  Serving the file list itself from an endpoint, rather than inlining 28 MB of
+  it, is the remaining step.
 
 - **The docs taught command lines that no longer parse.** `guides/browsing.md`
   still documented `--faces`, `--show-faces`, `--heic` and `--heic-original`,
