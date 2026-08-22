@@ -27,6 +27,28 @@ version number and are released together.
 
 ### Fixed
 
+- :warning: **`videre gallery` never finished loading on a large library.** Two
+  causes, both of them the page carrying data it should have fetched.
+
+  **Face crops were decoded and inlined.** For every labelled face on every
+  file, building the page opened the original and decoded the **whole** image to
+  cut out one face. On a library with 23,217 labelled faces across 16,572 files
+  that is 16,572 full-resolution JPEG decodes per request, off external storage.
+  Nothing errored; the request simply never returned. A live page now sends the
+  face id and the browser fetches the crop from `/api/face-image/` when a
+  lightbox opens. Static exports keep inline crops, having no server to ask.
+
+  **Every embedding was inlined as base64**, which was 145 MB of a 149 MB page.
+  Above 24 MB of vectors, in-page similarity search is now switched off with a
+  note explaining why, the same path already taken for a library with no
+  embeddings. Smaller libraries keep it.
+
+  Measured on a real 70,601-file library: **from not returning at all to 28 MB
+  in 0.6 seconds**, with every file present.
+
+  Serving the file list itself from an endpoint, rather than inlining 28 MB of
+  it, is the remaining step.
+
 - **The docs taught command lines that no longer parse.** `guides/browsing.md`
   still documented `--faces`, `--show-faces`, `--heic` and `--heic-original`,
   including a table explaining how they combined, two releases after they were
