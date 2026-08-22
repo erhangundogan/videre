@@ -120,6 +120,95 @@ fn query_vectors(conn: &Connection, model_id: &str) -> Option<VectorBlock> {
     })
 }
 
+/// One page of the gallery's file list, for `/api/files`.
+///
+/// Returns each row with its copy count, plus the total across the whole view
+/// so the client can say "Show more (N remaining)" without holding the rest.
+///
+/// :warning: **Paged in SQL, so it does not filter by `Path::exists()`.**
+/// `query_all_files` filters in Rust after the query, which cannot be paged: a
+/// page of 200 would yield fewer than 200 rows, raggedly, and `total` would
+/// disagree with what the pages actually contain.
+///
+/// Not filtering also matches `query_groups`, which never filtered, and matches
+/// what the docs now say: the database is the source of truth until
+/// `videre prune` removes a row. The consequence to handle when this is wired
+/// up is that an unplugged drive shows files rather than an empty grid, which
+/// needs saying in the page rather than being left to look broken.
+fn query_files_page(
+    conn: &Connection,
+    view: &str,
+    offset: i64,
+    limit: i64,
+) -> rusqlite::Result<(Vec<(FileRow, i64)>, i64)> {
+    let effective = videre_core::query::EFFECTIVE_DATE_SQL;
+
+    // `view=date` shows one row per hash, the same KEEP set `/date` renders.
+    // Choosing it in SQL rather than in Rust is what makes it pageable.
+    let (from, total_from) = if view == "date" {
+        (
+            format!(
+                "(SELECT * FROM (SELECT *, ROW_NUMBER() OVER \
+                  (PARTITION BY hash ORDER BY {effective}, path) AS rn \
+                  FROM file_hashes) WHERE rn = 1)"
+            ),
+            "(SELECT DISTINCT hash FROM file_hashes)".to_string(),
+        )
+    } else {
+        ("file_hashes".to_string(), "file_hashes".to_string())
+    };
+
+    let total: i64 = conn
+        .query_row(&format!("SELECT COUNT(*) FROM {total_from}"), [], |r| {
+            r.get(0)
+        })
+        .unwrap_or(0);
+
+    // `copies` is how many files share this hash. The client derived it by
+    // scanning the whole array, which is the only reason it needed the whole
+    // array. The database knew it all along.
+    let sql = format!(
+        "SELECT path, hash, size_bytes, COALESCE(ext,''), created_at, modified_at, exif_date, \
+                gps_lat, gps_lon, width, height, \
+                (SELECT COUNT(*) FROM file_hashes c WHERE c.hash = f.hash) AS copies \
+         FROM {from} AS f ORDER BY f.path LIMIT ?1 OFFSET ?2"
+    );
+    // :warning: A failed query must not read as an empty page. Returning
+    // `(vec![], total)` here once hid malformed SQL behind a gallery that looked
+    // like a library with nothing in it, which is the same shape as every other
+    // fault in this file's history: nothing errored, so nothing was reported.
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("videre gallery: /api/files query failed: {e}\n  {sql}");
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+    };
+    let rows = stmt
+        .query_map([limit, offset], |r| {
+            Ok((
+                FileRow {
+                    path: r.get(0)?,
+                    hash: r.get(1)?,
+                    size_bytes: r.get(2)?,
+                    ext: r.get(3)?,
+                    created_at: r.get(4)?,
+                    modified_at: r.get(5)?,
+                    exif_date: r.get(6)?,
+                    gps_lat: r.get(7)?,
+                    gps_lon: r.get(8)?,
+                    width: r.get(9)?,
+                    height: r.get(10)?,
+                },
+                r.get::<_, i64>(11)?,
+            ))
+        })
+        .map(|it| it.filter_map(|r| r.ok()).collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    Ok((rows, total))
+}
+
 fn best_date(r: &FileRow) -> &str {
     if let Some(d) = r.exif_date.as_deref() {
         if !d.starts_with("0000") {
@@ -988,6 +1077,69 @@ async fn handle_location(
     Ok(AxumJson(LocationResponse { name }))
 }
 
+/// One page of the file list, for a live gallery that fetches rather than
+/// carries its rows.
+///
+/// :warning: `limit` is capped. An unbounded `limit` would let a client ask for
+/// the whole library in one request, which is the exact page this endpoint
+/// exists to stop being built.
+async fn handle_files(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<FilesQuery>,
+) -> Result<axum::response::Response, StatusCode> {
+    const MAX_LIMIT: i64 = 500;
+
+    let view = q.view.as_deref().unwrap_or("all");
+    let offset = q.offset.unwrap_or(0).max(0);
+    let limit = q.limit.unwrap_or(200).clamp(1, MAX_LIMIT);
+
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let faces_by_hash = videre_core::face_db::labeled_faces_by_hash(&conn).unwrap_or_default();
+    let (rows, total) = query_files_page(&conn, view, offset, limit)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut out = String::from("{\"total\":");
+    out.push_str(&total.to_string());
+    out.push_str(",\"offset\":");
+    out.push_str(&offset.to_string());
+    out.push_str(",\"files\":[");
+    for (i, (row, copies)) in rows.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        // Same row shape the page inlines today, so the client renders a fetched
+        // row and an inlined one with one code path.
+        let mut obj = file_to_json_with_faces(
+            row,
+            false,
+            false,
+            faces_by_hash
+                .get(&row.hash)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]),
+            true,
+        );
+        // Splice `copies` in rather than widening FileRow, which the static
+        // export also builds and has no use for it.
+        if obj.ends_with('}') {
+            obj.truncate(obj.len() - 1);
+            obj.push_str(&format!(",\"copies\":{copies}}}"));
+        }
+        out.push_str(&obj);
+    }
+    out.push_str("]}");
+
+    use axum::response::IntoResponse;
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        out,
+    )
+        .into_response())
+}
+
 async fn handle_get_faces(
     State(state): State<Arc<AppState>>,
 ) -> Result<AxumJson<FacesData>, StatusCode> {
@@ -1188,6 +1340,16 @@ async fn handle_face_image(
 
 fn mime_for_ext(ext: &str) -> &'static str {
     videre_api::mime_for_ext(ext)
+}
+
+#[derive(Deserialize)]
+struct FilesQuery {
+    /// `all` (default) or `date`. Anything else is treated as `all` rather than
+    /// rejected: an unknown view is a client bug, and a 400 here would render as
+    /// an empty gallery with no explanation.
+    view: Option<String>,
+    offset: Option<i64>,
+    limit: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -1404,7 +1566,8 @@ async fn serve_faces_async(
         .route("/api/search/person", get(handle_search_person))
         .route("/api/quit", post(handle_quit))
         .route("/api/location", get(handle_location))
-        .route("/api/raw", get(handle_raw_file));
+        .route("/api/raw", get(handle_raw_file))
+        .route("/api/files", get(handle_files));
 
     if state.serve_faces_ui {
         router = router

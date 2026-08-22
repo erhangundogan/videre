@@ -289,3 +289,93 @@ fn port_zero_announces_the_port_it_actually_bound() {
         "announced port {port} but nothing was listening there"
     );
 }
+
+// ---- /api/files, the endpoint the gallery will fetch its rows from ----------
+//
+// :warning: The first version of this endpoint returned an empty page when its
+// query failed to prepare, so a malformed `view=date` looked exactly like a
+// library with nothing in it. These assert row counts rather than only status,
+// because a 200 carrying nothing is the failure that actually happened.
+
+/// Returns (total, number of rows returned).
+fn files_page(server: &Server, query: &str) -> (i64, usize) {
+    let (status, body) = server.get(&format!("/api/files?{query}"));
+    assert_eq!(status, 200, "/api/files?{query} did not return 200");
+    let v: serde_json::Value =
+        serde_json::from_str(&body).unwrap_or_else(|e| panic!("invalid JSON for {query}: {e}"));
+    (
+        v["total"].as_i64().expect("total"),
+        v["files"].as_array().expect("files").len(),
+    )
+}
+
+#[test]
+fn the_files_endpoint_pages_both_views() {
+    let dir = tempdir().unwrap();
+    let db = fixture(dir.path());
+    let server = Server::start(&db);
+
+    // The fixture holds one file, so both views see it and paging is trivial
+    // but real: the arithmetic is what is being pinned, not the volume.
+    for view in ["all", "date"] {
+        let (total, n) = files_page(&server, &format!("view={view}&limit=10"));
+        assert_eq!(total, 1, "view={view} reported the wrong total");
+        assert_eq!(n, 1, "view={view} returned the wrong number of rows");
+    }
+}
+
+#[test]
+fn an_offset_past_the_end_is_an_empty_page_not_an_error() {
+    let dir = tempdir().unwrap();
+    let db = fixture(dir.path());
+    let server = Server::start(&db);
+
+    let (total, n) = files_page(&server, "offset=9999&limit=10");
+    assert_eq!(total, 1, "total must describe the view, not the page");
+    assert_eq!(n, 0, "a page past the end should be empty");
+}
+
+#[test]
+fn limit_is_capped_so_a_client_cannot_ask_for_the_library() {
+    // The whole point of the endpoint is that no single response carries
+    // everything, so an unbounded limit would defeat it.
+    let dir = tempdir().unwrap();
+    let db = fixture(dir.path());
+    let server = Server::start(&db);
+
+    let (_, n) = files_page(&server, "limit=100000");
+    assert!(n <= 500, "limit was not capped: {n} rows returned");
+}
+
+#[test]
+fn each_row_carries_its_copy_count() {
+    // `copies` is why the client no longer needs the whole array: it used to
+    // scan everything to count files per hash, a number the database had.
+    let dir = tempdir().unwrap();
+    let db = fixture(dir.path());
+    let server = Server::start(&db);
+
+    let (status, body) = server.get("/api/files?limit=1");
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let copies = v["files"][0]["copies"]
+        .as_i64()
+        .expect("every row must carry copies");
+    assert_eq!(
+        copies, 1,
+        "the fixture has one file, so one copy of its hash"
+    );
+}
+
+#[test]
+fn an_unknown_view_falls_back_rather_than_failing() {
+    // An unknown view is a client bug. Rejecting it would render as an empty
+    // gallery with no explanation, which is worse than showing all files.
+    let dir = tempdir().unwrap();
+    let db = fixture(dir.path());
+    let server = Server::start(&db);
+
+    let (total, n) = files_page(&server, "view=nonsense&limit=10");
+    assert_eq!(total, 1);
+    assert_eq!(n, 1);
+}
