@@ -27,6 +27,20 @@ version number and are released together.
 
 ### Fixed
 
+- :warning: **`videre gallery` was unusable on a large library.** It inlined
+  every embedding into the page as base64, so a 70,601-file library produced a
+  **149 MB page of which 97% was vectors**. The server builds that in under a
+  second, so it looked like a hang in the browser rather than a problem the
+  server could report: the page simply never appeared.
+
+  In-page similarity search is now disabled, with a note, once the vectors
+  would exceed 24 MB. The same page is **31 MB** and everything else is
+  unaffected: browsing, people, dates, the lightbox and paging all work. Small
+  libraries keep the feature.
+
+  Serving vectors from an endpoint rather than inlining them is the real fix and
+  is still to come.
+
 - **The docs taught command lines that no longer parse.** `guides/browsing.md`
   still documented `--faces`, `--show-faces`, `--heic` and `--heic-original`,
   including a table explaining how they combined, two releases after they were

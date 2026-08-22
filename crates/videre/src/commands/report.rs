@@ -36,10 +36,30 @@ pub(crate) struct VectorBlock {
     dim: usize,
 }
 
+/// Ceiling on the embedding payload inlined into a page, in raw bytes before
+/// base64 (which adds a third).
+///
+/// :warning: **Without this, a large library produces a page no browser can
+/// open.** Measured on a real 70,601-file library: 70,588 vectors at 768 f16
+/// dimensions is 108 MB raw, 145 MB base64, and **97% of a 149 MB page**. The
+/// server builds that in 0.74s, so it reads as a hang in the browser rather
+/// than as slowness anywhere the server can report it. Shipped in 0.18.0 and
+/// found by running it against a real library rather than a test fixture.
+///
+/// 24 MB keeps in-page similarity for libraries up to roughly 16,000 embedded
+/// files at 768 dimensions, and is about a third of a second of parse. Beyond
+/// that the feature is disabled with a note, which is exactly what already
+/// happens when a library has no embeddings at all.
+///
+/// The real fix is to serve vectors from an endpoint rather than inline them,
+/// so the client fetches what it needs. This constant is the stopgap.
+const MAX_INLINE_VECTOR_BYTES: usize = 24 * 1024 * 1024;
+
 /// Load all embeddings for the default model, ordered by hash, as one
-/// base64-encoded f16 buffer. Returns None when the table is missing or empty.
-/// Rows whose blob length disagrees with the first valid row's dimension are
-/// skipped (mirrors search.rs semantics for corrupt rows).
+/// base64-encoded f16 buffer. Returns None when the table is missing or empty,
+/// or when the payload would exceed `MAX_INLINE_VECTOR_BYTES`. Rows whose blob
+/// length disagrees with the first valid row's dimension are skipped (mirrors
+/// search.rs semantics for corrupt rows).
 fn query_vectors(conn: &Connection, model_id: &str) -> Option<VectorBlock> {
     let table_exists = conn
         .query_row(
@@ -78,6 +98,19 @@ fn query_vectors(conn: &Connection, model_id: &str) -> Option<VectorBlock> {
         hashes.push(hash);
     }
     if hashes.is_empty() {
+        return None;
+    }
+    // Checked before encoding: base64 of an oversized blob is the expensive
+    // part, and the answer is to not send it either way.
+    if blob.len() > MAX_INLINE_VECTOR_BYTES {
+        eprintln!(
+            "note: in-page similarity search disabled for this library\n  \
+             {} embeddings at {dim} dimensions is {}, more than a page can \n  \
+             carry (limit {}). Browsing, people, dates and search all work.",
+            hashes.len(),
+            videre_core::disk::human_bytes(blob.len() as u64),
+            videre_core::disk::human_bytes(MAX_INLINE_VECTOR_BYTES as u64),
+        );
         return None;
     }
     Some(VectorBlock {
