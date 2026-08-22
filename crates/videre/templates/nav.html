@@ -1,0 +1,28 @@
+{# The section strip, shared by `gallery.html` and `faces.html`.
+
+   :warning: It carries its own `<style>` on purpose. The two pages that include
+   it have separate stylesheets (`gallery.css`, `faces.css`), so styling it there
+   would mean two copies of the same rules kept in step by hand. A component
+   included in two documents keeps its markup and its rules together, in one
+   file, and adding a section later touches only this one.
+
+   `nav` is `Option<Section>`, the current section, and `None` on any page that has
+   nowhere to navigate to: a static `--html` export has no server, and the
+   labeling-only server has no `/date` or `/`. Every route linked here exists
+   only under `videre gallery`, which routes all three together.
+
+   :warning: Reserved routes (`/map`, `/events`, `/smart`) are deliberately
+   absent. They answer 404 "Not built yet", and a link to that is worse than no
+   link. Add each one here when it renders. #}
+{% if let Some(current) = nav %}<style>
+.secnav{display:flex;gap:2px;padding:10px 16px;background:#1a1a1f;border-bottom:1px solid #2a2a33;position:sticky;top:0;z-index:50}
+.secnav a{padding:6px 14px;border-radius:6px;color:#9a9aa8;text-decoration:none;font:500 14px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.secnav a:hover{background:#25252d;color:#d8d8e0}
+.secnav a.on{background:#3b82f6;color:#fff}
+</style>
+<nav class="secnav">
+<a href="/"{% if current.is_all() %} class="on"{% endif %}>Files</a>
+<a href="/date"{% if current.is_date() %} class="on"{% endif %}>Date</a>
+<a href="/people"{% if current.is_people() %} class="on"{% endif %}>People</a>
+</nav>
+{% endif %}

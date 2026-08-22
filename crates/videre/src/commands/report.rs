@@ -709,6 +709,30 @@ fn query_keep_files(conn: &Connection) -> Vec<FileRow> {
         .collect()
 }
 
+/// Which section a page is, for the strip in `templates/nav.html`.
+///
+/// An enum rather than a `&str` because the template asks which one this is on
+/// every entry, and a mistyped string would compile and quietly highlight
+/// nothing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Section {
+    All,
+    Date,
+    People,
+}
+
+impl Section {
+    pub(crate) fn is_all(&self) -> bool {
+        *self == Section::All
+    }
+    pub(crate) fn is_date(&self) -> bool {
+        *self == Section::Date
+    }
+    pub(crate) fn is_people(&self) -> bool {
+        *self == Section::People
+    }
+}
+
 #[derive(askama::Template)]
 #[template(path = "gallery.html")]
 struct GalleryPage<'a> {
@@ -728,6 +752,9 @@ struct GalleryPage<'a> {
     embedded: Option<usize>,
     all_files_count: Option<usize>,
     has_keep_files: bool,
+    /// The current section, or `None` on a page with nowhere to navigate to.
+    /// Read by the included `nav.html`, which documents the rule.
+    nav: Option<Section>,
 }
 
 /// The rows behind a list of paths, in the order given.
@@ -771,6 +798,9 @@ pub(crate) fn write_static_page(
         false,
         &faces_by_hash,
         false,
+        // A static export has no server behind it, so every section link would
+        // be dead the moment the file is opened from `file://`.
+        None,
     );
     std::fs::write(output, &html)
         .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", output.display()))?;
@@ -778,6 +808,8 @@ pub(crate) fn write_static_page(
     Ok(())
 }
 
+/// `nav` names the current section, or is `None` on a page with nowhere to
+/// navigate to. See `templates/nav.html`.
 pub(crate) fn generate_html(
     db_path: &str,
     stats: &Stats,
@@ -789,6 +821,7 @@ pub(crate) fn generate_html(
     heic_original: bool,
     faces_by_hash: &videre_core::face_db::LabeledFacesByHash,
     live: bool,
+    nav: Option<Section>,
 ) -> String {
     use askama::Template;
     use chrono::Utc;
@@ -826,6 +859,7 @@ pub(crate) fn generate_html(
         embedded: vectors.map(|vb| vb.hashes.len()),
         all_files_count: all_files.map(|f| f.len()),
         has_keep_files: keep_files.is_some(),
+        nav,
     };
     page.render().expect("gallery template")
 }
@@ -967,6 +1001,9 @@ mod pages {
     pub struct Faces {
         pub css: &'static str,
         pub js: &'static str,
+        /// The current section, or `None` when there is nowhere to navigate to.
+        /// See `templates/nav.html`.
+        pub nav: Option<super::Section>,
     }
 
     #[derive(Template)]
@@ -1060,13 +1097,21 @@ struct AppState {
     report_heic: bool,
     report_heic_original: bool,
     serve_faces_ui: bool,
+    /// `videre gallery` rather than a report or labeling server. The one
+    /// configuration where `/`, `/date` and `/people` all exist, so the one
+    /// where a section strip can link to them.
+    gallery: bool,
 }
 
-async fn handle_root() -> impl axum::response::IntoResponse {
+/// The labeling UI. Served as `/people` under `videre gallery`, and as `/` on a
+/// labeling-only server, which is why the nav strip depends on state rather than
+/// on the route: only the former has anywhere to navigate to.
+async fn handle_root(State(state): State<Arc<AppState>>) -> impl axum::response::IntoResponse {
     use askama::Template;
     let page = pages::Faces {
         css: pages::FACES_CSS,
         js: pages::FACES_JS,
+        nav: state.gallery.then_some(super::report::Section::People),
     };
     axum::response::Html(page.render().expect("faces template"))
 }
@@ -1075,21 +1120,22 @@ async fn handle_root() -> impl axum::response::IntoResponse {
 /// rendered on each request from the current database state (labeled faces
 /// included, since this route only exists when `--show-faces` is set).
 async fn handle_report(State(state): State<Arc<AppState>>) -> impl axum::response::IntoResponse {
-    render_live(&state, state.report_all, state.report_by_date)
+    // Not `videre gallery`: this server has `/` and nothing else.
+    render_live(&state, state.report_all, state.report_by_date, None)
 }
 
 /// `videre gallery`'s `/`: every file, with in-page similarity search.
 async fn handle_gallery_all(
     State(state): State<Arc<AppState>>,
 ) -> impl axum::response::IntoResponse {
-    render_live(&state, true, false)
+    render_live(&state, true, false, Some(Section::All))
 }
 
 /// `videre gallery`'s `/date`: the year/month/day drill-down over KEEP files.
 async fn handle_gallery_date(
     State(state): State<Arc<AppState>>,
 ) -> impl axum::response::IntoResponse {
-    render_live(&state, false, true)
+    render_live(&state, false, true, Some(Section::Date))
 }
 
 /// Reserved so the shape of the command is visible before the views exist.
@@ -1108,7 +1154,17 @@ async fn handle_not_yet() -> impl axum::response::IntoResponse {
 
 /// Which sections a live page renders is a property of the route, not of the
 /// server, so `/` and `/date` can differ within one `gallery`.
-fn render_live(state: &Arc<AppState>, all: bool, by_date: bool) -> axum::response::Html<String> {
+///
+/// `nav` is `Some` only under `videre gallery`, which is the one configuration
+/// that routes `/`, `/date` and `/people` together. The other servers reach this
+/// through `/` alone, where a strip of links to routes that do not exist would
+/// 404 on every entry but the one you are on.
+fn render_live(
+    state: &Arc<AppState>,
+    all: bool,
+    by_date: bool,
+    nav: Option<Section>,
+) -> axum::response::Html<String> {
     let conn = state.conn.lock().unwrap();
     let stats = query_stats(&conn);
     let groups = query_groups(&conn);
@@ -1133,6 +1189,7 @@ fn render_live(state: &Arc<AppState>, all: bool, by_date: bool) -> axum::respons
         state.report_heic_original,
         &faces_by_hash,
         true,
+        nav,
     );
     axum::response::Html(html)
 }
@@ -1773,6 +1830,7 @@ async fn serve_faces_async(
         report_heic: opts.report_heic,
         report_heic_original: opts.report_heic_original,
         serve_faces_ui: opts.serve_faces_ui,
+        gallery: opts.gallery,
     });
 
     let mut router = Router::new()

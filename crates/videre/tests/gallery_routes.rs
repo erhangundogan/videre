@@ -456,3 +456,57 @@ fn a_date_that_matches_nothing_is_empty_rather_than_everything() {
     assert_eq!(v["files"].as_array().unwrap().len(), 0);
     assert_eq!(v["total"], 0);
 }
+
+// :warning: A view nobody can reach is the same class of fault as a view that
+// never renders: it works, nothing reports a problem, and no one sees it.
+//
+// `/date` shipped reachable only by typing the URL. Every route test in this
+// file passed, because each one asks for a path directly and none of them asked
+// how a person would get there. These two do.
+#[test]
+fn every_gallery_view_links_to_the_others() {
+    let dir = tempdir().unwrap();
+    let db = fixture(dir.path());
+    let server = Server::start(&db);
+
+    for path in ["/", "/date", "/people"] {
+        let (status, body) = server.get(path);
+        assert_eq!(status, 200, "{path} did not render");
+        for target in ["href=\"/\"", "href=\"/date\"", "href=\"/people\""] {
+            assert!(
+                body.contains(target),
+                "{path} has no {target} link, so that view is reachable only by \
+                 typing its URL"
+            );
+        }
+    }
+}
+
+/// The current section is marked, or the strip cannot say where you are.
+///
+/// This is what the typed `Section` protects: a mistyped string would still
+/// render three links and simply highlight none of them, which looks like a
+/// styling glitch rather than a bug.
+#[test]
+fn the_current_section_is_marked_on_each_view() {
+    let dir = tempdir().unwrap();
+    let db = fixture(dir.path());
+    let server = Server::start(&db);
+
+    for (path, expected) in [
+        ("/", "<a href=\"/\" class=\"on\">"),
+        ("/date", "<a href=\"/date\" class=\"on\">"),
+        ("/people", "<a href=\"/people\" class=\"on\">"),
+    ] {
+        let (_, body) = server.get(path);
+        assert!(
+            body.contains(expected),
+            "{path} does not mark itself as the current section"
+        );
+        assert_eq!(
+            body.matches("class=\"on\"").count(),
+            1,
+            "{path} marks more than one section as current"
+        );
+    }
+}

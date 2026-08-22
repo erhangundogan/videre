@@ -131,6 +131,13 @@ fn a_static_page_carries_no_vectors_or_gallery_shell() {
     assert!(!html.contains("var ALLFILES="));
     assert!(!html.contains("id=\"gallery\""));
     assert!(!html.contains("id=\"results\""));
+    // The section strip is server-only for the same reason: `/date` and
+    // `/people` do not exist once the file is opened from `file://`, so linking
+    // to them would offer three routes and deliver one dead end each.
+    assert!(
+        !html.contains("class=\"secnav\""),
+        "static export must not carry section links to routes that need a server"
+    );
 }
 
 #[test]

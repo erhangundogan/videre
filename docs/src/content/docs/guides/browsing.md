@@ -112,6 +112,9 @@ demand.
 | `/people` | Face groups, and where you name them |
 | `/date` | Year, month, day drill-down |
 
+A strip along the top of every page switches between the three, so none of them
+needs to be typed.
+
 Those used to be flags on a single page, and combining them needed a table to
 explain which one won. Routes need no such explanation, which is why they
 replaced the flags in 0.18.0.
