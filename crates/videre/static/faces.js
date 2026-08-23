@@ -1,5 +1,13 @@
 let facesData = { people: [], clusters: [], singletons: [] };
 
+    // Sub-page prefix, from the server. `videre gallery` puts the labeling UI at
+    // /people and its sub-pages beneath it; a labeling-only server serves it at
+    // / and has no /people at all, so this cannot be hardcoded either way.
+    function peopleRoot() {
+      const r = (typeof PEOPLE_ROOT === 'string') ? PEOPLE_ROOT : '/';
+      return r.endsWith('/') ? r : r + '/';
+    }
+
     async function loadFaces() {
       try {
         const r = await fetch('/api/faces');
@@ -75,7 +83,7 @@ let facesData = { people: [], clusters: [], singletons: [] };
       const sorted = [...people].sort((a, b) =>
         a.full_name.localeCompare(b.full_name, undefined, { sensitivity: 'base' }));
       grid.innerHTML = sorted.map(p => {
-        const url = `/person/${encodeURIComponent(p.label)}`;
+        const url = `${peopleRoot()}person/${encodeURIComponent(p.label)}`;
         const extra = p.face_ids.length > 1
           ? `<div class="extra-count">+${p.face_ids.length - 1} more</div>` : '';
         return `
@@ -182,7 +190,7 @@ let facesData = { people: [], clusters: [], singletons: [] };
       document.getElementById('cluster-count').textContent = clusters.length;
       const sorted = [...clusters].sort((a, b) => b.face_ids.length - a.face_ids.length);
       grid.innerHTML = sorted.map(c =>
-        renderAssignableCard(c.face_ids, `/cluster/${c.cluster_id}`, 'cluster-card')
+        renderAssignableCard(c.face_ids, `${peopleRoot()}cluster/${c.cluster_id}`, 'cluster-card')
       ).join('');
     }
 

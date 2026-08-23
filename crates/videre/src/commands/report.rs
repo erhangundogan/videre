@@ -669,6 +669,40 @@ fn query_keep_files(conn: &Connection) -> Vec<FileRow> {
         .collect()
 }
 
+/// Where the labeling UI lives on this server, which decides both the URL
+/// prefix of its sub-pages and where their back link points.
+///
+/// :warning: **It is not always `/people`.** `videre gallery` routes the
+/// labeling UI at `/people` under a nav strip; a labeling-only server serves it
+/// at `/` with no `/people` route at all. Hardcoding either one 404s in the
+/// other configuration, which is why this is derived from state rather than
+/// written into the templates.
+///
+/// :warning: **The second configuration is currently unreachable**, and this is
+/// deliberately written for it anyway. `serve_gallery` is the only constructor
+/// of `ServeOptions` and always sets `gallery: true`; the labeling-only entry
+/// point went with `videre report` in 0.20.0. `ServeOptions` still models it and
+/// the router still branches on it, so a value that silently assumed `/people`
+/// would be a trap for whoever restores that path. It is three lines and it
+/// cannot be covered by a test until something can produce the configuration.
+fn people_root(gallery: bool) -> &'static str {
+    if gallery {
+        "/people"
+    } else {
+        "/"
+    }
+}
+
+/// The wording for a link back to it. The nav calls that section "People";
+/// a labeling-only server has no nav and calls it what it is.
+fn people_back_label(gallery: bool) -> &'static str {
+    if gallery {
+        "Back to people"
+    } else {
+        "Back to labeling"
+    }
+}
+
 /// Which section a page is, for the strip in `templates/nav.html`.
 ///
 /// An enum rather than a `&str` because the template asks which one this is on
@@ -811,6 +845,7 @@ pub(crate) fn generate_html(
     let heic_original = heic_original && !live;
 
     let data = build_data_block(
+        nav,
         groups,
         all_files,
         keep_files,
@@ -845,6 +880,7 @@ pub(crate) fn generate_html(
 /// closing `</script>`, which the template supplies after the rendering script.
 #[allow(clippy::too_many_arguments)]
 fn build_data_block(
+    nav: Option<Section>,
     groups: &[Vec<FileRow>],
     all_files: Option<&[FileRow]>,
     keep_files: Option<&[FileRow]>,
@@ -859,8 +895,11 @@ fn build_data_block(
     // the client never has to infer it from the URL.
     let view = if keep_files.is_some() { "date" } else { "all" };
     out.push_str(&format!(
-        "<script>\nvar LIVE_SERVER={live};\nvar GVIEW={};\n</script>\n",
-        json_str(view)
+        "<script>\nvar LIVE_SERVER={live};\nvar GVIEW={};\nvar PEOPLE_ROOT={};\n</script>\n",
+        json_str(view),
+        // `nav` is Some only under `videre gallery`, which is the one
+        // configuration with a `/people`. See `people_root`.
+        json_str(people_root(nav.is_some()))
     ));
     out.push_str("<script>\nvar GROUPS=[\n");
     for (i, group) in groups.iter().enumerate() {
@@ -967,6 +1006,8 @@ mod pages {
         /// The current section, or `None` when there is nowhere to navigate to.
         /// See `templates/nav.html`.
         pub nav: Option<super::Section>,
+        /// Where this server's labeling sub-pages live. See `people_root`.
+        pub people_root: &'static str,
     }
 
     #[derive(Template)]
@@ -975,6 +1016,9 @@ mod pages {
         pub css: &'static str,
         pub js: &'static str,
         pub cluster_id: i64,
+        /// Where the labeling UI lives on this server. See `people_root`.
+        pub back_href: &'static str,
+        pub back_label: &'static str,
     }
 
     #[derive(Template)]
@@ -983,6 +1027,9 @@ mod pages {
         pub css: &'static str,
         pub js: &'static str,
         pub faces_ui_enabled: bool,
+        /// Where the labeling UI lives on this server. See `people_root`.
+        pub back_href: &'static str,
+        pub back_label: &'static str,
     }
 
     pub const FACES_CSS: &str = include_str!("../../static/faces.css");
@@ -1102,6 +1149,7 @@ async fn handle_root(State(state): State<Arc<AppState>>) -> impl axum::response:
         generated_at: Utc::now().format("%Y-%m-%d %H:%M UTC").to_string(),
         total_files,
         nav: state.gallery.then_some(Section::People),
+        people_root: people_root(state.gallery),
     };
     axum::response::Html(page.render().expect("faces template"))
 }
@@ -1628,12 +1676,15 @@ async fn handle_quit(State(state): State<Arc<AppState>>) -> StatusCode {
 
 async fn handle_cluster_page(
     axum::extract::Path(cluster_id): axum::extract::Path<i64>,
+    State(state): State<Arc<AppState>>,
 ) -> impl axum::response::IntoResponse {
     use askama::Template;
     let page = pages::Cluster {
         css: pages::CLUSTER_CSS,
         js: pages::CLUSTER_JS,
         cluster_id,
+        back_href: people_root(state.gallery),
+        back_label: people_back_label(state.gallery),
     };
     axum::response::Html(page.render().expect("cluster template"))
 }
@@ -1657,6 +1708,8 @@ async fn handle_person_page(State(state): State<Arc<AppState>>) -> axum::respons
         css: pages::PERSON_CSS,
         js: pages::PERSON_JS,
         faces_ui_enabled: state.serve_faces_ui,
+        back_href: people_root(state.gallery),
+        back_label: people_back_label(state.gallery),
     };
     axum::response::Html(page.render().expect("person template"))
 }
@@ -1936,12 +1989,20 @@ async fn serve_faces_async(
         embedder: Mutex::new(None),
     });
 
+    // :warning: The cluster and person pages are registered per configuration,
+    // not once. Under `gallery` they belong beneath `/people`; on a
+    // labeling-only server that path does not exist and they stay at the root.
+    // Registering only the nested form would 404 the labeling server's own
+    // links, which is the failure this shape exists to prevent.
+    let people_pages = |r: Router<Arc<AppState>>, prefix: &str| {
+        r.route(&format!("{prefix}cluster/{{id}}"), get(handle_cluster_page))
+            .route(&format!("{prefix}person/{{name}}"), get(handle_person_page))
+    };
+
     let mut router = Router::new()
         .route("/api/face-image/{id}", get(handle_face_image))
         .route("/api/original-image/{id}", get(handle_original_image))
-        .route("/cluster/{id}", get(handle_cluster_page))
         .route("/api/cluster/{id}", get(handle_cluster_api))
-        .route("/person/{name}", get(handle_person_page))
         .route("/api/person/{name}", get(handle_person_api))
         .route("/api/search/person", get(handle_search_person))
         .route("/api/quit", post(handle_quit))
@@ -1969,7 +2030,7 @@ async fn serve_faces_async(
     //   --show-faces alone   -> `/` = live report, no `/faces` route
     //   both                 -> `/` = live report, `/faces` = labeling UI
     router = if opts.gallery {
-        router
+        people_pages(router, "/people/")
             .route("/", get(handle_gallery_all))
             .route("/duplicates", get(handle_gallery_duplicates))
             .route("/people", get(handle_root))
@@ -1978,6 +2039,7 @@ async fn serve_faces_async(
             .route("/events", get(handle_not_yet))
             .route("/smart", get(handle_not_yet))
     } else {
+        let router = people_pages(router, "/");
         match (state.serve_faces_ui, opts.show_report) {
             (true, true) => router
                 .route("/", get(handle_report))

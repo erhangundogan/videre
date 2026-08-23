@@ -236,8 +236,56 @@ fn a_person_page_renders() {
     let db = fixture(dir.path());
     let server = Server::start(&db);
 
-    let (status, _) = server.get("/person/ozgur_demirtas");
+    let (status, _) = server.get("/people/person/ozgur_demirtas");
     assert_eq!(status, 200, "a labelled person's page should render");
+}
+
+// :warning: **These routes had no test at all**, which is why they sat at the
+// root for so long and why their back link pointed at a page that stopped being
+// the labeling UI when `gallery` gained routes.
+//
+// The pair below is the point: the same two pages must live under `/people` on a
+// gallery server and at the root on a labeling-only one, because that server has
+// no `/people`. Testing only the configuration you are looking at is what makes
+// the other one break silently.
+
+#[test]
+fn the_labeling_sub_pages_live_under_people_on_a_gallery() {
+    let dir = tempdir().unwrap();
+    let db = fixture(dir.path());
+    let server = Server::start(&db);
+
+    for path in ["/people/cluster/1", "/people/person/ozgur_demirtas"] {
+        let (status, _) = server.get(path);
+        assert_eq!(status, 200, "{path} should render under the gallery");
+    }
+    for path in ["/cluster/1", "/person/ozgur_demirtas"] {
+        let (status, _) = server.get(path);
+        assert_eq!(
+            status, 404,
+            "{path} should not exist on a gallery; these pages belong under /people"
+        );
+    }
+}
+
+#[test]
+fn the_back_link_returns_to_the_labeling_ui_not_the_file_list() {
+    let dir = tempdir().unwrap();
+    let db = fixture(dir.path());
+    let server = Server::start(&db);
+
+    for path in ["/people/cluster/1", "/people/person/ozgur_demirtas"] {
+        let (_, body) = server.get(path);
+        assert!(
+            body.contains("href=\"/people\""),
+            "{path} does not link back to /people, so `back` leaves labeling for \
+             the file list"
+        );
+        assert!(
+            !body.contains("Back to labeling"),
+            "{path} still says \"Back to labeling\"; the nav calls that section People"
+        );
+    }
 }
 
 #[test]
