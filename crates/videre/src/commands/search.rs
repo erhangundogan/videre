@@ -31,6 +31,17 @@ pub struct SearchArgs {
     #[arg(long, conflicts_with = "query")]
     pub(crate) image: Option<PathBuf>,
 
+    /// Rank by the stored embedding of a file already in this library, by hash.
+    ///
+    /// :warning: **`#[arg(skip)]`: deliberately not a CLI flag.** It is set by
+    /// callers that already hold a hash, which is the gallery asking "more like
+    /// this one". `--image` is the CLI's way to ask the same question about an
+    /// arbitrary file, and it re-embeds, because a file outside the library has
+    /// no stored vector to read. Exposing this as a flag would mean asking a
+    /// person to type a 64-character hash.
+    #[arg(skip)]
+    pub(crate) like: Option<String>,
+
     /// Only files containing a named person (confirmed faces only)
     #[arg(long)]
     pub(crate) person: Option<String>,
@@ -292,6 +303,38 @@ impl QueryEmbedder for FreshEmbedder {
     }
 }
 
+/// A long-lived server's embedder: loaded on the first ranking search and kept
+/// for the life of the process, so only that one call pays the ~900ms load.
+///
+/// Shared by the MCP server and the gallery server, which have the same shape: a
+/// process that answers many queries. `FreshEmbedder` above is the CLI's, which
+/// loads per invocation. That difference is the only reason the pipeline takes
+/// an embedder at all.
+///
+/// :warning: **It must stay lazy.** A server whose library nobody searches must
+/// never load a model, for the reason `CLAUDE.md` records: a model loaded before
+/// there was work to do once downloaded 778MB from inside a unit test.
+pub(crate) struct CachedEmbedder<'a>(
+    pub(crate) &'a std::sync::Mutex<Option<videre_ml::model::Embedder>>,
+);
+
+impl QueryEmbedder for CachedEmbedder<'_> {
+    fn embed(&self, model_id: &str, input: QueryInput<'_>) -> Result<Vec<f32>> {
+        let mut guard = self
+            .0
+            .lock()
+            .map_err(|_| anyhow::anyhow!("embedder lock poisoned"))?;
+        if guard.is_none() {
+            *guard = Some(model::Embedder::load(device::best_device(), model_id)?);
+        }
+        let embedder = guard.as_ref().expect("just initialized");
+        match input {
+            QueryInput::Text(text) => embedder.embed_text(text),
+            QueryInput::Image(path) => model::embed_image_file(embedder, path),
+        }
+    }
+}
+
 /// Load the embedding corpus, erroring if empty. Called BEFORE any model load
 /// so a db without embeddings fails fast without downloading weights.
 pub(crate) fn load_corpus(
@@ -314,7 +357,7 @@ pub(crate) fn load_corpus(
 /// Whether this invocation ranks by similarity at all. Only a text query or
 /// `--image` does; every other flag is a filter, which narrows without ordering.
 fn is_ranked(args: &SearchArgs) -> bool {
-    args.query.is_some() || args.image.is_some()
+    args.query.is_some() || args.image.is_some() || args.like.is_some()
 }
 
 /// The requested order, or the one that keeps each invocation's historical
@@ -602,6 +645,29 @@ fn rank(
     embedder: &dyn QueryEmbedder,
 ) -> Result<HashMap<String, f32>> {
     let corpus = load_corpus(conn, db, model_id)?;
+
+    // :warning: Resolved against the **unfiltered** corpus, before the lines
+    // below narrow it. A selection can exclude the example itself - asking for
+    // photos of one person that resemble a photo of someone else is a perfectly
+    // ordinary request - and looking the vector up afterwards would fail on
+    // exactly those queries.
+    let stored = args
+        .like
+        .as_ref()
+        .map(|hash| {
+            corpus
+                .iter()
+                .find(|(h, _)| h == hash)
+                .map(|(_, v)| v.clone())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no embedding for {hash} in this library under {model_id}; \
+                         run videre embed first"
+                    )
+                })
+        })
+        .transpose()?;
+
     let corpus: Vec<(String, Vec<f32>)> = match &cands.hashes {
         Some(keep) => corpus
             .into_iter()
@@ -610,10 +676,17 @@ fn rank(
         None => corpus,
     };
 
-    let query_vec = match (&args.query, &args.image) {
-        (Some(text), None) => embedder.embed(model_id, QueryInput::Text(text))?,
-        (None, Some(img)) => embedder.embed(model_id, QueryInput::Image(img))?,
-        _ => anyhow::bail!("provide either a text query or --image <path>"),
+    // An embedder turns something *outside* the library into a vector. A stored
+    // one is already here, so it never reaches the embedder at all, which is
+    // why this is not a `QueryInput` variant: every implementation would need an
+    // arm it could not answer.
+    let query_vec = match (&args.query, &args.image, stored) {
+        (Some(text), None, None) => embedder.embed(model_id, QueryInput::Text(text))?,
+        (None, Some(img), None) => embedder.embed(model_id, QueryInput::Image(img))?,
+        (None, None, Some(vec)) => vec,
+        _ => {
+            anyhow::bail!("provide exactly one of a text query, --image <path>, or an example hash")
+        }
     };
 
     let k = if sort_keys[0].field == SortField::Relevance && sort_keys[0].desc {

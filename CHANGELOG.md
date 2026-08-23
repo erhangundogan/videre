@@ -13,6 +13,39 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [Unreleased]
+
+### Added
+
+- **The gallery searches on the server, and "Similar" works at any library
+  size.** It used to switch itself off above 24 MB of vectors, which is every
+  library big enough to want it: the page did the ranking, so it had to download
+  every embedding first, and on a 70,601-file library that was 134 MB it refused
+  to send.
+
+  A new `/api/search` ranks either a text query or an example already in the
+  library, and returns a ranking rather than rows, since the client already
+  fetches rows by hash. It is the third caller of the seam `videre search` and
+  the MCP server share, so all three rank identically by construction.
+
+  Measured on that library: **0.21s per query** once the model is loaded, and
+  the first search pays ~2.3s to load it. Nothing is loaded until someone
+  searches, so browsing never touches the model cache.
+
+### Changed
+
+- **The `Embedded` count is shown again on large libraries.** It came from the
+  function that loaded every vector, which gave up above the size cap, so the
+  header quietly showed nothing on exactly the libraries with the most embedded
+  files. It is a `COUNT(*)` now.
+
+### Removed
+
+- **The page no longer carries embeddings at all**, so the 24 MB ceiling, the
+  "similarity disabled for this library" note, and the in-browser f16 decoder
+  and dot product are gone. This is what the 0.20.2 entry below said the real
+  fix would be.
+
 ## [0.20.2] - 2026-08-20
 
 ### Changed
@@ -1082,6 +1115,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.20.2...HEAD
 [0.20.2]: https://github.com/erhangundogan/videre/compare/v0.20.1...v0.20.2
 [0.20.1]: https://github.com/erhangundogan/videre/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/erhangundogan/videre/compare/v0.19.0...v0.20.0

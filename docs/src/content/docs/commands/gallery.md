@@ -19,7 +19,7 @@ Stop it with `Ctrl-C`.
 
 | Path | What you get |
 |------|--------------|
-| `/` | Every file, with in-page similarity search |
+| `/` | Every file, with a **Similar** button on each card |
 | `/people` | Face groups, and naming them |
 | `/date` | A Year / Month / Day drill-down |
 | `/map` | Reserved, not built yet |
@@ -41,7 +41,7 @@ open from disk, because both need something running to answer.
 | Flag | What it does |
 |------|--------------|
 | `--db <DB>` | SQLite database (default: resolved from `~/.videre`) |
-| `--model <MODEL>` | Embedding model backing the in-page similarity search |
+| `--model <MODEL>` | Embedding model backing similarity search |
 | `--port <PORT>` | Port to listen on (default 7878) |
 | `--browse` | Open a browser once the server is listening |
 
