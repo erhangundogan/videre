@@ -13,6 +13,23 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [Unreleased]
+
+### Fixed
+
+- **The back link from a cluster or person page left the labeling UI.** Both
+  pages hardcoded `href="/"`, which since 0.20.0 is the **Files** view, so "Back
+  to labeling" dropped you on the file grid. It returns to `/people` now, and
+  says "Back to people", which is what the nav calls that section.
+
+- **Cluster and person pages now live under `/people`.** They sat at the root as
+  `/cluster/<id>` and `/person/<name>`, so the URL gave no hint which section you
+  were in. They are `/people/cluster/<id>` and `/people/person/<name>`.
+
+  Neither path is hardcoded: both are derived from where the labeling UI actually
+  lives, because a labeling-only server puts it at `/` and has no `/people` at
+  all.
+
 ## [0.20.4] - 2026-08-23
 
 ### Added
@@ -1147,6 +1164,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.20.4...HEAD
 [0.20.4]: https://github.com/erhangundogan/videre/compare/v0.20.3...v0.20.4
 [0.20.3]: https://github.com/erhangundogan/videre/compare/v0.20.2...v0.20.3
 [0.20.2]: https://github.com/erhangundogan/videre/compare/v0.20.1...v0.20.2

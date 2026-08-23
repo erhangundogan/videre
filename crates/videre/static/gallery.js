@@ -163,7 +163,7 @@ function renderMetaPanel(meta){
     parts.push(meta.faces.map(function(fc){
       var src = fc.thumb ? escA(fc.thumb) : '/api/face-image/'+encodeURIComponent(fc.id);
       return '<div class="lb-face"><img src="'+src+'" loading="lazy">'+
-        '<a href="/person/'+encodeURIComponent(fc.name)+'?from=lightbox">'+escH(fc.name)+'</a></div>';
+        '<a href="'+peopleRootG()+'person/'+encodeURIComponent(fc.name)+'?from=lightbox">'+escH(fc.name)+'</a></div>';
     }).join(''));
   }
   if(meta.location){
@@ -335,6 +335,11 @@ document.getElementById('lb').addEventListener('click',function(e){
 // HASH_FILES stays for the inlined static export, whose rows carry no `copies`
 // field and so must be counted client-side.
 var GPAGE=200,gShown=0,HASH_FILES={},RESULT_ROWS={};
+// See faces.js: the labeling sub-pages are not always under /people.
+function peopleRootG(){
+  var r=(typeof PEOPLE_ROOT==='string')?PEOPLE_ROOT:'/people';
+  return r.charAt(r.length-1)==='/'?r:r+'/';
+}
 function bestDateJs(f){
   if(f.ex&&f.ex.indexOf('0000')!==0)return f.ex;
   if(f.cr&&f.mo)return f.cr<f.mo?f.cr:f.mo;
