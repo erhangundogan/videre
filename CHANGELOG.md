@@ -15,16 +15,6 @@ version number and are released together.
 
 ## [Unreleased]
 
-### Fixed
-
-- **Finishing an action in the labeling UI dropped you on the file list.**
-  Removing a person, assigning a cluster and dissolving a cluster all redirected
-  to `/`, which is the **Files** view. 0.20.5 fixed the back *link* at the top of
-  those pages and missed the redirects, so the link went to the right place while
-  every action that completed the page still left labeling.
-
-## [Unreleased]
-
 ### Changed
 
 - **Face quality is judged on the face, not on the library.** `videre faces` held
@@ -61,6 +51,14 @@ version number and are released together.
   never merge two groups.
 - `faces.det_score` and `faces.blur` are recorded. Both were computed and
   discarded on every run.
+
+### Fixed
+
+- **Finishing an action in the labeling UI dropped you on the file list.**
+  Removing a person, assigning a cluster and dissolving a cluster all redirected
+  to `/`, which is the **Files** view. 0.20.5 fixed the back *link* at the top of
+  those pages and missed the redirects, so the link went to the right place while
+  every action that completed the page still left labeling.
 
 ## [0.20.6] - 2026-08-23
 
