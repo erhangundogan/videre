@@ -30,7 +30,10 @@ pub struct SingletonData {
 }
 
 /// Top-level payload for the labeling page.
-#[derive(Serialize, Clone)]
+///
+/// `Default` is the "detection has never run" answer, which is a state rather
+/// than an error. See `faces_list`.
+#[derive(Serialize, Clone, Default)]
 pub struct FacesData {
     pub people: Vec<PersonData>,
     pub clusters: Vec<ClusterData>,

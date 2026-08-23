@@ -1,0 +1,30 @@
+/* Page chrome shared by every videre page.
+ *
+ * :warning: This exists because `/people` did not look like the others. It is
+ * rendered from `faces.html` with its own stylesheet, so it had a different
+ * font, a white background, `padding: 16px` on the body that inset the sticky
+ * nav, and no header block at all. Two stylesheets meant two answers to
+ * questions that should have one.
+ *
+ * Page-specific rules stay in `gallery.css` and `faces.css`; anything that
+ * decides what a videre page *is* belongs here.
+ */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f4f4f5;color:#18181b;font-size:14px;line-height:1.5}
+.header{background:#18181b;color:#fff;padding:24px 32px}
+.header h1{font-size:20px;font-weight:700;margin-bottom:2px}
+.subtitle{color:#71717a;font-size:12px;font-family:monospace;margin-bottom:20px}
+.stats{display:flex;gap:16px;flex-wrap:wrap}
+.stat{background:#27272a;border-radius:8px;padding:12px 20px;min-width:130px}
+.num{font-size:22px;font-weight:700;display:block}
+.label{font-size:11px;color:#a1a1aa;text-transform:uppercase;letter-spacing:.06em}
+.stat.warn .num{color:#fbbf24}
+.toolbar{padding:10px 32px;background:#fff;border-bottom:1px solid #e4e4e7;display:flex;gap:8px;align-items:center;position:sticky;top:0;z-index:10;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+button{padding:5px 12px;border:1px solid #d4d4d8;background:#fff;border-radius:6px;cursor:pointer;font-size:12px;color:#3f3f46}
+button:hover{background:#f4f4f5;border-color:#a1a1aa}
+/* A view that legitimately has nothing to show still has to say so. */
+.empty-state{max-width:640px;margin:64px auto;padding:32px;text-align:center;background:#fff;border:1px solid #e5e5ec;border-radius:12px}
+.empty-state h2{margin:0 0 12px;font-size:20px;color:#1a1a1f}
+.empty-state p{margin:0 0 10px;color:#55555f;line-height:1.5}
+.empty-state .hint{font-size:14px;color:#8a8a96}
+.empty-state code{background:#f4f4f8;padding:2px 6px;border-radius:4px;font-size:13px}

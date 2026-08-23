@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>videre</title>
+<style>{{ chrome|safe }}</style>
 <style>
 {{ css|safe }}</style>
 </head>
@@ -23,6 +24,11 @@
 <div class="gallery-head"><h2>All files</h2><span class="info" id="gallery-info">{{ n }} files</span></div>
 <div class="gallery" id="gallery"></div>
 <div class="more-wrap"><button id="gallery-more" onclick="showMoreGallery()"></button></div>
+{% endif %}{% if no_duplicates %}<div class="empty-state">
+<h2>No duplicates</h2>
+<p>Every file in this library has a unique hash, so there is nothing to review here.</p>
+<p class="hint">Visually similar photos are a different question: <code>videre scan --similar</code> finds those, and they appear here once it has run.</p>
+</div>
 {% endif %}{% if has_keep_files %}<div class="date-view" id="dateView">
 <h2>Browse by date</h2>
 <div class="date-breadcrumb" id="dateBreadcrumb"></div>

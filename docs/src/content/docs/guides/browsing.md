@@ -109,11 +109,15 @@ demand.
 | Route | Shows |
 |---|---|
 | `/` | Every file |
+| `/duplicates` | Duplicate groups |
 | `/people` | Face groups, and where you name them |
 | `/date` | Year, month, day drill-down |
 
-A strip along the top of every page switches between the three, so none of them
-needs to be typed.
+A strip along the top of every page switches between them, so none of them needs
+to be typed.
+
+Duplicates used to share `/` with the file list. They have their own route now,
+so the page everyone lands on shows files and nothing else.
 
 Those used to be flags on a single page, and combining them needed a table to
 explain which one won. Routes need no such explanation, which is why they
