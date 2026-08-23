@@ -11,6 +11,16 @@ pub struct FaceRow {
     pub person_label: Option<String>,
     pub confirmed: i64,
     pub is_primary: i64,
+    /// SCRFD's confidence for this detection, and how sharp the aligned crop is
+    /// (variance of the Laplacian).
+    ///
+    /// :warning: **Both were computed and thrown away.** The detector has always
+    /// produced a score and the crop has always been available; nothing read
+    /// either, so the pipeline could not tell a confident, sharp face from a
+    /// doubtful, blurry one, and embedded both. Stored so quality can be judged
+    /// at detection time rather than guessed at cluster time.
+    pub det_score: f32,
+    pub blur: f32,
 }
 
 /// Creates the `people` table if it is missing.
@@ -60,11 +70,17 @@ pub fn create_faces_table(conn: &Connection) -> rusqlite::Result<()> {
             cluster_id    INTEGER,
             person_label  TEXT,
             confirmed     INTEGER DEFAULT 0,
-            is_primary    INTEGER DEFAULT 0
+            is_primary    INTEGER DEFAULT 0,
+            det_score     REAL,
+            blur          REAL
         );",
     )?;
     // Migration for existing tables without is_primary column; ignored if already exists.
     let _ = conn.execute_batch("ALTER TABLE faces ADD COLUMN is_primary INTEGER DEFAULT 0");
+    // Same shape: existing libraries gain the columns as NULL, which reads as
+    // "not recorded" rather than "bad", so nothing is retro-excluded.
+    let _ = conn.execute_batch("ALTER TABLE faces ADD COLUMN det_score REAL");
+    let _ = conn.execute_batch("ALTER TABLE faces ADD COLUMN blur REAL");
 
     // Records every hash whose faces have been scanned, INCLUDING images where
     // zero faces were detected (which leave no `faces` row). This is what makes
@@ -131,11 +147,12 @@ pub fn replace_faces_for_hash(
         conn.execute("DELETE FROM faces WHERE hash = ?1", rusqlite::params![hash])?;
         for face in faces {
             conn.execute(
-                "INSERT INTO faces (hash, bbox, landmark, embedding, cluster_id, person_label, confirmed, is_primary)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO faces (hash, bbox, landmark, embedding, cluster_id, person_label, confirmed, is_primary, det_score, blur)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 rusqlite::params![
                     face.hash, face.bbox, face.landmark, face.embedding,
-                    face.cluster_id, face.person_label, face.confirmed, face.is_primary
+                    face.cluster_id, face.person_label, face.confirmed, face.is_primary,
+                    face.det_score, face.blur
                 ],
             )?;
         }
@@ -178,22 +195,29 @@ pub fn load_face_embeddings(conn: &Connection) -> rusqlite::Result<Vec<(i64, Vec
 /// near-degenerate ArcFace vectors that cluster together regardless of
 /// identity, so callers gate them out of clustering. A bbox that fails to
 /// parse yields a min-side of 0.0 (treated as lowest quality).
-pub fn load_faces_for_clustering(conn: &Connection) -> rusqlite::Result<Vec<(i64, Vec<f32>, f32)>> {
-    let mut stmt = conn.prepare("SELECT id, embedding, bbox FROM faces")?;
+pub fn load_faces_for_clustering(
+    conn: &Connection,
+) -> rusqlite::Result<Vec<(i64, Vec<f32>, f32, Option<String>, Option<f32>)>> {
+    // The landmark string travels as-is. What "a good landmark set" means is a
+    // property of the ArcFace template, which lives in `videre-ml`; this crate
+    // is below it in the dependency graph and must not learn it.
+    let mut stmt = conn.prepare("SELECT id, embedding, bbox, landmark, blur FROM faces")?;
     let rows = stmt.query_map([], |row| {
         let id: i64 = row.get(0)?;
         let blob: Vec<u8> = row.get(1)?;
         let bbox: String = row.get(2)?;
-        Ok((id, blob, bbox))
+        let landmark: Option<String> = row.get(3)?;
+        let blur: Option<f32> = row.get(4)?;
+        Ok((id, blob, bbox, landmark, blur))
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (id, blob, bbox) = row?;
+        let (id, blob, bbox, landmark, blur) = row?;
         let emb: Vec<f32> = blob
             .chunks_exact(2)
             .map(|b| f16::from_le_bytes([b[0], b[1]]).to_f32())
             .collect();
-        out.push((id, emb, bbox_min_side(&bbox)));
+        out.push((id, emb, bbox_min_side(&bbox), landmark, blur));
     }
     Ok(out)
 }
@@ -307,6 +331,8 @@ mod tests {
                 person_label: None,
                 confirmed: 0,
                 is_primary: 0,
+                det_score: 0.9,
+                blur: 1000.0,
             }],
         )
         .unwrap();
@@ -335,6 +361,8 @@ mod tests {
                     person_label: None,
                     confirmed: 0,
                     is_primary: 0,
+                    det_score: 0.9,
+                    blur: 1000.0,
                 },
                 FaceRow {
                     hash: "h1".into(),
@@ -345,6 +373,8 @@ mod tests {
                     person_label: None,
                     confirmed: 0,
                     is_primary: 0,
+                    det_score: 0.9,
+                    blur: 1000.0,
                 },
             ],
         )
@@ -361,6 +391,8 @@ mod tests {
                 person_label: None,
                 confirmed: 0,
                 is_primary: 0,
+                det_score: 0.9,
+                blur: 1000.0,
             }],
         )
         .unwrap();
@@ -384,6 +416,8 @@ mod tests {
                 person_label: None,
                 confirmed: 0,
                 is_primary: 0,
+                det_score: 0.9,
+                blur: 1000.0,
             }],
         )
         .unwrap();
@@ -416,6 +450,8 @@ mod tests {
                     person_label: None,
                     confirmed: 0,
                     is_primary: 0,
+                    det_score: 0.9,
+                    blur: 1000.0,
                 },
                 FaceRow {
                     hash: "h1".into(),
@@ -426,6 +462,8 @@ mod tests {
                     person_label: None,
                     confirmed: 0,
                     is_primary: 0,
+                    det_score: 0.9,
+                    blur: 1000.0,
                 },
             ],
         )
@@ -498,6 +536,8 @@ mod tests {
                 person_label: None,
                 confirmed: 0,
                 is_primary: 0,
+                det_score: 0.9,
+                blur: 1000.0,
             }],
         )
         .unwrap();

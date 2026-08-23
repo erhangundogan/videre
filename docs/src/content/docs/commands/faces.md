@@ -109,7 +109,10 @@ videre faces --eps 0.6                 # how alike faces must be to group (defau
 videre faces --min-cluster-size 3      # fewest faces that can form a group (default 3)
 videre faces --merge-sim 0.35          # how readily two groups merge (default 0.35)
 videre faces --min-face-size 80        # ignore faces smaller than this in pixels (default 80)
-videre faces --max-generic-sim 0.4     # drop blurry/featureless faces (default 0.4)
+videre faces --min-blur 100            # ignore faces too soft to read (default 100)
+videre faces --max-landmark-error 7    # ignore faces the detector mislocated (default 7)
+videre faces --max-generic-sim 0.4     # legacy fallback, see below (default 0.4)
+videre faces --attach-sim 1            # second pass, off by default (default 1)
 videre faces --batch 8                 # images per batch (default 8)
 videre faces --workers 8               # parallel workers (default: 2x your CPU cores)
 videre faces --qlmanage-concurrency 6  # simultaneous HEIC conversions (default 6)
@@ -122,21 +125,43 @@ singletons, still visible and still nameable by hand, just not grouped.
 
 This exists because low-quality faces produce near-identical featureless
 fingerprints regardless of who they are, so grouping them piles unrelated people
-into one large mixed cluster. A face is held out if it fails either check:
+into one large mixed cluster. A face is held out if it fails any check:
 
 - **Size** (`--min-face-size`, default 80px). Tiny crops, such as distant faces
-  in group shots, are mostly blur once scaled up. On real data, genuine person
-  groups were essentially all above 100px per side, while a junk cluster sat
-  around 60px.
-- **Distinctiveness** (`--max-generic-sim`, default 0.4). Sunglasses, masks,
-  profiles, blur, and false positives such as a carved statue face carry little
-  identity information. On real data, 0.4 removed about 78% of a mixed junk
-  cluster while touching none of the confirmed real-person clusters.
+  in group shots, are mostly blur once scaled up.
+- **Sharpness** (`--min-blur`, default 100). The variance of the Laplacian of the
+  aligned crop, which is the image the model is actually given. Measured on a
+  1,063-face library: faces that grouped had a median of 894, faces left ungrouped
+  182.
+- **Alignment** (`--max-landmark-error`, default 7). The model never sees your
+  photo, only a small square built by warping it so the detected eyes, nose and
+  mouth land on fixed positions. When the detector mislocates those points the
+  square is a mangled image, and the fingerprint describes the mangling rather
+  than the person, so such faces resemble *each other*. This measures how far the
+  five points are from being a face shape at all.
 
-`--min-face-size 0` and `--max-generic-sim 1` each disable their check.
+Each is disabled by setting it to 0, except `--max-landmark-error`, which is
+disabled by setting it high.
 
-A well-photographed person survives this even in their bad shots, because their
-many good photos anchor the group far from the generic average.
+:warning: **`--max-generic-sim` (default 0.4) is a fallback, and only applies to
+faces recorded before sharpness was measured.** It compares a face against the
+average of every face in the library, which sounds reasonable and is not: on a
+personal library that average largely *is* the most photographed person, so the
+check discards the very faces most worth grouping. Measured on a labelled
+library, it blocked 15 photos of the owner, several of which matched a face
+already in their group almost exactly. Re-run `videre faces --reprocess` to
+record sharpness and leave it behind.
+
+### Recovering more of one person
+
+`--attach-sim` (default 1, off) runs a second pass after grouping: an ungrouped
+face joins the group holding its **nearest** face, if that face is at least this
+similar. Grouping normally asks a face to resemble the *average* of a whole
+group, which someone photographed over many years can fail even when three
+members match them almost exactly. `--attach-sim 0.5` recovers some of those.
+
+It runs after grouping and can never merge two groups, which is what keeps it
+safe.
 
 ## Why grouping runs in two stages
 

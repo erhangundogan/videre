@@ -214,6 +214,10 @@ pub fn run_face_pipeline(
                             hash: String,
                             detections: Vec<face_detect::Detection>,
                             n_crops: usize,
+                            /// Sharpness of each aligned crop, in the same order
+                            /// as `detections`. Measured here because this is
+                            /// the only point the crop exists.
+                            blurs: Vec<f32>,
                         }
                         let mut chunk_entries: Vec<ChunkEntry> = Vec::new();
                         let mut chunk_crops: Vec<image::RgbImage> = Vec::new();
@@ -273,11 +277,15 @@ pub fn run_face_pipeline(
                             }
 
                             let n_crops = crops.len();
+                            // Measured here: the only point the aligned crop exists.
+                            let blurs: Vec<f32> =
+                                crops.iter().map(face_align::blur_score).collect();
                             chunk_crops.extend(crops);
                             chunk_entries.push(ChunkEntry {
                                 hash: hash.clone(),
                                 detections,
                                 n_crops,
+                                blurs,
                             });
                             progress.tick();
                         }
@@ -310,7 +318,8 @@ pub fn run_face_pipeline(
                                 .detections
                                 .iter()
                                 .zip(embs.iter())
-                                .map(|(det, emb)| {
+                                .zip(entry.blurs.iter())
+                                .map(|((det, emb), blur)| {
                                     let [x1, y1, x2, y2] = det.bbox;
                                     let bbox = format!(
                                         "{},{},{},{}",
@@ -338,6 +347,8 @@ pub fn run_face_pipeline(
                                         person_label: None,
                                         confirmed: 0,
                                         is_primary: 0,
+                                        det_score: det.score,
+                                        blur: *blur,
                                     }
                                 })
                                 .collect();
@@ -428,23 +439,58 @@ pub struct ClusteringResult {
 /// similarity exceeds `max_generic_sim` (use >= 1.0 to disable the signal).
 /// Returns assignments for every input face.
 pub fn cluster_with_quality_gate(
-    faces: &[(i64, Vec<f32>, f32)],
+    faces: &[(i64, Vec<f32>, f32, Option<String>, Option<f32>)],
     eps: f32,
     min_cluster_size: usize,
     merge_sim: f32,
     min_face_px: f32,
     max_generic_sim: f32,
+    max_landmark_err: f32,
+    min_blur: f32,
+    attach_sim: f32,
     silent: bool,
 ) -> Vec<(i64, Option<i64>)> {
-    let global_mean = normalized_mean(faces.iter().map(|(_, e, _)| e));
+    let global_mean = normalized_mean(faces.iter().map(|(_, e, _, _, _)| e));
 
     let mut quality: Vec<(i64, Vec<f32>)> = Vec::new();
     let mut low_quality_ids: Vec<i64> = Vec::new();
-    for (id, emb, side) in faces {
+    for (id, emb, side, landmark, blur) in faces {
         let too_small = *side < min_face_px;
+        // :warning: **The two quality gates are alternatives, not a stack, and
+        // which one applies depends on what the library recorded.**
+        //
+        // `blur` is the better signal: it measures the crop the model is given,
+        // so it is a property of one face. `max_generic_sim` compares a face to
+        // the population mean, which on a personal library largely *is* the most
+        // photographed person - measured at +0.917 correlation between that
+        // score and having a near neighbour, so it discards exactly the faces
+        // worth clustering.
+        //
+        // But a library detected before `blur` existed has none, and simply
+        // dropping the old gate would leave those libraries with nothing at all:
+        // measured, that produces a 33-face cluster of mixed people. So a face
+        // with a blur reading is judged on it, and a face without falls back to
+        // the old gate until the library is re-detected.
+        let has_blur = blur.is_some();
         let too_generic =
-            !global_mean.is_empty() && cosine_sim(emb, &global_mean) > max_generic_sim;
-        if too_small || too_generic {
+            !has_blur && !global_mean.is_empty() && cosine_sim(emb, &global_mean) > max_generic_sim;
+        // A face whose landmarks are not a face shape was warped into a mangled
+        // 112x112 crop, so its embedding describes the mangling. Those resemble
+        // each other and collect into a cluster of their own, which is what the
+        // two wrong clusters on the labelled corpus turned out to be.
+        //
+        // A face with no stored landmarks predates the column and is not judged
+        // here; it keeps whatever the other gates decide.
+        let bad_landmarks = landmark
+            .as_deref()
+            .and_then(crate::face_align::parse_landmarks)
+            .map(|lm| crate::face_align::landmark_residual(&lm) > max_landmark_err)
+            .unwrap_or(false);
+        // A crop too soft to read carries almost no identity. Measured on a
+        // 1,063-face corpus: faces that clustered had a median sharpness of 894,
+        // those left as singletons 182.
+        let too_blurry = blur.map(|b| b < min_blur).unwrap_or(false);
+        if too_small || too_generic || bad_landmarks || too_blurry {
             low_quality_ids.push(*id);
         } else {
             quality.push((*id, emb.clone()));
@@ -465,8 +511,70 @@ pub fn cluster_with_quality_gate(
         merge_sim,
         silent,
     );
+
+    if attach_sim < 1.0 {
+        attach_leftovers(&quality, &mut assignments, attach_sim, silent);
+    }
+
     assignments.extend(low_quality_ids.into_iter().map(|id| (id, None)));
     assignments
+}
+
+/// Second pass: a face left unclustered joins the cluster containing its
+/// **nearest** face, when that face is at least `attach_sim` similar.
+///
+/// :warning: **This exists because average linkage asks the wrong question of a
+/// large cluster.** To join, a face must be similar to the *mean* of every
+/// member; its single best match is never consulted. A person photographed over
+/// ten years accumulates a cluster so varied that a new photo of them - matching
+/// three recent members almost exactly - still averages below the bar and is
+/// refused. Measured on a labelled corpus: of 44 photos of one person left as
+/// singletons, 29 had a match of 0.40 or better to a face already inside their
+/// own cluster.
+///
+/// It runs *after* clustering, never during, and cannot merge two clusters. That
+/// is the whole reason it is safe: nearest-neighbour linkage applied while
+/// clusters form is the classic chaining failure, where two people join through
+/// a chain of intermediates. Here the clusters are already fixed and a leftover
+/// face can only attach to one of them.
+fn attach_leftovers(
+    quality: &[(i64, Vec<f32>)],
+    assignments: &mut [(i64, Option<i64>)],
+    attach_sim: f32,
+    silent: bool,
+) {
+    let emb: std::collections::HashMap<i64, &Vec<f32>> =
+        quality.iter().map(|(id, e)| (*id, e)).collect();
+    let assigned: Vec<(i64, i64)> = assignments
+        .iter()
+        .filter_map(|(id, c)| c.map(|c| (*id, c)))
+        .collect();
+    if assigned.is_empty() {
+        return;
+    }
+
+    let mut attached = 0usize;
+    for (id, slot) in assignments.iter_mut() {
+        if slot.is_some() {
+            continue;
+        }
+        let Some(e) = emb.get(id) else { continue };
+        let mut best = (attach_sim, None);
+        for (other, cluster) in &assigned {
+            let Some(oe) = emb.get(other) else { continue };
+            let sim: f32 = e.iter().zip(oe.iter()).map(|(a, b)| a * b).sum();
+            if sim >= best.0 {
+                best = (sim, Some(*cluster));
+            }
+        }
+        if let Some(c) = best.1 {
+            *slot = Some(c);
+            attached += 1;
+        }
+    }
+    if !silent && attached > 0 {
+        eprintln!("Attached {attached} leftover face(s) to their nearest cluster");
+    }
 }
 
 /// L2-normalized mean of a set of embeddings, or an empty vec if there are none
@@ -510,6 +618,9 @@ pub fn run_clustering(
     merge_sim: f32,
     min_face_px: f32,
     max_generic_sim: f32,
+    max_landmark_err: f32,
+    min_blur: f32,
+    attach_sim: f32,
     silent: bool,
 ) -> Result<Option<ClusteringResult>> {
     let all_faces = videre_core::face_db::load_faces_for_clustering(conn)?;
@@ -523,6 +634,9 @@ pub fn run_clustering(
         merge_sim,
         min_face_px,
         max_generic_sim,
+        max_landmark_err,
+        min_blur,
+        attach_sim,
         silent,
     );
     videre_core::face_db::update_cluster_assignments(conn, &assignments)?;
@@ -704,7 +818,8 @@ mod tests {
     fn run_clustering_on_empty_db_does_not_error() {
         let conn = Connection::open_in_memory().unwrap();
         face_db::create_faces_table(&conn).unwrap();
-        let result = run_clustering(&conn, 0.6, 3, 0.35, 50.0, 0.4, true).unwrap();
+        let result =
+            run_clustering(&conn, 0.6, 3, 0.35, 50.0, 0.4, f32::MAX, 0.0, 1.0, true).unwrap();
         assert!(result.is_none());
     }
 
@@ -724,17 +839,18 @@ mod tests {
         let a = || l2(vec![1.0, 0.02, 0.0]);
         let b = || l2(vec![0.0, 0.02, 1.0]);
         let faces = vec![
-            (1, a(), 200.0),
-            (2, a(), 180.0),
-            (3, a(), 160.0),
-            (4, b(), 200.0),
-            (5, b(), 190.0),
-            (6, b(), 170.0),
-            (7, a(), 20.0),
-            (8, a(), 15.0), // tiny, would otherwise join A
+            (1, a(), 200.0, None, None),
+            (2, a(), 180.0, None, None),
+            (3, a(), 160.0, None, None),
+            (4, b(), 200.0, None, None),
+            (5, b(), 190.0, None, None),
+            (6, b(), 170.0, None, None),
+            (7, a(), 20.0, None, None),
+            (8, a(), 15.0, None, None), // tiny, would otherwise join A
         ];
         // max_generic_sim = 1.0 disables the distinctiveness gate for this test.
-        let result = cluster_with_quality_gate(&faces, 0.3, 3, 1.0, 50.0, 1.0, true);
+        let result =
+            cluster_with_quality_gate(&faces, 0.3, 3, 1.0, 50.0, 1.0, f32::MAX, 0.0, 1.0, true);
         let map: std::collections::HashMap<_, _> = result.into_iter().collect();
         assert_eq!(map[&7], None, "tiny face must be gated out of clustering");
         assert_eq!(map[&8], None, "tiny face must be gated out of clustering");
@@ -753,17 +869,18 @@ mod tests {
         let gen = |noise: f32| l2(vec![1.0, noise, 0.0]);
         let dist = |noise: f32| l2(vec![0.0, noise, 1.0]);
         let faces = vec![
-            (1, gen(0.01), 300.0),
-            (2, gen(0.02), 300.0),
-            (3, gen(0.03), 300.0),
-            (4, gen(0.04), 300.0),
-            (5, gen(0.05), 300.0),
-            (6, dist(0.01), 300.0),
-            (7, dist(0.02), 300.0),
-            (8, dist(0.03), 300.0),
+            (1, gen(0.01), 300.0, None, None),
+            (2, gen(0.02), 300.0, None, None),
+            (3, gen(0.03), 300.0, None, None),
+            (4, gen(0.04), 300.0, None, None),
+            (5, gen(0.05), 300.0, None, None),
+            (6, dist(0.01), 300.0, None, None),
+            (7, dist(0.02), 300.0, None, None),
+            (8, dist(0.03), 300.0, None, None),
         ];
         // size gate off (min_face_px=0), distinctiveness gate at 0.6.
-        let result = cluster_with_quality_gate(&faces, 0.3, 3, 1.0, 0.0, 0.6, true);
+        let result =
+            cluster_with_quality_gate(&faces, 0.3, 3, 1.0, 0.0, 0.6, f32::MAX, 0.0, 1.0, true);
         let map: std::collections::HashMap<_, _> = result.into_iter().collect();
         for id in 1..=5 {
             assert_eq!(
@@ -832,6 +949,8 @@ mod tests {
             person_label: None,
             confirmed: 0,
             is_primary: 0,
+            det_score: 0.9,
+            blur: 1000.0,
         }
     }
 
