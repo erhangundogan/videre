@@ -13,6 +13,16 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [Unreleased]
+
+### Fixed
+
+- **Finishing an action in the labeling UI dropped you on the file list.**
+  Removing a person, assigning a cluster and dissolving a cluster all redirected
+  to `/`, which is the **Files** view. 0.20.5 fixed the back *link* at the top of
+  those pages and missed the redirects, so the link went to the right place while
+  every action that completed the page still left labeling.
+
 ## [0.20.6] - 2026-08-23
 
 ### Fixed
@@ -1180,6 +1190,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.20.6...HEAD
 [0.20.6]: https://github.com/erhangundogan/videre/compare/v0.20.5...v0.20.6
 [0.20.5]: https://github.com/erhangundogan/videre/compare/v0.20.4...v0.20.5
 [0.20.4]: https://github.com/erhangundogan/videre/compare/v0.20.3...v0.20.4

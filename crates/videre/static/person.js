@@ -4,6 +4,18 @@ const personName = decodeURIComponent(window.location.pathname.split('/').pop())
     const MAX_NAME_LEN = 60;
     let facesData = [];
 
+// After an action that removes what this page was showing, go back to the
+// labeling UI rather than to `/`.
+//
+// :warning: `/` is the **Files** view under `videre gallery`. These three
+// redirects were missed when the back links were fixed in 0.20.5: the link at
+// the top of the page went to the right place while every action that finished
+// the page still left labeling.
+function peopleHome() {
+  return (typeof PEOPLE_ROOT === 'string' && PEOPLE_ROOT) ? PEOPLE_ROOT : '/';
+}
+
+
     (function() {
       const params = new URLSearchParams(location.search);
       if (params.get('from') === 'lightbox') {
@@ -119,7 +131,7 @@ const personName = decodeURIComponent(window.location.pathname.split('/').pop())
         body: JSON.stringify({ label: personName })
       });
       if (!r.ok) { alert('Failed to remove person.'); return; }
-      window.location.href = '/';
+      window.location.href = peopleHome();
     }
 
     // Edits how the person is shown - adding a surname, fixing a spelling -

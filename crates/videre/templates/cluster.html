@@ -36,6 +36,7 @@
   </div>
 
   <script>window.CLUSTER_ID = {{ cluster_id }};</script>
-<script>{{ js|safe }}</script>
+<script>var PEOPLE_ROOT="{{ back_href }}";</script>
+  <script>{{ js|safe }}</script>
 </body>
 </html>
