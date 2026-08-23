@@ -28,6 +28,18 @@ version number and are released together.
 
 ### Fixed
 
+- **`/people` failed on any library that had never run `videre faces`.** `scan`
+  creates `file_hashes`, `people` and `pipeline_runs`; the `faces` table arrives
+  with the first detection run, so querying it before then failed with "no such
+  table". The server returned 500 with an empty body and the page reported
+  `Unexpected end of JSON input` across the top of the labeling UI.
+
+  Nothing detected is a state, not a failure. It returns an empty list now, and
+  the page says what to run.
+
+  Every existing test seeded a faces table, so none of them described a library
+  in the state every library starts in.
+
 - **The page-size test could not see this.** Every fixture it seeded had unique
   hashes, so it had zero duplicate groups and measured a page that was clean for
   the wrong reason. It now seeds duplicates, which is what showed that

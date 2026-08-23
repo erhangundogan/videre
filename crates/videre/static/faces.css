@@ -91,3 +91,10 @@
     .sel-bar .sel-hint { font-size: 12px; opacity: 0.85; }
     .sel-bar button { background: #fff; color: var(--blue-hover); font-weight: 600; border: none; }
     .sel-bar input[type=text] { width: 160px; }
+/* Shared wording with the gallery's empty states; see gallery.css. */
+.empty-state{max-width:640px;margin:64px auto;padding:32px;text-align:center;
+  background:#fff;border:1px solid #e5e5ec;border-radius:12px}
+.empty-state h2{margin:0 0 12px;font-size:20px;color:#1a1a1f}
+.empty-state p{margin:0 0 10px;color:#55555f;line-height:1.5}
+.empty-state .hint{font-size:14px;color:#8a8a96}
+.empty-state code{background:#f4f4f8;padding:2px 6px;border-radius:4px;font-size:13px}

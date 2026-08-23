@@ -7,8 +7,32 @@ use crate::types::*;
 use rusqlite::Connection;
 use std::collections::HashMap;
 
+/// Whether detection has ever run against this library.
+fn faces_table_exists(conn: &Connection) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='faces'",
+        [],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n > 0)
+    .unwrap_or(false)
+}
+
 /// People / unassigned clusters / singletons for the labeling page.
+///
+/// :warning: **A library that has never run `videre faces` has no `faces` table
+/// at all**, and that is not an error. `videre scan` creates `file_hashes`,
+/// `people` and `pipeline_runs`; the faces table arrives with the first
+/// detection run. Querying it before then failed with "no such table", which the
+/// server turned into a 500 with an empty body, which the page turned into
+/// `Unexpected end of JSON input` across the top of the labeling UI.
+///
+/// "Nothing detected yet" is a state, not a failure. It returns empty here and
+/// the page says so.
 pub fn faces_list(conn: &Connection) -> Result<FacesData> {
+    if !faces_table_exists(conn) {
+        return Ok(FacesData::default());
+    }
     let mut people: HashMap<String, PersonData> = HashMap::new();
     {
         let mut stmt = conn.prepare(
@@ -663,5 +687,36 @@ mod identity_tests {
             )
             .unwrap();
         assert_eq!(primary, 2);
+    }
+}
+
+#[cfg(test)]
+mod never_run_tests {
+    use super::*;
+
+    /// :warning: **A scanned-but-never-detected library has no `faces` table.**
+    ///
+    /// `videre scan` creates `file_hashes`, `people` and `pipeline_runs`. The
+    /// faces table arrives with the first `videre faces` run, so every query
+    /// here failed with "no such table" until then. The server turned that into
+    /// a 500 with an empty body, and the page turned the empty body into
+    /// `Unexpected end of JSON input` across the top of the labeling UI.
+    ///
+    /// Every existing test in this file seeds a faces table, which is why none
+    /// of them could see it: they all describe a library that has already run
+    /// detection.
+    #[test]
+    fn a_library_that_never_ran_detection_is_empty_not_an_error() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL);
+             CREATE TABLE people (name TEXT PRIMARY KEY, full_name TEXT);",
+        )
+        .unwrap();
+
+        let data = faces_list(&conn).expect("a library with no faces table is not an error");
+        assert!(data.people.is_empty());
+        assert!(data.clusters.is_empty());
+        assert!(data.singletons.is_empty());
     }
 }
