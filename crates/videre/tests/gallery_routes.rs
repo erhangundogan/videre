@@ -478,10 +478,15 @@ fn every_gallery_view_links_to_the_others() {
     let db = fixture(dir.path());
     let server = Server::start(&db);
 
-    for path in ["/", "/date", "/people"] {
+    for path in ["/", "/duplicates", "/date", "/people"] {
         let (status, body) = server.get(path);
         assert_eq!(status, 200, "{path} did not render");
-        for target in ["href=\"/\"", "href=\"/date\"", "href=\"/people\""] {
+        for target in [
+            "href=\"/\"",
+            "href=\"/duplicates\"",
+            "href=\"/date\"",
+            "href=\"/people\"",
+        ] {
             assert!(
                 body.contains(target),
                 "{path} has no {target} link, so that view is reachable only by \
@@ -504,6 +509,7 @@ fn the_current_section_is_marked_on_each_view() {
 
     for (path, expected) in [
         ("/", "<a href=\"/\" class=\"on\">"),
+        ("/duplicates", "<a href=\"/duplicates\" class=\"on\">"),
         ("/date", "<a href=\"/date\" class=\"on\">"),
         ("/people", "<a href=\"/people\" class=\"on\">"),
     ] {

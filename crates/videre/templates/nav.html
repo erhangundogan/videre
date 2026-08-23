@@ -22,6 +22,7 @@
 </style>
 <nav class="secnav">
 <a href="/"{% if current.is_all() %} class="on"{% endif %}>Files</a>
+<a href="/duplicates"{% if current.is_duplicates() %} class="on"{% endif %}>Duplicates</a>
 <a href="/date"{% if current.is_date() %} class="on"{% endif %}>Date</a>
 <a href="/people"{% if current.is_people() %} class="on"{% endif %}>People</a>
 </nav>

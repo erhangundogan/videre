@@ -45,6 +45,16 @@ const FILES: usize = 3_000;
 /// real library and enough for a reintroduced crop bug to be obvious.
 const FACES: usize = 1_000;
 
+/// How many files share a hash with another, forming duplicate groups.
+///
+/// :warning: **Every fixture in this file used to have unique hashes**, so it
+/// had zero duplicate groups and could not see that `var GROUPS=[...]` is
+/// inlined rather than fetched. `/` carried every duplicate group in the
+/// library, and this test measured that page and called it clean. A library
+/// that has been deduped has no groups, which is exactly why the development
+/// library did not show it either.
+const DUPES: usize = 2_000;
+
 /// 768 f16 dimensions, matching the default model.
 const DIM: usize = 768;
 
@@ -113,13 +123,16 @@ fn seed(dir: &Path) -> Option<PathBuf> {
         let year = 2019 + (i % 6);
         let month = 1 + (i % 12);
         let day = 1 + (i % 28);
+        // The first DUPES files pair up, so the library has DUPES/2 duplicate
+        // groups of two. See the constant.
+        let hash = if i < DUPES { i / 2 } else { i };
         tx.execute(
             "INSERT INTO file_hashes
                (path, hash, size_bytes, modified_at, ext, exif_date, gps_lat, gps_lon, width, height)
              VALUES (?1, ?2, ?3, ?4, 'jpg', ?4, ?5, ?6, 16, 16)",
             rusqlite::params![
                 path.to_string_lossy(),
-                format!("{i:064x}"),
+                format!("{hash:064x}"),
                 jpeg.len() as i64,
                 format!("{year}-{month:02}-{day:02}T12:00:00"),
                 41.0 + (i as f64) * 1e-5,
@@ -225,6 +238,10 @@ impl Server {
     }
 
     fn get_len(&self, path: &str) -> usize {
+        self.get_body(path).len()
+    }
+
+    fn get_body(&self, path: &str) -> String {
         let mut s = TcpStream::connect(("127.0.0.1", self.port)).unwrap();
         s.set_read_timeout(Some(Duration::from_secs(120))).unwrap();
         write!(
@@ -236,8 +253,8 @@ impl Server {
         s.read_to_end(&mut raw).unwrap();
         let text = String::from_utf8_lossy(&raw);
         text.split_once("\r\n\r\n")
-            .map(|(_, b)| b.len())
-            .unwrap_or(0)
+            .map(|(_, b)| b.to_string())
+            .unwrap_or_default()
     }
 }
 
@@ -266,6 +283,50 @@ fn the_all_files_page_does_not_carry_the_library() {
 #[test]
 fn the_date_page_does_not_carry_the_library() {
     assert_under_ceiling("/date");
+}
+
+/// :warning: **`/duplicates` still inlines its groups**, which is why this is
+/// ignored rather than absent. `/` no longer carries them, so the default route
+/// is clean; moving groups to a paged endpoint is the remaining half, and this
+/// is the assertion that will prove it. Un-ignore it then.
+/// :warning: **`/duplicates` still inlines its groups.** Measured at **989 bytes per
+/// group**, so 1,000 groups is ~1 MB and 50,000 is ~49 MB. `/` no longer carries
+/// them, which is the half that matters most since it is where everyone lands;
+/// moving them to a paged endpoint is the other half, and this is the assertion
+/// that will prove it. Un-ignore then.
+///
+/// The fixture seeds enough duplicates to cross the ceiling on purpose. At 300
+/// groups it came to 297 KB and passed, which would have recorded the fault as
+/// fixed while it was only small.
+#[test]
+#[ignore = "/duplicates inlines its groups; the paged endpoint is not built yet"]
+fn the_duplicates_page_does_not_carry_the_library() {
+    assert_under_ceiling("/duplicates");
+}
+
+/// The default route must not grow with the number of duplicates.
+///
+/// Separate from the ceiling test above because it is about a specific array:
+/// with `DUPES` groups seeded, an inlined `GROUPS` is unmistakable, while a
+/// byte ceiling could in principle be met by a page that still carries a few.
+#[test]
+fn the_default_page_carries_no_duplicate_groups() {
+    let dir = tempdir().unwrap();
+    let Some(db) = seed(dir.path()) else {
+        skip_no_fixture();
+        return;
+    };
+    let server = Server::start(&db);
+    let body = server.get_body("/");
+    let groups = body
+        .split_once("var GROUPS=[")
+        .map(|(_, rest)| rest.split("];").next().unwrap_or("").trim())
+        .unwrap_or("");
+    assert!(
+        groups.is_empty(),
+        "/ inlined {} bytes of duplicate groups; they belong on /duplicates",
+        groups.len()
+    );
 }
 
 /// The one that already passes, and the reason the other two are worth writing:

@@ -20,14 +20,15 @@ Stop it with `Ctrl-C`.
 | Path | What you get |
 |------|--------------|
 | `/` | Every file, with a **Similar** button on each card |
+| `/duplicates` | Duplicate groups, the same review `dedupe --html` writes |
 | `/people` | Face groups, and naming them |
 | `/date` | A Year / Month / Day drill-down |
 | `/map` | Reserved, not built yet |
 | `/events` | Reserved, not built yet |
 | `/smart` | Reserved, not built yet |
 
-**Files**, **Date** and **People** sit in a strip along the top of every page, so
-you switch between them without touching the address bar. The reserved routes are
+**Files**, **Duplicates**, **Date** and **People** sit in a strip along the top
+of every page, so you switch between them without touching the address bar. The reserved routes are
 deliberately not in it; each one appears when it renders something.
 
 They link to each other in smaller ways too, which is the point of serving them

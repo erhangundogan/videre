@@ -13,6 +13,26 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [Unreleased]
+
+### Added
+
+- **Duplicate groups have their own route, `/duplicates`.** They used to share
+  `/` with the file list, so the page everyone lands on grew with the number of
+  duplicates in the library: groups are inlined rather than fetched, measured at
+  **989 bytes per group**, so a library with 50,000 of them carried ~49 MB on
+  its default page. `/` now shows files and nothing else.
+
+  A duplicates page with no duplicates says so, rather than rendering a header
+  and nothing else.
+
+### Fixed
+
+- **The page-size test could not see this.** Every fixture it seeded had unique
+  hashes, so it had zero duplicate groups and measured a page that was clean for
+  the wrong reason. It now seeds duplicates, which is what showed that
+  `/duplicates` is still over the ceiling at 920 KB.
+
 ## [0.20.3] - 2026-08-23
 
 ### Added
@@ -1115,6 +1135,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.20.3...HEAD
 [0.20.3]: https://github.com/erhangundogan/videre/compare/v0.20.2...v0.20.3
 [0.20.2]: https://github.com/erhangundogan/videre/compare/v0.20.1...v0.20.2
 [0.20.1]: https://github.com/erhangundogan/videre/compare/v0.20.0...v0.20.1

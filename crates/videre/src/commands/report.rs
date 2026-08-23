@@ -673,6 +673,7 @@ fn query_keep_files(conn: &Connection) -> Vec<FileRow> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Section {
     All,
+    Duplicates,
     Date,
     People,
 }
@@ -680,6 +681,9 @@ pub(crate) enum Section {
 impl Section {
     pub(crate) fn is_all(&self) -> bool {
         *self == Section::All
+    }
+    pub(crate) fn is_duplicates(&self) -> bool {
+        *self == Section::Duplicates
     }
     pub(crate) fn is_date(&self) -> bool {
         *self == Section::Date
@@ -711,6 +715,10 @@ struct GalleryPage<'a> {
     /// The current section, or `None` on a page with nowhere to navigate to.
     /// Read by the included `nav.html`, which documents the rule.
     nav: Option<Section>,
+    /// A duplicates page with no duplicates. Without this the page renders a
+    /// header and nothing else, which reads as broken rather than as good news,
+    /// and a library that has already been deduped is the common case.
+    no_duplicates: bool,
 }
 
 /// The rows behind a list of paths, in the order given.
@@ -757,6 +765,8 @@ pub(crate) fn write_static_page(
         // A static export has no server behind it, so every section link would
         // be dead the moment the file is opened from `file://`.
         None,
+        // `dedupe --html` passes groups; `search --html` passes rows.
+        flat.is_none(),
     );
     std::fs::write(output, &html)
         .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", output.display()))?;
@@ -778,6 +788,10 @@ pub(crate) fn generate_html(
     faces_by_hash: &videre_core::face_db::LabeledFacesByHash,
     live: bool,
     nav: Option<Section>,
+    // `groups_view`: this page is about duplicate groups, so it must say
+    // something when there are none rather than render a header and nothing
+    // else. A doc comment is not allowed on a parameter.
+    groups_view: bool,
 ) -> String {
     use askama::Template;
     use chrono::Utc;
@@ -815,6 +829,7 @@ pub(crate) fn generate_html(
         all_files_count: all_files.map(|f| f.len()),
         has_keep_files: keep_files.is_some(),
         nav,
+        no_duplicates: groups_view && groups.is_empty(),
     };
     page.render().expect("gallery template")
 }
@@ -1063,21 +1078,29 @@ async fn handle_root(State(state): State<Arc<AppState>>) -> impl axum::response:
 /// included, since this route only exists when `--show-faces` is set).
 async fn handle_report(State(state): State<Arc<AppState>>) -> impl axum::response::IntoResponse {
     // Not `videre gallery`: this server has `/` and nothing else.
-    render_live(&state, state.report_all, state.report_by_date, None)
+    render_live(&state, state.report_all, state.report_by_date, true, None)
 }
 
 /// `videre gallery`'s `/`: every file, with in-page similarity search.
 async fn handle_gallery_all(
     State(state): State<Arc<AppState>>,
 ) -> impl axum::response::IntoResponse {
-    render_live(&state, true, false, Some(Section::All))
+    render_live(&state, true, false, false, Some(Section::All))
+}
+
+/// `videre gallery`'s `/duplicates`: duplicate groups, the review
+/// `dedupe --html` writes to a file.
+async fn handle_gallery_duplicates(
+    State(state): State<Arc<AppState>>,
+) -> impl axum::response::IntoResponse {
+    render_live(&state, false, false, true, Some(Section::Duplicates))
 }
 
 /// `videre gallery`'s `/date`: the year/month/day drill-down over KEEP files.
 async fn handle_gallery_date(
     State(state): State<Arc<AppState>>,
 ) -> impl axum::response::IntoResponse {
-    render_live(&state, false, true, Some(Section::Date))
+    render_live(&state, false, true, false, Some(Section::Date))
 }
 
 #[derive(Deserialize)]
@@ -1208,11 +1231,20 @@ fn render_live(
     state: &Arc<AppState>,
     all: bool,
     by_date: bool,
+    with_groups: bool,
     nav: Option<Section>,
 ) -> axum::response::Html<String> {
     let conn = state.conn.lock().unwrap();
     let stats = query_stats(&conn);
-    let groups = query_groups(&conn);
+    // :warning: Only `/duplicates` builds duplicate groups. `/` used to carry them
+    // as well, and they are inlined into the page rather than fetched, so the
+    // default route grew with the number of duplicates in the library. That is
+    // the same fault the file list had, on the one page everybody lands on.
+    let groups = if with_groups {
+        query_groups(&conn)
+    } else {
+        Vec::new()
+    };
     let all_files = all.then(|| query_all_files(&conn));
     let keep_files = by_date.then(|| query_keep_files(&conn));
     let faces_by_hash = videre_core::face_db::labeled_faces_by_hash(&conn).unwrap_or_default();
@@ -1235,6 +1267,7 @@ fn render_live(
         &faces_by_hash,
         true,
         nav,
+        with_groups,
     );
     axum::response::Html(html)
 }
@@ -1905,6 +1938,7 @@ async fn serve_faces_async(
     router = if opts.gallery {
         router
             .route("/", get(handle_gallery_all))
+            .route("/duplicates", get(handle_gallery_duplicates))
             .route("/people", get(handle_root))
             .route("/date", get(handle_gallery_date))
             .route("/map", get(handle_not_yet))
