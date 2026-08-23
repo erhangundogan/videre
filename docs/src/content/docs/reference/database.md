@@ -100,7 +100,7 @@ CREATE TABLE people (
 
 A person has two names. **`name` is who they are**: lowercase, ASCII, spaces as
 underscores, punctuation removed. It is what `faces.person_label` holds and what
-appears in the URL, `/person/isil_ozyegin`. **`full_name` is what you see**:
+appears in the URL, `/people/person/isil_ozyegin`. **`full_name` is what you see**:
 exactly what was typed, so `Işıl Özyeğin` keeps its spelling.
 
 That split is why `Alice` and `alice` are one person rather than two, and why

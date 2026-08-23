@@ -440,7 +440,7 @@ labeling UI still showed the person.
 
 :warning: **An identity is permanent, and that is a design decision, not an
 omission.** `set_full_name` changes what a person is shown as; nothing changes
-the `name` a face row points at or the `/person/<name>` URL. `rename_person` and
+the `name` a face row points at or the `/people/person/<name>` URL. `rename_person` and
 `/api/rename-person` existed, worked, were tested, and were called by no page,
 so they were removed in 0.17.0 rather than given a caller: an endpoint that
 exists eventually gets used, and videre-desktop had already wired it up. To

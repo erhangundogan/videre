@@ -159,7 +159,7 @@ pub fn cluster_detail(conn: &Connection, cluster_id: i64) -> Result<ClusterDetai
 
 /// Every confirmed face for one person, primary first and flagged.
 pub fn person_detail(conn: &Connection, name: &str) -> Result<PersonDetail> {
-    // Reads normalize too, so `/person/Erhan`, `/person/erhan` and the original
+    // Reads normalize too, so `/people/person/Erhan`, `/people/person/erhan` and the original
     // spelling all reach the same person. That is what keeps existing links
     // working across the migration without a redirect table.
     let name = videre_core::person::normalize(name).unwrap_or_else(|| name.to_string());
@@ -258,7 +258,7 @@ pub fn dissolve_cluster(conn: &Connection, cluster_id: i64) -> Result<()> {
 /// This is the only rename there is. Identity is permanent: `Erhan` to
 /// `Erhan Gündoğan` is a display correction even though its normalized form
 /// would change too, and there is no way to ask for the other reading. One row,
-/// no face touched, and `/person/<name>` keeps working, which is the whole
+/// no face touched, and `/people/person/<name>` keeps working, which is the whole
 /// reason identity and display are separate.
 pub fn set_full_name(conn: &Connection, name: &str, full_name: &str) -> Result<()> {
     let display = crate::label::sanitize_person_label(full_name).ok_or(Error::Invalid)?;
