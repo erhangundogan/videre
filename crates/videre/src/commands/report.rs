@@ -360,6 +360,10 @@ fn json_response(body: String) -> axum::response::Response {
         .into_response()
 }
 
+/// Page chrome, shared by the gallery templates and the labeling page so the
+/// two cannot drift into looking like different products.
+pub(crate) const CHROME_CSS: &str = include_str!("../../static/chrome.css");
+
 fn json_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
@@ -696,6 +700,8 @@ impl Section {
 #[derive(askama::Template)]
 #[template(path = "gallery.html")]
 struct GalleryPage<'a> {
+    /// The chrome every videre page shares. See `static/chrome.css`.
+    chrome: &'static str,
     css: &'static str,
     js: &'static str,
     /// The `var GROUPS=[...]` script block. Built in Rust because it is
@@ -815,6 +821,7 @@ pub(crate) fn generate_html(
     );
 
     let page = GalleryPage {
+        chrome: CHROME_CSS,
         css: include_str!("../../static/gallery.css"),
         js: include_str!("../../static/gallery.js"),
         data: &data,
@@ -949,8 +956,14 @@ mod pages {
     #[derive(Template)]
     #[template(path = "faces.html")]
     pub struct Faces {
+        /// The chrome every videre page shares. See `static/chrome.css`.
+        pub chrome: &'static str,
         pub css: &'static str,
         pub js: &'static str,
+        /// Pre-escaped by `esc`, so the template must not escape it again.
+        pub db: String,
+        pub generated_at: String,
+        pub total_files: i64,
         /// The current section, or `None` when there is nowhere to navigate to.
         /// See `templates/nav.html`.
         pub nav: Option<super::Section>,
@@ -1065,10 +1078,30 @@ struct AppState {
 /// on the route: only the former has anywhere to navigate to.
 async fn handle_root(State(state): State<Arc<AppState>>) -> impl axum::response::IntoResponse {
     use askama::Template;
+    use chrono::Utc;
+    // The same header the other pages carry. It had none, so the labeling page
+    // announced itself in a bare toolbar while every other route showed which
+    // library it was looking at.
+    let (db_path, total_files) = {
+        let conn = state.conn.lock().unwrap();
+        let total = conn
+            .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap_or(0);
+        (
+            conn.path().map(|p| p.to_string()).unwrap_or_default(),
+            total,
+        )
+    };
     let page = pages::Faces {
+        chrome: CHROME_CSS,
         css: pages::FACES_CSS,
         js: pages::FACES_JS,
-        nav: state.gallery.then_some(super::report::Section::People),
+        db: esc(&db_path),
+        generated_at: Utc::now().format("%Y-%m-%d %H:%M UTC").to_string(),
+        total_files,
+        nav: state.gallery.then_some(Section::People),
     };
     axum::response::Html(page.render().expect("faces template"))
 }

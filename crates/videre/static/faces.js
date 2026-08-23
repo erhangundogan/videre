@@ -12,11 +12,19 @@ let facesData = { people: [], clusters: [], singletons: [] };
         // library starts in. Saying "0 people, 0 clusters, 0 singletons" is
         // accurate and tells nobody what to do about it.
         if (total === 0) { showNothingDetected(); return; }
+        setHeaderStats();
         document.getElementById('status').textContent =
           `${facesData.people.length} people, ${facesData.clusters.length} clusters, ${facesData.singletons.length} singletons`;
       } catch(e) {
         document.getElementById('status').textContent = 'Error loading: ' + e;
       }
+    }
+
+    function setHeaderStats() {
+      const put = (id, n) => { const e = document.getElementById(id); if (e) e.textContent = n; };
+      put('stat-people', facesData.people.length);
+      put('stat-clusters', facesData.clusters.length);
+      put('stat-singletons', facesData.singletons.length);
     }
 
     function showNothingDetected() {

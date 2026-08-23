@@ -2,17 +2,29 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>videre faces labeling</title>
+  <style>{{ chrome|safe }}</style>
   <style>{{ css|safe }}</style>
 </head>
 <body>
   {% include "nav.html" %}
+  <div class="header">
+    <h1>videre</h1>
+    <p class="subtitle">{{ db|safe }} &mdash; {{ generated_at }}</p>
+    <div class="stats">
+      <div class="stat"><span class="num">{{ total_files }}</span><span class="label">Files scanned</span></div>
+      <div class="stat"><span class="num" id="stat-people">0</span><span class="label">People</span></div>
+      <div class="stat"><span class="num" id="stat-clusters">0</span><span class="label">Clusters</span></div>
+      <div class="stat"><span class="num" id="stat-singletons">0</span><span class="label">Singletons</span></div>
+    </div>
+  </div>
   <div class="toolbar">
-    <strong>videre faces labeling</strong>
-    <span id="status">Loading...</span>
+    <span id="status">Loading&hellip;</span>
     <button id="layout-toggle" onclick="toggleLayout()">People: Top</button>
     <button class="primary" onclick="saveAndClose()">Save &amp; Close</button>
   </div>
+  <div class="page-body">
 
   <div class="people-section">
     <h2 class="title-people">People <span id="people-count" class="badge badge-blue">0</span></h2>
@@ -27,6 +39,7 @@
   <h2 class="title-singletons">Singletons <span id="singleton-count" class="badge badge-orange">0</span></h2>
   <div id="singleton-grid" class="grid"></div>
 
+  </div>
   <div class="sel-bar" id="sel-bar"></div>
 
   <script>{{ js|safe }}</script>
