@@ -13,6 +13,22 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [Unreleased]
+
+### Fixed
+
+- **The People drop zone shared the top of the page with the nav bar.** Both were
+  `position: sticky; top: 0`, so the element you drag a cluster onto and the
+  element you navigate with occupied the same space, making the labeling UI's
+  main interaction unusable. A regression from 0.20.4, which gave every page the
+  same chrome; before it, `/people` had no nav and the strip had the top to
+  itself.
+
+  People now defaults to the right-hand sidebar, which competes with nothing. The
+  **People: Top** toggle still works and now sticks *below* the nav rather than
+  over it, so both layouts are usable. The layout is only stored when you choose
+  one, so an existing choice is left alone.
+
 ## [0.20.5] - 2026-08-23
 
 ### Fixed
@@ -1164,6 +1180,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.20.5...HEAD
 [0.20.5]: https://github.com/erhangundogan/videre/compare/v0.20.4...v0.20.5
 [0.20.4]: https://github.com/erhangundogan/videre/compare/v0.20.3...v0.20.4
 [0.20.3]: https://github.com/erhangundogan/videre/compare/v0.20.2...v0.20.3

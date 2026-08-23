@@ -175,7 +175,7 @@ let facesData = { people: [], clusters: [], singletons: [] };
         <div class="card ${cardClass}" ${selAttr}>
           <div class="drag-handle" draggable="true" ondragstart="onDragStart(event, ${faceIdsJson})" title="Drag to assign to a person">
             <span class="drag-dots">&#8942;&#8942;&#8942;</span>
-            <span class="drag-hint">Drag on person above</span>
+            <span class="drag-hint">Drag on a person</span>
           </div>
           ${thumb}
           <div class="new-person-area">
@@ -314,19 +314,45 @@ let facesData = { people: [], clusters: [], singletons: [] };
       await loadFaces();
     }
 
-    // ---- People placement toggle (top bar vs right sidebar) ----
+    // ---- People placement toggle (right sidebar vs top bar) ----
+    //
+    // :warning: **The default is 'right' because the top strip shares the top of
+    // the viewport with the nav.** Both are `position: sticky; top: 0`, so the
+    // element you drag a cluster onto and the element you navigate with occupy
+    // the same space. The sidebar runs down the right edge, where it competes
+    // with nothing.
+    //
+    // Only `toggleLayout` writes this key, so anyone who never chose a layout
+    // has nothing stored and picks the new default up immediately. A stored
+    // value is always a deliberate choice and is left alone.
     function applyLayout() {
-      const mode = localStorage.getItem('videre_people_layout') || 'top';
+      const mode = localStorage.getItem('videre_people_layout') || 'right';
       document.body.classList.toggle('sidebar-mode', mode === 'right');
       const btn = document.getElementById('layout-toggle');
       if (btn) btn.textContent = mode === 'right' ? 'People: Right' : 'People: Top';
+      measureChrome();
+    }
+
+    // The top strip sticks *below* the nav rather than over it.
+    //
+    // :warning: Measured rather than written as a constant. The nav's height
+    // comes from `chrome.css`, which `faces.css` does not own, so a hardcoded
+    // offset here would be a number that goes stale the first time the nav's
+    // padding or font changes and nobody would notice until the drop zone was
+    // covered again.
+    function measureChrome() {
+      const nav = document.querySelector('.secnav');
+      document.documentElement.style.setProperty(
+        '--secnav-h', (nav ? nav.offsetHeight : 0) + 'px');
     }
 
     function toggleLayout() {
-      const cur = localStorage.getItem('videre_people_layout') || 'top';
+      const cur = localStorage.getItem('videre_people_layout') || 'right';
       localStorage.setItem('videre_people_layout', cur === 'right' ? 'top' : 'right');
       applyLayout();
     }
+
+    window.addEventListener('resize', measureChrome);
 
     async function onDropToPerson(event, personLabel) {
       event.preventDefault();

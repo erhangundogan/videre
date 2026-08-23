@@ -52,7 +52,15 @@
        narrower card, e.g. the People cards in right-sidebar mode; aspect-ratio
        + height:auto keep them square while they scale down. */
     .face-img { object-fit: cover; border-radius: 3px; background: #ddd; display: block; max-width: 100%; height: auto; aspect-ratio: 1 / 1; }
-    .people-section { position: sticky; top: 0; background: #fff; z-index: 100; padding-bottom: 8px; }
+    /* The hint says where to drag to, and that depends on the layout, so the
+       direction is CSS rather than baked into the card's markup. Saying "above"
+       while People sits on the right is how the instruction went wrong when the
+       default changed. */
+    .drag-hint::after { content: " on the right"; }
+    body:not(.sidebar-mode) .drag-hint::after { content: " above"; }
+
+    /* Sticks below the nav, not over it. --secnav-h is measured in faces.js. */
+    .people-section { position: sticky; top: var(--secnav-h, 0px); background: #fff; z-index: 40; padding-bottom: 8px; }
     .people-scroll { max-height: 45vh; overflow-y: auto; padding-bottom: 4px; }
     .drag-handle { display: flex; align-items: center; gap: 6px; cursor: grab; color: #aaa; padding: 2px 0 6px; user-select: none; }
     .drag-handle .drag-dots { font-size: 16px; letter-spacing: 2px; flex-shrink: 0; }
