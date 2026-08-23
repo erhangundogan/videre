@@ -30,37 +30,15 @@ pub(crate) struct Stats {
     wasted_bytes: i64,
 }
 
-pub(crate) struct VectorBlock {
-    hashes: Vec<String>,
-    b64: String,
-    dim: usize,
-}
-
-/// Ceiling on the embedding payload inlined into a page, in raw bytes before
-/// base64 (which adds a third).
+/// How many files in this library are embedded under `model_id`, for the header
+/// stat. `None` when nothing is.
 ///
-/// :warning: **Without this, a large library produces a page no browser can
-/// open.** Measured on a real 70,601-file library: 70,588 vectors at 768 f16
-/// dimensions is 108 MB raw, 145 MB base64, and **97% of a 149 MB page**. The
-/// server builds that in 0.74s, so it reads as a hang in the browser rather
-/// than as slowness anywhere the server can report it. Shipped in 0.18.0 and
-/// found by running it against a real library rather than a test fixture.
-///
-/// 24 MB keeps in-page similarity for libraries up to roughly 16,000 embedded
-/// files at 768 dimensions, and is about a third of a second of parse. Beyond
-/// that the feature is disabled with a note, which is exactly what already
-/// happens when a library has no embeddings at all.
-///
-/// The real fix is to serve vectors from an endpoint rather than inline them,
-/// so the client fetches what it needs. This constant is the stopgap.
-const MAX_INLINE_VECTOR_BYTES: usize = 24 * 1024 * 1024;
-
-/// Load all embeddings for the default model, ordered by hash, as one
-/// base64-encoded f16 buffer. Returns None when the table is missing or empty,
-/// or when the payload would exceed `MAX_INLINE_VECTOR_BYTES`. Rows whose blob
-/// length disagrees with the first valid row's dimension are skipped (mirrors
-/// search.rs semantics for corrupt rows).
-fn query_vectors(conn: &Connection, model_id: &str) -> Option<VectorBlock> {
+/// :warning: This replaced a function that loaded **every vector** to answer the
+/// same question. That existed because the page did in-browser similarity and
+/// needed the vectors anyway; the server ranks now, so a page needs the number
+/// and nothing else. A large library used to lose this stat entirely, because
+/// the loader gave up above a size cap and the header then showed nothing.
+fn query_embedded_count(conn: &Connection, model_id: &str) -> Option<usize> {
     let table_exists = conn
         .query_row(
             "SELECT COUNT(*) FROM emb.sqlite_master WHERE type='table' AND name='embeddings'",
@@ -72,52 +50,15 @@ fn query_vectors(conn: &Connection, model_id: &str) -> Option<VectorBlock> {
     if !table_exists {
         return None;
     }
-    let mut stmt = conn
-        .prepare(
-            "SELECT hash, embedding FROM emb.embeddings WHERE model_id = ?1 \
-             AND hash IN (SELECT hash FROM file_hashes) ORDER BY hash",
-        )
-        .ok()?;
-    let rows: Vec<(String, Vec<u8>)> = stmt
-        .query_map([model_id], |r| Ok((r.get(0)?, r.get(1)?)))
-        .ok()?
-        .filter_map(|r| r.ok())
-        .collect();
-    let first_len = rows
-        .iter()
-        .map(|(_, b)| b.len())
-        .find(|l| *l > 0 && l % 2 == 0)?;
-    let dim = first_len / 2;
-    let mut blob = Vec::with_capacity(rows.len() * first_len);
-    let mut hashes = Vec::with_capacity(rows.len());
-    for (hash, bytes) in rows {
-        if bytes.len() != first_len {
-            continue;
-        }
-        blob.extend_from_slice(&bytes);
-        hashes.push(hash);
-    }
-    if hashes.is_empty() {
-        return None;
-    }
-    // Checked before encoding: base64 of an oversized blob is the expensive
-    // part, and the answer is to not send it either way.
-    if blob.len() > MAX_INLINE_VECTOR_BYTES {
-        eprintln!(
-            "note: in-page similarity search disabled for this library\n  \
-             {} embeddings at {dim} dimensions is {}, more than a page can \n  \
-             carry (limit {}). Browsing, people, dates and search all work.",
-            hashes.len(),
-            videre_core::disk::human_bytes(blob.len() as u64),
-            videre_core::disk::human_bytes(MAX_INLINE_VECTOR_BYTES as u64),
-        );
-        return None;
-    }
-    Some(VectorBlock {
-        hashes,
-        b64: base64_encode(&blob),
-        dim,
-    })
+    conn.query_row(
+        "SELECT COUNT(*) FROM emb.embeddings WHERE model_id = ?1 \
+         AND hash IN (SELECT hash FROM file_hashes)",
+        [model_id],
+        |r| r.get::<_, i64>(0),
+    )
+    .ok()
+    .filter(|n| *n > 0)
+    .map(|n| n as usize)
 }
 
 /// One page of the gallery's file list, for `/api/files`.
@@ -402,6 +343,21 @@ fn esc(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+/// A hand-built JSON body as a response.
+///
+/// These endpoints assemble JSON as a string rather than serialising a struct,
+/// because the row shape is shared with the inlined static export and is built
+/// by one function either way. This is the third endpoint to need the same two
+/// lines, so it is a function.
+fn json_response(body: String) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        body,
+    )
+        .into_response()
 }
 
 fn json_str(s: &str) -> String {
@@ -816,7 +772,7 @@ pub(crate) fn generate_html(
     groups: &[Vec<FileRow>],
     all_files: Option<&[FileRow]>,
     keep_files: Option<&[FileRow]>,
-    vectors: Option<&VectorBlock>,
+    embedded: Option<usize>,
     heic: bool,
     heic_original: bool,
     faces_by_hash: &videre_core::face_db::LabeledFacesByHash,
@@ -838,7 +794,6 @@ pub(crate) fn generate_html(
         groups,
         all_files,
         keep_files,
-        vectors,
         heic,
         heic_original,
         faces_by_hash,
@@ -856,7 +811,7 @@ pub(crate) fn generate_html(
         duplicate_groups: stats.duplicate_groups,
         duplicate_files: stats.duplicate_files,
         wasted: videre_core::disk::human_bytes(stats.wasted_bytes.max(0) as u64),
-        embedded: vectors.map(|vb| vb.hashes.len()),
+        embedded,
         all_files_count: all_files.map(|f| f.len()),
         has_keep_files: keep_files.is_some(),
         nav,
@@ -871,7 +826,6 @@ fn build_data_block(
     groups: &[Vec<FileRow>],
     all_files: Option<&[FileRow]>,
     keep_files: Option<&[FileRow]>,
-    vectors: Option<&VectorBlock>,
     heic: bool,
     heic_original: bool,
     faces_by_hash: &videre_core::face_db::LabeledFacesByHash,
@@ -935,25 +889,6 @@ fn build_data_block(
             ));
         }
         out.push_str("\n];\n");
-        match vectors {
-            Some(vb) => {
-                out.push_str(&format!("var VEC_DIM={};\n", vb.dim));
-                out.push_str("var VEC_HASHES=[");
-                for (i, h) in vb.hashes.iter().enumerate() {
-                    if i > 0 {
-                        out.push(',');
-                    }
-                    out.push_str(&json_str(h));
-                }
-                out.push_str("];\n");
-                out.push_str("var VEC_B64=\"");
-                out.push_str(&vb.b64);
-                out.push_str("\";\n");
-            }
-            None => {
-                out.push_str("var VEC_DIM=0;\nvar VEC_HASHES=[];\nvar VEC_B64=\"\";\n");
-            }
-        }
     }
 
     // Date-grouped KEEP-only file set (--by-date only).
@@ -1101,6 +1036,13 @@ struct AppState {
     /// configuration where `/`, `/date` and `/people` all exist, so the one
     /// where a section strip can link to them.
     gallery: bool,
+    /// Bound at startup, like `model_id`, so a request cannot retarget the
+    /// server at another library. `search::run_json` opens its own connection
+    /// from this, which is what keeps a ranking query off the shared one.
+    db: std::path::PathBuf,
+    /// Loaded on the first ranking search and kept for the process's life. Empty
+    /// until then: a gallery whose library nobody searches never loads a model.
+    embedder: Mutex<Option<videre_ml::model::Embedder>>,
 }
 
 /// The labeling UI. Served as `/people` under `videre gallery`, and as `/` on a
@@ -1138,6 +1080,109 @@ async fn handle_gallery_date(
     render_live(&state, false, true, Some(Section::Date))
 }
 
+#[derive(Deserialize)]
+struct SearchQuery {
+    /// A text query, ranked semantically.
+    q: Option<String>,
+    /// A hash already in this library: "more like this one".
+    like: Option<String>,
+    limit: Option<usize>,
+}
+
+/// Rank the library, and return only a ranking.
+///
+/// :warning: **Rows are deliberately not returned here.** The client already
+/// fetches rows by hash through `/api/files?hashes=`, so returning them would be
+/// a second row-shaping path to keep in step with the first. Search answers
+/// "which, in what order"; `/api/files` answers "what are they".
+///
+/// This is the third caller of the seam `commands/mcp.rs` opened: build a
+/// `SearchArgs`, hand it to `search::run_json`. Nothing about search is
+/// implemented here, which is the point - the CLI, MCP and the gallery rank
+/// identically because they run the same code.
+async fn handle_search(
+    State(state): State<Arc<AppState>>,
+    Query(sq): Query<SearchQuery>,
+) -> Result<axum::response::Response, StatusCode> {
+    const MAX_LIMIT: usize = 200;
+
+    if sq.q.is_none() == sq.like.is_none() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let top_k = sq.limit.unwrap_or(24).clamp(1, MAX_LIMIT);
+    // Kept out of the closure: needed again below to drop the example from its
+    // own results.
+    let example = sq.like.clone();
+
+    // :warning: `spawn_blocking`, because this is the one handler that can take
+    // ~900ms: the first ranking query loads the model. Every other handler here
+    // does milliseconds of SQLite and gets away with blocking the runtime; this
+    // one would stall every concurrent request, thumbnails included.
+    let hits = tokio::task::spawn_blocking(move || {
+        let args = crate::commands::search::SearchArgs {
+            html: None,
+            media: super::selection_args::MediaArgs::default(),
+            paths: super::selection_args::PathArgs::default(),
+            // Both bound at startup, so a request cannot retarget the server.
+            db: Some(state.db.clone()),
+            model: Some(state.model_id.clone()),
+            query: sq.q.clone(),
+            image: None,
+            like: sq.like.clone(),
+            person: None,
+            category: None,
+            location: None,
+            radius: 20.0,
+            after: None,
+            before: None,
+            date: None,
+            sort: None,
+            top_k,
+            scores: false,
+            json: true,
+        };
+        crate::commands::search::run_json(
+            &args,
+            &crate::commands::search::CachedEmbedder(&state.embedder),
+        )
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let hits = match hits {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("videre gallery: /api/search failed: {e}");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    // :warning: An example never appears among its own neighbours. Ranking a
+    // stored vector against the corpus it came from scores it ~1.0 against
+    // itself, and "things like this one" that begins with this one wastes the
+    // first and best slot. The in-page version skipped its own index for the
+    // same reason; the UI shows the query separately.
+    let results: Vec<_> = hits
+        .results
+        .iter()
+        .filter(|h| h.hash.as_deref() != example.as_deref())
+        .collect();
+
+    let mut out = format!("{{\"total\":{},\"results\":[", hits.total_matches);
+    for (i, hit) in results.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"hash\":{},\"score\":{}}}",
+            json_str(hit.hash.as_deref().unwrap_or("")),
+            hit.score.unwrap_or(0.0)
+        ));
+    }
+    out.push_str("]}");
+    Ok(json_response(out))
+}
+
 /// Reserved so the shape of the command is visible before the views exist.
 async fn handle_not_yet() -> impl axum::response::IntoResponse {
     (
@@ -1171,8 +1216,8 @@ fn render_live(
     let all_files = all.then(|| query_all_files(&conn));
     let keep_files = by_date.then(|| query_keep_files(&conn));
     let faces_by_hash = videre_core::face_db::labeled_faces_by_hash(&conn).unwrap_or_default();
-    let vectors = if all {
-        query_vectors(&conn, &state.model_id)
+    let embedded = if all {
+        query_embedded_count(&conn, &state.model_id)
     } else {
         None
     };
@@ -1184,7 +1229,7 @@ fn render_live(
         &groups,
         all_files.as_deref(),
         keep_files.as_deref(),
-        vectors.as_ref(),
+        embedded,
         state.report_heic,
         state.report_heic_original,
         &faces_by_hash,
@@ -1303,12 +1348,7 @@ async fn handle_files(
     }
     out.push_str("]}");
 
-    use axum::response::IntoResponse;
-    Ok((
-        [(axum::http::header::CONTENT_TYPE, "application/json")],
-        out,
-    )
-        .into_response())
+    Ok(json_response(out))
 }
 
 /// The year/month/day tree, as counts with one representative row per bucket.
@@ -1392,12 +1432,7 @@ async fn handle_dates(
         ));
     }
     out.push_str("]}");
-    use axum::response::IntoResponse;
-    Ok((
-        [(axum::http::header::CONTENT_TYPE, "application/json")],
-        out,
-    )
-        .into_response())
+    Ok(json_response(out))
 }
 
 async fn handle_get_faces(
@@ -1831,6 +1866,8 @@ async fn serve_faces_async(
         report_heic_original: opts.report_heic_original,
         serve_faces_ui: opts.serve_faces_ui,
         gallery: opts.gallery,
+        db: db.to_path_buf(),
+        embedder: Mutex::new(None),
     });
 
     let mut router = Router::new()
@@ -1845,7 +1882,8 @@ async fn serve_faces_async(
         .route("/api/location", get(handle_location))
         .route("/api/raw", get(handle_raw_file))
         .route("/api/files", get(handle_files))
-        .route("/api/dates", get(handle_dates));
+        .route("/api/dates", get(handle_dates))
+        .route("/api/search", get(handle_search));
 
     if state.serve_faces_ui {
         router = router

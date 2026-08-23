@@ -167,9 +167,13 @@ so a photo deleted outside videre appears until
 [`videre prune`](/commands/prune/) removes its row.
 
 **Similarity search needs [`videre embed`](/commands/embed/), and lives only in
-`gallery`.** A static page cannot carry it: matching a query against every
-vector needs the database, which an exported file does not have. Without
-embeddings, `gallery` still serves every view and says so rather than failing.
+`gallery`.** A static page cannot carry it: matching against every vector needs
+the database, which an exported file does not have. Without embeddings,
+`gallery` still serves every view and says so rather than failing.
+
+The **Similar** button on a card ranks the whole library against that photo. The
+server does the ranking, so it works at any library size, and the page never
+downloads a vector.
 
 **Nothing leaves your machine.** The server binds to `127.0.0.1`, and the pages
 make no external requests.

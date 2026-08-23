@@ -258,38 +258,6 @@ struct SearchParams {
     top_k: Option<usize>,
 }
 
-/// The MCP server's embedder: loaded on the first ranking search and kept for
-/// the life of the process, so only that one call pays the load. The CLI's
-/// equivalent (`search::FreshEmbedder`) loads per invocation instead; that
-/// difference is the only reason the pipeline takes an embedder at all.
-struct CachedEmbedder<'a>(&'a std::sync::Mutex<Option<videre_ml::model::Embedder>>);
-
-impl crate::commands::search::QueryEmbedder for CachedEmbedder<'_> {
-    fn embed(
-        &self,
-        model_id: &str,
-        input: crate::commands::search::QueryInput<'_>,
-    ) -> anyhow::Result<Vec<f32>> {
-        use crate::commands::search::QueryInput;
-
-        let mut guard = self
-            .0
-            .lock()
-            .map_err(|_| anyhow::anyhow!("embedder lock poisoned"))?;
-        if guard.is_none() {
-            *guard = Some(videre_ml::model::Embedder::load(
-                videre_ml::device::best_device(),
-                model_id,
-            )?);
-        }
-        let embedder = guard.as_ref().expect("just initialized");
-        match input {
-            QueryInput::Text(text) => embedder.embed_text(text),
-            QueryInput::Image(path) => videre_ml::model::embed_image_file(embedder, path),
-        }
-    }
-}
-
 /// Runs an MCP `search` call through exactly the pipeline `videre search
 /// --json` uses, by building the same `SearchArgs` the CLI parses into. The
 /// only MCP-specific parts are the two validity checks, whose wording names
@@ -349,6 +317,8 @@ fn build_search(
         model: Some(model_id.to_string()),
         query: params.query.clone(),
         image: params.image_path.as_deref().map(std::path::PathBuf::from),
+        // Not exposed as a tool parameter: an agent has a path, not a hash.
+        like: None,
         person: params.person.clone(),
         category: params.category.clone(),
         location: params.location.clone(),
@@ -364,7 +334,7 @@ fn build_search(
         json: true,
     };
 
-    search_cmd::run_json(&args, &CachedEmbedder(embedder_cell))
+    search_cmd::run_json(&args, &search_cmd::CachedEmbedder(embedder_cell))
 }
 
 #[tool_router]

@@ -91,17 +91,26 @@ impl Server {
     /// connection. Sleeping a fixed interval instead makes a slow machine look
     /// like a broken server.
     fn start(db: &Path) -> Server {
+        Server::start_with_hf_home(db, None)
+    }
+
+    /// `hf_home` points the child's model cache somewhere fresh, so a download
+    /// that should not happen lands where a test can see it instead of being
+    /// absorbed by the developer's warm cache.
+    fn start_with_hf_home(db: &Path, hf_home: Option<&Path>) -> Server {
         isolated_home();
         let _serialised = STARTUP.lock().unwrap_or_else(|e| e.into_inner());
         let port = free_port();
-        let child = Command::new(env!("CARGO_BIN_EXE_videre"))
-            .arg("gallery")
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_videre"));
+        cmd.arg("gallery")
             .arg("--db")
             .arg(db)
             .arg("--port")
-            .arg(port.to_string())
-            .spawn()
-            .expect("failed to spawn videre gallery");
+            .arg(port.to_string());
+        if let Some(hf) = hf_home {
+            cmd.env("HF_HOME", hf);
+        }
+        let child = cmd.spawn().expect("failed to spawn videre gallery");
         let server = Server { child, port };
 
         let deadline = Instant::now() + Duration::from_secs(20);
@@ -509,4 +518,195 @@ fn the_current_section_is_marked_on_each_view() {
             "{path} marks more than one section as current"
         );
     }
+}
+
+/// Embeddings for the search tests: three orthogonal-ish vectors so the ranking
+/// has a knowable answer rather than an arbitrary one.
+fn seed_search_embeddings(db: &Path, hashes: &[(&str, [f32; 4])]) {
+    let model = videre_core::embeddings::DEFAULT_MODEL_ID;
+    let path = videre_core::embeddings_db::db_path(db, model).unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS embeddings
+         (hash TEXT PRIMARY KEY, model_id TEXT NOT NULL, embedding BLOB NOT NULL);",
+    )
+    .unwrap();
+    for (hash, v) in hashes {
+        // The same conversion the app uses, rather than a `half` dev-dependency
+        // that could drift from it.
+        let blob = videre_core::vectors::to_f16_bytes(v);
+        conn.execute(
+            "INSERT OR REPLACE INTO embeddings VALUES (?1, ?2, ?3)",
+            rusqlite::params![hash, model, blob],
+        )
+        .unwrap();
+    }
+}
+
+/// A library of four files with known embeddings, for ranking assertions.
+fn search_fixture(dir: &Path) -> PathBuf {
+    // :warning: Before anything resolves a path. The embeddings database lives
+    // under the videre home, and `isolated_home` sets that once per test binary
+    // in a `OnceLock`. Seeding first writes it wherever the developer's real
+    // home points, and the server then finds nothing.
+    //
+    // These tests passed anyway until one of them was run in isolation: with
+    // several tests sharing a process, whichever reached `Server::start` first
+    // set the home for all of them, so the ordering hid it. Same fault as the
+    // one `gallery_payload.rs` documents.
+    isolated_home();
+    let db = dir.join("search.db");
+    let conn = Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL,
+         size_bytes INTEGER, created_at TEXT, modified_at TEXT, ext TEXT,
+         phash INTEGER, exif_date TEXT, gps_lat REAL, gps_lon REAL,
+         width INTEGER, height INTEGER);
+         CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL,
+         bbox TEXT NOT NULL, landmark TEXT, embedding BLOB NOT NULL,
+         cluster_id INTEGER, person_label TEXT, confirmed INTEGER DEFAULT 0,
+         is_primary INTEGER DEFAULT 0);
+         CREATE TABLE people (name TEXT PRIMARY KEY, full_name TEXT);
+         INSERT INTO file_hashes (path, hash, ext, size_bytes) VALUES
+           ('/tmp/a.jpg', 'aaaa', 'jpg', 10),
+           ('/tmp/b.jpg', 'bbbb', 'jpg', 10),
+           ('/tmp/c.jpg', 'cccc', 'jpg', 10),
+           ('/tmp/d.jpg', 'dddd', 'jpg', 10);",
+    )
+    .unwrap();
+    videre_core::db::ensure_file_hashes_columns(&conn);
+    drop(conn);
+    seed_search_embeddings(
+        &db,
+        &[
+            ("aaaa", [1.0, 0.0, 0.0, 0.0]),
+            ("bbbb", [0.9, 0.1, 0.0, 0.0]),
+            ("cccc", [0.5, 0.5, 0.0, 0.0]),
+            ("dddd", [0.0, 1.0, 0.0, 0.0]),
+        ],
+    );
+    db
+}
+
+// :warning: These use `?like=`, never `?q=`. A text query needs the model, and
+// a test that downloads 778MB of SigLIP is the exact failure `CLAUDE.md` records
+// from `classify`. Ranking against a stored vector needs no model at all, which
+// is precisely why the stored path exists.
+
+#[test]
+fn similarity_ranks_by_closeness_to_the_example() {
+    let dir = tempdir().unwrap();
+    let db = search_fixture(dir.path());
+    let server = Server::start(&db);
+
+    let (status, body) = server.get("/api/search?like=aaaa&limit=10");
+    assert_eq!(status, 200);
+    let hashes: Vec<&str> = body
+        .split("\"hash\":\"")
+        .skip(1)
+        .map(|s| s.split('"').next().unwrap())
+        .collect();
+    assert_eq!(
+        hashes,
+        vec!["bbbb", "cccc", "dddd"],
+        "expected nearest-first ordering, got {body}"
+    );
+}
+
+/// The example is not one of its own neighbours.
+///
+/// The in-page version skipped its own index; this must too, or the first and
+/// best result slot is spent showing the picture you already clicked.
+#[test]
+fn the_example_is_absent_from_its_own_results() {
+    let dir = tempdir().unwrap();
+    let db = search_fixture(dir.path());
+    let server = Server::start(&db);
+
+    let (_, body) = server.get("/api/search?like=aaaa&limit=10");
+    assert!(
+        !body.contains("\"aaaa\""),
+        "the example ranked itself, at ~1.0, wasting the top slot: {body}"
+    );
+}
+
+#[test]
+fn a_search_needs_exactly_one_ranker() {
+    let dir = tempdir().unwrap();
+    let db = search_fixture(dir.path());
+    let server = Server::start(&db);
+
+    for path in ["/api/search", "/api/search?q=cat&like=aaaa"] {
+        let (status, _) = server.get(path);
+        assert_eq!(status, 400, "{path} should be rejected as ambiguous");
+    }
+}
+
+/// An unembedded example is an error, not an empty result.
+///
+/// Same rule as the rest of this work: a plausible zero is worse than a failure,
+/// because "no similar images" reads as an answer.
+#[test]
+fn an_example_with_no_embedding_is_an_error() {
+    let dir = tempdir().unwrap();
+    let db = search_fixture(dir.path());
+    let server = Server::start(&db);
+
+    let (status, _) = server.get("/api/search?like=nosuchhash");
+    assert_eq!(status, 500);
+}
+
+/// :warning: **A gallery whose library nobody searches must never load a model.**
+///
+/// The search endpoint holds a lazily-loaded embedder, and "lazily" is the whole
+/// contract. `CLAUDE.md` records what the alternative costs: a model loaded
+/// before there was work to do downloaded 778MB from inside a unit test, and on
+/// CI those weights then woke a skipped test and took one job from 3 minutes to
+/// nearly 40.
+///
+/// Browsing must therefore leave a cold cache untouched. This drives every route
+/// a person hits without searching and asserts nothing was fetched.
+#[test]
+fn browsing_the_gallery_touches_no_model_cache() {
+    let dir = tempdir().unwrap();
+    let db = search_fixture(dir.path());
+    let hf_home = tempdir().unwrap();
+    let server = Server::start_with_hf_home(&db, Some(hf_home.path()));
+
+    for path in [
+        "/",
+        "/date",
+        "/people",
+        "/api/files?view=all&limit=10",
+        "/api/dates?level=year",
+        // The ranked path too: an example already embedded needs no model, which
+        // is the reason the stored-vector path exists rather than re-embedding.
+        "/api/search?like=aaaa",
+    ] {
+        let (status, _) = server.get(path);
+        assert_eq!(status, 200, "{path} did not answer");
+    }
+    drop(server);
+
+    let mut found = Vec::new();
+    let mut stack = vec![hf_home.path().to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in entries.filter_map(Result::ok) {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                found.push(p);
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "the gallery downloaded model weights without anyone running a text \
+         search: {found:?}"
+    );
 }

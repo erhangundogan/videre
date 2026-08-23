@@ -331,27 +331,21 @@ document.getElementById('lb').addEventListener('click',function(e){
 });
 
 // ---- All-files gallery and similarity search (active only with --all) ----
-var GPAGE=200,gShown=0,HASH_FILES={},VECS=null,VEC_INDEX={};
-function decodeVecs(b64,n,dim){
-  var bin=atob(b64);
-  var out=new Float32Array(n*dim);
-  for(var i=0;i<n*dim;i++){
-    var lo=bin.charCodeAt(i*2),hi=bin.charCodeAt(i*2+1);
-    var h=(hi<<8)|lo;
-    var s=(h&0x8000)?-1:1,e=(h>>10)&0x1f,f=h&0x3ff;
-    if(e===0)out[i]=s*f*Math.pow(2,-24);
-    else if(e===31)out[i]=f?NaN:s*Infinity;
-    else out[i]=s*(1+f/1024)*Math.pow(2,e-15);
-  }
-  return out;
-}
+// RESULT_ROWS holds only the rows a search returned, a couple of dozen at most.
+// HASH_FILES stays for the inlined static export, whose rows carry no `copies`
+// field and so must be counted client-side.
+var GPAGE=200,gShown=0,HASH_FILES={},RESULT_ROWS={};
 function bestDateJs(f){
   if(f.ex&&f.ex.indexOf('0000')!==0)return f.ex;
   if(f.cr&&f.mo)return f.cr<f.mo?f.cr:f.mo;
   return f.cr||f.mo||'';
 }
+// Similarity is a server feature now, so it works at every library size. It
+// used to appear only when the page had downloaded every vector, which switched
+// it off for exactly the libraries big enough to want it. A static export has
+// no server to ask, so it has no button.
 function similarBtn(hash){
-  if(!VECS||VEC_INDEX[hash]==null)return '';
+  if(typeof LIVE_SERVER==='undefined'||!LIVE_SERVER)return '';
   return '<button class="similar-btn" data-similar="'+escA(hash)+'">Similar</button>';
 }
 function buildCard(f){
@@ -407,27 +401,23 @@ function renderGallery(){
 }
 function showMoreGallery(){renderGallery();}
 function findSimilar(hash){
-  var qi=VEC_INDEX[hash];
-  if(qi==null||!VECS)return;
-  var q=VECS.subarray(qi*VEC_DIM,(qi+1)*VEC_DIM);
-  var scores=[];
-  for(var i=0;i<VEC_HASHES.length;i++){
-    if(i===qi)continue;
-    var v=VECS.subarray(i*VEC_DIM,(i+1)*VEC_DIM);
-    var dot=0;
-    for(var d=0;d<VEC_DIM;d++)dot+=q[d]*v[d];
-    if(isFinite(dot))scores.push([i,dot]);
-  }
-  scores.sort(function(a,b){return b[1]-a[1];});
-  renderResults(hash,scores.slice(0,24));
+  var panel=document.getElementById('results');
+  if(panel){panel.style.display='block';panel.innerHTML='<div class="results-head"><h2>Searching&hellip;</h2></div>';}
+  fetch('/api/search?like='+encodeURIComponent(hash)+'&limit=24')
+    .then(function(r){ if(!r.ok)throw 0; return r.json(); })
+    .then(function(d){ renderResults(hash,d.results||[]); })
+    .catch(function(){
+      if(panel)panel.innerHTML='<div class="results-head"><h2>Search failed</h2>'+
+        '<button onclick="clearResults()">Clear</button></div>';
+    });
 }
 function resultCard(hash,score,isQuery){
-  var files=HASH_FILES[hash];
-  if(!files||!files.length)return '';
-  var f=files[0];
+  var f=RESULT_ROWS[hash];
+  if(!f)return '';
   var fname=f.path.split('/').pop()||f.path;
   var badge=isQuery?'':'<span class="score">'+score.toFixed(3)+'</span>';
-  var copies=files.length>1?'<span class="copies">x'+files.length+'</span>':'';
+  var n=(typeof f.copies==='number')?f.copies:1;
+  var copies=n>1?'<span class="copies">x'+n+'</span>':'';
   return '<div class="rcard'+(isQuery?' query':'')+'" data-hash="'+escA(hash)+'">'+
     badge+copies+buildPreview(f)+
     '<div class="rname" title="'+escA(f.path)+'">'+(isQuery?'query: ':'')+escH(fname)+'</div>'+
@@ -439,15 +429,13 @@ function resultCard(hash,score,isQuery){
 // page carry the library in the first place.
 function renderResults(qHash,scored){
   var need=[qHash];
-  for(var i=0;i<scored.length;i++)need.push(VEC_HASHES[scored[i][0]]);
-  var missing=need.filter(function(h){return !HASH_FILES[h];});
+  for(var i=0;i<scored.length;i++)need.push(scored[i].hash);
+  var missing=need.filter(function(h){return !RESULT_ROWS[h];});
   if(missing.length===0){ drawResults(qHash,scored); return; }
   fetch('/api/files?hashes='+encodeURIComponent(missing.join(',')))
     .then(function(r){ return r.json(); })
     .then(function(d){
-      (d.files||[]).forEach(function(f){
-        (HASH_FILES[f.hash]=HASH_FILES[f.hash]||[]).push(f);
-      });
+      (d.files||[]).forEach(function(f){ RESULT_ROWS[f.hash]=f; });
       drawResults(qHash,scored);
     })
     .catch(function(){ drawResults(qHash,scored); });
@@ -458,7 +446,7 @@ function drawResults(qHash,scored){
     '<button onclick="clearResults()">Clear</button></div>'+
     '<div class="results-strip">'+resultCard(qHash,1,true);
   for(var i=0;i<scored.length;i++){
-    html+=resultCard(VEC_HASHES[scored[i][0]],scored[i][1],false);
+    html+=resultCard(scored[i].hash,scored[i].score,false);
   }
   html+='</div>';
   panel.innerHTML=html;
@@ -475,13 +463,9 @@ if(typeof ALLFILES!=='undefined'){
   ALLFILES.forEach(function(f){
     (HASH_FILES[f.hash]=HASH_FILES[f.hash]||[]).push(f);
   });
-  if(VEC_HASHES.length>0){
-    VECS=decodeVecs(VEC_B64,VEC_HASHES.length,VEC_DIM);
-    for(var vi=0;vi<VEC_HASHES.length;vi++)VEC_INDEX[VEC_HASHES[vi]]=vi;
-  }
   renderGallery();
 }else if(document.getElementById('gallery')){
-  // Nothing inlined: a live page above the vector gate. Fetch the first page.
+  // Nothing inlined: a live page. Fetch the first page.
   renderGallery();
 }
 document.addEventListener('click',function(e){
