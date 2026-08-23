@@ -73,7 +73,8 @@ videre faces                   # detect and group first
 videre gallery          # then name them
 ```
 
-Opens `http://localhost:7878` with three sections:
+Opens `http://localhost:7878`. Naming lives on the **People** tab (`/people`),
+which has three sections:
 
 - **People**, ones you have named
 - **Unassigned clusters**, groups it is confident about but has no name for
@@ -82,8 +83,9 @@ Opens `http://localhost:7878` with three sections:
 Drag a cluster's handle onto a person card to assign it, or click **New Person**
 to create one from it. One drag can name forty photos, which is the whole point.
 
-Each cluster links to a detail page showing every face full size, with per-face
-remove and assign for the odd wrong member. **Dissolve cluster** breaks a
+Each cluster links to a detail page at `/people/cluster/<id>`, showing every face
+full size, with per-face remove and assign for the odd wrong member. A person's
+page is `/people/person/<name>`, and both link back to **People**. **Dissolve cluster** breaks a
 wrongly-merged group back into singletons without deleting any faces, and is
 usually a better fix than retuning the whole clustering.
 

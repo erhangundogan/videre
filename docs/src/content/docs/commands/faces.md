@@ -37,10 +37,14 @@ videre gallery         # 2. name the groups in your browser
 videre search --person "Alice"
 ```
 
-Step 2 opens a page on `localhost:7878` with three sections: **People** you have
-named, **Unassigned Clusters** (groups it is confident about but has no name
-for), and **Singletons** (faces it could not group). Drag a cluster onto a
-person to assign it, or create a new person from it.
+Step 2 opens `localhost:7878`; naming happens on its **People** tab
+(`/people`), which has three sections: **People** you have named, **Unassigned
+Clusters** (groups it is confident about but has no name for), and **Singletons**
+(faces it could not group). Drag a cluster onto a person to assign it, or create
+a new person from it.
+
+Clicking a cluster or a person opens its own page, at `/people/cluster/<id>` and
+`/people/person/<name>`.
 
 The payoff is the ratio: one drag can name forty photos.
 
