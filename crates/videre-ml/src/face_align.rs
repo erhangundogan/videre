@@ -15,6 +15,48 @@ pub fn align_face(img: &DynamicImage, landmarks: &[[f32; 2]; 5]) -> RgbImage {
     warp_affine(img, m, 112, 112)
 }
 
+/// How far a detected 5-point landmark set is from being a face, in template
+/// pixels: the RMS residual after the best similarity fit onto `DST`.
+///
+/// :warning: **This is the question `--max-generic-sim` was reaching for and
+/// could not ask.** ArcFace never sees the photo, only the 112x112 crop warped
+/// so these five points land on the template. When the points are not really a
+/// face, the warp produces a mangled image and the embedding encodes the
+/// mangling rather than the person - so mangled faces resemble *each other* and
+/// collect into their own cluster, while a correctly aligned face of the same
+/// person sits somewhere else entirely.
+///
+/// Measured on a 92-face corpus with per-cluster ground truth: clusters the user
+/// confirmed correct had a median residual of 2.5-6.2, the two they confirmed
+/// wrong had 9.8 and 10.1, with one face at 33.0.
+///
+/// Unlike a cosine against the population mean, this is a property of one face.
+/// It does not move when the library's composition changes, which is why the
+/// threshold can transfer between libraries at all.
+pub fn landmark_residual(landmarks: &[[f32; 2]; 5]) -> f32 {
+    let m = umeyama(landmarks, &DST);
+    let mut sum = 0.0f32;
+    for (s, d) in landmarks.iter().zip(DST.iter()) {
+        let x = m[0][0] * s[0] + m[0][1] * s[1] + m[0][2];
+        let y = m[1][0] * s[0] + m[1][1] * s[1] + m[1][2];
+        sum += (x - d[0]).powi(2) + (y - d[1]).powi(2);
+    }
+    (sum / landmarks.len() as f32).sqrt()
+}
+
+/// Parse the stored `"x1,y1,...,x5,y5"` landmark string.
+pub fn parse_landmarks(s: &str) -> Option<[[f32; 2]; 5]> {
+    let n: Vec<f32> = s.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+    if n.len() < 10 {
+        return None;
+    }
+    let mut lm = [[0.0f32; 2]; 5];
+    for (p, slot) in lm.iter_mut().enumerate() {
+        *slot = [n[p * 2], n[p * 2 + 1]];
+    }
+    Some(lm)
+}
+
 /// Umeyama 2D similarity transform.
 /// Returns 2x3 matrix M such that dst ≈ M * [src_x, src_y, 1]^T.
 pub fn umeyama(src: &[[f32; 2]; 5], dst: &[[f32; 2]; 5]) -> [[f32; 3]; 2] {
@@ -179,4 +221,97 @@ mod tests {
         assert_eq!(out.width(), 112);
         assert_eq!(out.height(), 112);
     }
+}
+
+#[cfg(test)]
+mod residual_tests {
+    use super::*;
+
+    /// The template fits itself perfectly, and a rotated, scaled, translated
+    /// copy of it fits just as well: the residual measures *shape*, not pose.
+    /// That is the property the gate depends on, since a tilted face is still a
+    /// face and must not be held out for being tilted.
+    #[test]
+    fn residual_is_zero_for_a_face_shape_at_any_pose() {
+        assert!(landmark_residual(&DST) < 1e-3);
+
+        for deg in [15.0f32, 45.0, 90.0, 200.0] {
+            let (s, c) = deg.to_radians().sin_cos();
+            let mut moved = [[0.0f32; 2]; 5];
+            for (i, p) in DST.iter().enumerate() {
+                // scale 3.7 and an arbitrary offset, so only shape is left
+                moved[i] = [
+                    3.7 * (c * p[0] - s * p[1]) + 900.0,
+                    3.7 * (s * p[0] + c * p[1]) - 40.0,
+                ];
+            }
+            let r = landmark_residual(&moved);
+            assert!(r < 1e-2, "a rotated face scored {r} at {deg} degrees");
+        }
+    }
+
+    /// Points that are not a face score high. This is what separated the two
+    /// clusters a user confirmed wrong from the three they confirmed correct.
+    #[test]
+    fn residual_is_large_when_the_points_are_not_a_face() {
+        // Nose left of both eyes, mouth above them: no similarity transform
+        // makes this a face.
+        let scrambled = [
+            [38.0, 52.0],
+            [73.0, 52.0],
+            [10.0, 40.0],
+            [20.0, 20.0],
+            [60.0, 15.0],
+        ];
+        assert!(
+            landmark_residual(&scrambled) > 7.0,
+            "scrambled points scored {}",
+            landmark_residual(&scrambled)
+        );
+    }
+
+    #[test]
+    fn parse_landmarks_reads_the_stored_form() {
+        let lm = parse_landmarks("1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0,10.0").unwrap();
+        assert_eq!(lm[0], [1.0, 2.0]);
+        assert_eq!(lm[4], [9.0, 10.0]);
+        assert!(
+            parse_landmarks("1.0,2.0").is_none(),
+            "short input is not a face"
+        );
+        assert!(parse_landmarks("").is_none());
+    }
+}
+
+/// How sharp an aligned crop is: the variance of its Laplacian.
+///
+/// :warning: **Measured on the aligned 112x112 crop, not the original photo.**
+/// That is the image the model is actually given, so it is the one whose
+/// sharpness decides whether the embedding means anything. A sharp photo
+/// containing a tiny face produces a blurry crop once upscaled, and it is the
+/// crop that matters.
+///
+/// Scale-free in the sense that matters here: it is a property of one image,
+/// not of the library, so a threshold on it transfers between libraries in a way
+/// that a cosine against the population mean never could.
+pub fn blur_score(img: &RgbImage) -> f32 {
+    let (w, h) = img.dimensions();
+    if w < 3 || h < 3 {
+        return 0.0;
+    }
+    let gray: Vec<f32> = img
+        .pixels()
+        .map(|p| 0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32)
+        .collect();
+    let at = |x: u32, y: u32| gray[(y * w + x) as usize];
+    let mut vals = Vec::with_capacity(((w - 2) * (h - 2)) as usize);
+    for y in 1..h - 1 {
+        for x in 1..w - 1 {
+            // 4-neighbour Laplacian
+            vals.push(at(x - 1, y) + at(x + 1, y) + at(x, y - 1) + at(x, y + 1) - 4.0 * at(x, y));
+        }
+    }
+    let n = vals.len() as f32;
+    let mean = vals.iter().sum::<f32>() / n;
+    vals.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / n
 }

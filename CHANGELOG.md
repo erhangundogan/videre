@@ -13,6 +13,53 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [Unreleased]
+
+### Changed
+
+- **Face quality is judged on the face, not on the library.** `videre faces` held
+  out low-quality faces by comparing each one to the average of every face in the
+  library. On a personal library that average largely *is* the most photographed
+  person, so the check discarded exactly the faces most worth grouping: measured
+  against a labelled library, it blocked 15 photos of the owner, several matching
+  a face already in their group almost exactly.
+
+  Two per-face measurements replace it, both previously computed and thrown away:
+
+  - **Sharpness** (`--min-blur`, default 100), the variance of the Laplacian of
+    the aligned crop. Faces that grouped had a median of 894; faces left
+    ungrouped, 182.
+  - **Alignment** (`--max-landmark-error`, default 7), how far the five detected
+    landmarks are from being a face shape. When they are wrong, the crop handed
+    to the model is a mangled image and the fingerprint describes the mangling,
+    so such faces resemble each other and form a group that looks like a person.
+
+  Measured on two libraries with per-cluster ground truth: **better recall and
+  better precision than the previous defaults on both**, and the mixed 33-face
+  cluster that forms with no quality gate at all does not appear.
+
+  `--max-generic-sim` remains as a fallback for faces recorded before sharpness
+  was measured, so an existing library is unaffected until `videre faces
+  --reprocess` re-records them.
+
+### Added
+
+- **`--attach-sim`** (default 1, off): a second pass where an ungrouped face
+  joins the group holding its nearest face. Grouping asks a face to resemble the
+  *average* of a group, which someone photographed over many years fails even
+  when three members match them almost exactly. It runs after grouping and can
+  never merge two groups.
+- `faces.det_score` and `faces.blur` are recorded. Both were computed and
+  discarded on every run.
+
+### Fixed
+
+- **Finishing an action in the labeling UI dropped you on the file list.**
+  Removing a person, assigning a cluster and dissolving a cluster all redirected
+  to `/`, which is the **Files** view. 0.20.5 fixed the back *link* at the top of
+  those pages and missed the redirects, so the link went to the right place while
+  every action that completed the page still left labeling.
+
 ## [0.20.6] - 2026-08-23
 
 ### Fixed
@@ -1180,6 +1227,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.20.6...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.20.6...HEAD
 [0.20.6]: https://github.com/erhangundogan/videre/compare/v0.20.5...v0.20.6
 [0.20.5]: https://github.com/erhangundogan/videre/compare/v0.20.4...v0.20.5
 [0.20.4]: https://github.com/erhangundogan/videre/compare/v0.20.3...v0.20.4

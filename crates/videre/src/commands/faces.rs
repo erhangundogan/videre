@@ -65,6 +65,29 @@ pub struct FacesArgs {
     /// out of clustering. Lower = stricter. 1 disables. Default 0.4.
     #[arg(long, default_value = "0.4")]
     max_generic_sim: f32,
+
+    /// Alignment gate: faces whose 5 landmarks are further than this (RMS
+    /// pixels, on the 112x112 ArcFace template) from being a face shape are
+    /// held out of clustering. Raise to admit more, or set high to disable.
+    /// Default 7. A held-out face becomes a singleton, which is a smaller error
+    /// than a wrong group.
+    #[arg(long, default_value_t = videre_core::face_cluster::DEFAULT_MAX_LANDMARK_ERR)]
+    max_landmark_error: f32,
+
+    /// Second pass: after clustering, a leftover face joins the cluster holding
+    /// its nearest face when that face is at least this similar. Average linkage
+    /// asks a new photo to resemble the mean of a whole cluster, which a person
+    /// photographed over many years will fail even when three members match it
+    /// almost exactly. 1 disables the pass. Default 1 (off)
+    #[arg(long, default_value_t = 1.0)]
+    attach_sim: f32,
+
+    /// Sharpness gate: faces whose aligned crop has a Laplacian variance below
+    /// this are held out of clustering. A crop too soft to read carries almost
+    /// no identity, so such faces resemble each other rather than their owner.
+    /// 0 disables. Default 100
+    #[arg(long, default_value_t = videre_core::face_cluster::DEFAULT_MIN_BLUR)]
+    min_blur: f32,
     /// Print per-stage timing (load/detect/align/embed/db_write, load split
     /// HEIC vs. other) averaged per image, after the run finishes. A tuning
     /// tool, not part of the normal summary. See
@@ -195,6 +218,9 @@ pub fn run(args: FacesArgs) -> Result<()> {
                 args.merge_sim,
                 args.min_face_size,
                 args.max_generic_sim,
+                args.max_landmark_error,
+                args.min_blur,
+                args.attach_sim,
                 args.silent,
             )?;
             if !args.silent {
@@ -265,6 +291,9 @@ fn run_detection_and_clustering(
             args.merge_sim,
             args.min_face_size,
             args.max_generic_sim,
+            args.max_landmark_error,
+            args.min_blur,
+            args.attach_sim,
             args.silent,
         )?
     } else {

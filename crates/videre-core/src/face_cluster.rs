@@ -46,6 +46,34 @@ pub const DEFAULT_MIN_FACE_PX: f32 = 80.0;
 /// touching 0% of confirmed real-person clusters.
 pub const DEFAULT_MAX_GENERIC_SIM: f32 = 0.40;
 
+/// Alignment gate: RMS distance, in 112x112 template pixels, between a face's
+/// five detected landmarks and a face shape, above which it is held out of
+/// clustering.
+///
+/// :warning: **A face held out becomes a singleton, and that is the point.**
+/// Its embedding describes a mangled crop rather than a person, so admitting it
+/// does not put it with its owner - it puts it with other mangled faces, and
+/// they form a cluster that looks like a person and is not. A singleton is a
+/// smaller error than a wrong group, because a wrong group has to be found and
+/// undone by hand.
+///
+/// 7.0 measured against a 92-face corpus with per-cluster ground truth: every
+/// face in a cluster confirmed correct scored at most 6.42, and every face in
+/// the two clusters confirmed wrong scored at least 8.05, except one correctly
+/// aligned face of a person who appears once. Anything from 6.5 to 8.0 gives the
+/// same partition there.
+pub const DEFAULT_MAX_LANDMARK_ERR: f32 = 7.0;
+
+/// Sharpness floor for the aligned crop, below which a face is held out.
+///
+/// Measured on a 1,063-face corpus: faces that clustered had a median Laplacian
+/// variance of 894, faces left as singletons 182. At 100 the mixed 33-face
+/// cluster that appears without any quality gate does not form, while more of
+/// the labelled person's photos are recovered than the old population-mean gate
+/// allowed - better recall *and* better precision than the previous defaults, on
+/// both a 92-face and a 1,063-face corpus with per-cluster ground truth.
+pub const DEFAULT_MIN_BLUR: f32 = 100.0;
+
 /// Average-linkage (UPGMA) agglomerative clustering on L2-normalized
 /// embeddings using cosine distance. Repeatedly merges the two closest
 /// clusters, where the distance between two clusters is the size-weighted

@@ -21,6 +21,7 @@
   <div id="faces-grid" class="grid"></div>
 
   <script>window.FACES_UI_ENABLED = {{ faces_ui_enabled }};</script>
-<script>{{ js|safe }}</script>
+<script>var PEOPLE_ROOT="{{ back_href }}";</script>
+  <script>{{ js|safe }}</script>
 </body>
 </html>

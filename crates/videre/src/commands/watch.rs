@@ -268,6 +268,9 @@ fn run_faces_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> 
             videre_core::face_cluster::DEFAULT_MERGE_SIM,
             videre_core::face_cluster::DEFAULT_MIN_FACE_PX,
             videre_core::face_cluster::DEFAULT_MAX_GENERIC_SIM,
+            videre_core::face_cluster::DEFAULT_MAX_LANDMARK_ERR,
+            videre_core::face_cluster::DEFAULT_MIN_BLUR,
+            1.0,
             args.silent,
         )?;
         if !args.silent {

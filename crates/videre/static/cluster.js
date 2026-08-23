@@ -1,3 +1,14 @@
+
+// After an action that removes what this page was showing, go back to the
+// labeling UI rather than to `/`.
+//
+// :warning: `/` is the **Files** view under `videre gallery`. These three
+// redirects were missed when the back links were fixed in 0.20.5: the link at
+// the top of the page went to the right place while every action that finished
+// the page still left labeling.
+function peopleHome() {
+  return (typeof PEOPLE_ROOT === 'string' && PEOPLE_ROOT) ? PEOPLE_ROOT : '/';
+}
 // Set by the page before this script runs; see cluster.html.
 const clusterId = window.CLUSTER_ID;
     let facesData = [];
@@ -91,7 +102,7 @@ const clusterId = window.CLUSTER_ID;
       });
       if (!r.ok) { document.getElementById('status').textContent = 'Error: assign failed'; return; }
       document.getElementById('status').textContent = `Assigned ${faceIds.length} face(s) to "${label}"`;
-      setTimeout(() => { window.location.href = '/'; }, 800);
+      setTimeout(() => { window.location.href = peopleHome(); }, 800);
     }
 
     let assignModalFaceId = null;
@@ -144,7 +155,7 @@ const clusterId = window.CLUSTER_ID;
       });
       if (!r.ok) { document.getElementById('status').textContent = 'Error: dissolve failed'; return; }
       document.getElementById('status').textContent = 'Cluster dissolved';
-      setTimeout(() => { window.location.href = '/'; }, 500);
+      setTimeout(() => { window.location.href = peopleHome(); }, 500);
     }
 
     function assignOne(faceId) {
