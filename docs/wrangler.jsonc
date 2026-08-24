@@ -1,8 +1,7 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "videre-docs",
+	"name": "videre-doc",
 	"compatibility_date": "2026-08-11",
-
 	// A static site, so there is no `main` entry point: this is an assets-only
 	// Worker. Cloudflare serves the built files directly, with no script running
 	// on the request path.
@@ -10,7 +9,6 @@
 		// Relative to this file, and the dashboard's root directory is `docs`,
 		// so this is the `dist/` that `yarn build` writes.
 		"directory": "./dist",
-
 		// Serve Starlight's generated 404.html for unknown paths, instead of a
 		// bare Cloudflare error page.
 		"not_found_handling": "404-page"
