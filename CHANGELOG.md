@@ -13,6 +13,14 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.20.8] - 2026-08-24
+
+### Changed
+
+- Dependencies updated to their latest semver-compatible releases, 89 packages
+  in total. No behaviour change is intended; major version upgrades were held
+  back to be evaluated separately.
+
 ## [0.20.7] - 2026-08-24
 
 ### Changed
@@ -1227,6 +1235,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[0.20.8]: https://github.com/erhangundogan/videre/compare/v0.20.7...v0.20.8
 [0.20.7]: https://github.com/erhangundogan/videre/compare/v0.20.6...v0.20.7
 [0.20.6]: https://github.com/erhangundogan/videre/compare/v0.20.5...v0.20.6
 [0.20.5]: https://github.com/erhangundogan/videre/compare/v0.20.4...v0.20.5
