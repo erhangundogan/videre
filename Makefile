@@ -105,6 +105,12 @@ docs-og: ## Regenerate the social card at docs/public/og.png
 # keeps reporting the cargo copy however many times you `brew upgrade`. Check
 # with `which videre`, and `cargo uninstall videre` to undo.
 .PHONY: install
+.PHONY: hooks
+hooks: ## Install the commit guard (git config is per-clone, so not automatic)
+	@git config core.hooksPath hooks
+	@echo "core.hooksPath = $$(git config core.hooksPath)"
+	@echo "refuses >30 files, escaping paths, and non-source files"
+
 install: ## Install to ~/.cargo/bin (warning: shadows a Homebrew install, see comment)
 	$(CARGO) install --path crates/videre --force
 

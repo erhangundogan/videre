@@ -1,0 +1,102 @@
+#!/bin/sh
+# Refuse commits that do not look like source changes.
+#
+# Written 2026-08-24, after 1,094 thumbnail images of the author's family were
+# committed and pushed to this public repository across two commits. The cause
+# was `git add -A` run after a tool wrote a cache into the working tree, plus
+# `git commit -q`, which suppresses the "1094 files changed" line that would have
+# shown it immediately.
+#
+# :warning: **A force-push does not undo this.** `refs/pull/*/head` are read-only
+# to repository owners and keep every commit reachable, and
+# raw.githubusercontent.com serves the blobs from a separate cache. Only GitHub
+# Support can clear either. Prevention is the only cheap step; everything after
+# it is expensive and incomplete.
+#
+# Three rules, each with an escape hatch, because a guard that cannot be
+# overridden gets deleted the first time it is wrong.
+set -eu
+
+cd "$(git rev-parse --show-toplevel)"
+
+# Only what is staged for this commit, renames resolved to their new name.
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -n "$staged" ] || exit 0
+count=$(printf '%s\n' "$staged" | wc -l | tr -d ' ')
+
+fail() {
+    printf '\n  COMMIT REFUSED: %s\n\n' "$1" >&2
+    shift
+    for line in "$@"; do printf '    %s\n' "$line" >&2; done
+    printf '\n    Read what is staged first:  git status --short\n' >&2
+    exit 1
+}
+
+# ---------------------------------------------------------------- rule 1: size
+# 30 is above any hand-written change in this repo's history and far below the
+# 93 and 1,001 file commits that caused the incident.
+if [ "$count" -gt 30 ] && [ "${VIDERE_ALLOW_BIG_COMMIT:-}" != "1" ]; then
+    fail "$count files staged, more than the limit of 30" \
+        "A commit this size is usually a tool's output, not a change you wrote." \
+        "If it is deliberate (a sweep, a generated file, a bulk rename):" \
+        "" \
+        "    VIDERE_ALLOW_BIG_COMMIT=1 git commit ..."
+fi
+
+# ---------------------------------------------------------------- rule 2: path
+# The incident's directory was literally named "~", created because a tilde in
+# an env assignment was not expanded and a tool then wrote its home beneath the
+# repository. Nothing legitimate here starts with ~, / or .., or names a home
+# directory. This rule has no override: such a path is never intentional.
+bad_path=""
+for f in $staged; do
+    case "$f" in
+        '~'|'~'/*|/*|../*|*/../*|*/Users/*|Users/*) bad_path="$bad_path $f" ;;
+    esac
+done
+if [ -n "$bad_path" ]; then
+    # shellcheck disable=SC2086
+    set -- $bad_path
+    fail "staged paths that escape the repository layout" \
+        "$(printf '%s ' "$@" | cut -c1-300)" \
+        "" \
+        "A path beginning with ~ or / means a tool wrote outside where you" \
+        "thought. Delete it, fix the path, and stage again. This rule has no" \
+        "override on purpose."
+fi
+
+# ----------------------------------------------------------- rule 3: file kind
+# Everything this repository legitimately contains. Media is allowed, but only
+# where media belongs.
+is_allowed() {
+    case "$1" in
+        # source, config, docs
+        *.rs|*.toml|*.lock|*.md|*.mdx|*.txt|*.json|*.yml|*.yaml) return 0 ;;
+        *.js|*.mjs|*.ts|*.css|*.html|*.sh|*.py|*.sql|*.svg)      return 0 ;;
+        # named files with no extension, and dotfiles
+        LICENSE|Makefile|*/LICENSE|*/Makefile)                   return 0 ;;
+        .gitignore|*/.gitignore|.gitattributes|*/.gitattributes) return 0 ;;
+        docs/public/install|hooks/*|.github/*)                   return 0 ;;
+        # media, only where the repository already keeps it
+        crates/*/tests/fixtures/*|docs/public/*)                 return 0 ;;
+    esac
+    return 1
+}
+
+bad_kind=""
+for f in $staged; do
+    is_allowed "$f" || bad_kind="$bad_kind $f"
+done
+if [ -n "$bad_kind" ] && [ "${VIDERE_ALLOW_ANY_FILE:-}" != "1" ]; then
+    # shellcheck disable=SC2086
+    set -- $bad_kind
+    fail "staged files that are not source, config, docs, or fixtures" \
+        "$(printf '%s ' "$@" | cut -c1-300)" \
+        "" \
+        "Media belongs in crates/*/tests/fixtures/ or docs/public/ only." \
+        "If this really belongs in the repository:" \
+        "" \
+        "    VIDERE_ALLOW_ANY_FILE=1 git commit ..."
+fi
+
+exit 0

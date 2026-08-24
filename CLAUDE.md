@@ -726,6 +726,34 @@ box rather than an EXIF Orientation tag) come out sideways with `sips`, which
 copies raw sensor-buffer pixels unrotated. This affects face detection,
 embedding preprocessing, and every thumbnail path.
 
+## The commit guard
+
+`hooks/pre-commit`, installed with `git config core.hooksPath hooks`. It refuses
+a commit that does not look like a source change, on three rules: more than 30
+files staged, a path escaping the repository layout, or a file that is not
+source, config, docs, or a fixture.
+
+:warning: **It exists because 1,094 thumbnail images of personal photographs
+reached this public repository**, in two commits, on 2026-08-24. `git add -A`
+staged a cache a tool had written into the working tree, and `git commit -q`
+suppressed the "1094 files changed" line that would have shown it at once.
+
+:warning: **Removing that data cost far more than preventing it would have.** A
+force-push does not undo it: `refs/pull/*/head` are read-only to repository
+owners and keep every commit reachable, and `raw.githubusercontent.com` serves
+the blobs from a separate cache. Both were verified still serving the images
+after the rewrite. Only GitHub Support can clear either, and the repository had
+to be made private in the meantime.
+
+Two rules take an override, because a guard that cannot be overridden is deleted
+the first time it is wrong: `VIDERE_ALLOW_BIG_COMMIT=1` and
+`VIDERE_ALLOW_ANY_FILE=1`. The path rule has none, since a staged path beginning
+with `~` or `/` is never intentional.
+
+**Media belongs in `crates/*/tests/fixtures/` or `docs/public/` and nowhere
+else.** That is what the file-kind rule encodes, and it is why a new fixture
+commits without argument while a stray image does not.
+
 ## Release and publishing
 
 `.github/workflows/release.yml` runs on a `v*` tag: **create draft -> build ->
