@@ -41,7 +41,8 @@ videre prune --dry-run
 ## What one pass does
 
 1. Removes rows for files no longer on disk
-2. Refreshes timestamps for files that are still there
+2. Refreshes the stored timestamp of any file whose modification time has
+   changed since the last pass
 3. Deletes embeddings whose photo is gone, across **every**
    [model](/reference/models/)
 4. Deletes [cached thumbnails](/reference/paths/#thumbnail-cache) whose photo is
@@ -49,6 +50,12 @@ videre prune --dry-run
 
 Steps 3 and 4 are the reason to prune at all rather than ignoring stale rows:
 they are what actually reclaims disk space.
+
+Step 2 only touches rows that actually differ, so the count tells you something.
+Its usual cause is [`videre fix-dates`](/commands/fix-dates/), which rewrites
+modification times from EXIF and deliberately leaves the database alone; running
+prune afterwards reports exactly the number of files it changed. On a library
+nothing has touched, the count is zero and a second pass is a no-op.
 
 If two paths share the same content and only one is deleted, the shared
 embedding and cache entries are **kept**. They are keyed by content, so they are

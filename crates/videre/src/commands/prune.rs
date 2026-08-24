@@ -99,6 +99,23 @@ fn system_time_to_iso(t: SystemTime) -> String {
     dt.to_rfc3339()
 }
 
+/// Whether a row's stored `modified_at` needs replacing with the file's current
+/// timestamp.
+///
+/// Split out as a pure function so the rule is testable without a database, a
+/// filesystem, or a spawned binary; same reason `home::decide_db` is separate
+/// from `resolve_db`.
+///
+/// A plain string comparison is exact because both sides are produced by the
+/// same formatting: `hasher::system_time_to_iso` writes the stored value at scan
+/// time and the local one reproduces it here, both `DateTime<Utc>` then
+/// `to_rfc3339()`. Comparing parsed instants instead would be no more correct
+/// and would make a malformed stored value an error rather than a difference.
+fn needs_sync(stored: Option<&str>, current: &str) -> bool {
+    // None is a row that has never been synced, so it always is one.
+    stored != Some(current)
+}
+
 pub fn run(args: PruneArgs) -> anyhow::Result<()> {
     let db = super::resolve_reader_db(args.db.clone())?;
 
@@ -205,9 +222,7 @@ pub(crate) fn run_prune(
                 // at scan time, `system_time_to_iso` reproduces it here.
                 Ok(t) => {
                     let current = system_time_to_iso(t);
-                    // A NULL stored value has never been synced, so it always is
-                    // one; `Some(v) if v == current` is the no-op case.
-                    if stored_mtime.as_deref() != Some(current.as_str()) {
+                    if needs_sync(stored_mtime.as_deref(), &current) {
                         planned.push((path, Fate::Sync(current)));
                     }
                 }
@@ -453,6 +468,61 @@ pub(crate) fn run_prune(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An unchanged row must not be synced. This is the whole of BUG:21: the
+    /// classifier used to push a Sync for every file that existed, so the count
+    /// meant "rows whose file exists" and a run never converged.
+    #[test]
+    fn an_identical_timestamp_is_not_a_sync() {
+        let t = "2016-12-02T18:51:10+00:00";
+        assert!(!needs_sync(Some(t), t));
+    }
+
+    /// The case the sync exists for. `fix-dates` rewrites mtimes from EXIF and
+    /// deliberately leaves the database alone, pointing the user at prune to
+    /// re-sync; those rows must be detected.
+    #[test]
+    fn a_row_fix_dates_changed_is_a_sync() {
+        assert!(needs_sync(
+            Some("2026-08-24T19:41:36.805406992+00:00"), // what scan recorded
+            "2017-02-06T19:02:28+00:00",                 // what fix-dates set
+        ));
+    }
+
+    /// A row that has never been synced always is one. Without this a NULL would
+    /// compare unequal to itself by accident rather than by rule.
+    #[test]
+    fn a_null_stored_timestamp_is_always_a_sync() {
+        assert!(needs_sync(None, "2016-12-02T18:51:10+00:00"));
+    }
+
+    /// `fix-dates` zeroes the sub-second part, since EXIF has one-second
+    /// resolution, so a synced row and a freshly scanned one differ in exactly
+    /// that. The comparison must not treat "same second" as equal.
+    #[test]
+    fn a_differing_sub_second_part_is_a_sync() {
+        assert!(needs_sync(
+            Some("2026-08-24T19:41:36.805406992+00:00"),
+            "2026-08-24T19:41:36+00:00",
+        ));
+        // ...and full nanosecond precision still compares equal to itself, which
+        // is what makes `watch --prune` quiet between real changes.
+        let ns = "2026-08-24T19:41:36.805406992+00:00";
+        assert!(!needs_sync(Some(ns), ns));
+    }
+
+    /// Timestamps that differ only in offset notation are different strings, and
+    /// are treated as a difference. Sound because only one writer produces these:
+    /// both sides come from `to_rfc3339()` on a `DateTime<Utc>`, which always
+    /// renders `+00:00`. A test so that stays a deliberate property rather than
+    /// something discovered when a second writer appears.
+    #[test]
+    fn the_comparison_is_textual_not_temporal() {
+        assert!(needs_sync(
+            Some("2016-12-02T18:51:10Z"),
+            "2016-12-02T18:51:10+00:00",
+        ));
+    }
 
     /// `videre watch --prune` runs unattended on a loop and cannot ask, so
     /// neither override may be reachable from it. Cheap to assert, and it is
