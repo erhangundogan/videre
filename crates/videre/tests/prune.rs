@@ -511,3 +511,86 @@ fn the_bulk_guard_does_not_block_a_small_library() {
         .unwrap();
     assert_eq!(left, 2, "60% removal under the row floor must still prune");
 }
+
+/// The summary's synced count, from a run that is not `--silent`.
+///
+/// `run_prune` above passes `--silent`, which suppresses the summary line as
+/// well as the per-file output, so a test asserting on counts needs its own
+/// invocation.
+fn prune_synced_count(db: &std::path::Path, dry_run: bool) -> usize {
+    let mut cmd = Command::new(prune_bin());
+    cmd.arg("prune").arg("--db").arg(db);
+    if dry_run {
+        cmd.arg("--dry-run");
+    }
+    let out = cmd.output().expect("failed to run videre prune");
+    assert!(out.status.success());
+    // The summary goes to stderr; the per-file lines go to stdout.
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let line = text
+        .lines()
+        .find(|l| l.contains("row(s) checked"))
+        .unwrap_or_else(|| panic!("no summary line in prune output:\n{text}"))
+        .to_string();
+    let line = line.as_str();
+    // "... 0 were removed, 3 were synced, 0 error(s)."
+    let (before, _) = line
+        .split_once(" synced")
+        .expect("summary names a sync count");
+    before
+        .rsplit(|c: char| !c.is_ascii_digit())
+        .find(|s| !s.is_empty())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| panic!("could not read a sync count from: {line}"))
+}
+
+/// prune must converge: a second pass over an unchanged tree syncs nothing.
+///
+/// It used to sync every extant row on every run. The query selected only
+/// `path`, so the stored `modified_at` was never read and the classifier pushed
+/// a `Sync` unconditionally for any file that existed. The count therefore meant
+/// "rows that exist", not "rows that differ": on an untouched library every run
+/// rewrote every row with the value already there and reported the whole library
+/// as synced, so genuine drift was indistinguishable from the background, and
+/// `watch --prune` repeated it every cycle.
+#[test]
+fn prune_syncs_nothing_on_a_second_pass() {
+    let dir = tempdir().unwrap();
+    let (db, a, _, _) = fixture_db(dir.path());
+
+    // The fixture seeds a stale modified_at, so the first pass has real work.
+    let first = prune_synced_count(&db, false);
+    assert!(
+        first > 0,
+        "the fixture's stale timestamps should give the first pass something to do"
+    );
+
+    assert_eq!(
+        prune_synced_count(&db, false),
+        0,
+        "nothing changed on disk, so the second pass must sync nothing"
+    );
+    assert_eq!(
+        prune_synced_count(&db, true),
+        0,
+        "a dry run must agree with the real run about there being no work"
+    );
+
+    // A real change is still detected, and only that one row.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    std::fs::write(&a, b"img_a_changed").unwrap();
+    assert_eq!(
+        prune_synced_count(&db, false),
+        1,
+        "exactly the touched file should sync"
+    );
+    assert_eq!(
+        prune_synced_count(&db, false),
+        0,
+        "and it must converge again afterwards"
+    );
+}
