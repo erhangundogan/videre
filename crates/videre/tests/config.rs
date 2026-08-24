@@ -293,3 +293,65 @@ fn config_set_read_rate_roundtrips_and_refuses_zero() {
     let raw = std::fs::read_to_string(home.path().join("config.toml")).unwrap();
     assert!(!raw.contains("min_read_rate_mb_s"), "{raw}");
 }
+
+/// `videre config` must report the database the commands will actually open.
+///
+/// It used to call `home::resolve_db_in`, which consults config alone and does
+/// not apply the VIDERE_HOME rule. With an explicit home whose config.toml named
+/// a different database, `config` printed that database while every command
+/// opened `<home>/hashes.db` and failed with "no database found" against a path
+/// `config` had never shown. The two must not be resolved by different code.
+#[test]
+fn config_reports_the_database_commands_actually_open() {
+    let home = tempdir().unwrap();
+
+    // A config whose default_db diverges from <home>/hashes.db. VIDERE_HOME is
+    // meant to win here, and does for the commands.
+    let diverging = home.path().join("elsewhere.db");
+    let set = Command::new(videre_bin())
+        .args(["config", "set", "db"])
+        .arg(&diverging)
+        .env("VIDERE_HOME", home.path())
+        .status()
+        .expect("failed to run videre config set");
+    assert!(set.success());
+
+    let show = Command::new(videre_bin())
+        .arg("config")
+        .env("VIDERE_HOME", home.path())
+        .output()
+        .expect("failed to run videre config");
+    assert!(show.status.success());
+    let stdout = String::from_utf8_lossy(&show.stdout);
+
+    let reported = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("resolved db:"))
+        .expect("config must print a resolved db line")
+        .trim()
+        .to_string();
+
+    // What a real command opens, read from the error it raises for the missing
+    // file. Any command would do; stats needs no arguments.
+    let stats = Command::new(videre_bin())
+        .arg("stats")
+        .env("VIDERE_HOME", home.path())
+        .output()
+        .expect("failed to run videre stats");
+    let stderr = String::from_utf8_lossy(&stats.stderr);
+
+    assert!(
+        stderr.contains(&reported),
+        "config reported {reported}, but the command opened something else:\n{stderr}"
+    );
+    // And specifically: VIDERE_HOME wins, so neither may name the config value.
+    assert_eq!(
+        reported,
+        home.path().join("hashes.db").display().to_string(),
+        "VIDERE_HOME must outrank that home's own default_db"
+    );
+    assert!(
+        !reported.contains("elsewhere.db"),
+        "the overridden config value must not be presented as resolved: {stdout}"
+    );
+}

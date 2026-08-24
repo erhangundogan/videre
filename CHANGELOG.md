@@ -13,6 +13,19 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [Unreleased]
+
+### Fixed
+
+- **`videre config` reported a database no command would open.** With
+  `VIDERE_HOME` set and that home's `config.toml` naming a different `db`, the
+  `resolved db:` line showed the configured path while every command opened
+  `<home>/hashes.db`, then failed with "no database found" against a path
+  `config` had never mentioned. `config` resolved through `resolve_db_in`, which
+  reads config alone and does not apply the `VIDERE_HOME` rule; it now uses the
+  same `resolve_db` the commands call, and prints the same note when an explicit
+  home overrides a configured `default_db`.
+
 ## [0.20.8] - 2026-08-24
 
 ### Changed
@@ -1235,6 +1248,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.20.8...HEAD
 [0.20.8]: https://github.com/erhangundogan/videre/compare/v0.20.7...v0.20.8
 [0.20.7]: https://github.com/erhangundogan/videre/compare/v0.20.6...v0.20.7
 [0.20.6]: https://github.com/erhangundogan/videre/compare/v0.20.5...v0.20.6
