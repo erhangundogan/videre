@@ -155,6 +155,13 @@ videre fix-dates
 videre prune                   # re-sync the timestamps videre stores
 ```
 
+`fix-dates` changes the files; `prune` then copies the new times into the
+database. Nothing goes the other way, and `prune` never writes to a file.
+
+The two counts should match. If `fix-dates` reports 9 files updated, `prune`
+reports 9 rows synced, and running it again reports zero because there is
+nothing left to reconcile.
+
 ### Keep everything current
 
 ```bash
