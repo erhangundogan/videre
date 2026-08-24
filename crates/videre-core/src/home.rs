@@ -134,6 +134,21 @@ pub fn home_is_explicit() -> bool {
 ///
 /// Does not consider `VIDERE_HOME`; callers wanting the full precedence rule
 /// want `resolve_db`.
+///
+/// :warning: **Nothing outside this module's tests calls this, and nothing
+/// should. Never use it to decide or display which database is in play.** It
+/// answers "what does this home's config say", not "what will run", and the two
+/// differ exactly when `VIDERE_HOME` is set. `commands/config.rs` used it for
+/// its `resolved db:` line until 2026-08-24: it printed the configured path
+/// while every command opened `<home>/hashes.db`, so a user was told their
+/// library was at one path and then told no database existed at another, which
+/// the line had never named. The warning above this one was already present and
+/// was not enough on its own.
+///
+/// It survives only because it is `pub` in a published crate, so removing it is
+/// a semver break rather than a cleanup. Delete it at the next minor bump; the
+/// two tests below are its only remaining users and both belong on
+/// `load_config`/`decide_db` instead.
 pub fn resolve_db_in(home: &Path) -> Result<PathBuf> {
     Ok(load_config(home)?
         .default_db
