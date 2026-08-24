@@ -18,7 +18,13 @@ INSTALLER="$ROOT/docs/public/install"
 
 # Pinned deliberately. Testing against "latest" makes this job fail while a
 # release is mid-publish, for reasons unconnected to the script.
-PINNED="0.18.0"
+#
+# :warning: **This must name a release that still has assets attached**, not
+# merely a tag. It was 0.18.0 until 2026-08-24, when the repository was replaced
+# and only the newest release was carried over; the tag survived, the release
+# did not, and four of these tests failed with `no such release: v0.18.0`. If
+# old releases are pruned again, move this to the oldest one that remains.
+PINNED="0.20.6"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
