@@ -83,13 +83,14 @@ in seconds instead of hanging forever.
 
 Whole-file reads scale their limit with file size, because a large file on a
 healthy disk legitimately takes longer than a small one. If your drive is slow
-but working, and large videos are being skipped, raise the expected rate:
+but working, and large videos are being skipped, lower the assumed floor rate so
+each file is given more time:
 
 ```bash
-videre config set read-rate 10
+videre config set read-rate 5
 ```
 
-The default assumes 10 MB/s or better. The `stat` that reads the file size
+The default assumes 20 MB/s or better. The `stat` that reads the file size
 keeps a short fixed timeout on purpose, so a dead mount fails there rather than
 waiting for a size-scaled read that will never finish.
 
