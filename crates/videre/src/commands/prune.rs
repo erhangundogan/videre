@@ -133,11 +133,14 @@ pub(crate) fn run_prune(
     conn: &Connection,
     db: &std::path::Path,
 ) -> anyhow::Result<usize> {
-    let paths: Vec<String> = {
+    // `modified_at` is selected because the sync below compares against it.
+    // Without it there is nothing to compare to, so every extant row looked
+    // like it needed syncing and was rewritten on every run: see the loop.
+    let paths: Vec<(String, Option<String>)> = {
         let mut stmt = conn
-            .prepare("SELECT path FROM file_hashes ORDER BY path")
+            .prepare("SELECT path, modified_at FROM file_hashes ORDER BY path")
             .expect("failed to prepare");
-        stmt.query_map([], |r| r.get(0))
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .expect("failed to execute")
             .filter_map(|r| r.ok())
             .collect()
@@ -169,7 +172,7 @@ pub(crate) fn run_prune(
     }
     let mut planned: Vec<(&String, Fate)> = Vec::with_capacity(paths.len());
 
-    for path in &paths {
+    for (path, stored_mtime) in &paths {
         match std::fs::metadata(path) {
             Err(_) => {
                 // A missing file is only a deletion if its parent is still
@@ -188,7 +191,26 @@ pub(crate) fn run_prune(
                 planned.push((path, Fate::Remove));
             }
             Ok(meta) => match meta.modified() {
-                Ok(t) => planned.push((path, Fate::Sync(system_time_to_iso(t)))),
+                // Only a row whose stored value actually differs is a sync.
+                // This used to push a Sync unconditionally, so a run on an
+                // unchanged library rewrote every row with the value already
+                // there, reported the whole library as synced, and never
+                // converged: a second run said exactly the same. That made real
+                // drift indistinguishable from the constant background, and
+                // `watch --prune` repeated it every cycle, taking the single WAL
+                // writer lock for every row each time.
+                //
+                // A plain string comparison is sound because both sides come
+                // from the same `to_rfc3339()` formatting: `hasher.rs` writes it
+                // at scan time, `system_time_to_iso` reproduces it here.
+                Ok(t) => {
+                    let current = system_time_to_iso(t);
+                    // A NULL stored value has never been synced, so it always is
+                    // one; `Some(v) if v == current` is the no-op case.
+                    if stored_mtime.as_deref() != Some(current.as_str()) {
+                        planned.push((path, Fate::Sync(current)));
+                    }
+                }
                 Err(e) => {
                     eprintln!("Error reading mtime for {path}: {e}");
                     errors += 1;

@@ -13,6 +13,22 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [Unreleased]
+
+### Fixed
+
+- **`videre prune` rewrote every row on every run.** The timestamp sync selected
+  only `path`, so the stored `modified_at` was never read and every file that
+  existed was marked for syncing. The reported count meant "rows whose file
+  exists" rather than "rows that changed", so a run on an unchanged library
+  reported the whole library as synced and a second run said exactly the same.
+
+  It now compares against the stored value and syncs only what differs. After
+  `videre fix-dates` changes 9 files, prune reports 9 rather than the whole
+  library, which is the number that confirms what happened. `videre watch
+  --prune` is the larger beneficiary: it ran this every cycle, taking the single
+  WAL writer lock once per row and printing a line per file, for no change.
+
 ## [0.20.9] - 2026-08-24
 
 ### Fixed
@@ -1248,6 +1264,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.20.9...HEAD
 [0.20.9]: https://github.com/erhangundogan/videre/compare/v0.20.8...v0.20.9
 [0.20.8]: https://github.com/erhangundogan/videre/compare/v0.20.7...v0.20.8
 [0.20.7]: https://github.com/erhangundogan/videre/compare/v0.20.6...v0.20.7
