@@ -1227,6 +1227,7 @@ async fn handle_search(
             html: None,
             media: super::selection_args::MediaArgs::default(),
             paths: super::selection_args::PathArgs::default(),
+            marks: super::selection_args::MarkArgs::default(),
             // Both bound at startup, so a request cannot retarget the server.
             db: Some(state.db.clone()),
             model: Some(state.model_id.clone()),

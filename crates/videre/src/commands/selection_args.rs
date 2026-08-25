@@ -153,7 +153,41 @@ pub fn row_selection(
         exts: media.map(|m| m.ext.clone()).unwrap_or_default(),
         mimes: media.map(|m| m.mime.clone()).unwrap_or_default(),
         paths: paths.map(|p| p.path.clone()).unwrap_or_default(),
+        ..Default::default()
     })
+}
+
+/// `--rating`/`--pick`/`--label`/`--like` as *filters* (row-side only: marks are
+/// stored per hash, unknown at walk time). `videre mark` uses the mark flags as
+/// *setters* instead, so it does not flatten this group.
+#[derive(clap::Args, Clone, Debug, Default)]
+pub struct MarkArgs {
+    /// Only photos rated at least this many stars (0-5)
+    #[arg(long, value_name = "N")]
+    pub rating: Option<i64>,
+
+    /// Only photos with this pick state
+    #[arg(long, value_name = "keep|reject", value_parser = ["keep", "reject"])]
+    pub pick: Option<String>,
+
+    /// Only photos with this colour label
+    #[arg(long, value_name = "COLOUR")]
+    pub label: Option<String>,
+
+    /// Only liked photos
+    #[arg(long)]
+    pub like: bool,
+}
+
+impl MarkArgs {
+    /// The parsed pick state, if `--pick` was given.
+    pub fn pick_state(&self) -> Option<videre_core::marks::Pick> {
+        match self.pick.as_deref() {
+            Some("reject") => Some(videre_core::marks::Pick::Reject),
+            Some("keep") => Some(videre_core::marks::Pick::Keep),
+            _ => None,
+        }
+    }
 }
 
 /// Assemble a path selection, canonicalising its roots once.
