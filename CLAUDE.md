@@ -4,10 +4,59 @@ A fast Rust CLI for managing a local media library: duplicate detection,
 semantic search, and face recognition, all around a single SQLite database.
 
 **User-facing documentation lives at <https://docs.videre.sh>, generated from
-`docs/` in this repo.** This file is for working *on* videre: build and test
-invariants, measured findings, and traps that are easy to reintroduce. It is
-deliberately not a command reference. When you change behaviour, update the
-relevant page under `docs/src/content/docs/` in the same commit.
+`docs/` in this repo.** This file is for working *on* videre, in two parts kept
+deliberately separate: the **working methodology** just below (how to work
+here), then the **measured facts** (build and test invariants, findings, and
+traps easy to reintroduce). It is deliberately not a command reference. When you
+change behaviour, update the relevant page under `docs/src/content/docs/` in the
+same commit.
+
+## How to work on videre
+
+Methodology, kept separate from the measured facts that follow. These are
+working practices, not project truths.
+
+**Discovery before spec.** For any change touching shared logic, several
+subcommands, cross-cutting arguments or common behaviour, search code, tests,
+git history and docs exhaustively first. Ask rather than guess.
+
+**Shared code first.** The same thing implemented twice is the worst outcome; the
+second caller triggers extraction and refactoring of the first. Where it lives is
+the `videre-core`-versus-shared-module rule under Project structure.
+
+**Test first when fixing a bug.** Write it, run it, watch it fail. A test that has
+never failed has not been shown to test anything.
+
+**Find the cause before mitigating.** `cargo test` has four target kinds
+(`--lib`, `--bins`, `--test`, `--doc`), so `tests/` is not the set of tests.
+
+**Verify before claiming done.** Run the command and read its real output; if
+tests fail, say so with the output.
+
+**Challenge inherited constraints.** The model, the schema and the stored data
+are variables. Ask what recompute cost is acceptable before optimising within
+assumed limits.
+
+**Read the docs before advising.** Grep videre's own docs for a flag before
+recommending a value.
+
+**New settings go in `config.toml` and `videre config set`,** never a new
+environment variable. Do not design for backwards compatibility; users install
+latest.
+
+**Fixtures must look like the real library.** It is Turkish, and many names are
+non-ASCII; `Alice`/`Bob` cannot expose an ASCII-only SQLite `LOWER()`, and did
+not.
+
+**Style.** No em dashes in `README.md`, `CLAUDE.md` or Rust comments (a hyphen
+where a hyphen belongs, never as a dash); no `Co-Authored-By` trailer.
+
+**Getting a change in.** Read `git status --short` before staging and stage by
+name, never blanket-stage. Bump the version in all four crates and stage
+`Cargo.lock` in the same commit (below 1.0 the minor number is the compatibility
+boundary). `main` is branch-protected: PR with green checks, merge commits not
+squash so the reasoning survives. PR descriptions stay short; the reasoning lives
+in commit messages and this file.
 
 ## Build & run
 
