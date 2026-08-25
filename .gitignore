@@ -16,14 +16,8 @@ rustc-ice-*.txt
 .cargo/credentials
 .cargo/credentials.toml
 .mcp.json
+
 .superpowers/
 
-# The docs site (docs/) is tracked, and brings its own .gitignore for build
-# output. Specs and plans live outside the repo now, at ~/superpowers; this
-# line stays as a guard so writing one back to the old path cannot publish it.
-docs/superpowers/
-
-# A literal "~" directory, created when a tilde in an env assignment is not
-# expanded and a command then writes its home beneath the repo. 1,094 thumbnail
-# files reached main that way.
+# An unexpanded ~ in an env var can make a tool write its home into the repo. Keep.
 /~/
