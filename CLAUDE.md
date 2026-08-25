@@ -97,12 +97,8 @@ equivalent and is not: `rustup run` execs the right cargo but does **not** put
 the toolchain's bin on `PATH`, so cargo subcommands are not found and
 `rustup run 1.96.0 cargo fmt` dies with `no such command: fmt`. It was written
 that way first, appeared to work only because Homebrew's `cargo-fmt` was on
-`PATH`, and broke the moment Homebrew's Rust was removed.
-
-**History.** How this pin came to be needed - two Rusts on one machine until
-2026-08-20, a real Homebrew cargo that ignored the pin, resolved by
-`brew uninstall rust` - is in the local
-[`.claude/HISTORY.md`](.claude/HISTORY.md).
+`PATH`, and broke the moment Homebrew's Rust was removed. The full two-toolchain
+history is in `rust-toolchain.toml`'s own comment.
 
 :warning: **Do not verify formatting with `fmt-check` before committing. Run
 `cargo fmt --all`.**
@@ -247,13 +243,13 @@ scanned and stored like anything else but explicitly vetoed as non-embeddable,
 so `embed` and `classify` return before loading a model; `HF_HOME` points into
 the test's temp dir and a guard asserts the sweep leaves it at zero bytes. The
 incident that taught this (SigLIP woken via `argument_robustness.rs`, the Ubuntu
-job creeping to 35 minutes) is in [`.claude/HISTORY.md`](.claude/HISTORY.md).
+job creeping to 35 minutes) is documented in the root `Cargo.toml` comment.
 
 :warning: **Do not set `[profile.dev.package."*"] opt-level = 3` to speed up the
 test build.** It was tried and reverted: release-grade codegen in every test
 build made Ubuntu's Build step ~4x worse overall, and deleting the cached model
-that caused the slow test beat optimizing the work. The measurements are in
-[`.claude/HISTORY.md`](.claude/HISTORY.md).
+that caused the slow test beat optimizing the work. The measurements and the
+`do not add this back` reasoning live in the root `Cargo.toml` comment.
 
 The salt in the model cache key (`hf-v2-`) exists because the key hashes
 `face_models.rs` and `embeddings.rs`, neither of which changed, so the poisoned
