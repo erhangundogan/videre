@@ -13,7 +13,7 @@ relevant page under `docs/src/content/docs/` in the same commit.
 
 ```bash
 cargo build --release
-make fmt-check                 # what CI enforces
+cargo fmt --all                # NOT make fmt-check; see below
 cargo test --workspace
 ```
 
@@ -50,14 +50,10 @@ the toolchain's bin on `PATH`, so cargo subcommands are not found and
 that way first, appeared to work only because Homebrew's `cargo-fmt` was on
 `PATH`, and broke the moment Homebrew's Rust was removed.
 
-**History, because the failure mode is worth recognising.** Until 2026-08-20
-this machine had **two** Rusts: a Homebrew `rust` formula owning
-`/opt/homebrew/bin/{cargo,rustc,rustfmt}` as real binaries, plus rustup. The
-Homebrew one won on `PATH` and, being a real cargo rather than a shim, ignored
-any pin. Meanwhile CI used the runner's preinstalled Rust. So "it passes
-locally" and "it passes in CI" were different claims about different compilers,
-and one rustfmt failure took a CI round trip to see. Resolved by
-`brew uninstall rust`, leaving rustup as the only Rust.
+**History.** How this pin came to be needed - two Rusts on one machine until
+2026-08-20, a real Homebrew cargo that ignored the pin, resolved by
+`brew uninstall rust` - is in the local
+[`.claude/HISTORY.md`](.claude/HISTORY.md).
 
 :warning: **Do not verify formatting with `fmt-check` before committing. Run
 `cargo fmt --all`.**
@@ -196,29 +192,19 @@ so changing the model invalidates it rather than reusing weights for a different
 one.
 
 :warning: **A test that downloads does not just break "tests never download",
-it changes which *other* tests run.** The warm-up step fetches SigLIP on macOS
-only, so on Linux `siglip_ready()` is false and
-`cpu_batch_matches_single_image_baseline` skips in milliseconds - it had never
-once run there. `argument_robustness.rs` then scanned an `a.jpg` and ran
-`videre embed` against it, which loads the model and pulls 777MB; the cache
-saved those weights, and from the next run the batch test found a warm cache
-and began really running. 28 minutes, then 35, with nothing failing, which is
-why it read as a hang rather than a slow test.
+it changes which *other* tests run**, because the cached weights wake a test
+that skips on a cold cache. The guard is the `.dng` in that test library:
+scanned and stored like anything else but explicitly vetoed as non-embeddable,
+so `embed` and `classify` return before loading a model; `HF_HOME` points into
+the test's temp dir and a guard asserts the sweep leaves it at zero bytes. The
+incident that taught this (SigLIP woken via `argument_robustness.rs`, the Ubuntu
+job creeping to 35 minutes) is in [`.claude/HISTORY.md`](.claude/HISTORY.md).
 
-The fix is the `.dng` in that test library: scanned and stored like anything
-else but explicitly vetoed as non-embeddable, so `embed` and `classify` return
-before loading a model. `HF_HOME` points into the test's temp dir and a guard
-asserts the sweep leaves it at zero bytes.
-
-:warning: **Optimizing dependencies in the test build was the wrong fix, and
-was reverted.** `[profile.dev.package."*"] opt-level = 3` did make the woken
-test bearable (2287s to 66s, since unoptimized candle measures **9.41s per
-224px forward pass against 0.168s in release, 56x**), but it put release-grade
-codegen in every test build: Ubuntu's Build step went 35s to 660s and did *not*
-amortize per cache key as predicted. Wall clock stayed ~4x worse than before
-0.15.3. Removing the weights instead lets the test skip in milliseconds, which
-is what it did for its whole life. Deleting a cached artifact beat optimizing
-the work it caused.
+:warning: **Do not set `[profile.dev.package."*"] opt-level = 3` to speed up the
+test build.** It was tried and reverted: release-grade codegen in every test
+build made Ubuntu's Build step ~4x worse overall, and deleting the cached model
+that caused the slow test beat optimizing the work. The measurements are in
+[`.claude/HISTORY.md`](.claude/HISTORY.md).
 
 The salt in the model cache key (`hf-v2-`) exists because the key hashes
 `face_models.rs` and `embeddings.rs`, neither of which changed, so the poisoned
@@ -228,9 +214,9 @@ The remaining hole is that this test skips silently rather than calling
 `skip_without_models`, so `VIDERE_TEST_REQUIRE_MODELS=1` - which exists to turn
 exactly this into a failure - never fires for it.
 
-Clippy is not in CI yet: it reports 31 warnings as of 2026-08-16 (18 when
-first counted), so a lint job would need `--allow`-ing them or a cleanup
-pass first. `make lint` runs it. The count drifts upward precisely because
+Clippy is not in CI yet: it reports ~37 warnings as of 2026-08-25 (31 on
+2026-08-16, 18 when first counted), so a lint job would need `--allow`-ing them
+or a cleanup pass first. `make lint` runs it. The count drifts upward precisely because
 nothing enforces it, which is the argument for adding the job.
 
 ## Testing conventions
@@ -788,7 +774,7 @@ for `cargo install videre`.
 deployed automatically from `main` by Cloudflare.
 
 **It is a Cloudflare Worker**, configured by `docs/wrangler.jsonc` and named
-`videre-docs`. Specifically an **assets-only Worker: there is no `main` entry
+`videre-doc`. Specifically an **assets-only Worker: there is no `main` entry
 point**, so Cloudflare serves the built `dist/` directly and no script runs on
 the request path. `not_found_handling` is `404-page`, so unknown paths get
 Starlight's own 404 rather than a bare Cloudflare error.
@@ -807,7 +793,7 @@ path.
 `docs/public/install` is the shell installer, served at
 <https://docs.videre.sh/install> as an ordinary static asset. It is also
 reachable at <https://videre.sh/install>, which is a **Workers route** on the
-`videre-docs` Worker rather than a redirect, so both addresses serve the same
+`videre-doc` Worker rather than a redirect, so both addresses serve the same
 bytes.
 
 The apex zone is separate from `docs.videre.sh` and carries a proxied
