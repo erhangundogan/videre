@@ -4,6 +4,10 @@
 //! `candidates` intersects them. Keeping them here rather than in
 //! `person_search`/`classify`/`geocode` means the intersection logic lives in
 //! one testable place and those modules keep their existing callers unchanged.
+//!
+//! Both search surfaces consume this module: `commands::search` (the CLI) and
+//! `commands::mcp` (over the `QueryEmbedder` trait) call the same predicates, so
+//! a composed CLI query and the equivalent MCP tool call cannot drift.
 
 use anyhow::Result;
 use rusqlite::Connection;

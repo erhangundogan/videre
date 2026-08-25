@@ -4,10 +4,59 @@ A fast Rust CLI for managing a local media library: duplicate detection,
 semantic search, and face recognition, all around a single SQLite database.
 
 **User-facing documentation lives at <https://docs.videre.sh>, generated from
-`docs/` in this repo.** This file is for working *on* videre: build and test
-invariants, measured findings, and traps that are easy to reintroduce. It is
-deliberately not a command reference. When you change behaviour, update the
-relevant page under `docs/src/content/docs/` in the same commit.
+`docs/` in this repo.** This file is for working *on* videre, in two parts kept
+deliberately separate: the **working methodology** just below (how to work
+here), then the **measured facts** (build and test invariants, findings, and
+traps easy to reintroduce). It is deliberately not a command reference. When you
+change behaviour, update the relevant page under `docs/src/content/docs/` in the
+same commit.
+
+## How to work on videre
+
+Methodology, kept separate from the measured facts that follow. These are
+working practices, not project truths.
+
+**Discovery before spec.** For any change touching shared logic, several
+subcommands, cross-cutting arguments or common behaviour, search code, tests,
+git history and docs exhaustively first. Ask rather than guess.
+
+**Shared code first.** The same thing implemented twice is the worst outcome; the
+second caller triggers extraction and refactoring of the first. Where it lives is
+the `videre-core`-versus-shared-module rule under Project structure.
+
+**Test first when fixing a bug.** Write it, run it, watch it fail. A test that has
+never failed has not been shown to test anything.
+
+**Find the cause before mitigating.** `cargo test` has four target kinds
+(`--lib`, `--bins`, `--test`, `--doc`), so `tests/` is not the set of tests.
+
+**Verify before claiming done.** Run the command and read its real output; if
+tests fail, say so with the output.
+
+**Challenge inherited constraints.** The model, the schema and the stored data
+are variables. Ask what recompute cost is acceptable before optimising within
+assumed limits.
+
+**Read the docs before advising.** Grep videre's own docs for a flag before
+recommending a value.
+
+**New settings go in `config.toml` and `videre config set`,** never a new
+environment variable. Do not design for backwards compatibility; users install
+latest.
+
+**Fixtures must look like the real library.** It is Turkish, and many names are
+non-ASCII; `Alice`/`Bob` cannot expose an ASCII-only SQLite `LOWER()`, and did
+not.
+
+**Style.** No em dashes in `README.md`, `CLAUDE.md` or Rust comments (a hyphen
+where a hyphen belongs, never as a dash); no `Co-Authored-By` trailer.
+
+**Getting a change in.** Read `git status --short` before staging and stage by
+name, never blanket-stage. Bump the version in all four crates and stage
+`Cargo.lock` in the same commit (below 1.0 the minor number is the compatibility
+boundary). `main` is branch-protected: PR with green checks, merge commits not
+squash so the reasoning survives. PR descriptions stay short; the reasoning lives
+in commit messages and this file.
 
 ## Build & run
 
@@ -272,202 +321,6 @@ show artificially low numbers despite being well covered.
 
 The expensive-to-rediscover things. Each was measured, not assumed.
 
-### Import locates files through one shared contract
-
-`videre_core::import_location` owns the ladder every `videre import` source
-uses: an optional provider database, then known folder layouts, then asking the
-user. `videre_core::import_providers` is the data, a static table of descriptors
-plus structural detection.
-
-**The default never opens a provider database.** Apple is read purely from the
-filesystem, because Apple's schema changes between macOS releases and its folder
-layout does not: `originals/` (Photos 5+), `Masters/` (iPhoto 9), `Originals/`
-(early iPhoto). Lightroom is the one source starting on the database rung, and
-there it is not optional, since its files live in arbitrary user folders with no
-layout to fall back to.
-
-A new source declares which rung it starts on and supplies only the
-provider-specific part. It must not invent its own discovery scheme. If adding a
-provider ever requires editing `import_location.rs`, the design has failed.
-
-Asking a catalog *where to look* is not the same as asking it *what is there*.
-Location may come from a database; content and metadata always come from the
-files.
-
-### `videre embed --batch` silently corrupts above ~121
-
-`videre_ml::model::MAX_SAFE_BATCH` is 96. Above a threshold measured between 121
-and 127, the batched inference path returns embeddings that do not match a
-one-at-a-time baseline: no error, no NaN, just wrong vectors, with only the
-trailing partial batch correct. Values over 96 are reduced with a warning.
-
-**Checking output for zero or NaN vectors does NOT detect this**, since
-`--batch 256` produces neither and is still fully corrupt. Do not raise the
-constant without re-running the ignored `batched_embeddings_match_one_at_a_time`
-test in `videre-ml`. Root cause is candle's Metal backend, proven against MLX
-and PyTorch on the same GPU; larger batches buy nothing anyway (31.0 ms/img at
-96 against 39.1 at 768).
-
-### Embeddings live in per-library, per-model databases
-
-`~/.videre/embeddings/<db stem>-<hash16>/<owner>--<model>.db`, attached to the
-main connection under the alias `emb`. `videre_core::embeddings_db` is the only
-module that knows this layout.
-
-- **`sqlite_master` is per database.** A probe for the table must say
-  `emb.sqlite_master`; the unqualified form returns 0, and every caller reads 0
-  as "nothing embedded yet", so getting this wrong makes search return no
-  results and report success.
-- **No atomic commit across attached databases in WAL mode.** No transaction may
-  write to both `main` and `emb` and depend on both landing. Nothing needs that
-  today; do not merge the two for tidiness.
-- Per library rather than one global file per model, because `videre prune`
-  cannot see another library's `file_hashes`, so a global layout would let one
-  library's orphan sweep delete vectors another still needs. An embedding costs
-  hours; a thumbnail costs milliseconds, which is why the thumbnail cache can
-  tolerate the same flaw.
-- Created with `page_size = 16384`, set on the empty file before WAL and before
-  any table exists, since SQLite silently ignores it afterwards and needs a full
-  `VACUUM` to apply.
-
-### Input validation belongs where every entrance passes
-
-Two panics reachable from ordinary CLI input, both the same shape: a guard
-placed at one of several entrances to the same function.
-
-- **Model ids** are validated by `videre_core::embeddings::validate_model_id`,
-  called from `resolve_model_id_in`. It used to be private to
-  `commands/config.rs`, so `videre config set` was guarded and `--model` was
-  not, and `videre embed --model foo` hit
-  `split_once('/').expect("model id is owner/name")` in `videre-ml`. `--model`
-  also has a clap `value_parser`, so a typo fails at parse time rather than
-  after an unrelated "no database found".
-- **Batch sizes** go through `videre_ml::model::clamp_batch`, because
-  `slice::chunks(0)` panics. `embed` guarded it, `faces` did not.
-
-:warning: **`clamp_batch`'s upper cap is a parameter, not a constant.**
-`MAX_SAFE_BATCH` exists because *this inference path* silently corrupts
-embeddings above ~121. That is a fact about embedding, not about face detection,
-so `faces` passes `None` and gets the zero-guard only. Do not "tidy" the two
-callers into sharing one cap.
-
-### The timeout error path must not touch the filesystem
-
-`hash_file`'s timeout handler called `std::fs::metadata` **unbounded** on the
-path that had just timed out, only to name the timeout in its message. On a
-stale mount `metadata` is the call that never returns, so the handler hung in
-the exact scenario the timeout exists to survive - the protection defeated by
-its own error reporting.
-
-`io_timeout::run_with_timeout_for_path_detailed` returns `TimedOutAfter`, which
-carries the timeout that was applied and which phase used it. Format from that.
-Anything in this path that consults the filesystem reintroduces the bug.
-
-It also made the message honest: a dead drive reports that the `stat` never
-answered, instead of claiming a read took 20s when nothing was read.
-
-### A model is loaded inside `with_work`, never before it
-
-`videre_core::work` owns "compute what is pending, narrow it by the selection,
-stop if nothing is left". `embed` and `classify` run their whole tail inside
-`with_work`, so `Embedder::load` is unreachable when there is nothing to
-process. That is structural, not a convention: there is no code path from
-`Work::Nothing` to the closure, and a unit test asserts the closure does not
-run.
-
-It exists because the convention failed. All three commands hand-wrote the same
-guard, `classify`'s copy was wrong, and it downloaded **778MB of SigLIP from
-inside a unit test**. On CI those weights entered the model cache and woke
-`cpu_batch_matches_single_image_baseline`, which skips when weights are absent
-and had skipped since the day it was written; the Ubuntu job went from ~3
-minutes to nearly 40. Three copies meant no single test could cover it.
-
-:warning: **`faces` shares `narrow` but not `with_work`, deliberately.**
-Clustering runs on every path through that command, including when there is
-nothing new to detect, so gating the tail on "is there work" would silently stop
-it. Detection is the optional part there, not the command.
-
-Messages are unified rather than per-command: `pending item(s)` everywhere, one
-sentence per state. A command needing different wording passes it in via
-`Words::saying` rather than printing its own, which is how three names for one
-idea appeared in the first place.
-
-### A person has an identity and a display name
-
-`videre_core::person::normalize` produces the identity - trim, fold diacritics
-to ASCII, lowercase, spaces to `_`, drop punctuation - and it is what
-`faces.person_label` stores and what the URL uses. `people(name PRIMARY KEY,
-full_name)` holds what a reader sees. `alice` and `Alice` are one person by
-construction rather than by a comparison rule every call site must remember.
-
-**Folding, not stripping.** Dropping a diacritic turns `Şefik` into `efik` and
-`Çağdaş` into `ada`, eating the first letter of any name starting with one - 14
-of 85 names in the library this was built against. Turkish `I` is mapped
-explicitly because `to_lowercase` is Unicode-default, not locale-aware: `İ`
-lowercases to `i` plus a combining mark. A test pins the whole set
-`öÖüÜıIiİşŞçÇğĞ`.
-
-:warning: **`normalize` must stay idempotent.** Reads normalize too, so it runs
-on values that are already identities. The first version dropped `_` as
-non-alphanumeric, so `isil_ozyegin` became `isilozyegin` and every multi-word
-person URL would have resolved to nothing. `_` is a separator on input as well
-as output, and a test asserts the fixed point.
-
-**`by_person` matches either form**, because both are things a user types: the
-identity from the URL, and the display name from the screen. They stop agreeing
-as soon as someone adds a surname.
-
-:warning: **Any entry point taking a person name must normalize**, and there are
-more than expected: `assign`, `set_primary`, `delete_person`, `set_full_name`,
-`person_detail`, `person_search`, plus `query::by_person` which funnels
-`search --person`, the selection layer and the MCP tool. Migrating labels
-without this made `videre search --person "Ahmet Arı"` return nothing while the
-labeling UI still showed the person.
-
-:warning: **An identity is permanent, and that is a design decision, not an
-omission.** `set_full_name` changes what a person is shown as; nothing changes
-the `name` a face row points at or the `/people/person/<name>` URL. `rename_person` and
-`/api/rename-person` existed, worked, were tested, and were called by no page,
-so they were removed in 0.17.0 rather than given a caller: an endpoint that
-exists eventually gets used, and videre-desktop had already wired it up. To
-correct an identity, delete the person and relabel.
-
-`Error::Conflict` went with it, because that function was the only thing that
-ever constructed it.
-
-No foreign key from `faces.person_label` either: SQLite leaves
-`PRAGMA foreign_keys` off and videre never sets it, so `REFERENCES` would be
-documentation rather than a constraint. The original argument was sharper, that
-an unenforced `ON UPDATE CASCADE` would silently orphan every face row on a
-rename; with renames gone that particular hazard is too, and the pragma reason
-stands on its own.
-
-**One resolver, and a test that all surfaces use it.**
-`person::resolve_identities` turns a typed name into every identity it could
-mean, and `by_person` and `search_by_person` both call it. They did not always:
-each normalized its own argument, the two drifted, and the labeling UI stopped
-finding anyone whose display name had been edited while the CLI still found
-them.
-
-:warning: **SQLite's `LOWER()` is ASCII-only, so the display-name comparison
-must stay in Rust.** `LOWER('Ö')` is `'Ö'` while Rust gives `'ö'`, so
-`LOWER(full_name) = ?` matched no name containing a Turkish character - 15 of
-86 people in the library this was built against. Pushing that comparison back
-into SQL for tidiness silently breaks most of the library.
-
-`crates/videre-api/tests/person_surfaces.rs` exercises every lookup and display
-surface against one person whose **display name does not normalize back to
-their identity** (`ozgur_demirtas` shown as `Özgür`). The divergence is the
-point: while the two agree, the identity path satisfies every assertion alone
-and the display path is never exercised, which is how tests passed while two
-surfaces were broken. Each of the three bugs was replayed against this file and
-each one fails it. A new surface belongs there; one that cannot be added is not
-going through the resolver.
-
-:warning: **Fixtures in this area must use non-ASCII names.** Every fixture
-here was `Alice`/`Bob`, and `Alice` cannot expose an ASCII-only `LOWER()`. The
-test data has to look like the library.
-
 ### Every filter goes through `videre_core::selection`
 
 One layer, two shapes. `RowSelection` filters rows that exist in the database
@@ -511,28 +364,9 @@ Neither form covers a row stored under a symlink whose root is given as the
 target. That needs per-row canonicalisation and is a deliberate non-goal.
 
 Missing data excludes. A file with no GPS never matches `--location`, one with
-no date never matches `--date`. Dates fall back to `modified_at` first (see
-`EFFECTIVE_DATE_SQL` below); only a file with neither is excluded.
-
-### Search predicates live in one place, used by two surfaces
-
-`videre_core::query` owns every search filter: `by_date`, `by_person`,
-`by_category`, `by_location`, plus `candidates_with_model` which intersects the
-active ones into a hash set. `commands/search.rs` builds a `Filters` from its
-args; `commands/mcp.rs` builds a `SearchArgs` and calls straight into
-`search::run_json` behind the `QueryEmbedder` trait, so the two surfaces run the
-*same* code rather than parallel implementations that can drift.
-
-`QueryEmbedder` exists only so the MCP server can keep its embedder cached
-across calls while the CLI builds a fresh one per invocation. Do not collapse it
-back into a concrete type without solving that.
-
-**The effective date is `EFFECTIVE_DATE_SQL`, not `exif_date`.** Date filters
-match `exif_date` when present and not `0000%`, else `modified_at`. The `0000%`
-guard is the same rule `output.rs::best_date` uses when picking which duplicate
-to keep; a camera with an unset clock must fall back rather than match year
-zero. Filtering happens before ranking, so a composed query scores fewer
-vectors than an unfiltered one.
+no date never matches `--date`. Dates fall back to `modified_at` first
+(`EFFECTIVE_DATE_SQL` in `videre_core::query`); only a file with neither is
+excluded.
 
 ### Locks are keyed by a hash of the canonical database path
 
@@ -593,29 +427,6 @@ than camera originals.
 `--retry-incomplete` keys on `mime IS NULL`, which does not mean "scanned before
 video metadata existed", so an older library shows empty dates until re-scanned.
 
-### The read timeout scales with file size; the stat timeout does not
-
-`DEFAULT_IO_TIMEOUT` (20s) is a floor, not a ceiling.
-`io_timeout::timeout_for_size` scales a whole-file read by
-`MIN_READ_RATE_MB_S_DEFAULT` (20 MB/s), because a constant cannot tell a large
-file from a stalled one. Measured 2026-08-12: a healthy 3.7GB video on a drive
-sustaining 158 MB/s needs ~23s and was being skipped with a message blaming the
-drive. Sizes do not change, so such files were skipped on **every** run, no row
-was written at all, and they are by definition the library's longest videos.
-Configurable via `videre config set read-rate`.
-
-The `stat` that reads the size keeps a short *constant* timeout, and that
-ordering is the safety property: `fs::metadata` is itself one of the calls a
-stale mount blocks forever, so a dead mount fails there and the read is never
-attempted. Without that, a large file on a dead mount would hang for its scaled
-timeout.
-
-:warning: **This applies to whole-file reads only.** `hash_file` reads every
-byte, so duration really is proportional to size. The decode paths do not:
-`decode_via_quicklook` extracts a poster frame from a fraction of a video, so
-scaling those by full file size would turn the known "QuickLook hangs on a
-container with no video track" failure from 20s into minutes.
-
 ### Probe videos before invoking QuickLook
 
 `qlmanage -t` does not fail on a container with no video track, it **hangs**, so
@@ -639,63 +450,6 @@ HEIC load averaged 16,339ms against ~7.6s uncontended, and one file blew past
 the 20s timeout that converted in 0.39s standalone. Impact is bounded, since the
 skipped file is correctly not marked scanned and self-heals next run, but the
 intended `watch` + manual-command workflow makes overlap normal.
-
-### Face clustering is O(n^2) in both memory and time, and both were fixed
-
-The heap's unconditional `with_capacity(n*(n-1)/2)` preallocation demanded ~41GB
-at n=58,555 before any work began; it is now seeded only with pairs already
-within `--eps`. Correctness-preserving, because a pair that later becomes
-eligible via a merge is still picked up by the distance-update step, which reads
-the dense matrix directly rather than the heap. See
-`one_bad_pair_does_not_block_an_otherwise_strong_merge` in `face_cluster.rs`.
-
-Time was then fixed by an exact algebraic reformulation (average-linkage
-distance for L2-normalized embeddings decomposes as
-`1 - (sum_A . sum_B)/(|A|*|B|)`) plus a `matrixmultiply` GEMM candidate filter.
-Every GEMM-flagged pair is re-verified against the exact scalar distance, since
-GEMM's FMA accumulation does not bit-match the scalar path the staleness check
-depends on. Verified on 58,555 real faces: 19m27s to 8m48s with a
-**byte-for-byte identical** cluster partition.
-
-### `watch --prune` can override neither prune guard
-
-`PruneArgs::for_watch_stage` pins both the bulk-deletion and repeated-failure
-guards to false, and a unit test asserts it. It runs unattended and cannot ask.
-
-### `videre locations` is a full recompute, and the cost moved
-
-Measured on a 70,601-file library with 26,744 distinct coordinates: **412s
-before, 86s after** indexing the GPS columns. The whole recompute runs in one
-transaction, so it holds the single WAL writer lock for that entire window and
-a concurrent `watch` write blocks.
-
-The per-coordinate `file_hashes` UPDATE used to match
-`ROUND(gps_lat, 6) = ROUND(?, 6)`. A function call on a column makes any index
-unusable and there was no GPS index anyway, so each update scanned every row.
-It matches exactly now, against `idx_file_hashes_gps`. `coords` comes from
-`SELECT DISTINCT gps_lat, gps_lon`, so those are the exact stored values and
-matching them back exactly returns exactly the rows they came from.
-
-The same `ROUND` also over-matched: two coordinates differing past the sixth
-decimal both claimed the same photo, and `photo_count` counted it twice. **181
-photos were double-counted**, 179 in Berlin. A test pins both halves, including
-that `EXPLAIN QUERY PLAN` still says SCAN for the `ROUND` form, so nobody adds
-an index and wonders why nothing got faster.
-
-:warning: **The dominant cost is now `cluster_by_distance`, not the UPDATE.**
-It builds a dense `vec![vec![0.0; n]; n]`: at 26,744 coordinates that is ~5.3GB
-claimed before any work plus ~357 million haversine calls. This file called it
-"sub-second", measured when the library had 5,512 coordinates; the video
-re-scan that gave 11,985 videos dates and GPS made every one a coordinate to
-assign. Believing the stale note is what put the first progress bar on the
-wrong phase, whose 4.8x speedup then made the *unmeasured* phase the whole
-wait - reported twice as a freeze. **Time the phases before instrumenting.**
-
-Both phases report progress now, and `cluster_by_distance_reporting` takes a
-per-row callback (n calls, not n^2/2). Progress counts coordinates, not images:
-`Progress::new_counting` exists because the non-TTY line hardcoded "images
-processed", which for 26,744 coordinates in a 70,601-file library was three
-numbers no reader could reconcile.
 
 ### `pipeline_runs` tracks exactly 8 commands
 
@@ -835,3 +589,22 @@ check for path content, not for the element's presence.
 
 See `docs/README.md` for layout and the content split between README, the site,
 and this file.
+
+## Invariant index
+
+Detail lives at the code site named; this is only a pointer, so a constraint is
+discoverable before you touch its code. Cross-cutting invariants stay in full
+above.
+
+- Import file-location ladder -> `videre_core::import_location` (module doc)
+- `embed --batch` corrupts above ~121 -> `videre_ml::model::MAX_SAFE_BATCH`, `clamp_batch`
+- Per-library, per-model embedding DBs -> `videre_core::embeddings_db`
+- Input validation at every entrance -> `videre_ml::model::clamp_batch`, `videre_core::embeddings::validate_model_id`
+- Timeout error path must not touch the filesystem -> `videre_core::io_timeout::run_with_timeout_for_path_detailed`
+- Model loads inside `with_work`, never before -> `videre_core::work`
+- Person identity vs display name -> `videre_core::person`
+- Search predicates shared by CLI and MCP -> `videre_core::query`
+- Read timeout scales with size, stat timeout does not -> `videre_core::io_timeout::timeout_for_size`
+- Face clustering O(n^2) fixes (memory and time) -> `videre_core::face_cluster`
+- `watch --prune` cannot override the guards -> `commands::prune::PruneArgs::for_watch_stage`
+- `videre locations` is a global recompute -> `commands::locations`

@@ -13,6 +13,9 @@ rustc-ice-*.txt
 .vscode/
 .claude/
 
+# Private, always-loaded personal memory. Never committed.
+CLAUDE.local.md
+
 .cargo/credentials
 .cargo/credentials.toml
 .mcp.json
