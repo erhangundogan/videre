@@ -89,6 +89,7 @@ export default defineConfig({
 						{ label: 'embed', slug: 'commands/embed' },
 						{ label: 'faces', slug: 'commands/faces' },
 						{ label: 'classify', slug: 'commands/classify' },
+						{ label: 'mark', slug: 'commands/mark' },
 						{ label: 'locations', slug: 'commands/locations' },
 						{ label: 'fix-dates', slug: 'commands/fix-dates' },
 						{ label: 'prune', slug: 'commands/prune' },
