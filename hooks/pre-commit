@@ -1,12 +1,6 @@
 #!/bin/sh
 # Refuse commits that do not look like source changes.
 #
-# Written 2026-08-24, after 1,094 thumbnail images of the author's family were
-# committed and pushed to this public repository across two commits. The cause
-# was `git add -A` run after a tool wrote a cache into the working tree, plus
-# `git commit -q`, which suppresses the "1094 files changed" line that would have
-# shown it immediately.
-#
 # :warning: **A force-push does not undo this.** `refs/pull/*/head` are read-only
 # to repository owners and keep every commit reachable, and
 # raw.githubusercontent.com serves the blobs from a separate cache. Only GitHub
@@ -33,8 +27,7 @@ fail() {
 }
 
 # ---------------------------------------------------------------- rule 1: size
-# 30 is above any hand-written change in this repo's history and far below the
-# 93 and 1,001 file commits that caused the incident.
+# 30 files and above is too much to commit
 if [ "$count" -gt 30 ] && [ "${VIDERE_ALLOW_BIG_COMMIT:-}" != "1" ]; then
     fail "$count files staged, more than the limit of 30" \
         "A commit this size is usually a tool's output, not a change you wrote." \
@@ -44,9 +37,7 @@ if [ "$count" -gt 30 ] && [ "${VIDERE_ALLOW_BIG_COMMIT:-}" != "1" ]; then
 fi
 
 # ---------------------------------------------------------------- rule 2: path
-# The incident's directory was literally named "~", created because a tilde in
-# an env assignment was not expanded and a tool then wrote its home beneath the
-# repository. Nothing legitimate here starts with ~, / or .., or names a home
+# Nothing legitimate here starts with ~, / or .., or names a home
 # directory. This rule has no override: such a path is never intentional.
 bad_path=""
 for f in $staged; do
