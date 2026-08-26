@@ -254,6 +254,30 @@ A scoped run prints `N of M`, so a filter that matches nothing is
 distinguishable from an empty library. Full detail, including how missing data
 excludes a file, is in [scoping a run](/guides/scoping-a-run/).
 
+## Importing names from XMP
+
+If a photo has an `.xmp` sidecar (or embedded XMP) with named face regions, for
+example one digiKam or Lightroom wrote, `videre faces` reads those regions and
+assigns the names to the faces it detects, matching each region to a face by
+where it sits in the frame. This is the read side of
+[`videre export --xmp`](/commands/export/): a name you gave a face in another
+tool imports into videre.
+
+Names are imported while faces are being detected, so the region has a detected
+face to attach to. To import into a library whose faces were detected earlier,
+re-run with `--reprocess`.
+
+The `--xmp` flag decides who wins when both carry a name:
+
+| `--xmp` | Effect |
+|---|---|
+| `db` (default) | The database wins: imported names fill only faces you have not already named |
+| `file` | The sidecar wins: an imported name replaces an existing one |
+| `newest` | Reserved; currently behaves as `db` |
+
+The default comes from the `xmp_precedence` config key (see
+[`videre config`](/commands/config/)), the same setting `scan` uses for ratings.
+
 ## More detail
 
 - [Long-running jobs](/guides/long-running-jobs/) covers running this alongside other commands, and resuming.

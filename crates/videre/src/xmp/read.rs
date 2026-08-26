@@ -165,6 +165,26 @@ pub fn read_marks(path: &Path) -> XmpMarks {
     XmpMarks::default()
 }
 
+/// Read the full XMP data for a photo: sidecar first, then the embedded packet,
+/// mirroring `read_marks`. Never errors; a missing or malformed source yields an
+/// empty `XmpData`.
+pub fn read_data(path: &Path) -> XmpData {
+    let sidecar = path.with_extension(match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) => format!("{ext}.xmp"),
+        None => "xmp".to_string(),
+    });
+    if let Ok(doc) = std::fs::read_to_string(&sidecar) {
+        let d = parse_xmp_data(&doc);
+        if d != XmpData::default() {
+            return d;
+        }
+    }
+    if let Some(doc) = embedded_packet(path) {
+        return parse_xmp_data(&doc);
+    }
+    XmpData::default()
+}
+
 /// Extract the embedded XMP packet from a file's bytes, best-effort: find the
 /// `<x:xmpmeta ...> ... </x:xmpmeta>` span. Works across JPEG/HEIC/PNG because
 /// the packet is stored as UTF-8 text regardless of container.
@@ -228,6 +248,31 @@ mod tests {
     #[test]
     fn garbage_yields_no_regions_not_an_error() {
         assert_eq!(parse_xmp_data("not xml"), XmpData::default());
+    }
+
+    #[test]
+    fn read_data_reads_a_region_from_an_adjacent_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let photo = dir.path().join("IMG.jpg");
+        std::fs::write(&photo, b"not-a-real-jpeg").unwrap();
+        std::fs::write(
+            dir.path().join("IMG.jpg.xmp"),
+            r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF
+ xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+ <rdf:Description rdf:about=""
+   xmlns:mwg-rs="http://www.metadataworkinggroup.com/schemas/regions/"
+   xmlns:stArea="http://ns.adobe.com/xmp/sType/Area#">
+  <mwg-rs:Regions rdf:parseType="Resource"><mwg-rs:RegionList><rdf:Bag>
+   <rdf:li rdf:parseType="Resource"><mwg-rs:Name>Ayşe</mwg-rs:Name>
+    <mwg-rs:Area stArea:x="0.5" stArea:y="0.5" stArea:w="0.2" stArea:h="0.2"/>
+   </rdf:li>
+  </rdf:Bag></mwg-rs:RegionList></mwg-rs:Regions>
+ </rdf:Description></rdf:RDF></x:xmpmeta>"#,
+        )
+        .unwrap();
+        let d = read_data(&photo);
+        assert_eq!(d.regions.len(), 1);
+        assert_eq!(d.regions[0].name, "Ayşe");
     }
 
     const SIDECAR: &str = r#"<?xpacket begin="?"?>
