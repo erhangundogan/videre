@@ -182,6 +182,18 @@ videre search --like --date 2024                # favourites from 2024
 
 A photo with no mark never matches, the same rule every filter follows.
 
+## Filtering by tag
+
+Free-form tags set with [`videre tag`](/commands/tag/) filter here as well:
+
+| Flag | Selects |
+|---|---|
+| `--tag <tag>` | files carrying this tag. Repeatable; every named tag must be present |
+
+```bash
+videre search --tag beach --tag summer --person "Alice"
+```
+
 ## Filters compose
 
 `--person`, `--category`, `--location`, `--type`, `--ext`, `--mime`, `--path`,

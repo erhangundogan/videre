@@ -20,6 +20,7 @@ pub mod scan;
 pub mod search;
 pub mod selection_args;
 pub mod stats;
+pub mod tag;
 pub mod watch;
 
 /// Prompts on stderr and reads a yes/no answer from stdin. Any input other
