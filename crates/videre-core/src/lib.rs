@@ -29,3 +29,4 @@ pub mod vectors;
 pub mod video_meta;
 pub mod video_probe;
 pub mod work;
+pub mod xmp_gather;
