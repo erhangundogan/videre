@@ -39,22 +39,30 @@ impl XmpArg {
     }
 }
 
-/// Read a photo's XMP marks and fold them into the database under `prec`. Shared
-/// by scan, watch and every import path so all three apply XMP identically.
-/// Best-effort read: a read or parse failure yields no change, never an error.
+/// Read a photo's XMP and fold it into the database under `prec`. Shared by scan,
+/// watch and every import path so all three apply XMP identically. Marks (rating
+/// and label) obey `prec`; `dc:subject` keywords become tags additively (a set,
+/// so precedence does not apply and re-import is idempotent). Best-effort read: a
+/// read or parse failure yields no change, never an error.
 pub fn import_xmp_for(
     conn: &Connection,
     path: &Path,
     hash: &str,
     prec: XmpPrecedence,
 ) -> Result<()> {
-    let xmp = read_marks(path);
-    if xmp.rating.is_none() && xmp.label.is_none() {
-        return Ok(());
+    let data = read::read_data(path);
+    if data.rating.is_some() || data.label.is_some() {
+        let existing = marks::get(conn, hash)?;
+        if let Some(change) = marks::import_change(&existing, data.rating, data.label, prec) {
+            marks::set(conn, std::slice::from_ref(&hash.to_string()), &change)?;
+        }
     }
-    let existing = marks::get(conn, hash)?;
-    if let Some(change) = marks::import_change(&existing, xmp.rating, xmp.label, prec) {
-        marks::set(conn, std::slice::from_ref(&hash.to_string()), &change)?;
+    if !data.keywords.is_empty() {
+        videre_core::tags::set_tags(
+            conn,
+            std::slice::from_ref(&hash.to_string()),
+            &data.keywords,
+        )?;
     }
     Ok(())
 }
