@@ -101,6 +101,10 @@ Set a persistent default with `videre config set xmp <db|file|newest>`; the flag
 overrides it for one run. The same flag works on [`videre watch`](/commands/watch/).
 Picks and likes have no XMP standard, so they are never touched here.
 
+Scan also reads `dc:subject` keywords and stores them as
+[tags](/commands/tag/). Keyword import is additive (it only ever adds a tag,
+never removes one), so it ignores the `--xmp` precedence above.
+
 ## Caveats
 
 **Rows are keyed by path, so a moved file looks like a new one.** Re-scanning

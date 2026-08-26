@@ -29,6 +29,7 @@ using the standard fields the other tools already read:
 | Named faces (confirmed) | MWG face regions (`mwg-rs:Regions`), name plus box |
 | Resolved location name | `Iptc4xmpCore:Location` |
 | Category (photo/screenshot/document/meme) | `dc:subject` keyword |
+| [Tags](/commands/tag/) | `dc:subject` keywords |
 | Star rating | `xmp:Rating` |
 | Colour label | `xmp:Label` |
 

@@ -167,6 +167,24 @@ so a mark follows a photo across duplicates and moves, and
 [`videre prune`](/commands/prune/) drops a row once no path references its hash.
 Only `rating` and `label` are portable to XMP; `pick` and `liked` stay here.
 
+## photo_tags
+
+Free-form tags, written by [`videre tag`](/commands/tag/) and by `scan`/`watch`
+when they read `dc:subject` keywords from XMP. One row per (photo, tag) pair,
+keyed by `hash`.
+
+```sql
+CREATE TABLE photo_tags (
+    hash TEXT NOT NULL,
+    tag  TEXT NOT NULL,
+    PRIMARY KEY (hash, tag)
+);
+```
+
+A tag is one flat string; hierarchy is not modelled. Tags round-trip through XMP
+`dc:subject`, so [`videre export --xmp`](/commands/export/) writes them back out
+for digiKam or Lightroom.
+
 ## location_clusters and geocode_cache
 
 ```sql
