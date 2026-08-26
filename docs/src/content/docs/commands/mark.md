@@ -68,6 +68,10 @@ write them back:
 videre mark --path ~/Photos --export-xmp    # write .xmp sidecars (opt-in)
 ```
 
+To export more than marks (named face regions, location, categories) in one
+pass, use [`videre export`](/commands/export/), which shares the same sidecar
+writer and merges rather than overwriting.
+
 Picks and likes have no portable standard and stay in videre's database. See
 [`videre scan`](/commands/scan/) for the `--xmp` precedence rule when importing.
 
