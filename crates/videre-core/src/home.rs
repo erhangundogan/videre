@@ -45,6 +45,9 @@ pub struct Config {
     /// Default XMP precedence for scan/watch/import: `db`, `file`, or `newest`.
     /// A `--xmp` flag overrides it per run. Absent means `db`.
     pub xmp_precedence: Option<String>,
+    /// Whether `videre watch` runs the XMP export stage each cycle. Opt-in;
+    /// absent means off. `watch --export-xmp` also turns it on for that run.
+    pub export_xmp_on_watch: Option<bool>,
 }
 
 /// Path of the config file inside a given home dir: <home>/config.toml.
@@ -83,6 +86,21 @@ fn positive_int_key(table: &toml::Table, file: &Path, key: &str) -> Result<Optio
         ),
         Some(other) => bail!(
             "malformed config {}: {} must be an integer, got {}",
+            file.display(),
+            key,
+            other.type_str()
+        ),
+    }
+}
+
+/// Read a boolean-valued key. A typo (a string `"true"` rather than a bare
+/// `true`) is a hard error, matching the other typed keys.
+fn bool_key(table: &toml::Table, file: &Path, key: &str) -> Result<Option<bool>> {
+    match table.get(key) {
+        None => Ok(None),
+        Some(toml::Value::Boolean(b)) => Ok(Some(*b)),
+        Some(other) => bail!(
+            "malformed config {}: {} must be a boolean, got {}",
             file.display(),
             key,
             other.type_str()
@@ -136,6 +154,7 @@ pub fn load_config(home: &Path) -> Result<Config> {
         default_model: string_key(&table, &path, "default_model")?,
         min_read_rate_mb_s: positive_int_key(&table, &path, "min_read_rate_mb_s")?,
         xmp_precedence: xmp_precedence_key(&table, &path)?,
+        export_xmp_on_watch: bool_key(&table, &path, "export_xmp_on_watch")?,
     })
 }
 
@@ -342,6 +361,32 @@ pub fn unset_xmp_precedence(home: &Path) -> Result<()> {
     unset_key(home, "xmp_precedence")
 }
 
+/// Write one boolean-valued key, as a TOML boolean so it round-trips through
+/// `bool_key`.
+fn set_bool_key(home: &Path, key: &str, value: bool) -> Result<()> {
+    std::fs::create_dir_all(home).with_context(|| format!("create {}", home.display()))?;
+    let path = config_path(home);
+    let mut table: toml::Table = match std::fs::read_to_string(&path) {
+        Ok(t) => t
+            .parse()
+            .with_context(|| format!("malformed config {}", path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
+        Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
+    };
+    table.insert(key.to_string(), toml::Value::Boolean(value));
+    std::fs::write(&path, toml::to_string_pretty(&table)?)
+        .with_context(|| format!("write {}", path.display()))?;
+    Ok(())
+}
+
+pub fn set_export_xmp_on_watch(home: &Path, value: bool) -> Result<()> {
+    set_bool_key(home, "export_xmp_on_watch", value)
+}
+
+pub fn unset_export_xmp_on_watch(home: &Path) -> Result<()> {
+    unset_key(home, "export_xmp_on_watch")
+}
+
 /// The configured default embedding model, if any. None means the built-in
 /// default applies (see `videre_core::embeddings::DEFAULT_MODEL_ID`).
 pub fn default_model() -> Result<Option<String>> {
@@ -406,6 +451,17 @@ mod tests {
             db.display()
         );
         assert!(db.ends_with("rel.db"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn export_xmp_on_watch_roundtrips_as_a_bool() {
+        let home = tmp_home("exportxmp");
+        assert_eq!(load_config(&home).unwrap().export_xmp_on_watch, None);
+        set_export_xmp_on_watch(&home, true).unwrap();
+        assert_eq!(load_config(&home).unwrap().export_xmp_on_watch, Some(true));
+        unset_export_xmp_on_watch(&home).unwrap();
+        assert_eq!(load_config(&home).unwrap().export_xmp_on_watch, None);
         let _ = std::fs::remove_dir_all(&home);
     }
 
