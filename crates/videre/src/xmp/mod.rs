@@ -2,6 +2,7 @@
 //! pair, shared by scan/watch/import (read) and `mark --export-xmp` (write), so
 //! there is no second XMP parser anywhere in the tree.
 
+pub mod model;
 pub mod read;
 pub mod write;
 

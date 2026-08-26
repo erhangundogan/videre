@@ -13,6 +13,33 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.21.1] - 2026-08-26
+
+### Added
+
+- **`videre export --xmp`: portable labels beyond marks.** Writes named face
+  regions (MWG `mwg-rs:Regions`, the format digiKam and Lightroom read),
+  resolved location (`Iptc4xmpCore:Location`), category keyword (`dc:subject`)
+  and the existing rating/label into `.xmp` sidecars beside each photo. The
+  selection flags scope it exactly like `search`, and it prints `N of M`. So a
+  name you assigned in videre shows up as a named face in Lightroom or digiKam.
+
+- **Merging, not clobbering.** Export merges into an existing sidecar, replacing
+  only the fields videre owns and preserving everything else verbatim, including
+  another tool's keywords and develop settings, in both element and attribute
+  form. Re-exporting is idempotent. The MWG region shape was validated against
+  exiftool, the reference parser those tools rely on.
+
+- **Opt-in `watch` export stage.** `videre watch --export-xmp` keeps sidecars
+  current each cycle while you work in another tool; `videre config set
+  export-xmp-on-watch true` makes it always-on. Never defaults on, and merges
+  like the command. `videre mark --export-xmp` now shares the same writer.
+
+### Changed
+
+- Exported sidecars use element form (`<xmp:Rating>4</xmp:Rating>`) rather than
+  attribute form, so they carry the richer face-region and keyword structure.
+
 ## [0.21.0] - 2026-08-26
 
 ### Added
@@ -1290,6 +1317,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[0.21.1]: https://github.com/erhangundogan/videre/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/erhangundogan/videre/compare/v0.20.10...v0.21.0
 [0.20.10]: https://github.com/erhangundogan/videre/compare/v0.20.9...v0.20.10
 [0.20.9]: https://github.com/erhangundogan/videre/compare/v0.20.8...v0.20.9

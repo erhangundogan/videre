@@ -32,7 +32,8 @@ originally. Existing scripts do not need changing.
 ## Stages
 
 If none of `--scan`, `--faces`, `--heic` or `--location` are given, all four
-run. `--prune` is the exception: it is opt-in and never defaults on.
+run. `--prune` and `--export-xmp` are the exceptions: they are opt-in and never
+default on.
 
 | Stage | What it does |
 |---|---|
@@ -41,6 +42,12 @@ run. `--prune` is the exception: it is opt-in and never defaults on.
 | `--heic` | Pre-converts and caches HEIC thumbnails |
 | `--location` | Looks up place names for GPS coordinates that have none |
 | `--prune` | Same cleanup as [`videre prune`](/commands/prune/) |
+| `--export-xmp` | Writes labels to `.xmp` sidecars, same as [`videre export`](/commands/export/) |
+
+The export stage keeps sidecars current while you work in another tool. It is
+opt-in per run with `--export-xmp`, or always-on by setting
+`videre config set export-xmp-on-watch true`. It merges into existing sidecars,
+so it never clobbers another tool's data.
 
 Note that [`embed`](/commands/embed/) and [`classify`](/commands/classify/) are
 **not** stages. Semantic search data is not kept current automatically; run

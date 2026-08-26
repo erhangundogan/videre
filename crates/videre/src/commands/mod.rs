@@ -2,6 +2,7 @@ pub mod classify;
 pub mod config;
 pub mod dedupe;
 pub mod embed;
+pub mod export;
 pub mod faces;
 pub mod fix_dates;
 pub mod gallery;

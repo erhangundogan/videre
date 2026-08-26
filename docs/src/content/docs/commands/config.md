@@ -38,6 +38,7 @@ jsonl:         ~/.videre/hashes.jsonl
 | `model` | The resolved search model, marked `(default)` when not configured |
 | `read-rate` | Assumed floor read speed in MB/s, used to scale the file-read timeout to file size. Default 20. Only worth changing on a mount slower than that |
 | `xmp` | Default XMP precedence for `scan`/`watch`: `db`, `file`, or `newest`. Default `db`. See [`videre mark`](/commands/mark/) |
+| `export-xmp-on-watch` | Whether [`videre watch`](/commands/watch/) runs the XMP export stage each cycle. Default off |
 | `jsonl` | Where a bare `scan --output` would write |
 
 The distinction between `db` and `resolved db` is the useful part. The first is
@@ -47,7 +48,7 @@ set nothing. When something reads the wrong library, this is the line to check.
 `[from config.toml]` marks a value that came from your settings rather than a
 built-in default.
 
-## The three settings
+## The settings
 
 | Key | Effect when set | Stored as |
 |---|---|---|
@@ -55,6 +56,7 @@ built-in default.
 | `path` | The folder `scan` and `watch` use with no argument | `default_path` |
 | `model` | The [search model](/reference/models/) used without `--model` | `default_model` |
 | `xmp` | XMP precedence for `scan`/`watch` (`db`/`file`/`newest`) | `xmp_precedence` |
+| `export-xmp-on-watch` | Run the [`watch`](/commands/watch/) XMP export stage each cycle (`true`/`false`) | `export_xmp_on_watch` |
 
 The file itself is plain TOML, and editing it by hand is fine:
 

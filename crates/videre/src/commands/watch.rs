@@ -47,6 +47,10 @@ pub struct WatchArgs {
     /// already gone from disk.
     #[arg(long)]
     prune: bool,
+    /// Write XMP sidecars for updated labels each cycle (opt-in). Also enabled
+    /// by `videre config set export-xmp-on-watch true`.
+    #[arg(long)]
+    export_xmp: bool,
 
     /// Seconds between cycles
     #[arg(long, default_value = "300")]
@@ -76,6 +80,16 @@ pub fn run(mut args: WatchArgs) -> Result<()> {
         args.faces = true;
         args.heic = true;
         args.location = true;
+    }
+
+    // The XMP export stage is opt-in: the flag, or the config default. It is
+    // never part of the all-four default above, exactly like --prune.
+    if videre_core::home::videre_home()
+        .and_then(|h| videre_core::home::load_config(&h))
+        .map(|c| c.export_xmp_on_watch == Some(true))
+        .unwrap_or(false)
+    {
+        args.export_xmp = true;
     }
 
     // Watch is a writer: create the parent dir for a defaulted db path (that
@@ -136,7 +150,7 @@ fn run_cycle(args: &WatchArgs, directory: &std::path::Path, db: &std::path::Path
             eprintln!("videre watch: scan stage error: {e}");
         }
     }
-    if args.faces || args.heic || args.location || args.prune {
+    if args.faces || args.heic || args.location || args.prune || args.export_xmp {
         // These stages all read file_hashes; open once and reuse.
         let conn = db::open_wal(db)?;
         if !file_hashes_table_exists(&conn)? {
@@ -163,6 +177,23 @@ fn run_cycle(args: &WatchArgs, directory: &std::path::Path, db: &std::path::Path
                 eprintln!("videre watch: prune stage error: {e}");
             }
         }
+        if args.export_xmp {
+            if let Err(e) = run_export_stage(args, &conn) {
+                eprintln!("videre watch: export stage error: {e}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Writes XMP sidecars for the current labels (marks, named face regions,
+/// location, category), merging into any existing sidecar. Runs the same shared
+/// writer as `videre export --xmp`, over every file, against the already-open
+/// connection.
+fn run_export_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> {
+    let n = super::export::export_all(conn)?;
+    if !args.silent {
+        eprintln!("videre watch: export stage wrote {n} sidecar(s)");
     }
     Ok(())
 }

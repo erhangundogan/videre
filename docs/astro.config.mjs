@@ -90,6 +90,7 @@ export default defineConfig({
 						{ label: 'faces', slug: 'commands/faces' },
 						{ label: 'classify', slug: 'commands/classify' },
 						{ label: 'mark', slug: 'commands/mark' },
+						{ label: 'export', slug: 'commands/export' },
 						{ label: 'locations', slug: 'commands/locations' },
 						{ label: 'fix-dates', slug: 'commands/fix-dates' },
 						{ label: 'prune', slug: 'commands/prune' },

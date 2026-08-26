@@ -13,6 +13,7 @@ description: Every videre subcommand, what it does, and where to read more.
 | [`videre embed`](/commands/embed/) | Prepare photos for search (one-time, resumable) |
 | [`videre faces`](/commands/faces/) | Detect and group faces |
 | [`videre classify`](/commands/classify/) | Tag photos as photo/screenshot/document/meme |
+| [`videre export`](/commands/export/) | Write labels (faces, location, ratings) to portable .xmp sidecars |
 | [`videre locations`](/commands/locations/) | Group photos by where they were taken |
 | [`videre fix-dates`](/commands/fix-dates/) | Set each file's date from its EXIF shoot date |
 | [`videre prune`](/commands/prune/) | Remove database entries for files that no longer exist |

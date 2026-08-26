@@ -48,6 +48,8 @@ enum Command {
     Stats(commands::stats::StatsArgs),
     /// Set ratings, picks, colour labels and likes on photos
     Mark(commands::mark::MarkArgs),
+    /// Write videre's labels to portable .xmp sidecars (faces, location, marks)
+    Export(commands::export::ExportArgs),
 }
 
 /// Pushes the configured floor read rate into `io_timeout` before any command
@@ -113,6 +115,7 @@ fn main() {
         Command::Mcp(args) => commands::mcp::run(args),
         Command::Stats(args) => commands::stats::run(args),
         Command::Mark(args) => commands::mark::run(args),
+        Command::Export(args) => commands::export::run(args),
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");

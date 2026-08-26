@@ -2,7 +2,14 @@ use anyhow::Result;
 use clap::builder::PossibleValuesParser;
 use videre_core::home;
 
-const CONFIG_KEYS: &[&str] = &["db", "path", "model", "read-rate", "xmp"];
+const CONFIG_KEYS: &[&str] = &[
+    "db",
+    "path",
+    "model",
+    "read-rate",
+    "xmp",
+    "export-xmp-on-watch",
+];
 
 #[derive(clap::Args)]
 pub struct ConfigArgs {
@@ -43,6 +50,12 @@ pub fn run(args: ConfigArgs) -> Result<()> {
                 home::set_default_model(&home, &value)
             }
             "xmp" => home::set_xmp_precedence(&home, &value),
+            "export-xmp-on-watch" => {
+                let on: bool = value.parse().map_err(|_| {
+                    anyhow::anyhow!("export-xmp-on-watch must be true or false, got {value:?}")
+                })?;
+                home::set_export_xmp_on_watch(&home, on)
+            }
             _ => unreachable!("clap restricts keys to CONFIG_KEYS"),
         },
         Some(ConfigAction::Unset { key }) => match key.as_str() {
@@ -51,6 +64,7 @@ pub fn run(args: ConfigArgs) -> Result<()> {
             "read-rate" => home::unset_min_read_rate(&home),
             "model" => home::unset_default_model(&home),
             "xmp" => home::unset_xmp_precedence(&home),
+            "export-xmp-on-watch" => home::unset_export_xmp_on_watch(&home),
             _ => unreachable!("clap restricts keys to CONFIG_KEYS"),
         },
     }
@@ -101,6 +115,12 @@ fn show(home: &std::path::Path) -> Result<()> {
         Some(p) => println!("xmp:           {p} [from config.toml]"),
         None => println!(
             "xmp:           db (default) [set with: videre config set xmp <db|file|newest>]"
+        ),
+    }
+    match config.export_xmp_on_watch {
+        Some(true) => println!("export-xmp-on-watch: on [from config.toml]"),
+        _ => println!(
+            "export-xmp-on-watch: off (default) [set with: videre config set export-xmp-on-watch <true|false>]"
         ),
     }
     println!("jsonl:         {}", home.join("hashes.jsonl").display());
