@@ -79,10 +79,18 @@ fn scan_imports_xmp_rating_and_db_precedence_holds() {
 
 /// Copies the fixture jpg into `dir` as `name`, with no sidecar.
 fn plain_fixture(dir: &Path, name: &str) -> std::path::PathBuf {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tiny.jpg");
-    let img = dir.join(name);
-    std::fs::copy(&src, &img).expect("copy fixture");
-    img
+    copy_fixture(dir, "tiny.jpg", name)
+}
+
+/// Copies fixture `src` into `dir` as `dst`. Distinct fixtures hash distinctly,
+/// which the prune test relies on.
+fn copy_fixture(dir: &Path, src: &str, dst: &str) -> std::path::PathBuf {
+    let s = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(src);
+    let d = dir.join(dst);
+    std::fs::copy(&s, &d).expect("copy fixture");
+    d
 }
 
 #[test]
@@ -135,4 +143,56 @@ fn export_xmp_writes_sidecars_and_dry_run_writes_nothing() {
     let _ = &img;
     run(&["scan", photos_s, "--db", db2_s, "--silent"]);
     assert!(run(&["search", "--rating", "4", "--db", db2_s]).contains("A.jpg"));
+}
+
+#[test]
+fn stats_reports_marks() {
+    let dir = tempdir().unwrap();
+    let photos = dir.path().join("photos");
+    std::fs::create_dir(&photos).unwrap();
+    plain_fixture(&photos, "S.jpg");
+    let db = dir.path().join("hashes.db");
+    let (photos_s, db_s) = (photos.to_str().unwrap(), db.to_str().unwrap());
+    run(&["scan", photos_s, "--db", db_s, "--silent"]);
+    run(&[
+        "mark", "--path", photos_s, "--rating", "5", "--like", "--db", db_s, "--silent",
+    ]);
+    let out = run(&["stats", "--db", db_s]);
+    assert!(out.contains("Marks: 1 rated"), "got: {out}");
+    assert!(out.contains("1 liked"), "got: {out}");
+}
+
+#[test]
+fn prune_drops_orphaned_marks() {
+    let dir = tempdir().unwrap();
+    let photos = dir.path().join("photos");
+    std::fs::create_dir(&photos).unwrap();
+    let gone = copy_fixture(&photos, "tiny.jpg", "one.jpg");
+    copy_fixture(&photos, "sample_with_exif.jpg", "two.jpg");
+    let db = dir.path().join("hashes.db");
+    let (photos_s, db_s) = (photos.to_str().unwrap(), db.to_str().unwrap());
+    run(&["scan", photos_s, "--db", db_s, "--silent"]);
+    run(&[
+        "mark", "--path", photos_s, "--rating", "5", "--db", db_s, "--silent",
+    ]);
+
+    let before = run(&["search", "--rating", "5", "--db", db_s]);
+    assert!(
+        before.contains("one.jpg") && before.contains("two.jpg"),
+        "both should be rated: {before}"
+    );
+
+    // Delete one photo from disk; prune removes its stale row and its now-orphan mark.
+    std::fs::remove_file(&gone).unwrap();
+    run(&["prune", "--db", db_s, "--silent"]);
+
+    let after = run(&["search", "--rating", "5", "--db", db_s]);
+    assert!(
+        !after.contains("one.jpg"),
+        "orphan mark must be gone: {after}"
+    );
+    assert!(
+        after.contains("two.jpg"),
+        "surviving mark must remain: {after}"
+    );
 }

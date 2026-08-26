@@ -144,6 +144,29 @@ CREATE TABLE classifications (
 includes `model_id`, so two [models](/reference/models/) can classify the same
 library without overwriting each other.
 
+## marks
+
+Written by [`videre mark`](/commands/mark/), the gallery, and `scan`/`watch`
+when they read XMP. One row per marked photo; an unmarked photo has no row, and
+a row left with no marks is deleted rather than kept empty.
+
+```sql
+CREATE TABLE marks (
+    hash       TEXT PRIMARY KEY,
+    rating     INTEGER,
+    pick       INTEGER,
+    label      TEXT,
+    liked      INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+```
+
+`rating` is 0-5 (0 is stored as NULL, meaning unrated). `pick` is `1` keep / `0`
+reject / NULL. `label` is a colour name. `liked` is a boolean. Keyed by `hash`,
+so a mark follows a photo across duplicates and moves, and
+[`videre prune`](/commands/prune/) drops a row once no path references its hash.
+Only `rating` and `label` are portable to XMP; `pick` and `liked` stay here.
+
 ## location_clusters and geocode_cache
 
 ```sql

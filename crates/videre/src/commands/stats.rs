@@ -81,6 +81,10 @@ fn run_text(args: &StatsArgs) -> anyhow::Result<()> {
         "Faces: {} detected, {} people named",
         library.faces_detected, library.people_named
     );
+    println!(
+        "Marks: {} rated, {} picked, {} labelled, {} liked",
+        library.marks.rated, library.marks.picked, library.marks.labelled, library.marks.liked
+    );
     println!();
     println!("Embeddings:");
     if library.embeddings.is_empty() {

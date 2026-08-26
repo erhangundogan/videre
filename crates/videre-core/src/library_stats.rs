@@ -18,6 +18,9 @@ pub struct LibraryStats {
     pub wasted_bytes: i64,
     pub faces_detected: i64,
     pub people_named: i64,
+    /// Counts of rated/picked/labelled/liked photos.
+    #[serde(default)]
+    pub marks: crate::marks::MarksSummary,
     /// One entry per model with an embedding database for this library.
     /// Empty when nothing has been embedded, which is a normal state.
     #[serde(default)]
@@ -107,6 +110,7 @@ pub fn compute(conn: &Connection) -> Result<LibraryStats> {
         wasted_bytes,
         faces_detected,
         people_named,
+        marks: crate::marks::summary(conn)?,
         embeddings: Vec::new(),
     })
 }

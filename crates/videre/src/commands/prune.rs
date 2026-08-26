@@ -364,6 +364,34 @@ pub(crate) fn run_prune(
         orphans += removed;
     }
 
+    // Remove orphan marks: a mark whose photo is gone from every path. Same
+    // shared-hash rule as the embeddings sweep above (a hash survives as long as
+    // any path still references it), but marks live in the main db, so there is
+    // no attach. Dry-run counts pre-existing orphans only, for the same reason.
+    let marks_orphans = if args.dry_run {
+        conn.query_row(
+            "SELECT COUNT(*) FROM marks WHERE hash NOT IN (SELECT hash FROM file_hashes)",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n.max(0) as usize)
+        .unwrap_or(0)
+    } else {
+        conn.execute(
+            "DELETE FROM marks WHERE hash NOT IN (SELECT hash FROM file_hashes)",
+            [],
+        )
+        .unwrap_or(0)
+    };
+    if !args.silent && marks_orphans > 0 {
+        let tag = if args.dry_run {
+            "[dry-run] would remove"
+        } else {
+            "removed"
+        };
+        eprintln!("{tag} {marks_orphans} orphan mark(s)");
+    }
+
     // Remove orphan thumbnail-cache files: any videre_core::thumb_cache entry
     // (240/1200px thumbnail, face crop, or full-res original) whose content
     // hash has no remaining file_hashes row. Same "shared-hash safety" as the

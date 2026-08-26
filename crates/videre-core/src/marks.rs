@@ -136,6 +136,36 @@ pub fn get(conn: &Connection, hash: &str) -> Result<Marks> {
     Ok(row.unwrap_or_default())
 }
 
+/// Counts of each kind of mark across the library, for `videre stats`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+pub struct MarksSummary {
+    pub rated: i64,
+    pub picked: i64,
+    pub labelled: i64,
+    pub liked: i64,
+}
+
+/// Summarise the marks table. All zeroes when the table is absent, so a caller
+/// that predates marks still gets a valid struct. Returns `rusqlite::Result` to
+/// compose with `library_stats::compute`.
+pub fn summary(conn: &Connection) -> rusqlite::Result<MarksSummary> {
+    if !crate::db::table_exists(conn, "marks")? {
+        return Ok(MarksSummary::default());
+    }
+    Ok(conn.query_row(
+        "SELECT COUNT(rating), COUNT(pick), COUNT(label), COALESCE(SUM(liked), 0) FROM marks",
+        [],
+        |r| {
+            Ok(MarksSummary {
+                rated: r.get(0)?,
+                picked: r.get(1)?,
+                labelled: r.get(2)?,
+                liked: r.get(3)?,
+            })
+        },
+    )?)
+}
+
 /// Read marks for many hashes at once, for the gallery's file list. Only marked
 /// hashes appear in the map; an absent key means the photo is unmarked.
 pub fn get_many(conn: &Connection, hashes: &[String]) -> Result<HashMap<String, Marks>> {

@@ -71,6 +71,14 @@ videre mark --path ~/Photos --export-xmp    # write .xmp sidecars (opt-in)
 Picks and likes have no portable standard and stay in videre's database. See
 [`videre scan`](/commands/scan/) for the `--xmp` precedence rule when importing.
 
+## Other options
+
+| Flag | Effect |
+|---|---|
+| `--dry-run` | Show what would change (or which sidecars `--export-xmp` would write) without writing anything |
+| `--db <path>` | Act on a specific database instead of the [resolved default](/commands/config/) |
+| `--silent` | Suppress the `N of M` progress line |
+
 ## Caveats
 
 **Marks are database-only until you export.** `--export-xmp` writes one `.xmp`
