@@ -3767,6 +3767,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "roxmltree"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
+
+[[package]]
 name = "rsqlite-vfs"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5069,7 +5075,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "videre"
-version = "0.20.10"
+version = "0.21.0"
 dependencies = [
  "anyhow",
  "askama",
@@ -5084,6 +5090,7 @@ dependencies = [
  "kamadak-exif",
  "rayon",
  "rmcp",
+ "roxmltree",
  "rusqlite",
  "schemars",
  "serde",
@@ -5098,7 +5105,7 @@ dependencies = [
 
 [[package]]
 name = "videre-api"
-version = "0.20.10"
+version = "0.21.0"
 dependencies = [
  "anyhow",
  "image",
@@ -5111,7 +5118,7 @@ dependencies = [
 
 [[package]]
 name = "videre-core"
-version = "0.20.10"
+version = "0.21.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5131,7 +5138,7 @@ dependencies = [
 
 [[package]]
 name = "videre-ml"
-version = "0.20.10"
+version = "0.21.0"
 dependencies = [
  "anyhow",
  "candle-core",

@@ -112,6 +112,10 @@ pub struct SearchArgs {
     /// --path, from the shared selection vocabulary.
     #[command(flatten)]
     pub(crate) paths: super::selection_args::PathArgs,
+
+    /// --rating / --pick / --label / --like filters.
+    #[command(flatten)]
+    pub(crate) marks: super::selection_args::MarkArgs,
 }
 
 #[derive(Debug, Serialize)]
@@ -529,6 +533,10 @@ fn collect_hits(args: &SearchArgs, embedder: &dyn QueryEmbedder) -> Result<Outco
         exts: args.media.ext.clone(),
         mimes: args.media.mime.clone(),
         paths: args.paths.path.clone(),
+        min_rating: args.marks.rating,
+        pick: args.marks.pick_state(),
+        label: args.marks.label.clone(),
+        liked: args.marks.like,
     };
     anyhow::ensure!(
         is_ranked(args) || !selection.is_empty(),

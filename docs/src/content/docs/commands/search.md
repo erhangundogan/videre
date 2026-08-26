@@ -163,11 +163,30 @@ These same four work on [`videre scan`](/commands/scan/),
 narrow the *work* rather than the results. See
 [scoping a run](/guides/scoping-a-run/).
 
+## Filtering by mark
+
+Photos you have marked with [`videre mark`](/commands/mark/) filter here too:
+
+| Flag | Selects |
+|---|---|
+| `--rating <N>` | rating of **at least** N stars (0-5) |
+| `--pick <keep\|reject>` | that pick state exactly |
+| `--label <colour>` | that colour label exactly |
+| `--like` | liked (favourite) photos |
+
+```bash
+videre search --rating 4 --person "Alice"      # 4+ stars, of Alice
+videre search --pick reject | xargs trash       # cull what you flagged
+videre search --like --date 2024                # favourites from 2024
+```
+
+A photo with no mark never matches, the same rule every filter follows.
+
 ## Filters compose
 
-`--person`, `--category`, `--location`, `--type`, `--ext`, `--mime`, `--path`
-and the date bounds are **filters**: give any combination and they AND together,
-each narrowing further.
+`--person`, `--category`, `--location`, `--type`, `--ext`, `--mime`, `--path`,
+`--rating`, `--pick`, `--label`, `--like` and the date bounds are **filters**:
+give any combination and they AND together, each narrowing further.
 
 A text query or `--image` is a **ranker**: at most one, and it orders whatever
 the filters left.

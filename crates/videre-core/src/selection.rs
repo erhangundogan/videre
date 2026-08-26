@@ -122,6 +122,14 @@ pub struct RowSelection {
     pub exts: Vec<String>,
     pub mimes: Vec<String>,
     pub paths: Vec<PathBuf>,
+    /// Minimum star rating (>=), when filtering by rating.
+    pub min_rating: Option<i64>,
+    /// Exact pick state.
+    pub pick: Option<crate::marks::Pick>,
+    /// Exact colour label.
+    pub label: Option<String>,
+    /// Only liked photos.
+    pub liked: bool,
 }
 
 /// What a command can offer the resolver about itself.
@@ -160,6 +168,10 @@ impl RowSelection {
             && self.exts.is_empty()
             && self.mimes.is_empty()
             && self.paths.is_empty()
+            && self.min_rating.is_none()
+            && self.pick.is_none()
+            && self.label.is_none()
+            && !self.liked
     }
 
     /// Human-readable form for progress lines and confirmations.
@@ -198,6 +210,24 @@ impl RowSelection {
         }
         for p in &self.paths {
             parts.push(format!("--path {}", p.display()));
+        }
+        if let Some(r) = self.min_rating {
+            parts.push(format!("--rating {r}"));
+        }
+        if let Some(p) = self.pick {
+            parts.push(format!(
+                "--pick {}",
+                match p {
+                    crate::marks::Pick::Keep => "keep",
+                    crate::marks::Pick::Reject => "reject",
+                }
+            ));
+        }
+        if let Some(l) = &self.label {
+            parts.push(format!("--label {l}"));
+        }
+        if self.liked {
+            parts.push("--like".to_string());
         }
         parts.join(" ")
     }
@@ -247,6 +277,18 @@ impl RowSelection {
         }
         if !self.paths.is_empty() {
             narrow(by_paths(conn, &self.paths)?, &mut acc);
+        }
+        if let Some(min) = self.min_rating {
+            narrow(crate::marks::by_rating(conn, min)?, &mut acc);
+        }
+        if let Some(p) = self.pick {
+            narrow(crate::marks::by_pick(conn, p)?, &mut acc);
+        }
+        if let Some(l) = &self.label {
+            narrow(crate::marks::by_label(conn, l)?, &mut acc);
+        }
+        if self.liked {
+            narrow(crate::marks::by_liked(conn)?, &mut acc);
         }
 
         // Place last: geocoding may hit the network, so an already-empty

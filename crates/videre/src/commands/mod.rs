@@ -10,6 +10,8 @@ pub mod import_apple;
 pub mod import_lightroom;
 pub mod import_takeout;
 pub mod locations;
+pub mod mark;
+pub mod mark_export;
 pub mod mcp;
 pub mod prune;
 pub mod report;

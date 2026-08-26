@@ -15,6 +15,7 @@ pub mod io_timeout;
 pub mod library_stats;
 pub mod location;
 pub mod location_cluster;
+pub mod marks;
 pub mod mime_probe;
 pub mod person;
 pub mod person_search;

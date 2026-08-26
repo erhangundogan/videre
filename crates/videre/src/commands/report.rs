@@ -1098,6 +1098,18 @@ struct PersonSearchQuery {
     name: String,
 }
 
+/// The body of `POST /api/mark`. Every field is optional: only those present are
+/// changed, matching the partial-update semantics of `videre mark`. `rating` 0
+/// clears; `pick`/`label` `"none"` clears.
+#[derive(Deserialize)]
+struct MarkBody {
+    hash: String,
+    rating: Option<i64>,
+    pick: Option<String>,
+    label: Option<String>,
+    liked: Option<bool>,
+}
+
 struct AppState {
     conn: Mutex<Connection>,
     shutdown_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
@@ -1227,6 +1239,7 @@ async fn handle_search(
             html: None,
             media: super::selection_args::MediaArgs::default(),
             paths: super::selection_args::PathArgs::default(),
+            marks: super::selection_args::MarkArgs::default(),
             // Both bound at startup, so a request cannot retarget the server.
             db: Some(state.db.clone()),
             model: Some(state.model_id.clone()),
@@ -1408,6 +1421,28 @@ async fn handle_location(
 /// :warning: `limit` is capped. An unbounded `limit` would let a client ask for
 /// the whole library in one request, which is the exact page this endpoint
 /// exists to stop being built.
+/// The mark fields for a file object, as a leading-comma JSON fragment
+/// (`,"rating":..,"pick":..,"label":..,"liked":..`). An unmarked photo reads as
+/// nulls and `liked:false`, so every file has the same stable shape.
+fn mark_fields_json(m: Option<&videre_core::marks::Marks>) -> String {
+    use videre_core::marks::Pick;
+    let rating = m
+        .and_then(|m| m.rating)
+        .map(|r| r.to_string())
+        .unwrap_or_else(|| "null".into());
+    let pick = match m.and_then(|m| m.pick) {
+        Some(Pick::Keep) => "\"keep\"",
+        Some(Pick::Reject) => "\"reject\"",
+        None => "null",
+    };
+    let label = m
+        .and_then(|m| m.label.as_deref())
+        .and_then(|l| serde_json::to_string(l).ok())
+        .unwrap_or_else(|| "null".into());
+    let liked = m.map(|m| m.liked).unwrap_or(false);
+    format!(",\"rating\":{rating},\"pick\":{pick},\"label\":{label},\"liked\":{liked}")
+}
+
 async fn handle_files(
     State(state): State<Arc<AppState>>,
     Query(q): Query<FilesQuery>,
@@ -1431,6 +1466,9 @@ async fn handle_files(
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
     };
 
+    let page_hashes: Vec<String> = rows.iter().map(|(r, _)| r.hash.clone()).collect();
+    let marks = videre_core::marks::get_many(&conn, &page_hashes).unwrap_or_default();
+
     let mut out = String::from("{\"total\":");
     out.push_str(&total.to_string());
     out.push_str(",\"offset\":");
@@ -1452,11 +1490,13 @@ async fn handle_files(
                 .unwrap_or(&[]),
             true,
         );
-        // Splice `copies` in rather than widening FileRow, which the static
-        // export also builds and has no use for it.
+        // Splice `copies` and the marks in rather than widening FileRow, which
+        // the static export also builds and has no use for either.
         if obj.ends_with('}') {
             obj.truncate(obj.len() - 1);
-            obj.push_str(&format!(",\"copies\":{copies}}}"));
+            obj.push_str(&format!(",\"copies\":{copies}"));
+            obj.push_str(&mark_fields_json(marks.get(&row.hash)));
+            obj.push('}');
         }
         out.push_str(&obj);
     }
@@ -1572,6 +1612,34 @@ async fn handle_assign(
     videre_api::assign(&conn, &req.face_ids, &req.person_label)
         .map(|_| StatusCode::OK)
         .map_err(api_status)
+}
+
+/// Set marks on one photo from the gallery. Goes through the same
+/// `videre_core::marks` writer and the same parts-to-change mapping as
+/// `videre mark`, so the CLI and the gallery behave identically.
+async fn handle_set_mark(
+    State(state): State<Arc<AppState>>,
+    AxumJson(body): AxumJson<MarkBody>,
+) -> Result<StatusCode, StatusCode> {
+    let change = videre_core::marks::change_from_parts(
+        body.rating,
+        body.pick.as_deref(),
+        body.label.as_deref(),
+        body.liked,
+    );
+    if !change.any() {
+        return Ok(StatusCode::OK);
+    }
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    videre_core::marks::set(&conn, std::slice::from_ref(&body.hash), &change)
+        .map(|_| StatusCode::OK)
+        .map_err(|e| {
+            eprintln!("videre gallery: /api/mark failed: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
 }
 
 async fn handle_new_person(
@@ -2009,6 +2077,7 @@ async fn serve_faces_async(
         .route("/api/location", get(handle_location))
         .route("/api/raw", get(handle_raw_file))
         .route("/api/files", get(handle_files))
+        .route("/api/mark", post(handle_set_mark))
         .route("/api/dates", get(handle_dates))
         .route("/api/search", get(handle_search));
 

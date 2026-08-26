@@ -42,6 +42,9 @@ pub struct Config {
     /// Assumed floor read rate in MB/s, used to scale the I/O timeout to file
     /// size. Only needed on a mount slower than the default.
     pub min_read_rate_mb_s: Option<u64>,
+    /// Default XMP precedence for scan/watch/import: `db`, `file`, or `newest`.
+    /// A `--xmp` flag overrides it per run. Absent means `db`.
+    pub xmp_precedence: Option<String>,
 }
 
 /// Path of the config file inside a given home dir: <home>/config.toml.
@@ -102,6 +105,19 @@ fn string_key(table: &toml::Table, file: &Path, key: &str) -> Result<Option<Stri
     }
 }
 
+/// Read the `xmp_precedence` key, validating it against the known values so a
+/// typo is caught at load time rather than silently ignored during a scan.
+fn xmp_precedence_key(table: &toml::Table, file: &Path) -> Result<Option<String>> {
+    match string_key(table, file, "xmp_precedence")? {
+        None => Ok(None),
+        Some(s) => {
+            crate::marks::XmpPrecedence::parse(&s)
+                .with_context(|| format!("malformed config {}", file.display()))?;
+            Ok(Some(s))
+        }
+    }
+}
+
 /// Load <home>/config.toml. A missing file is the default config; a file that
 /// does not parse is a hard error (silent fallback would mask typos).
 pub fn load_config(home: &Path) -> Result<Config> {
@@ -119,6 +135,7 @@ pub fn load_config(home: &Path) -> Result<Config> {
         default_path: path_key(&table, &path, "default_path")?,
         default_model: string_key(&table, &path, "default_model")?,
         min_read_rate_mb_s: positive_int_key(&table, &path, "min_read_rate_mb_s")?,
+        xmp_precedence: xmp_precedence_key(&table, &path)?,
     })
 }
 
@@ -312,6 +329,17 @@ pub fn set_default_model(home: &Path, model_id: &str) -> Result<()> {
 
 pub fn unset_default_model(home: &Path) -> Result<()> {
     unset_key(home, "default_model")
+}
+
+/// Set the default XMP precedence, validating it before writing so a bad value
+/// never reaches the config file.
+pub fn set_xmp_precedence(home: &Path, value: &str) -> Result<()> {
+    crate::marks::XmpPrecedence::parse(value)?;
+    set_string_key(home, "xmp_precedence", value.to_string())
+}
+
+pub fn unset_xmp_precedence(home: &Path) -> Result<()> {
+    unset_key(home, "xmp_precedence")
 }
 
 /// The configured default embedding model, if any. None means the built-in

@@ -50,6 +50,9 @@ pub struct ScanArgs {
     #[arg(long)]
     silent: bool,
 
+    #[command(flatten)]
+    xmp: crate::xmp::XmpArg,
+
     /// Emit a single JSON object on stdout instead of human-readable text
     #[arg(long)]
     json: bool,
@@ -345,6 +348,16 @@ fn run_text(args: ScanArgs) -> anyhow::Result<()> {
                 eprintln!("Error: {e:#}");
                 process::exit(1);
             }
+            match args.xmp.precedence() {
+                Ok(prec) => {
+                    if let Err(e) =
+                        crate::xmp::import_xmp_for_records(&conn, &records, prec, args.silent)
+                    {
+                        eprintln!("Warning: applying XMP marks: {e:#}");
+                    }
+                }
+                Err(e) => eprintln!("Warning: {e:#}"),
+            }
             if !args.silent {
                 eprintln!(
                     "{}",
@@ -397,6 +410,8 @@ fn run_json(args: &ScanArgs) -> anyhow::Result<ScanJson> {
                 sqlite_output::write_records(&records, &db_path)
                     .map_err(|e| anyhow::anyhow!("writing to {:?}: {}", db_path, e))
             })?;
+            let prec = args.xmp.precedence()?;
+            crate::xmp::import_xmp_for_records(&conn, &records, prec, args.silent)?;
             if !args.silent {
                 eprintln!(
                     "{}",

@@ -16,6 +16,7 @@ videre stats --db ~/photos.db          # use a specific database
 Library: 70601 file(s) (398.9 GB), 57142 photo(s), 13459 video(s)
 Duplicates: 0 group(s), 0 file(s), 0 B wasted
 Faces: 58555 detected, 86 people named
+Marks: 312 rated, 40 picked, 12 labelled, 128 liked
 
 Embeddings:
   google/siglip-base-patch16-224            70588   768-dim   128.3 MB

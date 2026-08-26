@@ -13,6 +13,32 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.21.0] - 2026-08-26
+
+### Added
+
+- **Photo marks: rating, pick, colour label, and like.** A new `videre mark`
+  command sets any of them on a selection (the same filters as `search`) or on
+  paths piped in, and the same names filter everywhere: `videre search --rating
+  4 --pick keep --label Red --like` composes with every existing filter, in the
+  CLI, over MCP, and in the gallery. Marks are keyed by content hash, so they
+  follow a photo across duplicates and moves.
+
+- **XMP interchange.** `scan` and `watch` read `xmp:Rating` and `xmp:Label` from
+  a sidecar or the embedded packet, so a library already rated in Lightroom or
+  digiKam arrives with its ratings intact. A `--xmp db|file|newest` flag (config
+  key `xmp_precedence`, default `db`) decides who wins when both carry a mark,
+  and `videre mark --export-xmp` writes portable sidecars back out. Pick and
+  like have no XMP standard and stay in videre's database.
+
+- **Gallery marks over HTTP.** `POST /api/mark` writes marks and `/api/files`
+  returns them, through the same core the CLI uses. The visible thumbnail UI is
+  tracked separately.
+
+- **`videre stats`** now reports a Marks line, and `videre prune` drops marks
+  whose photo is gone from every path, the same orphan rule as embeddings and
+  thumbnails.
+
 ## [0.20.10] - 2026-08-24
 
 ### Fixed
@@ -1264,6 +1290,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[0.21.0]: https://github.com/erhangundogan/videre/compare/v0.20.10...v0.21.0
 [0.20.10]: https://github.com/erhangundogan/videre/compare/v0.20.9...v0.20.10
 [0.20.9]: https://github.com/erhangundogan/videre/compare/v0.20.8...v0.20.9
 [0.20.8]: https://github.com/erhangundogan/videre/compare/v0.20.7...v0.20.8

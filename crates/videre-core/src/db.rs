@@ -13,6 +13,7 @@ pub fn open_wal(path: &Path) -> rusqlite::Result<Connection> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     ensure_file_hashes_columns(&conn);
     crate::face_db::ensure_people_table(&conn);
+    let _ = crate::marks::ensure_marks_table(&conn);
     Ok(conn)
 }
 
