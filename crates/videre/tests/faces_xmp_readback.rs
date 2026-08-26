@@ -60,21 +60,16 @@ fn imports_a_face_name_from_an_xmp_region() {
 
     // Scan (width/height come from the image header) and detect faces.
     run(&["scan", photos_s, "--db", db_s, "--silent"]);
-    run(&[
-        "faces",
-        "--db",
-        db_s,
-        "--min-cluster-size",
-        "1",
-        "--silent",
-    ]);
+    run(&["faces", "--db", db_s, "--min-cluster-size", "1", "--silent"]);
 
     // Read a detected face's bbox and the image dimensions, so the region we
     // write overlaps a real face regardless of the model's exact output.
     let (bbox, iw, ih): (String, f64, f64) = {
         let conn = Connection::open(&db).unwrap();
         let bbox: String = conn
-            .query_row("SELECT bbox FROM faces ORDER BY id LIMIT 1", [], |r| r.get(0))
+            .query_row("SELECT bbox FROM faces ORDER BY id LIMIT 1", [], |r| {
+                r.get(0)
+            })
             .expect("the fixture must contain at least one detectable face");
         let (w, h): (f64, f64) = conn
             .query_row("SELECT width, height FROM file_hashes LIMIT 1", [], |r| {
@@ -119,5 +114,8 @@ fn imports_a_face_name_from_an_xmp_region() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(confirmed, 1, "the region name should confirm exactly one face");
+    assert_eq!(
+        confirmed, 1,
+        "the region name should confirm exactly one face"
+    );
 }
