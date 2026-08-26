@@ -3,6 +3,7 @@
 //! there is no second XMP parser anywhere in the tree.
 
 pub mod read;
+pub mod write;
 
 pub use read::read_marks;
 

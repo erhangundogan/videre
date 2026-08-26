@@ -76,3 +76,63 @@ fn scan_imports_xmp_rating_and_db_precedence_holds() {
     );
     assert!(run(&["search", "--rating", "3", "--db", db_s]).contains("IMG.jpg"));
 }
+
+/// Copies the fixture jpg into `dir` as `name`, with no sidecar.
+fn plain_fixture(dir: &Path, name: &str) -> std::path::PathBuf {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tiny.jpg");
+    let img = dir.join(name);
+    std::fs::copy(&src, &img).expect("copy fixture");
+    img
+}
+
+#[test]
+fn export_xmp_writes_sidecars_and_dry_run_writes_nothing() {
+    let dir = tempdir().unwrap();
+    let photos = dir.path().join("photos");
+    std::fs::create_dir(&photos).unwrap();
+    let img = plain_fixture(&photos, "A.jpg");
+    let db = dir.path().join("hashes.db");
+    let (photos_s, db_s) = (photos.to_str().unwrap(), db.to_str().unwrap());
+    let sidecar = photos.join("A.jpg.xmp");
+
+    run(&["scan", photos_s, "--db", db_s, "--silent"]);
+    run(&[
+        "mark", "--path", photos_s, "--rating", "4", "--label", "Green", "--db", db_s, "--silent",
+    ]);
+
+    // Dry run writes nothing.
+    run(&[
+        "mark",
+        "--path",
+        photos_s,
+        "--export-xmp",
+        "--dry-run",
+        "--db",
+        db_s,
+        "--silent",
+    ]);
+    assert!(!sidecar.exists(), "--dry-run must not write a sidecar");
+
+    // Real export writes a sidecar carrying the rating and label.
+    run(&[
+        "mark",
+        "--path",
+        photos_s,
+        "--export-xmp",
+        "--db",
+        db_s,
+        "--silent",
+    ]);
+    assert!(sidecar.exists(), "expected {}", sidecar.display());
+    let doc = std::fs::read_to_string(&sidecar).unwrap();
+    assert!(doc.contains("xmp:Rating=\"4\""), "got: {doc}");
+    assert!(doc.contains("Green"), "got: {doc}");
+
+    // And it reads back into a fresh library.
+    let db2 = dir.path().join("hashes2.db");
+    let db2_s = db2.to_str().unwrap();
+    // The scan needs the image beside its sidecar; both are already in photos.
+    let _ = &img;
+    run(&["scan", photos_s, "--db", db2_s, "--silent"]);
+    assert!(run(&["search", "--rating", "4", "--db", db2_s]).contains("A.jpg"));
+}
