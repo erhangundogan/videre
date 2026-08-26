@@ -120,6 +120,138 @@ pub fn build_packet(o: &OwnedXmp) -> String {
     )
 }
 
+/// The (namespace-URI, local-name) pairs videre owns. Any existing element or
+/// attribute under an rdf:Description matching one of these is removed before
+/// ours is inserted, so a re-export never doubles a property.
+/// `lr:hierarchicalSubject` is listed now so a later tags change need not touch
+/// this set again.
+const OWNED_PROPS: &[(&str, &str)] = &[
+    ("http://ns.adobe.com/xap/1.0/", "Rating"),
+    ("http://ns.adobe.com/xap/1.0/", "Label"),
+    ("http://purl.org/dc/elements/1.1/", "subject"),
+    ("http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/", "Location"),
+    (
+        "http://www.metadataworkinggroup.com/schemas/regions/",
+        "Regions",
+    ),
+    ("http://ns.adobe.com/lightroom/1.0/", "hierarchicalSubject"),
+];
+
+const RDF_NS: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
+
+fn is_owned(ns: &str, name: &str) -> bool {
+    OWNED_PROPS.iter().any(|(u, n)| *u == ns && *n == name)
+}
+
+/// Apply non-overlapping `(start, end, replacement)` edits to `s`, highest start
+/// first so earlier offsets stay valid.
+fn apply_edits(mut s: String, mut edits: Vec<(usize, usize, String)>) -> String {
+    edits.sort_by(|a, b| b.0.cmp(&a.0));
+    for (start, end, repl) in edits {
+        s.replace_range(start..end, &repl);
+    }
+    s
+}
+
+/// Merge owned properties into an existing sidecar's text. Removes only
+/// videre-owned properties (in element OR attribute form, across every
+/// rdf:Description), preserves all foreign content and its namespace
+/// declarations verbatim, and inserts the freshly built owned block into the
+/// first rdf:Description. Best effort: if the text cannot be parsed or has no
+/// rdf:Description, fall back to a fresh packet, so a merge never fails an export.
+pub fn merge_into(existing: &str, o: &OwnedXmp) -> String {
+    // Pass 1: locate and delete owned props (elements and attributes) everywhere.
+    let out = {
+        let Ok(doc) = roxmltree::Document::parse(existing) else {
+            return build_packet(o);
+        };
+        let descs: Vec<_> = doc
+            .descendants()
+            .filter(|n| {
+                n.tag_name().name() == "Description" && n.tag_name().namespace() == Some(RDF_NS)
+            })
+            .collect();
+        if descs.is_empty() {
+            return build_packet(o);
+        }
+        let mut cuts: Vec<(usize, usize, String)> = Vec::new();
+        for desc in &descs {
+            for child in desc.children().filter(|n| n.is_element()) {
+                if is_owned(
+                    child.tag_name().namespace().unwrap_or(""),
+                    child.tag_name().name(),
+                ) {
+                    let r = child.range();
+                    cuts.push((r.start, r.end, String::new()));
+                }
+            }
+            for attr in desc.attributes() {
+                if is_owned(attr.namespace().unwrap_or(""), attr.name()) {
+                    let mut r = attr.range();
+                    // Eat one leading space so we do not leave a double gap.
+                    if r.start > 0 && existing.as_bytes()[r.start - 1] == b' ' {
+                        r.start -= 1;
+                    }
+                    cuts.push((r.start, r.end, String::new()));
+                }
+            }
+        }
+        apply_edits(existing.to_string(), cuts)
+    };
+
+    // Pass 2: insert owned block + any missing owned namespaces into the first
+    // rdf:Description of the trimmed text. Re-parse so offsets are valid.
+    let (props, missing_ns, tag_open_gt, self_closing, close_lt, desc_start) = {
+        let Ok(doc) = roxmltree::Document::parse(&out) else {
+            return build_packet(o);
+        };
+        let Some(desc) = doc.descendants().find(|n| {
+            n.tag_name().name() == "Description" && n.tag_name().namespace() == Some(RDF_NS)
+        }) else {
+            return build_packet(o);
+        };
+        let declared: std::collections::HashSet<&str> =
+            desc.namespaces().filter_map(|ns| ns.name()).collect();
+        let missing_ns: String = OWNED_NS
+            .iter()
+            .filter(|(p, _)| !declared.contains(*p))
+            .map(|(p, u)| format!(" xmlns:{p}=\"{u}\""))
+            .collect();
+        let desc_start = desc.range().start;
+        let gt = out[desc_start..]
+            .find('>')
+            .map(|i| desc_start + i)
+            .unwrap_or(out.len());
+        let self_closing = gt > desc_start && out.as_bytes()[gt - 1] == b'/';
+        let desc_end = desc.range().end;
+        let close_lt = out[..desc_end].rfind('<').unwrap_or(desc_end);
+        (
+            owned_properties_xml(o),
+            missing_ns,
+            gt,
+            self_closing,
+            close_lt,
+            desc_start,
+        )
+    };
+    let _ = desc_start;
+
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    if self_closing {
+        // Replace the trailing `/>` with `{ns}>\n{props}  </rdf:Description>\n`.
+        let slash = tag_open_gt - 1;
+        edits.push((
+            slash,
+            tag_open_gt + 1,
+            format!("{missing_ns}>\n{props}  </rdf:Description>\n"),
+        ));
+    } else {
+        edits.push((tag_open_gt, tag_open_gt, missing_ns));
+        edits.push((close_lt, close_lt, props));
+    }
+    apply_edits(out, edits)
+}
+
 /// The sidecar path for a photo: `<file>.<ext>.xmp`, matching what the reader
 /// looks for.
 pub fn sidecar_path(path: &Path) -> std::path::PathBuf {
@@ -219,6 +351,72 @@ mod tests {
         }
         let want = std::fs::read_to_string(path).expect("golden fixture missing");
         assert_eq!(doc, want, "build_packet drifted from the validated golden");
+    }
+
+    #[test]
+    fn merge_preserves_foreign_props_and_replaces_owned_element_form() {
+        use crate::xmp::model::OwnedXmp;
+        let existing = r#"<?xpacket begin="﻿"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF
+ xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+ <rdf:Description rdf:about=""
+   xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+   xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/">
+  <xmp:Rating>2</xmp:Rating>
+  <crs:Temperature>5200</crs:Temperature>
+ </rdf:Description>
+</rdf:RDF></x:xmpmeta><?xpacket end="w"?>"#;
+        let owned = OwnedXmp {
+            rating: Some(5),
+            keywords: vec!["beach".into()],
+            ..Default::default()
+        };
+        let merged = merge_into(existing, &owned);
+        assert!(merged.contains("<crs:Temperature>5200</crs:Temperature>")); // foreign survives
+        assert!(!merged.contains("<xmp:Rating>2</xmp:Rating>")); // old rating gone
+        assert_eq!(merged.matches("<xmp:Rating>5</xmp:Rating>").count(), 1); // new, once
+        assert!(merged.contains("<rdf:li>beach</rdf:li>"));
+        assert!(merged.contains(r#"xmlns:dc="http://purl.org/dc/elements/1.1/""#)); // dc declared
+        assert!(roxmltree::Document::parse(&merged).is_ok()); // still well-formed
+    }
+
+    #[test]
+    fn merge_strips_owned_attribute_form_rating() {
+        use crate::xmp::model::OwnedXmp;
+        // Lightroom writes xmp:Rating as an ATTRIBUTE on rdf:Description.
+        let existing = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF
+ xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+ <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+   xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+   xmp:Rating="2" crs:Contrast="10">
+  <crs:Temperature>5200</crs:Temperature>
+ </rdf:Description></rdf:RDF></x:xmpmeta>"#;
+        let owned = OwnedXmp {
+            rating: Some(5),
+            ..Default::default()
+        };
+        let merged = merge_into(existing, &owned);
+        // Old attribute rating removed; no attribute rating survives.
+        assert!(!merged.contains(r#"xmp:Rating="2""#));
+        assert!(!merged.contains(r#"xmp:Rating="5""#));
+        // New rating present exactly once, as an element.
+        assert_eq!(merged.matches("<xmp:Rating>5</xmp:Rating>").count(), 1);
+        // Foreign attribute and element both survive.
+        assert!(merged.contains(r#"crs:Contrast="10""#));
+        assert!(merged.contains("<crs:Temperature>5200</crs:Temperature>"));
+        assert!(roxmltree::Document::parse(&merged).is_ok());
+    }
+
+    #[test]
+    fn merge_on_unparseable_falls_back_to_fresh_packet() {
+        use crate::xmp::model::OwnedXmp;
+        let owned = OwnedXmp {
+            rating: Some(3),
+            ..Default::default()
+        };
+        let merged = merge_into("not xml at all", &owned);
+        assert!(merged.contains("<xmp:Rating>3</xmp:Rating>"));
+        assert!(merged.contains("<x:xmpmeta"));
     }
 
     #[test]
