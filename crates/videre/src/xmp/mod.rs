@@ -7,8 +7,6 @@ pub mod read;
 pub mod readback;
 pub mod write;
 
-pub use read::read_marks;
-
 use anyhow::Result;
 use rusqlite::Connection;
 use std::path::Path;
