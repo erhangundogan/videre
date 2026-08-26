@@ -313,6 +313,7 @@ fn build_search(
             path: params.path.iter().map(std::path::PathBuf::from).collect(),
         },
         marks: super::selection_args::MarkArgs::default(),
+        tags: Default::default(),
         // Both bound at startup, so a call cannot retarget the server.
         db: Some(db.to_path_buf()),
         model: Some(model_id.to_string()),

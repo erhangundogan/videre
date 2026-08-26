@@ -116,6 +116,10 @@ pub struct SearchArgs {
     /// --rating / --pick / --label / --like filters.
     #[command(flatten)]
     pub(crate) marks: super::selection_args::MarkArgs,
+
+    /// --tag filter (repeatable; all must be present).
+    #[command(flatten)]
+    pub(crate) tags: super::selection_args::TagFilterArgs,
 }
 
 #[derive(Debug, Serialize)]
@@ -537,6 +541,7 @@ fn collect_hits(args: &SearchArgs, embedder: &dyn QueryEmbedder) -> Result<Outco
         pick: args.marks.pick_state(),
         label: args.marks.label.clone(),
         liked: args.marks.like,
+        tags: args.tags.tags.clone(),
     };
     anyhow::ensure!(
         is_ranked(args) || !selection.is_empty(),

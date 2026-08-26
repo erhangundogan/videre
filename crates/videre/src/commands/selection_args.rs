@@ -179,6 +179,15 @@ pub struct MarkArgs {
     pub like: bool,
 }
 
+/// `--tag` as a *filter* (row-side: tags are stored per hash). `videre tag` uses
+/// tags as *setters* instead, so it does not flatten this group.
+#[derive(clap::Args, Clone, Debug, Default)]
+pub struct TagFilterArgs {
+    /// Only files carrying this tag. Repeatable; all must be present
+    #[arg(long = "tag", value_name = "TAG")]
+    pub tags: Vec<String>,
+}
+
 impl MarkArgs {
     /// The parsed pick state, if `--pick` was given.
     pub fn pick_state(&self) -> Option<videre_core::marks::Pick> {

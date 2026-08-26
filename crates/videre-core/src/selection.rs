@@ -130,6 +130,8 @@ pub struct RowSelection {
     pub label: Option<String>,
     /// Only liked photos.
     pub liked: bool,
+    /// Tags that must all be present (AND across multiple --tag values).
+    pub tags: Vec<String>,
 }
 
 /// What a command can offer the resolver about itself.
@@ -172,6 +174,7 @@ impl RowSelection {
             && self.pick.is_none()
             && self.label.is_none()
             && !self.liked
+            && self.tags.is_empty()
     }
 
     /// Human-readable form for progress lines and confirmations.
@@ -228,6 +231,9 @@ impl RowSelection {
         }
         if self.liked {
             parts.push("--like".to_string());
+        }
+        for t in &self.tags {
+            parts.push(format!("--tag {t}"));
         }
         parts.join(" ")
     }
@@ -289,6 +295,9 @@ impl RowSelection {
         }
         if self.liked {
             narrow(crate::marks::by_liked(conn)?, &mut acc);
+        }
+        for t in &self.tags {
+            narrow(crate::tags::by_tag(conn, t)?, &mut acc);
         }
 
         // Place last: geocoding may hit the network, so an already-empty
@@ -719,6 +728,33 @@ mod resolve_tests {
         let h = r.hashes.unwrap();
         assert_eq!(h.len(), 2);
         assert!(h.contains("h_mov") && h.contains("h_mp4"));
+    }
+
+    #[test]
+    fn tag_predicate_narrows_and_ands_with_other_axes() {
+        let conn = db();
+        crate::tags::set_tags(&conn, &["h_jpg".into(), "h_heic".into()], &["beach".into()])
+            .unwrap();
+        // The tag alone selects both tagged files.
+        let mut s = sel();
+        s.tags = vec!["beach".into()];
+        let h = s
+            .resolve(&conn, &SelectionCtx::default())
+            .unwrap()
+            .hashes
+            .unwrap();
+        assert_eq!(h.len(), 2);
+        assert!(h.contains("h_jpg") && h.contains("h_heic"));
+        // And it intersects with another axis.
+        let mut s = sel();
+        s.tags = vec!["beach".into()];
+        s.exts = vec!["jpg".into()];
+        let h = s
+            .resolve(&conn, &SelectionCtx::default())
+            .unwrap()
+            .hashes
+            .unwrap();
+        assert_eq!(h.into_iter().collect::<Vec<_>>(), vec!["h_jpg"]);
     }
 
     #[test]
