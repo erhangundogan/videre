@@ -5,6 +5,7 @@ pub mod embeddings;
 pub mod embeddings_db;
 pub mod face_cluster;
 pub mod face_db;
+pub mod face_match;
 pub mod geocode;
 pub mod heic;
 pub mod hf_cache;
