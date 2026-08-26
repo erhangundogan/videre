@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use std::io::Read;
 use std::path::PathBuf;
-use videre_core::marks::{self, Field, MarkChange, Pick};
+use videre_core::marks::{self, MarkChange};
 use videre_core::selection::SelectionCtx;
 
 #[derive(clap::Args)]
@@ -83,24 +83,8 @@ fn build_change(a: &MarkArgs) -> MarkChange {
     } else {
         None
     };
-    MarkChange {
-        rating: a
-            .rating
-            .map(|r| if r == 0 { Field::Clear } else { Field::Set(r) }),
-        pick: a.pick.as_deref().map(|p| match p {
-            "keep" => Field::Set(Pick::Keep),
-            "reject" => Field::Set(Pick::Reject),
-            _ => Field::Clear, // "none"
-        }),
-        label: a.label.as_deref().map(|l| {
-            if l == "none" {
-                Field::Clear
-            } else {
-                Field::Set(l.to_string())
-            }
-        }),
-        liked,
-    }
+    // Shared with the gallery's POST /api/mark, so the two cannot drift.
+    marks::change_from_parts(a.rating, a.pick.as_deref(), a.label.as_deref(), liked)
 }
 
 /// Targets come from stdin (a pipe of paths) when stdin is not a terminal, else

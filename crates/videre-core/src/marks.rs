@@ -8,7 +8,7 @@
 
 use anyhow::Result;
 use rusqlite::Connection;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// A photo's four marks. Absent means unset.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -73,6 +73,34 @@ impl MarkChange {
     }
 }
 
+/// Build a `MarkChange` from the loosely-typed request shapes the CLI flags and
+/// the gallery's JSON body share: `rating` where 0 clears, `pick`/`label` where
+/// `"none"` clears, `liked` set directly. The one place these string forms map
+/// to the typed change, so the two callers cannot drift.
+pub fn change_from_parts(
+    rating: Option<i64>,
+    pick: Option<&str>,
+    label: Option<&str>,
+    liked: Option<bool>,
+) -> MarkChange {
+    MarkChange {
+        rating: rating.map(|r| if r == 0 { Field::Clear } else { Field::Set(r) }),
+        pick: pick.map(|p| match p {
+            "keep" => Field::Set(Pick::Keep),
+            "reject" => Field::Set(Pick::Reject),
+            _ => Field::Clear, // "none"
+        }),
+        label: label.map(|l| {
+            if l == "none" {
+                Field::Clear
+            } else {
+                Field::Set(l.to_string())
+            }
+        }),
+        liked,
+    }
+}
+
 /// Create the marks table if absent. Idempotent, safe on every open, called
 /// from `db::open_wal` the same way the `faces`/`people` tables are ensured.
 pub fn ensure_marks_table(conn: &Connection) -> Result<()> {
@@ -106,6 +134,19 @@ pub fn get(conn: &Connection, hash: &str) -> Result<Marks> {
         )
         .ok();
     Ok(row.unwrap_or_default())
+}
+
+/// Read marks for many hashes at once, for the gallery's file list. Only marked
+/// hashes appear in the map; an absent key means the photo is unmarked.
+pub fn get_many(conn: &Connection, hashes: &[String]) -> Result<HashMap<String, Marks>> {
+    let mut out = HashMap::new();
+    for h in hashes {
+        let m = get(conn, h)?;
+        if m != Marks::default() {
+            out.insert(h.clone(), m);
+        }
+    }
+    Ok(out)
 }
 
 /// Apply `change` to every hash. Fields not named are untouched; a `Clear`
@@ -266,6 +307,37 @@ mod tests {
     #[test]
     fn empty_change_touches_nothing() {
         assert!(!MarkChange::default().any());
+    }
+
+    #[test]
+    fn change_from_parts_maps_the_request_shapes() {
+        // rating 0 clears, "none" clears pick/label, liked passes through.
+        let c = change_from_parts(Some(0), Some("none"), Some("none"), Some(false));
+        assert!(matches!(c.rating, Some(Field::Clear)));
+        assert!(matches!(c.pick, Some(Field::Clear)));
+        assert!(matches!(c.label, Some(Field::Clear)));
+        assert_eq!(c.liked, Some(false));
+        let c = change_from_parts(Some(4), Some("reject"), Some("Red"), None);
+        assert!(matches!(c.rating, Some(Field::Set(4))));
+        assert!(matches!(c.pick, Some(Field::Set(Pick::Reject))));
+        assert!(matches!(c.label, Some(Field::Set(ref s)) if s == "Red"));
+        assert_eq!(c.liked, None);
+        // an absent field stays untouched
+        assert!(change_from_parts(None, None, None, None).rating.is_none());
+    }
+
+    #[test]
+    fn get_many_returns_only_marked_hashes() {
+        let c = mem();
+        set(
+            &c,
+            &["a".into()],
+            &change_from_parts(Some(5), None, None, None),
+        )
+        .unwrap();
+        let map = get_many(&c, &["a".into(), "b".into()]).unwrap();
+        assert_eq!(map.get("a").and_then(|m| m.rating), Some(5));
+        assert!(!map.contains_key("b"), "unmarked hash must be absent");
     }
 
     #[test]
