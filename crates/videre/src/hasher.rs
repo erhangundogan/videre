@@ -212,7 +212,7 @@ fn hash_file_inner(path: &Path) -> io::Result<FileRecord> {
         .unwrap_or("")
         .to_lowercase();
 
-    let meta = match videre_core::mime_probe::effective_mime(mime.as_deref(), &ext) {
+    let mut meta = match videre_core::mime_probe::effective_mime(mime.as_deref(), &ext) {
         Some(m) if videre_core::mime_probe::EXIF_MIMES.contains(&m) => extract_exif(path).into(),
         // QuickTime atoms are not EXIF, so `EXIF_MIMES` is deliberately not
         // widened to cover video; it would be a lie the next reader has to
@@ -222,6 +222,21 @@ fn hash_file_inner(path: &Path) -> io::Result<FileRecord> {
         }
         _ => ExtractedMeta::default(),
     };
+
+    // EXIF often omits pixel dimensions (AI-generated images, screenshots, many
+    // PNGs), yet width/height are load-bearing for XMP face-region export and
+    // import, which normalize pixel bboxes against them. Fall back to the image
+    // header, which `image::image_dimensions` reads without decoding pixels.
+    // Images only: video dimensions come from the container above, and a HEIC or
+    // non-image file simply fails the read and stays NULL.
+    let is_video = videre_core::mime_probe::effective_mime(mime.as_deref(), &ext)
+        .is_some_and(videre_core::mime_probe::is_video_mime);
+    if !is_video && (meta.width.is_none() || meta.height.is_none()) {
+        if let Ok((w, h)) = image::image_dimensions(path) {
+            meta.width = Some(w);
+            meta.height = Some(h);
+        }
+    }
 
     Ok(FileRecord {
         path: path.to_string_lossy().to_string(),
@@ -469,6 +484,19 @@ mod tests {
         assert!(record.gps_lon.is_some());
         assert_eq!(record.width, Some(4032));
         assert_eq!(record.height, Some(3024));
+    }
+
+    #[test]
+    fn hash_file_falls_back_to_image_header_when_exif_lacks_dimensions() {
+        // A PNG carries no EXIF pixel dimensions, so width/height must come from
+        // the image header. Without the fallback these stay NULL and XMP face
+        // regions cannot be exported or imported for the file.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("no-exif.png");
+        image::RgbImage::new(7, 5).save(&path).unwrap();
+        let record = hash_file(&path).unwrap();
+        assert_eq!(record.width, Some(7));
+        assert_eq!(record.height, Some(5));
     }
 
     #[test]
