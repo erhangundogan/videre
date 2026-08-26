@@ -391,6 +391,50 @@ mod tests {
     }
 
     #[test]
+    fn merge_preserves_a_real_exiftool_written_sidecar() {
+        use crate::xmp::model::{Area, OwnedXmp, Region};
+        // A genuine third-party sidecar produced by exiftool (the MWG reference
+        // writer): multiple rdf:Description blocks, one per namespace, and nested
+        // element-form MWG areas - a structure quite unlike what videre emits.
+        let existing = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/xmp/thirdparty-lightroom.xmp"
+        ))
+        .unwrap();
+        let owned = OwnedXmp {
+            rating: Some(5),
+            keywords: vec!["portrait".into()],
+            regions: vec![Region {
+                name: "Ayşe".into(),
+                area: Area {
+                    cx: 0.5,
+                    cy: 0.5,
+                    w: 0.1,
+                    h: 0.1,
+                },
+            }],
+            applied_dims: Some((6000, 4000)),
+            ..Default::default()
+        };
+        let merged = merge_into(&existing, &owned);
+
+        // Foreign Camera Raw develop setting survives untouched.
+        assert!(merged.contains("<crs:Contrast>25</crs:Contrast>"));
+        // Owned rating replaced: the exiftool value is gone, ours present once.
+        assert!(!merged.contains("<xmp:Rating>3</xmp:Rating>"));
+        assert_eq!(merged.matches("<xmp:Rating>5</xmp:Rating>").count(), 1);
+        // The old face region and keywords (owned) are replaced by ours, not doubled.
+        assert!(!merged.contains("<mwg-rs:Name>Gökhan</mwg-rs:Name>"));
+        assert!(merged.contains("<mwg-rs:Name>Ayşe</mwg-rs:Name>"));
+        assert!(!merged.contains("<rdf:li>holiday</rdf:li>"));
+        assert!(merged.contains("<rdf:li>portrait</rdf:li>"));
+        // And the merged document is still well-formed XML.
+        assert!(roxmltree::Document::parse(&merged).is_ok());
+        // Our reader can read the new rating back out of the merged result.
+        assert_eq!(crate::xmp::read::parse_xmp(&merged).rating, Some(5));
+    }
+
+    #[test]
     fn merge_on_unparseable_falls_back_to_fresh_packet() {
         use crate::xmp::model::OwnedXmp;
         let owned = OwnedXmp {

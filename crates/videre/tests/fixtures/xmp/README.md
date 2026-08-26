@@ -21,3 +21,25 @@ Confirm exiftool still reports `XMP-mwg-rs RegionInfo` with `Name=Ayşe`,
 commit the regenerated fixture. exiftool is not in CI (it is not a build
 dependency), so this manual step is the guard against emitting XMP a real tool
 cannot read.
+
+## `thirdparty-lightroom.xmp`
+
+A sidecar written by exiftool itself, not by videre, so the merge is tested
+against genuine third-party output: multiple `rdf:Description` blocks (one per
+namespace) and nested element-form MWG areas, a structure unlike what videre
+emits. It carries a rating, a colour label, `dc:subject` keywords, a named MWG
+face region, and a foreign Camera Raw develop setting (`crs:Contrast`).
+
+`merge_preserves_a_real_exiftool_written_sidecar` (in `xmp/write.rs`) asserts a
+merge replaces only the videre-owned fields and preserves `crs:Contrast`
+verbatim. It was regenerated with:
+
+```bash
+exiftool -q -o thirdparty-lightroom.xmp \
+  -XMP-xmp:Rating=3 -XMP-xmp:Label=Yellow \
+  -XMP-dc:Subject=holiday -XMP-dc:Subject=beach \
+  -XMP-crs:Contrast=25 \
+  -RegionName="Gökhan" -RegionType=Face \
+  -RegionAreaX=0.40 -RegionAreaY=0.30 -RegionAreaW=0.15 -RegionAreaH=0.20 -RegionAreaUnit=normalized \
+  -RegionAppliedToDimensionsW=6000 -RegionAppliedToDimensionsH=4000 -RegionAppliedToDimensionsUnit=pixel
+```
