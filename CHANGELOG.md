@@ -27,6 +27,14 @@ version number and are released together.
   override, `newest` is reserved. The default comes from the `xmp_precedence`
   config key, the same one `scan` uses for ratings.
 
+### Fixed
+
+- **Image dimensions are recorded even without EXIF.** `scan` now falls back to
+  the image header for width/height when the EXIF tags are absent (AI-generated
+  images, screenshots, many PNGs). Without this, XMP face regions could neither
+  be exported nor imported for such files, since both normalize pixel boxes
+  against the dimensions.
+
 ### Notes
 
 - Both region encodings are read: videre's attribute-form `stArea` and the nested
@@ -34,6 +42,8 @@ version number and are released together.
   exiftool-produced sidecar fixture.
 - Names import while faces are detected; use `--reprocess` to import into a
   library whose faces were detected earlier.
+- End-to-end coverage: a model-gated test detects a face in a real image, imports
+  a region name onto it, and confirms `search --person` finds it.
 
 ## [0.21.1] - 2026-08-26
 
