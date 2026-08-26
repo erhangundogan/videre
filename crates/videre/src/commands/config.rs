@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::builder::PossibleValuesParser;
 use videre_core::home;
 
-const CONFIG_KEYS: &[&str] = &["db", "path", "model", "read-rate"];
+const CONFIG_KEYS: &[&str] = &["db", "path", "model", "read-rate", "xmp"];
 
 #[derive(clap::Args)]
 pub struct ConfigArgs {
@@ -42,6 +42,7 @@ pub fn run(args: ConfigArgs) -> Result<()> {
                 videre_core::embeddings::validate_model_id(&value)?;
                 home::set_default_model(&home, &value)
             }
+            "xmp" => home::set_xmp_precedence(&home, &value),
             _ => unreachable!("clap restricts keys to CONFIG_KEYS"),
         },
         Some(ConfigAction::Unset { key }) => match key.as_str() {
@@ -49,6 +50,7 @@ pub fn run(args: ConfigArgs) -> Result<()> {
             "path" => home::unset_default_path(&home),
             "read-rate" => home::unset_min_read_rate(&home),
             "model" => home::unset_default_model(&home),
+            "xmp" => home::unset_xmp_precedence(&home),
             _ => unreachable!("clap restricts keys to CONFIG_KEYS"),
         },
     }
@@ -93,6 +95,12 @@ fn show(home: &std::path::Path) -> Result<()> {
         None => println!(
             "model:         {} (default) [set with: videre config set model <id>]",
             videre_core::embeddings::DEFAULT_MODEL_ID
+        ),
+    }
+    match &config.xmp_precedence {
+        Some(p) => println!("xmp:           {p} [from config.toml]"),
+        None => println!(
+            "xmp:           db (default) [set with: videre config set xmp <db|file|newest>]"
         ),
     }
     println!("jsonl:         {}", home.join("hashes.jsonl").display());

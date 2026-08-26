@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 
 mod commands;
+mod xmp;
 
 #[derive(Parser)]
 #[command(

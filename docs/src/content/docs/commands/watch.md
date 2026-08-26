@@ -36,7 +36,7 @@ run. `--prune` is the exception: it is opt-in and never defaults on.
 
 | Stage | What it does |
 |---|---|
-| `--scan` | Same scan and hash pipeline as [`videre scan`](/commands/scan/) |
+| `--scan` | Same scan and hash pipeline as [`videre scan`](/commands/scan/), including reading marks from XMP (`--xmp db\|file\|newest`, see [scan](/commands/scan/#reading-marks-from-xmp---xmp)) |
 | `--faces` | Detects faces in new images, then regroups everything |
 | `--heic` | Pre-converts and caches HEIC thumbnails |
 | `--location` | Looks up place names for GPS coordinates that have none |

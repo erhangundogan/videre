@@ -39,7 +39,11 @@ impl Pick {
         }
     }
     pub fn from_bool(v: i64) -> Pick {
-        if v == 0 { Pick::Reject } else { Pick::Keep }
+        if v == 0 {
+            Pick::Reject
+        } else {
+            Pick::Keep
+        }
     }
 }
 
@@ -65,10 +69,7 @@ impl MarkChange {
     /// True if this change would touch at least one field. `videre mark` refuses
     /// a no-op invocation on the strength of this.
     pub fn any(&self) -> bool {
-        self.rating.is_some()
-            || self.pick.is_some()
-            || self.label.is_some()
-            || self.liked.is_some()
+        self.rating.is_some() || self.pick.is_some() || self.label.is_some() || self.liked.is_some()
     }
 }
 
@@ -171,7 +172,11 @@ pub fn by_rating(conn: &Connection, min: i64) -> Result<HashSet<String>> {
 }
 /// Hashes with exactly this pick state.
 pub fn by_pick(conn: &Connection, pick: Pick) -> Result<HashSet<String>> {
-    hashes(conn, "SELECT hash FROM marks WHERE pick = ?1", [pick.as_bool()])
+    hashes(
+        conn,
+        "SELECT hash FROM marks WHERE pick = ?1",
+        [pick.as_bool()],
+    )
 }
 /// Hashes with exactly this colour label.
 pub fn by_label(conn: &Connection, label: &str) -> Result<HashSet<String>> {
@@ -239,7 +244,11 @@ pub fn import_change(
             c.label = Some(Field::Set(l));
         }
     }
-    if c.any() { Some(c) } else { None }
+    if c.any() {
+        Some(c)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -261,7 +270,10 @@ mod tests {
 
     #[test]
     fn a_rating_change_is_a_change() {
-        let c = MarkChange { rating: Some(Field::Set(4)), ..Default::default() };
+        let c = MarkChange {
+            rating: Some(Field::Set(4)),
+            ..Default::default()
+        };
         assert!(c.any());
     }
 
@@ -269,7 +281,9 @@ mod tests {
     fn ensure_marks_table_is_idempotent() {
         let c = mem();
         ensure_marks_table(&c).unwrap();
-        let n: i64 = c.query_row("SELECT COUNT(*) FROM marks", [], |r| r.get(0)).unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM marks", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, 0);
     }
 
@@ -289,7 +303,12 @@ mod tests {
         .unwrap();
         assert_eq!(
             get(&c, "abc").unwrap(),
-            Marks { rating: Some(4), pick: Some(Pick::Keep), label: Some("red".into()), liked: true }
+            Marks {
+                rating: Some(4),
+                pick: Some(Pick::Keep),
+                label: Some("red".into()),
+                liked: true
+            }
         );
     }
 
@@ -299,11 +318,22 @@ mod tests {
         set(
             &c,
             &["abc".into()],
-            &MarkChange { rating: Some(Field::Set(5)), liked: Some(true), ..Default::default() },
+            &MarkChange {
+                rating: Some(Field::Set(5)),
+                liked: Some(true),
+                ..Default::default()
+            },
         )
         .unwrap();
-        set(&c, &["abc".into()], &MarkChange { rating: Some(Field::Clear), ..Default::default() })
-            .unwrap();
+        set(
+            &c,
+            &["abc".into()],
+            &MarkChange {
+                rating: Some(Field::Clear),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let m = get(&c, "abc").unwrap();
         assert_eq!(m.rating, None);
         assert!(m.liked);
@@ -312,12 +342,28 @@ mod tests {
     #[test]
     fn a_row_with_no_marks_left_is_deleted() {
         let c = mem();
-        set(&c, &["abc".into()], &MarkChange { rating: Some(Field::Set(3)), ..Default::default() })
-            .unwrap();
-        set(&c, &["abc".into()], &MarkChange { rating: Some(Field::Clear), ..Default::default() })
-            .unwrap();
+        set(
+            &c,
+            &["abc".into()],
+            &MarkChange {
+                rating: Some(Field::Set(3)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        set(
+            &c,
+            &["abc".into()],
+            &MarkChange {
+                rating: Some(Field::Clear),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let n: i64 = c
-            .query_row("SELECT COUNT(*) FROM marks WHERE hash='abc'", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM marks WHERE hash='abc'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(n, 0, "an all-clear row must be removed");
     }
@@ -331,28 +377,81 @@ mod tests {
     #[test]
     fn by_rating_is_at_least() {
         let c = mem();
-        set(&c, &["a".into()], &MarkChange { rating: Some(Field::Set(5)), ..Default::default() })
-            .unwrap();
-        set(&c, &["b".into()], &MarkChange { rating: Some(Field::Set(3)), ..Default::default() })
-            .unwrap();
+        set(
+            &c,
+            &["a".into()],
+            &MarkChange {
+                rating: Some(Field::Set(5)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        set(
+            &c,
+            &["b".into()],
+            &MarkChange {
+                rating: Some(Field::Set(3)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let hit = by_rating(&c, 4).unwrap();
-        assert!(hit.contains("a") && !hit.contains("b"), "--rating 4 means >= 4");
+        assert!(
+            hit.contains("a") && !hit.contains("b"),
+            "--rating 4 means >= 4"
+        );
     }
 
     #[test]
     fn by_pick_and_liked_are_exact() {
         let c = mem();
-        set(&c, &["k".into()], &MarkChange { pick: Some(Field::Set(Pick::Keep)), ..Default::default() }).unwrap();
-        set(&c, &["r".into()], &MarkChange { pick: Some(Field::Set(Pick::Reject)), ..Default::default() }).unwrap();
-        set(&c, &["l".into()], &MarkChange { liked: Some(true), ..Default::default() }).unwrap();
-        assert_eq!(by_pick(&c, Pick::Reject).unwrap().into_iter().collect::<Vec<_>>(), vec!["r"]);
-        assert_eq!(by_liked(&c).unwrap().into_iter().collect::<Vec<_>>(), vec!["l"]);
+        set(
+            &c,
+            &["k".into()],
+            &MarkChange {
+                pick: Some(Field::Set(Pick::Keep)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        set(
+            &c,
+            &["r".into()],
+            &MarkChange {
+                pick: Some(Field::Set(Pick::Reject)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        set(
+            &c,
+            &["l".into()],
+            &MarkChange {
+                liked: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            by_pick(&c, Pick::Reject)
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec!["r"]
+        );
+        assert_eq!(
+            by_liked(&c).unwrap().into_iter().collect::<Vec<_>>(),
+            vec!["l"]
+        );
     }
 
     #[test]
     fn import_db_precedence_fills_gaps_only() {
         // db already has a rating: db wins, so no change for rating; label is a gap, so filled.
-        let existing = Marks { rating: Some(5), ..Default::default() };
+        let existing = Marks {
+            rating: Some(5),
+            ..Default::default()
+        };
         let c = import_change(&existing, Some(2), Some("Red".into()), XmpPrecedence::Db).unwrap();
         assert!(c.rating.is_none(), "db rating kept");
         assert!(matches!(c.label, Some(Field::Set(ref s)) if s == "Red"));
@@ -360,14 +459,23 @@ mod tests {
 
     #[test]
     fn import_file_precedence_overwrites() {
-        let existing = Marks { rating: Some(5), ..Default::default() };
+        let existing = Marks {
+            rating: Some(5),
+            ..Default::default()
+        };
         let c = import_change(&existing, Some(2), None, XmpPrecedence::File).unwrap();
         assert!(matches!(c.rating, Some(Field::Set(2))));
     }
 
     #[test]
     fn import_nothing_to_do_is_none() {
-        let existing = Marks { rating: Some(5), label: Some("Red".into()), ..Default::default() };
-        assert!(import_change(&existing, Some(2), Some("Blue".into()), XmpPrecedence::Db).is_none());
+        let existing = Marks {
+            rating: Some(5),
+            label: Some("Red".into()),
+            ..Default::default()
+        };
+        assert!(
+            import_change(&existing, Some(2), Some("Blue".into()), XmpPrecedence::Db).is_none()
+        );
     }
 }

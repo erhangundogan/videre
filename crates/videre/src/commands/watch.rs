@@ -52,6 +52,9 @@ pub struct WatchArgs {
     #[arg(long, default_value = "300")]
     interval: u64,
 
+    #[command(flatten)]
+    xmp: crate::xmp::XmpArg,
+
     #[arg(long)]
     silent: bool,
 }
@@ -438,6 +441,8 @@ fn run_scan_stage(
             .filter_map(|path| hasher::hash_file(path).ok())
             .collect();
         sqlite_output::write_records(&records, db)?;
+        let prec = args.xmp.precedence()?;
+        crate::xmp::import_xmp_for_records(&conn, &records, prec, args.silent)?;
         if !args.silent {
             eprintln!("videre watch: scan stage wrote {} record(s)", records.len());
         }

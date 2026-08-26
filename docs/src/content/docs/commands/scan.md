@@ -81,6 +81,26 @@ For `.mov` and `.mp4` this needs macOS, since the frame is extracted with
 QuickLook. Elsewhere those files simply get no fingerprint, the same graceful
 skip as any other undecodable file. HEIC files never get one.
 
+## Reading marks from XMP (`--xmp`)
+
+Scan reads a photo's star rating and colour label from its XMP, if present:
+first an adjacent `<file>.xmp` sidecar, then the embedded packet. This is how a
+library already rated in Lightroom or digiKam arrives with its ratings intact.
+See [`videre mark`](/commands/mark/) for querying and setting marks.
+
+`--xmp` decides what happens when a photo carries a mark in *both* the file and
+videre's database:
+
+| Value | Behaviour |
+|---|---|
+| `db` (default) | the database wins; the file only fills in marks the database lacks |
+| `file` | the file wins, overwriting the database |
+| `newest` | not yet implemented; treated as `db` with a warning |
+
+Set a persistent default with `videre config set xmp <db|file|newest>`; the flag
+overrides it for one run. The same flag works on [`videre watch`](/commands/watch/).
+Picks and likes have no XMP standard, so they are never touched here.
+
 ## Caveats
 
 **Rows are keyed by path, so a moved file looks like a new one.** Re-scanning

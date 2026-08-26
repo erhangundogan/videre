@@ -84,7 +84,9 @@ fn build_change(a: &MarkArgs) -> MarkChange {
         None
     };
     MarkChange {
-        rating: a.rating.map(|r| if r == 0 { Field::Clear } else { Field::Set(r) }),
+        rating: a
+            .rating
+            .map(|r| if r == 0 { Field::Clear } else { Field::Set(r) }),
         pick: a.pick.as_deref().map(|p| match p {
             "keep" => Field::Set(Pick::Keep),
             "reject" => Field::Set(Pick::Reject),
@@ -109,7 +111,11 @@ pub(crate) fn resolve_targets(a: &MarkArgs, conn: &rusqlite::Connection) -> Resu
     if !std::io::stdin().is_terminal() {
         let mut buf = String::new();
         std::io::stdin().read_to_string(&mut buf)?;
-        let paths: Vec<&str> = buf.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+        let paths: Vec<&str> = buf
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
         if !paths.is_empty() {
             return hashes_for_paths(conn, &paths);
         }
@@ -131,11 +137,9 @@ pub(crate) fn resolve_targets(a: &MarkArgs, conn: &rusqlite::Connection) -> Resu
 fn hashes_for_paths(conn: &rusqlite::Connection, paths: &[&str]) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for p in paths {
-        if let Ok(h) =
-            conn.query_row("SELECT hash FROM file_hashes WHERE path = ?1", [p], |r| {
-                r.get::<_, String>(0)
-            })
-        {
+        if let Ok(h) = conn.query_row("SELECT hash FROM file_hashes WHERE path = ?1", [p], |r| {
+            r.get::<_, String>(0)
+        }) {
             out.push(h);
         }
     }

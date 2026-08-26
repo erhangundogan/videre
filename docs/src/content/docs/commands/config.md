@@ -37,6 +37,7 @@ jsonl:         ~/.videre/hashes.jsonl
 | `resolved path` | The folder `scan` and `watch` use with no argument |
 | `model` | The resolved search model, marked `(default)` when not configured |
 | `read-rate` | Assumed floor read speed in MB/s, used to scale the file-read timeout to file size. Default 20. Only worth changing on a mount slower than that |
+| `xmp` | Default XMP precedence for `scan`/`watch`: `db`, `file`, or `newest`. Default `db`. See [`videre mark`](/commands/mark/) |
 | `jsonl` | Where a bare `scan --output` would write |
 
 The distinction between `db` and `resolved db` is the useful part. The first is
@@ -53,6 +54,7 @@ built-in default.
 | `db` | The database every command uses without `--db` | `default_db` |
 | `path` | The folder `scan` and `watch` use with no argument | `default_path` |
 | `model` | The [search model](/reference/models/) used without `--model` | `default_model` |
+| `xmp` | XMP precedence for `scan`/`watch` (`db`/`file`/`newest`) | `xmp_precedence` |
 
 The file itself is plain TOML, and editing it by hand is fine:
 
