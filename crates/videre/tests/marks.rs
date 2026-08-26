@@ -133,7 +133,7 @@ fn export_xmp_writes_sidecars_and_dry_run_writes_nothing() {
     ]);
     assert!(sidecar.exists(), "expected {}", sidecar.display());
     let doc = std::fs::read_to_string(&sidecar).unwrap();
-    assert!(doc.contains("xmp:Rating=\"4\""), "got: {doc}");
+    assert!(doc.contains("<xmp:Rating>4</xmp:Rating>"), "got: {doc}");
     assert!(doc.contains("Green"), "got: {doc}");
 
     // And it reads back into a fresh library.

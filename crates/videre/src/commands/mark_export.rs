@@ -14,6 +14,11 @@ pub fn run(args: &super::mark::MarkArgs, conn: &rusqlite::Connection) -> Result<
         if m.rating.is_none() && m.label.is_none() {
             continue;
         }
+        let owned = crate::xmp::model::OwnedXmp {
+            rating: m.rating,
+            label: m.label.clone(),
+            ..Default::default()
+        };
         // One hash can map to several paths (duplicates); write a sidecar next
         // to each, so a copy in any folder carries the marks too.
         let mut stmt = conn.prepare("SELECT path FROM file_hashes WHERE hash = ?1")?;
@@ -25,7 +30,7 @@ pub fn run(args: &super::mark::MarkArgs, conn: &rusqlite::Connection) -> Result<
                     "would write {}",
                     crate::xmp::write::sidecar_path(&path).display()
                 );
-            } else if crate::xmp::write::write_sidecar(&path, m.rating, m.label.as_deref())? {
+            } else if crate::xmp::write::write_sidecar(&path, &owned)? {
                 written += 1;
             }
         }

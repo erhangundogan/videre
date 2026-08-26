@@ -10,25 +10,6 @@
 use crate::xmp::model::OwnedXmp;
 use std::path::Path;
 
-/// A minimal XMP packet carrying only the fields we own. Attribute form on a
-/// single rdf:Description, which every reader (including ours) accepts.
-pub fn sidecar_doc(rating: Option<i64>, label: Option<&str>) -> String {
-    let mut attrs = String::new();
-    if let Some(r) = rating {
-        attrs.push_str(&format!(" xmp:Rating=\"{}\"", r.clamp(0, 5)));
-    }
-    if let Some(l) = label {
-        attrs.push_str(&format!(" xmp:Label=\"{}\"", xml_escape(l)));
-    }
-    format!(
-        "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n\
-         <x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n\
-         <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n\
-         <rdf:Description xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\"{attrs}/>\n\
-         </rdf:RDF>\n</x:xmpmeta>\n<?xpacket end=\"w\"?>\n"
-    )
-}
-
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -261,17 +242,19 @@ pub fn sidecar_path(path: &Path) -> std::path::PathBuf {
     })
 }
 
-/// Write the sidecar for `path` if there is anything portable to write. Returns
-/// whether a file was written.
-pub fn write_sidecar(
-    path: &Path,
-    rating: Option<i64>,
-    label: Option<&str>,
-) -> std::io::Result<bool> {
-    if rating.is_none() && label.is_none() {
+/// Write (creating or merging) the sidecar for `path` from its owned properties.
+/// Reads any existing sidecar and merges so foreign data is preserved. Returns
+/// whether a file was written (false when there is nothing owned to write).
+pub fn write_sidecar(path: &Path, o: &OwnedXmp) -> std::io::Result<bool> {
+    if o.is_empty() {
         return Ok(false);
     }
-    std::fs::write(sidecar_path(path), sidecar_doc(rating, label))?;
+    let side = sidecar_path(path);
+    let doc = match std::fs::read_to_string(&side) {
+        Ok(existing) => merge_into(&existing, o),
+        Err(_) => build_packet(o),
+    };
+    std::fs::write(&side, doc)?;
     Ok(true)
 }
 
@@ -420,28 +403,66 @@ mod tests {
     }
 
     #[test]
-    fn sidecar_roundtrips_through_read() {
-        let doc = sidecar_doc(Some(4), Some("Red"));
-        let m = crate::xmp::read::parse_xmp(&doc);
-        assert_eq!(m.rating, Some(4));
-        assert_eq!(m.label.as_deref(), Some("Red"));
-    }
-
-    #[test]
     fn omits_absent_fields() {
-        let doc = sidecar_doc(Some(2), None);
+        use crate::xmp::model::OwnedXmp;
+        let doc = build_packet(&OwnedXmp {
+            rating: Some(2),
+            ..Default::default()
+        });
         assert!(doc.contains("xmp:Rating"));
         assert!(!doc.contains("xmp:Label"));
+        assert!(!doc.contains("Iptc4xmpCore:Location"));
+        assert!(!doc.contains("mwg-rs:Regions"));
     }
 
     #[test]
     fn escapes_a_label() {
-        let doc = sidecar_doc(None, Some(r#"a&b"c"#));
+        use crate::xmp::model::OwnedXmp;
+        let doc = build_packet(&OwnedXmp {
+            label: Some(r#"a&b"c"#.into()),
+            ..Default::default()
+        });
         assert!(doc.contains("a&amp;b&quot;c"));
         // and it survives a round-trip back to the original text
         assert_eq!(
             crate::xmp::read::parse_xmp(&doc).label.as_deref(),
             Some(r#"a&b"c"#)
         );
+    }
+
+    #[test]
+    fn write_sidecar_merges_when_one_exists() {
+        use crate::xmp::model::OwnedXmp;
+        let dir = tempfile::tempdir().unwrap();
+        let photo = dir.path().join("p.jpg");
+        std::fs::write(&photo, b"not-a-real-jpeg").unwrap();
+        let side = sidecar_path(&photo);
+        std::fs::write(
+            &side,
+            r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF
+ xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+ <rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/">
+  <crs:Temperature>5200</crs:Temperature>
+ </rdf:Description></rdf:RDF></x:xmpmeta>"#,
+        )
+        .unwrap();
+        let owned = OwnedXmp {
+            rating: Some(3),
+            ..Default::default()
+        };
+        assert!(write_sidecar(&photo, &owned).unwrap());
+        let back = std::fs::read_to_string(&side).unwrap();
+        assert!(back.contains("crs:Temperature")); // foreign survived
+        assert!(back.contains("<xmp:Rating>3</xmp:Rating>"));
+    }
+
+    #[test]
+    fn write_sidecar_skips_when_nothing_owned() {
+        use crate::xmp::model::OwnedXmp;
+        let dir = tempfile::tempdir().unwrap();
+        let photo = dir.path().join("p.jpg");
+        std::fs::write(&photo, b"x").unwrap();
+        assert!(!write_sidecar(&photo, &OwnedXmp::default()).unwrap());
+        assert!(!sidecar_path(&photo).exists());
     }
 }
