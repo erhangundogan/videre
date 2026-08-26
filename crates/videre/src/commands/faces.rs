@@ -25,6 +25,13 @@ pub struct FacesArgs {
     /// SQLite database (default: resolved from ~/.videre; see 'videre config')
     #[arg(long)]
     db: Option<PathBuf>,
+
+    /// How XMP face regions in a sidecar interact with detected faces: db (the
+    /// database wins, imports only fill unconfirmed faces), file (the sidecar
+    /// wins), or newest. Default from config, else db.
+    #[command(flatten)]
+    xmp: crate::xmp::XmpArg,
+
     #[arg(long)]
     reprocess: bool,
     /// Skip detection; just re-run clustering on existing embeddings
@@ -237,10 +244,41 @@ pub fn run(args: FacesArgs) -> Result<()> {
         run_detection_and_clustering(&args, &conn, &to_process)
     })?;
 
+    // Import any face names from XMP sidecars onto the faces just detected,
+    // symmetric with the marks read-back on scan. Governed by the shared --xmp
+    // precedence; db (the default) fills only unconfirmed faces.
+    let imported = import_face_regions(&args, &conn, &to_process)?;
+    if imported > 0 && !args.silent {
+        eprintln!("Imported {imported} face name(s) from XMP");
+    }
+
     if outcome.write_errors > 0 || outcome.detect_errors > 0 {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// For each just-processed hash, read its sidecar/embedded XMP regions and apply
+/// the names to the detected faces under the shared --xmp precedence. Best-effort
+/// per hash: an unreadable sidecar or an unmatched region simply imports nothing.
+fn import_face_regions(
+    args: &FacesArgs,
+    conn: &rusqlite::Connection,
+    to_process: &[(String, String)],
+) -> Result<usize> {
+    let prec = args.xmp.precedence()?;
+    if matches!(prec, videre_core::marks::XmpPrecedence::Newest) && !args.silent {
+        eprintln!("Warning: --xmp newest is not yet implemented; treating as db");
+    }
+    let mut imported = 0usize;
+    for (path, hash) in to_process {
+        let data = crate::xmp::read::read_data(std::path::Path::new(path));
+        if data.regions.is_empty() {
+            continue;
+        }
+        imported += crate::xmp::readback::apply_regions(conn, hash, &data.regions, prec)?;
+    }
+    Ok(imported)
 }
 
 struct FacesOutcome {

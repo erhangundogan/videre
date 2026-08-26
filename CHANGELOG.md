@@ -13,6 +13,38 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.21.2] - 2026-08-26
+
+### Added
+
+- **Import face names from XMP.** `videre faces` now reads MWG face regions from
+  a photo's `.xmp` sidecar or embedded packet and assigns the names to the faces
+  it detects, matching each region to a face by bounding-box overlap. A name you
+  gave a face in digiKam or Lightroom imports into videre. This is the read side
+  of `videre export --xmp`.
+- **`--xmp db|file|newest` on `faces`.** Decides who wins when a face already has
+  a name: `db` (default) fills only unnamed faces, `file` lets the sidecar
+  override, `newest` is reserved. The default comes from the `xmp_precedence`
+  config key, the same one `scan` uses for ratings.
+
+### Fixed
+
+- **Image dimensions are recorded even without EXIF.** `scan` now falls back to
+  the image header for width/height when the EXIF tags are absent (AI-generated
+  images, screenshots, many PNGs). Without this, XMP face regions could neither
+  be exported nor imported for such files, since both normalize pixel boxes
+  against the dimensions.
+
+### Notes
+
+- Both region encodings are read: videre's attribute-form `stArea` and the nested
+  element form exiftool and other tools write. Verified against a real
+  exiftool-produced sidecar fixture.
+- Names import while faces are detected; use `--reprocess` to import into a
+  library whose faces were detected earlier.
+- End-to-end coverage: a model-gated test detects a face in a real image, imports
+  a region name onto it, and confirms `search --person` finds it.
+
 ## [0.21.1] - 2026-08-26
 
 ### Added
@@ -1317,6 +1349,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[0.21.2]: https://github.com/erhangundogan/videre/compare/v0.21.1...v0.21.2
 [0.21.1]: https://github.com/erhangundogan/videre/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/erhangundogan/videre/compare/v0.20.10...v0.21.0
 [0.20.10]: https://github.com/erhangundogan/videre/compare/v0.20.9...v0.20.10

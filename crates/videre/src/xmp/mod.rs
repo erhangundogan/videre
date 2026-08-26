@@ -4,6 +4,7 @@
 
 pub mod model;
 pub mod read;
+pub mod readback;
 pub mod write;
 
 pub use read::read_marks;
