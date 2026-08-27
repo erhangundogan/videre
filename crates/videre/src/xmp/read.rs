@@ -147,26 +147,8 @@ pub fn parse_xmp_data(doc: &str) -> XmpData {
     d
 }
 
-/// Read marks for a photo: sidecar first, then the embedded packet. Never errors.
-pub fn read_marks(path: &Path) -> XmpMarks {
-    let sidecar = path.with_extension(match path.extension().and_then(|e| e.to_str()) {
-        Some(ext) => format!("{ext}.xmp"),
-        None => "xmp".to_string(),
-    });
-    if let Ok(doc) = std::fs::read_to_string(&sidecar) {
-        let m = parse_xmp(&doc);
-        if m != XmpMarks::default() {
-            return m;
-        }
-    }
-    if let Some(doc) = embedded_packet(path) {
-        return parse_xmp(&doc);
-    }
-    XmpMarks::default()
-}
-
-/// Read the full XMP data for a photo: sidecar first, then the embedded packet,
-/// mirroring `read_marks`. Never errors; a missing or malformed source yields an
+/// Read the full XMP data for a photo: sidecar first, then the embedded packet.
+/// Never errors; a missing or malformed source yields an
 /// empty `XmpData`.
 pub fn read_data(path: &Path) -> XmpData {
     let sidecar = path.with_extension(match path.extension().and_then(|e| e.to_str()) {

@@ -88,6 +88,7 @@ fn ensure_optional_tables(conn: &rusqlite::Connection) {
     let _ = videre_core::classify::ensure_classifications_table(conn);
     let _ = videre_core::location_cluster::ensure_location_clusters_table(conn);
     videre_core::location_cluster::ensure_location_cluster_id_column(conn);
+    let _ = videre_core::tags::ensure_photo_tags_table(conn);
 }
 
 fn all_hashes(conn: &rusqlite::Connection) -> Result<Vec<String>> {
@@ -126,11 +127,18 @@ fn write_sidecars_for(
             })
             .unwrap_or_default();
 
+        // The zero-shot category and the user's tags both export as dc:subject
+        // keywords. Dedup so a tag equal to the category is not written twice.
+        let mut keywords: Vec<String> = g.category.clone().into_iter().collect();
+        keywords.extend(videre_core::tags::tags_for_hash(conn, hash)?);
+        keywords.sort();
+        keywords.dedup();
+
         let owned = OwnedXmp {
             rating: m.rating,
             label: m.label.clone(),
             location: g.location.clone(),
-            keywords: g.category.clone().into_iter().collect(),
+            keywords,
             regions,
             applied_dims: g.dims,
         };

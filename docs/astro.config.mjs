@@ -91,6 +91,7 @@ export default defineConfig({
 						{ label: 'classify', slug: 'commands/classify' },
 						{ label: 'mark', slug: 'commands/mark' },
 						{ label: 'export', slug: 'commands/export' },
+						{ label: 'tag', slug: 'commands/tag' },
 						{ label: 'locations', slug: 'commands/locations' },
 						{ label: 'fix-dates', slug: 'commands/fix-dates' },
 						{ label: 'prune', slug: 'commands/prune' },

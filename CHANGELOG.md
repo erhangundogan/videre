@@ -13,6 +13,26 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.21.3] - 2026-08-26
+
+### Added
+
+- **Free-form tags.** A new `videre tag --add`/`--remove` command tags photos by
+  content hash (so tags follow a photo across duplicates and moves), and `--tag`
+  filters everywhere `search` filters, ANDed and composing with every other
+  predicate: `videre search --tag beach --person "Ayşe" --rating 4`.
+- **Tags round-trip through XMP.** `scan` reads `dc:subject` keywords from a
+  sidecar or embedded packet and stores them as tags (additive, so it ignores the
+  `--xmp` precedence), and `videre export --xmp` writes your tags back out as
+  `dc:subject`, so digiKam, Lightroom and darktable see them. Verified against a
+  real exiftool-produced sidecar. This closes the keyword read-back loop from the
+  XMP portability work.
+
+### Notes
+
+- A tag is one flat string; hierarchical keywords (`lr:hierarchicalSubject`) are
+  not modelled yet, and gallery tag filtering is not built yet.
+
 ## [0.21.2] - 2026-08-26
 
 ### Added
@@ -1349,6 +1369,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[0.21.3]: https://github.com/erhangundogan/videre/compare/v0.21.2...v0.21.3
 [0.21.2]: https://github.com/erhangundogan/videre/compare/v0.21.1...v0.21.2
 [0.21.1]: https://github.com/erhangundogan/videre/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/erhangundogan/videre/compare/v0.20.10...v0.21.0

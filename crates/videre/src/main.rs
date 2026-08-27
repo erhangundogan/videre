@@ -50,6 +50,8 @@ enum Command {
     Mark(commands::mark::MarkArgs),
     /// Write videre's labels to portable .xmp sidecars (faces, location, marks)
     Export(commands::export::ExportArgs),
+    /// Add or remove free-form tags on photos (filter by them with search --tag)
+    Tag(commands::tag::TagArgs),
 }
 
 /// Pushes the configured floor read rate into `io_timeout` before any command
@@ -116,6 +118,7 @@ fn main() {
         Command::Stats(args) => commands::stats::run(args),
         Command::Mark(args) => commands::mark::run(args),
         Command::Export(args) => commands::export::run(args),
+        Command::Tag(args) => commands::tag::run(args),
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");
