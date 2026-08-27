@@ -13,6 +13,13 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.21.6] - 2026-08-28
+
+### Changed
+
+- Updated the transitive `chacha20` dependency from the yanked 0.10.1 to 0.10.2.
+  No behaviour change; it clears a yank warning on `cargo publish`.
+
 ## [0.21.5] - 2026-08-28
 
 ### Removed
@@ -1396,6 +1403,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[0.21.6]: https://github.com/erhangundogan/videre/compare/v0.21.5...v0.21.6
 [0.21.5]: https://github.com/erhangundogan/videre/compare/v0.21.4...v0.21.5
 [0.21.4]: https://github.com/erhangundogan/videre/compare/v0.21.3...v0.21.4
 [0.21.3]: https://github.com/erhangundogan/videre/compare/v0.21.2...v0.21.3
