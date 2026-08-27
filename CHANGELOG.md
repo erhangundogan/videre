@@ -13,6 +13,20 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.21.5] - 2026-08-28
+
+### Removed
+
+- **Dead `videre report` routing.** The gallery server carried a labeling-only
+  configuration that no command had constructed since `videre report` was removed
+  in 0.20.0: `serve_gallery` is the only entry point and always runs as
+  `videre gallery`, so the `else` branch (and its `/faces`, bare `/cluster/{id}`
+  and `/person/{name}` routes) was unreachable. Removed it along with the now-dead
+  `handle_report` handler and the `show_report`/`report_all`/`report_by_date`
+  state it needed. No user-facing change; the `--html` export and every live
+  gallery route are unaffected. The gallery endpoint manifest drops to the real
+  routes, and its per-route `gallery` flag is gone.
+
 ## [0.21.4] - 2026-08-28
 
 ### Changed
@@ -1382,6 +1396,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[0.21.5]: https://github.com/erhangundogan/videre/compare/v0.21.4...v0.21.5
 [0.21.4]: https://github.com/erhangundogan/videre/compare/v0.21.3...v0.21.4
 [0.21.3]: https://github.com/erhangundogan/videre/compare/v0.21.2...v0.21.3
 [0.21.2]: https://github.com/erhangundogan/videre/compare/v0.21.1...v0.21.2

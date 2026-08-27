@@ -1113,9 +1113,7 @@ struct MarkBody {
 struct AppState {
     conn: Mutex<Connection>,
     shutdown_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
-    report_all: bool,
     model_id: String,
-    report_by_date: bool,
     report_heic: bool,
     report_heic_original: bool,
     serve_faces_ui: bool,
@@ -1164,14 +1162,6 @@ async fn handle_root(State(state): State<Arc<AppState>>) -> impl axum::response:
         people_root: people_root(state.gallery),
     };
     axum::response::Html(page.render().expect("faces template"))
-}
-
-/// Live-server equivalent of the static `--all`/`--by-date` HTML report,
-/// rendered on each request from the current database state (labeled faces
-/// included, since this route only exists when `--show-faces` is set).
-async fn handle_report(State(state): State<Arc<AppState>>) -> impl axum::response::IntoResponse {
-    // Not `videre gallery`: this server has `/` and nothing else.
-    render_live(&state, state.report_all, state.report_by_date, true, None)
 }
 
 /// `videre gallery`'s `/`: every file, with in-page similarity search.
@@ -2001,13 +1991,7 @@ async fn handle_original_image(
 /// static file.
 struct ServeOptions {
     serve_faces_ui: bool,
-    /// True when `--show-faces` was passed, i.e. `/` should serve the live
-    /// report instead of the labeling UI. Tracked separately from
-    /// `serve_faces_ui` (`--faces`) because the two flags are independent:
-    /// either can be passed alone or together.
-    show_report: bool,
     report_all: bool,
-    report_by_date: bool,
     report_heic: bool,
     report_heic_original: bool,
     model_id: String,
@@ -2047,9 +2031,7 @@ async fn serve_faces_async(
     let state = Arc::new(AppState {
         conn: Mutex::new(conn),
         shutdown_tx: Mutex::new(Some(shutdown_tx)),
-        report_all: opts.report_all,
         model_id: opts.model_id.clone(),
-        report_by_date: opts.report_by_date,
         report_heic: opts.report_heic,
         report_heic_original: opts.report_heic_original,
         serve_faces_ui: opts.serve_faces_ui,
@@ -2057,16 +2039,6 @@ async fn serve_faces_async(
         db: db.to_path_buf(),
         embedder: Mutex::new(None),
     });
-
-    // :warning: The cluster and person pages are registered per configuration,
-    // not once. Under `gallery` they belong beneath `/people`; on a
-    // labeling-only server that path does not exist and they stay at the root.
-    // Registering only the nested form would 404 the labeling server's own
-    // links, which is the failure this shape exists to prevent.
-    let people_pages = |r: Router<Arc<AppState>>, prefix: &str| {
-        r.route(&format!("{prefix}cluster/{{id}}"), get(handle_cluster_page))
-            .route(&format!("{prefix}person/{{name}}"), get(handle_person_page))
-    };
 
     let mut router = Router::new()
         .route("/api/face-image/{id}", get(handle_face_image))
@@ -2094,31 +2066,19 @@ async fn serve_faces_async(
             .route("/api/set-primary", post(handle_set_primary));
     }
 
-    // `/` and (when both modes are active) `/faces` depend on which combination
-    // of --faces / --show-faces started this server:
-    //   --faces alone        -> `/` = labeling UI, no report route at all
-    //   --show-faces alone   -> `/` = live report, no `/faces` route
-    //   both                 -> `/` = live report, `/faces` = labeling UI
-    router = if opts.gallery {
-        people_pages(router, "/people/")
-            .route("/", get(handle_gallery_all))
-            .route("/duplicates", get(handle_gallery_duplicates))
-            .route("/people", get(handle_root))
-            .route("/date", get(handle_gallery_date))
-            .route("/map", get(handle_not_yet))
-            .route("/events", get(handle_not_yet))
-            .route("/smart", get(handle_not_yet))
-    } else {
-        let router = people_pages(router, "/");
-        match (state.serve_faces_ui, opts.show_report) {
-            (true, true) => router
-                .route("/", get(handle_report))
-                .route("/faces", get(handle_root)),
-            (true, false) => router.route("/", get(handle_root)),
-            (false, true) => router.route("/", get(handle_report)),
-            (false, false) => router, // unreachable: serve_faces_async only runs when at least one is set
-        }
-    };
+    // `videre gallery` is the only server configuration; the labeling-only entry
+    // point went away with `videre report` in 0.20.0. The cluster and person
+    // pages live under `/people`.
+    router = router
+        .route("/people/cluster/{id}", get(handle_cluster_page))
+        .route("/people/person/{name}", get(handle_person_page))
+        .route("/", get(handle_gallery_all))
+        .route("/duplicates", get(handle_gallery_duplicates))
+        .route("/people", get(handle_root))
+        .route("/date", get(handle_gallery_date))
+        .route("/map", get(handle_not_yet))
+        .route("/events", get(handle_not_yet))
+        .route("/smart", get(handle_not_yet));
 
     let app = router.with_state(state);
 
@@ -2175,9 +2135,7 @@ pub(crate) fn serve_gallery(
 ) -> anyhow::Result<()> {
     let opts = ServeOptions {
         serve_faces_ui: true,
-        show_report: false,
         report_all: true,
-        report_by_date: false,
         report_heic: false,
         report_heic_original: false,
         model_id,
