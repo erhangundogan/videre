@@ -10,10 +10,9 @@
 //!    the set is exactly the manifest. Add, remove or move a route and this fails
 //!    until the JSON is updated.
 //! 2. `docs_do_not_name_a_missing_route` scans the docs for gallery routes and
-//!    asserts each is served by `videre gallery` (the manifest's `gallery: true`
-//!    subset). The published docs describe `videre gallery`, so a doc naming
-//!    `/cluster/1` fails: the gallery serves it at `/people/cluster/1`. That is
-//!    the exact 0.20.5 regression this guards against.
+//!    asserts each one exists in the manifest. A doc naming `/cluster/1` fails:
+//!    the gallery serves it at `/people/cluster/1`. That is the exact 0.20.5
+//!    regression this guards against.
 
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -33,7 +32,6 @@ struct Manifest {
 struct Endpoint {
     method: String,
     path: String,
-    gallery: bool,
 }
 
 fn manifest() -> Vec<Endpoint> {
@@ -74,53 +72,22 @@ fn manifest_set() -> BTreeSet<Endpt> {
         .collect()
 }
 
-/// Parse the `(METHOD, path)` set the router actually registers, from report.rs.
-///
-/// Handles literal `.route("/x", get(..))` and the `people_pages` closure's
-/// `.route(&format!("{prefix}cluster/{{id}}"), get(..))`, expanded against the
-/// prefixes it is called with (`/people/` under gallery, `/` labeling-only).
+/// Parse the `(METHOD, path)` set the router registers, from the literal
+/// `.route("/x", get(..))` calls in report.rs. `videre gallery` is the only
+/// server configuration, so every route is a plain literal.
 fn router_set() -> BTreeSet<Endpt> {
     let src = std::fs::read_to_string(REPORT_RS).expect("read report.rs");
     let mut out: BTreeSet<Endpt> = BTreeSet::new();
-    let mut dynamic: Vec<(String, String)> = Vec::new(); // (method, "cluster/{id}")
-
     for piece in src.split(".route(").skip(1) {
         let p = piece.trim_start();
         let method = first_method(p);
         if let Some(rest) = p.strip_prefix('"') {
-            // literal path
             if let Some(end) = rest.find('"') {
                 let path = &rest[..end];
                 if path.starts_with('/') {
                     out.insert((method, norm_path(path)));
                 }
             }
-        } else if let Some(rest) = p.strip_prefix("&format!(\"") {
-            // people_pages: &format!("{prefix}cluster/{{id}}")
-            if let Some(end) = rest.find('"') {
-                let tmpl = rest[..end].replace("{{", "{").replace("}}", "}");
-                if let Some(sub) = tmpl.strip_prefix("{prefix}") {
-                    dynamic.push((method, sub.to_string()));
-                }
-            }
-        }
-    }
-
-    // Prefixes the closure is called with.
-    let mut prefixes: Vec<String> = Vec::new();
-    for piece in src.split("people_pages(router, \"").skip(1) {
-        if let Some(end) = piece.find('"') {
-            prefixes.push(piece[..end].to_string());
-        }
-    }
-    assert!(
-        !dynamic.is_empty() && !prefixes.is_empty(),
-        "failed to parse people_pages routes/prefixes from report.rs; the guard \
-         needs updating to the new shape"
-    );
-    for (method, sub) in &dynamic {
-        for prefix in &prefixes {
-            out.insert((method.clone(), norm_path(&format!("{prefix}{sub}"))));
         }
     }
     out
@@ -215,18 +182,14 @@ fn matches(pattern: &str, doc: &str) -> bool {
 
 #[test]
 fn docs_do_not_name_a_missing_route() {
-    let gallery: Vec<String> = manifest()
-        .into_iter()
-        .filter(|e| e.gallery)
-        .map(|e| norm_path(&e.path))
-        .collect();
+    let routes: Vec<String> = manifest().into_iter().map(|e| norm_path(&e.path)).collect();
 
     let docs_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/src/content/docs");
     let mut offenders: Vec<(String, String)> = Vec::new();
     for file in walk_markdown(std::path::Path::new(docs_dir)) {
         let text = std::fs::read_to_string(&file).unwrap();
         for tok in doc_route_tokens(&text) {
-            if !gallery.iter().any(|g| matches(g, &tok)) {
+            if !routes.iter().any(|g| matches(g, &tok)) {
                 offenders.push((
                     file.strip_prefix(docs_dir)
                         .unwrap_or(&file)
@@ -290,14 +253,11 @@ mod unit {
     }
 
     #[test]
-    fn moved_bare_cluster_is_not_a_gallery_route() {
-        let gallery: Vec<String> = manifest()
-            .into_iter()
-            .filter(|e| e.gallery)
-            .map(|e| norm_path(&e.path))
-            .collect();
-        assert!(!gallery.iter().any(|g| matches(g, &norm_path("/cluster/1"))));
-        assert!(gallery
+    fn moved_bare_cluster_is_not_a_route() {
+        // The 0.20.5 regression: /cluster/1 moved to /people/cluster/1.
+        let routes: Vec<String> = manifest().into_iter().map(|e| norm_path(&e.path)).collect();
+        assert!(!routes.iter().any(|g| matches(g, &norm_path("/cluster/1"))));
+        assert!(routes
             .iter()
             .any(|g| matches(g, &norm_path("/people/cluster/1"))));
     }

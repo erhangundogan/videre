@@ -1,6 +1,6 @@
 [package]
 name = "videre-ml"
-version = "0.21.4"
+version = "0.21.5"
 edition = "2021"
 description = "SigLIP embedding, zero-shot classification, and InsightFace face detection/clustering for the videre media library CLI"
 license = "Apache-2.0"
@@ -12,7 +12,7 @@ categories = ["multimedia::images", "science"]
 real-model = []
 
 [dependencies]
-videre-core = { path = "../videre-core", version = "0.21.4" }
+videre-core = { path = "../videre-core", version = "0.21.5" }
 rusqlite = { version = "0.40", features = ["bundled"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
 half = "2"
