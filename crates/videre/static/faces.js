@@ -59,7 +59,7 @@ let facesData = { people: [], clusters: [], singletons: [] };
     }
 
     function faceImg(faceId, w, h) {
-      return `<img class="face-img" src="/api/face-image/${faceId}" width="${w}" height="${h}" title="#${faceId}" onerror="this.removeAttribute('src');this.style.background='#ddd'">`;
+      return `<img class="face-img" src="/api/faces/${faceId}/image" width="${w}" height="${h}" title="#${faceId}" onerror="this.removeAttribute('src');this.style.background='#ddd'">`;
     }
 
     function thumbGrid(faceIds) {
@@ -301,10 +301,10 @@ let facesData = { people: [], clusters: [], singletons: [] };
       const label = sanitizeName(input.value);
       if (!label) return;
       const ids = Array.from(selectedSingletons);
-      const r = await fetch('/api/new-person', {
+      const r = await fetch('/api/people', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_ids: ids, label: label })
+        body: JSON.stringify({ face_ids: ids, name: label })
       });
       if (!r.ok) {
         document.getElementById('status').textContent = 'Error: create person failed';
@@ -357,10 +357,10 @@ let facesData = { people: [], clusters: [], singletons: [] };
     async function onDropToPerson(event, personLabel) {
       event.preventDefault();
       const data = JSON.parse(event.dataTransfer.getData('application/json'));
-      const r = await fetch('/api/assign', {
-        method: 'POST',
+      const r = await fetch(`/api/people/${encodeURIComponent(personLabel)}/faces`, {
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_ids: data.face_ids, person_label: personLabel })
+        body: JSON.stringify({ face_ids: data.face_ids })
       });
       if (!r.ok) {
         document.getElementById('status').textContent = 'Error: assign failed';
@@ -390,10 +390,10 @@ let facesData = { people: [], clusters: [], singletons: [] };
       const input = document.getElementById(inputId);
       const label = sanitizeName(input.value);
       if (!label) return;
-      const r = await fetch('/api/new-person', {
+      const r = await fetch('/api/people', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_ids: faceIds, label: label })
+        body: JSON.stringify({ face_ids: faceIds, name: label })
       });
       if (!r.ok) {
         document.getElementById('status').textContent = 'Error: create person failed';

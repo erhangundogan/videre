@@ -13,6 +13,9 @@
 //!    asserts each one exists in the manifest. A doc naming `/cluster/1` fails:
 //!    the gallery serves it at `/people/cluster/1`. That is the exact 0.20.5
 //!    regression this guards against.
+//! 3. `frontend_only_calls_declared_endpoints` scans the static JS for `/api/...`
+//!    URLs and asserts each is a declared endpoint, so a stale `fetch` to a
+//!    renamed route fails the build.
 
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -73,19 +76,20 @@ fn manifest_set() -> BTreeSet<Endpt> {
 }
 
 /// Parse the `(METHOD, path)` set the router registers, from the literal
-/// `.route("/x", get(..))` calls in report.rs. `videre gallery` is the only
-/// server configuration, so every route is a plain literal.
+/// `.route("/x", get(..).post(..))` calls in report.rs. A method-router may carry
+/// several methods on one path, so every method in the piece is emitted.
 fn router_set() -> BTreeSet<Endpt> {
     let src = std::fs::read_to_string(REPORT_RS).expect("read report.rs");
     let mut out: BTreeSet<Endpt> = BTreeSet::new();
     for piece in src.split(".route(").skip(1) {
         let p = piece.trim_start();
-        let method = first_method(p);
         if let Some(rest) = p.strip_prefix('"') {
             if let Some(end) = rest.find('"') {
                 let path = &rest[..end];
                 if path.starts_with('/') {
-                    out.insert((method, norm_path(path)));
+                    for method in methods_in(p) {
+                        out.insert((method, norm_path(path)));
+                    }
                 }
             }
         }
@@ -93,8 +97,10 @@ fn router_set() -> BTreeSet<Endpt> {
     out
 }
 
-/// The first axum method constructor in a `.route(...)` piece.
-fn first_method(piece: &str) -> String {
+/// Every axum method constructor in a `.route(...)` piece (`get(`, `post(`, ...).
+/// The piece spans one route's args (up to the next `.route(`), so the methods
+/// found are exactly that route's.
+fn methods_in(piece: &str) -> BTreeSet<String> {
     let cands = [
         ("get(", "GET"),
         ("post(", "POST"),
@@ -104,10 +110,9 @@ fn first_method(piece: &str) -> String {
     ];
     cands
         .iter()
-        .filter_map(|(needle, m)| piece.find(needle).map(|i| (i, *m)))
-        .min_by_key(|(i, _)| *i)
+        .filter(|(needle, _)| piece.contains(needle))
         .map(|(_, m)| m.to_string())
-        .unwrap_or_else(|| "GET".to_string())
+        .collect()
 }
 
 #[test]
@@ -208,6 +213,97 @@ fn docs_do_not_name_a_missing_route() {
         offenders
             .iter()
             .map(|(f, p)| format!("  {f}: {p}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+}
+
+// --- frontend guard: the JS may only call declared endpoints ---
+
+/// Extract `/api/...` paths the static JS calls. Handles both param styles the
+/// gallery uses: template literals `${...}` and string concatenation
+/// `'+expr+'`, each collapsed to a `{}` segment. Query strings are dropped.
+fn js_api_urls(text: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let mut i = 0;
+    while let Some(rel) = text[i..].find("/api/") {
+        let start = i + rel;
+        let mut j = start;
+        let mut path = String::new();
+        let is_path_char = |c: char| {
+            c == '/' || c == '{' || c == '}' || c == '-' || c == '_' || c.is_alphanumeric()
+        };
+        loop {
+            let rest = &text[j..];
+            if rest.starts_with("${") {
+                // template-literal param
+                match rest.find('}') {
+                    Some(e) => {
+                        path.push_str("{}");
+                        j += e + 1;
+                    }
+                    None => break,
+                }
+            } else if let Some(q) = rest.chars().next() {
+                if q == '\'' || q == '"' || q == '`' {
+                    // A quote ends the string literal. If it is followed by `+`
+                    // AND the reopened string continues the path, this is a
+                    // concatenation param (`'+expr+'/more`): collapse the expr to
+                    // `{}` and continue. Otherwise (a trailing `+(size?...)`, a
+                    // query, or a real end) the path ends here.
+                    let after = text[j + q.len_utf8()..].trim_start();
+                    let cont = after.strip_prefix('+').and_then(|_| {
+                        text[j + 1..]
+                            .find(['\'', '"', '`'])
+                            .map(|r2| j + 1 + r2 + 1)
+                            .filter(|&pos| text[pos..].chars().next().is_some_and(is_path_char))
+                    });
+                    match cont {
+                        Some(pos) => {
+                            path.push_str("{}");
+                            j = pos;
+                        }
+                        None => break,
+                    }
+                } else if is_path_char(q) {
+                    path.push(q);
+                    j += q.len_utf8();
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        out.insert(norm_path(&path));
+        i = j.max(start + 5);
+    }
+    out
+}
+
+#[test]
+fn frontend_only_calls_declared_endpoints() {
+    let routes: Vec<String> = manifest().into_iter().map(|e| norm_path(&e.path)).collect();
+    let js_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/static");
+    let mut offenders: Vec<(String, String)> = Vec::new();
+    for entry in std::fs::read_dir(js_dir).unwrap().flatten() {
+        let p = entry.path();
+        if p.extension().and_then(|e| e.to_str()) != Some("js") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&p).unwrap();
+        for url in js_api_urls(&text) {
+            if !routes.iter().any(|r| matches(r, &url)) {
+                offenders.push((p.file_name().unwrap().to_string_lossy().into_owned(), url));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "frontend JS calls endpoints not declared in gallery_endpoints.json:\n{}",
+        offenders
+            .iter()
+            .map(|(f, u)| format!("  {f}: {u}"))
             .collect::<Vec<_>>()
             .join("\n"),
     );

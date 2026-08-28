@@ -13,6 +13,27 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.21.7] - 2026-08-28
+
+### Changed
+
+- **The gallery HTTP API is now resource-oriented REST.** RPC-style verbs in the
+  path (`POST /api/new-person`, `/api/set-full-name`, `/api/dissolve-cluster`,
+  ...) become methods on plural-noun resources: `POST /api/people`,
+  `PATCH`/`DELETE /api/people/{name}`, `PUT /api/people/{name}/faces`,
+  `PATCH`/`DELETE /api/faces/{id}`, `GET /api/faces/{id}/image` and `/original`,
+  `GET`/`DELETE /api/clusters/{id}`, `PATCH /api/files/{hash}`,
+  `GET /api/files/{hash}/raw`, `GET /api/locations`. The router, the endpoint
+  manifest, and the gallery frontend change together. Internal only: no CLI, MCP,
+  or `--html` change, and the gallery ships in the same binary so there is no
+  external API to break.
+
+### Added
+
+- A build-time guard that the gallery frontend JS only calls endpoints declared
+  in `gallery_endpoints.json`, so a stale `fetch` to a renamed route fails the
+  build (the frontend counterpart of the docs-route guard).
+
 ## [0.21.6] - 2026-08-28
 
 ### Changed
@@ -1403,6 +1424,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[0.21.7]: https://github.com/erhangundogan/videre/compare/v0.21.6...v0.21.7
 [0.21.6]: https://github.com/erhangundogan/videre/compare/v0.21.5...v0.21.6
 [0.21.5]: https://github.com/erhangundogan/videre/compare/v0.21.4...v0.21.5
 [0.21.4]: https://github.com/erhangundogan/videre/compare/v0.21.3...v0.21.4
