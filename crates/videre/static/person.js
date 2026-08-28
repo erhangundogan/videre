@@ -52,7 +52,7 @@ function peopleHome() {
     async function load() {
       try {
         document.title = personName;
-        const r = await fetch(`/api/person/${encodeURIComponent(personName)}`);
+        const r = await fetch(`/api/people/${encodeURIComponent(personName)}`);
         if (!r.ok) throw new Error('person fetch failed');
         const data = await r.json();
         // After the fetch, not before: `data` is a `const` declared here, and
@@ -79,8 +79,8 @@ function peopleHome() {
       grid.innerHTML = facesData.map(f => `
         <div class="card${f.is_primary ? ' is-default' : ''}" id="card-${f.face_id}">
           ${f.is_primary ? '<span class="default-badge">&#9733; Default</span>' : ''}
-          <a href="/api/original-image/${f.face_id}" target="_blank" title="Open original image">
-            <img class="face-img" src="/api/face-image/${f.face_id}" width="180" height="180"
+          <a href="/api/faces/${f.face_id}/original" target="_blank" title="Open original image">
+            <img class="face-img" src="/api/faces/${f.face_id}/image" width="180" height="180"
                  onerror="this.removeAttribute('src');this.style.background='#ddd'">
           </a>
           <div class="path" title="${escHtml(f.path)}">${escHtml(basename(f.path))}</div>
@@ -100,10 +100,7 @@ function peopleHome() {
     }
 
     async function removeFace(faceId) {
-      const r = await fetch('/api/remove-face', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_id: faceId })
-      });
+      const r = await fetch(`/api/faces/${faceId}`, { method: 'DELETE' });
       if (!r.ok) { document.getElementById('status').textContent = 'Error: remove failed'; return; }
       document.getElementById(`card-${faceId}`)?.remove();
       facesData = facesData.filter(f => f.face_id !== faceId);
@@ -111,9 +108,9 @@ function peopleHome() {
     }
 
     async function setDefault(faceId) {
-      const r = await fetch('/api/set-primary', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_id: faceId, person_label: personName })
+      const r = await fetch(`/api/faces/${faceId}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ person_label: personName })
       });
       if (!r.ok) { document.getElementById('status').textContent = 'Error: set default failed'; return; }
       // Move the flag locally and re-render so the badge and disabled state
@@ -126,10 +123,7 @@ function peopleHome() {
 
     async function removePerson() {
       if (!confirm('Remove ' + personName + '? Their ' + facesData.length + ' photo(s) will become unassigned.')) return;
-      const r = await fetch('/api/delete-person', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label: personName })
-      });
+      const r = await fetch(`/api/people/${encodeURIComponent(personName)}`, { method: 'DELETE' });
       if (!r.ok) { alert('Failed to remove person.'); return; }
       window.location.href = peopleHome();
     }
@@ -141,9 +135,9 @@ function peopleHome() {
     async function submitRename() {
       const newName = sanitizeName(document.getElementById('renameInput').value);
       if (!newName) return;
-      const r = await fetch('/api/set-full-name', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: personName, full_name: newName })
+      const r = await fetch(`/api/people/${encodeURIComponent(personName)}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ full_name: newName })
       });
       if (!r.ok) { alert('Could not save the name.'); return; }
       document.getElementById('person-title').textContent = newName;

@@ -1,6 +1,6 @@
 use axum::extract::{Json as AxumJson, Query, State};
 use axum::http::StatusCode;
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post, put};
 use axum::Router;
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -448,7 +448,7 @@ fn file_to_json_with_faces(
         .unwrap_or_else(|| "null".to_string());
 
     // :warning: A live page emits a face id and lets the browser fetch the crop
-    // from `/api/face-image/{id}` when a lightbox opens. Inlining crops instead
+    // from `/api/faces/{id}/image` when a lightbox opens. Inlining crops instead
     // means **decoding every original in full** to cut out one face, for every
     // labelled face in the library, on every single request.
     //
@@ -838,7 +838,7 @@ pub(crate) fn generate_html(
     let now = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
 
     // In server mode HEIC thumbnails are converted lazily per request via
-    // /api/raw (see handle_raw_file). Converting every HEIC eagerly here made
+    // /api/files/{hash}/raw (see handle_raw_file). Converting every HEIC eagerly here made
     // server startup take minutes on a collection with many of them; the static
     // path pays that cost once at generation time instead.
     let heic = heic && !live;
@@ -1050,46 +1050,29 @@ fn api_status(e: videre_api::Error) -> StatusCode {
 }
 
 #[derive(Deserialize)]
-struct AssignRequest {
-    face_ids: Vec<i64>,
-    person_label: String,
-}
-
-#[derive(Deserialize)]
 struct NewPersonRequest {
     face_ids: Vec<i64>,
-    label: String,
-}
-
-#[derive(Deserialize)]
-struct RemoveFaceRequest {
-    face_id: i64,
-}
-
-#[derive(Deserialize)]
-struct DissolveClusterRequest {
-    cluster_id: i64,
-}
-
-#[derive(Deserialize)]
-struct DeletePersonRequest {
-    label: String,
-}
-
-/// Changing what a person is shown as, without touching their identity.
-///
-/// Separate from rename because intent cannot be read from the new string:
-/// `Erhan` to `Erhan Gündoğan` is a display correction whose normalized form
-/// also changes, so one endpoint would have to guess which was meant.
-#[derive(Deserialize)]
-struct SetFullNameRequest {
     name: String,
+}
+
+/// Faces to attach to a person: `PUT /api/people/{name}/faces`. The person comes
+/// from the path.
+#[derive(Deserialize)]
+struct AssignFacesBody {
+    face_ids: Vec<i64>,
+}
+
+/// Changing what a person is shown as, without touching their identity. The
+/// identity comes from the path (`PATCH /api/people/{name}`).
+#[derive(Deserialize)]
+struct SetFullNameBody {
     full_name: String,
 }
 
+/// Which person a face is the primary for: `PATCH /api/faces/{id}`. The face id
+/// comes from the path.
 #[derive(Deserialize)]
-struct SetPrimaryRequest {
-    face_id: i64,
+struct SetPrimaryBody {
     person_label: String,
 }
 
@@ -1098,12 +1081,11 @@ struct PersonSearchQuery {
     name: String,
 }
 
-/// The body of `POST /api/mark`. Every field is optional: only those present are
+/// The body of `PATCH /api/files/{hash}`. Every field is optional: only those present are
 /// changed, matching the partial-update semantics of `videre mark`. `rating` 0
 /// clears; `pick`/`label` `"none"` clears.
 #[derive(Deserialize)]
 struct MarkBody {
-    hash: String,
     rating: Option<i64>,
     pick: Option<String>,
     label: Option<String>,
@@ -1594,13 +1576,14 @@ async fn handle_get_faces(
 
 async fn handle_assign(
     State(state): State<Arc<AppState>>,
-    AxumJson(req): AxumJson<AssignRequest>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    AxumJson(req): AxumJson<AssignFacesBody>,
 ) -> Result<StatusCode, StatusCode> {
     let conn = state
         .conn
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    videre_api::assign(&conn, &req.face_ids, &req.person_label)
+    videre_api::assign(&conn, &req.face_ids, &name)
         .map(|_| StatusCode::OK)
         .map_err(api_status)
 }
@@ -1610,6 +1593,7 @@ async fn handle_assign(
 /// `videre mark`, so the CLI and the gallery behave identically.
 async fn handle_set_mark(
     State(state): State<Arc<AppState>>,
+    axum::extract::Path(hash): axum::extract::Path<String>,
     AxumJson(body): AxumJson<MarkBody>,
 ) -> Result<StatusCode, StatusCode> {
     let change = videre_core::marks::change_from_parts(
@@ -1625,7 +1609,7 @@ async fn handle_set_mark(
         .conn
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    videre_core::marks::set(&conn, std::slice::from_ref(&body.hash), &change)
+    videre_core::marks::set(&conn, std::slice::from_ref(&hash), &change)
         .map(|_| StatusCode::OK)
         .map_err(|e| {
             eprintln!("videre gallery: /api/mark failed: {e}");
@@ -1641,72 +1625,74 @@ async fn handle_new_person(
         .conn
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    videre_api::new_person(&conn, &req.face_ids, &req.label)
+    videre_api::new_person(&conn, &req.face_ids, &req.name)
         .map(|_| StatusCode::OK)
         .map_err(api_status)
 }
 
 async fn handle_remove_face(
     State(state): State<Arc<AppState>>,
-    AxumJson(req): AxumJson<RemoveFaceRequest>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> Result<StatusCode, StatusCode> {
     let conn = state
         .conn
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    videre_api::remove_face(&conn, req.face_id)
+    videre_api::remove_face(&conn, id)
         .map(|_| StatusCode::OK)
         .map_err(api_status)
 }
 
 async fn handle_delete_person(
     State(state): State<Arc<AppState>>,
-    AxumJson(req): AxumJson<DeletePersonRequest>,
+    axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Result<StatusCode, StatusCode> {
     let conn = state
         .conn
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    videre_api::delete_person(&conn, &req.label)
+    videre_api::delete_person(&conn, &name)
         .map(|_| StatusCode::OK)
         .map_err(api_status)
 }
 
 async fn handle_set_full_name(
     State(state): State<Arc<AppState>>,
-    AxumJson(req): AxumJson<SetFullNameRequest>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    AxumJson(req): AxumJson<SetFullNameBody>,
 ) -> Result<StatusCode, StatusCode> {
     let conn = state
         .conn
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    videre_api::set_full_name(&conn, &req.name, &req.full_name)
+    videre_api::set_full_name(&conn, &name, &req.full_name)
         .map(|_| StatusCode::OK)
         .map_err(api_status)
 }
 
 async fn handle_dissolve_cluster(
     State(state): State<Arc<AppState>>,
-    AxumJson(req): AxumJson<DissolveClusterRequest>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> Result<StatusCode, StatusCode> {
     let conn = state
         .conn
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    videre_api::dissolve_cluster(&conn, req.cluster_id)
+    videre_api::dissolve_cluster(&conn, id)
         .map(|_| StatusCode::OK)
         .map_err(api_status)
 }
 
 async fn handle_set_primary(
     State(state): State<Arc<AppState>>,
-    AxumJson(req): AxumJson<SetPrimaryRequest>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    AxumJson(req): AxumJson<SetPrimaryBody>,
 ) -> Result<StatusCode, StatusCode> {
     let conn = state
         .conn
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    videre_api::set_primary(&conn, req.face_id, &req.person_label)
+    videre_api::set_primary(&conn, id, &req.person_label)
         .map(|_| StatusCode::OK)
         .map_err(api_status)
 }
@@ -1843,7 +1829,6 @@ struct FilesQuery {
 
 #[derive(Deserialize)]
 struct RawFileQuery {
-    path: String,
     /// Optional max width/height in pixels, only meaningful for HEIC
     /// (which always needs QuickLook conversion) so the caller can request a
     /// small thumbnail (240px in the grid) or a larger version (1200px in
@@ -1868,18 +1853,19 @@ struct RawFileQuery {
 /// existed (`generate_html` used to call `heic_to_b64` synchronously for
 /// every HEIC file before returning any response).
 async fn handle_raw_file(
+    axum::extract::Path(hash): axum::extract::Path<String>,
     Query(q): Query<RawFileQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl axum::response::IntoResponse, StatusCode> {
-    let (path, hash) = {
+    let path = {
         let conn = state
             .conn
             .lock()
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         conn.query_row(
-            "SELECT path, hash FROM file_hashes WHERE path = ?1 LIMIT 1",
-            [&q.path],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            "SELECT path FROM file_hashes WHERE hash = ?1 LIMIT 1",
+            [&hash],
+            |r| r.get::<_, String>(0),
         )
         .optional()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
@@ -2040,36 +2026,47 @@ async fn serve_faces_async(
         embedder: Mutex::new(None),
     });
 
-    let mut router = Router::new()
-        .route("/api/face-image/{id}", get(handle_face_image))
-        .route("/api/original-image/{id}", get(handle_original_image))
-        .route("/api/cluster/{id}", get(handle_cluster_api))
-        .route("/api/person/{name}", get(handle_person_api))
-        .route("/api/search/person", get(handle_search_person))
-        .route("/api/quit", post(handle_quit))
-        .route("/api/location", get(handle_location))
-        .route("/api/raw", get(handle_raw_file))
+    // `videre gallery` is the only server configuration (labeling-only went away
+    // with `videre report` in 0.20.0, `serve_faces_ui` is always true), so every
+    // route is registered unconditionally. The API is resource-oriented REST;
+    // ids live in the path, methods carry intent. The cluster and person pages
+    // live under `/people`.
+    let router = Router::new()
+        // files / media
         .route("/api/files", get(handle_files))
-        .route("/api/mark", post(handle_set_mark))
+        .route("/api/files/{hash}", patch(handle_set_mark))
+        .route("/api/files/{hash}/raw", get(handle_raw_file))
         .route("/api/dates", get(handle_dates))
-        .route("/api/search", get(handle_search));
-
-    if state.serve_faces_ui {
-        router = router
-            .route("/api/faces", get(handle_get_faces))
-            .route("/api/assign", post(handle_assign))
-            .route("/api/new-person", post(handle_new_person))
-            .route("/api/remove-face", post(handle_remove_face))
-            .route("/api/delete-person", post(handle_delete_person))
-            .route("/api/set-full-name", post(handle_set_full_name))
-            .route("/api/dissolve-cluster", post(handle_dissolve_cluster))
-            .route("/api/set-primary", post(handle_set_primary));
-    }
-
-    // `videre gallery` is the only server configuration; the labeling-only entry
-    // point went away with `videre report` in 0.20.0. The cluster and person
-    // pages live under `/people`.
-    router = router
+        .route("/api/search", get(handle_search))
+        .route("/api/locations", get(handle_location))
+        // people
+        .route(
+            "/api/people",
+            get(handle_search_person).post(handle_new_person),
+        )
+        .route(
+            "/api/people/{name}",
+            get(handle_person_api)
+                .patch(handle_set_full_name)
+                .delete(handle_delete_person),
+        )
+        .route("/api/people/{name}/faces", put(handle_assign))
+        // faces
+        .route("/api/faces", get(handle_get_faces))
+        .route(
+            "/api/faces/{id}",
+            patch(handle_set_primary).delete(handle_remove_face),
+        )
+        .route("/api/faces/{id}/image", get(handle_face_image))
+        .route("/api/faces/{id}/original", get(handle_original_image))
+        // clusters
+        .route(
+            "/api/clusters/{id}",
+            get(handle_cluster_api).delete(handle_dissolve_cluster),
+        )
+        // control
+        .route("/api/quit", post(handle_quit))
+        // pages
         .route("/people/cluster/{id}", get(handle_cluster_page))
         .route("/people/person/{name}", get(handle_person_page))
         .route("/", get(handle_gallery_all))

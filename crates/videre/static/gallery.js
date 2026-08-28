@@ -17,14 +17,15 @@ function fmtB(b){
   while(v>=1024&&u<U.length-1){v/=1024;u++;}
   return v.toFixed(1)+' '+U[u];
 }
-function rawUrl(path){
-  return LIVE_SERVER ? '/api/raw?path='+encodeURIComponent(path) : 'file://'+path;
+function rawUrl(f, size){
+  if(!LIVE_SERVER) return 'file://'+f.path;
+  return '/api/files/'+encodeURIComponent(f.hash)+'/raw'+(size?('?size='+size):'');
 }
 function buildPreview(f){
   var ext=f.ext,path=f.path;
   var metaAttr=escA(JSON.stringify(f.meta));
   if(ext==='jpg'||ext==='jpeg'||ext==='png'||ext==='gif'||ext==='webp'||ext==='bmp'){
-    var url=rawUrl(path);
+    var url=rawUrl(f);
     return '<a href="'+escA(url)+'" target="_blank" data-lb-url="'+escA(url)+'" data-lb-type="image" '+
       'data-lb-meta="'+metaAttr+'">'+
       '<img src="'+escA(url)+'" class="thumb" loading="lazy" '+
@@ -32,8 +33,8 @@ function buildPreview(f){
   }
   if(ext==='heic'){
     if(LIVE_SERVER){
-      var thumbUrl=rawUrl(path)+'&size=240';
-      var lbUrl=rawUrl(path)+'&size=1200';
+      var thumbUrl=rawUrl(f, 240);
+      var lbUrl=rawUrl(f, 1200);
       return '<img src="'+escA(thumbUrl)+'" class="thumb heic-loading" loading="lazy" data-lb-url="'+escA(lbUrl)+'" '+
         'data-lb-type="image" data-lb-meta="'+metaAttr+'" '+
         'onload="this.classList.remove(\'heic-loading\')" '+
@@ -50,7 +51,7 @@ function buildPreview(f){
   if(ext==='tiff')return '<span class="no-prev">TIFF</span>';
   if(ext==='dng') return '<span class="no-prev">DNG</span>';
   if(ext==='mov'||ext==='mp4'){
-    var url=rawUrl(path);
+    var url=rawUrl(f);
     return '<video src="'+escA(url)+'" class="thumb" preload="metadata" muted playsinline '+
       'data-lb-url="'+escA(url)+'" data-lb-type="video" '+
       'data-lb-meta="'+metaAttr+'" '+
@@ -161,7 +162,7 @@ function renderMetaPanel(meta){
     // this lightbox opens. A static export has no server to ask, so it carries
     // `thumb` as a data URI. Supporting both keeps one renderer for both.
     parts.push(meta.faces.map(function(fc){
-      var src = fc.thumb ? escA(fc.thumb) : '/api/face-image/'+encodeURIComponent(fc.id);
+      var src = fc.thumb ? escA(fc.thumb) : '/api/faces/'+encodeURIComponent(fc.id)+'/image';
       return '<div class="lb-face"><img src="'+src+'" loading="lazy">'+
         '<a href="'+peopleRootG()+'person/'+encodeURIComponent(fc.name)+'?from=lightbox">'+escH(fc.name)+'</a></div>';
     }).join(''));
@@ -169,7 +170,7 @@ function renderMetaPanel(meta){
   if(meta.location){
     var locId = 'lbLoc'+Math.random().toString(36).slice(2);
     parts.push('<div class="lb-location" id="'+locId+'">Loading location...</div>');
-    fetch('/api/location?lat='+meta.location.lat+'&lon='+meta.location.lon)
+    fetch('/api/locations?lat='+meta.location.lat+'&lon='+meta.location.lon)
       .then(function(r){ return r.json(); })
       .then(function(d){
         var n = document.getElementById(locId);

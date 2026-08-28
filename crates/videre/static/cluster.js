@@ -43,7 +43,7 @@ const clusterId = window.CLUSTER_ID;
     async function load() {
       try {
         const [clusterRes, mainRes] = await Promise.all([
-          fetch(`/api/cluster/${clusterId}`),
+          fetch(`/api/clusters/${clusterId}`),
           fetch('/api/faces')
         ]);
         if (!clusterRes.ok) throw new Error('cluster fetch failed');
@@ -63,7 +63,7 @@ const clusterId = window.CLUSTER_ID;
       const grid = document.getElementById('faces-grid');
       grid.innerHTML = facesData.map(f => `
         <div class="card" id="card-${f.face_id}">
-          <img class="face-img" src="/api/face-image/${f.face_id}" width="180" height="180"
+          <img class="face-img" src="/api/faces/${f.face_id}/image" width="180" height="180"
                onerror="this.removeAttribute('src');this.style.background='#ddd'">
           <div class="path" title="${escHtml(f.path)}">${escHtml(basename(f.path))}</div>
           <div class="face-id">#${f.face_id}</div>
@@ -82,10 +82,7 @@ const clusterId = window.CLUSTER_ID;
     }
 
     async function removeFace(faceId) {
-      const r = await fetch('/api/remove-face', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_id: faceId })
-      });
+      const r = await fetch(`/api/faces/${faceId}`, { method: 'DELETE' });
       if (!r.ok) { document.getElementById('status').textContent = 'Error: remove failed'; return; }
       document.getElementById(`card-${faceId}`)?.remove();
       facesData = facesData.filter(f => f.face_id !== faceId);
@@ -96,9 +93,9 @@ const clusterId = window.CLUSTER_ID;
       const label = sanitizeName(document.getElementById('person-input').value);
       if (!label) return;
       const faceIds = facesData.map(f => f.face_id);
-      const r = await fetch('/api/new-person', {
+      const r = await fetch('/api/people', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_ids: faceIds, label })
+        body: JSON.stringify({ face_ids: faceIds, name: label })
       });
       if (!r.ok) { document.getElementById('status').textContent = 'Error: assign failed'; return; }
       document.getElementById('status').textContent = `Assigned ${faceIds.length} face(s) to "${label}"`;
@@ -125,9 +122,9 @@ const clusterId = window.CLUSTER_ID;
       const label = sanitizeName(document.getElementById('assignInput').value);
       if (!label) return;
       const faceId = assignModalFaceId;
-      const r = await fetch('/api/assign', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ face_ids: [faceId], person_label: label })
+      const r = await fetch(`/api/people/${encodeURIComponent(label)}/faces`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ face_ids: [faceId] })
       });
       if (!r.ok) { document.getElementById('status').textContent = 'Error: assign failed'; return; }
       closeAssignModal();
@@ -149,10 +146,7 @@ const clusterId = window.CLUSTER_ID;
 
     async function dissolveCluster() {
       if (!confirm(`Dissolve cluster ${clusterId}? Its ${facesData.length} face(s) will become unassigned singletons (not deleted).`)) return;
-      const r = await fetch('/api/dissolve-cluster', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cluster_id: clusterId })
-      });
+      const r = await fetch(`/api/clusters/${clusterId}`, { method: 'DELETE' });
       if (!r.ok) { document.getElementById('status').textContent = 'Error: dissolve failed'; return; }
       document.getElementById('status').textContent = 'Cluster dissolved';
       setTimeout(() => { window.location.href = peopleHome(); }, 500);
