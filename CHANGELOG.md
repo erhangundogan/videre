@@ -13,6 +13,16 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.21.8] - 2026-08-29
+
+### Added
+
+- **Gallery HTTP interface reference.** The docs now describe the local HTTP
+  routes served while `videre gallery` is running, including page routes, JSON
+  endpoints, request bodies, response examples and byte-serving endpoints. A new
+  docs guard checks that every route in `gallery_endpoints.json` appears in the
+  reference page, so route changes and docs changes stay paired.
+
 ## [0.21.7] - 2026-08-28
 
 ### Changed
@@ -1424,6 +1434,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[0.21.8]: https://github.com/erhangundogan/videre/compare/v0.21.7...v0.21.8
 [0.21.7]: https://github.com/erhangundogan/videre/compare/v0.21.6...v0.21.7
 [0.21.6]: https://github.com/erhangundogan/videre/compare/v0.21.5...v0.21.6
 [0.21.5]: https://github.com/erhangundogan/videre/compare/v0.21.4...v0.21.5
