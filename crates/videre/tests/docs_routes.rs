@@ -25,6 +25,10 @@ const MANIFEST: &str = concat!(
     "/src/commands/gallery_endpoints.json"
 );
 const REPORT_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/commands/report.rs");
+const GALLERY_HTTP_INTERFACE_DOC: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../docs/src/content/docs/reference/gallery-http-interface.md"
+);
 
 #[derive(Deserialize)]
 struct Manifest {
@@ -213,6 +217,31 @@ fn docs_do_not_name_a_missing_route() {
         offenders
             .iter()
             .map(|(f, p)| format!("  {f}: {p}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+}
+
+#[test]
+fn gallery_http_interface_documents_every_manifest_route() {
+    let text = std::fs::read_to_string(GALLERY_HTTP_INTERFACE_DOC)
+        .expect("read reference/gallery-http-interface.md");
+    let mut missing = Vec::new();
+
+    for endpoint in manifest() {
+        let token = format!("`{} {}`", endpoint.method.to_uppercase(), endpoint.path);
+        if !text.contains(&token) {
+            missing.push(token);
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "gallery HTTP interface docs are missing route(s) from \
+         src/commands/gallery_endpoints.json:\n{}",
+        missing
+            .iter()
+            .map(|route| format!("  {route}"))
             .collect::<Vec<_>>()
             .join("\n"),
     );
