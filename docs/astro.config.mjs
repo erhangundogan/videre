@@ -124,6 +124,7 @@ export default defineConfig({
 						{ label: 'Cautions', slug: 'reference/cautions' },
 						{ label: 'Where your data lives', slug: 'reference/paths' },
 						{ label: 'The database', slug: 'reference/database' },
+						{ label: 'Gallery HTTP interface', slug: 'reference/gallery-http-interface' },
 						{ label: 'Platform support', slug: 'reference/platforms' },
 						{ label: 'Supported files', slug: 'reference/file-types' },
 						{ label: 'Search models', slug: 'reference/models' },
