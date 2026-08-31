@@ -27,6 +27,16 @@ version number and are released together.
 
 ## [0.22.1] - 2026-08-31
 
+### Removed
+
+- **`videre_core::home::resolve_db_in` is deleted.** It resolved a database from
+  a home's `config.toml` alone, ignoring `VIDERE_HOME`, which is a meaning almost
+  no caller wants. The one caller that used it (the `videre config` output) was
+  already switched to the full-precedence `resolve_db`, and nothing else in the
+  workspace called it. Removing a `pub` item from a published crate is why the
+  0.21 to 0.22 step is a minor bump rather than a patch; no command-line
+  behaviour changes.
+
 ### Fixed
 
 - **The gallery `/people` labeling page no longer overlaps the top chrome.** The
@@ -46,17 +56,6 @@ version number and are released together.
   the person page; on the labeling page each singleton gets a magnifier that
   opens its original in a new tab without disturbing multi-select or
   drag-to-assign.
-
-## [0.22.0] - 2026-08-31
-
-### Removed
-
-- **`videre_core::home::resolve_db_in` is deleted.** It resolved a database from
-  a home's `config.toml` alone, ignoring `VIDERE_HOME`, which is a meaning almost
-  no caller wants. The one caller that used it (the `videre config` output) was
-  already switched to the full-precedence `resolve_db`, and nothing else in the
-  workspace called it. Removing a `pub` item from a published crate is why this
-  is a minor rather than a patch release; no command-line behaviour changes.
 
 ## [0.21.9] - 2026-08-31
 
@@ -1490,8 +1489,7 @@ takes the model id explicitly instead of reading it from the environment.
 - First release published to crates.io.
 
 [0.22.2]: https://github.com/erhangundogan/videre/compare/v0.22.1...v0.22.2
-[0.22.1]: https://github.com/erhangundogan/videre/compare/v0.22.0...v0.22.1
-[0.22.0]: https://github.com/erhangundogan/videre/compare/v0.21.9...v0.22.0
+[0.22.1]: https://github.com/erhangundogan/videre/compare/v0.21.9...v0.22.1
 [0.21.9]: https://github.com/erhangundogan/videre/compare/v0.21.8...v0.21.9
 [0.21.8]: https://github.com/erhangundogan/videre/compare/v0.21.7...v0.21.8
 [0.21.7]: https://github.com/erhangundogan/videre/compare/v0.21.6...v0.21.7
