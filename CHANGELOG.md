@@ -13,6 +13,18 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.22.2] - 2026-08-31
+
+### Fixed
+
+- **The section nav strip now appears on the cluster and person pages.** The
+  `/people/cluster/{id}` and `/people/person/{name}` pages were missing the
+  Files/Duplicates/Date/People navigation that every other gallery page carries.
+- **The person page's Save button is a primary button now,** with spacing before
+  it, matching the rest of the labeling UI.
+- **Date-view cards inset their thumbnail** with padding instead of running it
+  flush to the card's top edge.
+
 ## [0.22.1] - 2026-08-31
 
 ### Fixed
@@ -1477,6 +1489,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[0.22.2]: https://github.com/erhangundogan/videre/compare/v0.22.1...v0.22.2
 [0.22.1]: https://github.com/erhangundogan/videre/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/erhangundogan/videre/compare/v0.21.9...v0.22.0
 [0.21.9]: https://github.com/erhangundogan/videre/compare/v0.21.8...v0.21.9

@@ -63,6 +63,8 @@ mod pages {
         /// Where the labeling UI lives on this server. See `people_root`.
         pub back_href: &'static str,
         pub back_label: &'static str,
+        /// Highlighted section for the shared nav strip. See `templates/nav.html`.
+        pub nav: Option<super::Section>,
     }
 
     #[derive(Template)]
@@ -74,6 +76,8 @@ mod pages {
         /// Where the labeling UI lives on this server. See `people_root`.
         pub back_href: &'static str,
         pub back_label: &'static str,
+        /// Highlighted section for the shared nav strip. See `templates/nav.html`.
+        pub nav: Option<super::Section>,
     }
 
     pub const FACES_CSS: &str = include_str!("../../../static/faces.css");
@@ -789,6 +793,7 @@ async fn handle_cluster_page(
         cluster_id,
         back_href: people_root(state.gallery),
         back_label: people_back_label(state.gallery),
+        nav: state.gallery.then_some(Section::People),
     };
     axum::response::Html(page.render().expect("cluster template"))
 }
@@ -814,6 +819,7 @@ async fn handle_person_page(State(state): State<Arc<AppState>>) -> axum::respons
         faces_ui_enabled: state.serve_faces_ui,
         back_href: people_root(state.gallery),
         back_label: people_back_label(state.gallery),
+        nav: state.gallery.then_some(Section::People),
     };
     axum::response::Html(page.render().expect("person template"))
 }
