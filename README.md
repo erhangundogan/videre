@@ -18,6 +18,9 @@ A local-first tool for making sense of a folder full of photos and videos.
 - fix wrong file dates from the camera's own EXIF data
 - group photos by where they were taken
 
+Free and open source under the permissive Apache 2.0 licence: no account, no
+subscription, no lock-in, and every line is yours to read, audit, or build on.
+
 **Documentation: [docs.videre.sh](https://docs.videre.sh)**
 
 ## Why videre
@@ -39,6 +42,10 @@ what's there. Stop using it and your photos are exactly as they were.
 - **Nothing leaves your machine.** No account, no upload, no telemetry. The one
   exception is `videre search --location "Berlin"`, which looks a place name up
   once and remembers it.
+- **Free, open, and permanent.** videre is open source under the permissive
+  Apache 2.0 licence. It costs nothing, has no subscription or paywalled tier,
+  and cannot be discontinued out from under you: read exactly what it does with
+  your photos, keep the version you have forever, fork it, or build on it.
 - **It won't delete anything behind your back.** `videre dedupe` prints what
   *could* go and stops there. You decide, and you can look through the
   candidates in a browser first.
