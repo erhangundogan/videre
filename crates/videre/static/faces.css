@@ -22,7 +22,8 @@
     .badge-blue { background: var(--blue-bg); border-color: var(--blue-border); color: var(--blue-text); }
     .badge-green { background: var(--green-bg); border-color: var(--green-border); color: var(--green-text); }
     .badge-orange { background: var(--orange-bg); border-color: var(--orange-border); color: var(--orange-text); }
-    h2.title-people { color: var(--blue-text); }
+    h2.title-people { color: var(--blue-text); display: flex; align-items: center; gap: 8px; }
+    h2.title-people #layout-toggle { margin-left: auto; font-weight: 400; }
     h2.title-clusters { color: var(--green-text); }
     h2.title-singletons { color: var(--orange-text); }
     .new-person-area { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
@@ -89,6 +90,8 @@
     /* Singleton multi-select. */
     .singleton-card.selected { border-color: var(--blue-hover); box-shadow: 0 0 0 2px var(--blue-hover); }
     .sel-zone { position: relative; cursor: pointer; }
+    .view-orig { position: absolute; top: 6px; left: 6px; width: 22px; height: 22px; border-radius: 50%; background: rgba(255,255,255,0.92); display: flex; align-items: center; justify-content: center; font-size: 12px; text-decoration: none; z-index: 6; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
+    .view-orig:hover { background: #fff; }
     .sel-check { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; border-radius: 50%; background: var(--blue-hover); color: #fff; align-items: center; justify-content: center; font-size: 13px; z-index: 5; display: none; }
     .singleton-card.selected .sel-check { display: flex; }
     .sel-bar { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--blue-hover); color: #fff; padding: 10px 16px; border-radius: 10px; display: none; gap: 12px; align-items: center; z-index: 300; box-shadow: 0 4px 16px rgba(0,0,0,0.25); flex-wrap: wrap; }

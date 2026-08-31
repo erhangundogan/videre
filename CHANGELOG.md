@@ -24,6 +24,16 @@ version number and are released together.
   strip at the top in "People: Top" mode, with a background matching the page.
   The drag hint on each cluster and singleton card reads "Drag on a person to
   assign", and the section headings have room before their first thumbnail.
+- **Removed the redundant `/people` toolbar and the "Save & Close" button.** The
+  band duplicated the header's people/clusters/singletons counts, and "Save &
+  Close" only stopped the server, which every labeling action already saves the
+  moment it is made. The layout toggle moved into the People heading as a primary
+  button; the server still stops with Ctrl-C.
+- **Cluster and singleton faces can now open their original photo.** On the
+  cluster detail page each face links to the full image in a new tab, matching
+  the person page; on the labeling page each singleton gets a magnifier that
+  opens its original in a new tab without disturbing multi-select or
+  drag-to-assign.
 
 ## [0.22.0] - 2026-08-31
 
