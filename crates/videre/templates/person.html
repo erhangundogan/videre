@@ -6,6 +6,7 @@
   <style>{{ css|safe }}</style>
 </head>
 <body>
+  {% include "nav.html" %}
   <div class="toolbar">
     <a id="backLink" href="{{ back_href }}">&larr; {{ back_label }}</a>
     <strong id="person-title">Person</strong>
@@ -13,7 +14,7 @@
     <span id="status"></span>
     <span id="renameArea" style="display:none">
       <input type="text" id="renameInput" maxlength="60">
-      <button onclick="submitRename()">Save</button>
+      <button class="primary" style="margin-left:8px" onclick="submitRename()">Save</button>
     </span>
     <button id="removeBtn" class="danger" style="display:none;margin-left:auto" onclick="removePerson()">Remove person</button>
   </div>

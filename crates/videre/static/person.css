@@ -8,6 +8,7 @@ body { font-family: sans-serif; margin: 0; padding: 16px; background: #f5f5f5; }
     .face-id { font-size: 11px; color: #999; margin-top: 2px; }
     .btns { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
     button { cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid #999; background: white; font-size: 13px; }
+    button.primary { background: #2a6db5; color: #fff; border-color: #2a6db5; }
     button.danger { color: #c00; border-color: #fbb; }
     button:disabled { cursor: default; opacity: 0.6; }
     .card { position: relative; }

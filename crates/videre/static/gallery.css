@@ -71,9 +71,9 @@ th.preview-th{width:130px}
 .date-breadcrumb{margin-bottom:16px;font-size:13px;color:#71717a}
 .date-breadcrumb a{color:#3f3f46;cursor:pointer;text-decoration:underline}
 .date-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}
-.date-card{background:#fff;border-radius:8px;overflow:hidden;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.08)}
-.date-card img{width:100%;aspect-ratio:1;object-fit:cover;display:block}
-.date-card .date-card-label{padding:8px;font-size:13px;font-weight:600}
-.date-card .date-card-count{padding:0 8px 8px;font-size:11px;color:#71717a}
+.date-card{background:#fff;border-radius:8px;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.08);padding:8px}
+.date-card img{width:100%;aspect-ratio:1;object-fit:cover;display:block;border-radius:6px}
+.date-card .date-card-label{padding:6px 0 0;font-size:13px;font-weight:600}
+.date-card .date-card-count{padding:2px 0 0;font-size:11px;color:#71717a}
 img.heic-loading{display:block;width:100%;aspect-ratio:1;object-fit:cover;background:linear-gradient(90deg,#e4e4e7 25%,#f4f4f5 37%,#e4e4e7 63%);background-size:400% 100%;animation:heicShimmer 1.4s ease infinite}
 @keyframes heicShimmer{0%{background-position:100% 0}100%{background-position:0 0}}
