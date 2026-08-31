@@ -21,10 +21,8 @@ let facesData = { people: [], clusters: [], singletons: [] };
         // accurate and tells nobody what to do about it.
         if (total === 0) { showNothingDetected(); return; }
         setHeaderStats();
-        document.getElementById('status').textContent =
-          `${facesData.people.length} people, ${facesData.clusters.length} clusters, ${facesData.singletons.length} singletons`;
       } catch(e) {
-        document.getElementById('status').textContent = 'Error loading: ' + e;
+        alert('Error loading faces: ' + e);
       }
     }
 
@@ -36,7 +34,6 @@ let facesData = { people: [], clusters: [], singletons: [] };
     }
 
     function showNothingDetected() {
-      document.getElementById('status').textContent = 'No faces yet';
       const host = document.querySelector('.people-section');
       if (!host || document.getElementById('faces-empty')) return;
       const box = document.createElement('div');
@@ -163,8 +160,15 @@ let facesData = { people: [], clusters: [], singletons: [] };
       const inner = thumbGrid(faceIds);
       let thumb;
       if (selectable) {
+        // The thumbnail click toggles multi-select and the drag handle assigns,
+        // so opening the photo gets its own control: a corner link that stops
+        // the click from bubbling to the select handler. A singleton has no
+        // detail page, so this is its only route to the full image.
         thumb = `<div class="sel-zone" onclick="toggleSingleton(${selFaceId})" title="Click to select">`
-          + `<div class="sel-check">&#10003;</div>${inner}</div>`;
+          + `<div class="sel-check">&#10003;</div>`
+          + `<a class="view-orig" href="/api/faces/${selFaceId}/original" target="_blank"`
+          + ` title="Open original photo" onclick="event.stopPropagation()">&#128269;</a>`
+          + `${inner}</div>`;
       } else if (linkUrl) {
         thumb = `<a href="${escHtml(linkUrl)}">${inner}</a>`;
       } else {
@@ -175,7 +179,7 @@ let facesData = { people: [], clusters: [], singletons: [] };
         <div class="card ${cardClass}" ${selAttr}>
           <div class="drag-handle" draggable="true" ondragstart="onDragStart(event, ${faceIdsJson})" title="Drag to assign to a person">
             <span class="drag-dots">&#8942;&#8942;&#8942;</span>
-            <span class="drag-hint">Drag on a person</span>
+            <span class="drag-hint">Drag on a person to assign</span>
           </div>
           ${thumb}
           <div class="new-person-area">
@@ -307,7 +311,7 @@ let facesData = { people: [], clusters: [], singletons: [] };
         body: JSON.stringify({ face_ids: ids, name: label })
       });
       if (!r.ok) {
-        document.getElementById('status').textContent = 'Error: create person failed';
+        alert('Create person failed');
         return;
       }
       clearSelection();
@@ -363,7 +367,7 @@ let facesData = { people: [], clusters: [], singletons: [] };
         body: JSON.stringify({ face_ids: data.face_ids })
       });
       if (!r.ok) {
-        document.getElementById('status').textContent = 'Error: assign failed';
+        alert('Assign failed');
         return;
       }
       clearSelection();
@@ -396,15 +400,10 @@ let facesData = { people: [], clusters: [], singletons: [] };
         body: JSON.stringify({ face_ids: faceIds, name: label })
       });
       if (!r.ok) {
-        document.getElementById('status').textContent = 'Error: create person failed';
+        alert('Create person failed');
         return;
       }
       await loadFaces();
-    }
-
-    async function saveAndClose() {
-      await fetch('/api/quit', { method: 'POST' });
-      document.body.innerHTML = '<div style="padding:32px;font-size:18px">Server stopped. You can close this tab.</div>';
     }
 
     applyLayout();
