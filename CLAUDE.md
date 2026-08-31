@@ -62,7 +62,7 @@ in commit messages and this file.
 
 ```bash
 cargo build --release
-cargo fmt --all                # NOT make fmt-check; see below
+make fmt                       # not bare `cargo fmt`; see below
 cargo test --workspace
 ```
 
@@ -100,20 +100,29 @@ that way first, appeared to work only because Homebrew's `cargo-fmt` was on
 `PATH`, and broke the moment Homebrew's Rust was removed. The full two-toolchain
 history is in `rust-toolchain.toml`'s own comment.
 
-:warning: **Do not verify formatting with `fmt-check` before committing. Run
-`cargo fmt --all`.**
+:warning: **Format with `make fmt` and verify with `make fmt-check`, not bare
+`cargo fmt`.**
 
-`make fmt-check` has twice reported clean on a tree CI's rustfmt then rejected,
-2026-08-20, both times on a branch adding a new test file. Checking out the exact
-rejected commit and re-running locally finds **the same diffs**, so local and CI
-agree about the bytes and the fault is in the invocation rather than the
-toolchain. The mechanism is still unknown; five hypotheses have been eliminated
-and are listed on the board item, including version skew and stale cargo
-metadata.
+`cargo fmt` visits only the `.rs` files reachable through `mod` from a target
+root, so it silently skips any file not wired into the module tree and still
+exits 0. That is a real false pass, reproduced directly: a misformatted `src/`
+module that nothing `mod`-declares passes `cargo fmt --all -- --check` cleanly.
+The long-repeated mitigation "just run `cargo fmt --all`, it cannot report a
+false pass" was wrong for exactly this reason: it does not format an unreachable
+file either, it just never looks at it.
 
-`cargo fmt --all` is idempotent and cannot report a false pass, so it sidesteps
-the question entirely. Never wrap the check in something that asserts success
-from an exit code alone.
+`make fmt` and `make fmt-check` enumerate the sources with `find crates` and hand
+each file to rustfmt directly, so coverage no longer depends on the module tree
+or on cargo's target discovery. Fixed 2026-08-31. This closed the whole class;
+whether the exact 2026-08-20 incident (a just-added `tests/*.rs`, normally its
+own target root) was this sub-case or a metadata-timing one was never pinned
+down, but the file-enumeration check does not touch that machinery at all. Never
+wrap the check in something that asserts success from an exit code alone.
+
+:information_source: `make fmt-check` runs `rustup run $(TOOLCHAIN) rustfmt`.
+That is safe where `rustup run <toolchain> cargo fmt` is not (the warning above):
+`rustfmt` is a first-class binary in the toolchain's bin, so `rustup run` finds
+it, whereas a cargo *subcommand* is not on that PATH.
 
 Coverage is the one command that still names a toolchain of its own; see the
 coverage section for why.

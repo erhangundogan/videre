@@ -61,13 +61,23 @@ test: ## Run the full workspace test suite (as CI does)
 test-install: ## Exercise docs/public/install end to end (needs network)
 	.github/scripts/test-install.sh
 
+# rustfmt only visits files reachable through `mod` from a target root, so
+# `cargo fmt` silently skips any .rs not yet wired into the module tree and
+# still exits 0. That is a real false pass: a newly added file that is not yet
+# `mod`-linked is not checked at all. Enumerating the source files ourselves and
+# handing each to rustfmt directly closes the blind spot, and matches this repo's
+# CI comment that formatting "parses the source directly" with no cargo metadata.
+# All four crates are edition 2021; a future edition change updates this too.
+RUSTFMT := rustup run $(TOOLCHAIN) rustfmt --edition 2021
+RUST_SOURCES = find crates -name '*.rs' -not -path '*/target/*'
+
 .PHONY: fmt
 fmt: ## Format all Rust code
-	$(CARGO) fmt --all
+	$(RUST_SOURCES) | xargs $(RUSTFMT)
 
 .PHONY: fmt-check
 fmt-check: ## Check formatting without modifying files
-	$(CARGO) fmt --all -- --check
+	$(RUST_SOURCES) | xargs $(RUSTFMT) --check
 
 .PHONY: lint
 lint: ## Run clippy across the workspace
