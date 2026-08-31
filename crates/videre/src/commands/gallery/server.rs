@@ -1,3 +1,7 @@
+//! The `videre gallery` HTTP server: the axum router, its handlers, and the
+//! face-labeling API. The rendering it shares with `dedupe --html` and
+//! `search --html` lives in `crate::render`; this file is the HTTP layer only.
+
 use crate::render::*;
 use axum::extract::{Json as AxumJson, Query, State};
 use axum::http::StatusCode;
@@ -72,12 +76,12 @@ mod pages {
         pub back_label: &'static str,
     }
 
-    pub const FACES_CSS: &str = include_str!("../../static/faces.css");
-    pub const FACES_JS: &str = include_str!("../../static/faces.js");
-    pub const CLUSTER_CSS: &str = include_str!("../../static/cluster.css");
-    pub const CLUSTER_JS: &str = include_str!("../../static/cluster.js");
-    pub const PERSON_CSS: &str = include_str!("../../static/person.css");
-    pub const PERSON_JS: &str = include_str!("../../static/person.js");
+    pub const FACES_CSS: &str = include_str!("../../../static/faces.css");
+    pub const FACES_JS: &str = include_str!("../../../static/faces.js");
+    pub const CLUSTER_CSS: &str = include_str!("../../../static/cluster.css");
+    pub const CLUSTER_JS: &str = include_str!("../../../static/cluster.js");
+    pub const PERSON_CSS: &str = include_str!("../../../static/person.css");
+    pub const PERSON_JS: &str = include_str!("../../../static/person.js");
 }
 
 fn api_status(e: videre_api::Error) -> StatusCode {
@@ -249,9 +253,9 @@ async fn handle_search(
     let hits = tokio::task::spawn_blocking(move || {
         let args = crate::commands::search::SearchArgs {
             html: None,
-            media: super::selection_args::MediaArgs::default(),
-            paths: super::selection_args::PathArgs::default(),
-            marks: super::selection_args::MarkArgs::default(),
+            media: crate::commands::selection_args::MediaArgs::default(),
+            paths: crate::commands::selection_args::PathArgs::default(),
+            marks: crate::commands::selection_args::MarkArgs::default(),
             tags: Default::default(),
             // Both bound at startup, so a request cannot retarget the server.
             db: Some(state.db.clone()),
@@ -1173,12 +1177,8 @@ async fn serve_faces_async(
 /// Entry point for `videre gallery`: the same server, every view on its own
 /// route.
 ///
-/// :warning: This file is named `report.rs` for a command that no longer
-/// exists. `videre report` was removed in 0.20.0; what remains here is the
-/// shared renderer and server that `gallery`, `dedupe --html` and
-/// `search --html` all use. Renaming it, and moving this function to
-/// `gallery.rs`, is tracked separately: it is a large mechanical move and does
-/// not belong in the same change as the removal.
+/// This module is the HTTP layer only. The renderer it shares with
+/// `dedupe --html` and `search --html` lives in `crate::render`.
 pub(crate) fn serve_gallery(
     db: &Path,
     model_id: String,
