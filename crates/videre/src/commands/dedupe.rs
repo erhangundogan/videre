@@ -64,8 +64,8 @@ fn write_html(
         p.set_file_name(format!("{stem}_duplicates.html"));
         p
     };
-    let groups = super::report::query_groups(conn);
-    super::report::write_static_page(conn, &output, &groups, None)
+    let groups = crate::render::query_groups(conn);
+    crate::render::write_static_page(conn, &output, &groups, None)
 }
 
 fn run_text(args: DedupeArgs) -> anyhow::Result<()> {
