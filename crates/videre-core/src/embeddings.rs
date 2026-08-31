@@ -49,10 +49,9 @@ pub const DEFAULT_MODEL_ID: &str = "google/siglip-base-patch16-224";
 /// The model to use, given an explicit home: `--model` > `config.toml` > the
 /// built-in default.
 ///
-/// Split from `resolve_model_id` the same way `home::resolve_db_in` is split
-/// from `home::resolve_db`, so tests can pass a home directly instead of
-/// mutating `VIDERE_HOME`. Tests share a process and run in parallel, so a
-/// per-test `set_var` races every concurrent `getenv`.
+/// Takes the home directly instead of reading `VIDERE_HOME`, so tests can pass
+/// one rather than mutating the environment. Tests share a process and run in
+/// parallel, so a per-test `set_var` races every concurrent `getenv`.
 ///
 /// Note the return type is `anyhow::Result`, not this module's `Result`, which
 /// is `rusqlite::Result`. It returns a Result at all so a malformed
