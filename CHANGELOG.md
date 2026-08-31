@@ -13,6 +13,18 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.22.1] - 2026-08-31
+
+### Fixed
+
+- **The gallery `/people` labeling page no longer overlaps the top chrome.** The
+  People section was a full-height fixed sidebar that painted over the nav bar
+  and header down the right edge. It is now a column inside the content area,
+  below the shared chrome: a sticky right-hand pane by default, a full-width
+  strip at the top in "People: Top" mode, with a background matching the page.
+  The drag hint on each cluster and singleton card reads "Drag on a person to
+  assign", and the section headings have room before their first thumbnail.
+
 ## [0.22.0] - 2026-08-31
 
 ### Removed
@@ -1455,6 +1467,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[0.22.1]: https://github.com/erhangundogan/videre/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/erhangundogan/videre/compare/v0.21.9...v0.22.0
 [0.21.9]: https://github.com/erhangundogan/videre/compare/v0.21.8...v0.21.9
 [0.21.8]: https://github.com/erhangundogan/videre/compare/v0.21.7...v0.21.8

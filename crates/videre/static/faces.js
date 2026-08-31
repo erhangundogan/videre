@@ -175,7 +175,7 @@ let facesData = { people: [], clusters: [], singletons: [] };
         <div class="card ${cardClass}" ${selAttr}>
           <div class="drag-handle" draggable="true" ondragstart="onDragStart(event, ${faceIdsJson})" title="Drag to assign to a person">
             <span class="drag-dots">&#8942;&#8942;&#8942;</span>
-            <span class="drag-hint">Drag on a person</span>
+            <span class="drag-hint">Drag on a person to assign</span>
           </div>
           ${thumb}
           <div class="new-person-area">
