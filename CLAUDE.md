@@ -48,9 +48,6 @@ latest.
 non-ASCII; `Alice`/`Bob` cannot expose an ASCII-only SQLite `LOWER()`, and did
 not.
 
-**Style.** No em dashes in `README.md`, `CLAUDE.md` or Rust comments (a hyphen
-where a hyphen belongs, never as a dash); no `Co-Authored-By` trailer.
-
 **Getting a change in.** Read `git status --short` before staging and stage by
 name, never blanket-stage. Bump the version in all four crates and stage
 `Cargo.lock` in the same commit (below 1.0 the minor number is the compatibility
