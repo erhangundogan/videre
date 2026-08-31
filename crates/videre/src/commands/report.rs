@@ -9,6 +9,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use videre_api::{ClusterDetail, FacesData, PersonDetail};
 
+#[derive(Clone)]
 pub(crate) struct FileRow {
     path: String,
     hash: String,
@@ -791,48 +792,90 @@ pub(crate) fn write_static_page(
     let stats = query_stats(conn);
     let faces_by_hash = videre_core::face_db::labeled_faces_by_hash(conn).unwrap_or_default();
     let db_path = conn.path().map(|p| p.to_string()).unwrap_or_default();
-    let html = generate_html(
-        &db_path,
-        &stats,
+    // `dedupe --html` passes groups (a duplicates page); `search --html` passes
+    // rows (a flat gallery). A static export has no server behind it, so `nav`
+    // is None: every section link would be dead when opened from `file://`.
+    let (items, groups, view) = match flat {
+        None => (Vec::new(), groups.to_vec(), View::Duplicates),
+        Some(rows) => (rows.to_vec(), Vec::new(), View::All),
+    };
+    let set = RenderSet {
+        stats,
+        items,
         groups,
-        flat,
-        None,
-        None,
-        false,
-        false,
-        &faces_by_hash,
-        false,
-        // A static export has no server behind it, so every section link would
-        // be dead the moment the file is opened from `file://`.
-        None,
-        // `dedupe --html` passes groups; `search --html` passes rows.
-        flat.is_none(),
-    );
+        faces_by_hash,
+        nav: None,
+        view,
+        options: RenderOptions {
+            live: false,
+            heic: false,
+            heic_original: false,
+            embedded: None,
+            db_path,
+        },
+    };
+    let html = render(&set);
     std::fs::write(output, &html)
         .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", output.display()))?;
     eprintln!("Wrote {} ({} KB)", output.display(), html.len() / 1024);
     Ok(())
 }
 
+/// Which gallery a [`RenderSet`] describes. Replaces the old all_files/keep_files
+/// slice signalling: `Date` was `keep_files.is_some()`, `Duplicates` was the
+/// `groups_view` flag, `All` was the remainder.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum View {
+    All,
+    Date,
+    Duplicates,
+}
+
+/// Rendering knobs that are not the data themselves.
+pub(crate) struct RenderOptions {
+    pub live: bool,
+    pub heic: bool,
+    pub heic_original: bool,
+    pub embedded: Option<usize>,
+    pub db_path: String,
+}
+
+/// One set of files plus everything known about them, ready to render as a
+/// static file (`live = false`, data embedded) or a served page (`live = true`,
+/// data fetched from `/api/...`). Collapses the twelve former parameters of
+/// `generate_html`.
+pub(crate) struct RenderSet {
+    pub stats: Stats,
+    pub items: Vec<FileRow>,
+    pub groups: Vec<Vec<FileRow>>,
+    pub faces_by_hash: videre_core::face_db::LabeledFacesByHash,
+    pub nav: Option<Section>,
+    pub view: View,
+    pub options: RenderOptions,
+}
+
 /// `nav` names the current section, or is `None` on a page with nowhere to
 /// navigate to. See `templates/nav.html`.
-pub(crate) fn generate_html(
-    db_path: &str,
-    stats: &Stats,
-    groups: &[Vec<FileRow>],
-    all_files: Option<&[FileRow]>,
-    keep_files: Option<&[FileRow]>,
-    embedded: Option<usize>,
-    heic: bool,
-    heic_original: bool,
-    faces_by_hash: &videre_core::face_db::LabeledFacesByHash,
-    live: bool,
-    nav: Option<Section>,
-    // `groups_view`: this page is about duplicate groups, so it must say
-    // something when there are none rather than render a header and nothing
-    // else. A doc comment is not allowed on a parameter.
-    groups_view: bool,
-) -> String {
+pub(crate) fn render(set: &RenderSet) -> String {
+    // Reconstruct the former positional parameters as locals so the body below
+    // is unchanged. `all_files` and `keep_files` came from different queries and
+    // are per-view exclusive; preserve that exactly.
+    let db_path: &str = &set.options.db_path;
+    let stats = &set.stats;
+    let groups: &[Vec<FileRow>] = &set.groups;
+    let (all_files, keep_files): (Option<&[FileRow]>, Option<&[FileRow]>) = match set.view {
+        View::All => (Some(&set.items), None),
+        View::Date => (None, Some(&set.items)),
+        View::Duplicates => (None, None),
+    };
+    let embedded = set.options.embedded;
+    let heic = set.options.heic;
+    let heic_original = set.options.heic_original;
+    let faces_by_hash = &set.faces_by_hash;
+    let live = set.options.live;
+    let nav = set.nav;
+    let groups_view = set.view == View::Duplicates;
+
     use askama::Template;
     use chrono::Utc;
     let now = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
@@ -1312,8 +1355,22 @@ fn render_live(
     } else {
         Vec::new()
     };
-    let all_files = all.then(|| query_all_files(&conn));
-    let keep_files = by_date.then(|| query_keep_files(&conn));
+    // `all_files` and `keep_files` came from different queries; the view picks
+    // one. `with_groups`, `all` and `by_date` are mutually exclusive per route.
+    let items = if all {
+        query_all_files(&conn)
+    } else if by_date {
+        query_keep_files(&conn)
+    } else {
+        Vec::new()
+    };
+    let view = if with_groups {
+        View::Duplicates
+    } else if by_date {
+        View::Date
+    } else {
+        View::All
+    };
     let faces_by_hash = videre_core::face_db::labeled_faces_by_hash(&conn).unwrap_or_default();
     let embedded = if all {
         query_embedded_count(&conn, &state.model_id)
@@ -1322,21 +1379,22 @@ fn render_live(
     };
     let db_path = conn.path().map(|p| p.to_string()).unwrap_or_default();
     drop(conn);
-    let html = generate_html(
-        &db_path,
-        &stats,
-        &groups,
-        all_files.as_deref(),
-        keep_files.as_deref(),
-        embedded,
-        state.report_heic,
-        state.report_heic_original,
-        &faces_by_hash,
-        true,
+    let set = RenderSet {
+        stats,
+        items,
+        groups,
+        faces_by_hash,
         nav,
-        with_groups,
-    );
-    axum::response::Html(html)
+        view,
+        options: RenderOptions {
+            live: true,
+            heic: state.report_heic,
+            heic_original: state.report_heic_original,
+            embedded,
+            db_path,
+        },
+    };
+    axum::response::Html(render(&set))
 }
 
 #[derive(Deserialize)]
