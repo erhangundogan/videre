@@ -5,7 +5,7 @@
 //! honest, so a change on either side that is not mirrored fails the build:
 //!
 //! 1. `manifest_matches_the_router` parses every `.route(...)` in
-//!    `commands/report.rs` (the actual router, not the test fixtures - the
+//!    `commands/gallery/server.rs` (the actual router, not the test fixtures - the
 //!    `gallery_routes.rs` fixtures deliberately assert some paths 404) and asserts
 //!    the set is exactly the manifest. Add, remove or move a route and this fails
 //!    until the JSON is updated.
@@ -24,7 +24,10 @@ const MANIFEST: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/src/commands/gallery_endpoints.json"
 );
-const REPORT_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/commands/report.rs");
+const ROUTER_RS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/commands/gallery/server.rs"
+);
 const GALLERY_HTTP_INTERFACE_DOC: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../docs/src/content/docs/reference/gallery-http-interface.md"
@@ -80,10 +83,10 @@ fn manifest_set() -> BTreeSet<Endpt> {
 }
 
 /// Parse the `(METHOD, path)` set the router registers, from the literal
-/// `.route("/x", get(..).post(..))` calls in report.rs. A method-router may carry
+/// `.route("/x", get(..).post(..))` calls in gallery/server.rs. A method-router may carry
 /// several methods on one path, so every method in the piece is emitted.
 fn router_set() -> BTreeSet<Endpt> {
-    let src = std::fs::read_to_string(REPORT_RS).expect("read report.rs");
+    let src = std::fs::read_to_string(ROUTER_RS).expect("read gallery/server.rs");
     let mut out: BTreeSet<Endpt> = BTreeSet::new();
     for piece in src.split(".route(").skip(1) {
         let p = piece.trim_start();
@@ -129,9 +132,9 @@ fn manifest_matches_the_router() {
 
     assert!(
         missing_from_manifest.is_empty() && missing_from_router.is_empty(),
-        "gallery_endpoints.json is out of sync with report.rs's .route(...) calls.\n\
-         In report.rs but not the manifest (add them):\n{}\n\
-         In the manifest but not report.rs (remove them):\n{}",
+        "gallery_endpoints.json is out of sync with gallery/server.rs's .route(...) calls.\n\
+         In gallery/server.rs but not the manifest (add them):\n{}\n\
+         In the manifest but not gallery/server.rs (remove them):\n{}",
         fmt(&missing_from_manifest),
         fmt(&missing_from_router),
     );

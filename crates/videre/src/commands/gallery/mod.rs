@@ -9,6 +9,8 @@
 //! Rendering a set a command just produced is the other half, and stays static:
 //! see `dedupe --html` and `search --html`.
 
+mod server;
+
 use std::path::PathBuf;
 
 #[derive(clap::Args)]
@@ -37,7 +39,7 @@ pub fn run(args: GalleryArgs) -> anyhow::Result<()> {
         eprintln!("Error: {:?} does not exist", db);
         std::process::exit(1);
     }
-    super::report::serve_gallery(
+    server::serve_gallery(
         &db,
         videre_core::embeddings::resolve_model_id(args.model.as_deref())?,
         args.port,

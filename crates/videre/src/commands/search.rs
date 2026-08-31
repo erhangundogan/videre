@@ -229,8 +229,8 @@ fn write_html(args: &SearchArgs, outcome: &Outcome, arg: Option<&std::path::Path
     };
     let conn = videre_core::db::open_wal(&db)?;
     let paths: Vec<String> = outcome.rows.iter().map(|r| r.path.clone()).collect();
-    let rows = super::report::rows_for_paths(&conn, &paths);
-    super::report::write_static_page(&conn, &output, &[], Some(&rows))
+    let rows = crate::render::rows_for_paths(&conn, &paths);
+    crate::render::write_static_page(&conn, &output, &[], Some(&rows))
 }
 
 fn run_text(args: &SearchArgs) -> Result<()> {
