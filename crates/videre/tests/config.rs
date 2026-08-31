@@ -296,10 +296,10 @@ fn config_set_read_rate_roundtrips_and_refuses_zero() {
 
 /// `videre config` must report the database the commands will actually open.
 ///
-/// It used to call `home::resolve_db_in`, which consults config alone and does
-/// not apply the VIDERE_HOME rule. With an explicit home whose config.toml named
-/// a different database, `config` printed that database while every command
-/// opened `<home>/hashes.db` and failed with "no database found" against a path
+/// It used to resolve the shown path from config alone, ignoring the
+/// VIDERE_HOME rule. With an explicit home whose config.toml named a different
+/// database, `config` printed that database while every command opened
+/// `<home>/hashes.db` and failed with "no database found" against a path
 /// `config` had never shown. The two must not be resolved by different code.
 #[test]
 fn config_reports_the_database_commands_actually_open() {

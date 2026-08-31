@@ -166,31 +166,6 @@ pub fn home_is_explicit() -> bool {
     std::env::var_os("VIDERE_HOME").is_some()
 }
 
-/// Resolution for a given home: config default_db, else <home>/hashes.db.
-///
-/// Does not consider `VIDERE_HOME`; callers wanting the full precedence rule
-/// want `resolve_db`.
-///
-/// :warning: **Nothing outside this module's tests calls this, and nothing
-/// should. Never use it to decide or display which database is in play.** It
-/// answers "what does this home's config say", not "what will run", and the two
-/// differ exactly when `VIDERE_HOME` is set. `commands/config.rs` used it for
-/// its `resolved db:` line until 2026-08-24: it printed the configured path
-/// while every command opened `<home>/hashes.db`, so a user was told their
-/// library was at one path and then told no database existed at another, which
-/// the line had never named. The warning above this one was already present and
-/// was not enough on its own.
-///
-/// It survives only because it is `pub` in a published crate, so removing it is
-/// a semver break rather than a cleanup. Delete it at the next minor bump; the
-/// two tests below are its only remaining users and both belong on
-/// `load_config`/`decide_db` instead.
-pub fn resolve_db_in(home: &Path) -> Result<PathBuf> {
-    Ok(load_config(home)?
-        .default_db
-        .unwrap_or_else(|| home.join("hashes.db")))
-}
-
 /// Full chain: explicit CLI path > `VIDERE_HOME` > config `default_db` >
 /// `<home>/hashes.db`.
 ///
@@ -415,8 +390,13 @@ mod tests {
     #[test]
     fn missing_config_yields_defaults() {
         let home = tmp_home("missing");
-        assert_eq!(load_config(&home).unwrap(), Config::default());
-        assert_eq!(resolve_db_in(&home).unwrap(), home.join("hashes.db"));
+        let cfg = load_config(&home).unwrap();
+        assert_eq!(cfg, Config::default());
+        // No config and no explicit home falls back to <home>/hashes.db.
+        assert_eq!(
+            decide_db(&home, false, cfg.default_db).0,
+            home.join("hashes.db")
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -424,8 +404,10 @@ mod tests {
     fn config_default_db_wins_over_builtin_default() {
         let home = tmp_home("wins");
         set_default_db(&home, Path::new("/tmp/custom.db")).unwrap();
+        // With no explicit home, the config's default_db wins over the builtin.
+        let configured = load_config(&home).unwrap().default_db;
         assert_eq!(
-            resolve_db_in(&home).unwrap(),
+            decide_db(&home, false, configured).0,
             PathBuf::from("/tmp/custom.db")
         );
         let _ = std::fs::remove_dir_all(&home);

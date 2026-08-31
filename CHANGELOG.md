@@ -13,6 +13,17 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.22.0] - 2026-08-31
+
+### Removed
+
+- **`videre_core::home::resolve_db_in` is deleted.** It resolved a database from
+  a home's `config.toml` alone, ignoring `VIDERE_HOME`, which is a meaning almost
+  no caller wants. The one caller that used it (the `videre config` output) was
+  already switched to the full-precedence `resolve_db`, and nothing else in the
+  workspace called it. Removing a `pub` item from a published crate is why this
+  is a minor rather than a patch release; no command-line behaviour changes.
+
 ## [0.21.9] - 2026-08-31
 
 ### Changed
@@ -1444,6 +1455,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[0.22.0]: https://github.com/erhangundogan/videre/compare/v0.21.9...v0.22.0
 [0.21.9]: https://github.com/erhangundogan/videre/compare/v0.21.8...v0.21.9
 [0.21.8]: https://github.com/erhangundogan/videre/compare/v0.21.7...v0.21.8
 [0.21.7]: https://github.com/erhangundogan/videre/compare/v0.21.6...v0.21.7

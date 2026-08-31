@@ -89,12 +89,12 @@ fn show(home: &std::path::Path) -> Result<()> {
         Some(db) => println!("db:            {} [from config.toml]", db.display()),
         None => println!("db:            (not set) [set with: videre config set db <path>]"),
     }
-    // `resolve_db`, not `resolve_db_in`: the latter reads config alone and does
-    // not apply the VIDERE_HOME rule, so with an explicit home whose config.toml
-    // names a different database it printed a path no command would open. The
-    // command then failed with "no database found" against a path this line had
-    // never mentioned. Any resolved value shown here must come from the same
-    // function the commands call.
+    // The resolved value must come from `resolve_db`, the VIDERE_HOME-aware
+    // function every command opens the database through. Resolving it from
+    // config alone once printed a path no command would open, so with an
+    // explicit home whose config.toml named a different database, `config`
+    // showed one path while commands failed with "no database found" against
+    // another.
     println!("resolved db:   {}", home::resolve_db(None)?.display());
     match &config.default_path {
         Some(dir) => println!("resolved path: {} [from config.toml]", dir.display()),
