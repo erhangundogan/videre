@@ -13,6 +13,16 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.21.9] - 2026-08-31
+
+### Changed
+
+- **Internal restructure of the gallery code.** The oversized
+  `commands/report.rs`, named for a command removed in 0.20.0, is split into a
+  shared `render` module and a `commands/gallery/server.rs` HTTP server, and the
+  page renderer now takes a single `RenderSet`. No change to behaviour, output,
+  or the command-line interface.
+
 ## [0.21.8] - 2026-08-29
 
 ### Added
@@ -1434,6 +1444,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[0.21.9]: https://github.com/erhangundogan/videre/compare/v0.21.8...v0.21.9
 [0.21.8]: https://github.com/erhangundogan/videre/compare/v0.21.7...v0.21.8
 [0.21.7]: https://github.com/erhangundogan/videre/compare/v0.21.6...v0.21.7
 [0.21.6]: https://github.com/erhangundogan/videre/compare/v0.21.5...v0.21.6
