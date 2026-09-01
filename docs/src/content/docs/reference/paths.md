@@ -20,11 +20,23 @@ never create a directory or a database.
 
 ## How a database is resolved
 
-Every command resolves its database the same way, first match wins:
+Every command resolves its database the same way. First match wins:
 
 1. An explicit `--db <path>`
-2. `default_db` in `config.toml`, set via `videre config set db`
-3. `~/.videre/hashes.db`
+2. If `VIDERE_HOME` is set, `<VIDERE_HOME>/hashes.db`
+3. `default_db` in `config.toml`, set via `videre config set db`
+4. `~/.videre/hashes.db`
+
+That means the shortest form is:
+
+```text
+--db > VIDERE_HOME > config default_db > ~/.videre/hashes.db
+```
+
+`VIDERE_HOME` selects a whole home directory, so its database is the
+`hashes.db` inside that home. When `VIDERE_HOME` is set, a `default_db` value in
+that home's config is ignored for database selection. Pass `--db` when you want
+one command to use a different database without changing the selected home.
 
 Readers never create a database. If the resolved path does not exist they print
 this and exit nonzero, rather than silently creating an empty one:

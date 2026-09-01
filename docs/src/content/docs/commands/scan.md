@@ -8,18 +8,19 @@ Reads a folder recursively and records every
 everything else reads from what it creates.
 
 ```bash
-videre scan ~/Photos                              # scan into the default database
-videre scan                                       # same, using the folder from `videre config set path`
-videre scan ~/Photos --similar                    # also fingerprint images/videos for near-duplicate detection
-videre scan ~/Photos --db ~/photos.db             # write to a specific database instead
-videre scan ~/Photos --output                     # write JSONL to ~/.videre/hashes.jsonl instead of SQLite
-videre scan ~/Photos --output out.jsonl           # write JSONL to a specific file
-videre scan ~/Photos --retry-incomplete           # only files an earlier scan didn't finish
-videre scan ~/Photos --silent                     # no progress output
-videre scan ~/Photos --json                       # print one JSON summary object instead
-videre scan ~/Photos --type video                 # only videos
-videre scan ~/Photos --ext heic,mov               # only these formats
-videre scan ~/Photos --path ~/Photos/2024         # only this subfolder
+videre scan ~/Photos                       # scan ~/Photos into the default database (~/.videre/hashes.db)
+videre scan ~/Pictures                     # scan ~/Pictures into the same database, adding or updating rows
+videre scan                                # scan the configured default path; check it with `videre config`
+videre scan ~/Photos --db ~/photos.db      # write to a specific database instead of the default
+videre scan ~/Photos --similar             # also fingerprint images/videos for near-duplicate detection
+videre scan ~/Photos --output              # write JSONL to ~/.videre/hashes.jsonl instead of SQLite
+videre scan ~/Photos --output out.jsonl    # write JSONL to a specific file
+videre scan ~/Photos --retry-incomplete    # only files an earlier scan didn't finish
+videre scan ~/Photos --silent              # no progress output
+videre scan ~/Photos --json                # print one JSON summary object instead
+videre scan ~/Photos --type video          # only videos
+videre scan ~/Photos --ext heic,mov        # only these formats
+videre scan ~/Photos --path ~/Photos/2024  # only this subfolder
 ```
 
 :::tip
