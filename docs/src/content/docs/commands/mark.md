@@ -36,7 +36,8 @@ Targets come from either the selection flags or a pipe:
 
 - **Selection flags** narrow the library the same way `search` does:
   `--person`, `--date`/`--after`/`--before`, `--location`/`--radius`, `--type`,
-  `--ext`, `--mime`, `--path`. See [scoping a run](/guides/scoping-a-run/).
+  `--ext`, `--mime`, `--path`, `--has`, `--missing`. See
+  [scoping a run](/guides/scoping-a-run/).
 - **Standard input**: if you pipe paths in (`videre search ... | videre mark ...`),
   those files are marked. This is how you mark by an *existing* mark, since the
   mark flags on `mark` itself always *set* rather than filter.

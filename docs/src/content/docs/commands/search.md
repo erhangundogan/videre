@@ -22,6 +22,8 @@ videre search --type video                 # only videos
 videre search --ext mov,mp4                # only these extensions
 videre search --mime video/quicktime       # an exact type
 videre search --path ~/Photos/2024         # only files under a folder
+videre search --missing gps                # files missing GPS coordinates
+videre search --has gps,date               # files with GPS and a date
 videre search --sort=distance,date         # order, with tie-breaks
 ```
 
@@ -163,6 +165,28 @@ These same four work on [`videre scan`](/commands/scan/),
 narrow the *work* rather than the results. See
 [scoping a run](/guides/scoping-a-run/).
 
+## Finding files with or without metadata
+
+Presence filters select by whether videre has metadata for a file:
+
+| Flag | Selects |
+|---|---|
+| `--has <field>` | files where this metadata exists |
+| `--missing <field>` | files where this metadata is absent |
+
+Supported fields are `gps` and `date`. Both flags are repeatable and accept
+comma-separated lists, so `--missing gps,date` and `--missing gps --missing date`
+are the same request.
+
+```bash
+videre search --missing gps
+videre search --missing gps,date --json
+videre search --has gps --missing date
+```
+
+`gps` means both latitude and longitude are present. A file missing either
+coordinate matches `--missing gps`, and it does not match `--location`.
+
 ## Filtering by mark
 
 Photos you have marked with [`videre mark`](/commands/mark/) filter here too:
@@ -197,7 +221,8 @@ videre search --tag beach --tag summer --person "Alice"
 ## Filters compose
 
 `--person`, `--category`, `--location`, `--type`, `--ext`, `--mime`, `--path`,
-`--rating`, `--pick`, `--label`, `--like` and the date bounds are **filters**:
+`--has`, `--missing`, `--rating`, `--pick`, `--label`, `--like` and the date
+bounds are **filters**:
 give any combination and they AND together, each narrowing further.
 
 A text query or `--image` is a **ranker**: at most one, and it orders whatever
