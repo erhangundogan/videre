@@ -18,6 +18,8 @@ pub struct MarkArgs {
     #[command(flatten)]
     people: super::selection_args::PeopleArgs,
     #[command(flatten)]
+    presence: super::selection_args::PresenceArgs,
+    #[command(flatten)]
     paths: super::selection_args::PathArgs,
 
     /// Set the star rating (0-5; 0 clears)
@@ -109,6 +111,7 @@ pub(crate) fn resolve_targets(a: &MarkArgs, conn: &rusqlite::Connection) -> Resu
         Some(&a.dates),
         Some(&a.place),
         Some(&a.people),
+        Some(&a.presence),
         Some(&a.paths),
     )?;
     let resolved = sel.resolve(conn, &SelectionCtx::default())?;

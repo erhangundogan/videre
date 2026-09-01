@@ -20,6 +20,8 @@ pub struct FacesArgs {
     #[command(flatten)]
     place: super::selection_args::PlaceArgs,
     #[command(flatten)]
+    presence: super::selection_args::PresenceArgs,
+    #[command(flatten)]
     paths: super::selection_args::PathArgs,
 
     /// SQLite database (default: resolved from ~/.videre; see 'videre config')
@@ -158,6 +160,7 @@ pub fn run(args: FacesArgs) -> Result<()> {
         Some(&args.dates),
         Some(&args.place),
         None,
+        Some(&args.presence),
         Some(&args.paths),
     )?;
     // Shares `narrow` with embed and classify: same filtering, same "N of M"

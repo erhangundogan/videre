@@ -19,6 +19,8 @@ pub struct ExportArgs {
     #[command(flatten)]
     people: super::selection_args::PeopleArgs,
     #[command(flatten)]
+    presence: super::selection_args::PresenceArgs,
+    #[command(flatten)]
     paths: super::selection_args::PathArgs,
 
     /// Write XMP sidecars (currently the only export format)
@@ -54,6 +56,7 @@ fn export_selection(conn: &rusqlite::Connection, args: &ExportArgs) -> Result<()
         Some(&args.dates),
         Some(&args.place),
         Some(&args.people),
+        Some(&args.presence),
         Some(&args.paths),
     )?;
     let resolved = sel.resolve(conn, &SelectionCtx::default())?;

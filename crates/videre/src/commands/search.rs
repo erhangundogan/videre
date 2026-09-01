@@ -536,6 +536,8 @@ fn collect_hits(args: &SearchArgs, embedder: &dyn QueryEmbedder) -> Result<Outco
         kinds: args.media.kinds()?,
         exts: args.media.ext.clone(),
         mimes: args.media.mime.clone(),
+        has: Vec::new(),
+        missing: Vec::new(),
         paths: args.paths.path.clone(),
         min_rating: args.marks.rating,
         pick: args.marks.pick_state(),

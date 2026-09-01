@@ -29,6 +29,8 @@ pub struct EmbedArgs {
     #[command(flatten)]
     place: super::selection_args::PlaceArgs,
     #[command(flatten)]
+    presence: super::selection_args::PresenceArgs,
+    #[command(flatten)]
     paths: super::selection_args::PathArgs,
 
     /// Inference batch size (clamped to videre_ml::model::MAX_SAFE_BATCH)
@@ -71,6 +73,7 @@ fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection, model_id: &str) -> R
         Some(&args.dates),
         Some(&args.place),
         None,
+        Some(&args.presence),
         Some(&args.paths),
     )?;
     let work = videre_core::work::narrow(

@@ -15,6 +15,8 @@ pub struct ClassifyArgs {
     #[command(flatten)]
     people: super::selection_args::PeopleArgs,
     #[command(flatten)]
+    presence: super::selection_args::PresenceArgs,
+    #[command(flatten)]
     paths: super::selection_args::PathArgs,
 
     /// SQLite database (default: resolved from ~/.videre; see 'videre config')
@@ -77,6 +79,7 @@ fn run_classify(args: &ClassifyArgs, conn: &rusqlite::Connection, model_id: &str
         Some(&args.dates),
         Some(&args.place),
         Some(&args.people),
+        Some(&args.presence),
         Some(&args.paths),
     )?;
     let work = videre_core::work::narrow(
@@ -289,6 +292,7 @@ mod tests {
             Some(&a.dates),
             Some(&a.place),
             Some(&a.people),
+            Some(&a.presence),
             Some(&a.paths),
         )
         .unwrap();

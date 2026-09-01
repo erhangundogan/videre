@@ -54,7 +54,17 @@ fn library() -> (TempDir, std::path::PathBuf) {
 fn run(home: &std::path::Path, db: &std::path::Path, args: &[&str]) -> (bool, String) {
     let needs_db = matches!(
         args[0],
-        "search" | "embed" | "faces" | "classify" | "dedupe" | "prune" | "stats" | "locations"
+        "search"
+            | "embed"
+            | "faces"
+            | "classify"
+            | "dedupe"
+            | "prune"
+            | "stats"
+            | "locations"
+            | "mark"
+            | "tag"
+            | "export"
     );
     let mut c = Command::new(videre_bin());
     // Point the weights cache at the temp dir too. Nothing here should reach a
@@ -138,6 +148,46 @@ fn a_flag_a_command_cannot_answer_fails_to_parse() {
         let (ok, text) = run(dir.path(), &db, &args);
         assert_no_panic(&label, &text);
         assert!(!ok, "{label} must not parse: the command cannot answer it");
+    }
+}
+
+#[test]
+fn path_backed_commands_reject_presence_filters() {
+    let (dir, db) = library();
+    let pics = dir.path().join("pics");
+    let p = pics.to_str().unwrap();
+    for args in [
+        vec!["scan", p, "--missing", "gps"],
+        vec!["scan", p, "--has", "date"],
+        vec!["watch", p, "--missing", "gps"],
+        vec!["watch", p, "--has", "date"],
+        vec!["locations", "--missing", "gps"],
+    ] {
+        let label = args.join(" ");
+        let (ok, text) = run(dir.path(), &db, &args);
+        assert_no_panic(&label, &text);
+        assert!(!ok, "{label} must not parse: the command cannot answer it");
+    }
+}
+
+#[test]
+fn row_backed_commands_accept_presence_filters() {
+    let (dir, db) = library();
+    for args in [
+        vec!["embed", "--has", "gps", "--batch", "0"],
+        vec!["faces", "--missing", "date", "--dry-run"],
+        vec!["classify", "--has", "gps", "--model", "no-slash"],
+        vec!["mark", "--missing", "gps", "--rating", "1", "--dry-run"],
+        vec!["tag", "--missing", "gps", "--add", "needs-gps"],
+        vec!["export", "--missing", "gps", "--xmp", "--dry-run"],
+    ] {
+        let label = args.join(" ");
+        let (_, text) = run(dir.path(), &db, &args);
+        assert_no_panic(&label, &text);
+        assert!(
+            !text.contains("unexpected argument"),
+            "{label} should parse presence filters before reaching command validation:\n{text}"
+        );
     }
 }
 

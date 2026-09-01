@@ -26,6 +26,8 @@ pub struct TagArgs {
     #[command(flatten)]
     people: super::selection_args::PeopleArgs,
     #[command(flatten)]
+    presence: super::selection_args::PresenceArgs,
+    #[command(flatten)]
     paths: super::selection_args::PathArgs,
 
     /// SQLite database (default: resolved from ~/.videre; see 'videre config')
@@ -62,6 +64,7 @@ pub fn run(args: TagArgs) -> Result<()> {
         Some(&args.dates),
         Some(&args.place),
         Some(&args.people),
+        Some(&args.presence),
         Some(&args.paths),
     )?;
     let resolved = sel.resolve(&conn, &SelectionCtx::default())?;
