@@ -113,6 +113,10 @@ pub struct SearchArgs {
     #[command(flatten)]
     pub(crate) paths: super::selection_args::PathArgs,
 
+    /// --has / --missing database presence filters.
+    #[command(flatten)]
+    pub(crate) presence: super::selection_args::PresenceArgs,
+
     /// --rating / --pick / --label / --like filters.
     #[command(flatten)]
     pub(crate) marks: super::selection_args::MarkArgs,
@@ -496,6 +500,12 @@ fn describe_query(args: &SearchArgs, dates: &(Option<String>, Option<String>)) -
     for p in &args.paths.path {
         parts.push(format!("path={}", p.display()));
     }
+    for field in &args.presence.has {
+        parts.push(format!("has={field}"));
+    }
+    for field in &args.presence.missing {
+        parts.push(format!("missing={field}"));
+    }
     QueryJson {
         kind: "filter",
         value: parts.join(" "),
@@ -517,6 +527,7 @@ fn collect_hits(args: &SearchArgs, embedder: &dyn QueryEmbedder) -> Result<Outco
     let conn = videre_core::db::open_wal(&db).with_context(|| format!("open {}", db.display()))?;
 
     let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref())?;
+    let (has, missing) = args.presence.fields()?;
 
     // One selection, resolved in one place. `--location` is part of it rather
     // than a separate pass: `resolve` geocodes the place name, intersects, and
@@ -536,6 +547,8 @@ fn collect_hits(args: &SearchArgs, embedder: &dyn QueryEmbedder) -> Result<Outco
         kinds: args.media.kinds()?,
         exts: args.media.ext.clone(),
         mimes: args.media.mime.clone(),
+        has,
+        missing,
         paths: args.paths.path.clone(),
         min_rating: args.marks.rating,
         pick: args.marks.pick_state(),
@@ -547,7 +560,7 @@ fn collect_hits(args: &SearchArgs, embedder: &dyn QueryEmbedder) -> Result<Outco
         is_ranked(args) || !selection.is_empty(),
         "provide a text query, --image <path>, or at least one filter \
          (--person, --category, --location, --date, --after, --before, \
-          --type, --ext, --mime, --path)"
+          --type, --ext, --mime, --path, --has, --missing)"
     );
 
     // Only a ranking query reads vectors. Attaching for a pure filter query

@@ -16,8 +16,12 @@ they AND together, each one narrowing further.
 | `--after`, `--before`, `--date` | when it was taken |
 | `--type`, `--ext`, `--mime` | what kind of file it is |
 | `--path` | which folder it is in |
+| `--has`, `--missing` | whether metadata exists. Supported fields: `gps`, `date` |
 
 Every condition must hold, so adding a flag can only narrow the result.
+
+`--has` and `--missing` are repeatable and accept comma-separated lists:
+`--missing gps,date` and `--missing gps --missing date` are the same request.
 
 The same vocabulary narrows the *work* on the long-running commands, not just
 the results of a search: see [scoping a run](/guides/scoping-a-run/).
@@ -26,8 +30,8 @@ the results of a search: see [scoping a run](/guides/scoping-a-run/).
 
 **Filters narrow. A ranker orders what survives.**
 
-- **Filters:** `--person`, `--category`, `--location`, and the date bounds.
-  Any number, in any combination.
+- **Filters:** `--person`, `--category`, `--location`, the date bounds, and the
+  other selection flags. Any number, in any combination.
 - **Rankers:** a text query, or `--image`. At most one, and optional.
 
 If you give no ranker, results come back ordered by date. That is the whole
@@ -241,6 +245,10 @@ available and excludes a file only when there is none. Location, `--person` and
 `--category` have no fallback, so files lacking that data drop out. Dates do
 have one - every file has a modification time - so nothing is excluded for
 want of a capture date; the weaker evidence is used instead.
+
+To find those gaps directly, use `--missing gps` or `--missing date`. For GPS,
+both coordinates must be present; a file missing either latitude or longitude
+matches `--missing gps`.
 
 ### Video dates are capture dates
 

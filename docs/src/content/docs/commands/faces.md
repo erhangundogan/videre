@@ -246,6 +246,8 @@ each condition must hold.
 | `--location` | within `--radius` km of a place, e.g. `"Berlin, Germany"` |
 | `--radius` | radius in km for `--location` (default 20) |
 | `--path` | only files under this directory. Repeatable |
+| `--has` | only files with this metadata. Supported fields: `gps`, `date` |
+| `--missing` | only files missing this metadata. Supported fields: `gps`, `date` |
 
 `--person` and `--category` are deliberately absent: both are derived from data
 this command produces, so selecting its input by one would be circular.

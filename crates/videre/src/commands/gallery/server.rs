@@ -259,6 +259,7 @@ async fn handle_search(
             html: None,
             media: crate::commands::selection_args::MediaArgs::default(),
             paths: crate::commands::selection_args::PathArgs::default(),
+            presence: crate::commands::selection_args::PresenceArgs::default(),
             marks: crate::commands::selection_args::MarkArgs::default(),
             tags: Default::default(),
             // Both bound at startup, so a request cannot retarget the server.

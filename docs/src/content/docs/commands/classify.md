@@ -146,6 +146,8 @@ each condition must hold.
 | `--path` | only files under this directory. Repeatable |
 | `--person` | only files containing this labeled person, confirmed faces only |
 | `--category` | only files `videre classify` gave this category |
+| `--has` | only files with this metadata. Supported fields: `gps`, `date` |
+| `--missing` | only files missing this metadata. Supported fields: `gps`, `date` |
 
 A scoped run prints `N of M`, so a filter that matches nothing is
 distinguishable from an empty library. Full detail, including how missing data

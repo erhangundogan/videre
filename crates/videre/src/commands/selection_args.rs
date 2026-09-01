@@ -11,7 +11,7 @@
 //! The predicates themselves live once in `videre_core::selection`; only the
 //! composition of groups is per command.
 
-use videre_core::selection::{MediaKind, PathSelection, PlaceQuery, RowSelection};
+use videre_core::selection::{MediaKind, PathSelection, PlaceQuery, PresenceField, RowSelection};
 
 /// `--type`, `--ext`, `--mime`. The only group both selection kinds honour,
 /// though they answer `--type` differently: rows by mime, paths by extension.
@@ -124,6 +124,35 @@ pub struct PathArgs {
     pub path: Vec<std::path::PathBuf>,
 }
 
+/// `--has`, `--missing`. Row-side only: these predicates ask what is present
+/// in the database, which a filesystem walk cannot know before reading files.
+#[derive(clap::Args, Clone, Debug, Default)]
+pub struct PresenceArgs {
+    /// Only files where this database field is present. Repeatable, or comma-separated
+    #[arg(long = "has", value_delimiter = ',', value_name = "FIELD")]
+    pub has: Vec<String>,
+
+    /// Only files where this database field is missing. Repeatable, or comma-separated
+    #[arg(long = "missing", value_delimiter = ',', value_name = "FIELD")]
+    pub missing: Vec<String>,
+}
+
+impl PresenceArgs {
+    pub fn fields(&self) -> anyhow::Result<(Vec<PresenceField>, Vec<PresenceField>)> {
+        let has = self
+            .has
+            .iter()
+            .map(|s| PresenceField::parse(s))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let missing = self
+            .missing
+            .iter()
+            .map(|s| PresenceField::parse(s))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        Ok((has, missing))
+    }
+}
+
 /// Assemble a row selection from whichever groups a command flattened.
 ///
 /// Takes options so a command passes `None` for a group it does not honour,
@@ -134,11 +163,16 @@ pub fn row_selection(
     dates: Option<&DateArgs>,
     place: Option<&PlaceArgs>,
     people: Option<&PeopleArgs>,
+    presence: Option<&PresenceArgs>,
     paths: Option<&PathArgs>,
 ) -> anyhow::Result<RowSelection> {
     let (after, before) = match dates {
         Some(d) => d.bounds()?,
         None => (None, None),
+    };
+    let (has, missing) = match presence {
+        Some(p) => p.fields()?,
+        None => (Vec::new(), Vec::new()),
     };
     Ok(RowSelection {
         person: people.and_then(|p| p.person.clone()),
@@ -152,6 +186,8 @@ pub fn row_selection(
         },
         exts: media.map(|m| m.ext.clone()).unwrap_or_default(),
         mimes: media.map(|m| m.mime.clone()).unwrap_or_default(),
+        has,
+        missing,
         paths: paths.map(|p| p.path.clone()).unwrap_or_default(),
         ..Default::default()
     })
@@ -250,14 +286,14 @@ mod tests {
     fn a_command_omitting_a_group_gets_no_predicate_from_it() {
         // The point of grouping: faces passes None for people, so --category
         // cannot arrive at all rather than failing later.
-        let s = row_selection(None, None, None, None, None).unwrap();
+        let s = row_selection(None, None, None, None, None, None).unwrap();
         assert!(s.is_empty());
 
         let media = MediaArgs {
             media_type: vec!["video".into()],
             ..Default::default()
         };
-        let s = row_selection(Some(&media), None, None, None, None).unwrap();
+        let s = row_selection(Some(&media), None, None, None, None, None).unwrap();
         assert_eq!(s.kinds.len(), 1);
         assert!(s.person.is_none() && s.category.is_none());
         assert!(!s.is_empty());

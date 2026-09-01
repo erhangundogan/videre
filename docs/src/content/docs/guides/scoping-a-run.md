@@ -17,6 +17,7 @@ videre embed --type video                      # only videos
 videre faces --after 2024-06 --before 2024-09  # only that summer
 videre scan ~/Photos --ext heic,mov            # only these two formats
 videre classify --location "Berlin, Germany"   # only photos taken near Berlin
+videre search --missing gps                     # photos with no coordinates
 ```
 
 ## The flags
@@ -31,9 +32,11 @@ videre classify --location "Berlin, Germany"   # only photos taken near Berlin
 | `--person` | who is in it |
 | `--category` | how [`videre classify`](/commands/classify/) labelled it |
 | `--path` | which folder it is in |
+| `--has`, `--missing` | whether metadata exists. Supported fields: `gps`, `date` |
 
-`--type`, `--ext` and `--mime` are repeatable and accept comma-separated lists:
-`--ext mov,avi` and `--ext mov --ext avi` are the same request.
+`--type`, `--ext`, `--mime`, `--has` and `--missing` are repeatable and accept
+comma-separated lists: `--ext mov,avi` and `--ext mov --ext avi` are the same
+request, as are `--missing gps,date` and `--missing gps --missing date`.
 
 Combining flags narrows further: every condition must hold. `--type video
 --after 2024-01-01` means videos *and* taken this year, never either.
@@ -46,6 +49,7 @@ Combining flags narrows further: every condition must hold. `--type video
 | [`classify`](/commands/classify/) | all of them |
 | [`embed`](/commands/embed/), [`faces`](/commands/faces/) | everything except `--person` and `--category` |
 | [`scan`](/commands/scan/), [`watch`](/commands/watch/) | `--type`, `--ext`, `--mime`, `--path` |
+| [`mark`](/commands/mark/), [`tag`](/commands/tag/), [`export --xmp`](/commands/export/) | all search filters that select files |
 
 The gaps are deliberate rather than unfinished.
 
@@ -97,6 +101,10 @@ This is the same rule everywhere, and it means you can widen a run in stages.
 If `--location "Berlin, Germany"` covers fewer files than you expected, the
 missing ones are the ones without coordinates; scan them or fill in their
 metadata rather than loosening the radius.
+
+Use `--missing gps` or `--missing date` when the missing metadata is itself the
+thing you want to fix or inspect. `--has gps` means both latitude and longitude
+are present; a file missing either coordinate matches `--missing gps`.
 
 ## Worked examples
 
