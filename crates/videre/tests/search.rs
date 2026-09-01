@@ -640,6 +640,31 @@ fn fixture_db_with_mixed_media() -> (TempDir, PathBuf) {
     (dir, db)
 }
 
+fn fixture_db_with_presence() -> (TempDir, PathBuf) {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("presence.db");
+    let conn = videre_core::db::open_wal(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS file_hashes (
+            path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
+            created_at TEXT, modified_at TEXT, ext TEXT, mime TEXT, phash INTEGER,
+            exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER);
+         INSERT INTO file_hashes
+            (path, hash, size_bytes, modified_at, exif_date, ext, mime, gps_lat, gps_lon)
+         VALUES
+            ('/presence/complete.jpg','complete',10,'2025-05-01T10:00:00','2025-05-01T10:00:00','jpg','image/jpeg',52.5,13.4),
+            ('/presence/missing-lat.jpg','missing_lat',10,'2025-05-02T10:00:00','2025-05-02T10:00:00','jpg','image/jpeg',NULL,13.4),
+            ('/presence/missing-lon.jpg','missing_lon',10,'2025-05-03T10:00:00','2025-05-03T10:00:00','jpg','image/jpeg',52.5,NULL),
+            ('/presence/missing-date.jpg','missing_date',10,NULL,NULL,'jpg','image/jpeg',52.5,13.4);
+         CREATE TABLE IF NOT EXISTS classifications (
+            model_id TEXT NOT NULL, hash TEXT NOT NULL, category TEXT NOT NULL,
+            confidence REAL NOT NULL, classified_at TEXT NOT NULL,
+            PRIMARY KEY (model_id, hash));",
+    )
+    .unwrap();
+    (dir, db)
+}
+
 fn search_paths(db: &PathBuf, args: &[&str]) -> Vec<String> {
     let out = Command::new(videre_bin())
         .arg("search")
@@ -658,6 +683,46 @@ fn search_paths(db: &PathBuf, args: &[&str]) -> Vec<String> {
         .filter(|l| l.starts_with('/'))
         .map(|s| s.to_string())
         .collect()
+}
+
+#[test]
+fn search_filters_by_missing_gps() {
+    let (_d, db) = fixture_db_with_presence();
+    let mut got = search_paths(&db, &["--missing", "gps"]);
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            "/presence/missing-lat.jpg".to_string(),
+            "/presence/missing-lon.jpg".to_string()
+        ]
+    );
+
+    let out = Command::new(videre_bin())
+        .args(["search", "--db"])
+        .arg(&db)
+        .args(["--missing", "gps", "--json"])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["query"]["kind"], "filter");
+    assert!(json["query"]["value"]
+        .as_str()
+        .unwrap()
+        .contains("missing=gps"));
+}
+
+#[test]
+fn search_accepts_comma_separated_presence_fields() {
+    let (_d, db) = fixture_db_with_presence();
+    let got = search_paths(&db, &["--has", "gps,date"]);
+    assert_eq!(got, vec!["/presence/complete.jpg".to_string()]);
 }
 
 #[test]

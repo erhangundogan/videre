@@ -247,6 +247,12 @@ struct SearchParams {
     /// Filter: only files under these directories.
     #[serde(default)]
     path: Vec<String>,
+    /// Filter: database fields that must be present. Supported values: gps, date.
+    #[serde(default)]
+    has: Vec<String>,
+    /// Filter: database fields that must be missing. Supported values: gps, date.
+    #[serde(default)]
+    missing: Vec<String>,
     /// Result order: comma-separated field[:asc|desc] over relevance, distance,
     /// date and size, e.g. "distance:asc,date:desc". Defaults are relevance,
     /// date and size descending and distance ascending. relevance needs a
@@ -290,12 +296,14 @@ fn build_search(
         || !params.media_type.is_empty()
         || !params.ext.is_empty()
         || !params.mime.is_empty()
-        || !params.path.is_empty();
+        || !params.path.is_empty()
+        || !params.has.is_empty()
+        || !params.missing.is_empty();
     anyhow::ensure!(
         params.query.is_some() || params.image_path.is_some() || any_filter,
         "provide at least one of 'query', 'image_path', 'person', 'category', \
-         'location', 'after', 'before', 'date', 'media_type', 'ext', 'mime' \
-         or 'path'; an unfiltered search would return the whole library"
+         'location', 'after', 'before', 'date', 'media_type', 'ext', 'mime', \
+         'path', 'has' or 'missing'; an unfiltered search would return the whole library"
     );
 
     let args = SearchArgs {
@@ -311,6 +319,10 @@ fn build_search(
         },
         paths: super::selection_args::PathArgs {
             path: params.path.iter().map(std::path::PathBuf::from).collect(),
+        },
+        presence: super::selection_args::PresenceArgs {
+            has: params.has.clone(),
+            missing: params.missing.clone(),
         },
         marks: super::selection_args::MarkArgs::default(),
         tags: Default::default(),
@@ -372,7 +384,7 @@ impl VidereServer {
 
     /// Composed search: filters narrow, an optional ranker orders.
     #[tool(
-        description = "Search the videre library with composable filters. Every filter given is ANDed, so they only ever narrow: 'person' (labeled person, confirmed faces only), 'category' (photo/screenshot/document/meme/unknown), 'location' + 'radius_km', and a date range as either 'after'/'before' (before is exclusive) or the 'date' shorthand YYYY, YYYY-MM or YYYY-MM-DD. At most one ranker may be given: 'query' (semantic text) or 'image_path' (similar to a local image), never both; a ranker orders the filtered survivors by cosine score. At least one filter or ranker is required. 'sort' takes a comma-separated field[:asc|desc] list over relevance, distance, date and size, e.g. \"distance:asc,date:desc\"; relevance needs a ranker and distance needs 'location'. Results carry path, hash, and where applicable score, distance_km and date. Dates match the EXIF capture date when present and valid, otherwise the file mtime. WARNING: 'location' forward-geocodes the place name over the network on a cache miss and writes the answer to the geocode_cache table; repeats are local. Requires 'videre embed' for query/image_path, 'videre faces' + labeling for person, and 'videre classify' for category. The first text/image search loads the embedding model and may be slow; later calls are fast."
+        description = "Search the videre library with composable filters. Every filter given is ANDed, so they only ever narrow: 'person' (labeled person, confirmed faces only), 'category' (photo/screenshot/document/meme/unknown), 'location' + 'radius_km', a date range as either 'after'/'before' (before is exclusive) or the 'date' shorthand YYYY, YYYY-MM or YYYY-MM-DD, 'has' fields that must be present, and 'missing' fields that must be missing. Supported 'has' and 'missing' values are gps and date. At most one ranker may be given: 'query' (semantic text) or 'image_path' (similar to a local image), never both; a ranker orders the filtered survivors by cosine score. At least one filter or ranker is required. 'sort' takes a comma-separated field[:asc|desc] list over relevance, distance, date and size, e.g. \"distance:asc,date:desc\"; relevance needs a ranker and distance needs 'location'. Results carry path, hash, and where applicable score, distance_km and date. Dates match the EXIF capture date when present and valid, otherwise the file mtime. WARNING: 'location' forward-geocodes the place name over the network on a cache miss and writes the answer to the geocode_cache table; repeats are local. Requires 'videre embed' for query/image_path, 'videre faces' + labeling for person, and 'videre classify' for category. The first text/image search loads the embedding model and may be slow; later calls are fast."
     )]
     async fn search(
         &self,

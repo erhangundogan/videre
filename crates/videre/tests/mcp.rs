@@ -513,3 +513,31 @@ fn media_filters_agree_between_the_cli_and_the_mcp_tool() {
 
     assert_eq!(cli_paths, mcp_paths, "one vocabulary, two surfaces");
 }
+
+#[test]
+fn mcp_search_accepts_presence_filters() {
+    let dir = tempdir().unwrap();
+    let db = make_dated_db(dir.path());
+    let conn = Connection::open(&db).unwrap();
+    conn.execute(
+        "UPDATE file_hashes SET gps_lat = 52.5, gps_lon = 13.4 WHERE hash IN ('d1', 'd4')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let mut client = McpClient::start(&db);
+    let resp = client.call_tool(21, "search", json!({"missing": ["gps"], "top_k": 100}));
+    assert_ne!(resp["result"]["isError"], json!(true), "{resp}");
+    let doc = &resp["result"]["structuredContent"];
+    let mut paths: Vec<String> = doc["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["path"].as_str().unwrap().to_string())
+        .collect();
+    paths.sort();
+    client.shutdown();
+
+    assert_eq!(paths, vec!["/tmp/june.png", "/tmp/may-b.png"]);
+}
