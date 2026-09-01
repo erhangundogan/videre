@@ -13,6 +13,20 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.23.0] - 2026-09-01
+
+### Added
+
+- **Presence filters.** Row-backed commands can now select files by metadata
+  availability with `--has <field>` and `--missing <field>`. The first fields
+  are `gps` and `date`, and both repeated flags and comma-separated values are
+  accepted: `--missing gps --missing date` and `--missing gps,date` mean the
+  same thing. `search`, `embed`, `faces`, `classify`, `mark`, `tag` and
+  `export --xmp` support the new filters; path-backed `scan` and `watch` do
+  not, because they have not read row metadata yet.
+- **MCP search can use presence filters too.** The `search` tool accepts `has`
+  and `missing` arrays, using the same `gps` and `date` fields as the CLI.
+
 ## [0.22.2] - 2026-08-31
 
 ### Fixed
@@ -1488,6 +1502,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[0.23.0]: https://github.com/erhangundogan/videre/compare/v0.22.2...v0.23.0
 [0.22.2]: https://github.com/erhangundogan/videre/compare/v0.22.1...v0.22.2
 [0.22.1]: https://github.com/erhangundogan/videre/compare/v0.21.9...v0.22.1
 [0.21.9]: https://github.com/erhangundogan/videre/compare/v0.21.8...v0.21.9
