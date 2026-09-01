@@ -48,6 +48,29 @@ impl MediaKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PresenceField {
+    Gps,
+    Date,
+}
+
+impl PresenceField {
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "gps" => Ok(Self::Gps),
+            "date" => Ok(Self::Date),
+            other => anyhow::bail!("unknown presence field {other:?}; expected one of: gps, date"),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Gps => "gps",
+            Self::Date => "date",
+        }
+    }
+}
+
 /// Normalise a user-supplied extension so `.MOV`, `MOV` and `mov` agree.
 ///
 /// Done once at parse time rather than per row: a selection is compared
@@ -118,6 +141,8 @@ pub struct RowSelection {
     pub place: Option<PlaceQuery>,
     pub after: Option<String>,
     pub before: Option<String>,
+    pub has: Vec<PresenceField>,
+    pub missing: Vec<PresenceField>,
     pub kinds: Vec<MediaKind>,
     pub exts: Vec<String>,
     pub mimes: Vec<String>,
@@ -166,6 +191,8 @@ impl RowSelection {
             && self.place.is_none()
             && self.after.is_none()
             && self.before.is_none()
+            && self.has.is_empty()
+            && self.missing.is_empty()
             && self.kinds.is_empty()
             && self.exts.is_empty()
             && self.mimes.is_empty()
@@ -201,6 +228,12 @@ impl RowSelection {
         }
         if let Some(b) = &self.before {
             parts.push(format!("--before {b}"));
+        }
+        for field in &self.has {
+            parts.push(format!("--has {}", field.as_str()));
+        }
+        for field in &self.missing {
+            parts.push(format!("--missing {}", field.as_str()));
         }
         for k in &self.kinds {
             parts.push(format!("--type {}", k.as_str()));
@@ -271,6 +304,12 @@ impl RowSelection {
                 query::by_date(conn, self.after.as_deref(), self.before.as_deref())?,
                 &mut acc,
             );
+        }
+        for field in &self.has {
+            narrow(by_presence(conn, *field, true)?, &mut acc);
+        }
+        for field in &self.missing {
+            narrow(by_presence(conn, *field, false)?, &mut acc);
         }
         if !self.kinds.is_empty() {
             narrow(by_kinds(conn, &self.kinds)?, &mut acc);
@@ -343,6 +382,33 @@ impl RowSelection {
             distances,
         })
     }
+}
+
+fn by_presence(
+    conn: &Connection,
+    field: PresenceField,
+    want_present: bool,
+) -> anyhow::Result<HashSet<String>> {
+    let sql = match (field, want_present) {
+        (PresenceField::Gps, true) => "SELECT DISTINCT hash FROM file_hashes
+             WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL"
+            .to_string(),
+        (PresenceField::Gps, false) => "SELECT DISTINCT hash FROM file_hashes
+             WHERE gps_lat IS NULL OR gps_lon IS NULL"
+            .to_string(),
+        (PresenceField::Date, true) => format!(
+            "SELECT DISTINCT hash FROM file_hashes WHERE {} IS NOT NULL",
+            crate::query::EFFECTIVE_DATE_SQL
+        ),
+        (PresenceField::Date, false) => format!(
+            "SELECT DISTINCT hash FROM file_hashes WHERE {} IS NULL",
+            crate::query::EFFECTIVE_DATE_SQL
+        ),
+    };
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    rows.collect::<rusqlite::Result<HashSet<_>>>()
+        .map_err(Into::into)
 }
 
 /// Hashes whose type matches any of `kinds`.
@@ -642,6 +708,16 @@ mod tests {
     }
 
     #[test]
+    fn presence_field_parse_names_supported_values() {
+        assert_eq!(PresenceField::parse("gps").unwrap(), PresenceField::Gps);
+        assert_eq!(PresenceField::parse("date").unwrap(), PresenceField::Date);
+
+        let err = PresenceField::parse("faces").unwrap_err().to_string();
+        assert!(err.contains("gps"), "{err}");
+        assert!(err.contains("date"), "{err}");
+    }
+
+    #[test]
     fn extensions_normalise_to_one_spelling() {
         for s in [".MOV", "MOV", "mov", " .mov "] {
             assert_eq!(normalise_ext(s), "mov", "input {s:?}");
@@ -710,6 +786,34 @@ mod resolve_tests {
         RowSelection::default()
     }
 
+    fn set<const N: usize>(hashes: [&str; N]) -> HashSet<String> {
+        hashes.into_iter().map(str::to_string).collect()
+    }
+
+    fn presence_db() -> Connection {
+        let c = db();
+        c.execute("DELETE FROM file_hashes", []).unwrap();
+        c
+    }
+
+    fn insert_presence_row(
+        conn: &rusqlite::Connection,
+        hash: &str,
+        path: &str,
+        gps_lat: Option<f64>,
+        gps_lon: Option<f64>,
+        exif_date: Option<&str>,
+        modified_at: Option<&str>,
+    ) {
+        conn.execute(
+            "INSERT INTO file_hashes
+             (path, hash, size_bytes, ext, mime, gps_lat, gps_lon, exif_date, modified_at)
+             VALUES (?1, ?2, 1, 'jpg', 'image/jpeg', ?3, ?4, ?5, ?6)",
+            rusqlite::params![path, hash, gps_lat, gps_lon, exif_date, modified_at],
+        )
+        .unwrap();
+    }
+
     #[test]
     fn no_selection_means_unconstrained_not_empty() {
         // The distinction that matters: None = process everything,
@@ -718,6 +822,137 @@ mod resolve_tests {
         let r = sel().resolve(&db(), &SelectionCtx::default()).unwrap();
         assert!(r.hashes.is_none(), "no predicate given must not constrain");
         assert!(sel().is_empty());
+    }
+
+    #[test]
+    fn presence_filters_select_gps_rows() {
+        let conn = presence_db();
+        insert_presence_row(
+            &conn,
+            "both",
+            "/tmp/both.jpg",
+            Some(52.5),
+            Some(13.4),
+            None,
+            Some("2024-01-01T00:00:00"),
+        );
+        insert_presence_row(
+            &conn,
+            "missing_lat",
+            "/tmp/missing-lat.jpg",
+            None,
+            Some(13.4),
+            None,
+            Some("2024-01-01T00:00:00"),
+        );
+        insert_presence_row(
+            &conn,
+            "missing_lon",
+            "/tmp/missing-lon.jpg",
+            Some(52.5),
+            None,
+            None,
+            Some("2024-01-01T00:00:00"),
+        );
+
+        let mut has = RowSelection::default();
+        has.has.push(PresenceField::Gps);
+        assert_eq!(
+            has.resolve(&conn, &SelectionCtx::default())
+                .unwrap()
+                .hashes
+                .unwrap(),
+            set(["both"])
+        );
+
+        let mut missing = RowSelection::default();
+        missing.missing.push(PresenceField::Gps);
+        assert_eq!(
+            missing
+                .resolve(&conn, &SelectionCtx::default())
+                .unwrap()
+                .hashes
+                .unwrap(),
+            set(["missing_lat", "missing_lon"])
+        );
+    }
+
+    #[test]
+    fn presence_filters_select_effective_date_rows() {
+        let conn = presence_db();
+        insert_presence_row(
+            &conn,
+            "exif",
+            "/tmp/exif.jpg",
+            None,
+            None,
+            Some("2024-05-01T10:00:00"),
+            None,
+        );
+        insert_presence_row(
+            &conn,
+            "mtime",
+            "/tmp/mtime.jpg",
+            None,
+            None,
+            None,
+            Some("2024-05-02T10:00:00"),
+        );
+        insert_presence_row(&conn, "missing", "/tmp/missing.jpg", None, None, None, None);
+
+        let mut has = RowSelection::default();
+        has.has.push(PresenceField::Date);
+        assert_eq!(
+            has.resolve(&conn, &SelectionCtx::default())
+                .unwrap()
+                .hashes
+                .unwrap(),
+            set(["exif", "mtime"])
+        );
+
+        let mut missing = RowSelection::default();
+        missing.missing.push(PresenceField::Date);
+        assert_eq!(
+            missing
+                .resolve(&conn, &SelectionCtx::default())
+                .unwrap()
+                .hashes
+                .unwrap(),
+            set(["missing"])
+        );
+    }
+
+    #[test]
+    fn contradictory_presence_filters_match_nothing() {
+        let conn = presence_db();
+        insert_presence_row(
+            &conn,
+            "both",
+            "/tmp/both.jpg",
+            Some(52.5),
+            Some(13.4),
+            None,
+            Some("2024-01-01T00:00:00"),
+        );
+
+        let mut sel = RowSelection::default();
+        sel.has.push(PresenceField::Gps);
+        sel.missing.push(PresenceField::Gps);
+
+        let resolved = sel.resolve(&conn, &SelectionCtx::default()).unwrap();
+        assert!(resolved.hashes.unwrap().is_empty());
+    }
+
+    #[test]
+    fn presence_fields_participate_in_empty_and_describe() {
+        let mut sel = RowSelection::default();
+        assert!(sel.is_empty());
+
+        sel.has.push(PresenceField::Gps);
+        sel.missing.push(PresenceField::Date);
+
+        assert!(!sel.is_empty());
+        assert_eq!(sel.describe(), "--has gps --missing date");
     }
 
     #[test]
