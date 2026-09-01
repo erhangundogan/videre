@@ -21,6 +21,7 @@ CLAUDE.local.md
 .mcp.json
 
 .superpowers/
+.worktrees/
 
 # An unexpanded ~ in an env var can make a tool write its home into the repo. Keep.
 /~/
