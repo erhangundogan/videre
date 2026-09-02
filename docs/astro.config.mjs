@@ -35,6 +35,11 @@ export default defineConfig({
 				dark: './src/assets/logo-horizontal-dark.svg',
 				replacesTitle: true,
 			},
+			expressiveCode: {
+				themes: ['starlight-dark', 'github-light'],
+				useStarlightDarkModeSwitch: true,
+				useStarlightUiThemeColors: true,
+			},
 			favicon: '/favicon.svg',
 			// Starlight emits twitter:card=summary_large_image but no image, which
 			// renders a large empty box on every platform that honours it. One
