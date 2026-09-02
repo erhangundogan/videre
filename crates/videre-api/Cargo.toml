@@ -1,6 +1,6 @@
 [package]
 name = "videre-api"
-version = "0.23.0"
+version = "0.24.0"
 edition = "2021"
 description = "Transport-agnostic facade over videre's face-labeling and image-serving operations"
 license = "Apache-2.0"
@@ -11,8 +11,15 @@ categories = ["multimedia::images"]
 [dependencies]
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
-videre-core = { path = "../videre-core", version = "0.23.0" }
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
+videre-core = { path = "../videre-core", version = "0.24.0" }
+image = { version = "0.25", default-features = false, features = [
+    "jpeg",
+    "png",
+    "gif",
+    "webp",
+    "bmp",
+    "tiff",
+] }
 kamadak-exif = "0.5"
 anyhow = "1"
 

@@ -13,6 +13,17 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.24.0] - 2026-09-02
+
+### Added
+
+- **Gallery date routes** added `/date/YYYY`, `/date/YYYY/MM`, `/date/YYYY/MM/DD`
+- **Gallery date filtering** added `/date?from=...&to=...` and `/api/files?view=date&from=...&to=....`
+- from is inclusive, to is exclusive, partial dates normalize to the first day.
+- Invalid path dates return 404; invalid query/range dates return 400.
+- Live date cards now use real route links; static HTML exports keep their single-file behavior.
+- Updated endpoint manifest and Gallery HTTP docs.
+
 ## [0.23.0] - 2026-09-01
 
 ### Added
@@ -1502,6 +1513,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[0.24.0]: https://github.com/erhangundogan/videre/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/erhangundogan/videre/compare/v0.22.2...v0.23.0
 [0.22.2]: https://github.com/erhangundogan/videre/compare/v0.22.1...v0.22.2
 [0.22.1]: https://github.com/erhangundogan/videre/compare/v0.21.9...v0.22.1
