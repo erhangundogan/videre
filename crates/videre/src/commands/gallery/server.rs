@@ -22,6 +22,213 @@ fn json_response(body: String) -> axum::response::Response {
         .into_response()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum InitialDateFilter {
+    Home,
+    Prefix(String),
+    Range {
+        from: Option<String>,
+        to: Option<String>,
+    },
+}
+
+fn route_date_filter(
+    year: &str,
+    month: Option<&str>,
+    day: Option<&str>,
+) -> Result<InitialDateFilter, StatusCode> {
+    let prefix = match (month, day) {
+        (None, None) => {
+            if year.len() == 4 && year.chars().all(|c| c.is_ascii_digit()) {
+                year.to_string()
+            } else {
+                return Err(StatusCode::NOT_FOUND);
+            }
+        }
+        (Some(month), None) => {
+            let raw = format!("{year}-{month}");
+            validate_partial_date(&raw).ok_or(StatusCode::NOT_FOUND)?;
+            raw
+        }
+        (Some(month), Some(day)) => {
+            let raw = format!("{year}-{month}-{day}");
+            validate_partial_date(&raw).ok_or(StatusCode::NOT_FOUND)?;
+            raw
+        }
+        (None, Some(_)) => return Err(StatusCode::NOT_FOUND),
+    };
+    Ok(InitialDateFilter::Prefix(prefix))
+}
+
+fn validate_partial_date(raw: &str) -> Option<()> {
+    match raw.len() {
+        4 => raw
+            .chars()
+            .all(|c| c.is_ascii_digit())
+            .then_some(())
+            .and_then(|_| raw.parse::<i32>().ok().map(|_| ())),
+        7 => {
+            if raw.as_bytes().get(4) != Some(&b'-') {
+                return None;
+            }
+            let year = raw[0..4].parse::<i32>().ok()?;
+            let month = raw[5..7].parse::<u32>().ok()?;
+            chrono::NaiveDate::from_ymd_opt(year, month, 1).map(|_| ())
+        }
+        10 => {
+            if raw.as_bytes().get(4) != Some(&b'-') || raw.as_bytes().get(7) != Some(&b'-') {
+                return None;
+            }
+            let year = raw[0..4].parse::<i32>().ok()?;
+            let month = raw[5..7].parse::<u32>().ok()?;
+            let day = raw[8..10].parse::<u32>().ok()?;
+            chrono::NaiveDate::from_ymd_opt(year, month, day).map(|_| ())
+        }
+        _ => None,
+    }
+}
+
+fn normalize_date_range(
+    from: Option<&str>,
+    to: Option<&str>,
+    today: chrono::NaiveDate,
+) -> Result<InitialDateFilter, StatusCode> {
+    if from.is_none() && to.is_none() {
+        return Ok(InitialDateFilter::Home);
+    }
+
+    let from = from
+        .filter(|s| !s.is_empty())
+        .map(expand_bound_start)
+        .transpose()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let to = match to.filter(|s| !s.is_empty()) {
+        Some(raw) => Some(expand_bound_start(raw).map_err(|_| StatusCode::BAD_REQUEST)?),
+        None if from.is_some() => Some((today + chrono::Days::new(1)).to_string()),
+        None => None,
+    };
+
+    if let (Some(from), Some(to)) = (&from, &to) {
+        if from >= to {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    }
+
+    Ok(InitialDateFilter::Range { from, to })
+}
+
+fn expand_bound_start(raw: &str) -> Result<String, ()> {
+    match raw.len() {
+        4 => {
+            let year = raw.parse::<i32>().map_err(|_| ())?;
+            chrono::NaiveDate::from_ymd_opt(year, 1, 1)
+                .map(|d| d.to_string())
+                .ok_or(())
+        }
+        7 => {
+            if raw.as_bytes().get(4) != Some(&b'-') {
+                return Err(());
+            }
+            let year = raw[0..4].parse::<i32>().map_err(|_| ())?;
+            let month = raw[5..7].parse::<u32>().map_err(|_| ())?;
+            chrono::NaiveDate::from_ymd_opt(year, month, 1)
+                .map(|d| d.to_string())
+                .ok_or(())
+        }
+        10 => {
+            if raw.as_bytes().get(4) != Some(&b'-') || raw.as_bytes().get(7) != Some(&b'-') {
+                return Err(());
+            }
+            let year = raw[0..4].parse::<i32>().map_err(|_| ())?;
+            let month = raw[5..7].parse::<u32>().map_err(|_| ())?;
+            let day = raw[8..10].parse::<u32>().map_err(|_| ())?;
+            chrono::NaiveDate::from_ymd_opt(year, month, day)
+                .map(|d| d.to_string())
+                .ok_or(())
+        }
+        _ => Err(()),
+    }
+}
+
+#[cfg(test)]
+mod date_filter_tests {
+    use super::*;
+    use chrono::NaiveDate;
+
+    #[test]
+    fn date_route_segments_normalize_to_prefixes() {
+        assert_eq!(
+            route_date_filter("2025", None, None).unwrap(),
+            InitialDateFilter::Prefix("2025".to_string())
+        );
+        assert_eq!(
+            route_date_filter("2025", Some("06"), None).unwrap(),
+            InitialDateFilter::Prefix("2025-06".to_string())
+        );
+        assert_eq!(
+            route_date_filter("2025", Some("06"), Some("03")).unwrap(),
+            InitialDateFilter::Prefix("2025-06-03".to_string())
+        );
+    }
+
+    #[test]
+    fn invalid_date_route_segments_are_not_found() {
+        for (year, month, day) in [
+            ("abcd", None, None),
+            ("2025", Some("6"), None),
+            ("2025", Some("13"), None),
+            ("2025", Some("02"), Some("31")),
+            ("2025", Some("06"), Some("xx")),
+        ] {
+            let err = route_date_filter(year, month, day).unwrap_err();
+            assert_eq!(err, StatusCode::NOT_FOUND);
+        }
+    }
+
+    #[test]
+    fn date_query_range_normalizes_partial_bounds() {
+        let today = NaiveDate::from_ymd_opt(2026, 9, 2).unwrap();
+
+        assert_eq!(
+            normalize_date_range(Some("2025"), None, today).unwrap(),
+            InitialDateFilter::Range {
+                from: Some("2025-01-01".to_string()),
+                to: Some("2026-09-03".to_string()),
+            }
+        );
+        assert_eq!(
+            normalize_date_range(Some("2016-05"), Some("2017"), today).unwrap(),
+            InitialDateFilter::Range {
+                from: Some("2016-05-01".to_string()),
+                to: Some("2017-01-01".to_string()),
+            }
+        );
+        assert_eq!(
+            normalize_date_range(None, Some("2018"), today).unwrap(),
+            InitialDateFilter::Range {
+                from: None,
+                to: Some("2018-01-01".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn invalid_date_query_ranges_are_bad_requests() {
+        let today = NaiveDate::from_ymd_opt(2026, 9, 2).unwrap();
+
+        for (from, to) in [
+            (Some("banana"), None),
+            (Some("2025-13"), None),
+            (Some("2017"), Some("2016")),
+            (Some("2025-05-10"), Some("2025-05-10")),
+            (Some("2025-02-31"), None),
+        ] {
+            let err = normalize_date_range(from, to, today).unwrap_err();
+            assert_eq!(err, StatusCode::BAD_REQUEST);
+        }
+    }
+}
+
 // ---- Faces labeling server ----
 
 /// Maps a `videre-api` facade error to the HTTP status code the axum
@@ -212,8 +419,44 @@ async fn handle_gallery_duplicates(
 /// `videre gallery`'s `/date`: the year/month/day drill-down over KEEP files.
 async fn handle_gallery_date(
     State(state): State<Arc<AppState>>,
-) -> impl axum::response::IntoResponse {
-    render_live(&state, false, true, false, Some(Section::Date))
+    Query(q): Query<DatePageQuery>,
+) -> Result<axum::response::Response, StatusCode> {
+    let filter = normalize_date_range(
+        q.from.as_deref(),
+        q.to.as_deref(),
+        chrono::Local::now().date_naive(),
+    )?;
+    render_live_date(&state, filter)
+}
+
+#[derive(Deserialize)]
+struct DatePageQuery {
+    from: Option<String>,
+    to: Option<String>,
+}
+
+async fn handle_gallery_date_year(
+    axum::extract::Path(year): axum::extract::Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> Result<axum::response::Response, StatusCode> {
+    let filter = route_date_filter(&year, None, None)?;
+    render_live_date(&state, filter)
+}
+
+async fn handle_gallery_date_month(
+    axum::extract::Path((year, month)): axum::extract::Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+) -> Result<axum::response::Response, StatusCode> {
+    let filter = route_date_filter(&year, Some(&month), None)?;
+    render_live_date(&state, filter)
+}
+
+async fn handle_gallery_date_day(
+    axum::extract::Path((year, month, day)): axum::extract::Path<(String, String, String)>,
+    State(state): State<Arc<AppState>>,
+) -> Result<axum::response::Response, StatusCode> {
+    let filter = route_date_filter(&year, Some(&month), Some(&day))?;
+    render_live_date(&state, filter)
 }
 
 #[derive(Deserialize)]
@@ -350,6 +593,54 @@ fn render_live(
     with_groups: bool,
     nav: Option<Section>,
 ) -> axum::response::Html<String> {
+    render_live_with_date(state, all, by_date, with_groups, nav, "null")
+}
+
+fn render_live_date(
+    state: &Arc<AppState>,
+    filter: InitialDateFilter,
+) -> Result<axum::response::Response, StatusCode> {
+    use axum::response::IntoResponse;
+
+    Ok(render_live_with_date(
+        state,
+        false,
+        true,
+        false,
+        Some(Section::Date),
+        &initial_date_filter_json(&filter),
+    )
+    .into_response())
+}
+
+fn initial_date_filter_json(filter: &InitialDateFilter) -> String {
+    match filter {
+        InitialDateFilter::Home => "null".to_string(),
+        InitialDateFilter::Prefix(value) => {
+            format!("{{\"kind\":\"prefix\",\"value\":{}}}", json_str(value))
+        }
+        InitialDateFilter::Range { from, to } => {
+            let from = from
+                .as_deref()
+                .map(json_str)
+                .unwrap_or_else(|| "null".to_string());
+            let to = to
+                .as_deref()
+                .map(json_str)
+                .unwrap_or_else(|| "null".to_string());
+            format!("{{\"kind\":\"range\",\"from\":{from},\"to\":{to}}}")
+        }
+    }
+}
+
+fn render_live_with_date(
+    state: &Arc<AppState>,
+    all: bool,
+    by_date: bool,
+    with_groups: bool,
+    nav: Option<Section>,
+    date_filter_json: &str,
+) -> axum::response::Html<String> {
     let conn = state.conn.lock().unwrap();
     let stats = query_stats(&conn);
     // :warning: Only `/duplicates` builds duplicate groups. `/` used to carry them
@@ -398,6 +689,7 @@ fn render_live(
             heic_original: state.report_heic_original,
             embedded,
             db_path,
+            date_filter_json: date_filter_json.to_string(),
         },
     };
     axum::response::Html(render(&set))
@@ -499,8 +791,28 @@ async fn handle_files(
         Some(h) if !h.is_empty() => {
             query_files_by_hash(&conn, h).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         }
-        _ => query_files_page(&conn, view, q.date.as_deref(), offset, limit)
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        _ => {
+            let date_filter = if let Some(date) = q.date.as_deref().filter(|s| !s.is_empty()) {
+                validate_partial_date(date).ok_or(StatusCode::BAD_REQUEST)?;
+                Some(FileDateFilter::Prefix(date.to_string()))
+            } else if q.from.is_some() || q.to.is_some() {
+                match normalize_date_range(
+                    q.from.as_deref(),
+                    q.to.as_deref(),
+                    chrono::Local::now().date_naive(),
+                )? {
+                    InitialDateFilter::Range { from, to } => {
+                        Some(FileDateFilter::Range { from, to })
+                    }
+                    InitialDateFilter::Prefix(value) => Some(FileDateFilter::Prefix(value)),
+                    InitialDateFilter::Home => None,
+                }
+            } else {
+                None
+            };
+            query_files_page(&conn, view, date_filter.as_ref(), offset, limit)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        }
     };
 
     let page_hashes: Vec<String> = rows.iter().map(|(r, _)| r.hash.clone()).collect();
@@ -891,6 +1203,10 @@ struct FilesQuery {
     /// asks for one day; the prefix form means the same endpoint answers a
     /// month or a year without a second parameter.
     date: Option<String>,
+    /// Inclusive lower bound for date range filters.
+    from: Option<String>,
+    /// Exclusive upper bound for date range filters.
+    to: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1138,6 +1454,9 @@ async fn serve_faces_async(
         .route("/", get(handle_gallery_all))
         .route("/duplicates", get(handle_gallery_duplicates))
         .route("/people", get(handle_root))
+        .route("/date/{year}/{month}/{day}", get(handle_gallery_date_day))
+        .route("/date/{year}/{month}", get(handle_gallery_date_month))
+        .route("/date/{year}", get(handle_gallery_date_year))
         .route("/date", get(handle_gallery_date))
         .route("/map", get(handle_not_yet))
         .route("/events", get(handle_not_yet))

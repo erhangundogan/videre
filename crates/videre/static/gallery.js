@@ -236,17 +236,31 @@ function dateKeepFiles(){ return (typeof KEEPFILES!=='undefined') ? KEEPFILES : 
 // An inlined page (a static export, which has no server) still groups locally.
 function dateInlined(){ return typeof KEEPFILES!=='undefined'; }
 
-function dateCards(buckets,onclick){
+function dateHref(prefix){
+  return '/date/'+String(prefix).replace(/-/g,'/');
+}
+function dateCardAttrs(prefix,action){
+  if(LIVE_SERVER) return '<a class="date-card-link" href="/date/'+escA(String(prefix).replace(/-/g,'/'))+'" aria-label="Open '+escA(prefix)+'"></a>';
+  return '<a class="date-card-link" href="#" onclick="'+action+';return false" aria-label="Open '+escA(prefix)+'"></a>';
+}
+function dateCrumb(label,prefix,action){
+  if(LIVE_SERVER) return '<a href="'+escA(dateHref(prefix))+'">'+escH(label)+'</a>';
+  return '<a onclick="'+action+'">'+escH(label)+'</a>';
+}
+
+function dateCards(buckets,actionFor){
   return buckets.map(function(b){
-    return '<div class="date-card" data-key="'+escA(b.key)+'" onclick="'+onclick(b.key)+'">'+
+    var action=actionFor(b.key);
+    return '<div class="date-card" data-key="'+escA(b.key)+'">'+
+      dateCardAttrs(b.key,action)+
       buildPreview(b.sample)+
       '<div class="date-card-label">'+escH(b.key)+'</div>'+
       '<div class="date-card-count">'+b.count+' files</div></div>';
   }).join('');
 }
-function fetchBuckets(level,parent,then){
-  var grid=document.getElementById('dateGrid');
-  grid.innerHTML='<p class="muted">Loading\u2026</p>';
+function fetchBuckets(level,parent,then,target){
+  var grid=target||document.getElementById('dateGrid');
+  grid.innerHTML='<p class="muted">Loading...</p>';
   var q='/api/dates?level='+encodeURIComponent(level);
   if(parent)q+='&parent='+encodeURIComponent(parent);
   fetch(q).then(function(r){return r.json();})
@@ -270,6 +284,8 @@ function groupInlined(len,parent){
 function buildYearView(){
   dateState={level:'year',year:null,month:null};
   document.getElementById('dateBreadcrumb').innerHTML='';
+  var narrowing=document.getElementById('dateNarrowing');
+  if(narrowing)narrowing.innerHTML='';
   var draw=function(b){
     document.getElementById('dateGrid').innerHTML=
       dateCards(b,function(k){return "buildMonthView('"+k+"')";});
@@ -279,7 +295,9 @@ function buildYearView(){
 function buildMonthView(year){
   dateState={level:'month',year:year,month:null};
   document.getElementById('dateBreadcrumb').innerHTML=
-    '<a onclick="buildYearView()">'+escH(year)+'</a>';
+    dateCrumb(year,year,'buildYearView()');
+  var narrowing=document.getElementById('dateNarrowing');
+  if(narrowing)narrowing.innerHTML='';
   var draw=function(b){
     document.getElementById('dateGrid').innerHTML=
       dateCards(b,function(k){return "buildDayView('"+k+"')";});
@@ -289,8 +307,10 @@ function buildMonthView(year){
 function buildDayView(month){
   dateState={level:'day',year:dateState.year||month.slice(0,4),month:month};
   document.getElementById('dateBreadcrumb').innerHTML=
-    '<a onclick="buildYearView()">'+escH(dateState.year)+'</a> &gt; '+
-    '<a onclick="buildMonthView(\''+dateState.year+'\')">'+escH(month)+'</a>';
+    dateCrumb(dateState.year,dateState.year,'buildYearView()')+' &gt; '+
+    dateCrumb(month,month,"buildMonthView('"+dateState.year+"')");
+  var narrowing=document.getElementById('dateNarrowing');
+  if(narrowing)narrowing.innerHTML='';
   var draw=function(b){
     document.getElementById('dateGrid').innerHTML=
       dateCards(b,function(k){return "buildDayGallery('"+k+"')";});
@@ -299,8 +319,10 @@ function buildDayView(month){
 }
 function buildDayGallery(day){
   document.getElementById('dateBreadcrumb').innerHTML=
-    '<a onclick="buildYearView()">'+escH(dateState.year)+'</a> &gt; '+
-    '<a onclick="buildMonthView(\''+dateState.year+'\')">'+escH(dateState.month)+'</a> &gt; '+escH(day);
+    dateCrumb(dateState.year,dateState.year,'buildYearView()')+' &gt; '+
+    dateCrumb(dateState.month,dateState.month,"buildMonthView('"+dateState.year+"')")+' &gt; '+escH(day);
+  var narrowing=document.getElementById('dateNarrowing');
+  if(narrowing)narrowing.innerHTML='';
   var grid=document.getElementById('dateGrid');
   if(dateInlined()){
     var files=dateKeepFiles().filter(function(f){
@@ -316,6 +338,69 @@ function buildDayGallery(day){
       grid.innerHTML=(d.files||[]).map(function(f){return buildCard(f);}).join('');
     })
     .catch(function(){ grid.innerHTML='<p class="muted">Could not load that day.</p>'; });
+}
+function fetchDateFiles(params,emptyText){
+  var grid=document.getElementById('dateGrid');
+  grid.innerHTML='<p class="muted">Loading...</p>';
+  fetch('/api/files?view=date&'+params+'&limit=500')
+    .then(function(r){return r.json();})
+    .then(function(d){
+      var files=d.files||[];
+      grid.innerHTML=files.length ? files.map(function(f){return buildCard(f);}).join('')
+        : '<p class="muted">'+escH(emptyText||'No files for this date.')+'</p>';
+    })
+    .catch(function(){ grid.innerHTML='<p class="muted">Could not load that date.</p>'; });
+}
+function renderDateBreadcrumb(prefix){
+  var parts=prefix.split('-');
+  if(parts.length===1){
+    document.getElementById('dateBreadcrumb').innerHTML=dateCrumb(parts[0],parts[0],'buildYearView()');
+  }else if(parts.length===2){
+    document.getElementById('dateBreadcrumb').innerHTML=
+      dateCrumb(parts[0],parts[0],'buildYearView()')+' &gt; '+
+      dateCrumb(prefix,prefix,"buildMonthView('"+parts[0]+"')");
+  }else{
+    var month=parts[0]+'-'+parts[1];
+    document.getElementById('dateBreadcrumb').innerHTML=
+      dateCrumb(parts[0],parts[0],'buildYearView()')+' &gt; '+
+      dateCrumb(month,month,"buildMonthView('"+parts[0]+"')")+' &gt; '+escH(prefix);
+  }
+}
+function renderDateNarrowing(prefix){
+  var narrowing=document.getElementById('dateNarrowing');
+  if(!narrowing)return;
+  narrowing.innerHTML='';
+  var level=null;
+  if(prefix.length===4)level='month';
+  if(prefix.length===7)level='day';
+  if(!level)return;
+  fetchBuckets(level,prefix,function(b){
+    narrowing.innerHTML=dateCards(b,function(k){
+      return level==='month' ? "buildDayView('"+k+"')" : "buildDayGallery('"+k+"')";
+    });
+  },narrowing);
+}
+function buildPrefixGallery(prefix){
+  var parts=prefix.split('-');
+  dateState.year=parts[0]||null;
+  dateState.month=parts.length>=2 ? parts[0]+'-'+parts[1] : null;
+  renderDateBreadcrumb(prefix);
+  renderDateNarrowing(prefix);
+  fetchDateFiles('date='+encodeURIComponent(prefix),'No files for '+prefix+'.');
+}
+function buildRangeGallery(range){
+  document.getElementById('dateBreadcrumb').innerHTML='Date range';
+  var narrowing=document.getElementById('dateNarrowing');
+  if(narrowing)narrowing.innerHTML='';
+  var params=[];
+  if(range.from)params.push('from='+encodeURIComponent(range.from));
+  if(range.to)params.push('to='+encodeURIComponent(range.to));
+  fetchDateFiles(params.join('&'),'No files for this range.');
+}
+function buildDateInitialView(){
+  if(typeof GDATE==='object'&&GDATE&&GDATE.kind==='prefix')buildPrefixGallery(GDATE.value);
+  else if(typeof GDATE==='object'&&GDATE&&GDATE.kind==='range')buildRangeGallery(GDATE);
+  else buildYearView();
 }
 // Event delegation: toggle, lightbox, copy. One listener for all dynamic content
 document.addEventListener('click',function(e){
@@ -479,4 +564,4 @@ document.addEventListener('click',function(e){
   if(sb){e.preventDefault();e.stopPropagation();findSimilar(sb.dataset.similar);}
 });
 render(true);
-if(document.getElementById('dateGrid')) buildYearView();
+if(document.getElementById('dateGrid')) buildDateInitialView();

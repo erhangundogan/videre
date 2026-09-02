@@ -166,6 +166,94 @@ fn every_live_route_answers() {
     }
 }
 
+#[test]
+fn date_prefix_routes_render_with_initial_state() {
+    let dir = tempdir().unwrap();
+    let db = fixture(dir.path());
+    let server = Server::start(&db);
+
+    for (path, prefix) in [
+        ("/date/2025", "\"value\":\"2025\""),
+        ("/date/2025/06", "\"value\":\"2025-06\""),
+        ("/date/2025/06/03", "\"value\":\"2025-06-03\""),
+    ] {
+        let (status, body) = server.get(path);
+        assert_eq!(status, 200, "{path}");
+        assert!(body.contains("var GDATE="), "{path} does not emit GDATE");
+        assert!(
+            body.contains("\"kind\":\"prefix\""),
+            "{path} is not a prefix page"
+        );
+        assert!(body.contains(prefix), "{path} has the wrong initial prefix");
+    }
+}
+
+#[test]
+fn date_range_routes_render_with_normalized_initial_state() {
+    let dir = tempdir().unwrap();
+    let db = fixture(dir.path());
+    let server = Server::start(&db);
+
+    let (status, body) = server.get("/date?from=2016-05&to=2017");
+    assert_eq!(status, 200);
+    assert!(body.contains("\"kind\":\"range\""));
+    assert!(body.contains("\"from\":\"2016-05-01\""));
+    assert!(body.contains("\"to\":\"2017-01-01\""));
+
+    let (status, body) = server.get("/date?to=2018");
+    assert_eq!(status, 200);
+    assert!(body.contains("\"from\":null"));
+    assert!(body.contains("\"to\":\"2018-01-01\""));
+}
+
+#[test]
+fn invalid_date_page_routes_return_the_right_status() {
+    let dir = tempdir().unwrap();
+    let db = fixture(dir.path());
+    let server = Server::start(&db);
+
+    for path in [
+        "/date/abcd",
+        "/date/2025/6",
+        "/date/2025/13",
+        "/date/2025/02/31",
+    ] {
+        let (status, _) = server.get(path);
+        assert_eq!(status, 404, "{path}");
+    }
+
+    for path in [
+        "/date?from=banana",
+        "/date?from=2025-13",
+        "/date?from=2017&to=2016",
+        "/date?from=2025-05-10&to=2025-05-10",
+    ] {
+        let (status, _) = server.get(path);
+        assert_eq!(status, 400, "{path}");
+    }
+}
+
+#[test]
+fn live_date_pages_link_the_drill_down_routes() {
+    let dir = tempdir().unwrap();
+    let db = fixture(dir.path());
+    let server = Server::start(&db);
+
+    let (status, body) = server.get("/date");
+    assert_eq!(status, 200);
+    assert!(body.contains("href=\"/date/'+escA"));
+
+    let (status, body) = server.get("/date/2025");
+    assert_eq!(status, 200);
+    assert!(body.contains("\"value\":\"2025\""));
+    assert!(body.contains("level='month'"));
+
+    let (status, body) = server.get("/date/2025/06");
+    assert_eq!(status, 200);
+    assert!(body.contains("\"value\":\"2025-06\""));
+    assert!(body.contains("level='day'"));
+}
+
 // :warning: The reserved views answer **404 with a page**, which is deliberate
 // and easy to mistake for a bug. The status says the view does not exist yet;
 // the body says so in words and links back. Registering them is what makes the
@@ -512,6 +600,41 @@ fn a_date_that_matches_nothing_is_empty_rather_than_everything() {
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(v["files"].as_array().unwrap().len(), 0);
     assert_eq!(v["total"], 0);
+}
+
+#[test]
+fn the_files_endpoint_filters_date_ranges() {
+    let dir = tempdir().unwrap();
+    let db = fixture(dir.path());
+    let server = Server::start(&db);
+
+    let (status, body) = server.get("/api/files?view=date&from=2025-06-01&to=2025-07-01&limit=100");
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["total"], 1);
+    assert_eq!(v["files"].as_array().unwrap().len(), 1);
+
+    let (status, body) = server.get("/api/files?view=date&from=2025-07-01&to=2025-08-01&limit=100");
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["total"], 0);
+    assert_eq!(v["files"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn invalid_files_endpoint_date_ranges_are_bad_requests() {
+    let dir = tempdir().unwrap();
+    let db = fixture(dir.path());
+    let server = Server::start(&db);
+
+    for path in [
+        "/api/files?view=date&from=banana",
+        "/api/files?view=date&from=2025-13-01",
+        "/api/files?view=date&from=2025-07-01&to=2025-06-01",
+    ] {
+        let (status, _) = server.get(path);
+        assert_eq!(status, 400, "{path}");
+    }
 }
 
 // :warning: A view nobody can reach is the same class of fault as a view that

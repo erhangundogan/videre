@@ -71,7 +71,10 @@ th.preview-th{width:130px}
 .date-breadcrumb{margin-bottom:16px;font-size:13px;color:#71717a}
 .date-breadcrumb a{color:#3f3f46;cursor:pointer;text-decoration:underline}
 .date-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}
-.date-card{background:#fff;border-radius:8px;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.08);padding:8px}
+.date-narrowing{margin-bottom:16px}
+.date-card{background:#fff;border-radius:8px;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.08);padding:8px;position:relative}
+.date-card-link{position:absolute;inset:0;z-index:1;border-radius:8px}
+.date-card [data-lb-url]{position:relative;z-index:2}
 .date-card img{width:100%;aspect-ratio:1;object-fit:cover;display:block;border-radius:6px}
 .date-card .date-card-label{padding:6px 0 0;font-size:13px;font-weight:600}
 .date-card .date-card-count{padding:2px 0 0;font-size:11px;color:#71717a}

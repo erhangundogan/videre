@@ -138,6 +138,10 @@ fn a_static_page_carries_no_vectors_or_gallery_shell() {
         !html.contains("class=\"secnav\""),
         "static export must not carry section links to routes that need a server"
     );
+    assert!(
+        !html.contains("href=\"/date/2025"),
+        "static export must not link to live-only date routes"
+    );
 }
 
 #[test]
