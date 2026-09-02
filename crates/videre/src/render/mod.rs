@@ -31,6 +31,14 @@ pub(crate) struct Stats {
     wasted_bytes: i64,
 }
 
+pub(crate) enum FileDateFilter {
+    Prefix(String),
+    Range {
+        from: Option<String>,
+        to: Option<String>,
+    },
+}
+
 /// How many files in this library are embedded under `model_id`, for the header
 /// stat. `None` when nothing is.
 ///
@@ -80,7 +88,7 @@ pub(crate) fn query_embedded_count(conn: &Connection, model_id: &str) -> Option<
 pub(crate) fn query_files_page(
     conn: &Connection,
     view: &str,
-    date: Option<&str>,
+    date_filter: Option<&FileDateFilter>,
     offset: i64,
     limit: i64,
 ) -> rusqlite::Result<(Vec<(FileRow, i64)>, i64)> {
@@ -100,12 +108,29 @@ pub(crate) fn query_files_page(
     // A date prefix narrows both the count and the page, so "Show more" counts
     // what is actually in the day rather than in the library.
     let effective = videre_core::query::EFFECTIVE_DATE_SQL;
-    let (where_sql, params): (String, Vec<String>) = match date.filter(|d| !d.is_empty()) {
-        Some(d) => (
+    let (where_sql, params): (String, Vec<String>) = match date_filter {
+        Some(FileDateFilter::Prefix(d)) if !d.is_empty() => (
             format!(" WHERE substr({effective}, 1, {}) = ?", d.len()),
             vec![d.to_string()],
         ),
-        None => (String::new(), Vec::new()),
+        Some(FileDateFilter::Range { from, to }) => {
+            let mut clauses = Vec::new();
+            let mut params = Vec::new();
+            if let Some(from) = from {
+                clauses.push(format!("{effective} >= ?"));
+                params.push(from.clone());
+            }
+            if let Some(to) = to {
+                clauses.push(format!("{effective} < ?"));
+                params.push(to.clone());
+            }
+            if clauses.is_empty() {
+                (String::new(), Vec::new())
+            } else {
+                (format!(" WHERE {}", clauses.join(" AND ")), params)
+            }
+        }
+        _ => (String::new(), Vec::new()),
     };
 
     let total: i64 = conn
@@ -804,6 +829,7 @@ pub(crate) fn write_static_page(
             heic_original: false,
             embedded: None,
             db_path,
+            date_filter_json: "null".to_string(),
         },
     };
     let html = render(&set);
@@ -830,6 +856,7 @@ pub(crate) struct RenderOptions {
     pub heic_original: bool,
     pub embedded: Option<usize>,
     pub db_path: String,
+    pub date_filter_json: String,
 }
 
 /// One set of files plus everything known about them, ready to render as a
@@ -888,6 +915,7 @@ pub(crate) fn render(set: &RenderSet) -> String {
         heic_original,
         faces_by_hash,
         live,
+        &set.options.date_filter_json,
     );
 
     let page = GalleryPage {
@@ -923,6 +951,7 @@ fn build_data_block(
     heic_original: bool,
     faces_by_hash: &videre_core::face_db::LabeledFacesByHash,
     live: bool,
+    date_filter_json: &str,
 ) -> String {
     let mut out = String::with_capacity(256 * 1024);
     // GVIEW tells the client which view to ask /api/files for when it fetches
@@ -930,11 +959,12 @@ fn build_data_block(
     // the client never has to infer it from the URL.
     let view = if keep_files.is_some() { "date" } else { "all" };
     out.push_str(&format!(
-        "<script>\nvar LIVE_SERVER={live};\nvar GVIEW={};\nvar PEOPLE_ROOT={};\n</script>\n",
+        "<script>\nvar LIVE_SERVER={live};\nvar GVIEW={};\nvar PEOPLE_ROOT={};\nvar GDATE={};\n</script>\n",
         json_str(view),
         // `nav` is Some only under `videre gallery`, which is the one
         // configuration with a `/people`. See `people_root`.
-        json_str(people_root(nav.is_some()))
+        json_str(people_root(nav.is_some())),
+        date_filter_json,
     ));
     out.push_str("<script>\nvar GROUPS=[\n");
     for (i, group) in groups.iter().enumerate() {

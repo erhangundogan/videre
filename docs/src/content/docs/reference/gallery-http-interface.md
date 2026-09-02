@@ -33,11 +33,34 @@ and cannot answer these HTTP requests after the command exits.
 | `GET /duplicates` | Duplicate review |
 | `GET /people` | People and face labeling |
 | `GET /date` | Date drill-down |
+| `GET /date/{year}` | Files for one year |
+| `GET /date/{year}/{month}` | Files for one month |
+| `GET /date/{year}/{month}/{day}` | Files for one day |
 | `GET /people/cluster/{id}` | One face cluster |
 | `GET /people/person/{name}` | One person |
 | `GET /map` | Reserved |
 | `GET /events` | Reserved |
 | `GET /smart` | Reserved |
+
+Date route segments are zero-padded where applicable: `YYYY`, `YYYY/MM` and
+`YYYY/MM/DD`. Invalid date routes return `404 Not Found`.
+
+`GET /date` also accepts range query parameters:
+
+| Query | Meaning |
+|---|---|
+| `from=YYYY[-MM[-DD]]` | Inclusive lower bound |
+| `to=YYYY[-MM[-DD]]` | Exclusive upper bound |
+
+Partial bounds expand to the first day of the period. For example,
+`from=2025` starts at `2025-01-01`, and `to=2018` stops before `2018-01-01`.
+When `from` is present without `to`, the range runs through today. Invalid
+query dates or empty ranges return `400 Bad Request`.
+
+```bash
+curl "http://127.0.0.1:7878/date/2025/06/03"
+curl "http://127.0.0.1:7878/date?from=2016-05&to=2017"
+```
 
 The reserved routes currently return a placeholder page with `404 Not Found`.
 
@@ -54,10 +77,13 @@ Returns a page of file rows. By default it lists all scanned paths.
 | `offset=<n>` | Page offset. The default is `0` |
 | `limit=<n>` | Page size. The default is `200`, capped by the server |
 | `date=YYYY[-MM[-DD]]` | Date prefix used by the date view |
+| `from=YYYY[-MM[-DD]]` | Inclusive date lower bound for `view=date` |
+| `to=YYYY[-MM[-DD]]` | Exclusive date upper bound for `view=date` |
 | `hashes=<a,b,c>` | Comma-separated hashes to resolve after a search |
 
 ```bash
 curl "http://127.0.0.1:7878/api/files?limit=1"
+curl "http://127.0.0.1:7878/api/files?view=date&from=2025-01-01&to=2026-01-01&limit=100"
 ```
 
 ```json
