@@ -1,6 +1,6 @@
 [package]
 name = "videre-core"
-version = "0.25.0"
+version = "0.25.1"
 edition = "2021"
 description = "Shared SQLite, caching, and search helpers for the videre media library CLI"
 license = "Apache-2.0"
@@ -10,6 +10,7 @@ categories = ["multimedia::images"]
 
 [dependencies]
 anyhow = "1"
+blake3 = "1"
 half = "2"
 image = { version = "0.25", default-features = false, features = [
     "jpeg",

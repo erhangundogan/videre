@@ -13,6 +13,8 @@ pub mod home;
 pub mod import_location;
 pub mod import_providers;
 pub mod io_timeout;
+pub mod library;
+pub mod library_config;
 pub mod library_stats;
 pub mod location;
 pub mod location_cluster;
