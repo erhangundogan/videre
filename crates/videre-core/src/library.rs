@@ -44,7 +44,7 @@ pub struct LibraryPaths {
     pub db: PathBuf,
     /// The library's `config.toml`.
     pub config: PathBuf,
-    /// Default JSONL export path (`dedupe --output` with no value).
+    /// Default JSONL export path (`scan --output` with no value).
     pub jsonl: PathBuf,
     /// Directory holding this library's per-model embedding databases.
     pub embeddings: PathBuf,
@@ -230,7 +230,7 @@ fn canonical_root(root: &Path) -> Result<(PathBuf, bool)> {
 ///
 /// The identity comes from an fstat of the handle, not from a second name
 /// lookup, so it is the identity of the directory actually opened. One
-/// further bounded stat of the name then confirms the handle corresponds to
+/// further bounded lstat of the name then confirms the handle corresponds to
 /// the canonical path; a mismatch means the directory was replaced in the
 /// window between resolution and open, and no context is built on that race.
 fn open_pinned(canonical: &Path) -> Result<(File, std::fs::Metadata)> {
@@ -252,9 +252,24 @@ fn open_pinned(canonical: &Path) -> Result<(File, std::fs::Metadata)> {
     }
     let pinned = dir_identity(&meta);
     let owned = canonical.to_path_buf();
+    // lstat, deliberately: the output of canonicalize never has a symlink as
+    // its final component, so this stat not following symlinks is strictly
+    // stronger here, and it is the only stat that proves the name was not
+    // swapped for a link. A following stat would compare the link target's
+    // identity, which both the open above and the verification would then
+    // agree on, pinning the context to the wrong library without any
+    // disagreement to observe. ensure_root_identity, in contrast,
+    // intentionally follows: a renamed root reached through a symlink left
+    // behind still names the pinned directory and must keep validating.
     let named = bounded_op(canonical, "read", io_timeout::STAT_TIMEOUT, move || {
-        std::fs::metadata(&owned)
+        std::fs::symlink_metadata(&owned)
     })?;
+    if !named.is_dir() {
+        bail!(
+            "library root {} changed while it was being opened: it is no longer a directory",
+            canonical.display()
+        );
+    }
     if dir_identity(&named) != pinned {
         bail!(
             "library root {} changed while it was being opened",
@@ -373,6 +388,24 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
+    /// Writes to the process's real stderr, bypassing libtest's output
+    /// capture. A skip is a passing test, and libtest captures the print
+    /// macros for passing tests, so an `eprintln!` skip message is invisible
+    /// in a normal `cargo test` run and only appears under `--nocapture`;
+    /// writing to fd 2 directly sidesteps the capture. Same pattern as the
+    /// integration suite's `common::write_past_test_capture`, local here
+    /// because videre-core unit tests have no shared helper. `ManuallyDrop`
+    /// because dropping a `File` built from a borrowed fd would close fd 2
+    /// for the rest of the process.
+    fn write_past_test_capture(msg: &str) {
+        use std::io::Write;
+        use std::os::fd::FromRawFd;
+
+        let mut stderr = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(2) });
+        let _ = stderr.write_all(msg.as_bytes());
+        let _ = stderr.flush();
+    }
+
     #[test]
     fn paths_are_local_and_root_aliases_share_identity() {
         let temp = tempfile::tempdir().unwrap();
@@ -484,6 +517,33 @@ mod tests {
     }
 
     #[test]
+    fn a_root_swapped_for_a_symlink_during_open_is_rejected() {
+        // The race this guards lives between two adjacent syscalls inside
+        // open_pinned (canonicalize has already run, the name is swapped for
+        // a symlink before the verification stat), so it cannot be produced
+        // end to end deterministically. The post-race state can be: hand
+        // open_pinned a name that is now a symlink to another directory.
+        // A stat that follows the link compares the decoy directory's
+        // identity against the handle the open just got on that same decoy,
+        // and they agree, pinning the context to the wrong library; the
+        // lstat sees the link itself and rejects it.
+        let temp = tempfile::tempdir().unwrap();
+        let real = temp.path().join("photos");
+        let decoy = temp.path().join("other-library");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::create_dir(&decoy).unwrap();
+        // Any name handed to open_pinned plays the canonical name; a symlink
+        // there is exactly the swapped state, since canonicalize never
+        // returns one.
+        let swapped = temp.path().join("swapped");
+        std::os::unix::fs::symlink(&decoy, &swapped).unwrap();
+        let err = open_pinned(&swapped).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("changed while it was being opened"), "{msg}");
+        assert!(msg.contains("swapped"), "{msg}");
+    }
+
+    #[test]
     fn an_inaccessible_root_is_rejected_with_its_path() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("photos");
@@ -495,7 +555,9 @@ mod tests {
         std::fs::write(&probe, b"x").unwrap();
         std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o000)).unwrap();
         if std::fs::read(&probe).is_ok() {
-            eprintln!("SKIP: running as root, so chmod 000 does not block opening a directory");
+            write_past_test_capture(
+                "SKIP: running as root, so chmod 000 does not block opening a directory\n",
+            );
             return;
         }
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o000)).unwrap();
