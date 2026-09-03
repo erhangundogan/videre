@@ -7,37 +7,39 @@
 </head>
 <body>
   {% include "nav.html" %}
-  <div class="toolbar">
-    <a href="{{ back_href }}">&larr; {{ back_label }}</a>
-    <strong>Cluster {{ cluster_id }}</strong>
-    <span id="face-count" style="color:#555;font-size:13px"></span>
-    <span id="status"></span>
-  </div>
+  <main>
+    <div class="toolbar">
+      <a href="{{ back_href }}">&larr; {{ back_label }}</a>
+      <strong>Cluster {{ cluster_id }}</strong>
+      <span id="face-count" style="color:#555;font-size:13px"></span>
+      <span id="status"></span>
+    </div>
 
-  <div class="assign-bar">
-    <strong>Assign all to:</strong>
-    <input type="text" id="person-input" placeholder="Person name" maxlength="60" list="people-list">
-    <datalist id="people-list"></datalist>
-    <button class="primary" onclick="assignAll()">Assign cluster</button>
-    <button class="danger" onclick="dissolveCluster()" style="margin-left:auto">Dissolve cluster (wrong grouping)</button>
-  </div>
+    <div class="assign-bar">
+      <strong>Assign all to:</strong>
+      <input type="text" id="person-input" placeholder="Person name" maxlength="60" list="people-list">
+      <datalist id="people-list"></datalist>
+      <button class="primary" onclick="assignAll()">Assign cluster</button>
+      <button class="danger" onclick="dissolveCluster()" style="margin-left:auto">Dissolve cluster (wrong grouping)</button>
+    </div>
 
-  <div id="faces-grid" class="grid"></div>
+    <div id="faces-grid" class="grid"></div>
 
-  <div id="assignModal" class="modal-backdrop">
-    <div class="modal">
-      <h3>Assign to person</h3>
-      <input id="assignInput" list="assign-people-list" placeholder="Person name" maxlength="60">
-      <datalist id="assign-people-list"></datalist>
-      <div class="modal-actions">
-        <button onclick="submitAssignModal()">Assign</button>
-        <button onclick="closeAssignModal()">Cancel</button>
+    <div id="assignModal" class="modal-backdrop">
+      <div class="modal">
+        <h3>Assign to person</h3>
+        <input id="assignInput" list="assign-people-list" placeholder="Person name" maxlength="60">
+        <datalist id="assign-people-list"></datalist>
+        <div class="modal-actions">
+          <button onclick="submitAssignModal()">Assign</button>
+          <button onclick="closeAssignModal()">Cancel</button>
+        </div>
       </div>
     </div>
-  </div>
+  </main>
 
   <script>window.CLUSTER_ID = {{ cluster_id }};</script>
-<script>var PEOPLE_ROOT="{{ back_href }}";</script>
+  <script>let PEOPLE_ROOT="{{ back_href }}";</script>
   <script>{{ js|safe }}</script>
 </body>
 </html>

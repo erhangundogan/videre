@@ -7,22 +7,24 @@
 </head>
 <body>
   {% include "nav.html" %}
-  <div class="toolbar">
-    <a id="backLink" href="{{ back_href }}">&larr; {{ back_label }}</a>
-    <strong id="person-title">Person</strong>
-    <span id="face-count" style="color:#555;font-size:13px"></span>
-    <span id="status"></span>
-    <span id="renameArea" style="display:none">
-      <input type="text" id="renameInput" maxlength="60">
-      <button class="primary" style="margin-left:8px" onclick="submitRename()">Save</button>
-    </span>
-    <button id="removeBtn" class="danger" style="display:none;margin-left:auto" onclick="removePerson()">Remove person</button>
-  </div>
+  <main>
+    <div class="toolbar">
+      <a id="backLink" href="{{ back_href }}">&larr; {{ back_label }}</a>
+      <strong id="person-title">Person</strong>
+      <span id="face-count" style="color:#555;font-size:13px"></span>
+      <span id="status"></span>
+      <span id="renameArea" style="display:none">
+        <input type="text" id="renameInput" maxlength="60">
+        <button class="primary" style="margin-left:8px" onclick="submitRename()">Save</button>
+      </span>
+      <button id="removeBtn" class="danger" style="display:none;margin-left:auto" onclick="removePerson()">Remove person</button>
+    </div>
 
-  <div id="faces-grid" class="grid"></div>
+    <div id="faces-grid" class="grid"></div>
+  </main>
 
   <script>window.FACES_UI_ENABLED = {{ faces_ui_enabled }};</script>
-<script>var PEOPLE_ROOT="{{ back_href }}";</script>
+  <script>let PEOPLE_ROOT="{{ back_href }}";</script>
   <script>{{ js|safe }}</script>
 </body>
 </html>
