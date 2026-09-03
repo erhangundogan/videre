@@ -12,6 +12,8 @@ rustc-ice-*.txt
 
 .vscode/
 .claude/
+.codex/
+.agents/
 
 # Private, always-loaded personal memory. Never committed.
 CLAUDE.local.md
@@ -20,7 +22,6 @@ CLAUDE.local.md
 .cargo/credentials.toml
 .mcp.json
 
-.superpowers/
 .worktrees/
 
 # An unexpanded ~ in an env var can make a tool write its home into the repo. Keep.
