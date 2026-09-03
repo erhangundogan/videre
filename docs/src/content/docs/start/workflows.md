@@ -18,30 +18,51 @@ the index.
 ## The pipeline
 
 ```
-videre scan                  <- everything starts here
-  |
-  |-- videre dedupe          find duplicates
-  |-- videre fix-dates       correct file dates
-  |-- videre locations       group by place
-  |-- videre stats           what's in the library
-  |-- videre dedupe --html          browse and review
-  |
-  |-- videre embed           prepare search  (slow, one-time)
-  |     |
-  |     |-- videre search "..."        by description
-  |     |-- videre search --image      by example
-  |     |-- videre gallery        in-page similarity
-  |     |-- videre classify            tag screenshots/documents/memes
-  |           |
-  |           |-- videre search --category
-  |
-  |-- videre faces           detect and group faces  (slow, one-time)
-        |
-        |-- videre gallery      name people (manual step)
-              |
-              |-- videre search --person
-              |-- videre gallery
+videre scan                         <- everything starts here
+  │
+  ├── videre dedupe                 find duplicates
+  │     │
+  │     └── xargs trash             pipe result to xargs trash to remove duplicates
+  │           │
+  │           └── videre prune      synchronize the database after cleanup
+  │
+  ├── videre fix-dates              correct file dates
+  │     │
+  │     └── videre prune            synchronize the database after fixing dates
+  │
+  ├── videre locations              group by place
+  ├── videre stats                  what's in the library
+  ├── videre embed                  prepare search  (slow, one-time)
+  │     │
+  │     ├── videre search "..."     by description
+  │     ├── videre search --image   by example
+  │     ├── videre gallery          in-page similarity
+  │     └── videre classify         tag screenshots/documents/memes
+  │           │
+  │           ├── videre mark --category
+  │           ├── videre tag --category
+  │           └── videre search --category
+  │
+  ├── videre mark
+  ├── videre tag
+  ├── videre gallery                browse files, duplicates and dates
+  └── videre faces                  detect and group faces  (slow, one-time)
+        │
+        └── videre gallery          show face clusters and name people (manual step)
+              │
+              ├── videre mark --person
+              ├── videre tag --person
+              └── videre search --person
 ```
+
+- When migrating from another photo tool, `videre import` comes before `videre scan`.
+- `videre watch` can run instead of a one-off `videre scan` for continuous operation.
+- `videre export` can run once a file has metadata to export:
+  - Ratings and labels require `mark`
+  - Keywords require `tag`
+  - Named face regions require `faces`, then naming in `gallery`
+  - Categories require `embed`, then `classify`
+  - Resolved place names require `locations`
 
 ## What each command needs first
 

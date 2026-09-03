@@ -13,6 +13,20 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [0.24.1] - 2026-09-03
+
+### Fixed
+
+- **Code examples use matching light and dark syntax themes.** Documentation
+  builds now force content regeneration and fail when generated pages reference
+  missing local CSS or JavaScript assets.
+
+### Changed
+
+- **The workflow pipeline is easier to follow.** Its tree now uses consistent
+  branch characters and shows where gallery views, marking, tagging, cleanup,
+  and metadata export fit into the processing sequence.
+
 ## [0.24.0] - 2026-09-02
 
 ### Added
@@ -1513,6 +1527,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[0.24.1]: https://github.com/erhangundogan/videre/compare/v0.24.0...v0.24.1
 [0.24.0]: https://github.com/erhangundogan/videre/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/erhangundogan/videre/compare/v0.22.2...v0.23.0
 [0.22.2]: https://github.com/erhangundogan/videre/compare/v0.22.1...v0.22.2

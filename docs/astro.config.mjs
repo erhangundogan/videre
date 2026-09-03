@@ -22,6 +22,11 @@ export default defineConfig({
 			title: 'videre',
 			description:
 				'Find any photo by describing it, by who is in it, or where it was taken. Duplicates, semantic search, faces and places over a folder you already own, entirely offline.',
+			expressiveCode: {
+				themes: ['starlight-dark', 'github-light'],
+				useStarlightDarkModeSwitch: true,
+				useStarlightUiThemeColors: true,
+			},
 			// Horizontal lockup: the mark and wordmark side by side fit the header
 			// bar far better than the stacked square version, which forced the
 			// header taller to stay legible. The square logos are still used by
