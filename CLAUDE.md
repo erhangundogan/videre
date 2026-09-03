@@ -63,7 +63,7 @@ make fmt                       # not bare `cargo fmt`; see below
 cargo test --workspace
 ```
 
-One binary, `videre`, with fifteen subcommands. `main.rs` dispatches to one
+One binary, `videre`, with eighteen subcommands. `main.rs` dispatches to one
 module per subcommand under `src/commands/`.
 
 ### The Rust version is pinned, in one place
