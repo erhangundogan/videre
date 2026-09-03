@@ -98,8 +98,10 @@ pub struct LibraryContext {
     pub paths: LibraryPaths,
     /// Cache locations under the explicit cache base.
     pub cache: CachePaths,
-    /// Settings in force for this context; built-in defaults here, with the
-    /// config file layered on by the config loader.
+    /// Settings in force for this context, loaded once from the library's
+    /// `config.toml` at construction (built-in defaults when it is absent).
+    /// A snapshot: editing the file later does not mutate an existing
+    /// context, only a context built after the edit.
     pub settings: LibraryConfig,
     identity: Arc<Shared>,
 }
@@ -143,8 +145,9 @@ fn cache_for(base: &Path, paths: &LibraryPaths) -> CachePaths {
 /// production callers pass [`io_timeout::STAT_TIMEOUT`], the right ceiling
 /// for metadata-sized work. On timeout the message is built from strings
 /// already in hand: re-reading the very path that failed to answer is the
-/// mistake `TimedOutAfter::describe` exists to prevent.
-fn bounded_op<T, F>(path: &Path, op: &str, budget: Duration, f: F) -> Result<T>
+/// mistake `TimedOutAfter::describe` exists to prevent. Crate visible: the
+/// config layer runs its file operations through the same bound.
+pub(crate) fn bounded_op<T, F>(path: &Path, op: &str, budget: Duration, f: F) -> Result<T>
 where
     T: Send + 'static,
     F: FnOnce() -> std::io::Result<T> + Send + 'static,
@@ -168,8 +171,9 @@ fn dir_identity(meta: &std::fs::Metadata) -> (u64, u64) {
 }
 
 /// Whether an error chain bottoms out in `NotFound`, so a caller can phrase a
-/// missing thing as missing rather than as a generic failure.
-fn root_cause_is_not_found(e: &anyhow::Error) -> bool {
+/// missing thing as missing rather than as a generic failure. Crate visible
+/// for the same reader as `bounded_op`: the config layer.
+pub(crate) fn root_cause_is_not_found(e: &anyhow::Error) -> bool {
     e.root_cause()
         .downcast_ref::<std::io::Error>()
         .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
@@ -284,7 +288,10 @@ impl LibraryContext {
     ///
     /// Creates nothing, anywhere: neither the state directory inside the root
     /// nor any part of the cache base. Both are writers' job, so looking at a
-    /// library never litters it.
+    /// library never litters it. The library's `config.toml` is read here
+    /// when present: settings are snapshotted into the context, an edit to
+    /// the file after construction does not mutate it, and an invalid or
+    /// corrupt file fails construction rather than silently defaulting.
     pub fn new(root: &Path, cache_base: &Path) -> Result<Self> {
         // Every path handed to lower layers is absolute. A relative input
         // would have to be resolved against the process's cwd, which is
@@ -315,10 +322,15 @@ impl LibraryContext {
         let (handle, meta) = open_pinned(&canonical)?;
         let paths = paths_for(canonical);
         let cache = cache_for(cache_base, &paths);
+        // The config belongs to the library, so it is loaded through the
+        // pinned root's derived paths, after root validation and before the
+        // context exists: an invalid config must fail here, at the entrance,
+        // not surface as surprising behaviour mid-command.
+        let settings = crate::library_config::load(&paths)?;
         Ok(Self {
             paths,
             cache,
-            settings: LibraryConfig::default(),
+            settings,
             identity: Arc::new(Shared {
                 root_handle: handle,
                 root_dev: meta.dev(),
