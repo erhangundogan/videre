@@ -276,7 +276,44 @@ impl RowSelection {
     /// Predicates OR within an axis (`--ext mov,avi` matches either) and AND
     /// across axes (`--type video --ext jpg` matches nothing), which is how
     /// every existing filter already composes.
+    ///
+    /// Path filters are resolved against the process's ambient filesystem
+    /// here; a caller holding a library context should use
+    /// [`RowSelection::resolve_in`], which constrains them to that library
+    /// first.
     pub fn resolve(&self, conn: &Connection, ctx: &SelectionCtx) -> anyhow::Result<Resolved> {
+        self.resolve_selection(conn, ctx)
+    }
+
+    /// Resolve one selection against one library, with its path filters
+    /// constrained to that library before anything else runs.
+    ///
+    /// The only difference from [`RowSelection::resolve`] is the path axis:
+    /// every supplied filter is validated by
+    /// [`library_guard::validate_paths`](crate::library_guard::validate_paths)
+    /// (relative filters resolve against the library root, absolute ones must
+    /// physically land inside it), and one bad filter rejects the whole
+    /// invocation rather than being quietly dropped. The guarded forms are
+    /// substituted into a clone and run through the same engine as the
+    /// ambient resolver, so a direct caller cannot bypass the guard by
+    /// skipping CLI parsing, and every other axis behaves identically. A
+    /// selection with no path filters resolves exactly as [`Self::resolve`]
+    /// does.
+    pub fn resolve_in(
+        &self,
+        conn: &Connection,
+        ctx: &SelectionCtx,
+        library: &crate::library::LibraryContext,
+    ) -> anyhow::Result<Resolved> {
+        let mut guarded = self.clone();
+        guarded.paths = crate::library_guard::validate_paths(library, &self.paths)?;
+        guarded.resolve_selection(conn, ctx)
+    }
+
+    /// The engine both resolvers share: every active predicate, intersected.
+    /// Private so the only public entrances are `resolve` (ambient paths) and
+    /// `resolve_in` (guarded paths); there is no third way to reach this.
+    fn resolve_selection(&self, conn: &Connection, ctx: &SelectionCtx) -> anyhow::Result<Resolved> {
         if self.is_empty() {
             return Ok(Resolved::default());
         }
@@ -1183,6 +1220,180 @@ mod resolve_tests {
         assert!(
             d.contains("--type video") && d.contains("--after 2024-01-01"),
             "{d}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod resolve_in_tests {
+    use super::*;
+    use crate::library::LibraryContext;
+
+    fn insert_row(conn: &Connection, root: &Path, rel: &str, hash: &str) {
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, ext, mime) VALUES (?1, ?2, 'jpg', 'image/jpeg')",
+            rusqlite::params![root.join(rel).to_str().unwrap(), hash],
+        )
+        .unwrap();
+    }
+
+    /// One library context plus an in-memory index whose rows live under the
+    /// library's canonical root. Fixture directories are deliberately not
+    /// created on disk: a filter selects indexed rows, and those rows can
+    /// outlive their files.
+    fn library(rows: &[(&str, &str)]) -> (tempfile::TempDir, LibraryContext, Connection) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("photos");
+        std::fs::create_dir(&root).unwrap();
+        let ctx = LibraryContext::new(&root, &temp.path().join("cache")).unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (
+                path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
+                created_at TEXT, modified_at TEXT, ext TEXT, mime TEXT, phash INTEGER,
+                exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER);",
+        )
+        .unwrap();
+        for (rel, hash) in rows {
+            insert_row(&conn, &ctx.paths.root, rel, hash);
+        }
+        (temp, ctx, conn)
+    }
+
+    fn set<const N: usize>(hashes: [&str; N]) -> HashSet<String> {
+        hashes.into_iter().map(str::to_string).collect()
+    }
+
+    #[test]
+    fn paths_or_within_the_axis_and_intersect_across_it() {
+        let (_temp, ctx, conn) = library(&[
+            ("Trips/a.jpg", "h_trips_a"),
+            ("Trips/b.jpg", "h_trips_b"),
+            ("2024/c.jpg", "h_2024"),
+            ("Misc/d.jpg", "h_misc"),
+        ]);
+        // Two paths union, and neither selects the unmentioned directory.
+        let mut s = RowSelection::default();
+        s.paths = vec![PathBuf::from("Trips"), PathBuf::from("2024")];
+        let h = s
+            .resolve_in(&conn, &SelectionCtx::default(), &ctx)
+            .unwrap()
+            .hashes
+            .unwrap();
+        assert_eq!(h.len(), 3);
+        assert!(!h.contains("h_misc"));
+        // The same axis intersection rule as every other predicate.
+        let mut s = RowSelection::default();
+        s.paths = vec![PathBuf::from("Trips")];
+        s.kinds = vec![MediaKind::Video];
+        let h = s
+            .resolve_in(&conn, &SelectionCtx::default(), &ctx)
+            .unwrap()
+            .hashes
+            .unwrap();
+        assert!(h.is_empty(), "jpg rows AND video matches nothing");
+    }
+
+    #[test]
+    fn no_filter_is_unconstrained_and_a_matching_nothing_filter_is_empty() {
+        let (_temp, ctx, conn) = library(&[("Trips/a.jpg", "h_a")]);
+        let r = RowSelection::default()
+            .resolve_in(&conn, &SelectionCtx::default(), &ctx)
+            .unwrap();
+        assert!(r.hashes.is_none(), "no predicate given must not constrain");
+        let mut s = RowSelection::default();
+        s.paths = vec![PathBuf::from("Nothere")];
+        let r = s.resolve_in(&conn, &SelectionCtx::default(), &ctx).unwrap();
+        let h = r.hashes.expect("an active path filter must constrain");
+        assert!(
+            h.is_empty(),
+            "a filter matching nothing is empty, not everything"
+        );
+    }
+
+    #[test]
+    fn rows_under_a_missing_in_root_directory_stay_selectable() {
+        // The rows exist in the index; their directory does not exist on
+        // disk. The guard keeps them selectable rather than treating the
+        // missing prefix as outside the library.
+        let (_temp, ctx, conn) = library(&[("Gone/a.jpg", "h_gone_a"), ("Gone/b.jpg", "h_gone_b")]);
+        assert!(!ctx.paths.root.join("Gone").exists());
+        let mut s = RowSelection::default();
+        s.paths = vec![PathBuf::from("Gone")];
+        let h = s
+            .resolve_in(&conn, &SelectionCtx::default(), &ctx)
+            .unwrap()
+            .hashes
+            .unwrap();
+        assert_eq!(h, set(["h_gone_a", "h_gone_b"]));
+    }
+
+    #[test]
+    fn one_outside_path_rejects_the_whole_invocation_in_either_order() {
+        let (temp, ctx, conn) = library(&[("Trips/a.jpg", "h_a")]);
+        let outside = temp.path().join("elsewhere");
+        std::fs::create_dir(&outside).unwrap();
+        for order in [
+            vec![PathBuf::from("Trips"), outside.clone()],
+            vec![outside.clone(), PathBuf::from("Trips")],
+        ] {
+            let mut s = RowSelection::default();
+            s.paths = order;
+            let err = s
+                .resolve_in(&conn, &SelectionCtx::default(), &ctx)
+                .unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(msg.contains("outside library"), "{msg}");
+            assert!(msg.contains("elsewhere"), "{msg}");
+        }
+    }
+
+    #[test]
+    fn relative_filters_resolve_against_the_library_root() {
+        // The rows were stored under the canonical root, and the test
+        // process's cwd is the workspace, nowhere near the library, so a
+        // match here proves a relative filter resolved through the root
+        // rather than through ambient state.
+        let (_temp, ctx, conn) = library(&[("Trips/a.jpg", "h_a")]);
+        let mut s = RowSelection::default();
+        s.paths = vec![PathBuf::from("Trips")];
+        let h = s
+            .resolve_in(&conn, &SelectionCtx::default(), &ctx)
+            .unwrap()
+            .hashes
+            .unwrap();
+        assert_eq!(h, set(["h_a"]));
+    }
+
+    #[test]
+    fn resolution_scales_with_supplied_filters_not_with_matched_rows() {
+        // Two thousand matching rows, one supplied filter. Resolution is
+        // counted where it happens, so the claim is deterministic rather
+        // than a timing assertion: were the walk per matched row, the delta
+        // would be 2000 (and each resolution its own thread spawn inside its
+        // own budget).
+        let (_temp, ctx, conn) = library(&[]);
+        for i in 0..2000 {
+            insert_row(
+                &conn,
+                &ctx.paths.root,
+                &format!("Big/{i}.jpg"),
+                &format!("h_{i}"),
+            );
+        }
+        let before = crate::library_guard::count_resolutions();
+        let mut s = RowSelection::default();
+        s.paths = vec![PathBuf::from("Big")];
+        let h = s
+            .resolve_in(&conn, &SelectionCtx::default(), &ctx)
+            .unwrap()
+            .hashes
+            .unwrap();
+        assert_eq!(h.len(), 2000);
+        assert_eq!(
+            crate::library_guard::count_resolutions() - before,
+            1,
+            "one supplied filter means one filesystem resolution, whatever the row count"
         );
     }
 }

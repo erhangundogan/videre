@@ -16,6 +16,7 @@ pub mod io_timeout;
 pub mod library;
 pub mod library_config;
 pub mod library_db;
+pub mod library_guard;
 pub mod library_locks;
 pub mod library_stats;
 pub mod location;
