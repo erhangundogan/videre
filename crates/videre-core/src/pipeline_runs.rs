@@ -266,6 +266,131 @@ pub fn install_sigint_handler(db_path: &Path, command: &'static str) -> Result<(
     .context("installing SIGINT handler")
 }
 
+/// The context-aware twin of [`track`]: bookkeeping for a command whose
+/// per-command lock is already held as a
+/// [`library_locks::CommandGuard`](crate::library_locks::CommandGuard).
+///
+/// The guard is verified rather than trusted: it must have been taken for
+/// exactly `ctx` and `command`, because a mismatched pairing would record
+/// one library's run against another (or one command's row against another
+/// command's) with nothing visibly wrong. Beyond that it is `track`'s exact
+/// model: `start_run` before `f`, `success`/`failed` (with the error
+/// message) after, all before returning. It never calls the global
+/// `acquire_lock` and never reacquires the supplied guard, so converting a
+/// command to the library-scoped locks cannot double-lock or consult the
+/// legacy global lock directory.
+pub fn track_in<T, F>(
+    conn: &Connection,
+    ctx: &crate::library::LibraryContext,
+    guard: &crate::library_locks::CommandGuard,
+    command: &str,
+    f: F,
+) -> Result<T>
+where
+    F: FnOnce() -> Result<T>,
+{
+    guard.ensure_matches(ctx, command)?;
+    ensure_pipeline_runs_table(conn)?;
+    start_run(conn, command)?;
+    let started = std::time::Instant::now();
+    let result = f();
+    let duration_ms = started.elapsed().as_millis() as i64;
+    match &result {
+        Ok(_) => finish_run(conn, command, "success", duration_ms, None)?,
+        Err(e) => finish_run(conn, command, "failed", duration_ms, Some(&e.to_string()))?,
+    }
+    result
+}
+
+/// The context-aware twin of [`read_all`]: liveness probed through the
+/// library's own lock files (`library_locks::command_locked`) instead of
+/// the global home-keyed locks, so a library-scoped command shows up as
+/// running exactly when a library-scoped reader asks.
+pub fn read_all_in(
+    conn: &Connection,
+    ctx: &crate::library::LibraryContext,
+) -> Result<Vec<PipelineRunStatus>> {
+    ensure_pipeline_runs_table(conn)?;
+    let mut out = Vec::with_capacity(TRACKED_COMMANDS.len());
+    for command in TRACKED_COMMANDS {
+        let row: Option<(String, Option<i64>, String)> = conn
+            .query_row(
+                "SELECT started_at, duration_ms, status FROM pipeline_runs WHERE command = ?1",
+                params![command],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        let currently_running = crate::library_locks::command_locked(ctx, command)?;
+        let (last_run_at, status, duration_ms) = match row {
+            None => (None, None, None),
+            Some((started_at, duration_ms, stored_status)) => {
+                let status = if stored_status == "running" && !currently_running {
+                    "crashed".to_string()
+                } else {
+                    stored_status
+                };
+                (Some(started_at), Some(status), duration_ms)
+            }
+        };
+        out.push(PipelineRunStatus {
+            command: command.to_string(),
+            last_run_at,
+            status,
+            duration_ms,
+            currently_running,
+        });
+    }
+    Ok(out)
+}
+
+/// The context-aware twin of [`install_sigint_handler`]: marks `command`'s
+/// row `interrupted` and exits 130, against the library the context pins.
+///
+/// The library's identity is validated before the handler is installed (and
+/// again inside it): a handler bound to a root that no longer names its
+/// library would write another library's database on the way out. The
+/// handler's connection opens without `CREATE`, so an exiting process can
+/// never conjure a database that initialization is responsible for. Same
+/// best-effort contract as the global version: errors inside the handler
+/// are swallowed, there is no useful way to report them once the process is
+/// already exiting on a signal.
+pub fn install_sigint_handler_in(
+    ctx: std::sync::Arc<crate::library::LibraryContext>,
+    command: &'static str,
+) -> Result<()> {
+    ctx.ensure_root_identity()
+        .context("validating the library before installing the SIGINT handler")?;
+    ctrlc::set_handler(move || {
+        if ctx.ensure_root_identity().is_ok() {
+            if let Ok(conn) = crate::library_db::open_without_create(&ctx.paths.db) {
+                let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
+                let started_at: Option<String> = conn
+                    .query_row(
+                        "SELECT started_at FROM pipeline_runs WHERE command = ?1",
+                        params![command],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .ok()
+                    .flatten();
+                let duration_ms = started_at
+                    .and_then(|s| {
+                        chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S").ok()
+                    })
+                    .map(|started| {
+                        (chrono::Utc::now().naive_utc() - started)
+                            .num_milliseconds()
+                            .max(0)
+                    })
+                    .unwrap_or(0);
+                let _ = finish_run(&conn, command, "interrupted", duration_ms, None);
+            }
+        }
+        std::process::exit(130);
+    })
+    .context("installing SIGINT handler")
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PipelineRunStatus {
     pub command: String,
@@ -657,5 +782,129 @@ mod tests {
         // so this is deliberately the only test that calls it in this suite.)
         let result = install_sigint_handler(db_file.path(), "scan");
         assert!(result.is_ok());
+    }
+
+    /// One library with its state and locks directories in place, plus a
+    /// connection with the runs table: the minimum the library-scoped
+    /// bookkeeping needs, without pulling the database layer's
+    /// initialization in. Locks only need the directories to exist.
+    fn in_library() -> (
+        tempfile::TempDir,
+        crate::library::LibraryContext,
+        Connection,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("photos");
+        std::fs::create_dir(&root).unwrap();
+        let ctx = crate::library::LibraryContext::new(&root, &temp.path().join("cache")).unwrap();
+        std::fs::create_dir_all(&ctx.paths.locks).unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_pipeline_runs_table(&conn).unwrap();
+        (temp, ctx, conn)
+    }
+
+    #[test]
+    fn track_in_records_runs_under_an_already_held_command_guard() {
+        let (_t, ctx, conn) = in_library();
+        let guard = crate::library_locks::try_command(&ctx, "scan").unwrap();
+        let result = track_in(&conn, &ctx, &guard, "scan", || Ok(7)).unwrap();
+        assert_eq!(result, 7);
+        let (status, summary): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, summary FROM pipeline_runs WHERE command = 'scan'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "success");
+        assert_eq!(summary, None);
+        // The other commands' rows are untouched: one command's bookkeeping
+        // never overwrites another's.
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pipeline_runs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        let failed: Result<()> =
+            track_in(&conn, &ctx, &guard, "scan", || Err(anyhow::anyhow!("boom")));
+        failed.unwrap_err();
+        let (status, summary): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, summary FROM pipeline_runs WHERE command = 'scan'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "failed");
+        assert_eq!(summary.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn track_in_refuses_a_guard_from_another_command_or_library() {
+        let (_t, ctx, conn) = in_library();
+        let guard = crate::library_locks::try_command(&ctx, "scan").unwrap();
+        // A guard held for scan must not bookkeep embed's row.
+        let result: Result<()> = track_in(&conn, &ctx, &guard, "embed", || Ok(()));
+        let err = result.unwrap_err();
+        assert!(format!("{err:#}").contains("scan"), "{err:#}");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pipeline_runs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "a refused guard must write no row");
+
+        // Nor may one library's guard bookkeep another library's run, even
+        // under the same command name.
+        let temp = tempfile::tempdir().unwrap();
+        let other_root = temp.path().join("other");
+        std::fs::create_dir(&other_root).unwrap();
+        let other =
+            crate::library::LibraryContext::new(&other_root, &temp.path().join("cache")).unwrap();
+        let result: Result<()> = track_in(&conn, &other, &guard, "scan", || Ok(()));
+        let err = result.unwrap_err();
+        assert!(
+            format!("{err:#}").contains(other_root.file_name().unwrap().to_string_lossy().as_ref()),
+            "{err:#}"
+        );
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pipeline_runs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn read_all_in_answers_liveness_from_the_library_locks() {
+        let (_t, ctx, conn) = in_library();
+        let guard = crate::library_locks::try_command(&ctx, "scan").unwrap();
+        track_in(&conn, &ctx, &guard, "scan", || Ok(())).unwrap();
+        // Released: the finished run is not running.
+        drop(guard);
+        // A held command lock shows up as running to a library-scoped
+        // reader, with no row of its own: the probe is what says live, not
+        // the presence of a row.
+        let _faces = crate::library_locks::try_command(&ctx, "faces").unwrap();
+        let statuses = read_all_in(&conn, &ctx).unwrap();
+        let scan = statuses.iter().find(|s| s.command == "scan").unwrap();
+        assert_eq!(scan.status.as_deref(), Some("success"));
+        assert!(!scan.currently_running);
+        let faces = statuses.iter().find(|s| s.command == "faces").unwrap();
+        assert_eq!(faces.status, None);
+        assert!(faces.currently_running);
+    }
+
+    #[test]
+    fn install_sigint_handler_in_validates_the_library_before_installing() {
+        // A context whose root was replaced after construction must be
+        // refused before any handler is installed, so this deliberately
+        // never reaches ctrlc::set_handler (only one handler can exist per
+        // process, and another test in this suite owns that slot).
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("photos");
+        std::fs::create_dir(&root).unwrap();
+        let ctx = std::sync::Arc::new(
+            crate::library::LibraryContext::new(&root, &temp.path().join("cache")).unwrap(),
+        );
+        std::fs::rename(&root, temp.path().join("moved")).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        let err = install_sigint_handler_in(ctx, "scan").unwrap_err();
+        assert!(format!("{err:#}").contains("no longer names"), "{err:#}");
     }
 }

@@ -382,14 +382,12 @@ impl LibraryContext {
 
     /// Whether a successful index validation has already been memoized for
     /// this context. Shared by every clone; failures are never memoized.
-    #[allow(dead_code)] // first callers arrive with the layers built on this context
     pub(crate) fn index_validated(&self) -> bool {
         *self.identity.index_validated.lock().unwrap()
     }
 
     /// Record a successful index validation. Only success is recordable: a
     /// failed validation must be retried rather than remembered.
-    #[allow(dead_code)] // first callers arrive with the layers built on this context
     pub(crate) fn mark_index_validated(&self) {
         *self.identity.index_validated.lock().unwrap() = true;
     }

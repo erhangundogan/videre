@@ -5,30 +5,11 @@ use std::path::Path;
 pub fn write_records(records: &[FileRecord], db_path: &Path) -> Result<()> {
     let conn = videre_core::db::open_wal(db_path)?;
 
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS file_hashes (
-            path        TEXT PRIMARY KEY,
-            hash        TEXT NOT NULL,
-            size_bytes  INTEGER,
-            created_at  TEXT,
-            modified_at TEXT,
-            ext         TEXT,
-            mime        TEXT,
-            phash       INTEGER,
-            exif_date   TEXT,
-            gps_lat     REAL,
-            gps_lon     REAL,
-            width       INTEGER,
-            height      INTEGER
-        );",
-    )?;
-
-    // Existing databases predate this column. Same idempotent pattern
-    // location.rs uses for location_name: attempt it, ignore the
-    // duplicate-column error.
-    let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN mime TEXT;");
-    let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN duration_secs REAL;");
-    let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN codec TEXT;");
+    // One implementation of the scan schema, in core: this used to own a
+    // duplicate of the DDL plus the swallowed-ALTER migrations, which is
+    // exactly the shape that drifts from the real schema. The core version
+    // inspects PRAGMA table_info and adds only the columns that are missing.
+    videre_core::library_db::ensure_scan_schema(&conn)?;
 
     let tx = conn.unchecked_transaction()?;
 

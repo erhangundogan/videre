@@ -325,6 +325,19 @@ fn write_config(state: &Path, path: &Path, table: &toml::Table) -> Result<()> {
     })
 }
 
+/// Write the initial five-declaration config, only when none exists.
+///
+/// Read-before-write, so a repeated call never rewrites what is there: the
+/// config `initialize` leaves behind is the one every later open sees.
+/// Crate visible because it is part of initialization, not the editing
+/// surface; it runs under the caller's init lock.
+pub(crate) fn write_initial_if_absent(ctx: &LibraryContext) -> Result<()> {
+    if read_config(&ctx.paths.config)?.is_some() {
+        return Ok(());
+    }
+    write_config(&ctx.paths.state, &ctx.paths.config, &initial_table())
+}
+
 /// Edit one supported setting in this library's `config.toml`; `None`
 /// removes the key.
 ///
@@ -335,16 +348,42 @@ fn write_config(state: &Path, path: &Path, table: &toml::Table) -> Result<()> {
 /// absent config is a no-op that creates nothing; an existing file must
 /// pass the same validation `load` applies before even a no-op unset
 /// returns, so success is never a quiet blessing of a config `load` would
-/// reject.
+/// reject. A redirected config (a symlink, or a file hard-linked into
+/// another library) is refused under the lock rather than read through the
+/// link and replaced by a local file, so an edit never silently decouples
+/// a library from whatever the link points at.
 ///
-/// Concurrency: the library locks module (library_locks.rs, not yet present)
-/// adds the shared initialization lock that serializes concurrent first-touch
-/// writers; until it exists, no CLI subcommand exposes this entry point. That
-/// lock will be released when `edit` returns, while a timed-out write's
-/// abandoned worker may still be running, so releasing it waits for no
-/// stranded rename.
+/// Concurrency: serialized against initialization and every other edit by
+/// the library's init lock (`library_locks::try_init`), held for the whole
+/// read-validate-write, so concurrent first-touch writers cannot interleave.
+/// The file is reread under that lock: the pre-lock read only decides
+/// whether this is the one no-op that must create nothing, so a file
+/// written in between is seen as it now stands. `edit` takes the init lock
+/// only and never the activity lock, so configuring a library neither waits
+/// for nor delays running work. One known, accepted gap: the lock is
+/// released when `edit` returns, but a timed-out `io_timeout` worker thread
+/// may still complete its config rename afterwards (see `write_config`);
+/// closing that would mean blocking lock release on a thread that may never
+/// finish.
 pub fn edit(ctx: &LibraryContext, key: ConfigKey, value: Option<toml::Value>) -> Result<()> {
     let path = &ctx.paths.config;
+    // The one case that must create nothing at all is decided before any
+    // lock: acquiring the init lock creates the locks directory, which is
+    // fine for a write but must not happen for a no-op against an absent
+    // config.
+    if value.is_none() && read_config(path)?.is_none() {
+        return Ok(());
+    }
+    // A writer creates the state the init lock lives in; an edit is a write
+    // even when validation later refuses it, because the locks directory is
+    // the library's own coordination state, not config content.
+    crate::library_locks::ensure_state_and_locks(ctx)?;
+    let _init = crate::library_locks::try_init(ctx)?;
+    // The config itself must not be redirected: without this check the
+    // rewrite below would replace a symlink with a local file, silently
+    // decoupling the library from the file it was pointing at. Absent is
+    // fine, so the no-op against a missing config keeps creating nothing.
+    crate::library_locks::reject_redirect(path, "the library config")?;
     let mut table = match read_config(path)? {
         Some(text) => {
             let table = text
@@ -354,18 +393,13 @@ pub fn edit(ctx: &LibraryContext, key: ConfigKey, value: Option<toml::Value>) ->
             // it, including nothing: an edit can never launder a broken
             // file into place and leave the failure to surface mid-scan,
             // and a no-op against one must surface the breakage rather
-            // than bless it by succeeding.
+            // than bless it by succeeding. This is the reread under the
+            // init lock: the file may have changed since the pre-lock
+            // read, and validation answers for what is on disk now.
             config_from_table(&table, path)?;
             table
         }
-        None => {
-            // Unsetting against an absent config is a no-op: it must
-            // succeed and create nothing, not even the state directory.
-            if value.is_none() {
-                return Ok(());
-            }
-            initial_table()
-        }
+        None => initial_table(),
     };
     match value {
         Some(v) => {
@@ -582,6 +616,60 @@ mod tests {
     }
 
     #[test]
+    fn an_edit_refuses_a_config_symlinked_outside_the_library() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("photos");
+        std::fs::create_dir(&root).unwrap();
+        let ctx = LibraryContext::new(&root, &temp.path().join("cache")).unwrap();
+        std::fs::create_dir(&ctx.paths.state).unwrap();
+        // The config is a symlink to some unrelated file outside the state
+        // directory. Reading it through the link is what an unguarded edit
+        // would do before replacing the link with a local file.
+        let outside = temp.path().join("outside.toml");
+        std::fs::write(&outside, "custom = \"keep\"\n").unwrap();
+        std::os::unix::fs::symlink(&outside, &ctx.paths.config).unwrap();
+        let err = edit(&ctx, ConfigKey::ReadRate, Some(toml::Value::Integer(7))).unwrap_err();
+        assert!(format!("{err:#}").contains("symlink"), "{err:#}");
+        // The outside file is unchanged, and the link itself was not
+        // silently replaced by a local config.
+        assert_eq!(std::fs::read(&outside).unwrap(), b"custom = \"keep\"\n");
+        assert!(std::fs::symlink_metadata(&ctx.paths.config)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        // An unset against the same redirected file is refused too, not
+        // quietly succeeded as a no-op against somebody else's bytes.
+        let err = edit(&ctx, ConfigKey::ReadRate, None).unwrap_err();
+        assert!(format!("{err:#}").contains("symlink"), "{err:#}");
+    }
+
+    #[test]
+    fn an_edit_refuses_a_hard_linked_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("photos");
+        std::fs::create_dir(&root).unwrap();
+        let ctx = LibraryContext::new(&root, &temp.path().join("cache")).unwrap();
+        std::fs::create_dir(&ctx.paths.state).unwrap();
+        // A second library's config, hard-linked at this library's config
+        // path: two names for one file, which an unguarded edit would
+        // rewrite for both libraries at once.
+        let other_root = temp.path().join("other-photos");
+        std::fs::create_dir(&other_root).unwrap();
+        let other = LibraryContext::new(&other_root, &temp.path().join("cache")).unwrap();
+        std::fs::create_dir(&other.paths.state).unwrap();
+        std::fs::write(&other.paths.config, "custom = \"keep\"\n").unwrap();
+        std::fs::hard_link(&other.paths.config, &ctx.paths.config).unwrap();
+        let err = edit(&ctx, ConfigKey::ReadRate, Some(toml::Value::Integer(7))).unwrap_err();
+        assert!(format!("{err:#}").contains("hard-linked"), "{err:#}");
+        // The shared bytes are unchanged: the other library's config is not
+        // this edit's to rewrite.
+        assert_eq!(
+            std::fs::read_to_string(&other.paths.config).unwrap(),
+            "custom = \"keep\"\n"
+        );
+    }
+
+    #[test]
     fn an_edit_preserves_unknown_nested_tables() {
         let (_t, ctx) = library_with_config("[future]\nsub = \"keep\"\n");
         edit(
@@ -644,6 +732,11 @@ mod tests {
     #[test]
     fn a_failed_write_leaves_the_prior_bytes_unchanged() {
         let (_t, ctx) = library_with_config("custom = \"keep\"\n");
+        // The locks directory exists before the failure is staged, so the
+        // failure lands on the write itself rather than on creating the
+        // init lock's directory (which is also a legitimate write, just not
+        // the one under test here).
+        std::fs::create_dir_all(&ctx.paths.locks).unwrap();
         // Root bypasses permission bits entirely (a stock Docker image runs
         // as root), so the behaviour is probed rather than the uid checked,
         // the same probe the integration suite's permissions_are_enforced
@@ -670,8 +763,16 @@ mod tests {
             "custom = \"keep\"\n"
         );
         // The scratch file was never created, and nothing else appeared.
-        let entries: Vec<_> = std::fs::read_dir(&ctx.paths.state).unwrap().collect();
-        assert_eq!(entries.len(), 1, "only the config may remain");
+        // The locks directory is expected: taking the init lock creates it,
+        // and it is the lock, not a leftover, so it is allowed beside the
+        // config.
+        let entries: Vec<_> = std::fs::read_dir(&ctx.paths.state)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name != "locks")
+            .collect();
+        assert_eq!(entries.len(), 1, "only the config may remain: {entries:?}");
+        assert_eq!(entries[0], "config.toml");
     }
 
     #[test]
