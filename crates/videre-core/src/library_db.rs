@@ -37,7 +37,7 @@ use crate::library_locks::ActivityMode;
 use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Component, Path};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -354,7 +354,10 @@ fn require_supported_library(conn: &Connection, db: &Path) -> Result<()> {
 ///
 /// Containment is by path components, not string prefix: `<root>-sibling`
 /// starts with the same bytes as `<root>` but is a different directory, and
-/// a prefix comparison would let it through. A file that no longer exists
+/// a prefix comparison would let it through. A `.` or `..` component is
+/// refused the same way, because `<root>/../outside` does start with
+/// `<root>` lexically and videre never writes such a path, so a row carrying
+/// one is hand-injected and foreign. A file that no longer exists
 /// under the root remains valid, because the question is which library the
 /// row belongs to, not whether its media is currently mounted. A foreign row
 /// refuses the whole library: serving it would mix two libraries silently.
@@ -372,7 +375,11 @@ fn validate_row_containment(ctx: &LibraryContext, conn: &Connection) -> Result<(
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let path: String = row.get(0)?;
-            if !Path::new(&path).starts_with(&root) {
+            let stored = Path::new(&path);
+            let dot_component = stored
+                .components()
+                .any(|component| matches!(component, Component::CurDir | Component::ParentDir));
+            if dot_component || !stored.starts_with(&root) {
                 bail!(
                     "the database at {} indexes {}, which is outside the library root {}; it belongs to a different library, so nothing was read or changed",
                     ctx.paths.db.display(),
@@ -420,8 +427,9 @@ fn remove_file_bounded(path: &Path, what: &str) -> Result<()> {
 }
 
 /// Sync a directory so a rename inside it is durable, the step after the
-/// rename that a crash would otherwise undo.
-fn sync_dir(path: &Path) -> Result<()> {
+/// rename that a crash would otherwise undo. Shared with the config layer,
+/// whose scratch rename needs the same crash durability.
+pub(crate) fn sync_dir(path: &Path) -> Result<()> {
     let owned = path.to_path_buf();
     bounded_op(path, "sync", STAT_TIMEOUT, move || {
         let dir = std::fs::File::open(&owned)?;
@@ -1047,6 +1055,37 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(msg.contains("outside the library root"), "{msg}");
         assert!(msg.contains("-sibling"), "{msg}");
+        assert!(initialize(&fresh).is_err());
+        assert_eq!(std::fs::read(&ctx.paths.db).unwrap(), before);
+        assert_eq!(std::fs::read(&ctx.paths.config).unwrap(), before_cfg);
+    }
+
+    #[test]
+    fn a_row_with_a_dot_component_is_refused_as_foreign() {
+        let (_t, ctx) = library();
+        {
+            let conn = initialize(&ctx).unwrap();
+            conn.execute(
+                "INSERT INTO file_hashes (path, hash) VALUES (?1, 'h')",
+                params![ctx.paths.root.join("plain.jpg").to_str().unwrap()],
+            )
+            .unwrap();
+            // `<root>/../outside/x.jpg` starts with `<root>` lexically, so
+            // only the `.`/`..` component check can refuse it.
+            let escaped = format!("{}/../outside/x.jpg", ctx.paths.root.to_str().unwrap());
+            conn.execute(
+                "INSERT INTO file_hashes (path, hash) VALUES (?1, 'h')",
+                params![escaped],
+            )
+            .unwrap();
+        }
+        let before = std::fs::read(&ctx.paths.db).unwrap();
+        let before_cfg = std::fs::read(&ctx.paths.config).unwrap();
+        let fresh = LibraryContext::new(&ctx.paths.root, &ctx.cache.base).unwrap();
+        let err = open_existing(&fresh).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("outside the library root"), "{msg}");
+        assert!(msg.contains(".."), "{msg}");
         assert!(initialize(&fresh).is_err());
         assert_eq!(std::fs::read(&ctx.paths.db).unwrap(), before);
         assert_eq!(std::fs::read(&ctx.paths.config).unwrap(), before_cfg);

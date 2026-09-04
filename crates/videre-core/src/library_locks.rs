@@ -85,7 +85,10 @@ impl CommandGuard {
     /// A guard handed to the wrong library or command is a wiring bug, and
     /// silently accepting it would record one library's run against another
     /// (or one command's row against another command's), so it is refused
-    /// before anything is written.
+    /// before anything is written. This is a wiring check, not a
+    /// root-identity check: it compares canonical path strings, and root
+    /// identity across time is enforced by the context's
+    /// [`LibraryContext::ensure_root_identity`] at open boundaries.
     pub(crate) fn ensure_matches(&self, ctx: &LibraryContext, command: &str) -> Result<()> {
         anyhow::ensure!(
             self.command == command,

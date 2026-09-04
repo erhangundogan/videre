@@ -295,11 +295,13 @@ static SCRATCH_SEQ: AtomicU64 = AtomicU64::new(0);
 /// the state directory so the rename never crosses a filesystem, which is
 /// what makes it atomic; validation has already completed by the time this
 /// runs, and an I/O failure at any step leaves the existing bytes untouched
-/// because the rename is the last thing to happen. A timeout is the one
-/// exception: the bounded operation abandons its worker thread, which runs
-/// on in the background and may still complete the rename after the error
-/// has returned, so the untouched-bytes guarantee holds for I/O failures,
-/// not timeouts. The scratch file is
+/// because the rename is the last thing to happen. After a successful rename
+/// the state directory is synced (via `library_db::sync_dir`), the same
+/// crash-durability step the database publication path takes. A timeout is
+/// the one exception: the bounded operation abandons its worker thread,
+/// which runs on in the background and may still complete the rename after
+/// the error has returned, so the untouched-bytes guarantee holds for I/O
+/// failures, not timeouts. The scratch file is
 /// deliberately not removed on failure: the failing volume is why the write
 /// failed, and touching it again from the error path is the unbounded
 /// re-stat mistake `TimedOutAfter::describe` exists to prevent.
@@ -315,14 +317,16 @@ fn write_config(state: &Path, path: &Path, table: &toml::Table) -> Result<()> {
     let state = state.to_path_buf();
     let target = path.to_path_buf();
     let owned_scratch = scratch.clone();
+    let write_state = state.clone();
     bounded_op(path, "write", crate::io_timeout::STAT_TIMEOUT, move || {
-        std::fs::create_dir_all(&state)?;
+        std::fs::create_dir_all(&write_state)?;
         let mut file = std::fs::File::create(&owned_scratch)?;
         file.write_all(text.as_bytes())?;
         file.sync_all()?;
         drop(file);
         std::fs::rename(&owned_scratch, target)
-    })
+    })?;
+    crate::library_db::sync_dir(&state)
 }
 
 /// Write the initial five-declaration config, only when none exists.
