@@ -20,6 +20,7 @@ the index.
 ```
 videre scan                         <- everything starts here
   │
+  ├── videre gallery                browse files, duplicates and dates
   ├── videre dedupe                 find duplicates
   │     │
   │     └── xargs trash             pipe result to xargs trash to remove duplicates
@@ -32,6 +33,8 @@ videre scan                         <- everything starts here
   │
   ├── videre locations              group by place
   ├── videre stats                  what's in the library
+  ├── videre mark                   rate, like, label, pick your media files
+  ├── videre tag                    add word or phrase to your media files
   ├── videre embed                  prepare search  (slow, one-time)
   │     │
   │     ├── videre search "..."     by description
@@ -43,9 +46,6 @@ videre scan                         <- everything starts here
   │           ├── videre tag --category
   │           └── videre search --category
   │
-  ├── videre mark
-  ├── videre tag
-  ├── videre gallery                browse files, duplicates and dates
   └── videre faces                  detect and group faces  (slow, one-time)
         │
         └── videre gallery          show face clusters and name people (manual step)
