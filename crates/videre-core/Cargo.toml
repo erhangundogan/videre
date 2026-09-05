@@ -1,6 +1,6 @@
 [package]
 name = "videre-core"
-version = "0.25.7"
+version = "0.25.8"
 edition = "2021"
 description = "Shared SQLite, caching, and search helpers for the videre media library CLI"
 license = "Apache-2.0"
@@ -23,6 +23,7 @@ image = { version = "0.25", default-features = false, features = [
 indicatif = "0.17"
 reverse_geocoder = "4"
 rusqlite = { version = "0.40", features = ["bundled"] }
+rustix = { version = "1.1.4", features = ["fs"] }
 toml = { version = "0.8", features = ["preserve_order"] }
 serde = { version = "1", features = ["derive"] }
 fs2 = "0.4"
@@ -32,4 +33,5 @@ ureq = { version = "3", features = ["json"] }
 matrixmultiply = "0.3"
 
 [dev-dependencies]
+libc = "0.2"
 tempfile = "3"

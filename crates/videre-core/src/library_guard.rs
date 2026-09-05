@@ -71,6 +71,35 @@ fn note_resolution() {
     RESOLUTIONS.with(|c| c.set(c.get() + 1));
 }
 
+/// Resolve `raw` against the library root, never a process cwd: the shared
+/// first step of the guard and of the confined I/O layer, so the two can
+/// never disagree about what a relative path names.
+pub(crate) fn rooted(ctx: &LibraryContext, raw: &Path) -> PathBuf {
+    if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        ctx.paths.root.join(raw)
+    }
+}
+
+/// Physically resolve `candidate` and require it to land on the library root
+/// or inside it: the containment half of [`validate_paths`], shared with the
+/// confined I/O layer so its opens answer to the same rule the guard checks.
+pub(crate) fn resolve_in_root(ctx: &LibraryContext, candidate: &Path) -> Result<PathBuf> {
+    let resolved = resolve_allow_missing(candidate)?;
+    // Component-wise, not bytes: `starts_with` compares components, so a
+    // sibling like `photos-old` is not inside `photos`.
+    if !resolved.starts_with(&ctx.paths.root) {
+        bail!(
+            "path {} resolves to {}, which is outside library {}; paths must name the library itself or a path inside it",
+            candidate.display(),
+            resolved.display(),
+            ctx.paths.root.display()
+        );
+    }
+    Ok(resolved)
+}
+
 /// Validate every supplied path filter against one library, returning the
 /// forms a selection should match.
 ///
@@ -85,22 +114,8 @@ fn note_resolution() {
 pub fn validate_paths(ctx: &LibraryContext, paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
     let mut forms = Vec::with_capacity(paths.len() * 2);
     for raw in paths {
-        let candidate = if raw.is_absolute() {
-            raw.clone()
-        } else {
-            ctx.paths.root.join(raw)
-        };
-        let resolved = resolve_allow_missing(&candidate)?;
-        // Component-wise, not bytes: `starts_with` compares components, so a
-        // sibling like `photos-old` is not inside `photos`.
-        if !resolved.starts_with(&ctx.paths.root) {
-            bail!(
-                "path filter {} resolves to {}, which is outside library {}; path filters must name the library itself or a path inside it",
-                raw.display(),
-                resolved.display(),
-                ctx.paths.root.display()
-            );
-        }
+        let candidate = rooted(ctx, raw);
+        let resolved = resolve_in_root(ctx, &candidate)?;
         forms.push(candidate.clone());
         if resolved != candidate {
             forms.push(resolved);

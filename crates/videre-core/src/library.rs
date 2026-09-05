@@ -29,7 +29,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// The reserved state directory videre keeps inside every library root.
-const STATE_DIR: &str = ".videre";
+/// Crate visible: the pinned-I/O layer refuses the same name as a sidecar
+/// target, so the literal is written once, here.
+pub(crate) const STATE_DIR: &str = ".videre";
 
 /// Where everything derived from one library root lives. All paths are
 /// absolute; the root is the canonical root, so every field is the same in
@@ -375,7 +377,6 @@ impl LibraryContext {
     /// The open handle on the canonical library root, held for the process
     /// lifetime. Used by the pinned-I/O layers built on this context; crate
     /// visible deliberately, since it is a building block, not an answer.
-    #[allow(dead_code)] // first callers arrive with the layers built on this context
     pub(crate) fn root_handle(&self) -> &File {
         &self.identity.root_handle
     }
