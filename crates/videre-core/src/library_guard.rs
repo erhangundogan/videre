@@ -48,11 +48,12 @@ use std::time::Duration;
 /// loop or an abuse of links, not a directory in a library.
 const MAX_LINK_EXPANSIONS: usize = 40;
 
-/// Counts resolutions in tests, proving filesystem work scales with the
-/// number of supplied filters rather than with the rows a query matches.
-/// Thread-local because libtest runs each test on its own thread: a
-/// process-global counter would attribute neighbouring tests' walks to
-/// whoever read it.
+// Counts resolutions in tests, proving filesystem work scales with the
+// number of supplied filters rather than with the rows a query matches.
+// Thread-local because libtest runs each test on its own thread: a
+// process-global counter would attribute neighbouring tests' walks to
+// whoever read it. Plain `//`, not `///`: rustdoc cannot document a macro
+// invocation, so a doc comment here is an unused_doc_comments warning.
 #[cfg(test)]
 thread_local! {
     static RESOLUTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -94,7 +95,7 @@ pub fn validate_paths(ctx: &LibraryContext, paths: &[PathBuf]) -> Result<Vec<Pat
         // sibling like `photos-old` is not inside `photos`.
         if !resolved.starts_with(&ctx.paths.root) {
             bail!(
-                "path filter {} resolves to {}, which is outside library {}; path filters must name the library itself or a directory inside it",
+                "path filter {} resolves to {}, which is outside library {}; path filters must name the library itself or a path inside it",
                 raw.display(),
                 resolved.display(),
                 ctx.paths.root.display()
@@ -158,11 +159,17 @@ fn steps(path: &Path, from_link: bool) -> Vec<(OsString, bool)> {
 /// the caller checks containment either way, and nothing is ever created.
 ///
 /// Every other outcome is an error, so the caller fails closed: a permission
-/// denial, a `..` through a regular file (ENOTDIR), a kernel-reported loop,
-/// or a dangling link, which is a component that arrived by expanding a
-/// symlink and then did not exist. A missing component of the path as given
-/// is the only absence that counts as a missing suffix, because a filter
-/// selecting deleted-but-indexed files names those paths directly.
+/// denial, a `..` through a regular file with further components after it
+/// (ENOTDIR), a symlink loop (caught by this guard's expansion cap, not by
+/// the kernel), or a dangling link, which is a component that arrived by
+/// expanding a symlink and then did not exist. A terminal `..` over a
+/// non-directory is a deliberate exception rather than an error: it cancels
+/// lexically to the containing directory, which is safe because `..` pops
+/// only physically-resolved components, so it cannot climb outside the
+/// library, and the containment check judges where the walk landed. A
+/// missing component of the path as given is the only absence that counts
+/// as a missing suffix, because a filter selecting deleted-but-indexed
+/// files names those paths directly.
 ///
 /// Names travel as `OsString` end to end; `display()` is used only to phrase
 /// error messages, never to compare or build a path.
