@@ -38,6 +38,24 @@ pub fn thumb_exists_in(cache: &crate::library::CachePaths, hash: &str, size: u32
     thumb_path_in(cache, hash, size).is_file()
 }
 
+/// Scratch path for an original conversion in the selected library's cache,
+/// renamed into place at [`original_path_in`]. Process id disambiguates
+/// concurrent writers; the `.tmp` infix keeps prune from treating it as a
+/// published entry.
+pub fn original_tmp_path_in(cache: &crate::library::CachePaths, hash: &str) -> PathBuf {
+    cache
+        .thumbnails
+        .join(format!("{hash}_original.tmp{}", std::process::id()))
+}
+
+/// Scratch path for a thumbnail in the selected library's cache, renamed into
+/// place at [`thumb_path_in`].
+pub fn thumb_tmp_path_in(cache: &crate::library::CachePaths, hash: &str, size: u32) -> PathBuf {
+    cache
+        .thumbnails
+        .join(format!("{hash}_{size}.tmp{}", std::process::id()))
+}
+
 pub fn original_exists_in(cache: &crate::library::CachePaths, hash: &str) -> bool {
     original_path_in(cache, hash).is_file()
 }

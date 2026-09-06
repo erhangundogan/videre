@@ -8,26 +8,24 @@ fresh data without you rerunning things by hand. No server and no UI: it runs in
 the foreground logging to stderr until you stop it with Ctrl-C.
 
 ```bash
-videre watch ~/Photos                  # scan, faces, HEIC cache, and locations every 5 minutes
-videre watch                           # same, using the folder from `videre config set path`
-videre watch ~/Photos --scan --faces   # only these stages
-videre watch ~/Photos --heic           # only pre-convert HEIC thumbnails
-videre watch ~/Photos --location       # only look up place names
-videre watch ~/Photos --prune          # also clean stale entries (off by default)
-videre watch ~/Photos --interval 60    # seconds between cycles (default 300)
-videre watch ~/Photos --silent         # no per-cycle output
-videre watch ~/Photos --db ~/photos.db # use a specific database
-videre watch ~/Photos --type image     # only watch for new images
-videre watch ~/Photos --path ~/Photos/Inbox # only watch one subfolder
+videre watch                           # scan, faces, HEIC cache, and locations every 5 minutes
+videre --library ~/Photos watch        # watch a different library
+videre watch --scan --faces            # only these stages
+videre watch --heic                    # only pre-convert HEIC thumbnails
+videre watch --location                # only look up place names
+videre watch --prune                   # also clean stale entries (off by default)
+videre watch --interval 60             # seconds between cycles (default 300)
+videre watch --silent                  # no per-cycle output
+videre watch --type image              # only watch for new images
 ```
+
+Like every command, `videre watch` operates on the library in the current
+directory, or the one named by `--library`. It scans that library's own root.
 
 :::tip
 These filters work the same way across commands, and combine. See
 [scoping a run](/guides/scoping-a-run/).
 :::
-
-`--output-sqlite` still works as an alias for `--db`, the name it had
-originally. Existing scripts do not need changing.
 
 ## Stages
 

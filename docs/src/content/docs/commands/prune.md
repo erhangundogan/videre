@@ -11,7 +11,7 @@ already gone.
 videre prune --dry-run                 # show what would be removed
 videre prune                           # remove stale entries and refresh metadata
 videre prune --silent                  # no per-file output
-videre prune --db ~/photos.db          # use a specific database
+videre --library ~/Photos prune        # select a different library
 videre prune --prune-unreachable       # also drop entries whose folder is gone
 videre prune --force                   # allow an unusually large cleanup
 ```

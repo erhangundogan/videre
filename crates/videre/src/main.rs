@@ -157,7 +157,8 @@ fn main() {
             .and_then(|ctx| commands::fix_dates::run(args, &ctx)),
         Command::Import(args) => command_context::CommandContext::capture(library)
             .and_then(|ctx| commands::import::run(args, &ctx)),
-        Command::Prune(_) => unconverted("prune"),
+        Command::Prune(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::prune::run(args, &ctx)),
         Command::Locations(args) => command_context::CommandContext::capture(library)
             .and_then(|ctx| commands::locations::run(args, &ctx)),
         Command::Embed(args) => command_context::CommandContext::capture(library)
@@ -168,7 +169,8 @@ fn main() {
             .and_then(|ctx| commands::faces::run(args, &ctx)),
         Command::Classify(args) => command_context::CommandContext::capture(library)
             .and_then(|ctx| commands::classify::run(args, &ctx)),
-        Command::Watch(_) => unconverted("watch"),
+        Command::Watch(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::watch::run(args, &ctx)),
         Command::Mcp(args) => command_context::CommandContext::capture(library)
             .and_then(|ctx| commands::mcp::run(args, &ctx)),
         Command::Stats(args) => command_context::CommandContext::capture(library)

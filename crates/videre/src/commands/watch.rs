@@ -1,31 +1,17 @@
 use super::faces::format_clustering_only_summary;
+use crate::command_context::CommandContext;
 use anyhow::Result;
 use rayon::prelude::*;
-use std::path::PathBuf;
 use std::time::Duration;
 use videre::{hasher, scanner, sqlite_output, types};
-use videre_core::{db, face_db};
-use videre_ml::pipeline::{run_clustering, run_face_pipeline};
+use videre_core::face_db;
+use videre_ml::pipeline::{run_clustering, run_face_pipeline_in};
 
 #[derive(clap::Args)]
 pub struct WatchArgs {
-    /// Directory to scan recursively (default: 'path' from videre config)
-    directory: Option<PathBuf>,
-
     /// Narrow the walk, exactly as on `videre scan`. Path-side only.
     #[command(flatten)]
     media: super::selection_args::MediaArgs,
-
-    #[command(flatten)]
-    paths: super::selection_args::PathArgs,
-
-    /// SQLite database to populate (same file videre gallery reads).
-    /// Default: resolved from ~/.videre; see 'videre config'
-    //
-    // `--output-sqlite` is the original name, inherited from `videre scan`, and
-    // still works. Demoted from a doc comment for the same reason as there.
-    #[arg(long, alias = "output-sqlite")]
-    db: Option<PathBuf>,
 
     /// Re-run the scan/hash/EXIF pipeline each cycle
     #[arg(long)]
@@ -63,18 +49,11 @@ pub struct WatchArgs {
     silent: bool,
 }
 
-pub fn run(mut args: WatchArgs) -> Result<()> {
-    let directory = super::resolve_directory(args.directory.clone())?;
-    if !directory.exists() {
-        anyhow::bail!("{:?} does not exist", directory);
-    }
+pub fn run(mut args: WatchArgs, ctx: &CommandContext) -> Result<()> {
     // If NO stage flag at all was passed (including --prune), run the
-    // original all-four default, the common case is "just keep everything
-    // up to date", not memorizing four flags. But if the user passed
-    // --prune explicitly (alone or combined), that's an explicit stage
-    // selection: don't also silently default scan/faces/heic/location on,
-    // or a lightweight "just prune" cron cycle would unexpectedly also pay
-    // for face detection and network geocoding.
+    // original all-four default: the common case is "just keep everything up
+    // to date". An explicit --prune is a stage selection and does not turn the
+    // others on.
     if !(args.scan || args.faces || args.heic || args.location || args.prune) {
         args.scan = true;
         args.faces = true;
@@ -82,47 +61,19 @@ pub fn run(mut args: WatchArgs) -> Result<()> {
         args.location = true;
     }
 
-    // The XMP export stage is opt-in: the flag, or the config default. It is
-    // never part of the all-four default above, exactly like --prune.
-    if videre_core::home::videre_home()
-        .and_then(|h| videre_core::home::load_config(&h))
-        .map(|c| c.export_xmp_on_watch == Some(true))
-        .unwrap_or(false)
-    {
+    // The XMP export stage is opt-in: the flag, or the library config default.
+    if ctx.library.settings.export_xmp_on_watch {
         args.export_xmp = true;
     }
 
-    // Watch is a writer: create the parent dir for a defaulted db path (that
-    // is how ~/.videre comes into existence on first use).
-    let db: PathBuf = match &args.db {
-        Some(p) => p.clone(),
-        None => {
-            let db = videre_core::home::resolve_db(None)?;
-            if let Some(parent) = db.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            db
-        }
-    };
+    // Watch is a writer: initialize the selected library so its database and
+    // lock directory exist before the lifetime lock is taken.
+    videre_core::library_db::initialize(&ctx.library)?;
 
-    // Ensure the db file exists before deriving a lock path from it (locks
-    // are canonicalized-path sidecars, which requires the target to already
-    // exist), matches how `scan`'s SQLite branch opens a connection before
-    // tracking, for the same reason. Only do this when the file is actually
-    // missing (first-ever run): opening a second connection to a db another
-    // `videre watch` process already has open can itself error ("database is
-    // locked") before our own lock check ever runs, which would wrongly look
-    // like a crash instead of the clean "already running" refusal below.
-    if !db.exists() {
-        drop(db::open_wal(&db)?);
-    }
-
-    // Held for the entire life of this process, releases automatically
-    // (even on kill) when the process exits, same mechanism as every other
-    // command's lock. No pipeline_runs row: watch has no "finished" moment
-    // during normal operation, only "currently running or not".
-    let _watch_lock = videre_core::pipeline_runs::acquire_lock(&db, "watch")
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    // Held for the entire life of this process (released even on kill), so a
+    // second `videre watch` against this library is refused rather than racing.
+    // No pipeline_runs row: watch has no "finished" moment, only running or not.
+    let _watch_lock = videre_core::library_locks::try_command(&ctx.library, "watch")?;
 
     loop {
         if !args.silent {
@@ -131,7 +82,7 @@ pub fn run(mut args: WatchArgs) -> Result<()> {
                 chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
             );
         }
-        if let Err(e) = run_cycle(&args, &directory, &db) {
+        if let Err(e) = run_cycle(&args, ctx) {
             eprintln!("videre watch: cycle error: {e}");
         }
         if !args.silent {
@@ -141,44 +92,55 @@ pub fn run(mut args: WatchArgs) -> Result<()> {
     }
 }
 
-fn run_cycle(args: &WatchArgs, directory: &std::path::Path, db: &std::path::Path) -> Result<()> {
+/// Run a tracked stage under its own command lock. A busy lock (a standalone
+/// command is running that stage against this library) is reported and skipped;
+/// the next cycle retries. Never reacquires the watch lifetime lock.
+fn tracked_stage(
+    ctx: &CommandContext,
+    conn: &rusqlite::Connection,
+    command: &str,
+    silent: bool,
+    f: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    match videre_core::library_locks::try_command(&ctx.library, command) {
+        Ok(guard) => videre_core::pipeline_runs::track_in(conn, &ctx.library, &guard, command, f),
+        Err(_) => {
+            if !silent {
+                eprintln!("videre watch: {command} stage busy (a {command} run is active); will retry next cycle");
+            }
+            Ok(())
+        }
+    }
+}
+
+fn run_cycle(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
+    let conn = videre_core::library_db::open_existing(&ctx.library)?;
     if args.scan {
-        // A scan failure this cycle doesn't invalidate file_hashes rows from
-        // previous cycles, so don't let it block the faces/heic/location
-        // block below, just log and move on.
-        if let Err(e) = run_scan_stage(args, directory, db) {
+        // A scan failure this cycle does not invalidate earlier rows; log and
+        // carry on to the stages below.
+        if let Err(e) = run_scan_stage(args, ctx, &conn) {
             eprintln!("videre watch: scan stage error: {e}");
         }
     }
     if args.faces || args.heic || args.location || args.prune || args.export_xmp {
-        // These stages all read file_hashes; open once and reuse.
-        let conn = db::open_wal(db)?;
-        if !file_hashes_table_exists(&conn)? {
-            if !args.silent {
-                eprintln!(
-                    "videre watch: file_hashes table not found - run 'videre scan --output-sqlite <db> <dir>' or 'videre watch --scan ...' first"
-                );
-            }
-            return Ok(());
-        }
         face_db::create_faces_table(&conn)?;
         videre_core::location::ensure_location_column(&conn);
         if args.faces {
-            run_faces_stage(args, &conn)?;
+            run_faces_stage(args, ctx, &conn)?;
         }
         if args.heic {
-            run_heic_stage(args, &conn)?;
+            run_heic_stage(args, ctx, &conn)?;
         }
         if args.location {
-            run_location_stage(args, &conn)?;
+            run_location_stage(args, ctx, &conn)?;
         }
         if args.prune {
-            if let Err(e) = run_prune_stage(args, &conn, db) {
+            if let Err(e) = run_prune_stage(args, ctx, &conn) {
                 eprintln!("videre watch: prune stage error: {e}");
             }
         }
         if args.export_xmp {
-            if let Err(e) = run_export_stage(args, &conn) {
+            if let Err(e) = run_export_stage(args, ctx, &conn) {
                 eprintln!("videre watch: export stage error: {e}");
             }
         }
@@ -190,8 +152,12 @@ fn run_cycle(args: &WatchArgs, directory: &std::path::Path, db: &std::path::Path
 /// location, category), merging into any existing sidecar. Runs the same shared
 /// writer as `videre export --xmp`, over every file, against the already-open
 /// connection.
-fn run_export_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> {
-    let n = super::export::export_all(conn)?;
+fn run_export_stage(
+    args: &WatchArgs,
+    ctx: &CommandContext,
+    conn: &rusqlite::Connection,
+) -> Result<()> {
+    let n = super::export::export_all_in(conn, ctx)?;
     if !args.silent {
         eprintln!("videre watch: export stage wrote {n} sidecar(s)");
     }
@@ -204,29 +170,17 @@ fn run_export_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()>
 /// standalone `videre prune` invocation would be.
 fn run_prune_stage(
     args: &WatchArgs,
+    ctx: &CommandContext,
     conn: &rusqlite::Connection,
-    db_path: &std::path::Path,
 ) -> Result<()> {
     let prune_args = super::prune::PruneArgs::for_watch_stage(args.silent);
-    let errors = videre_core::pipeline_runs::track(conn, db_path, "prune", || {
-        super::prune::run_prune(&prune_args, conn, db_path)
-    })?;
-    if !args.silent && errors > 0 {
-        eprintln!("videre watch: prune stage finished with {errors} error(s)");
-    }
-    Ok(())
-}
-
-/// True if the `file_hashes` table exists in `conn`. Used to give a clear,
-/// one-shot-per-cycle diagnostic instead of letting queries against a
-/// fresh/empty database fail with "no such table" every cycle forever.
-fn file_hashes_table_exists(conn: &rusqlite::Connection) -> Result<bool> {
-    let exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='file_hashes')",
-        [],
-        |r| r.get(0),
-    )?;
-    Ok(exists)
+    tracked_stage(ctx, conn, "prune", args.silent, || {
+        let errors = super::prune::run_prune(&prune_args, &ctx.library, conn)?;
+        if !args.silent && errors > 0 {
+            eprintln!("videre watch: prune stage finished with {errors} error(s)");
+        }
+        Ok(())
+    })
 }
 
 /// Queries (path, hash) pairs from file_hashes matching a SQL WHERE clause,
@@ -263,12 +217,12 @@ fn dedup_paths_by_hash(
         .collect())
 }
 
-fn run_faces_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> {
-    let db_path = conn
-        .path()
-        .map(std::path::PathBuf::from)
-        .ok_or_else(|| anyhow::anyhow!("faces stage requires a file-backed database"))?;
-    videre_core::pipeline_runs::track(conn, &db_path, "faces", || {
+fn run_faces_stage(
+    args: &WatchArgs,
+    ctx: &CommandContext,
+    conn: &rusqlite::Connection,
+) -> Result<()> {
+    tracked_stage(ctx, conn, "faces", args.silent, || {
         let all_paths = dedup_paths_by_hash(conn, PathExtFilter::Faces)?;
         // Skip already-scanned hashes (marker includes no-face images), unioned with
         // hashes that already have faces for pre-marker migration, same resumable
@@ -285,8 +239,16 @@ fn run_faces_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> 
             let workers = std::thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(4);
-            let result =
-                run_face_pipeline(conn, &to_process, 8, false, args.silent, None, workers)?;
+            let result = run_face_pipeline_in(
+                &ctx.library,
+                conn,
+                &to_process,
+                8,
+                false,
+                args.silent,
+                None,
+                workers,
+            )?;
             if !args.silent {
                 eprintln!(
                     "videre watch: faces stage processed {} new hash(es), {} face(s)",
@@ -336,21 +298,26 @@ fn publish_thumb(
         && std::fs::rename(tmp_path, final_path).is_ok()
 }
 
-fn run_heic_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> {
+fn run_heic_stage(
+    args: &WatchArgs,
+    ctx: &CommandContext,
+    conn: &rusqlite::Connection,
+) -> Result<()> {
+    let cache = &ctx.library.cache;
     let heic_paths = dedup_paths_by_hash(conn, PathExtFilter::HeicOnly)?;
     let mut converted = 0usize;
     let mut failed = 0usize;
     for (path, hash) in heic_paths {
-        let need_240 = !videre_core::thumb_cache::thumb_exists(&hash, 240);
-        let need_1200 = !videre_core::thumb_cache::thumb_exists(&hash, 1200);
+        let need_240 = !videre_core::thumb_cache::thumb_exists_in(cache, &hash, 240);
+        let need_1200 = !videre_core::thumb_cache::thumb_exists_in(cache, &hash, 1200);
         // Also feeds `videre faces`'s detection cache (see `load_image` in
         // videre-ml's pipeline.rs), a full-res original cached here means
         // detection can skip its own qlmanage decode entirely for this hash.
-        let need_original = !videre_core::thumb_cache::original_exists(&hash);
+        let need_original = !videre_core::thumb_cache::original_exists_in(cache, &hash);
         if !need_240 && !need_1200 && !need_original {
             continue;
         }
-        std::fs::create_dir_all(videre_core::thumb_cache::cache_dir()).ok();
+        std::fs::create_dir_all(&cache.thumbnails).ok();
         // Convert once, then downscale the same in-memory image for each
         // missing size (largest first) instead of re-running QuickLook per
         // size. None (full resolution), not Some(n): the same decode also
@@ -364,8 +331,8 @@ fn run_heic_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> {
         match videre_core::heic::heic_via_quicklook(&path, "watch", None) {
             Some(img) => {
                 if need_original {
-                    let tmp_path = videre_core::thumb_cache::original_tmp_path(&hash);
-                    let final_path = videre_core::thumb_cache::original_path(&hash);
+                    let tmp_path = videre_core::thumb_cache::original_tmp_path_in(cache, &hash);
+                    let final_path = videre_core::thumb_cache::original_path_in(cache, &hash);
                     if publish_thumb(&img, &tmp_path, &final_path) {
                         converted += 1;
                     } else {
@@ -383,8 +350,8 @@ fn run_heic_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> {
                     } else {
                         img.clone()
                     };
-                    let tmp_path = videre_core::thumb_cache::thumb_tmp_path(&hash, size);
-                    let final_path = videre_core::thumb_cache::thumb_path(&hash, size);
+                    let tmp_path = videre_core::thumb_cache::thumb_tmp_path_in(cache, &hash, size);
+                    let final_path = videre_core::thumb_cache::thumb_path_in(cache, &hash, size);
                     if publish_thumb(&resized, &tmp_path, &final_path) {
                         converted += 1;
                     } else {
@@ -416,7 +383,11 @@ fn run_heic_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 
-fn run_location_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<()> {
+fn run_location_stage(
+    args: &WatchArgs,
+    ctx: &CommandContext,
+    conn: &rusqlite::Connection,
+) -> Result<()> {
     let unresolved: Vec<(f64, f64)> = {
         let mut stmt = conn.prepare(
             "SELECT DISTINCT gps_lat, gps_lon FROM file_hashes \
@@ -429,7 +400,7 @@ fn run_location_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<(
     };
     let mut resolved = 0usize;
     for (lat, lon) in unresolved {
-        if let Some(name) = videre_core::location::location_name(lat, lon) {
+        if let Some(name) = videre_core::location::location_name_in(&ctx.library.cache, lat, lon)? {
             conn.execute(
                 "UPDATE file_hashes SET location_name = ?1 \
                  WHERE ROUND(gps_lat, 6) = ROUND(?2, 6) AND ROUND(gps_lon, 6) = ROUND(?3, 6)",
@@ -446,13 +417,17 @@ fn run_location_stage(args: &WatchArgs, conn: &rusqlite::Connection) -> Result<(
 
 fn run_scan_stage(
     args: &WatchArgs,
-    directory: &std::path::Path,
-    db: &std::path::Path,
+    ctx: &CommandContext,
+    conn: &rusqlite::Connection,
 ) -> Result<()> {
-    let conn = db::open_wal(db)?;
-    let selection = super::selection_args::path_selection(Some(&args.media), Some(&args.paths))?;
-    videre_core::pipeline_runs::track(&conn, db, "scan", || {
-        let paths = scanner::scan(directory);
+    let selection = super::selection_args::path_selection(Some(&args.media), None)?;
+    let root = ctx.library.paths.root.clone();
+    tracked_stage(ctx, conn, "scan", args.silent, || {
+        // Exclude the .videre state directory from the walk, exactly as scan does.
+        let paths: Vec<_> = scanner::scan(&root)
+            .into_iter()
+            .filter(|p| !p.components().any(|c| c.as_os_str() == ".videre"))
+            .collect();
         let walked = paths.len();
         let paths: Vec<_> = if selection.is_empty() {
             paths
@@ -471,9 +446,9 @@ fn run_scan_stage(
             .par_iter()
             .filter_map(|path| hasher::hash_file(path).ok())
             .collect();
-        sqlite_output::write_records(&records, db)?;
-        let prec = args.xmp.precedence()?;
-        crate::xmp::import_xmp_for_records(&conn, &records, prec, args.silent)?;
+        sqlite_output::write_records_in(conn, &ctx.library, &records)?;
+        let prec = args.xmp.resolve_from(&ctx.library.settings)?;
+        crate::xmp::import_xmp_for_records_in(conn, &ctx.library, &records, prec, args.silent)?;
         if !args.silent {
             eprintln!("videre watch: scan stage wrote {} record(s)", records.len());
         }
