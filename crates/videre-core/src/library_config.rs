@@ -8,10 +8,10 @@
 //! nothing; a file that fails validation, or does not parse, is an error
 //! rather than a silent fallback, because a typo in the config must surface,
 //! not vanish. Unknown keys (including nested tables) are preserved by
-//! edits, which rewrite by renaming a synced scratch file into place. An
-//! I/O failure leaves the prior bytes unchanged; a timeout abandons the
-//! writing thread instead, and that thread may still complete the rename
-//! after the error has returned.
+//! edits, which rewrite by renaming a synced scratch file into place. The
+//! bounded worker prepares only the scratch file; publication happens after
+//! that worker returns, so an I/O failure or timeout leaves prior bytes
+//! unchanged and cannot publish stale settings later.
 
 use crate::embeddings::{validate_model_id, DEFAULT_MODEL_ID};
 use crate::library::{bounded_op, root_cause_is_not_found, LibraryContext, LibraryPaths};
@@ -297,15 +297,25 @@ static SCRATCH_SEQ: AtomicU64 = AtomicU64::new(0);
 /// runs, and an I/O failure at any step leaves the existing bytes untouched
 /// because the rename is the last thing to happen. After a successful rename
 /// the state directory is synced (via `library_db::sync_dir`), the same
-/// crash-durability step the database publication path takes. A timeout is
-/// the one exception: the bounded operation abandons its worker thread,
-/// which runs on in the background and may still complete the rename after
-/// the error has returned, so the untouched-bytes guarantee holds for I/O
-/// failures, not timeouts. The scratch file is
-/// deliberately not removed on failure: the failing volume is why the write
-/// failed, and touching it again from the error path is the unbounded
-/// re-stat mistake `TimedOutAfter::describe` exists to prevent.
-fn write_config(state: &Path, path: &Path, table: &toml::Table) -> Result<()> {
+/// crash-durability step the database publication path takes. The bounded
+/// worker prepares and syncs the scratch file but never publishes it. Only a
+/// worker that returned within its budget reaches the rename in the calling
+/// thread, so a timed-out worker cannot overwrite a later edit. The scratch
+/// file is deliberately not removed on failure: the failing volume is why
+/// the write failed, and touching it again from the error path is the
+/// unbounded re-stat mistake `TimedOutAfter::describe` exists to prevent.
+fn write_config_with_budget_and_hooks<BeforePublish, AfterWorker>(
+    state: &Path,
+    path: &Path,
+    table: &toml::Table,
+    budget: std::time::Duration,
+    before_publish: BeforePublish,
+    after_worker: AfterWorker,
+) -> Result<()>
+where
+    BeforePublish: FnOnce() + Send + 'static,
+    AfterWorker: FnOnce() + Send + 'static,
+{
     use std::io::Write;
 
     let text = toml::to_string_pretty(table).context("serialize the library config")?;
@@ -315,18 +325,32 @@ fn write_config(state: &Path, path: &Path, table: &toml::Table) -> Result<()> {
         SCRATCH_SEQ.fetch_add(1, Ordering::Relaxed)
     ));
     let state = state.to_path_buf();
-    let target = path.to_path_buf();
     let owned_scratch = scratch.clone();
     let write_state = state.clone();
-    bounded_op(path, "write", crate::io_timeout::STAT_TIMEOUT, move || {
+    bounded_op(path, "write", budget, move || {
         std::fs::create_dir_all(&write_state)?;
         let mut file = std::fs::File::create(&owned_scratch)?;
         file.write_all(text.as_bytes())?;
         file.sync_all()?;
         drop(file);
-        std::fs::rename(&owned_scratch, target)
+        before_publish();
+        after_worker();
+        Ok(())
     })?;
+    std::fs::rename(&scratch, path)
+        .with_context(|| format!("publish library config {}", path.display()))?;
     crate::library_db::sync_dir(&state)
+}
+
+fn write_config(state: &Path, path: &Path, table: &toml::Table) -> Result<()> {
+    write_config_with_budget_and_hooks(
+        state,
+        path,
+        table,
+        crate::io_timeout::STAT_TIMEOUT,
+        || {},
+        || {},
+    )
 }
 
 /// Write the initial five-declaration config, only when none exists.
@@ -364,11 +388,9 @@ pub(crate) fn write_initial_if_absent(ctx: &LibraryContext) -> Result<()> {
 /// whether this is the one no-op that must create nothing, so a file
 /// written in between is seen as it now stands. `edit` takes the init lock
 /// only and never the activity lock, so configuring a library neither waits
-/// for nor delays running work. One known, accepted gap: the lock is
-/// released when `edit` returns, but a timed-out `io_timeout` worker thread
-/// may still complete its config rename afterwards (see `write_config`);
-/// closing that would mean blocking lock release on a thread that may never
-/// finish.
+/// for nor delays running work. A timed-out worker may finish its scratch
+/// file later, but it never publishes, so releasing the lock after an error
+/// cannot allow stale bytes to overwrite a later edit.
 pub fn edit(ctx: &LibraryContext, key: ConfigKey, value: Option<toml::Value>) -> Result<()> {
     let path = &ctx.paths.config;
     // The one case that must create nothing at all is decided before any
@@ -760,6 +782,44 @@ mod tests {
             .collect();
         assert_eq!(entries.len(), 1, "only the config may remain: {entries:?}");
         assert_eq!(entries[0], "config.toml");
+    }
+
+    #[test]
+    fn a_timed_out_config_write_cannot_publish_after_a_later_edit() {
+        let (_t, ctx) = library_with_config("custom = \"before\"\n");
+        let mut table = toml::Table::new();
+        table.insert("custom".into(), toml::Value::String("stale".into()));
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+
+        let err = write_config_with_budget_and_hooks(
+            &ctx.paths.state,
+            &ctx.paths.config,
+            &table,
+            std::time::Duration::from_millis(25),
+            move || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            },
+            move || finished_tx.send(()).unwrap(),
+        )
+        .unwrap_err();
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        assert!(format!("{err:#}").contains("did not respond"), "{err:#}");
+
+        std::fs::write(&ctx.paths.config, "custom = \"newer\"\n").unwrap();
+        release_tx.send(()).unwrap();
+        finished_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&ctx.paths.config).unwrap(),
+            "custom = \"newer\"\n"
+        );
     }
 
     #[test]

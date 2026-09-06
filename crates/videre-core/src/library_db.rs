@@ -496,6 +496,26 @@ fn sweep_stale_builds(ctx: &LibraryContext) {
     }
 }
 
+/// Publish one completed database build into its final path.
+///
+/// Kept as one operation so the no-overwrite contract can be tested at the
+/// same boundary initialization uses.
+fn publish_database(from: &Path, to: &Path) -> Result<()> {
+    let rename_from = from.to_path_buf();
+    let rename_to = to.to_path_buf();
+    bounded_op(to, "publish", STAT_TIMEOUT, move || {
+        rustix::fs::renameat_with(
+            rustix::fs::CWD,
+            &rename_from,
+            rustix::fs::CWD,
+            &rename_to,
+            rustix::fs::RenameFlags::NOREPLACE,
+        )
+        .map_err(Into::into)
+    })
+    .with_context(|| format!("publish {}", to.display()))
+}
+
 /// Build a fresh database in a unique state-local temporary file, close it
 /// fully checkpointed, and publish it by rename without overwriting an
 /// existing destination. Only called with the library's activity (exclusive)
@@ -555,12 +575,7 @@ fn publish_fresh(ctx: &LibraryContext) -> Result<Connection> {
         "a database appeared at {} while the library was being initialized",
         ctx.paths.db.display()
     );
-    let rename_from = tmp.clone();
-    let rename_to = ctx.paths.db.clone();
-    bounded_op(&ctx.paths.db, "publish", STAT_TIMEOUT, move || {
-        std::fs::rename(&rename_from, &rename_to)
-    })
-    .with_context(|| format!("publish {}", ctx.paths.db.display()))?;
+    publish_database(&tmp, &ctx.paths.db)?;
     sync_dir(&ctx.paths.state)?;
     let conn = open_existing_conn(ctx)?;
     open_prepared(ctx, &conn)?;
@@ -713,6 +728,21 @@ mod tests {
             .query_row("SELECT count(*) FROM file_hashes", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn fresh_database_publication_never_replaces_an_existing_destination() {
+        let temp = tempfile::tempdir().unwrap();
+        let built = temp.path().join("built.db");
+        let destination = temp.path().join("hashes.db");
+        std::fs::write(&built, b"completed build").unwrap();
+        std::fs::write(&destination, b"newer initializer").unwrap();
+
+        let err = publish_database(&built, &destination).unwrap_err();
+
+        assert!(format!("{err:#}").contains("publish"), "{err:#}");
+        assert_eq!(std::fs::read(&destination).unwrap(), b"newer initializer");
+        assert!(built.exists(), "the refused build remains recoverable");
     }
 
     #[test]
@@ -985,14 +1015,13 @@ mod tests {
         let err = open_existing(&ctx).unwrap_err();
         assert!(format!("{err:#}").contains("symlink"), "{err:#}");
 
-        // Nor a redirected config. It is valid TOML so the context loads;
-        // using the library must still refuse it.
+        // Nor a redirected config. It is valid TOML, but context construction
+        // must refuse it before any settings are loaded through the link.
         std::fs::remove_file(&ctx.paths.db).unwrap();
         let outside_cfg = temp.path().join("outside.toml");
         std::fs::write(&outside_cfg, b"custom = \"x\"\n").unwrap();
         std::os::unix::fs::symlink(&outside_cfg, &ctx.paths.config).unwrap();
-        let fresh = LibraryContext::new(&ctx.paths.root, &temp.path().join("cache")).unwrap();
-        let err = initialize(&fresh).unwrap_err();
+        let err = LibraryContext::new(&ctx.paths.root, &temp.path().join("cache")).unwrap_err();
         assert!(format!("{err:#}").contains("symlink"), "{err:#}");
         assert_eq!(std::fs::read(&outside_cfg).unwrap(), b"custom = \"x\"\n");
     }
@@ -1023,8 +1052,7 @@ mod tests {
         let twin_cfg = temp.path().join("twin.toml");
         std::fs::write(&twin_cfg, "custom = \"x\"\n").unwrap();
         std::fs::hard_link(&twin_cfg, &ctx.paths.config).unwrap();
-        let fresh = LibraryContext::new(&ctx.paths.root, &temp.path().join("cache")).unwrap();
-        let err = initialize(&fresh).unwrap_err();
+        let err = LibraryContext::new(&ctx.paths.root, &temp.path().join("cache")).unwrap_err();
         assert!(format!("{err:#}").contains("hard-linked"), "{err:#}");
     }
 

@@ -282,7 +282,7 @@ impl RowSelection {
     /// [`RowSelection::resolve_in`], which constrains them to that library
     /// first.
     pub fn resolve(&self, conn: &Connection, ctx: &SelectionCtx) -> anyhow::Result<Resolved> {
-        self.resolve_selection(conn, ctx)
+        self.resolve_selection(conn, ctx, false)
     }
 
     /// Resolve one selection against one library, with its path filters
@@ -307,13 +307,18 @@ impl RowSelection {
     ) -> anyhow::Result<Resolved> {
         let mut guarded = self.clone();
         guarded.paths = crate::library_guard::validate_paths(library, &self.paths)?;
-        guarded.resolve_selection(conn, ctx)
+        guarded.resolve_selection(conn, ctx, true)
     }
 
     /// The engine both resolvers share: every active predicate, intersected.
     /// Private so the only public entrances are `resolve` (ambient paths) and
     /// `resolve_in` (guarded paths); there is no third way to reach this.
-    fn resolve_selection(&self, conn: &Connection, ctx: &SelectionCtx) -> anyhow::Result<Resolved> {
+    fn resolve_selection(
+        &self,
+        conn: &Connection,
+        ctx: &SelectionCtx,
+        paths_are_guarded: bool,
+    ) -> anyhow::Result<Resolved> {
         if self.is_empty() {
             return Ok(Resolved::default());
         }
@@ -358,7 +363,7 @@ impl RowSelection {
             narrow(by_mimes(conn, &self.mimes)?, &mut acc);
         }
         if !self.paths.is_empty() {
-            narrow(by_paths(conn, &self.paths)?, &mut acc);
+            narrow(by_paths(conn, &self.paths, paths_are_guarded)?, &mut acc);
         }
         if let Some(min) = self.min_rating {
             narrow(crate::marks::by_rating(conn, min)?, &mut acc);
@@ -504,6 +509,16 @@ fn by_mimes(conn: &Connection, mimes: &[String]) -> anyhow::Result<HashSet<Strin
     Ok(out)
 }
 
+#[cfg(test)]
+thread_local! {
+    static AMBIENT_CANONICALIZATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn count_ambient_canonicalizations() -> usize {
+    AMBIENT_CANONICALIZATIONS.with(std::cell::Cell::get)
+}
+
 /// Each root, plus its canonical form when that differs.
 ///
 /// Used by both selection shapes, which is the point: a root must be matched in
@@ -522,6 +537,8 @@ fn roots_in_both_forms(roots: &[PathBuf]) -> Vec<PathBuf> {
     let mut out = Vec::with_capacity(roots.len() * 2);
     for r in roots {
         out.push(r.clone());
+        #[cfg(test)]
+        AMBIENT_CANONICALIZATIONS.with(|count| count.set(count.get() + 1));
         if let Ok(c) = std::fs::canonicalize(r) {
             if c != *r {
                 out.push(c);
@@ -535,8 +552,18 @@ fn roots_in_both_forms(roots: &[PathBuf]) -> Vec<PathBuf> {
 ///
 /// Compares **path components**, not string prefixes, so `/Pictures/2024` does
 /// not also match `/Pictures/2024-old`.
-fn by_paths(conn: &Connection, roots: &[PathBuf]) -> anyhow::Result<HashSet<String>> {
-    let roots = roots_in_both_forms(roots);
+fn by_paths(
+    conn: &Connection,
+    roots: &[PathBuf],
+    roots_are_guarded: bool,
+) -> anyhow::Result<HashSet<String>> {
+    let expanded;
+    let roots = if roots_are_guarded {
+        roots
+    } else {
+        expanded = roots_in_both_forms(roots);
+        &expanded
+    };
     let mut stmt = conn.prepare("SELECT hash, path FROM file_hashes")?;
     let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
     let mut out = HashSet::new();
@@ -1395,5 +1422,22 @@ mod resolve_in_tests {
             1,
             "one supplied filter means one filesystem resolution, whatever the row count"
         );
+    }
+
+    #[test]
+    fn guarded_paths_do_not_enter_the_ambient_canonicalizer() {
+        let (_temp, ctx, conn) = library(&[("Trips/a.jpg", "h_a")]);
+        let before = count_ambient_canonicalizations();
+        let mut selection = RowSelection::default();
+        selection.paths = vec![PathBuf::from("Trips")];
+
+        let hashes = selection
+            .resolve_in(&conn, &SelectionCtx::default(), &ctx)
+            .unwrap()
+            .hashes
+            .unwrap();
+
+        assert_eq!(hashes, set(["h_a"]));
+        assert_eq!(count_ambient_canonicalizations() - before, 0);
     }
 }

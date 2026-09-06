@@ -520,10 +520,11 @@ mod tests {
         std::fs::create_dir(&root).unwrap();
         std::fs::create_dir(&elsewhere).unwrap();
         std::fs::create_dir(elsewhere.join("locks")).unwrap();
-        // .videre pointing outside the library root: an externally linked
-        // state directory must not be used, not even read from.
-        std::os::unix::fs::symlink(&elsewhere, root.join(".videre")).unwrap();
         let ctx = LibraryContext::new(&root, &temp.path().join("cache")).unwrap();
+        // .videre pointing outside the library root: an externally linked
+        // state directory must not be used, even when it appeared after the
+        // context was constructed.
+        std::os::unix::fs::symlink(&elsewhere, root.join(".videre")).unwrap();
         let err = try_activity(&ctx, ActivityMode::Shared).unwrap_err();
         assert!(format!("{err:#}").contains("symlink"), "{err:#}");
     }

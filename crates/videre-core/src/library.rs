@@ -324,6 +324,11 @@ impl LibraryContext {
         let (handle, meta) = open_pinned(&canonical)?;
         let paths = paths_for(canonical);
         let cache = cache_for(cache_base, &paths);
+        // Refuse redirected state before loading through it. Database opens
+        // repeat these checks under their locks, but settings are already
+        // observable on the context and need the same protection here.
+        crate::library_locks::reject_dir_redirect(&paths.state, "the library state directory")?;
+        crate::library_locks::reject_redirect(&paths.config, "the library config")?;
         // The config belongs to the library, so it is loaded through the
         // pinned root's derived paths, after root validation and before the
         // context exists: an invalid config must fail here, at the entrance,
@@ -455,6 +460,21 @@ mod tests {
         // Geo is shared across libraries, not namespaced per root.
         assert_eq!(a.cache.geo, cache.join("videre/geo"));
         assert_eq!(b.cache.geo, a.cache.geo);
+    }
+
+    #[test]
+    fn context_rejects_redirected_state_before_loading_its_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("photos");
+        let outside = temp.path().join("outside-state");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("config.toml"), "min_read_rate_mb_s = 7\n").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join(".videre")).unwrap();
+
+        let err = LibraryContext::new(&root, &temp.path().join("cache")).unwrap_err();
+
+        assert!(format!("{err:#}").contains("symlink"), "{err:#}");
     }
 
     #[test]
