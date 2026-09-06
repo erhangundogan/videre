@@ -152,8 +152,10 @@ fn main() {
         Command::Dedupe(args) => command_context::CommandContext::capture(library)
             .and_then(|ctx| commands::dedupe::run(args, &ctx)),
         Command::Gallery(_) => unconverted("gallery"),
-        Command::FixDates(_) => unconverted("fix-dates"),
-        Command::Import(_) => unconverted("import"),
+        Command::FixDates(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::fix_dates::run(args, &ctx)),
+        Command::Import(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::import::run(args, &ctx)),
         Command::Prune(_) => unconverted("prune"),
         Command::Locations(args) => command_context::CommandContext::capture(library)
             .and_then(|ctx| commands::locations::run(args, &ctx)),

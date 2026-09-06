@@ -17,7 +17,7 @@ videre fix-dates --dry-run             # show what would change, touch nothing
 videre fix-dates                       # apply (asks for confirmation first)
 videre fix-dates --yes                 # apply without asking (for scripts)
 videre fix-dates --silent              # no per-file output
-videre fix-dates --db ~/photos.db      # use a specific database
+videre --library ~/Photos fix-dates    # select a different library
 ```
 
 ## Why you would want this
