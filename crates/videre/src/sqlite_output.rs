@@ -84,8 +84,22 @@ fn write_records_to(conn: &rusqlite::Connection, records: &[FileRecord]) -> Resu
 
 /// Read every file_hashes row back as FileRecords (the inverse of write_records;
 /// used by consumers that need records without re-scanning the filesystem).
+/// Load every file record from a path, opening its own connection.
+///
+/// Retained for the still-inactive callers (MCP's duplicate tool) that hold no
+/// connection yet. Directory-local commands hold a validated connection already
+/// and use [`load_records_from`] instead, which never opens or creates a file.
 pub fn load_records(db_path: &Path) -> Result<Vec<FileRecord>> {
     let conn = videre_core::db::open_wal(db_path)?;
+    load_records_from(&conn)
+}
+
+/// Load every file record from an already-open, validated connection.
+///
+/// The directory-local reader path: the caller has opened the selected
+/// library's database through `library_db::open_existing`, so this must not
+/// open or create anything of its own.
+pub fn load_records_from(conn: &rusqlite::Connection) -> Result<Vec<FileRecord>> {
     let mut stmt = conn.prepare(
         "SELECT path, hash, size_bytes, created_at, modified_at, ext, mime,
                 phash, exif_date, gps_lat, gps_lon, width, height,

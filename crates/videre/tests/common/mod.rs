@@ -301,6 +301,16 @@ impl TestLibrary {
     pub fn conn(&self) -> rusqlite::Connection {
         videre_core::library_db::open_existing(&self.context()).unwrap()
     }
+
+    /// Initialize this library's `.videre/hashes.db` with the full schema, as a
+    /// scan would, and return a connection for direct seeding.
+    ///
+    /// For tests that build a specific database by hand rather than by scanning
+    /// real files: the command under test is then selected by cwd (`cmd()`) or
+    /// `--library` (`from()`), never a `--db` path.
+    pub fn init_db(&self) -> rusqlite::Connection {
+        videre_core::library_db::initialize(&self.context()).unwrap()
+    }
 }
 
 /// Writes to the process's real stderr, bypassing libtest's output capture.

@@ -362,6 +362,11 @@ struct AppState {
     /// server at another library. `search::run_json` opens its own connection
     /// from this, which is what keeps a ranking query off the shared one.
     db: std::path::PathBuf,
+    /// The startup-bound library context. A ranking search runs through
+    /// `search::run_json_in` against this, so no request can retarget the
+    /// server at another library. Full request/image/cache binding is C8's
+    /// work; today only search consumes it.
+    context: Arc<crate::command_context::CommandContext>,
     /// Loaded on the first ranking search and kept for the process's life. Empty
     /// until then: a gallery whose library nobody searches never loads a model.
     embedder: Mutex<Option<videre_ml::model::Embedder>>,
@@ -505,8 +510,7 @@ async fn handle_search(
             presence: crate::commands::selection_args::PresenceArgs::default(),
             marks: crate::commands::selection_args::MarkArgs::default(),
             tags: Default::default(),
-            // Both bound at startup, so a request cannot retarget the server.
-            db: Some(state.db.clone()),
+            // Bound at startup, so a request cannot retarget the server.
             model: Some(state.model_id.clone()),
             query: sq.q.clone(),
             image: None,
@@ -523,9 +527,10 @@ async fn handle_search(
             scores: false,
             json: true,
         };
-        crate::commands::search::run_json(
+        crate::commands::search::run_json_in(
             &args,
             &crate::commands::search::CachedEmbedder(&state.embedder),
+            &state.context,
         )
     })
     .await
@@ -1366,6 +1371,8 @@ struct ServeOptions {
     /// `videre gallery`: serve every view on its own route rather than one page
     /// whose content depends on which flags started the server.
     gallery: bool,
+    /// The startup-bound library context, stored in `AppState` for search.
+    context: Arc<crate::command_context::CommandContext>,
     port: u16,
     browse: bool,
 }
@@ -1405,6 +1412,7 @@ async fn serve_faces_async(
         serve_faces_ui: opts.serve_faces_ui,
         gallery: opts.gallery,
         db: db.to_path_buf(),
+        context: opts.context.clone(),
         embedder: Mutex::new(None),
     });
 
@@ -1506,11 +1514,12 @@ async fn serve_faces_async(
 /// This module is the HTTP layer only. The renderer it shares with
 /// `dedupe --html` and `search --html` lives in `crate::render`.
 pub(crate) fn serve_gallery(
-    db: &Path,
+    ctx: &crate::command_context::CommandContext,
     model_id: String,
     port: u16,
     browse: bool,
 ) -> anyhow::Result<()> {
+    let db = ctx.library.paths.db.clone();
     let opts = ServeOptions {
         serve_faces_ui: true,
         report_all: true,
@@ -1518,10 +1527,11 @@ pub(crate) fn serve_gallery(
         report_heic_original: false,
         model_id,
         gallery: true,
+        context: Arc::new(ctx.clone()),
         port,
         browse,
     };
-    serve_faces(db, opts).map_err(|e| anyhow::anyhow!("{e}"))
+    serve_faces(&db, opts).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 fn serve_faces(db: &Path, opts: ServeOptions) -> Result<(), Box<dyn std::error::Error>> {

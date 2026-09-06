@@ -13,7 +13,7 @@ videre locations --radius 25           # how far apart places can be, in km (def
 videre locations --json                # print one JSON object instead
 videre locations --geojson             # print GeoJSON (opens in geojson.io, QGIS, ...)
 videre locations --silent              # no summary
-videre locations --db ~/photos.db      # use a specific database
+videre --library ~/Photos locations    # select a different library
 ```
 
 :::note

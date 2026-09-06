@@ -1,4 +1,5 @@
-use anyhow::{Context, Result};
+use crate::command_context::CommandContext;
+use anyhow::Result;
 use rusqlite::Connection;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -14,10 +15,6 @@ use videre_ml::{device, model, search};
 /// the two surfaces drift apart.
 #[derive(clap::Args)]
 pub struct SearchArgs {
-    /// SQLite database with embeddings (default: resolved from ~/.videre; see 'videre config')
-    #[arg(long)]
-    pub(crate) db: Option<PathBuf>,
-
     /// Embedding model to search against (default: 'videre config set model', else
     /// the built-in default). Must already have been embedded; run
     /// 'videre stats' to see which models this library has.
@@ -194,9 +191,9 @@ impl Outcome {
     }
 }
 
-pub fn run(args: SearchArgs) -> Result<()> {
+pub fn run(args: SearchArgs, ctx: &CommandContext) -> Result<()> {
     if args.json {
-        match run_json(&args, &FreshEmbedder) {
+        match run_json_in(&args, &FreshEmbedder, ctx) {
             Ok(doc) => {
                 println!("{}", serde_json::to_string(&doc)?);
                 Ok(())
@@ -209,7 +206,7 @@ pub fn run(args: SearchArgs) -> Result<()> {
             }
         }
     } else {
-        run_text(&args)
+        run_text(&args, ctx)
     }
 }
 
@@ -218,27 +215,34 @@ pub fn run(args: SearchArgs) -> Result<()> {
 /// The hits arrive as ranked paths, because ranking is what search did. The
 /// rows behind them come from one lookup, and the ranking order is preserved:
 /// the order *is* the answer.
-fn write_html(args: &SearchArgs, outcome: &Outcome, arg: Option<&std::path::Path>) -> Result<()> {
-    let db = super::resolve_reader_db_must_exist(args.db.clone())?;
-    let output = if let Some(p) = arg {
-        p.to_path_buf()
-    } else {
-        let stem = db
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let mut p = db.clone();
-        p.set_file_name(format!("{stem}_search.html"));
-        p
+fn write_html(
+    ctx: &CommandContext,
+    outcome: &Outcome,
+    arg: Option<&std::path::Path>,
+) -> Result<()> {
+    let db = &ctx.library.paths.db;
+    // A bare --html targets a page beside the selected database; an explicit
+    // relative path is an operand, resolved against the launch directory.
+    let output = match arg {
+        Some(p) => ctx.operand(p),
+        None => {
+            let stem = db
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let mut p = db.clone();
+            p.set_file_name(format!("{stem}_search.html"));
+            p
+        }
     };
-    let conn = videre_core::db::open_wal(&db)?;
+    let conn = videre_core::library_db::open_existing(&ctx.library)?;
     let paths: Vec<String> = outcome.rows.iter().map(|r| r.path.clone()).collect();
     let rows = crate::render::rows_for_paths(&conn, &paths);
     crate::render::write_static_page(&conn, &output, &[], Some(&rows))
 }
 
-fn run_text(args: &SearchArgs) -> Result<()> {
-    let outcome = collect_hits(args, &FreshEmbedder)?;
+fn run_text(args: &SearchArgs, ctx: &CommandContext) -> Result<()> {
+    let outcome = collect_hits(args, ctx, &FreshEmbedder)?;
     for row in &outcome.rows {
         if !args.scores {
             println!("{}", row.path);
@@ -266,15 +270,20 @@ fn run_text(args: &SearchArgs) -> Result<()> {
         }
     }
     if let Some(arg) = args.html.as_ref() {
-        write_html(args, &outcome, arg.as_deref())?;
+        write_html(ctx, &outcome, arg.as_deref())?;
     }
     Ok(())
 }
 
-/// The whole query, as a JSON document. Shared with the MCP `search` tool,
-/// which builds a `SearchArgs` of its own and calls straight in here.
-pub(crate) fn run_json(args: &SearchArgs, embedder: &dyn QueryEmbedder) -> Result<SearchJson> {
-    let outcome = collect_hits(args, embedder)?;
+/// The whole query, as a JSON document. Shared with the MCP `search` tool and
+/// the gallery server, which build a `SearchArgs` of their own and call
+/// straight in here against their own startup-bound library context.
+pub(crate) fn run_json_in(
+    args: &SearchArgs,
+    embedder: &dyn QueryEmbedder,
+    ctx: &CommandContext,
+) -> Result<SearchJson> {
+    let outcome = collect_hits(args, ctx, embedder)?;
     let results = outcome.hits();
     Ok(SearchJson {
         schema_version: SCHEMA_VERSION,
@@ -518,15 +527,22 @@ fn describe_query(args: &SearchArgs, dates: &(Option<String>, Option<String>)) -
 /// Person hits carry only a path (person search has always returned bare
 /// paths); every other hit carries its hash, plus a cosine score when there
 /// was a ranking query and a distance when `--location` was given.
-fn collect_hits(args: &SearchArgs, embedder: &dyn QueryEmbedder) -> Result<Outcome> {
+fn collect_hits(
+    args: &SearchArgs,
+    ctx: &CommandContext,
+    embedder: &dyn QueryEmbedder,
+) -> Result<Outcome> {
     let sort_keys = resolve_sort(args)?;
     let primary = sort_keys[0].field;
     let dates = resolve_dates(args)?;
 
-    let db = super::resolve_reader_db(args.db.clone())?;
-    let conn = videre_core::db::open_wal(&db).with_context(|| format!("open {}", db.display()))?;
+    let db = ctx.library.paths.db.clone();
+    let conn = videre_core::library_db::open_existing(&ctx.library)?;
 
-    let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref())?;
+    let model_id = videre_core::embeddings::resolve_model_id_from(
+        &ctx.library.settings,
+        args.model.as_deref(),
+    )?;
     let (has, missing) = args.presence.fields()?;
 
     // One selection, resolved in one place. `--location` is part of it rather
@@ -569,14 +585,18 @@ fn collect_hits(args: &SearchArgs, embedder: &dyn QueryEmbedder) -> Result<Outco
         // create: false. A reader must never bring an empty model database
         // into existence, or "no results" would silently replace a clear
         // error naming the models that do exist.
-        videre_core::embeddings_db::attach_for_read(&conn, &db, &model_id)?;
+        videre_core::embeddings_db::attach_for_read_in(&conn, &ctx.library, &model_id)?;
     }
 
-    let resolved = selection.resolve(
+    // resolve_in guards every --path against the selected root before it
+    // geocodes or reads a row, so an out-of-root or unresolved path filter
+    // rejects the whole query before any model load below.
+    let resolved = selection.resolve_in(
         &conn,
         &videre_core::selection::SelectionCtx {
             model_id: Some(model_id.clone()),
         },
+        &ctx.library,
     )?;
     let cands = query::Candidates {
         hashes: resolved.hashes,

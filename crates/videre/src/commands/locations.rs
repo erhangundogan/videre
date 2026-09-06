@@ -1,16 +1,12 @@
-use anyhow::{Context, Result};
+use crate::command_context::CommandContext;
+use anyhow::Result;
 use rusqlite::Connection;
 use serde::Serialize;
-use std::path::PathBuf;
 use videre::types::{ErrorJson, SCHEMA_VERSION};
 use videre_core::location_cluster;
 
 #[derive(clap::Args)]
 pub struct LocationsArgs {
-    /// SQLite database (default: resolved from ~/.videre; see 'videre config')
-    #[arg(long)]
-    db: Option<PathBuf>,
-
     /// Clustering radius in km, how close two coordinates must be to join
     /// the same location cluster. Default 15 ("which city was I in"
     /// granularity).
@@ -46,12 +42,12 @@ struct ClusterJson {
     photo_count: i64,
 }
 
-pub fn run(args: LocationsArgs) -> Result<()> {
-    let db = super::resolve_reader_db(args.db.clone())?;
-    let conn = videre_core::db::open_wal(&db).with_context(|| format!("open {}", db.display()))?;
+pub fn run(args: LocationsArgs, ctx: &CommandContext) -> Result<()> {
+    let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    let guard = videre_core::library_locks::try_command(&ctx.library, "locations")?;
 
     if args.json {
-        match run_locations_tracked(&args, &db, &conn) {
+        match run_locations_tracked(&args, ctx, &guard, &conn) {
             Ok(clusters) => {
                 let doc = LocationsJson {
                     schema_version: SCHEMA_VERSION,
@@ -67,11 +63,11 @@ pub fn run(args: LocationsArgs) -> Result<()> {
             }
         }
     } else if args.geojson {
-        let clusters = run_locations_tracked(&args, &db, &conn)?;
+        let clusters = run_locations_tracked(&args, ctx, &guard, &conn)?;
         println!("{}", to_geojson(&clusters, args.radius));
         Ok(())
     } else {
-        let clusters = run_locations_tracked(&args, &db, &conn)?;
+        let clusters = run_locations_tracked(&args, ctx, &guard, &conn)?;
         print_summary(&clusters, args.radius, args.silent);
         Ok(())
     }
@@ -79,10 +75,13 @@ pub fn run(args: LocationsArgs) -> Result<()> {
 
 fn run_locations_tracked(
     args: &LocationsArgs,
-    db: &std::path::Path,
+    ctx: &CommandContext,
+    guard: &videre_core::library_locks::CommandGuard,
     conn: &Connection,
 ) -> Result<Vec<ClusterJson>> {
-    videre_core::pipeline_runs::track(conn, db, "locations", || run_locations(args, conn))
+    videre_core::pipeline_runs::track_in(conn, &ctx.library, guard, "locations", || {
+        run_locations(args, ctx, conn)
+    })
 }
 
 /// The actual clustering work, wrapped by `track()` above. Full recompute
@@ -90,7 +89,11 @@ fn run_locations_tracked(
 /// `file_hashes.location_cluster_id`, then reclusters from scratch over
 /// every distinct GPS coordinate. Cluster IDs are therefore not stable
 /// across reruns (see the design spec's section 1).
-fn run_locations(args: &LocationsArgs, conn: &Connection) -> Result<Vec<ClusterJson>> {
+fn run_locations(
+    args: &LocationsArgs,
+    ctx: &CommandContext,
+    conn: &Connection,
+) -> Result<Vec<ClusterJson>> {
     let tx = conn.unchecked_transaction()?;
 
     location_cluster::ensure_location_clusters_table(&tx)?;
@@ -172,7 +175,13 @@ fn run_locations(args: &LocationsArgs, conn: &Connection) -> Result<Vec<ClusterJ
     let mut clusters = Vec::with_capacity(member_groups.len());
     for members in &member_groups {
         let (centroid_lat, centroid_lon) = location_cluster::centroid(&coords, members);
-        let name = videre_core::location::location_name(centroid_lat, centroid_lon);
+        // Cache-aware and fail-loud: a place-name lookup that cannot materialize
+        // its dataset propagates rather than silently producing a different name.
+        let name = videre_core::location::location_name_in(
+            &ctx.library.cache,
+            centroid_lat,
+            centroid_lon,
+        )?;
 
         tx.execute(
             "INSERT INTO location_clusters \

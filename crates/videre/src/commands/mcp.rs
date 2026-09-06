@@ -26,9 +26,16 @@ pub struct McpArgs {
     model: Option<String>,
 }
 
-pub fn run(args: McpArgs) -> Result<()> {
-    let db = super::resolve_reader_db_must_exist(args.db)?;
-    let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref())?;
+// Kept fail-closed in main's dispatch until C8 binds every tool to the context;
+// the signature and context threading are in place so C8 only flips the arm.
+pub fn run(_args: McpArgs, ctx: &crate::command_context::CommandContext) -> Result<()> {
+    let db = videre_core::library_db::open_existing(&ctx.library)?;
+    drop(db);
+    let db = ctx.library.paths.db.clone();
+    let model_id = videre_core::embeddings::resolve_model_id_from(
+        &ctx.library.settings,
+        _args.model.as_deref(),
+    )?;
     // Probed at startup so a typo in --model is visible immediately rather
     // than minutes later inside an agent's search result, but NOT fatal:
     // find_duplicates and stats do not touch embeddings, and refusing to
@@ -36,8 +43,8 @@ pub fn run(args: McpArgs) -> Result<()> {
     // scanned but never embedded, which is a perfectly normal state. The
     // search tool re-checks per call and returns a clear tool-level error.
     let embeddings_ready = {
-        let probe = videre_core::db::open_wal(&db)?;
-        match videre_core::embeddings_db::attach_for_read(&probe, &db, &model_id) {
+        let probe = videre_core::library_db::open_existing(&ctx.library)?;
+        match videre_core::embeddings_db::attach_for_read_in(&probe, &ctx.library, &model_id) {
             Ok(()) => true,
             Err(e) => {
                 eprintln!("videre mcp: search unavailable ({e})");
@@ -55,9 +62,10 @@ pub fn run(args: McpArgs) -> Result<()> {
         }
     );
 
+    let context = Arc::new(ctx.clone());
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async move {
-        let service = VidereServer::new(db, model_id).serve(stdio()).await?;
+        let service = VidereServer::new(context, model_id).serve(stdio()).await?;
         service.waiting().await?;
         Ok(())
     })
@@ -66,15 +74,17 @@ pub fn run(args: McpArgs) -> Result<()> {
 #[derive(Clone)]
 struct VidereServer {
     db: PathBuf,
+    context: Arc<crate::command_context::CommandContext>,
     model_id: String,
     embedder: Arc<std::sync::Mutex<Option<videre_ml::model::Embedder>>>,
     tool_router: ToolRouter<Self>,
 }
 
 impl VidereServer {
-    fn new(db: PathBuf, model_id: String) -> Self {
+    fn new(context: Arc<crate::command_context::CommandContext>, model_id: String) -> Self {
         Self {
-            db,
+            db: context.library.paths.db.clone(),
+            context,
             model_id,
             embedder: Arc::new(std::sync::Mutex::new(None)),
             tool_router: Self::tool_router(),
@@ -269,7 +279,7 @@ struct SearchParams {
 /// only MCP-specific parts are the two validity checks, whose wording names
 /// tool parameters rather than CLI flags, and the cached embedder.
 fn build_search(
-    db: &std::path::Path,
+    ctx: &crate::command_context::CommandContext,
     model_id: &str,
     embedder_cell: &std::sync::Mutex<Option<videre_ml::model::Embedder>>,
     params: &SearchParams,
@@ -326,8 +336,8 @@ fn build_search(
         },
         marks: super::selection_args::MarkArgs::default(),
         tags: Default::default(),
-        // Both bound at startup, so a call cannot retarget the server.
-        db: Some(db.to_path_buf()),
+        // Bound at startup through the context, so a call cannot retarget the
+        // server at another library.
         model: Some(model_id.to_string()),
         query: params.query.clone(),
         image: params.image_path.as_deref().map(std::path::PathBuf::from),
@@ -348,7 +358,7 @@ fn build_search(
         json: true,
     };
 
-    search_cmd::run_json(&args, &search_cmd::CachedEmbedder(embedder_cell))
+    search_cmd::run_json_in(&args, &search_cmd::CachedEmbedder(embedder_cell), ctx)
 }
 
 #[tool_router]
@@ -390,10 +400,10 @@ impl VidereServer {
         &self,
         Parameters(params): Parameters<SearchParams>,
     ) -> Result<CallToolResult, McpError> {
-        let db = self.db.clone();
+        let context = self.context.clone();
         let model_id = self.model_id.clone();
         let embedder = self.embedder.clone();
-        match blocking(move || build_search(&db, &model_id, &embedder, &params)).await? {
+        match blocking(move || build_search(&context, &model_id, &embedder, &params)).await? {
             Ok(doc) => json_result(&doc),
             Err(e) => Ok(tool_error(&e)),
         }

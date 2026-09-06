@@ -1,94 +1,228 @@
 mod common;
-use common::videre_bin;
-use std::fs;
-use std::path::PathBuf;
-use std::process::Command;
-use tempfile::{tempdir, TempDir};
 
-/// Two dated files and nothing else: enough to prove a date predicate narrows.
-/// Built by hand rather than by scanning, so the dates are the fixture rather
-/// than whatever mtime the filesystem happened to give the temp files.
-fn fixture_db_with_dates() -> (TempDir, PathBuf) {
-    let dir = tempdir().unwrap();
-    let db = dir.path().join("t.db");
-    let conn = videre_core::db::open_wal(&db).unwrap();
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS file_hashes (
-            path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
-            created_at TEXT, modified_at TEXT, ext TEXT, mime TEXT, phash INTEGER,
-            exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER);
-         INSERT INTO file_hashes (path, hash, size_bytes, modified_at, exif_date, ext, mime)
-         VALUES ('/may.jpg','h1',10,'2025-05-14T10:00:00','2025-05-14T10:00:00','jpg','image/jpeg'),
-                ('/jun.jpg','h2',10,'2025-06-14T10:00:00','2025-06-14T10:00:00','jpg','image/jpeg');
-         CREATE TABLE IF NOT EXISTS classifications (
-            model_id TEXT NOT NULL, hash TEXT NOT NULL, category TEXT NOT NULL,
-            confidence REAL NOT NULL, classified_at TEXT NOT NULL,
-            PRIMARY KEY (model_id, hash));",
-    )
-    .unwrap();
-    (dir, db)
+use common::TestLibrary;
+use rusqlite::params;
+use serde_json::Value;
+
+/// Paths a search printed, made relative to the selected library root so the
+/// assertions read the same whatever temp directory the library landed in.
+fn search_rel(lib: &TestLibrary, args: &[&str]) -> Vec<String> {
+    let out = lib
+        .cmd()
+        .arg("search")
+        .args(args)
+        .output()
+        .expect("failed to run videre search");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let prefix = format!("{}/", lib.context().paths.root.to_string_lossy());
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| l.starts_with('/'))
+        .map(|l| l.strip_prefix(&prefix).unwrap_or(l).to_string())
+        .collect()
+}
+
+/// Two dated files under the library root: enough to prove a date predicate
+/// narrows. Seeded directly so the dates are the fixture rather than whatever
+/// mtime the filesystem gave the temp files.
+fn dates_library() -> TestLibrary {
+    let lib = TestLibrary::new();
+    let root = lib.context().paths.root;
+    let conn = lib.init_db();
+    for (rel, hash, date) in [
+        ("may.jpg", "h1", "2025-05-14T10:00:00"),
+        ("jun.jpg", "h2", "2025-06-14T10:00:00"),
+    ] {
+        let path = root.join(rel);
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, size_bytes, modified_at, exif_date, ext, mime)
+             VALUES (?1, ?2, 10, ?3, ?3, 'jpg', 'image/jpeg')",
+            params![path.to_string_lossy().as_ref(), hash, date],
+        )
+        .unwrap();
+    }
+    lib
 }
 
 /// The dated fixture plus two confirmed faces, both labelled Alice.
-fn fixture_db_with_people() -> (TempDir, PathBuf) {
-    let (dir, db) = fixture_db_with_dates();
-    let conn = videre_core::db::open_wal(&db).unwrap();
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL,
-            bbox TEXT NOT NULL, landmark TEXT, embedding BLOB NOT NULL, cluster_id INTEGER,
-            person_label TEXT, confirmed INTEGER DEFAULT 0, is_primary INTEGER DEFAULT 0);
-         INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
-         VALUES ('h1','[]',x'00','alice',1), ('h2','[]',x'00','alice',1);",
-    )
-    .unwrap();
-    (dir, db)
+fn people_library() -> TestLibrary {
+    let lib = dates_library();
+    lib.conn()
+        .execute_batch(
+            "INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
+             VALUES ('h1','[]',x'00','alice',1), ('h2','[]',x'00','alice',1);",
+        )
+        .unwrap();
+    lib
 }
 
-// Preflight check: `videre search` on a scanned-but-not-embedded db must fail
-// fast with a "run videre embed first" message rather than loading the SigLIP
-// model or silently returning zero results.
+/// Mixed media, so the 0.15.0 axes have something to discriminate: two photos,
+/// two videos, one HEIC, across two folders and two months.
+fn mixed_media_library() -> TestLibrary {
+    let lib = TestLibrary::new();
+    let root = lib.context().paths.root;
+    let conn = lib.init_db();
+    for (rel, hash, date, ext, mime) in [
+        (
+            "a/photo1.jpg",
+            "p1",
+            "2025-05-01T10:00:00",
+            "jpg",
+            "image/jpeg",
+        ),
+        (
+            "a/photo2.heic",
+            "p2",
+            "2025-05-02T10:00:00",
+            "heic",
+            "image/heic",
+        ),
+        (
+            "b/clip1.mov",
+            "v1",
+            "2025-06-01T10:00:00",
+            "mov",
+            "video/quicktime",
+        ),
+        (
+            "b/clip2.mp4",
+            "v2",
+            "2025-06-02T10:00:00",
+            "mp4",
+            "video/mp4",
+        ),
+    ] {
+        let path = root.join(rel);
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, size_bytes, modified_at, exif_date, ext, mime)
+             VALUES (?1, ?2, 10, ?3, ?3, ?4, ?5)",
+            params![path.to_string_lossy().as_ref(), hash, date, ext, mime],
+        )
+        .unwrap();
+    }
+    lib
+}
+
+fn presence_library() -> TestLibrary {
+    let lib = TestLibrary::new();
+    let root = lib.context().paths.root;
+    let conn = lib.init_db();
+    let rows: [(&str, &str, Option<&str>, Option<f64>, Option<f64>); 4] = [
+        (
+            "presence/complete.jpg",
+            "complete",
+            Some("2025-05-01T10:00:00"),
+            Some(52.5),
+            Some(13.4),
+        ),
+        (
+            "presence/missing-lat.jpg",
+            "missing_lat",
+            Some("2025-05-02T10:00:00"),
+            None,
+            Some(13.4),
+        ),
+        (
+            "presence/missing-lon.jpg",
+            "missing_lon",
+            Some("2025-05-03T10:00:00"),
+            Some(52.5),
+            None,
+        ),
+        (
+            "presence/missing-date.jpg",
+            "missing_date",
+            None,
+            Some(52.5),
+            Some(13.4),
+        ),
+    ];
+    for (rel, hash, date, lat, lon) in rows {
+        let path = root.join(rel);
+        conn.execute(
+            "INSERT INTO file_hashes
+                 (path, hash, size_bytes, modified_at, exif_date, ext, mime, gps_lat, gps_lon)
+             VALUES (?1, ?2, 10, ?3, ?3, 'jpg', 'image/jpeg', ?4, ?5)",
+            params![path.to_string_lossy().as_ref(), hash, date, lat, lon],
+        )
+        .unwrap();
+    }
+    lib
+}
+
+/// Seed a place into the local geocode cache so a `--location` search resolves
+/// without a network call.
+fn seed_geocode(lib: &TestLibrary, query: &str, lat: f64, lon: f64) {
+    lib.conn()
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS geocode_cache
+                 (query TEXT PRIMARY KEY, lat REAL NOT NULL, lon REAL NOT NULL, resolved_at TEXT NOT NULL);",
+        )
+        .unwrap();
+    lib.conn()
+        .execute(
+            "INSERT OR REPLACE INTO geocode_cache (query, lat, lon, resolved_at)
+             VALUES (?1, ?2, ?3, '2026-01-01')",
+            params![query, lat, lon],
+        )
+        .unwrap();
+}
+
+/// A relative `--path` filter resolves inside the selected library, not the
+/// launch directory, and a search launched elsewhere never creates a library
+/// where it was launched.
+#[test]
+fn search_path_is_relative_to_explicit_library() {
+    let a = TestLibrary::new();
+    let c = TestLibrary::new();
+    a.copy_fixture("tiny.jpg", "Trips/a.jpg");
+    a.scan();
+    a.conn()
+        .execute("UPDATE file_hashes SET gps_lat=NULL, gps_lon=NULL", [])
+        .unwrap();
+    let out = a
+        .from(&c.root)
+        .args(["search", "--missing", "gps", "--path", "Trips", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["count"], 1);
+    assert!(!c.db().exists());
+}
+
+// Preflight check: `videre search` on a scanned-but-not-embedded library must
+// fail fast with a "no embeddings" message rather than loading the model or
+// silently returning zero results.
 #[test]
 fn text_search_errors_with_run_embed_first_when_no_embeddings_exist() {
-    let scan_dir = tempdir().unwrap();
-    let out_dir = tempdir().unwrap();
-    let db_path = out_dir.path().join("hashes.db");
+    let lib = dates_library();
 
-    fs::write(scan_dir.path().join("a.jpg"), b"content").unwrap();
-
-    let status = Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .arg("--output-sqlite")
-        .arg(&db_path)
-        .arg(scan_dir.path())
-        .status()
-        .expect("failed to run videre scan");
-    assert!(status.success());
-
-    let out = Command::new(videre_bin())
-        .arg("search")
-        .arg("--db")
-        .arg(&db_path)
-        .arg("sunset on beach")
+    let out = lib
+        .cmd()
+        .args(["search", "sunset on beach"])
         .output()
         .expect("failed to run videre search");
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    // The message now names the model and the exact command to run, rather
-    // than a bare "run videre embed first".
     assert!(stderr.contains("no embeddings"), "{stderr}");
     assert!(stderr.contains("videre embed --model"), "{stderr}");
 
-    let json_out = Command::new(videre_bin())
-        .arg("search")
-        .arg("--db")
-        .arg(&db_path)
-        .arg("--json")
-        .arg("sunset on beach")
+    let json_out = lib
+        .cmd()
+        .args(["search", "--json", "sunset on beach"])
         .output()
         .expect("failed to run videre search --json");
     assert!(!json_out.status.success());
-    let doc: serde_json::Value = serde_json::from_slice(&json_out.stdout)
+    let doc: Value = serde_json::from_slice(&json_out.stdout)
         .expect("stdout must be one valid JSON error object");
     let msg = doc["error"]["message"].as_str().unwrap_or_default();
     assert!(msg.contains("no embeddings"), "{doc}");
@@ -97,42 +231,20 @@ fn text_search_errors_with_run_embed_first_when_no_embeddings_exist() {
 
 #[test]
 fn location_search_returns_nearby_photos_sorted_by_distance() {
-    let scan_dir = tempdir().unwrap();
-    let out_dir = tempdir().unwrap();
-    let db_path = out_dir.path().join("hashes.db");
+    let lib = TestLibrary::new();
+    let path = lib.context().paths.root.join("a.jpg");
+    lib.init_db()
+        .execute(
+            "INSERT INTO file_hashes (path, hash, ext, gps_lat, gps_lon)
+             VALUES (?1, 'ha', 'jpg', 48.8566, 2.3522)",
+            [path.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+    seed_geocode(&lib, "paris, france", 48.8566, 2.3522);
 
-    fs::write(scan_dir.path().join("a.jpg"), b"content").unwrap();
-
-    let status = Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .arg("--output-sqlite")
-        .arg(&db_path)
-        .arg(scan_dir.path())
-        .status()
-        .expect("failed to run videre scan");
-    assert!(status.success());
-
-    let conn = rusqlite::Connection::open(&db_path).unwrap();
-    conn.execute(
-        "UPDATE file_hashes SET gps_lat = 48.8566, gps_lon = 2.3522 WHERE path LIKE '%a.jpg'",
-        [],
-    )
-    .unwrap();
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS geocode_cache (query TEXT PRIMARY KEY, lat REAL NOT NULL, lon REAL NOT NULL, resolved_at TEXT NOT NULL);
-         INSERT INTO geocode_cache (query, lat, lon, resolved_at) VALUES ('paris, france', 48.8566, 2.3522, '2026-01-01');",
-    )
-    .unwrap();
-    drop(conn);
-
-    let out = Command::new(videre_bin())
-        .arg("search")
-        .arg("--db")
-        .arg(&db_path)
-        .arg("--location")
-        .arg("Paris, France")
-        .arg("--json")
+    let out = lib
+        .cmd()
+        .args(["search", "--location", "Paris, France", "--json"])
         .output()
         .expect("failed to run videre search --location");
     assert!(
@@ -140,8 +252,7 @@ fn location_search_returns_nearby_photos_sorted_by_distance() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-
-    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
     let results = doc["results"].as_array().unwrap();
     assert_eq!(results.len(), 1);
     assert!(results[0]["distance_km"].as_f64().unwrap() < 1.0);
@@ -149,75 +260,56 @@ fn location_search_returns_nearby_photos_sorted_by_distance() {
 
 #[test]
 fn location_search_excludes_photos_outside_radius() {
-    let scan_dir = tempdir().unwrap();
-    let out_dir = tempdir().unwrap();
-    let db_path = out_dir.path().join("hashes.db");
-
-    fs::write(scan_dir.path().join("a.jpg"), b"content").unwrap();
-
-    Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .arg("--output-sqlite")
-        .arg(&db_path)
-        .arg(scan_dir.path())
-        .status()
-        .expect("failed to run videre scan");
-
-    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let lib = TestLibrary::new();
+    let path = lib.context().paths.root.join("a.jpg");
     // Tokyo, far from Paris.
-    conn.execute(
-        "UPDATE file_hashes SET gps_lat = 35.6762, gps_lon = 139.6503 WHERE path LIKE '%a.jpg'",
-        [],
-    )
-    .unwrap();
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS geocode_cache (query TEXT PRIMARY KEY, lat REAL NOT NULL, lon REAL NOT NULL, resolved_at TEXT NOT NULL);
-         INSERT INTO geocode_cache (query, lat, lon, resolved_at) VALUES ('paris, france', 48.8566, 2.3522, '2026-01-01');",
-    )
-    .unwrap();
-    drop(conn);
+    lib.init_db()
+        .execute(
+            "INSERT INTO file_hashes (path, hash, ext, gps_lat, gps_lon)
+             VALUES (?1, 'ha', 'jpg', 35.6762, 139.6503)",
+            [path.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+    seed_geocode(&lib, "paris, france", 48.8566, 2.3522);
 
-    let out = Command::new(videre_bin())
-        .arg("search")
-        .arg("--db")
-        .arg(&db_path)
-        .arg("--location")
-        .arg("Paris, France")
-        .arg("--radius")
-        .arg("50")
-        .arg("--json")
+    let out = lib
+        .cmd()
+        .args([
+            "search",
+            "--location",
+            "Paris, France",
+            "--radius",
+            "50",
+            "--json",
+        ])
         .output()
         .expect("failed to run videre search --location");
     assert!(out.status.success());
-
-    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(doc["results"].as_array().unwrap().len(), 0);
 }
 
 #[test]
 fn location_and_radius_conflict_with_other_search_modes() {
-    let out_dir = tempdir().unwrap();
-    let db_path = out_dir.path().join("hashes.db");
-
-    let out = Command::new(videre_bin())
-        .arg("search")
-        .arg("--db")
-        .arg(&db_path)
-        .arg("--location")
-        .arg("Berlin, Germany")
-        .arg("--person")
-        .arg("Alice")
+    // A fresh library with no database: both requests fail before any work,
+    // and --radius without --location is rejected by the parser outright.
+    let lib = TestLibrary::new();
+    let out = lib
+        .cmd()
+        .args([
+            "search",
+            "--location",
+            "Berlin, Germany",
+            "--person",
+            "Alice",
+        ])
         .output()
         .expect("failed to run videre search");
     assert!(!out.status.success());
 
-    let out = Command::new(videre_bin())
-        .arg("search")
-        .arg("--db")
-        .arg(&db_path)
-        .arg("--radius")
-        .arg("10")
+    let out = lib
+        .cmd()
+        .args(["search", "--radius", "10"])
         .output()
         .expect("failed to run videre search");
     assert!(
@@ -228,58 +320,29 @@ fn location_and_radius_conflict_with_other_search_modes() {
 
 #[test]
 fn location_search_truncates_to_top_k_closest() {
-    let scan_dir = tempdir().unwrap();
-    let out_dir = tempdir().unwrap();
-    let db_path = out_dir.path().join("hashes.db");
+    let lib = TestLibrary::new();
+    let root = lib.context().paths.root;
+    let conn = lib.init_db();
+    // Three distinct photos at increasing distance from the geocoded "Paris,
+    // France" center (48.8566, 2.3522): a closest, c furthest, all in radius.
+    for (rel, hash, lat) in [
+        ("a.jpg", "ha", 48.8566),
+        ("b.jpg", "hb", 48.9000),
+        ("c.jpg", "hc", 49.0000),
+    ] {
+        let path = root.join(rel);
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, ext, gps_lat, gps_lon)
+             VALUES (?1, ?2, 'jpg', ?3, 2.3522)",
+            params![path.to_string_lossy().as_ref(), hash, lat],
+        )
+        .unwrap();
+    }
+    seed_geocode(&lib, "paris, france", 48.8566, 2.3522);
 
-    fs::write(scan_dir.path().join("a.jpg"), b"content a").unwrap();
-    fs::write(scan_dir.path().join("b.jpg"), b"content b").unwrap();
-    fs::write(scan_dir.path().join("c.jpg"), b"content c").unwrap();
-
-    Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .arg("--output-sqlite")
-        .arg(&db_path)
-        .arg(scan_dir.path())
-        .status()
-        .expect("failed to run videre scan");
-
-    let conn = rusqlite::Connection::open(&db_path).unwrap();
-    // Three points at increasing distance from the geocoded "Paris, France"
-    // center (48.8566, 2.3522): a is closest, c is furthest, all within the
-    // default 20km radius.
-    conn.execute(
-        "UPDATE file_hashes SET gps_lat = 48.8566, gps_lon = 2.3522 WHERE path LIKE '%a.jpg'",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "UPDATE file_hashes SET gps_lat = 48.9000, gps_lon = 2.3522 WHERE path LIKE '%b.jpg'",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "UPDATE file_hashes SET gps_lat = 49.0000, gps_lon = 2.3522 WHERE path LIKE '%c.jpg'",
-        [],
-    )
-    .unwrap();
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS geocode_cache (query TEXT PRIMARY KEY, lat REAL NOT NULL, lon REAL NOT NULL, resolved_at TEXT NOT NULL);
-         INSERT INTO geocode_cache (query, lat, lon, resolved_at) VALUES ('paris, france', 48.8566, 2.3522, '2026-01-01');",
-    )
-    .unwrap();
-    drop(conn);
-
-    let out = Command::new(videre_bin())
-        .arg("search")
-        .arg("--db")
-        .arg(&db_path)
-        .arg("--location")
-        .arg("Paris, France")
-        .arg("-k")
-        .arg("2")
-        .arg("--json")
+    let out = lib
+        .cmd()
+        .args(["search", "--location", "Paris, France", "-k", "2", "--json"])
         .output()
         .expect("failed to run videre search --location");
     assert!(
@@ -287,8 +350,7 @@ fn location_search_truncates_to_top_k_closest() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-
-    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
     let results = doc["results"].as_array().unwrap();
     assert_eq!(
         results.len(),
@@ -307,10 +369,10 @@ fn location_search_truncates_to_top_k_closest() {
 
 #[test]
 fn date_filter_narrows_results() {
-    let (_home, db) = fixture_db_with_dates();
-    let out = Command::new(videre_bin())
-        .args(["search", "--db", db.to_str().unwrap(), "--date", "2025-05"])
-        .arg("--json")
+    let lib = dates_library();
+    let out = lib
+        .cmd()
+        .args(["search", "--date", "2025-05", "--json"])
         .output()
         .unwrap();
     assert!(
@@ -318,7 +380,7 @@ fn date_filter_narrows_results() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(
         doc["count"], 1,
         "only the May 2025 file should match: {doc}"
@@ -331,12 +393,11 @@ fn date_filter_narrows_results() {
 
 #[test]
 fn filters_compose_and_narrow_further() {
-    let (_home, db) = fixture_db_with_dates();
-    let out = Command::new(videre_bin())
+    let lib = dates_library();
+    let out = lib
+        .cmd()
         .args([
             "search",
-            "--db",
-            db.to_str().unwrap(),
             "--category",
             "document",
             "--date",
@@ -350,41 +411,27 @@ fn filters_compose_and_narrow_further() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(doc["count"], 0, "no document in May 2025 in the fixture");
 }
 
 #[test]
 fn person_and_date_compose() {
-    let (_home, db) = fixture_db_with_people();
-    let alone = Command::new(videre_bin())
-        .args([
-            "search",
-            "--db",
-            db.to_str().unwrap(),
-            "--person",
-            "Alice",
-            "--json",
-        ])
+    let lib = people_library();
+    let alone = lib
+        .cmd()
+        .args(["search", "--person", "Alice", "--json"])
         .output()
         .unwrap();
-    let alone: serde_json::Value = serde_json::from_slice(&alone.stdout).unwrap();
+    let alone: Value = serde_json::from_slice(&alone.stdout).unwrap();
     assert_eq!(alone["count"], 2, "{alone}");
 
-    let composed = Command::new(videre_bin())
-        .args([
-            "search",
-            "--db",
-            db.to_str().unwrap(),
-            "--person",
-            "Alice",
-            "--date",
-            "2025-05",
-            "--json",
-        ])
+    let composed = lib
+        .cmd()
+        .args(["search", "--person", "Alice", "--date", "2025-05", "--json"])
         .output()
         .unwrap();
-    let composed: serde_json::Value = serde_json::from_slice(&composed.stdout).unwrap();
+    let composed: Value = serde_json::from_slice(&composed.stdout).unwrap();
     assert_eq!(
         composed["count"], 1,
         "the date must narrow Alice: {composed}"
@@ -393,39 +440,25 @@ fn person_and_date_compose() {
 
 #[test]
 fn top_k_now_applies_to_person_search() {
-    let (_home, db) = fixture_db_with_people();
-    let out = Command::new(videre_bin())
-        .args([
-            "search",
-            "--db",
-            db.to_str().unwrap(),
-            "--person",
-            "Alice",
-            "-k",
-            "1",
-            "--json",
-        ])
+    let lib = people_library();
+    let out = lib
+        .cmd()
+        .args(["search", "--person", "Alice", "-k", "1", "--json"])
         .output()
         .unwrap();
-    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(doc["results"].as_array().unwrap().len(), 1, "{doc}");
 }
 
 #[test]
 fn hits_carry_the_effective_date() {
-    let (_home, db) = fixture_db_with_dates();
-    let out = Command::new(videre_bin())
-        .args([
-            "search",
-            "--db",
-            db.to_str().unwrap(),
-            "--date",
-            "2025-05",
-            "--json",
-        ])
+    let lib = dates_library();
+    let out = lib
+        .cmd()
+        .args(["search", "--date", "2025-05", "--json"])
         .output()
         .unwrap();
-    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(
         doc["results"][0]["date"], "2025-05-14T10:00:00",
         "every hit should report its effective date: {doc}"
@@ -434,47 +467,45 @@ fn hits_carry_the_effective_date() {
 
 #[test]
 fn explicit_sort_reorders_and_scores_prepend_the_primary_key() {
-    let (_home, db) = fixture_db_with_dates();
-    let newest = Command::new(videre_bin())
-        .args(["search", "--db", db.to_str().unwrap(), "--date", "2025"])
+    let lib = dates_library();
+    let newest = lib
+        .cmd()
+        .args(["search", "--date", "2025"])
         .output()
         .unwrap();
     let newest = String::from_utf8_lossy(&newest.stdout);
-    assert_eq!(
-        newest.lines().collect::<Vec<_>>(),
-        vec!["/jun.jpg", "/may.jpg"],
-        "date descending is the default without a query"
+    let newest: Vec<&str> = newest.lines().collect();
+    assert_eq!(newest.len(), 2);
+    assert!(
+        newest[0].ends_with("jun.jpg"),
+        "date descending is the default: {newest:?}"
     );
+    assert!(newest[1].ends_with("may.jpg"), "{newest:?}");
 
-    let oldest = Command::new(videre_bin())
-        .args([
-            "search",
-            "--db",
-            db.to_str().unwrap(),
-            "--date",
-            "2025",
-            "--sort",
-            "date:asc",
-            "--scores",
-        ])
+    let oldest = lib
+        .cmd()
+        .args(["search", "--date", "2025", "--sort", "date:asc", "--scores"])
         .output()
         .unwrap();
     let oldest = String::from_utf8_lossy(&oldest.stdout);
-    assert_eq!(
-        oldest.lines().collect::<Vec<_>>(),
-        vec![
-            "2025-05-14T10:00:00\t/may.jpg",
-            "2025-06-14T10:00:00\t/jun.jpg"
-        ],
-        "--scores prepends the primary sort key, here the date"
+    let oldest: Vec<&str> = oldest.lines().collect();
+    assert_eq!(oldest.len(), 2);
+    assert!(
+        oldest[0].starts_with("2025-05-14T10:00:00\t") && oldest[0].ends_with("may.jpg"),
+        "--scores prepends the primary sort key, here the date: {oldest:?}"
+    );
+    assert!(
+        oldest[1].starts_with("2025-06-14T10:00:00\t") && oldest[1].ends_with("jun.jpg"),
+        "{oldest:?}"
     );
 }
 
 #[test]
 fn sort_distance_without_location_is_rejected() {
-    let (_home, db) = fixture_db_with_dates();
-    let out = Command::new(videre_bin())
-        .args(["search", "--db", db.to_str().unwrap(), "--sort", "distance"])
+    let lib = dates_library();
+    let out = lib
+        .cmd()
+        .args(["search", "--sort", "distance"])
         .output()
         .unwrap();
     assert!(!out.status.success());
@@ -484,21 +515,13 @@ fn sort_distance_without_location_is_rejected() {
         "the error must say what is missing: {err}"
     );
 
-    // Under --json the single JSON object on stdout is the only channel, so
-    // the same message has to be reachable there too.
-    let json = Command::new(videre_bin())
-        .args([
-            "search",
-            "--db",
-            db.to_str().unwrap(),
-            "--sort",
-            "distance",
-            "--json",
-        ])
+    let json = lib
+        .cmd()
+        .args(["search", "--sort", "distance", "--json"])
         .output()
         .unwrap();
     assert!(!json.status.success());
-    let doc: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let doc: Value = serde_json::from_slice(&json.stdout).unwrap();
     assert!(
         doc["error"]["message"]
             .as_str()
@@ -510,17 +533,10 @@ fn sort_distance_without_location_is_rejected() {
 
 #[test]
 fn sort_relevance_without_a_query_is_rejected() {
-    let (_home, db) = fixture_db_with_dates();
-    let out = Command::new(videre_bin())
-        .args([
-            "search",
-            "--db",
-            db.to_str().unwrap(),
-            "--date",
-            "2025",
-            "--sort",
-            "relevance",
-        ])
+    let lib = dates_library();
+    let out = lib
+        .cmd()
+        .args(["search", "--date", "2025", "--sort", "relevance"])
         .output()
         .unwrap();
     assert!(!out.status.success());
@@ -530,17 +546,10 @@ fn sort_relevance_without_a_query_is_rejected() {
 
 #[test]
 fn a_bad_sort_spec_fails_before_any_query_work() {
-    let (_home, db) = fixture_db_with_dates();
-    let out = Command::new(videre_bin())
-        .args([
-            "search",
-            "--db",
-            db.to_str().unwrap(),
-            "--date",
-            "2025",
-            "--sort",
-            "bogus",
-        ])
+    let lib = dates_library();
+    let out = lib
+        .cmd()
+        .args(["search", "--date", "2025", "--sort", "bogus"])
         .output()
         .unwrap();
     assert!(!out.status.success());
@@ -550,9 +559,10 @@ fn a_bad_sort_spec_fails_before_any_query_work() {
 
 #[test]
 fn a_bad_date_is_rejected_with_the_accepted_forms() {
-    let (_home, db) = fixture_db_with_dates();
-    let out = Command::new(videre_bin())
-        .args(["search", "--db", db.to_str().unwrap(), "--date", "May 2025"])
+    let lib = dates_library();
+    let out = lib
+        .cmd()
+        .args(["search", "--date", "May 2025"])
         .output()
         .unwrap();
     assert!(!out.status.success());
@@ -562,16 +572,14 @@ fn a_bad_date_is_rejected_with_the_accepted_forms() {
 
 /// Truncation must be visible. A filter-only query has no ranker, so `-k` cuts
 /// an arbitrary slice of a larger set; without a count the user reads the short
-/// list as the whole answer. Reported as "broken" on a real library where a
-/// location+date query matched 47 files including 3 videos and the default 20
-/// happened to contain none of them.
+/// list as the whole answer.
 #[test]
 fn truncated_results_report_the_total_on_stderr_and_in_json() {
-    let (_dir, db) = fixture_db_with_dates();
+    let lib = dates_library();
 
-    let out = Command::new(videre_bin())
-        .args(["search", "--date", "2025", "-k", "1", "--db"])
-        .arg(&db)
+    let out = lib
+        .cmd()
+        .args(["search", "--date", "2025", "-k", "1"])
         .output()
         .expect("failed to run videre search");
     assert!(out.status.success());
@@ -587,10 +595,9 @@ fn truncated_results_report_the_total_on_stderr_and_in_json() {
         "the notice belongs on stderr so a piped stdout stays a bare path list"
     );
 
-    // Nothing dropped: no notice, or every piped invocation gains noise.
-    let full = Command::new(videre_bin())
-        .args(["search", "--date", "2025", "-k", "50", "--db"])
-        .arg(&db)
+    let full = lib
+        .cmd()
+        .args(["search", "--date", "2025", "-k", "50"])
         .output()
         .unwrap();
     let full_err = String::from_utf8_lossy(&full.stderr);
@@ -599,14 +606,12 @@ fn truncated_results_report_the_total_on_stderr_and_in_json() {
         "no notice when nothing was truncated: {full_err}"
     );
 
-    // JSON has no stderr to read, so an agent needs the total in the document
-    // itself or it cannot tell a complete answer from a truncated one.
-    let js = Command::new(videre_bin())
-        .args(["search", "--date", "2025", "-k", "1", "--json", "--db"])
-        .arg(&db)
+    let js = lib
+        .cmd()
+        .args(["search", "--date", "2025", "-k", "1", "--json"])
         .output()
         .unwrap();
-    let doc: serde_json::Value = serde_json::from_slice(&js.stdout).unwrap();
+    let doc: Value = serde_json::from_slice(&js.stdout).unwrap();
     assert_eq!(doc["count"], 1);
     assert_eq!(doc["total_matches"], 2);
     assert!(
@@ -615,102 +620,30 @@ fn truncated_results_report_the_total_on_stderr_and_in_json() {
     );
 }
 
-/// Mixed media, so the axes added in 0.15.0 have something to discriminate:
-/// two photos, two videos, one HEIC, spread across two folders and two months.
-fn fixture_db_with_mixed_media() -> (TempDir, PathBuf) {
-    let dir = tempdir().unwrap();
-    let db = dir.path().join("m.db");
-    let conn = videre_core::db::open_wal(&db).unwrap();
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS file_hashes (
-            path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
-            created_at TEXT, modified_at TEXT, ext TEXT, mime TEXT, phash INTEGER,
-            exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER);
-         INSERT INTO file_hashes (path, hash, size_bytes, modified_at, exif_date, ext, mime)
-         VALUES ('/a/photo1.jpg','p1',10,'2025-05-01T10:00:00','2025-05-01T10:00:00','jpg','image/jpeg'),
-                ('/a/photo2.heic','p2',10,'2025-05-02T10:00:00','2025-05-02T10:00:00','heic','image/heic'),
-                ('/b/clip1.mov','v1',10,'2025-06-01T10:00:00','2025-06-01T10:00:00','mov','video/quicktime'),
-                ('/b/clip2.mp4','v2',10,'2025-06-02T10:00:00','2025-06-02T10:00:00','mp4','video/mp4');
-         CREATE TABLE IF NOT EXISTS classifications (
-            model_id TEXT NOT NULL, hash TEXT NOT NULL, category TEXT NOT NULL,
-            confidence REAL NOT NULL, classified_at TEXT NOT NULL,
-            PRIMARY KEY (model_id, hash));",
-    )
-    .unwrap();
-    (dir, db)
-}
-
-fn fixture_db_with_presence() -> (TempDir, PathBuf) {
-    let dir = tempdir().unwrap();
-    let db = dir.path().join("presence.db");
-    let conn = videre_core::db::open_wal(&db).unwrap();
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS file_hashes (
-            path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
-            created_at TEXT, modified_at TEXT, ext TEXT, mime TEXT, phash INTEGER,
-            exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER);
-         INSERT INTO file_hashes
-            (path, hash, size_bytes, modified_at, exif_date, ext, mime, gps_lat, gps_lon)
-         VALUES
-            ('/presence/complete.jpg','complete',10,'2025-05-01T10:00:00','2025-05-01T10:00:00','jpg','image/jpeg',52.5,13.4),
-            ('/presence/missing-lat.jpg','missing_lat',10,'2025-05-02T10:00:00','2025-05-02T10:00:00','jpg','image/jpeg',NULL,13.4),
-            ('/presence/missing-lon.jpg','missing_lon',10,'2025-05-03T10:00:00','2025-05-03T10:00:00','jpg','image/jpeg',52.5,NULL),
-            ('/presence/missing-date.jpg','missing_date',10,NULL,NULL,'jpg','image/jpeg',52.5,13.4);
-         CREATE TABLE IF NOT EXISTS classifications (
-            model_id TEXT NOT NULL, hash TEXT NOT NULL, category TEXT NOT NULL,
-            confidence REAL NOT NULL, classified_at TEXT NOT NULL,
-            PRIMARY KEY (model_id, hash));",
-    )
-    .unwrap();
-    (dir, db)
-}
-
-fn search_paths(db: &PathBuf, args: &[&str]) -> Vec<String> {
-    let out = Command::new(videre_bin())
-        .arg("search")
-        .args(args)
-        .arg("--db")
-        .arg(db)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter(|l| l.starts_with('/'))
-        .map(|s| s.to_string())
-        .collect()
-}
-
 #[test]
 fn search_filters_by_missing_gps() {
-    let (_d, db) = fixture_db_with_presence();
-    let mut got = search_paths(&db, &["--missing", "gps"]);
+    let lib = presence_library();
+    let mut got = search_rel(&lib, &["--missing", "gps"]);
     got.sort();
     assert_eq!(
         got,
         vec![
-            "/presence/missing-lat.jpg".to_string(),
-            "/presence/missing-lon.jpg".to_string()
+            "presence/missing-lat.jpg".to_string(),
+            "presence/missing-lon.jpg".to_string()
         ]
     );
 
-    let out = Command::new(videre_bin())
-        .args(["search", "--db"])
-        .arg(&db)
-        .args(["--missing", "gps", "--json"])
+    let out = lib
+        .cmd()
+        .args(["search", "--missing", "gps", "--json"])
         .output()
         .unwrap();
-
     assert!(
         out.status.success(),
         "stderr={}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let json: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["query"]["kind"], "filter");
     assert!(json["query"]["value"]
         .as_str()
@@ -720,111 +653,95 @@ fn search_filters_by_missing_gps() {
 
 #[test]
 fn search_accepts_comma_separated_presence_fields() {
-    let (_d, db) = fixture_db_with_presence();
-    let got = search_paths(&db, &["--has", "gps,date"]);
-    assert_eq!(got, vec!["/presence/complete.jpg".to_string()]);
+    let lib = presence_library();
+    let got = search_rel(&lib, &["--has", "gps,date"]);
+    assert_eq!(got, vec!["presence/complete.jpg".to_string()]);
 }
 
 #[test]
 fn mime_selects_one_exact_type() {
-    // --mime had zero coverage anywhere in the suite before this.
-    let (_d, db) = fixture_db_with_mixed_media();
-    let got = search_paths(&db, &["--mime", "video/quicktime"]);
+    let lib = mixed_media_library();
+    let got = search_rel(&lib, &["--mime", "video/quicktime"]);
     assert_eq!(
         got,
-        vec!["/b/clip1.mov"],
+        vec!["b/clip1.mov"],
         "an exact mime must not match its neighbours"
     );
 
-    let got = search_paths(&db, &["--mime", "image/heic"]);
-    assert_eq!(got, vec!["/a/photo2.heic"]);
+    let got = search_rel(&lib, &["--mime", "image/heic"]);
+    assert_eq!(got, vec!["a/photo2.heic"]);
 }
 
 #[test]
 fn mime_is_repeatable_and_comma_separated() {
-    let (_d, db) = fixture_db_with_mixed_media();
-    let a = search_paths(&db, &["--mime", "video/quicktime,video/mp4"]);
-    let b = search_paths(&db, &["--mime", "video/quicktime", "--mime", "video/mp4"]);
+    let lib = mixed_media_library();
+    let a = search_rel(&lib, &["--mime", "video/quicktime,video/mp4"]);
+    let b = search_rel(&lib, &["--mime", "video/quicktime", "--mime", "video/mp4"]);
     assert_eq!(a.len(), 2);
     assert_eq!(a, b, "a comma list and repeated flags are the same request");
 }
 
 #[test]
 fn type_covers_a_family_that_no_single_extension_does() {
-    let (_d, db) = fixture_db_with_mixed_media();
-    let vids = search_paths(&db, &["--type", "video"]);
+    let lib = mixed_media_library();
+    let vids = search_rel(&lib, &["--type", "video"]);
     assert_eq!(vids.len(), 2, "mov and mp4 are both video");
-    let imgs = search_paths(&db, &["--type", "image"]);
+    let imgs = search_rel(&lib, &["--type", "image"]);
     assert_eq!(imgs.len(), 2, "jpeg and heic are both image");
 }
 
 #[test]
 fn ext_is_narrower_than_type() {
-    let (_d, db) = fixture_db_with_mixed_media();
-    assert_eq!(search_paths(&db, &["--ext", "mov"]), vec!["/b/clip1.mov"]);
-    assert_eq!(search_paths(&db, &["--ext", "mov,mp4"]).len(), 2);
+    let lib = mixed_media_library();
+    assert_eq!(search_rel(&lib, &["--ext", "mov"]), vec!["b/clip1.mov"]);
+    assert_eq!(search_rel(&lib, &["--ext", "mov,mp4"]).len(), 2);
 }
 
 #[test]
 fn path_restricts_to_a_subtree() {
-    let (_d, db) = fixture_db_with_mixed_media();
-    let got = search_paths(&db, &["--path", "/b"]);
-    assert_eq!(got.len(), 2, "only the /b subtree");
-    assert!(got.iter().all(|p| p.starts_with("/b/")));
+    let lib = mixed_media_library();
+    let got = search_rel(&lib, &["--path", "b"]);
+    assert_eq!(got.len(), 2, "only the b subtree");
+    assert!(got.iter().all(|p| p.starts_with("b/")));
 }
 
 #[test]
 fn the_new_axes_compose_with_the_old_ones() {
-    let (_d, db) = fixture_db_with_mixed_media();
-    // video AND June -> both clips; video AND May -> none, without being an error
+    let lib = mixed_media_library();
     assert_eq!(
-        search_paths(&db, &["--type", "video", "--date", "2025-06"]).len(),
+        search_rel(&lib, &["--type", "video", "--date", "2025-06"]).len(),
         2
     );
-    assert!(search_paths(&db, &["--type", "video", "--date", "2025-05"]).is_empty());
-    // three axes at once
+    assert!(search_rel(&lib, &["--type", "video", "--date", "2025-05"]).is_empty());
     assert_eq!(
-        search_paths(&db, &["--type", "video", "--ext", "mov", "--path", "/b"]),
-        vec!["/b/clip1.mov"]
+        search_rel(&lib, &["--type", "video", "--ext", "mov", "--path", "b"]),
+        vec!["b/clip1.mov"]
     );
-    // contradictory axes are empty, not an error
-    assert!(search_paths(&db, &["--type", "image", "--ext", "mov"]).is_empty());
+    assert!(search_rel(&lib, &["--type", "image", "--ext", "mov"]).is_empty());
 }
 
 #[test]
 fn a_media_filter_reports_its_total_in_json() {
-    let (_d, db) = fixture_db_with_mixed_media();
-    let out = Command::new(videre_bin())
+    let lib = mixed_media_library();
+    let out = lib
+        .cmd()
         .args(["search", "--type", "video", "--json", "-k", "1"])
-        .arg("--db")
-        .arg(&db)
         .output()
         .unwrap();
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json output must parse");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json output must parse");
     assert_eq!(v["total_matches"], 2, "total is before truncation");
     assert_eq!(v["results"].as_array().unwrap().len(), 1, "-k truncates");
 }
 
-/// KNOWN BUG - see BUGS.md item 4. `search --json` describes a media- or
-/// path-only query as a date query, because the QueryJson fallback chain checks
-/// text, image, person, category and location and then drops through to
-/// `kind: "date"` unconditionally. The four axes added in 0.15.0 are not in that
-/// chain, so `--type video --json` reports `{"kind":"date","value":".."}`.
-///
-/// Ignored rather than deleted: it fails today on purpose, and un-ignoring it is
-/// the check that the fix actually worked. Silent and machine-facing, which is
-/// why an audit found it rather than the suite.
 #[test]
-#[ignore = "known bug: QueryJson mislabels media/path-only queries as date"]
-fn json_names_the_axis_that_actually_filtered() {
-    let (_d, db) = fixture_db_with_mixed_media();
-    let out = Command::new(videre_bin())
+fn a_media_filter_is_named_rather_than_mislabeled_as_a_date_query() {
+    let lib = mixed_media_library();
+    let out = lib
+        .cmd()
         .args(["search", "--type", "video", "--json"])
-        .arg("--db")
-        .arg(&db)
         .output()
         .unwrap();
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_ne!(
         v["query"]["kind"], "date",
         "a --type query is not a date query: {}",

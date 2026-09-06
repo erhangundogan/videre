@@ -11,13 +11,13 @@
 
 mod server;
 
-use std::path::PathBuf;
+use crate::command_context::CommandContext;
 
 #[derive(clap::Args)]
 pub struct GalleryArgs {
     /// SQLite database (default: resolved from ~/.videre; see 'videre config')
     #[arg(long)]
-    db: Option<PathBuf>,
+    db: Option<std::path::PathBuf>,
 
     /// Embedding model backing the in-page similarity search
     /// (default: 'videre config set model', else the built-in default).
@@ -33,16 +33,17 @@ pub struct GalleryArgs {
     browse: bool,
 }
 
-pub fn run(args: GalleryArgs) -> anyhow::Result<()> {
-    let db = super::resolve_reader_db(args.db.clone())?;
-    if !db.exists() {
-        eprintln!("Error: {:?} does not exist", db);
+// Kept fail-closed in main's dispatch until C8 binds the server's image, cache
+// and request paths to the context; the signature and context threading are in
+// place so C8 only flips the dispatch arm.
+pub fn run(args: GalleryArgs, ctx: &CommandContext) -> anyhow::Result<()> {
+    if !ctx.library.paths.db.exists() {
+        eprintln!("Error: {:?} does not exist", ctx.library.paths.db);
         std::process::exit(1);
     }
-    server::serve_gallery(
-        &db,
-        videre_core::embeddings::resolve_model_id(args.model.as_deref())?,
-        args.port,
-        args.browse,
-    )
+    let model_id = videre_core::embeddings::resolve_model_id_from(
+        &ctx.library.settings,
+        args.model.as_deref(),
+    )?;
+    server::serve_gallery(ctx, model_id, args.port, args.browse)
 }

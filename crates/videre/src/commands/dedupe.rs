@@ -1,13 +1,9 @@
-use std::path::PathBuf;
+use crate::command_context::CommandContext;
 use std::process;
 use videre::types::ErrorJson;
 
 #[derive(clap::Args)]
 pub struct DedupeArgs {
-    /// SQLite database (default: resolved from ~/.videre; see 'videre config')
-    #[arg(long)]
-    db: Option<PathBuf>,
-
     /// Also report perceptual-hash near-duplicate clusters (review-only)
     #[arg(long)]
     similar: bool,
@@ -23,12 +19,12 @@ pub struct DedupeArgs {
     /// Also write the duplicate groups to a browsable HTML page.
     /// Bare --html targets <db>_duplicates.html.
     #[arg(long, num_args = 0..=1)]
-    html: Option<Option<PathBuf>>,
+    html: Option<Option<std::path::PathBuf>>,
 }
 
-pub fn run(args: DedupeArgs) -> anyhow::Result<()> {
+pub fn run(args: DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     if args.json {
-        match run_json(&args) {
+        match run_json(&args, ctx) {
             Ok(doc) => {
                 println!("{}", serde_json::to_string(&doc)?);
                 Ok(())
@@ -39,7 +35,7 @@ pub fn run(args: DedupeArgs) -> anyhow::Result<()> {
             }
         }
     } else {
-        run_text(args)
+        run_text(args, ctx)
     }
 }
 
@@ -49,50 +45,56 @@ pub fn run(args: DedupeArgs) -> anyhow::Result<()> {
 /// nothing; this renders the set the command just produced, so it survives the
 /// process and can be archived or opened later.
 fn write_html(
+    ctx: &CommandContext,
     conn: &rusqlite::Connection,
     arg: Option<&std::path::Path>,
-    db: &std::path::Path,
 ) -> anyhow::Result<()> {
-    let output = if let Some(p) = arg {
-        p.to_path_buf()
-    } else {
-        let mut p = db.to_path_buf();
-        let stem = db
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
-        p.set_file_name(format!("{stem}_duplicates.html"));
-        p
+    let db = &ctx.library.paths.db;
+    // A bare --html targets a page beside the selected database; an explicit
+    // relative path is an operand, resolved against the launch directory.
+    let output = match arg {
+        Some(p) => ctx.operand(p),
+        None => {
+            let mut p = db.clone();
+            let stem = db
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            p.set_file_name(format!("{stem}_duplicates.html"));
+            p
+        }
     };
     let groups = crate::render::query_groups(conn);
     crate::render::write_static_page(conn, &output, &groups, None)
 }
 
-fn run_text(args: DedupeArgs) -> anyhow::Result<()> {
-    let db = match super::resolve_reader_db_must_exist(args.db.clone()) {
-        Ok(db) => db,
+fn run_text(args: DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
+    let conn = match videre_core::library_db::open_existing(&ctx.library) {
+        Ok(c) => c,
         Err(e) => {
             eprintln!("Error: {e:#}");
             process::exit(1);
         }
     };
-    let conn = match videre_core::db::open_wal(&db) {
-        Ok(c) => c,
+    let guard = match videre_core::library_locks::try_command(&ctx.library, "dedupe") {
+        Ok(g) => g,
         Err(e) => {
-            eprintln!("Error opening {:?}: {}", db, e);
+            eprintln!("Error: {e:#}");
             process::exit(1);
         }
     };
 
     let result =
-        videre_core::pipeline_runs::track(&conn, &db, "dedupe", || run_dedupe_text(&args, &db));
+        videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "dedupe", || {
+            run_dedupe_text(&args, &conn)
+        });
     if let Err(e) = result {
         eprintln!("Error: {e:#}");
         process::exit(1);
     }
 
     if let Some(arg) = args.html.as_ref() {
-        if let Err(e) = write_html(&conn, arg.as_deref(), &db) {
+        if let Err(e) = write_html(ctx, &conn, arg.as_deref()) {
             eprintln!("Error: {e:#}");
             process::exit(1);
         }
@@ -100,10 +102,10 @@ fn run_text(args: DedupeArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The actual dedupe-reporting work, wrapped by `track()` above.
-fn run_dedupe_text(args: &DedupeArgs, db: &std::path::Path) -> anyhow::Result<()> {
-    let records = videre::sqlite_output::load_records(db)
-        .map_err(|e| anyhow::anyhow!("reading {:?}: {}", db, e))?;
+/// The actual dedupe-reporting work, wrapped by `track_in()` above.
+fn run_dedupe_text(args: &DedupeArgs, conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    let records = videre::sqlite_output::load_records_from(conn)
+        .map_err(|e| anyhow::anyhow!("reading the library database: {e}"))?;
 
     let groups = videre::output::find_duplicate_groups(&records);
     if !args.silent {
@@ -132,10 +134,13 @@ fn run_dedupe_text(args: &DedupeArgs, db: &std::path::Path) -> anyhow::Result<()
     Ok(())
 }
 
-fn run_json(args: &DedupeArgs) -> anyhow::Result<videre::types::FindDuplicatesJson> {
-    let db = super::resolve_reader_db_must_exist(args.db.clone())?;
-    let conn = videre_core::db::open_wal(&db)?;
-    videre_core::pipeline_runs::track(&conn, &db, "dedupe", || {
-        super::build_find_duplicates(&db, args.similar)
+fn run_json(
+    args: &DedupeArgs,
+    ctx: &CommandContext,
+) -> anyhow::Result<videre::types::FindDuplicatesJson> {
+    let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    let guard = videre_core::library_locks::try_command(&ctx.library, "dedupe")?;
+    videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "dedupe", || {
+        super::build_find_duplicates_from(&conn, args.similar)
     })
 }

@@ -149,19 +149,23 @@ fn main() {
         },
         Command::Config(args) => command_context::CommandContext::capture(library)
             .and_then(|ctx| commands::config::run(args, &ctx)),
-        Command::Dedupe(_) => unconverted("dedupe"),
+        Command::Dedupe(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::dedupe::run(args, &ctx)),
         Command::Gallery(_) => unconverted("gallery"),
         Command::FixDates(_) => unconverted("fix-dates"),
         Command::Import(_) => unconverted("import"),
         Command::Prune(_) => unconverted("prune"),
-        Command::Locations(_) => unconverted("locations"),
+        Command::Locations(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::locations::run(args, &ctx)),
         Command::Embed(_) => unconverted("embed"),
-        Command::Search(_) => unconverted("search"),
+        Command::Search(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::search::run(args, &ctx)),
         Command::Faces(_) => unconverted("faces"),
         Command::Classify(_) => unconverted("classify"),
         Command::Watch(_) => unconverted("watch"),
         Command::Mcp(_) => unconverted("mcp"),
-        Command::Stats(_) => unconverted("stats"),
+        Command::Stats(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::stats::run(args, &ctx)),
         Command::Mark(_) => unconverted("mark"),
         Command::Export(_) => unconverted("export"),
         Command::Tag(_) => unconverted("tag"),

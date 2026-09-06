@@ -84,7 +84,17 @@ pub(crate) fn build_find_duplicates(
     db: &std::path::Path,
     include_similar: bool,
 ) -> anyhow::Result<videre::types::FindDuplicatesJson> {
-    let records = videre::sqlite_output::load_records(db)?;
+    let conn = videre_core::db::open_wal(db)?;
+    build_find_duplicates_from(&conn, include_similar)
+}
+
+/// The connection-based twin, for directory-local commands that already hold a
+/// validated connection to the selected library and must not reopen the file.
+pub(crate) fn build_find_duplicates_from(
+    conn: &rusqlite::Connection,
+    include_similar: bool,
+) -> anyhow::Result<videre::types::FindDuplicatesJson> {
+    let records = videre::sqlite_output::load_records_from(conn)?;
     let total_files = records.len();
     let duplicate_groups = videre::output::find_duplicate_groups(&records)
         .into_iter()

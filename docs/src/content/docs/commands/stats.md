@@ -7,7 +7,7 @@ description: Library totals and what has run recently, in one shot.
 videre stats                           # library totals and what has run recently
 videre stats --json                    # print one JSON object instead
 videre stats --check                   # exit non-zero if anything failed or crashed (for cron)
-videre stats --db ~/photos.db          # use a specific database
+videre --library ~/Photos stats        # select a different library
 ```
 
 ## Reading the output
@@ -231,8 +231,8 @@ videre stats --json | jq -r '.pipelines[] | select(.status != "success") | .comm
 until [`videre prune`](/commands/prune/) runs, which is the usual reason a
 freshly cleaned library still reports duplicates.
 
-**It requires an existing database.** Unlike `embed` or `classify`, pointing
-`--db` at a path that does not exist fails cleanly instead of creating an empty
+**It requires an existing database.** Unlike `embed` or `classify`, running in a
+library that has not been scanned yet fails cleanly instead of creating an empty
 one.
 
 **Sizes are what the files claim**, taken from the database rather than measured

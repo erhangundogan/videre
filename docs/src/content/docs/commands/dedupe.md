@@ -10,7 +10,7 @@ stdout, and nothing else, so it pipes cleanly.
 videre dedupe                          # list removable copies (one path per line)
 videre dedupe | xargs trash            # ...and delete them
 videre dedupe --similar                # also report look-alike groups (review only)
-videre dedupe --db ~/photos.db         # use a specific database
+videre --library ~/Photos dedupe       # select a different library
 videre dedupe --silent                 # suppress the summary; paths still print
 videre dedupe --json                   # print one JSON object instead
 ```

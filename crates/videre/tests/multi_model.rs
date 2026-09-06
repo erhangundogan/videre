@@ -2,10 +2,8 @@
 //! one library, and several libraries not treading on each other.
 
 mod common;
-use common::{isolated_home, videre_bin};
-
-use std::process::Command;
-use tempfile::tempdir;
+use common::TestLibrary;
+use rusqlite::params;
 
 const MODEL_A: &str = "google/siglip2-base-patch16-384";
 const MODEL_B: &str = "google/siglip-base-patch16-224";
@@ -73,45 +71,36 @@ fn feature_fixture_seeds_divergent_libraries_isolated_by_root() {
 ///
 /// Synthetic vectors on purpose: this covers routing and cleanup, not
 /// embedding quality, and loading real SigLIP weights would make it slow and
-/// network-dependent.
-fn seeded_library_in(
-    root: &std::path::Path,
-    name: &str,
-) -> (std::path::PathBuf, std::path::PathBuf) {
-    let scan_dir = root.join(format!("{name}-files"));
-    std::fs::create_dir_all(&scan_dir).unwrap();
-    let photo = scan_dir.join("a.jpg");
-    std::fs::copy("tests/fixtures/sample_with_exif.jpg", &photo).unwrap();
+/// network-dependent. One real file is scanned so the row exists for prune to
+/// reason about.
+fn seeded_library() -> TestLibrary {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("sample_with_exif.jpg", "a.jpg");
+    lib.scan();
 
-    let db = root.join(format!("{name}.db"));
-    let status = Command::new(videre_bin())
-        .args(["scan", "--silent", "--output-sqlite"])
-        .arg(&db)
-        .arg(&scan_dir)
-        .status()
-        .expect("failed to run videre scan");
-    assert!(status.success(), "scan failed for {name}");
-
-    let conn = rusqlite::Connection::open(&db).unwrap();
+    let ctx = lib.context();
+    let conn = lib.conn();
     let hash: String = conn
         .query_row("SELECT hash FROM file_hashes LIMIT 1", [], |r| r.get(0))
         .unwrap();
     for model in [MODEL_A, MODEL_B] {
-        videre_core::embeddings_db::attach(&conn, &db, model, true).unwrap();
+        videre_core::embeddings_db::attach_in(&conn, &ctx, model, true).unwrap();
         conn.execute(
             "INSERT INTO emb.embeddings (hash, model_id, embedding, embedded_at)
              VALUES (?1, ?2, zeroblob(1536), '2026-08-05T00:00:00')",
-            rusqlite::params![hash, model],
+            params![hash, model],
         )
         .unwrap();
         videre_core::embeddings_db::detach(&conn).unwrap();
     }
-    (db, photo)
+    lib
 }
 
-fn count_embeddings(db: &std::path::Path, model: &str) -> i64 {
-    isolated_home();
-    let path = videre_core::embeddings_db::db_path(db, model).unwrap();
+fn count_embeddings(lib: &TestLibrary, model: &str) -> i64 {
+    let path = videre_core::embeddings_db::db_path_in(&lib.context(), model).unwrap();
+    if !path.exists() {
+        return 0;
+    }
     let conn = rusqlite::Connection::open(path).unwrap();
     conn.query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0))
         .unwrap_or(0)
@@ -119,26 +108,23 @@ fn count_embeddings(db: &std::path::Path, model: &str) -> i64 {
 
 #[test]
 fn two_models_coexist_in_one_library() {
-    let dir = tempdir().unwrap();
-    let (db, _photo) = seeded_library_in(dir.path(), "coexist");
-
-    assert_eq!(count_embeddings(&db, MODEL_A), 1);
-    assert_eq!(count_embeddings(&db, MODEL_B), 1);
+    let lib = seeded_library();
+    assert_eq!(count_embeddings(&lib, MODEL_A), 1);
+    assert_eq!(count_embeddings(&lib, MODEL_B), 1);
+    let ctx = lib.context();
     assert_ne!(
-        videre_core::embeddings_db::db_path(&db, MODEL_A).unwrap(),
-        videre_core::embeddings_db::db_path(&db, MODEL_B).unwrap(),
+        videre_core::embeddings_db::db_path_in(&ctx, MODEL_A).unwrap(),
+        videre_core::embeddings_db::db_path_in(&ctx, MODEL_B).unwrap(),
         "each model must own a distinct file"
     );
 }
 
 #[test]
 fn stats_reports_every_model_separately() {
-    let dir = tempdir().unwrap();
-    let (db, _photo) = seeded_library_in(dir.path(), "statsmm");
-
-    let out = Command::new(videre_bin())
-        .args(["stats", "--json", "--db"])
-        .arg(&db)
+    let lib = seeded_library();
+    let out = lib
+        .cmd()
+        .args(["stats", "--json"])
         .output()
         .expect("failed to run videre stats");
     assert!(
@@ -165,13 +151,10 @@ fn stats_reports_every_model_separately() {
 
 #[test]
 fn search_names_the_available_models_when_one_is_missing() {
-    let dir = tempdir().unwrap();
-    let (db, _photo) = seeded_library_in(dir.path(), "missingmodel");
-
-    let out = Command::new(videre_bin())
-        .args(["search", "anything", "--db"])
-        .arg(&db)
-        .args(["--model", "google/does-not-exist-384"])
+    let lib = seeded_library();
+    let out = lib
+        .cmd()
+        .args(["search", "anything", "--model", "google/does-not-exist-384"])
         .output()
         .expect("failed to run videre search");
 
@@ -190,15 +173,15 @@ fn search_names_the_available_models_when_one_is_missing() {
     );
 }
 
+// The two prune tests below exercise `videre prune`, whose directory-local
+// entry point lands in a later task; they stay red until then.
 #[test]
 fn prune_removes_orphans_from_every_model_database() {
-    let dir = tempdir().unwrap();
-    let (db, photo) = seeded_library_in(dir.path(), "pruneall");
-
-    std::fs::remove_file(&photo).unwrap();
-    let out = Command::new(videre_bin())
-        .args(["prune", "--db"])
-        .arg(&db)
+    let lib = seeded_library();
+    std::fs::remove_file(lib.root.join("a.jpg")).unwrap();
+    let out = lib
+        .cmd()
+        .arg("prune")
         .output()
         .expect("failed to run videre prune");
     assert!(
@@ -209,7 +192,7 @@ fn prune_removes_orphans_from_every_model_database() {
 
     for model in [MODEL_A, MODEL_B] {
         assert_eq!(
-            count_embeddings(&db, model),
+            count_embeddings(&lib, model),
             0,
             "{model} still holds an orphan"
         );
@@ -221,20 +204,19 @@ fn pruning_one_library_leaves_another_librarys_embeddings_alone() {
     // The reason embeddings are per-library rather than global. A global
     // layout cannot see the other library's file_hashes, so this sweep would
     // delete vectors that are still in use, at hours of recompute to restore.
-    let dir = tempdir().unwrap();
-    let (db_a, photo_a) = seeded_library_in(dir.path(), "libA");
-    let (db_b, _photo_b) = seeded_library_in(dir.path(), "libB");
+    let lib_a = seeded_library();
+    let lib_b = seeded_library();
 
     assert_eq!(
-        count_embeddings(&db_b, MODEL_A),
+        count_embeddings(&lib_b, MODEL_A),
         1,
         "library B must start with an embedding for this to prove anything"
     );
 
-    std::fs::remove_file(&photo_a).unwrap();
-    let out = Command::new(videre_bin())
-        .args(["prune", "--db"])
-        .arg(&db_a)
+    std::fs::remove_file(lib_a.root.join("a.jpg")).unwrap();
+    let out = lib_a
+        .cmd()
+        .arg("prune")
         .output()
         .expect("failed to run videre prune");
     assert!(
@@ -243,9 +225,9 @@ fn pruning_one_library_leaves_another_librarys_embeddings_alone() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    assert_eq!(count_embeddings(&db_a, MODEL_A), 0, "library A was pruned");
+    assert_eq!(count_embeddings(&lib_a, MODEL_A), 0, "library A was pruned");
     assert_eq!(
-        count_embeddings(&db_b, MODEL_A),
+        count_embeddings(&lib_b, MODEL_A),
         1,
         "library B must be untouched"
     );

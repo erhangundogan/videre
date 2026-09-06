@@ -1,76 +1,69 @@
 mod common;
-use common::videre_bin as bin;
-use rusqlite::Connection;
-use std::process::Command;
-use tempfile::tempdir;
 
-fn make_db(dir: &std::path::Path) -> std::path::PathBuf {
-    let db = dir.join("test.db");
-    let conn = Connection::open(&db).unwrap();
+use common::TestLibrary;
+
+/// A library seeded with three confirmed faces (two Alice, one Bob), each file
+/// path under the canonical root so the row-containment guard accepts it.
+fn make_library() -> TestLibrary {
+    let lib = TestLibrary::new();
+    let root = lib.context().paths.root;
+    let conn = lib.init_db();
+    for (rel, hash) in [
+        ("alice1.jpg", "hash1"),
+        ("alice2.jpg", "hash2"),
+        ("bob.jpg", "hash3"),
+    ] {
+        let path = root.join(rel);
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, ext) VALUES (?1, ?2, 'jpg')",
+            rusqlite::params![path.to_string_lossy().as_ref(), hash],
+        )
+        .unwrap();
+    }
     conn.execute_batch(
-        "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL,
-         size_bytes INTEGER, created_at TEXT, modified_at TEXT, ext TEXT,
-         phash INTEGER, exif_date TEXT, gps_lat REAL, gps_lon REAL,
-         width INTEGER, height INTEGER);
-         CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL,
-         bbox TEXT NOT NULL, landmark TEXT, embedding BLOB NOT NULL,
-         cluster_id INTEGER, person_label TEXT, confirmed INTEGER DEFAULT 0,
-         is_primary INTEGER DEFAULT 0);
-         CREATE TABLE embeddings (hash TEXT PRIMARY KEY, model_id TEXT NOT NULL,
-         embedding BLOB NOT NULL, embedded_at TEXT NOT NULL);
-         INSERT INTO file_hashes (path, hash, ext) VALUES ('/tmp/alice1.jpg', 'hash1', 'jpg');
-         INSERT INTO file_hashes (path, hash, ext) VALUES ('/tmp/alice2.jpg', 'hash2', 'jpg');
-         INSERT INTO file_hashes (path, hash, ext) VALUES ('/tmp/bob.jpg', 'hash3', 'jpg');
-         INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
-           VALUES ('hash1', '0,0,50,50', X'0000', 'alice', 1);
-         INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
-           VALUES ('hash2', '0,0,50,50', X'0000', 'alice', 1);
-         INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
-           VALUES ('hash3', '0,0,50,50', X'0000', 'bob', 1);",
+        "INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
+           VALUES ('hash1', '0,0,50,50', X'0000', 'alice', 1),
+                  ('hash2', '0,0,50,50', X'0000', 'alice', 1),
+                  ('hash3', '0,0,50,50', X'0000', 'bob', 1);",
     )
     .unwrap();
-    videre_core::db::ensure_file_hashes_columns(&conn);
-    db
+    lib
 }
 
 #[test]
 fn person_search_prints_confirmed_paths() {
-    let dir = tempdir().unwrap();
-    let db = make_db(dir.path());
-    let out = Command::new(bin())
-        .arg("search")
-        .arg("--db")
-        .arg(&db)
-        .arg("--person")
-        .arg("Alice")
+    let lib = make_library();
+    let out = lib
+        .cmd()
+        .args(["search", "--person", "Alice"])
         .output()
         .expect("failed to run videre search");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success());
     assert!(
-        stdout.contains("/tmp/alice1.jpg"),
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("alice1.jpg"),
         "Expected alice1 in output:\n{stdout}"
     );
     assert!(
-        stdout.contains("/tmp/alice2.jpg"),
+        stdout.contains("alice2.jpg"),
         "Expected alice2 in output:\n{stdout}"
     );
     assert!(
-        !stdout.contains("/tmp/bob.jpg"),
+        !stdout.contains("bob.jpg"),
         "Expected bob not in output:\n{stdout}"
     );
 }
 
 #[test]
 fn person_search_empty_for_unknown_name() {
-    let dir = tempdir().unwrap();
-    let db = make_db(dir.path());
-    let out = Command::new(bin())
-        .arg("search")
-        .arg("--db")
-        .arg(&db)
-        .arg("--person")
-        .arg("Unknown")
+    let lib = make_library();
+    let out = lib
+        .cmd()
+        .args(["search", "--person", "Unknown"])
         .output()
         .expect("failed to run videre search");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -80,32 +73,24 @@ fn person_search_empty_for_unknown_name() {
 
 #[test]
 fn person_search_unconfirmed_not_returned() {
-    let dir = tempdir().unwrap();
-    let db = dir.path().join("test2.db");
-    let conn = Connection::open(&db).unwrap();
-    conn.execute_batch(
-        "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL,
-         size_bytes INTEGER, created_at TEXT, modified_at TEXT, ext TEXT,
-         phash INTEGER, exif_date TEXT, gps_lat REAL, gps_lon REAL,
-         width INTEGER, height INTEGER);
-         CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL,
-         bbox TEXT NOT NULL, landmark TEXT, embedding BLOB NOT NULL,
-         cluster_id INTEGER, person_label TEXT, confirmed INTEGER DEFAULT 0,
-         is_primary INTEGER DEFAULT 0);
-         CREATE TABLE embeddings (hash TEXT PRIMARY KEY, model_id TEXT NOT NULL,
-         embedding BLOB NOT NULL, embedded_at TEXT NOT NULL);
-         INSERT INTO file_hashes (path, hash, ext) VALUES ('/tmp/carol.jpg', 'hash4', 'jpg');
-         INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
-           VALUES ('hash4', '0,0,50,50', X'0000', 'Carol', 0);",
+    let lib = TestLibrary::new();
+    let path = lib.context().paths.root.join("carol.jpg");
+    let conn = lib.init_db();
+    conn.execute(
+        "INSERT INTO file_hashes (path, hash, ext) VALUES (?1, 'hash4', 'jpg')",
+        [path.to_string_lossy().as_ref()],
     )
     .unwrap();
-    videre_core::db::ensure_file_hashes_columns(&conn);
-    let out = Command::new(bin())
-        .arg("search")
-        .arg("--db")
-        .arg(&db)
-        .arg("--person")
-        .arg("Carol")
+    conn.execute(
+        "INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
+           VALUES ('hash4', '0,0,50,50', X'0000', 'Carol', 0)",
+        [],
+    )
+    .unwrap();
+
+    let out = lib
+        .cmd()
+        .args(["search", "--person", "Carol"])
         .output()
         .expect("failed to run videre search");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -118,18 +103,17 @@ fn person_search_unconfirmed_not_returned() {
 
 #[test]
 fn person_search_json_outputs_document() {
-    let dir = tempdir().unwrap();
-    let db = make_db(dir.path());
-    let out = Command::new(bin())
-        .arg("search")
-        .arg("--db")
-        .arg(&db)
-        .arg("--person")
-        .arg("Alice")
-        .arg("--json")
+    let lib = make_library();
+    let out = lib
+        .cmd()
+        .args(["search", "--person", "Alice", "--json"])
         .output()
         .expect("failed to run videre search");
-    assert!(out.status.success());
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let doc: serde_json::Value =
         serde_json::from_slice(&out.stdout).expect("stdout must be one valid JSON object");
     assert_eq!(doc["schema_version"], 1);
@@ -147,25 +131,15 @@ fn person_search_json_outputs_document() {
 
 #[test]
 fn person_search_json_scores_flag_is_silent_noop() {
-    let dir = tempdir().unwrap();
-    let db = make_db(dir.path());
-    let plain = Command::new(bin())
-        .arg("search")
-        .arg("--db")
-        .arg(&db)
-        .arg("--person")
-        .arg("Alice")
-        .arg("--json")
+    let lib = make_library();
+    let plain = lib
+        .cmd()
+        .args(["search", "--person", "Alice", "--json"])
         .output()
         .expect("failed to run videre search");
-    let with_scores = Command::new(bin())
-        .arg("search")
-        .arg("--db")
-        .arg(&db)
-        .arg("--person")
-        .arg("Alice")
-        .arg("--json")
-        .arg("--scores")
+    let with_scores = lib
+        .cmd()
+        .args(["search", "--person", "Alice", "--json", "--scores"])
         .output()
         .expect("failed to run videre search");
     assert!(
@@ -180,17 +154,14 @@ fn person_search_json_scores_flag_is_silent_noop() {
 
 #[test]
 fn search_json_error_is_json_object_on_stdout() {
-    let dir = tempdir().unwrap();
-    // Fresh DB with no tables: open_wal succeeds (SQLite creates the file),
-    // then load_embeddings fails (no embeddings table): the reliable error trigger.
-    let db = dir.path().join("empty.db");
-    Connection::open(&db).unwrap();
-    let out = Command::new(bin())
-        .arg("search")
-        .arg("--db")
-        .arg(&db)
-        .arg("beach")
-        .arg("--json")
+    // A library with a database but no embeddings: a text search fails when it
+    // cannot attach a model store, and the error must arrive as one JSON object
+    // on stdout rather than a bare stderr line.
+    let lib = TestLibrary::new();
+    lib.init_db();
+    let out = lib
+        .cmd()
+        .args(["search", "beach", "--json"])
         .output()
         .expect("failed to run videre search");
     assert!(!out.status.success(), "must exit nonzero");
@@ -205,15 +176,10 @@ fn search_json_error_is_json_object_on_stdout() {
 fn person_search_json_empty_is_silent_on_stderr() {
     // A clean agent invocation (--json) must not leak the human "No confirmed
     // photos" line to stderr; the empty result is already conveyed as count 0.
-    let dir = tempdir().unwrap();
-    let db = make_db(dir.path());
-    let out = Command::new(bin())
-        .arg("search")
-        .arg("--db")
-        .arg(&db)
-        .arg("--person")
-        .arg("Unknown")
-        .arg("--json")
+    let lib = make_library();
+    let out = lib
+        .cmd()
+        .args(["search", "--person", "Unknown", "--json"])
         .output()
         .expect("failed to run videre search");
     assert!(out.status.success());
@@ -228,13 +194,13 @@ fn person_search_json_empty_is_silent_on_stderr() {
 }
 
 #[test]
-fn search_json_missing_default_db_yields_json_error() {
-    let home = tempdir().unwrap();
-    let out = Command::new(bin())
-        .arg("search")
-        .arg("beach")
-        .arg("--json")
-        .env("VIDERE_HOME", home.path())
+fn search_json_on_uninitialized_library_yields_json_error() {
+    // No scan has run, so the selected library has no database. A --json search
+    // still emits exactly one JSON error object on stdout.
+    let lib = TestLibrary::new();
+    let out = lib
+        .cmd()
+        .args(["search", "beach", "--json"])
         .output()
         .expect("failed to run videre search");
     assert!(!out.status.success());
@@ -242,63 +208,5 @@ fn search_json_missing_default_db_yields_json_error() {
         .expect("stdout must be one valid JSON object even on error");
     assert_eq!(doc["schema_version"], 1);
     let msg = doc["error"]["message"].as_str().unwrap();
-    assert!(msg.contains("no database found"), "{msg}");
-}
-
-#[test]
-fn videre_home_outranks_config_default_db_and_explicit_db_wins() {
-    let dir = tempdir().unwrap();
-    let db = make_db(dir.path());
-    let home = tempdir().unwrap();
-
-    let set = Command::new(bin())
-        .arg("config")
-        .arg("set")
-        .arg("db")
-        .arg(&db)
-        .env("VIDERE_HOME", home.path())
-        .status()
-        .unwrap();
-    assert!(set.success());
-
-    // VIDERE_HOME outranks the configured db (0.14.1). Before that the config
-    // won, so a home copied from another wrote back into the source library.
-    // The divergence must be announced, not applied silently.
-    let out = Command::new(bin())
-        .arg("search")
-        .arg("--person")
-        .arg("Alice")
-        .env("VIDERE_HOME", home.path())
-        .output()
-        .unwrap();
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("VIDERE_HOME is set"),
-        "the ignored default_db must be reported: {stderr}"
-    );
-    assert!(
-        !String::from_utf8_lossy(&out.stdout).contains("/tmp/alice1.jpg"),
-        "the configured db must not be consulted when VIDERE_HOME is set"
-    );
-
-    // explicit --db wins for one invocation and does not modify config
-    let cfg_before = std::fs::read_to_string(home.path().join("config.toml")).unwrap();
-    let dir2 = tempdir().unwrap();
-    let db2 = make_db(dir2.path());
-    let out2 = Command::new(bin())
-        .arg("search")
-        .arg("--db")
-        .arg(&db2)
-        .arg("--person")
-        .arg("Bob")
-        .env("VIDERE_HOME", home.path())
-        .output()
-        .unwrap();
-    assert!(out2.status.success());
-    assert!(String::from_utf8_lossy(&out2.stdout).contains("/tmp/bob.jpg"));
-    let cfg_after = std::fs::read_to_string(home.path().join("config.toml")).unwrap();
-    assert_eq!(
-        cfg_before, cfg_after,
-        "explicit --db must not modify config"
-    );
+    assert!(msg.contains("not initialized"), "{msg}");
 }
