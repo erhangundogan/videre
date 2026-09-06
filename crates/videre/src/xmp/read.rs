@@ -3,7 +3,9 @@
 //! reads EXIF, not XMP, so this is separate. Best-effort: any parse failure
 //! yields no marks rather than an error, so a malformed packet never fails a scan.
 
-use std::path::Path;
+use std::ffi::{OsStr, OsString};
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 const XMP_NS: &str = "http://ns.adobe.com/xap/1.0/";
 const MWG_RS_NS: &str = "http://www.metadataworkinggroup.com/schemas/regions/";
@@ -151,10 +153,7 @@ pub fn parse_xmp_data(doc: &str) -> XmpData {
 /// Never errors; a missing or malformed source yields an
 /// empty `XmpData`.
 pub fn read_data(path: &Path) -> XmpData {
-    let sidecar = path.with_extension(match path.extension().and_then(|e| e.to_str()) {
-        Some(ext) => format!("{ext}.xmp"),
-        None => "xmp".to_string(),
-    });
+    let sidecar = sidecar_path(path);
     if let Ok(doc) = std::fs::read_to_string(&sidecar) {
         let d = parse_xmp_data(&doc);
         if d != XmpData::default() {
@@ -167,11 +166,67 @@ pub fn read_data(path: &Path) -> XmpData {
     XmpData::default()
 }
 
+pub fn read_data_in(ctx: &videre_core::library::LibraryContext, path: &Path) -> XmpData {
+    let sidecar = sidecar_path(path);
+    if let Some(doc) = read_confined(ctx, &sidecar).and_then(|bytes| String::from_utf8(bytes).ok())
+    {
+        let data = parse_xmp_data(&doc);
+        if data != XmpData::default() {
+            return data;
+        }
+    }
+    if let Some(bytes) = read_confined(ctx, path) {
+        if let Some(doc) = embedded_packet_bytes(&bytes) {
+            return parse_xmp_data(&doc);
+        }
+    }
+    XmpData::default()
+}
+
+fn sidecar_path(path: &Path) -> PathBuf {
+    let mut extension = path
+        .extension()
+        .unwrap_or_else(|| OsStr::new(""))
+        .to_os_string();
+    if !extension.is_empty() {
+        extension.push(".xmp");
+    } else {
+        extension = OsString::from("xmp");
+    }
+    path.with_extension(extension)
+}
+
+fn read_confined(ctx: &videre_core::library::LibraryContext, path: &Path) -> Option<Vec<u8>> {
+    let file = videre_core::library_io::open_media(ctx, path).ok()?;
+    let stat = file.try_clone().ok()?;
+    let size = videre_core::io_timeout::run_with_timeout(
+        videre_core::io_timeout::STAT_TIMEOUT,
+        move || stat.metadata().map(|metadata| metadata.len()),
+    )
+    .ok()?
+    .ok()?;
+    let budget = videre_core::io_timeout::timeout_for_size(
+        size,
+        videre_core::io_timeout::min_read_rate_mb_s(),
+    );
+    videre_core::io_timeout::run_with_timeout(budget, move || {
+        let mut file = file;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).map(|_| bytes)
+    })
+    .ok()?
+    .ok()
+}
+
 /// Extract the embedded XMP packet from a file's bytes, best-effort: find the
 /// `<x:xmpmeta ...> ... </x:xmpmeta>` span. Works across JPEG/HEIC/PNG because
 /// the packet is stored as UTF-8 text regardless of container.
 fn embedded_packet(path: &Path) -> Option<String> {
     let bytes = std::fs::read(path).ok()?;
+    embedded_packet_bytes(&bytes)
+}
+
+fn embedded_packet_bytes(bytes: &[u8]) -> Option<String> {
     let text = String::from_utf8_lossy(&bytes);
     let start = text.find("<x:xmpmeta")?;
     let end = text[start..].find("</x:xmpmeta>")? + start + "</x:xmpmeta>".len();

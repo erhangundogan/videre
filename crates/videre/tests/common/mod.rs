@@ -282,6 +282,21 @@ impl TestLibrary {
     pub fn context(&self) -> videre_core::library::LibraryContext {
         videre_core::library::LibraryContext::new(&self.root, &self.home.join(".cache")).unwrap()
     }
+
+    /// Scan this library through the directory-local command surface.
+    pub fn scan(&self) {
+        let output = self.cmd().args(["scan", "--silent"]).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Open the existing local database without creating one.
+    pub fn conn(&self) -> rusqlite::Connection {
+        videre_core::library_db::open_existing(&self.context()).unwrap()
+    }
 }
 
 /// Writes to the process's real stderr, bypassing libtest's output capture.

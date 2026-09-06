@@ -257,6 +257,11 @@ pub fn load(paths: &LibraryPaths) -> Result<LibraryConfig> {
     config_from_table(&table, path)
 }
 
+/// Whether the local config file exists, using the same bounded read as load.
+pub fn exists(paths: &LibraryPaths) -> Result<bool> {
+    Ok(read_config(&paths.config)?.is_some())
+}
+
 /// Check one incoming value against its key's rules before it can reach
 /// the file. The shapes mirror the load-time readers: what `load` would
 /// reject, `edit` must refuse to write, or the file and the edit disagree.

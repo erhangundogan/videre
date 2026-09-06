@@ -1,6 +1,6 @@
 use crate::types::FileRecord;
 use rusqlite::{params, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub fn write_records(records: &[FileRecord], db_path: &Path) -> Result<()> {
     let conn = videre_core::db::open_wal(db_path)?;
@@ -11,16 +11,50 @@ pub fn write_records(records: &[FileRecord], db_path: &Path) -> Result<()> {
     // inspects PRAGMA table_info and adds only the columns that are missing.
     videre_core::library_db::ensure_scan_schema(&conn)?;
 
+    write_records_to(&conn, records)
+}
+
+pub fn write_records_in(
+    conn: &rusqlite::Connection,
+    ctx: &videre_core::library::LibraryContext,
+    records: &[FileRecord],
+) -> anyhow::Result<()> {
+    let paths: Vec<PathBuf> = records
+        .iter()
+        .map(|record| PathBuf::from(&record.path))
+        .collect();
+    videre_core::library_guard::validate_paths(ctx, &paths)?;
+    write_records_to(conn, records)?;
+    Ok(())
+}
+
+fn write_records_to(conn: &rusqlite::Connection, records: &[FileRecord]) -> Result<()> {
+    videre_core::library_db::ensure_scan_schema(conn)?;
     let tx = conn.unchecked_transaction()?;
 
     {
         let mut stmt = tx.prepare(
-            "INSERT OR REPLACE INTO file_hashes
+            "INSERT INTO file_hashes
                 (path, hash, size_bytes, created_at, modified_at, ext, mime,
                  phash, exif_date, gps_lat, gps_lon, width, height,
                  duration_secs, codec)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                     ?14, ?15)",
+                     ?14, ?15)
+             ON CONFLICT(path) DO UPDATE SET
+                hash = excluded.hash,
+                size_bytes = excluded.size_bytes,
+                created_at = excluded.created_at,
+                modified_at = excluded.modified_at,
+                ext = excluded.ext,
+                mime = excluded.mime,
+                phash = excluded.phash,
+                exif_date = excluded.exif_date,
+                gps_lat = excluded.gps_lat,
+                gps_lon = excluded.gps_lon,
+                width = excluded.width,
+                height = excluded.height,
+                duration_secs = excluded.duration_secs,
+                codec = excluded.codec",
         )?;
 
         for r in records {
@@ -167,5 +201,34 @@ mod tests {
         let back = load_records(&db).unwrap();
         assert_eq!(back.len(), 2);
         assert!(back.iter().all(|r| r.mime.is_none()));
+    }
+
+    #[test]
+    fn rescanning_preserves_location_fields_owned_by_location_processing() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("hashes.db");
+        let first = rec("/a.jpg", "h1");
+        write_records(&[first.clone()], &db).unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute(
+            "UPDATE file_hashes SET location_name = 'Üsküdar', location_cluster_id = 17 WHERE path = '/a.jpg'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let mut rescanned = first;
+        rescanned.modified_at = Some("2026-09-06T12:00:00+00:00".into());
+        write_records(&[rescanned], &db).unwrap();
+
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let location: (String, i64) = conn
+            .query_row(
+                "SELECT location_name, location_cluster_id FROM file_hashes WHERE path = '/a.jpg'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(location, ("Üsküdar".into(), 17));
     }
 }

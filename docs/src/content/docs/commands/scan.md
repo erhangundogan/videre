@@ -1,238 +1,133 @@
 ---
 title: videre scan
-description: Read a folder recursively and record every media file in the database.
+description: Scan the current library and record every supported media file.
 ---
 
-Reads a folder recursively and records every
-[supported media file](/reference/file-types/) in the database. Run this first:
-everything else reads from what it creates.
+Scans the selected library recursively and records every
+[supported media file](/reference/file-types/) in `.videre/hashes.db` inside
+that library. Run this first. Other commands read the database it creates.
 
 ```bash
-videre scan ~/Photos                       # scan ~/Photos into the default database (~/.videre/hashes.db)
-videre scan ~/Pictures                     # scan ~/Pictures into the same database, adding or updating rows
-videre scan                                # scan the configured default path; check it with `videre config`
-videre scan ~/Photos --db ~/photos.db      # write to a specific database instead of the default
-videre scan ~/Photos --similar             # also fingerprint images/videos for near-duplicate detection
-videre scan ~/Photos --output              # write JSONL to ~/.videre/hashes.jsonl instead of SQLite
-videre scan ~/Photos --output out.jsonl    # write JSONL to a specific file
-videre scan ~/Photos --retry-incomplete    # only files an earlier scan didn't finish
-videre scan ~/Photos --silent              # no progress output
-videre scan ~/Photos --json                # print one JSON summary object instead
-videre scan ~/Photos --type video          # only videos
-videre scan ~/Photos --ext heic,mov        # only these formats
-videre scan ~/Photos --path ~/Photos/2024  # only this subfolder
+cd ~/Photos
+videre scan                    # scan the current directory
+videre scan --similar          # also prepare near-duplicate matching
+videre scan --retry-incomplete # process new or unfinished files only
+videre scan --silent           # suppress progress output
+videre scan --json             # print one JSON summary object
 ```
 
-:::tip
-These filters work the same way across commands, and combine. See
-[scoping a run](/guides/scoping-a-run/).
-:::
+Use `--library` to select a different library without changing directory:
 
-Re-running is safe and idempotent, since existing entries are updated in place.
+```bash
+videre --library ~/Photos scan
+videre scan --library ~/Photos
+```
 
-:::note
-`--output` and `--db` cannot be combined. A bare `--output` must come *after*
-the folder, or it swallows the folder as its value.
+`--library` may appear before or after the command, but only once. A relative
+value is resolved from the directory where videre was invoked.
 
-`--output-sqlite` still works as an alias for `--db`. It was the original name,
-from when JSONL and SQLite were peer output *formats* rather than one
-destination and one opt-out. Existing scripts do not need changing.
-:::
+## Local state
+
+The first scan creates this state inside the selected library:
+
+```text
+.videre/
+├── config.toml
+├── hashes.db
+└── locks/
+```
+
+The database location is fixed. `scan` has no directory operand, `--path`,
+`--db`, `--output`, or `--output-sqlite` option. To scan another collection,
+run the command from that directory or select it with `--library`.
+
+Re-running is safe. Existing rows are updated by path while annotations and
+location fields owned by later processing are preserved.
 
 ## What it records
 
-For every file: its content hash, size, timestamps, extension, detected type,
-and EXIF where present (date taken, GPS, dimensions). Nothing is opened for
-decoding unless you pass `--similar`.
+For every file, scan stores its content hash, size, timestamps, extension,
+detected type, and available media metadata. Photo metadata includes capture
+date, GPS coordinates, and dimensions. Video metadata can also include capture
+date, GPS coordinates, dimensions, duration, and codec.
 
-It does **not** prepare search or detect faces. Those are
-[`videre embed`](/commands/embed/) and [`videre faces`](/commands/faces/), run
-separately and much slower.
+Scan does not prepare semantic search or detect faces. Run
+[`videre embed`](/commands/embed/) and [`videre faces`](/commands/faces/)
+separately for those features.
 
 ## `--retry-incomplete`
 
-A normal scan re-reads every byte of every file, which on a large library is the
-slow part by far: about 10 minutes and 460 GB of reading for 70,000 files, of
-which walking the folder is under two seconds.
+A normal scan reads every byte of every supported file. This is the expensive
+part of scanning a large library.
 
-`--retry-incomplete` still walks the folder but opens only files that have no
-entry yet, or whose entry a previous run left unfinished, such as an interrupted
-scan or a file that timed out on a slow drive. On an already-complete library of
-that size it finishes in about a second, having opened nothing. New files are
-picked up too, since they have no entry yet.
+`--retry-incomplete` still walks the library, but opens only files with no row
+or no recorded media type. It also picks up files added since the previous
+scan. A file whose bytes were read but whose type could not be identified gets
+an explicit sentinel, so later retry runs do not repeatedly read it.
 
 ```bash
-videre scan ~/Photos                      # the full pass, occasionally
-videre scan ~/Photos --retry-incomplete   # the quick pass, routinely
+videre scan                    # full refresh
+videre scan --retry-incomplete # quick incremental pass
 ```
-
-It needs a database to consult, so it cannot be combined with `--output`, which
-writes JSONL.
 
 ## `--similar`
 
-Also computes a perceptual fingerprint, which is what lets
-[`videre dedupe --similar`](/commands/dedupe/) find photos that merely *look*
-alike rather than being byte-identical.
+`--similar` computes a perceptual fingerprint used by
+[`videre dedupe --similar`](/commands/dedupe/) to find media that looks alike
+without being byte-identical.
 
-This decodes every image, so it is substantially slower than a plain scan. It is
-worth doing once when you intend to hunt near-duplicates, not routinely.
+This requires image decoding, so it is slower than a normal scan. HEIC and
+video poster frames use QuickLook and are available on macOS. Files that cannot
+be decoded still keep their normal scan record without a perceptual hash.
 
-For `.mov` and `.mp4` this needs macOS, since the frame is extracted with
-QuickLook. Elsewhere those files simply get no fingerprint, the same graceful
-skip as any other undecodable file. HEIC files never get one.
+## Reading marks from XMP
 
-## Reading marks from XMP (`--xmp`)
-
-Scan reads a photo's star rating and colour label from its XMP, if present:
-first an adjacent `<file>.xmp` sidecar, then the embedded packet. This is how a
-library already rated in Lightroom or digiKam arrives with its ratings intact.
-See [`videre mark`](/commands/mark/) for querying and setting marks.
-
-`--xmp` decides what happens when a photo carries a mark in *both* the file and
-videre's database:
+Scan reads ratings, colour labels, and keywords from an adjacent XMP sidecar or
+an embedded XMP packet. The `--xmp` option controls how ratings and labels are
+reconciled with database values:
 
 | Value | Behaviour |
 |---|---|
-| `db` (default) | the database wins; the file only fills in marks the database lacks |
-| `file` | the file wins, overwriting the database |
-| `newest` | not yet implemented; treated as `db` with a warning |
+| `db` | Database values win. XMP fills missing values |
+| `file` | XMP values win |
+| `newest` | Reserved for timestamp comparison; currently behaves as `db` with a warning |
 
-Set a persistent default with `videre config set xmp <db|file|newest>`; the flag
-overrides it for one run. The same flag works on [`videre watch`](/commands/watch/).
-Picks and likes have no XMP standard, so they are never touched here.
+The local default is configured with:
 
-Scan also reads `dc:subject` keywords and stores them as
-[tags](/commands/tag/). Keyword import is additive (it only ever adds a tag,
-never removes one), so it ignores the `--xmp` precedence above.
+```bash
+videre config set xmp db
+```
+
+Keywords are imported as additive [tags](/commands/tag/), independently of
+the rating and label precedence.
+
+## Nested libraries
+
+A parent scan includes media in nested directories, even when one of those
+directories is also used as a separate library. It skips every `.videre`
+directory before descending, so nested databases, config files, caches, and
+other state are never scanned as media or merged into the parent library.
+
+For example, scanning `~/Photos/x` and later scanning `~/Photos` creates two
+independent databases. The parent sees media under `x`; it does not adopt or
+modify `x/.videre`.
 
 ## Caveats
 
-**Rows are keyed by path, so a moved file looks like a new one.** Re-scanning
-after reorganising folders adds rows at the new paths and leaves the old ones
-behind, pointing at files that no longer exist. Run
-[`videre prune`](/commands/prune/) afterwards to clear them. Nothing derived is
-lost in the meantime, because faces and embeddings are keyed by content, not
-path.
+**Rows are keyed by path.** Moving a file creates a new path on the next scan
+and leaves the old row until [`videre prune`](/commands/prune/) removes it.
+Faces, embeddings, marks, and tags are keyed by content hash.
 
-**Scanning several folders puts them all in one database.** That is often what
-you want, but it means `dedupe` and `prune` then act across all of them, and a
-bare `videre scan` with no argument only refreshes the *first* folder you ever
-scanned. See
-[scanning more than one folder](/reference/paths/#scanning-more-than-one-folder)
-for the full picture and how to keep collections separate.
+**Unreadable files are skipped.** Permission failures and files that time out
+are reported without stopping the rest of the scan. Use
+`--retry-incomplete` after fixing the underlying problem.
 
-**The first folder you scan becomes your default.** It is adopted automatically
-so later commands work with no arguments, it prints a note when it happens, and
-it never overwrites a folder you configured yourself. Change it with
-`videre config set path <dir>`.
-
-**Unreadable files are skipped, not fatal.** A permissions error or a file that
-times out on a slow or disconnected drive leaves that file unrecorded and the
-scan continues. `--retry-incomplete` is how you pick them up later once the
-cause is fixed.
-
-**A full scan reads every byte.** On an external drive or a network share that
-is the dominant cost, and it is why `--retry-incomplete` exists. Nothing is
-written to your files at any point.
-
-## Scoping the run
-
-Every flag below narrows an existing set, never widens it, and they combine:
-each condition must hold.
-
-| Flag | Selects |
-|---|---|
-| `--type` | `image` or `video`. Repeatable, or comma-separated |
-| `--ext` | file extension, e.g. `mov`. Repeatable, or comma-separated |
-| `--mime` | exact type, e.g. `video/quicktime`. Repeatable, or comma-separated |
-| `--path` | only files under this directory. Repeatable |
-
-`--date` and `--location` are deliberately absent: this walks the filesystem and
-has not opened the file yet, so it cannot answer them without doing the
-expensive work the filter exists to avoid.
-
-A scoped run prints `N of M`, so a filter that matches nothing is
-distinguishable from an empty library. Full detail, including how missing data
-excludes a file, is in [scoping a run](/guides/scoping-a-run/).
-
-## More detail
-
-- [JSONL output](/guides/jsonl/) covers `--output` and what it gives up.
-- [Keeping libraries separate](/guides/multiple-libraries/) covers scanning collections that should not see each other.
-
-
-## HEIC and near-duplicates
-
-`--similar` hashes HEIC as well as JPEG, PNG, GIF, WebP, BMP, TIFF and video.
-HEIC cannot be decoded directly, so it converts through QuickLook exactly as
-[`embed`](/commands/embed/) and [`faces`](/commands/faces/) do, which means
-HEIC near-duplicate detection is macOS-only.
-
-The conversion is cheap per file, because the hash only needs a 9x8 grid, so
-videre asks QuickLook for a 64px rendition rather than a full-size one. It is
-not cheap in bulk: HEIC and video both pay a conversion, so on a library made
-mostly of those, `--similar` is a long job.
-
-Measured on 700 real files (300 HEIC, 300 JPEG, 60 MOV, 40 PNG, 2.3 GB) on a
-10-core machine, with the files already in the page cache so the figure
-reflects decoding rather than disk:
-
-| | Time |
-|---|---|
-| before parallel hashing (0.13.0) | 108s |
-| after (0.13.1) | 15s |
-
-Expect less than that 7.2x on an external drive, where reading the files, not
-decoding them, becomes the limit. Progress is shown throughout, so a long run
-is visibly a long run rather than an apparent hang.
-
-:::note[Matching survives resizing]
-The perceptual hash compares images by shape, not bytes, so a photo matches its
-own downscaled copy. Measured on a real library, a HEIC original and its
-768x1024 preview differed by 0 to 5 bits out of 64, and 29,258 real rendition
-pairs were within 4 bits 99.1% of the time. Exact equality only held for 53.4%
-of them, which is why near-duplicate grouping uses a distance rather than an
-equality test.
-:::
-
-## Very large files
-
-Reading a file is bounded by a timeout that scales with the file's size, so a
-disconnected drive cannot hang a scan while a legitimately large video still
-gets the time it needs.
-
-If you scan a mount slower than about 20 MB/s and see files reported as
-unreachable, lower the assumed floor rate:
+**A full scan reads every byte.** On external drives and network shares, disk
+speed usually dominates. Set a lower local read-rate assumption for a slower
+mount:
 
 ```bash
 videre config set read-rate 5
 ```
 
-Why it scales, and why the same files fail on every run until you change this,
-are in [tuning](/guides/tuning/#slow-drives-and-large-files).
-
-## Video metadata
-
-Scanning reads each video's own metadata: capture date, GPS coordinates,
-dimensions, duration and codec. Those feed the same features photos already
-use, so [`videre search`](/commands/search/) date and location filters and
-[`videre locations`](/commands/locations/) all cover video.
-
-Dates are stored as local wall-clock time, exactly as photo dates are, so the
-two sort and filter together rather than drifting by a timezone.
-
-:::caution[Libraries scanned before v0.14.0 need re-scanning]
-`--retry-incomplete` only revisits files with no recorded type, which is not the
-same as "scanned before video metadata existed". Run `videre scan` over the
-library again to fill these in:
-
-```bash
-videre scan ~/Pictures
-```
-:::
-
-Not every video carries coordinates - a clip recorded with location services
-off has none, and on one real library 16 of 260 were in that position. Those
-files are still scanned and searchable; they simply do not appear in
-location-filtered results.
+See [tuning](/guides/tuning/#slow-drives-and-large-files) for details.

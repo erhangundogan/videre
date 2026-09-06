@@ -384,39 +384,35 @@ fn discard_temporary(parent: &File, temp: &OsStr, display: &Path) {
 /// A private, self-removing copy of one confined original, for decoders that
 /// can only consume a path. Dropping it removes the copy; the held file keeps
 /// the inode alive for the copy's whole observed lifetime.
-#[allow(dead_code)] // first callers arrive when commands convert to open_media
-struct StagedCopy {
+pub struct StagedCopy {
     path: PathBuf,
+    parent: File,
+    name: OsString,
+    #[allow(dead_code)]
     held: File,
+}
+
+impl StagedCopy {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 impl Drop for StagedCopy {
     fn drop(&mut self) {
-        let display = self.path.clone();
-        let path = display.clone();
-        let _ = bounded_op(&display, "remove", STAT_TIMEOUT, move || {
-            std::fs::remove_file(&path)
-        });
+        discard_temporary(&self.parent, &self.name, &self.path);
     }
 }
 
-/// Stage a private copy of an already-confined original under `scratch`,
+/// Stage a private copy of an already-confined original in library state,
 /// preserving `extension` so extension-routed decoders behave.
 ///
 /// The source is the held file from [`open_media`], never a path revalidated
 /// by name, so the bytes copied are exactly the bytes validation anchored.
-/// Deliberately not wired into any command yet: converting decoders is its
-/// own change, and this helper exists so that change has a tested boundary to
-/// call.
-#[allow(dead_code)] // same reason as StagedCopy
-fn staged_copy(source: &File, extension: &OsStr, scratch: &Path) -> Result<StagedCopy> {
-    // `scratch` is videre-owned state handed in as a whole, not a user path:
-    // pinning it under a held handle with symlink refusal happens at wiring
-    // time, when callers arrive with a context to anchor it under.
-    let dir = {
-        let owned = scratch.to_path_buf();
-        bounded_op(scratch, "open", STAT_TIMEOUT, move || File::open(&owned))?
-    };
+pub fn staged_copy(ctx: &LibraryContext, source: &File, extension: &OsStr) -> Result<StagedCopy> {
+    ctx.ensure_root_identity()?;
+    let scratch = &ctx.paths.state;
+    let dir = anchored_directory(ctx, scratch)?;
     let mut name = OsString::from(format!(
         ".videre-stage-{}-{}",
         std::process::id(),
@@ -455,7 +451,12 @@ fn staged_copy(source: &File, extension: &OsStr, scratch: &Path) -> Result<Stage
         held.sync_all()?;
         Ok(held)
     })?;
-    Ok(StagedCopy { path, held })
+    Ok(StagedCopy {
+        path,
+        parent: dir,
+        name,
+        held,
+    })
 }
 
 /// Duplicate a handle for a bounded operation's owned closure, naming the
@@ -906,19 +907,18 @@ mod tests {
     /// bytes under the original's extension, and removes itself when dropped.
     #[test]
     fn a_staged_copy_preserves_bytes_and_extension_and_cleans_up() {
-        let (temp, ctx) = library();
+        let (_temp, ctx) = library();
         std::fs::write(ctx.paths.root.join("scan.dng"), b"raw-ish").unwrap();
         let confined = open_media(&ctx, &ctx.paths.root.join("scan.dng")).unwrap();
-        let scratch = temp.path().join("scratch");
-        std::fs::create_dir(&scratch).unwrap();
-        let staged = staged_copy(&confined, OsStr::new("dng"), &scratch).unwrap();
+        std::fs::create_dir(&ctx.paths.state).unwrap();
+        let staged = staged_copy(&ctx, &confined, OsStr::new("dng")).unwrap();
         assert_eq!(staged.path.extension(), Some(OsStr::new("dng")));
         assert_eq!(std::fs::read(&staged.path).unwrap(), b"raw-ish");
         let path = staged.path.clone();
         drop(staged);
         assert!(!path.exists(), "dropping the staged copy must remove it");
         // An extensionless original stages without inventing a suffix.
-        let staged = staged_copy(&confined, OsStr::new(""), &scratch).unwrap();
+        let staged = staged_copy(&ctx, &confined, OsStr::new("")).unwrap();
         assert_eq!(staged.path.extension(), None);
         let path = staged.path.clone();
         drop(staged);

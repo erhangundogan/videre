@@ -35,6 +35,16 @@ impl XmpArg {
         };
         XmpPrecedence::parse(&s)
     }
+
+    pub fn resolve_from(
+        &self,
+        config: &videre_core::library_config::LibraryConfig,
+    ) -> Result<XmpPrecedence> {
+        match &self.xmp {
+            Some(value) => XmpPrecedence::parse(value),
+            None => Ok(config.xmp_precedence),
+        }
+    }
 }
 
 /// Read a photo's XMP and fold it into the database under `prec`. Shared by scan,
@@ -48,7 +58,25 @@ pub fn import_xmp_for(
     hash: &str,
     prec: XmpPrecedence,
 ) -> Result<()> {
-    let data = read::read_data(path);
+    apply_xmp_data(conn, hash, read::read_data(path), prec)
+}
+
+pub fn import_xmp_for_in(
+    conn: &Connection,
+    ctx: &videre_core::library::LibraryContext,
+    path: &Path,
+    hash: &str,
+    prec: XmpPrecedence,
+) -> Result<()> {
+    apply_xmp_data(conn, hash, read::read_data_in(ctx, path), prec)
+}
+
+fn apply_xmp_data(
+    conn: &Connection,
+    hash: &str,
+    data: read::XmpData,
+    prec: XmpPrecedence,
+) -> Result<()> {
     if data.rating.is_some() || data.label.is_some() {
         let existing = marks::get(conn, hash)?;
         if let Some(change) = marks::import_change(&existing, data.rating, data.label, prec) {
@@ -79,6 +107,22 @@ pub fn import_xmp_for_records(
     }
     for r in records {
         import_xmp_for(conn, Path::new(&r.path), &r.hash, prec)?;
+    }
+    Ok(())
+}
+
+pub fn import_xmp_for_records_in(
+    conn: &Connection,
+    ctx: &videre_core::library::LibraryContext,
+    records: &[videre::types::FileRecord],
+    prec: XmpPrecedence,
+    silent: bool,
+) -> Result<()> {
+    if matches!(prec, XmpPrecedence::Newest) && !silent {
+        eprintln!("Warning: --xmp newest is not yet implemented; treating as db");
+    }
+    for record in records {
+        import_xmp_for_in(conn, ctx, Path::new(&record.path), &record.hash, prec)?;
     }
     Ok(())
 }

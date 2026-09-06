@@ -1,15 +1,9 @@
-use anyhow::Result;
+use crate::command_context::CommandContext;
+use anyhow::{Context, Result};
 use clap::builder::PossibleValuesParser;
-use videre_core::home;
+use videre_core::library_config::{self, ConfigKey};
 
-const CONFIG_KEYS: &[&str] = &[
-    "db",
-    "path",
-    "model",
-    "read-rate",
-    "xmp",
-    "export-xmp-on-watch",
-];
+const CONFIG_KEYS: &[&str] = &["model", "read-rate", "xmp", "export-xmp-on-watch"];
 
 #[derive(clap::Args)]
 pub struct ConfigArgs {
@@ -19,110 +13,104 @@ pub struct ConfigArgs {
 
 #[derive(clap::Subcommand)]
 enum ConfigAction {
-    /// Set a config key (keys: db, path, model)
+    /// Set a library config key
     Set {
         #[arg(value_parser = PossibleValuesParser::new(CONFIG_KEYS))]
         key: String,
         value: String,
     },
-    /// Remove a config key (keys: db, path, model)
+    /// Remove a library config key
     Unset {
         #[arg(value_parser = PossibleValuesParser::new(CONFIG_KEYS))]
         key: String,
     },
 }
 
-pub fn run(args: ConfigArgs) -> Result<()> {
-    let home = home::videre_home()?;
+pub fn run(args: ConfigArgs, ctx: &CommandContext) -> Result<()> {
     match args.action {
-        None => show(&home),
-        Some(ConfigAction::Set { key, value }) => match key.as_str() {
-            "db" => home::set_default_db(&home, std::path::Path::new(&value)),
-            "path" => home::set_default_path(&home, std::path::Path::new(&value)),
-            "read-rate" => {
-                let mb_s: u64 = value.parse().map_err(|_| {
-                    anyhow::anyhow!("read-rate must be a whole number of MB/s, got {value:?}")
-                })?;
-                home::set_min_read_rate(&home, mb_s)
-            }
-            "model" => {
-                videre_core::embeddings::validate_model_id(&value)?;
-                home::set_default_model(&home, &value)
-            }
-            "xmp" => home::set_xmp_precedence(&home, &value),
-            "export-xmp-on-watch" => {
-                let on: bool = value.parse().map_err(|_| {
-                    anyhow::anyhow!("export-xmp-on-watch must be true or false, got {value:?}")
-                })?;
-                home::set_export_xmp_on_watch(&home, on)
-            }
-            _ => unreachable!("clap restricts keys to CONFIG_KEYS"),
-        },
-        Some(ConfigAction::Unset { key }) => match key.as_str() {
-            "db" => home::unset_default_db(&home),
-            "path" => home::unset_default_path(&home),
-            "read-rate" => home::unset_min_read_rate(&home),
-            "model" => home::unset_default_model(&home),
-            "xmp" => home::unset_xmp_precedence(&home),
-            "export-xmp-on-watch" => home::unset_export_xmp_on_watch(&home),
-            _ => unreachable!("clap restricts keys to CONFIG_KEYS"),
-        },
+        None => show(ctx),
+        Some(ConfigAction::Set { key, value }) => {
+            let (key, value) = config_value(&key, value)?;
+            library_config::edit(&ctx.library, key, Some(value))
+        }
+        Some(ConfigAction::Unset { key }) => {
+            library_config::edit(&ctx.library, config_key(&key), None)
+        }
     }
 }
 
-fn show(home: &std::path::Path) -> Result<()> {
-    let config_file = home::config_path(home);
-    let config = home::load_config(home)?;
-    println!("home:          {}", home.display());
+fn config_key(key: &str) -> ConfigKey {
+    match key {
+        "model" => ConfigKey::Model,
+        "read-rate" => ConfigKey::ReadRate,
+        "xmp" => ConfigKey::Xmp,
+        "export-xmp-on-watch" => ConfigKey::ExportXmpOnWatch,
+        _ => unreachable!("clap restricts keys to CONFIG_KEYS"),
+    }
+}
+
+fn config_value(key: &str, value: String) -> Result<(ConfigKey, toml::Value)> {
+    let key = config_key(key);
+    let value = match key {
+        ConfigKey::Model | ConfigKey::Xmp => toml::Value::String(value),
+        ConfigKey::ReadRate => {
+            let mb_s: u64 = value.parse().map_err(|_| {
+                anyhow::anyhow!("read-rate must be a whole number of MB/s, got {value:?}")
+            })?;
+            let mb_s = i64::try_from(mb_s).context("read-rate is too large")?;
+            toml::Value::Integer(mb_s)
+        }
+        ConfigKey::ExportXmpOnWatch => {
+            let on: bool = value.parse().map_err(|_| {
+                anyhow::anyhow!("export-xmp-on-watch must be true or false, got {value:?}")
+            })?;
+            toml::Value::Boolean(on)
+        }
+    };
+    Ok((key, value))
+}
+
+fn show(ctx: &CommandContext) -> Result<()> {
+    let paths = &ctx.library.paths;
+    let config = &ctx.library.settings;
+    println!("library:       {}", paths.root.display());
+    println!("selected by:   {}", ctx.source.label());
+    println!("state:         {}", paths.state.display());
     println!(
         "config:        {}{}",
-        config_file.display(),
-        if config_file.exists() {
+        paths.config.display(),
+        if library_config::exists(paths)? {
             ""
         } else {
             " (absent)"
         }
     );
-    // Display keys match the names `videre config set <key>` accepts, so the
-    // output doubles as documentation for how to change each value.
-    match &config.default_db {
-        Some(db) => println!("db:            {} [from config.toml]", db.display()),
-        None => println!("db:            (not set) [set with: videre config set db <path>]"),
+    println!("db:            {}", paths.db.display());
+    println!("jsonl:         {}", paths.jsonl.display());
+    println!("model:         {}", config.default_model);
+    match config.min_read_rate_mb_s {
+        Some(rate) => println!("read-rate:     {rate} MB/s"),
+        None => println!(
+            "read-rate:     {} MB/s (default)",
+            videre_core::io_timeout::MIN_READ_RATE_MB_S_DEFAULT
+        ),
     }
-    // The resolved value must come from `resolve_db`, the VIDERE_HOME-aware
-    // function every command opens the database through. Resolving it from
-    // config alone once printed a path no command would open, so with an
-    // explicit home whose config.toml named a different database, `config`
-    // showed one path while commands failed with "no database found" against
-    // another.
-    println!("resolved db:   {}", home::resolve_db(None)?.display());
-    match &config.default_path {
-        Some(dir) => println!("resolved path: {} [from config.toml]", dir.display()),
-        None => {
-            println!("resolved path: (not set) [set with: videre config set path <path>]")
+    println!("xmp:           {}", xmp_name(config.xmp_precedence));
+    println!(
+        "export-xmp-on-watch: {}",
+        if config.export_xmp_on_watch {
+            "on"
+        } else {
+            "off"
         }
-    }
-    // Show the resolved value even when unset: the question being asked is
-    // "what will videre use", not "what did I type".
-    match &config.default_model {
-        Some(m) => println!("model:         {m} [from config.toml]"),
-        None => println!(
-            "model:         {} (default) [set with: videre config set model <id>]",
-            videre_core::embeddings::DEFAULT_MODEL_ID
-        ),
-    }
-    match &config.xmp_precedence {
-        Some(p) => println!("xmp:           {p} [from config.toml]"),
-        None => println!(
-            "xmp:           db (default) [set with: videre config set xmp <db|file|newest>]"
-        ),
-    }
-    match config.export_xmp_on_watch {
-        Some(true) => println!("export-xmp-on-watch: on [from config.toml]"),
-        _ => println!(
-            "export-xmp-on-watch: off (default) [set with: videre config set export-xmp-on-watch <true|false>]"
-        ),
-    }
-    println!("jsonl:         {}", home.join("hashes.jsonl").display());
+    );
     Ok(())
+}
+
+fn xmp_name(precedence: videre_core::marks::XmpPrecedence) -> &'static str {
+    match precedence {
+        videre_core::marks::XmpPrecedence::Db => "db",
+        videre_core::marks::XmpPrecedence::File => "file",
+        videre_core::marks::XmpPrecedence::Newest => "newest",
+    }
 }
