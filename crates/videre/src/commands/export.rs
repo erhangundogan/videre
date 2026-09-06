@@ -3,9 +3,11 @@
 //! preserved. The deliberate-handoff surface; the same shared writer also runs
 //! from the watch export stage.
 
+use crate::command_context::CommandContext;
 use crate::xmp::model::{Area, OwnedXmp, Region};
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use std::path::PathBuf;
+use videre_core::library::LibraryContext;
 use videre_core::selection::SelectionCtx;
 
 #[derive(clap::Args)]
@@ -32,24 +34,27 @@ pub struct ExportArgs {
     /// No summary output
     #[arg(long)]
     silent: bool,
-    /// SQLite database (default: resolved from ~/.videre; see 'videre config')
-    #[arg(long)]
-    db: Option<PathBuf>,
 }
 
-pub fn run(args: ExportArgs) -> Result<()> {
+pub fn run(args: ExportArgs, ctx: &CommandContext) -> Result<()> {
     if !args.xmp {
         bail!("nothing to export: pass --xmp");
     }
-    let db = super::resolve_reader_db(args.db.clone())?;
-    let conn = videre_core::db::open_wal(&db).with_context(|| format!("open {}", db.display()))?;
+    // Guard every --path against the selected root before any table setup or
+    // sidecar write, so an out-of-root filter is rejected before work.
+    videre_core::library_guard::validate_paths(&ctx.library, &args.paths.path)?;
+    let conn = videre_core::library_db::open_existing(&ctx.library)?;
 
-    export_selection(&conn, &args)
+    export_selection(ctx, &conn, &args)
 }
 
 /// Resolve the selection and export sidecars for it. Split from `run` so the
 /// watch stage can drive an export over an already-open connection.
-fn export_selection(conn: &rusqlite::Connection, args: &ExportArgs) -> Result<()> {
+fn export_selection(
+    ctx: &CommandContext,
+    conn: &rusqlite::Connection,
+    args: &ExportArgs,
+) -> Result<()> {
     ensure_optional_tables(conn);
     let sel = super::selection_args::row_selection(
         Some(&args.media),
@@ -59,13 +64,13 @@ fn export_selection(conn: &rusqlite::Connection, args: &ExportArgs) -> Result<()
         Some(&args.presence),
         Some(&args.paths),
     )?;
-    let resolved = sel.resolve(conn, &SelectionCtx::default())?;
+    let resolved = sel.resolve_in(conn, &SelectionCtx::default(), &ctx.library)?;
     let hashes: Vec<String> = match resolved.hashes {
         Some(h) => h.into_iter().collect(),
         None => all_hashes(conn)?,
     };
     let total: i64 = conn.query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))?;
-    let written = write_sidecars_for(conn, &hashes, args.dry_run)?;
+    let written = write_sidecars_for(conn, &hashes, args.dry_run, Some(&ctx.library))?;
     if !args.silent && !args.dry_run {
         eprintln!(
             "Wrote {written} sidecar(s) for {} of {} file(s)",
@@ -76,12 +81,21 @@ fn export_selection(conn: &rusqlite::Connection, args: &ExportArgs) -> Result<()
     Ok(())
 }
 
-/// Export sidecars for every file in the library. The unscoped entry point the
-/// watch export stage calls; returns the number of sidecars written.
+/// Export sidecars for every file in the library, through the ambient writer.
+/// The legacy unscoped entry point the still-inactive watch export stage calls;
+/// replaced by [`export_all_in`] once watch is converted.
 pub fn export_all(conn: &rusqlite::Connection) -> Result<usize> {
     ensure_optional_tables(conn);
     let hashes = all_hashes(conn)?;
-    write_sidecars_for(conn, &hashes, false)
+    write_sidecars_for(conn, &hashes, false, None)
+}
+
+/// Export sidecars for every file in the selected library, publishing each
+/// through the confined library writer.
+pub fn export_all_in(conn: &rusqlite::Connection, ctx: &CommandContext) -> Result<usize> {
+    ensure_optional_tables(conn);
+    let hashes = all_hashes(conn)?;
+    write_sidecars_for(conn, &hashes, false, Some(&ctx.library))
 }
 
 /// Ensure the optional tables/columns exist so gathering never hits a missing
@@ -109,6 +123,7 @@ fn write_sidecars_for(
     conn: &rusqlite::Connection,
     hashes: &[String],
     dry_run: bool,
+    ctx: Option<&LibraryContext>,
 ) -> Result<usize> {
     let faces = videre_core::face_db::labeled_faces_by_hash(conn)?;
     let mut written = 0usize;
@@ -158,7 +173,13 @@ fn write_sidecars_for(
                     "would write {}",
                     crate::xmp::write::sidecar_path(&path).display()
                 );
-            } else if crate::xmp::write::write_sidecar(&path, &owned)? {
+                continue;
+            }
+            let wrote = match ctx {
+                Some(library) => crate::xmp::write::write_sidecar_in(library, &path, &owned)?,
+                None => crate::xmp::write::write_sidecar(&path, &owned)?,
+            };
+            if wrote {
                 written += 1;
             }
         }

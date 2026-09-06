@@ -57,5 +57,5 @@ string, and a `/`-separated value is stored verbatim.
 
 | Flag | Effect |
 |---|---|
-| `--db <path>` | Act on a specific database instead of the [resolved default](/commands/config/) |
+| `--library <dir>` | Select a different library instead of the [current directory](/commands/config/) |
 | `--silent` | Suppress the `N of M` line |

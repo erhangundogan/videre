@@ -64,7 +64,7 @@ empty library.
 |---|---|
 | `--xmp` | Write XMP sidecars (currently the only export format; required) |
 | `--dry-run` | List the sidecars that would be written, write nothing |
-| `--db <path>` | Act on a specific database instead of the [resolved default](/commands/config/) |
+| `--library <dir>` | Select a different library instead of the [current directory](/commands/config/) |
 | `--silent` | Suppress the summary line |
 
 ## Reading it back

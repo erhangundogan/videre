@@ -258,6 +258,37 @@ pub fn write_sidecar(path: &Path, o: &OwnedXmp) -> std::io::Result<bool> {
     Ok(true)
 }
 
+/// The directory-local sidecar writer: the merge and serialization are the same
+/// as [`write_sidecar`], but the existing sidecar is read through a confined
+/// handle and the merged document is published atomically inside the selected
+/// library, so a symlinked or out-of-root sidecar target is refused rather than
+/// followed.
+pub fn write_sidecar_in(
+    ctx: &videre_core::library::LibraryContext,
+    path: &Path,
+    o: &OwnedXmp,
+) -> anyhow::Result<bool> {
+    use std::io::Read;
+    if o.is_empty() {
+        return Ok(false);
+    }
+    let side = sidecar_path(path);
+    let existing = if side.exists() {
+        let mut file = videre_core::library_io::open_media(ctx, &side)?;
+        let mut buf = String::new();
+        file.read_to_string(&mut buf)?;
+        Some(buf)
+    } else {
+        None
+    };
+    let doc = match existing {
+        Some(existing) => merge_into(&existing, o),
+        None => build_packet(o),
+    };
+    videre_core::library_io::replace_sidecar(ctx, &side, doc.as_bytes())?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

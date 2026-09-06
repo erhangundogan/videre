@@ -169,9 +169,12 @@ fn main() {
         Command::Mcp(_) => unconverted("mcp"),
         Command::Stats(args) => command_context::CommandContext::capture(library)
             .and_then(|ctx| commands::stats::run(args, &ctx)),
-        Command::Mark(_) => unconverted("mark"),
-        Command::Export(_) => unconverted("export"),
-        Command::Tag(_) => unconverted("tag"),
+        Command::Mark(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::mark::run(args, &ctx)),
+        Command::Export(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::export::run(args, &ctx)),
+        Command::Tag(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::tag::run(args, &ctx)),
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");

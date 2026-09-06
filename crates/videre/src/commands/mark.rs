@@ -1,6 +1,6 @@
-use anyhow::{bail, Context, Result};
+use crate::command_context::CommandContext;
+use anyhow::{bail, Result};
 use std::io::Read;
-use std::path::PathBuf;
 use videre_core::marks::{self, MarkChange};
 use videre_core::selection::SelectionCtx;
 
@@ -45,20 +45,18 @@ pub struct MarkArgs {
     #[arg(long)]
     pub(crate) dry_run: bool,
 
-    /// SQLite database (default: resolved from ~/.videre; see 'videre config')
-    #[arg(long)]
-    pub(crate) db: Option<PathBuf>,
     /// No per-item output
     #[arg(long)]
     pub(crate) silent: bool,
 }
 
-pub fn run(args: MarkArgs) -> Result<()> {
-    let db = super::resolve_reader_db(args.db.clone())?;
-    let conn = videre_core::db::open_wal(&db).with_context(|| format!("open {}", db.display()))?;
+pub fn run(args: MarkArgs, ctx: &CommandContext) -> Result<()> {
+    // Guard every --path against the selected root before any mutation.
+    videre_core::library_guard::validate_paths(&ctx.library, &args.paths.path)?;
+    let conn = videre_core::library_db::open_existing(&ctx.library)?;
 
     if args.export_xmp {
-        return super::mark_export::run(&args, &conn);
+        return super::mark_export::run(&args, ctx, &conn);
     }
 
     let change = build_change(&args);
@@ -66,7 +64,7 @@ pub fn run(args: MarkArgs) -> Result<()> {
         bail!("nothing to set; give at least one of --rating/--pick/--label/--like/--no-like");
     }
 
-    let hashes = resolve_targets(&args, &conn)?;
+    let hashes = resolve_targets(&args, ctx, &conn)?;
     let total: i64 = conn.query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))?;
     if !args.silent {
         eprintln!("Marking {} of {} file(s)", hashes.len(), total);
@@ -92,7 +90,11 @@ fn build_change(a: &MarkArgs) -> MarkChange {
 /// Targets come from stdin (a pipe of paths) when stdin is not a terminal, else
 /// from the selection flags. Both resolve to content hashes. Shared by set and
 /// `--export-xmp` so the two select the same files.
-pub(crate) fn resolve_targets(a: &MarkArgs, conn: &rusqlite::Connection) -> Result<Vec<String>> {
+pub(crate) fn resolve_targets(
+    a: &MarkArgs,
+    ctx: &CommandContext,
+    conn: &rusqlite::Connection,
+) -> Result<Vec<String>> {
     use std::io::IsTerminal;
     if !std::io::stdin().is_terminal() {
         let mut buf = String::new();
@@ -114,7 +116,7 @@ pub(crate) fn resolve_targets(a: &MarkArgs, conn: &rusqlite::Connection) -> Resu
         Some(&a.presence),
         Some(&a.paths),
     )?;
-    let resolved = sel.resolve(conn, &SelectionCtx::default())?;
+    let resolved = sel.resolve_in(conn, &SelectionCtx::default(), &ctx.library)?;
     match resolved.hashes {
         Some(h) => Ok(h.into_iter().collect()),
         None => all_hashes(conn),

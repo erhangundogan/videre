@@ -81,7 +81,7 @@ Picks and likes have no portable standard and stay in videre's database. See
 | Flag | Effect |
 |---|---|
 | `--dry-run` | Show what would change (or which sidecars `--export-xmp` would write) without writing anything |
-| `--db <path>` | Act on a specific database instead of the [resolved default](/commands/config/) |
+| `--library <dir>` | Select a different library instead of the [current directory](/commands/config/) |
 | `--silent` | Suppress the `N of M` progress line |
 
 ## Caveats
