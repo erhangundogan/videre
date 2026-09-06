@@ -151,7 +151,8 @@ fn main() {
             .and_then(|ctx| commands::config::run(args, &ctx)),
         Command::Dedupe(args) => command_context::CommandContext::capture(library)
             .and_then(|ctx| commands::dedupe::run(args, &ctx)),
-        Command::Gallery(_) => unconverted("gallery"),
+        Command::Gallery(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::gallery::run(args, &ctx)),
         Command::FixDates(args) => command_context::CommandContext::capture(library)
             .and_then(|ctx| commands::fix_dates::run(args, &ctx)),
         Command::Import(args) => command_context::CommandContext::capture(library)
@@ -168,7 +169,8 @@ fn main() {
         Command::Classify(args) => command_context::CommandContext::capture(library)
             .and_then(|ctx| commands::classify::run(args, &ctx)),
         Command::Watch(_) => unconverted("watch"),
-        Command::Mcp(_) => unconverted("mcp"),
+        Command::Mcp(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::mcp::run(args, &ctx)),
         Command::Stats(args) => command_context::CommandContext::capture(library)
             .and_then(|ctx| commands::stats::run(args, &ctx)),
         Command::Mark(args) => command_context::CommandContext::capture(library)

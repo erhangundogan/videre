@@ -1269,7 +1269,8 @@ async fn handle_raw_file(
     // that directly instead of paying for a live qlmanage conversion.
     if ext == "heic" {
         if let Some(size) = q.size {
-            let cached_path = videre_core::thumb_cache::thumb_path(&hash, size);
+            let cached_path =
+                videre_core::thumb_cache::thumb_path_in(&state.context.library.cache, &hash, size);
             if let Ok(bytes) = tokio::fs::read(&cached_path).await {
                 return Ok(([(axum::http::header::CONTENT_TYPE, "image/jpeg")], bytes));
             }

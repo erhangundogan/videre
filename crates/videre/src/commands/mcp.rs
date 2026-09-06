@@ -15,26 +15,20 @@ use videre::types::SCHEMA_VERSION;
 
 #[derive(clap::Args)]
 pub struct McpArgs {
-    /// SQLite database (default: resolved from ~/.videre; see 'videre config')
-    #[arg(long)]
-    db: Option<PathBuf>,
-
     /// Embedding model to serve searches from (default: 'videre config set model',
-    /// else the built-in default). Bound once at startup, like --db, so a
-    /// bad value fails before the server accepts a single call.
+    /// else the built-in default). Bound once at startup, so a bad value fails
+    /// before the server accepts a single call.
     #[arg(long, value_parser = super::parse_model_id)]
     model: Option<String>,
 }
 
-// Kept fail-closed in main's dispatch until C8 binds every tool to the context;
-// the signature and context threading are in place so C8 only flips the arm.
-pub fn run(_args: McpArgs, ctx: &crate::command_context::CommandContext) -> Result<()> {
-    let db = videre_core::library_db::open_existing(&ctx.library)?;
-    drop(db);
+pub fn run(args: McpArgs, ctx: &crate::command_context::CommandContext) -> Result<()> {
+    // Validate the selected library exists before binding the server to it.
+    let _ = videre_core::library_db::open_existing(&ctx.library)?;
     let db = ctx.library.paths.db.clone();
     let model_id = videre_core::embeddings::resolve_model_id_from(
         &ctx.library.settings,
-        _args.model.as_deref(),
+        args.model.as_deref(),
     )?;
     // Probed at startup so a typo in --model is visible immediately rather
     // than minutes later inside an agent's search result, but NOT fatal:

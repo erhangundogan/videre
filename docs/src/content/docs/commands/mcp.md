@@ -9,7 +9,7 @@ child process and talks to it over stdin and stdout.
 
 ```bash
 videre mcp                             # serve using the default database
-videre mcp --db ~/photos.db            # serve a specific database
+videre --library ~/Photos mcp          # serve a different library
 videre mcp --model <model-id>          # serve searches from a specific model
 ```
 
@@ -167,7 +167,7 @@ Add arguments the same way you would on the command line:
   "mcpServers": {
     "work-photos": {
       "command": "/opt/homebrew/bin/videre",
-      "args": ["mcp", "--db", "/Users/you/work.db"]
+      "args": ["--library", "/Users/you/Photos", "mcp"]
     }
   }
 }
@@ -221,7 +221,7 @@ library it resolved, not the client.
 ## Caveats
 
 **The database must already exist.** Unlike other commands, `mcp` binds the
-resolved path once at startup, so even an explicit `--db` pointing at a missing
+selected library once at startup, so a library with no database that is missing
 file fails immediately with `no database found` on stderr and exit 1. Most
 clients report this only as "server failed to start", which is why the manual
 check above is useful.

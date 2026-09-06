@@ -15,10 +15,6 @@ use crate::command_context::CommandContext;
 
 #[derive(clap::Args)]
 pub struct GalleryArgs {
-    /// SQLite database (default: resolved from ~/.videre; see 'videre config')
-    #[arg(long)]
-    db: Option<std::path::PathBuf>,
-
     /// Embedding model backing the in-page similarity search
     /// (default: 'videre config set model', else the built-in default).
     #[arg(long, value_parser = super::parse_model_id)]

@@ -27,15 +27,13 @@
 //! mean anything.
 
 mod common;
-use common::isolated_home;
+use common::TestLibrary;
 
-use rusqlite::Connection;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::Child;
 use std::time::{Duration, Instant};
-use tempfile::tempdir;
 
 /// Enough rows that inlining them is unmistakably over the ceiling, while the
 /// fixture still builds in a second or two.
@@ -69,14 +67,9 @@ const DIM: usize = 768;
 /// megabytes, and for the 70,601-file library it was measured at 28 MB.
 const CEILING: usize = 512 * 1024;
 
-fn seed(dir: &Path) -> Option<PathBuf> {
-    // :warning: Before anything resolves a path. The embeddings database lives
-    // under the videre home, so seeding it before the home is isolated writes
-    // it where the server will not look, and the fixture then silently fails to
-    // exercise the payload it exists to measure.
-    isolated_home();
-
-    let pics = dir.join("pics");
+fn seed() -> Option<TestLibrary> {
+    let lib = TestLibrary::new();
+    let pics = lib.context().paths.root.join("pics");
     std::fs::create_dir_all(&pics).unwrap();
 
     // A real, decodable JPEG. See the warning at the top of this file.
@@ -91,22 +84,12 @@ fn seed(dir: &Path) -> Option<PathBuf> {
         Err(_) => return None,
     };
 
-    let db = dir.join("payload.db");
-    let conn = Connection::open(&db).unwrap();
-    conn.execute_batch(
-        "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL,
-         size_bytes INTEGER, created_at TEXT, modified_at TEXT, ext TEXT,
-         phash INTEGER, exif_date TEXT, gps_lat REAL, gps_lon REAL,
-         width INTEGER, height INTEGER);
-         CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL,
-         bbox TEXT NOT NULL, landmark TEXT, embedding BLOB NOT NULL,
-         cluster_id INTEGER, person_label TEXT, confirmed INTEGER DEFAULT 0,
-         is_primary INTEGER DEFAULT 0);
-         CREATE TABLE people (name TEXT PRIMARY KEY, full_name TEXT);
-         INSERT INTO people (name, full_name) VALUES ('ozgur_demirtas', 'Özgür');",
+    let conn = lib.init_db();
+    conn.execute(
+        "INSERT INTO people (name, full_name) VALUES ('ozgur_demirtas', 'Özgür')",
+        [],
     )
     .unwrap();
-    videre_core::db::ensure_file_hashes_columns(&conn);
 
     let tx = conn.unchecked_transaction().unwrap();
     for i in 0..FILES {
@@ -153,8 +136,8 @@ fn seed(dir: &Path) -> Option<PathBuf> {
     tx.commit().unwrap();
     drop(conn);
 
-    seed_embeddings(&db);
-    Some(db)
+    seed_embeddings(&lib);
+    Some(lib)
 }
 
 /// Written to fd 2 directly, not via `eprintln!`. libtest captures the print
@@ -175,11 +158,11 @@ fn fixture() -> PathBuf {
 
 /// Embeddings live in a per-library, per-model database beside the main one.
 /// Seeding them is what makes this fixture able to catch the 145 MB fault.
-fn seed_embeddings(db: &Path) {
+fn seed_embeddings(lib: &TestLibrary) {
     let model = videre_core::embeddings::DEFAULT_MODEL_ID;
-    let path = videre_core::embeddings_db::db_path(db, model).unwrap();
+    let path = videre_core::embeddings_db::db_path_in(&lib.context(), model).unwrap();
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let conn = Connection::open(&path).unwrap();
+    let conn = rusqlite::Connection::open(&path).unwrap();
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS embeddings
          (hash TEXT PRIMARY KEY, model_id TEXT NOT NULL, embedding BLOB NOT NULL);",
@@ -211,19 +194,15 @@ impl Drop for Server {
 }
 
 impl Server {
-    fn start(db: &Path) -> Server {
-        isolated_home();
+    fn start(lib: &TestLibrary) -> Server {
         let port = TcpListener::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
             .unwrap()
             .port();
-        let child = Command::new(env!("CARGO_BIN_EXE_videre"))
-            .arg("gallery")
-            .arg("--db")
-            .arg(db)
-            .arg("--port")
-            .arg(port.to_string())
+        let child = lib
+            .cmd()
+            .args(["gallery", "--port", &port.to_string()])
             .spawn()
             .expect("failed to spawn videre gallery");
         let server = Server { child, port };
@@ -259,12 +238,11 @@ impl Server {
 }
 
 fn assert_under_ceiling(route: &str) {
-    let dir = tempdir().unwrap();
-    let Some(db) = seed(dir.path()) else {
+    let Some(lib) = seed() else {
         skip_no_fixture();
         return;
     };
-    let server = Server::start(&db);
+    let server = Server::start(&lib);
     let len = server.get_len(route);
     assert!(
         len <= CEILING,
@@ -311,12 +289,11 @@ fn the_duplicates_page_does_not_carry_the_library() {
 /// byte ceiling could in principle be met by a page that still carries a few.
 #[test]
 fn the_default_page_carries_no_duplicate_groups() {
-    let dir = tempdir().unwrap();
-    let Some(db) = seed(dir.path()) else {
+    let Some(lib) = seed() else {
         skip_no_fixture();
         return;
     };
-    let server = Server::start(&db);
+    let server = Server::start(&lib);
     let body = server.get_body("/");
     let groups = body
         .split_once("var GROUPS=[")
@@ -334,12 +311,11 @@ fn the_default_page_carries_no_duplicate_groups() {
 /// other routes are moving toward.
 #[test]
 fn the_people_page_already_fetches_its_data() {
-    let dir = tempdir().unwrap();
-    let Some(db) = seed(dir.path()) else {
+    let Some(lib) = seed() else {
         skip_no_fixture();
         return;
     };
-    let server = Server::start(&db);
+    let server = Server::start(&lib);
     let len = server.get_len("/people");
     assert!(
         len <= CEILING,
