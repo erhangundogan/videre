@@ -14,7 +14,7 @@ videre faces --reprocess               # start over: re-detect everything
 videre faces --dry-run                 # detect but write nothing
 videre faces --profile                 # print per-stage timing when finished
 videre faces --silent                  # no per-image progress
-videre faces --db ~/photos.db          # use a specific database
+videre --library ~/Photos faces        # select a different library
 videre faces --ext heic                # only HEIC photos
 videre faces --date 2024-07            # only that month
 ```

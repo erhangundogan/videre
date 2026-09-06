@@ -158,8 +158,51 @@ pub fn run_face_pipeline(
     batch: usize,
     dry_run: bool,
     silent: bool,
+    profile: Option<&mut ProfileStats>,
+    workers: usize,
+) -> Result<FacesRunResult> {
+    // Legacy ambient-cache entry point, kept only for the not-yet-converted
+    // watch faces stage; removed once watch uses the context.
+    run_face_pipeline_impl(
+        conn, to_process, batch, dry_run, silent, profile, workers, None,
+    )
+}
+
+/// The directory-local face pipeline: HEIC-decode reuse follows the selected
+/// library's cache namespace rather than the ambient one.
+#[allow(clippy::too_many_arguments)]
+pub fn run_face_pipeline_in(
+    ctx: &videre_core::library::LibraryContext,
+    conn: &Connection,
+    to_process: &[(String, String)],
+    batch: usize,
+    dry_run: bool,
+    silent: bool,
+    profile: Option<&mut ProfileStats>,
+    workers: usize,
+) -> Result<FacesRunResult> {
+    run_face_pipeline_impl(
+        conn,
+        to_process,
+        batch,
+        dry_run,
+        silent,
+        profile,
+        workers,
+        Some(&ctx.cache),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_face_pipeline_impl(
+    conn: &Connection,
+    to_process: &[(String, String)],
+    batch: usize,
+    dry_run: bool,
+    silent: bool,
     mut profile: Option<&mut ProfileStats>,
     workers: usize,
+    cache: Option<&videre_core::library::CachePaths>,
 ) -> Result<FacesRunResult> {
     use crate::{face_align, face_detect, face_embed, face_models};
 
@@ -204,6 +247,7 @@ pub fn run_face_pipeline(
                 let det_path = det_path.clone();
                 let rec_path = rec_path.clone();
                 let progress = &progress;
+                let cache = cache;
                 scope.spawn(move || -> Result<ProfileStats> {
                     let mut local_profile = ProfileStats::default();
                     let mut detector = face_detect::FaceDetector::new(&det_path, intra_threads)?;
@@ -224,7 +268,7 @@ pub fn run_face_pipeline(
 
                         for (path, hash) in chunk {
                             let load_start = std::time::Instant::now();
-                            let img = match load_image(path, hash) {
+                            let img = match load_image(path, hash, cache) {
                                 Ok(i) => i,
                                 Err(msg) => {
                                     progress.println(&format!("skipping {path}: {msg}"));
@@ -653,7 +697,11 @@ pub fn run_clustering(
     }))
 }
 
-fn load_image(path: &str, hash: &str) -> Result<image::DynamicImage, String> {
+fn load_image(
+    path: &str,
+    hash: &str,
+    cache: Option<&videre_core::library::CachePaths>,
+) -> Result<image::DynamicImage, String> {
     if path.to_lowercase().ends_with(".heic") {
         #[cfg(target_os = "macos")]
         {
@@ -667,7 +715,10 @@ fn load_image(path: &str, hash: &str) -> Result<image::DynamicImage, String> {
             // thumbnails. Falls back to a fresh full-res qlmanage decode
             // (None) when the cache hasn't been populated for this hash yet,
             // so detection works correctly even if `watch --heic` never ran.
-            let cached_path = videre_core::thumb_cache::original_path(hash);
+            let cached_path = match cache {
+                Some(c) => videre_core::thumb_cache::original_path_in(c, hash),
+                None => videre_core::thumb_cache::original_path(hash),
+            };
             if cached_path.exists() {
                 let timeout_path = cached_path.clone();
                 let result = videre_core::io_timeout::run_with_timeout(
@@ -786,7 +837,8 @@ mod tests {
 
     #[test]
     fn load_image_missing_file_returns_descriptive_error() {
-        let err = load_image("/no/such/path/does-not-exist.jpg", "irrelevant-hash").unwrap_err();
+        let err =
+            load_image("/no/such/path/does-not-exist.jpg", "irrelevant-hash", None).unwrap_err();
         assert!(
             err.contains("/no/such/path/does-not-exist.jpg"),
             "error should name the path: {err}"
@@ -808,7 +860,7 @@ mod tests {
         // load_image fell through to a fresh qlmanage decode instead of
         // using the cache, this would fail rather than return the cached
         // 2x2 image.
-        let result = load_image("/nonexistent/should-not-be-read.heic", &hash).unwrap();
+        let result = load_image("/nonexistent/should-not-be-read.heic", &hash, None).unwrap();
         assert_eq!((result.width(), result.height()), (2, 2));
 
         let _ = std::fs::remove_file(&cache_path);

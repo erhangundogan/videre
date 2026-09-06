@@ -4,35 +4,22 @@
 //! asserts a resumed run picks up correctly with no images permanently lost.
 
 mod common;
-use common::{face_models_cached, shared_cache_guard, skip_without_models, videre_bin as bin};
+use common::{face_models_cached, shared_cache_guard, skip_without_models, TestLibrary};
 
 use rusqlite::Connection;
-use std::process::Command;
+use std::path::Path;
 use std::time::{Duration, Instant};
-use tempfile::tempdir;
 
-/// Populates `db` with `n` `file_hashes` rows, each a distinct fake hash
-/// pointing at its own copy of the real `sample_with_exif.jpg` fixture (real
-/// JPEG bytes, so detection genuinely decodes and runs SCRFD on each one,
-/// not a synthetic/corrupt file). Distinct hashes (not derived from content)
-/// so each row is a genuinely separate unit of resumable work, mirroring how
-/// other fixtures in this file set already fabricate hashes directly rather
-/// than computing them.
-fn fixture_db(dir: &std::path::Path, n: usize) -> std::path::PathBuf {
-    let db = dir.join("test.db");
-    let conn = Connection::open(&db).unwrap();
-    conn.execute_batch(
-        "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL,
-         size_bytes INTEGER, created_at TEXT, modified_at TEXT, ext TEXT,
-         phash INTEGER, exif_date TEXT, gps_lat REAL, gps_lon REAL,
-         width INTEGER, height INTEGER);",
-    )
-    .unwrap();
-    videre_core::db::ensure_file_hashes_columns(&conn);
-    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/sample_with_exif.jpg");
+/// Populates the library with `n` `file_hashes` rows, each a distinct fake hash
+/// pointing at its own copy of the real `sample_with_exif.jpg` fixture under the
+/// library root (real JPEG bytes, so detection genuinely runs SCRFD on each).
+fn fixture_library(n: usize) -> TestLibrary {
+    let lib = TestLibrary::new();
+    let root = lib.context().paths.root;
+    let conn = lib.init_db();
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample_with_exif.jpg");
     for i in 0..n {
-        let path = dir.join(format!("img_{i:04}.jpg"));
+        let path = root.join(format!("img_{i:04}.jpg"));
         std::fs::copy(&source, &path).unwrap();
         let hash = format!("h{i:04}");
         conn.execute(
@@ -41,10 +28,10 @@ fn fixture_db(dir: &std::path::Path, n: usize) -> std::path::PathBuf {
         )
         .unwrap();
     }
-    db
+    lib
 }
 
-fn scanned_count(db: &std::path::Path) -> i64 {
+fn scanned_count(db: &Path) -> i64 {
     let Ok(conn) = Connection::open(db) else {
         return 0;
     };
@@ -72,26 +59,16 @@ fn kill_mid_run_then_resume_processes_every_image_exactly_once() {
     }
     let _serial = shared_cache_guard();
     const N: usize = 10;
-    let dir = tempdir().unwrap();
-    let db = fixture_db(dir.path(), N);
+    let lib = fixture_library(N);
+    let db = lib.db();
 
-    // --workers 1: deterministic, strictly-incremental progress to poll
-    // against (this test is about interrupt/resume correctness, not
-    // multi-worker parallelism, which is covered elsewhere).
-    let mut child = Command::new(bin())
-        .arg("faces")
-        .arg("--db")
-        .arg(&db)
-        .arg("--workers")
-        .arg("1")
-        .arg("--silent")
+    // --workers 1: deterministic, strictly-incremental progress to poll against.
+    let mut child = lib
+        .cmd()
+        .args(["faces", "--workers", "1", "--silent"])
         .spawn()
         .expect("failed to spawn videre faces");
 
-    // Poll real on-disk progress instead of a fixed sleep, so this isn't
-    // flaky relative to machine speed: wait until some but not all images
-    // have been recorded as scanned, proving the kill below genuinely lands
-    // mid-run rather than before start or after completion.
     let deadline = Instant::now() + Duration::from_secs(60);
     let killed_at = loop {
         assert!(
@@ -122,15 +99,10 @@ fn kill_mid_run_then_resume_processes_every_image_exactly_once() {
         "faces_scanned count must never go backwards: was {killed_at} when we killed, now {after_kill}"
     );
 
-    // Resume: a plain rerun should pick up exactly where it left off and
-    // finish covering every image, with no errors.
-    let status = Command::new(bin())
-        .arg("faces")
-        .arg("--db")
-        .arg(&db)
-        .arg("--workers")
-        .arg("1")
-        .arg("--silent")
+    // Resume: a plain rerun should pick up exactly where it left off.
+    let status = lib
+        .cmd()
+        .args(["faces", "--workers", "1", "--silent"])
         .status()
         .expect("failed to run resumed videre faces");
     assert!(status.success(), "resumed run should exit 0");
@@ -141,9 +113,6 @@ fn kill_mid_run_then_resume_processes_every_image_exactly_once() {
         "every image must end up scanned exactly once after resuming"
     );
 
-    // faces_scanned.hash is a PRIMARY KEY, so duplicate-processing would have
-    // already failed the INSERT rather than silently double-counting, this
-    // is an explicit belt-and-suspenders check of that invariant.
     let conn = Connection::open(&db).unwrap();
     let distinct: i64 = conn
         .query_row("SELECT COUNT(DISTINCT hash) FROM faces_scanned", [], |r| {

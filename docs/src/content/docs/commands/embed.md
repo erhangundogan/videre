@@ -8,7 +8,7 @@ resumable.
 
 ```bash
 videre embed                           # process everything not done yet
-videre embed --db ~/photos.db          # use a specific database
+videre --library ~/Photos embed        # select a different library
 videre embed --model <model-id>        # prepare with a specific model, kept separately
 videre embed --batch 64                # images per inference batch (default 32, max 96)
 videre embed --chunk 1000              # rows saved per transaction (default 500)

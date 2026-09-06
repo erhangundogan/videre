@@ -1,5 +1,6 @@
-use anyhow::{Context, Result};
-use std::path::PathBuf;
+use crate::command_context::CommandContext;
+use anyhow::Result;
+use videre_core::library::LibraryContext;
 use videre_core::{classify as classify_core, embeddings, vectors};
 use videre_ml::{classify as classify_ml, device, model};
 
@@ -18,10 +19,6 @@ pub struct ClassifyArgs {
     presence: super::selection_args::PresenceArgs,
     #[command(flatten)]
     paths: super::selection_args::PathArgs,
-
-    /// SQLite database (default: resolved from ~/.videre; see 'videre config')
-    #[arg(long)]
-    db: Option<PathBuf>,
 
     /// Re-classify every embedded hash, including ones already classified
     #[arg(long)]
@@ -43,20 +40,31 @@ pub struct ClassifyArgs {
     silent: bool,
 }
 
-pub fn run(args: ClassifyArgs) -> Result<()> {
-    let db = super::resolve_reader_db(args.db.clone())?;
-    let conn = videre_core::db::open_wal(&db).with_context(|| format!("open {}", db.display()))?;
+pub fn run(args: ClassifyArgs, ctx: &CommandContext) -> Result<()> {
+    // Guard every --path against the selected root before any work; classify is
+    // a reader of embeddings, so it never creates a model store.
+    videre_core::library_guard::validate_paths(&ctx.library, &args.paths.path)?;
 
-    let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref())?;
-    videre_core::embeddings_db::attach_for_read(&conn, &db, &model_id)?;
+    let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    let model_id = videre_core::embeddings::resolve_model_id_from(
+        &ctx.library.settings,
+        args.model.as_deref(),
+    )?;
+    videre_core::embeddings_db::attach_for_read_in(&conn, &ctx.library, &model_id)?;
+    let guard = videre_core::library_locks::try_command(&ctx.library, "classify")?;
 
-    videre_core::pipeline_runs::track(&conn, &db, "classify", || {
-        run_classify(&args, &conn, &model_id)
+    videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "classify", || {
+        run_classify(&args, &ctx.library, &conn, &model_id)
     })
 }
 
-/// The actual classification work, wrapped by `track()` above.
-fn run_classify(args: &ClassifyArgs, conn: &rusqlite::Connection, model_id: &str) -> Result<()> {
+/// The actual classification work, wrapped by `track_in()` above.
+fn run_classify(
+    args: &ClassifyArgs,
+    library: &LibraryContext,
+    conn: &rusqlite::Connection,
+    model_id: &str,
+) -> Result<()> {
     classify_core::ensure_classifications_table(conn)?;
 
     // Loaded once and looked up by hash below rather than holding the whole
@@ -82,7 +90,7 @@ fn run_classify(args: &ClassifyArgs, conn: &rusqlite::Connection, model_id: &str
         Some(&args.presence),
         Some(&args.paths),
     )?;
-    let work = videre_core::work::narrow(
+    let work = videre_core::work::narrow_in(
         hashes,
         |h| h.as_str(),
         &selection,
@@ -90,6 +98,7 @@ fn run_classify(args: &ClassifyArgs, conn: &rusqlite::Connection, model_id: &str
         &videre_core::selection::SelectionCtx {
             model_id: Some(model_id.to_string()),
         },
+        library,
         videre_core::work::Words::new("classify", "Classifying"),
         args.silent,
     )?;
@@ -153,40 +162,26 @@ fn format_summary(done: usize, elapsed: std::time::Duration) -> String {
 mod tests {
     use super::*;
 
-    /// `VIDERE_HOME` is set once per test binary, and every test here calls this
-    /// before deriving any path from it. Setting it per test races every
-    /// concurrent getenv; deriving a path on both sides of the one flip is how
-    /// the report tests failed intermittently for days.
-    fn test_home() -> &'static std::path::Path {
-        static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-        HOME.get_or_init(|| {
-            let dir = std::env::temp_dir().join(format!("videre-classify-{}", std::process::id()));
-            std::fs::create_dir_all(&dir).unwrap();
-            unsafe { std::env::set_var("VIDERE_HOME", &dir) };
-            dir
-        })
-    }
-
-    /// A library with one embedded jpeg, nothing classified yet.
-    fn library_with_one_pending_image() -> rusqlite::Connection {
-        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let home = test_home();
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE file_hashes (
-                path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
-                created_at TEXT, modified_at TEXT, ext TEXT, mime TEXT, phash INTEGER,
-                exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER);
-             INSERT INTO file_hashes (path, hash, ext, mime)
-               VALUES ('/lib/a.jpg', 'h_jpg', 'jpg', 'image/jpeg');",
+    /// A directory-local library with one embedded jpeg, nothing classified
+    /// yet. Returns the temp dir (kept alive), its context and an open
+    /// connection with the model store attached.
+    fn library_with_one_pending_image() -> (tempfile::TempDir, LibraryContext, rusqlite::Connection)
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("lib");
+        std::fs::create_dir(&root).unwrap();
+        let ctx = LibraryContext::new(&root, &temp.path().join("cache")).unwrap();
+        let conn = videre_core::library_db::initialize(&ctx).unwrap();
+        let path = ctx.paths.root.join("a.jpg");
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, ext, mime)
+               VALUES (?1, 'h_jpg', 'jpg', 'image/jpeg')",
+            [path.to_string_lossy().as_ref()],
         )
         .unwrap();
-        let i = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let lib = home.join(format!("classify-{i}.db"));
-        std::fs::write(&lib, b"").unwrap();
-        videre_core::embeddings_db::attach(
+        videre_core::embeddings_db::attach_in(
             &conn,
-            &lib,
+            &ctx,
             videre_core::embeddings::DEFAULT_MODEL_ID,
             true,
         )
@@ -197,7 +192,7 @@ mod tests {
             [videre_core::embeddings::DEFAULT_MODEL_ID],
         )
         .unwrap();
-        conn
+        (temp, ctx, conn)
     }
 
     fn parse(extra: &[&str]) -> ClassifyArgs {
@@ -217,9 +212,14 @@ mod tests {
         // proves no weights were touched. That matters: loading SigLIP is
         // ~0.8GB and minutes on a cold cache, and a scoped run that matches
         // nothing must not pay it.
-        let conn = library_with_one_pending_image();
+        let (_temp, ctx, conn) = library_with_one_pending_image();
         let args = parse(&["--type", "video", "--silent"]);
-        let r = run_classify(&args, &conn, videre_core::embeddings::DEFAULT_MODEL_ID);
+        let r = run_classify(
+            &args,
+            &ctx,
+            &conn,
+            videre_core::embeddings::DEFAULT_MODEL_ID,
+        );
         assert!(r.is_ok(), "a scope matching nothing is not an error: {r:?}");
         let classified: i64 = conn
             .query_row("SELECT COUNT(*) FROM classifications", [], |r| r.get(0))
@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn an_already_classified_library_also_returns_early() {
-        let conn = library_with_one_pending_image();
+        let (_temp, ctx, conn) = library_with_one_pending_image();
         // `execute_batch`, not `execute`: the latter runs only the first
         // statement, so the INSERT silently never happened and `.ok()` hid the
         // error. The library was therefore *not* already classified, this test
@@ -255,7 +255,13 @@ mod tests {
         assert_eq!(already, 1, "the row this test depends on was not written");
 
         let args = parse(&["--silent"]);
-        assert!(run_classify(&args, &conn, videre_core::embeddings::DEFAULT_MODEL_ID).is_ok());
+        assert!(run_classify(
+            &args,
+            &ctx,
+            &conn,
+            videre_core::embeddings::DEFAULT_MODEL_ID
+        )
+        .is_ok());
     }
 
     #[test]

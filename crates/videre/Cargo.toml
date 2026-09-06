@@ -1,6 +1,6 @@
 [package]
 name = "videre"
-version = "0.25.13"
+version = "0.25.14"
 edition = "2021"
 description = "Local-first media library CLI: duplicate detection, semantic search, face recognition, and EXIF date repair over a single SQLite database"
 license = "Apache-2.0"
@@ -41,9 +41,9 @@ kamadak-exif = "0.5"
 roxmltree = "0.20"
 filetime = "0.2"
 rusqlite = { version = "0.40", features = ["bundled"] }
-videre-core = { path = "../videre-core", version = "0.25.13" }
-videre-ml = { path = "../videre-ml", version = "0.25.13" }
-videre-api = { path = "../videre-api", version = "0.25.13" }
+videre-core = { path = "../videre-core", version = "0.25.14" }
+videre-ml = { path = "../videre-ml", version = "0.25.14" }
+videre-api = { path = "../videre-api", version = "0.25.14" }
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
@@ -62,7 +62,7 @@ serde_json = "1"
 # Encodes the feature fixture's deterministic f16 model vectors; same version
 # videre-core uses. See tests/common/feature_fixture.rs.
 half = "2"
-videre-core = { path = "../videre-core", version = "0.25.13" }
+videre-core = { path = "../videre-core", version = "0.25.14" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 candle-core = { version = "0.11", features = ["metal"] }

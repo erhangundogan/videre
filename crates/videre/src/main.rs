@@ -157,11 +157,14 @@ fn main() {
         Command::Prune(_) => unconverted("prune"),
         Command::Locations(args) => command_context::CommandContext::capture(library)
             .and_then(|ctx| commands::locations::run(args, &ctx)),
-        Command::Embed(_) => unconverted("embed"),
+        Command::Embed(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::embed::run(args, &ctx)),
         Command::Search(args) => command_context::CommandContext::capture(library)
             .and_then(|ctx| commands::search::run(args, &ctx)),
-        Command::Faces(_) => unconverted("faces"),
-        Command::Classify(_) => unconverted("classify"),
+        Command::Faces(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::faces::run(args, &ctx)),
+        Command::Classify(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::classify::run(args, &ctx)),
         Command::Watch(_) => unconverted("watch"),
         Command::Mcp(_) => unconverted("mcp"),
         Command::Stats(args) => command_context::CommandContext::capture(library)

@@ -1,15 +1,11 @@
-use anyhow::{Context, Result};
+use crate::command_context::CommandContext;
+use anyhow::Result;
 use rayon::prelude::*;
-use std::path::PathBuf;
 use videre_core::{embeddings, vectors};
 use videre_ml::{device, model, preprocess};
 
 #[derive(clap::Args)]
 pub struct EmbedArgs {
-    /// SQLite database (default: resolved from ~/.videre; see 'videre config')
-    #[arg(long)]
-    db: Option<PathBuf>,
-
     /// Embedding model to use (default: 'videre config set model', else the
     /// built-in default). Each model gets its own database under
     /// ~/.videre/embeddings/, so models never overwrite each other.
@@ -46,21 +42,34 @@ pub struct EmbedArgs {
     silent: bool,
 }
 
-pub fn run(args: EmbedArgs) -> Result<()> {
-    let db = super::resolve_reader_db(args.db.clone())?;
-    let conn = videre_core::db::open_wal(&db).with_context(|| format!("open {}", db.display()))?;
+pub fn run(args: EmbedArgs, ctx: &CommandContext) -> Result<()> {
+    // Guard every --path against the selected root before any state changes, so
+    // an out-of-root filter is rejected before the model store below is created.
+    videre_core::library_guard::validate_paths(&ctx.library, &args.paths.path)?;
 
-    let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref())?;
+    let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    let model_id = videre_core::embeddings::resolve_model_id_from(
+        &ctx.library.settings,
+        args.model.as_deref(),
+    )?;
+    let guard = videre_core::library_locks::try_command(&ctx.library, "embed")?;
     // create: true here and nowhere else. embed is the only command allowed
     // to bring a model database into existence; every reader errors instead,
     // so a typo in --model never silently produces an empty library.
-    videre_core::embeddings_db::attach(&conn, &db, &model_id, true)?;
+    videre_core::embeddings_db::attach_in(&conn, &ctx.library, &model_id, true)?;
 
-    videre_core::pipeline_runs::track(&conn, &db, "embed", || run_embed(&args, &conn, &model_id))
+    videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "embed", || {
+        run_embed(&args, ctx, &conn, &model_id)
+    })
 }
 
-/// The actual embedding work, wrapped by `track()` above.
-fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection, model_id: &str) -> Result<()> {
+/// The actual embedding work, wrapped by `track_in()` above.
+fn run_embed(
+    args: &EmbedArgs,
+    ctx: &CommandContext,
+    conn: &rusqlite::Connection,
+    model_id: &str,
+) -> Result<()> {
     embeddings::ensure_embeddings_index(conn)?;
 
     let pending = embeddings::pending_images(conn, model_id)?;
@@ -76,7 +85,7 @@ fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection, model_id: &str) -> R
         Some(&args.presence),
         Some(&args.paths),
     )?;
-    let work = videre_core::work::narrow(
+    let work = videre_core::work::narrow_in(
         pending,
         |p| p.hash.as_str(),
         &selection,
@@ -84,6 +93,7 @@ fn run_embed(args: &EmbedArgs, conn: &rusqlite::Connection, model_id: &str) -> R
         &videre_core::selection::SelectionCtx {
             model_id: Some(model_id.to_string()),
         },
+        &ctx.library,
         videre_core::work::Words::new("embed", "Embedding"),
         args.silent,
     )?;
