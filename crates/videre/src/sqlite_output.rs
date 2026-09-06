@@ -100,32 +100,38 @@ pub fn load_records(db_path: &Path) -> Result<Vec<FileRecord>> {
 /// library's database through `library_db::open_existing`, so this must not
 /// open or create anything of its own.
 pub fn load_records_from(conn: &rusqlite::Connection) -> Result<Vec<FileRecord>> {
-    let mut stmt = conn.prepare(
-        "SELECT path, hash, size_bytes, created_at, modified_at, ext, mime,
-                phash, exif_date, gps_lat, gps_lon, width, height,
-                duration_secs, codec
-         FROM file_hashes",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok(FileRecord {
-            path: row.get(0)?,
-            hash: row.get(1)?,
-            size_bytes: row.get::<_, i64>(2)? as u64,
-            created_at: row.get(3)?,
-            modified_at: row.get(4)?,
-            ext: row.get(5)?,
-            mime: row.get(6)?,
-            phash: row.get::<_, Option<i64>>(7)?.map(|p| p as u64),
-            exif_date: row.get(8)?,
-            gps_lat: row.get(9)?,
-            gps_lon: row.get(10)?,
-            width: row.get(11)?,
-            height: row.get(12)?,
-            duration_secs: row.get(13)?,
-            codec: row.get(14)?,
-        })
-    })?;
+    let mut stmt = conn.prepare(&format!("SELECT {FILE_RECORD_COLUMNS} FROM file_hashes"))?;
+    let rows = stmt.query_map([], file_record_from_row)?;
     rows.collect()
+}
+
+/// The `file_hashes` columns a [`FileRecord`] reads, in the order
+/// [`file_record_from_row`] expects. Shared by every reader (dedupe, the JSONL
+/// snapshot) so the projection and the mapping cannot drift apart.
+pub const FILE_RECORD_COLUMNS: &str =
+    "path, hash, size_bytes, created_at, modified_at, ext, mime, phash, \
+     exif_date, gps_lat, gps_lon, width, height, duration_secs, codec";
+
+/// Map one `file_hashes` row, projected as [`FILE_RECORD_COLUMNS`], into a
+/// [`FileRecord`]. The JSONL snapshot streams rows straight through this.
+pub fn file_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileRecord> {
+    Ok(FileRecord {
+        path: row.get(0)?,
+        hash: row.get(1)?,
+        size_bytes: row.get::<_, i64>(2)? as u64,
+        created_at: row.get(3)?,
+        modified_at: row.get(4)?,
+        ext: row.get(5)?,
+        mime: row.get(6)?,
+        phash: row.get::<_, Option<i64>>(7)?.map(|p| p as u64),
+        exif_date: row.get(8)?,
+        gps_lat: row.get(9)?,
+        gps_lon: row.get(10)?,
+        width: row.get(11)?,
+        height: row.get(12)?,
+        duration_secs: row.get(13)?,
+        codec: row.get(14)?,
+    })
 }
 
 #[cfg(test)]

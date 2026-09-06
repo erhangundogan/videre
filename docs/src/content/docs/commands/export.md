@@ -14,10 +14,21 @@ and never modifies the original.
 
 ```bash
 videre export --xmp                          # every file with something to write
-videre export --xmp --path ~/Photos/2024     # just one folder
+videre export --xmp --path 2024              # just one subfolder
 videre export --xmp --person "Ayşe"          # just photos of one person
 videre export --xmp --dry-run                # list what would be written
+videre export --jsonl                        # snapshot the scan inventory to .videre/hashes.jsonl
 ```
+
+## JSONL snapshot
+
+`videre export --jsonl` writes one JSON object per file to
+`.videre/hashes.jsonl`, replacing any previous snapshot atomically. It is the
+composability handoff: one line per file straight into `jq`, `awk` or a
+spreadsheet, with no SQLite dependency. See
+[JSONL output](/guides/jsonl/) for the format and what it leaves out. `--xmp`
+and `--jsonl` are mutually exclusive, and it is a scan-inventory snapshot, not
+an annotations or embeddings backup.
 
 ## What it writes
 

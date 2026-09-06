@@ -25,9 +25,13 @@ pub struct ExportArgs {
     #[command(flatten)]
     paths: super::selection_args::PathArgs,
 
-    /// Write XMP sidecars (currently the only export format)
+    /// Write XMP sidecars beside each photo
     #[arg(long)]
     xmp: bool,
+    /// Write a JSONL scan-inventory snapshot to .videre/hashes.jsonl, replacing
+    /// any previous snapshot atomically
+    #[arg(long, conflicts_with = "xmp")]
+    jsonl: bool,
     /// Show what would be written, write nothing
     #[arg(long)]
     dry_run: bool,
@@ -37,15 +41,56 @@ pub struct ExportArgs {
 }
 
 pub fn run(args: ExportArgs, ctx: &CommandContext) -> Result<()> {
-    if !args.xmp {
-        bail!("nothing to export: pass --xmp");
+    if !args.xmp && !args.jsonl {
+        bail!("nothing to export: pass --xmp or --jsonl");
     }
     // Guard every --path against the selected root before any table setup or
-    // sidecar write, so an out-of-root filter is rejected before work.
+    // write, so an out-of-root filter is rejected before work.
     videre_core::library_guard::validate_paths(&ctx.library, &args.paths.path)?;
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
 
+    if args.jsonl {
+        return export_jsonl_snapshot(ctx, &conn, &args);
+    }
     export_selection(ctx, &conn, &args)
+}
+
+/// Resolve the selection and publish the JSONL snapshot for it, holding the
+/// export command lock across selection and publication.
+fn export_jsonl_snapshot(
+    ctx: &CommandContext,
+    conn: &rusqlite::Connection,
+    args: &ExportArgs,
+) -> Result<()> {
+    let selection = selection_for(args)?;
+    let _lock = videre_core::library_locks::try_command(&ctx.library, "export")?;
+    let written = super::export_jsonl::write_snapshot(ctx, conn, &selection, args.dry_run)?;
+    if !args.silent {
+        if args.dry_run {
+            eprintln!(
+                "would write {written} record(s) to {}",
+                ctx.library.paths.jsonl.display()
+            );
+        } else {
+            eprintln!(
+                "Wrote {written} record(s) to {}",
+                ctx.library.paths.jsonl.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The row selection this export was scoped to.
+fn selection_for(args: &ExportArgs) -> Result<videre_core::selection::RowSelection> {
+    super::selection_args::row_selection(
+        Some(&args.media),
+        Some(&args.dates),
+        Some(&args.place),
+        Some(&args.people),
+        Some(&args.presence),
+        Some(&args.paths),
+    )
 }
 
 /// Resolve the selection and export sidecars for it. Split from `run` so the
@@ -56,14 +101,7 @@ fn export_selection(
     args: &ExportArgs,
 ) -> Result<()> {
     ensure_optional_tables(conn);
-    let sel = super::selection_args::row_selection(
-        Some(&args.media),
-        Some(&args.dates),
-        Some(&args.place),
-        Some(&args.people),
-        Some(&args.presence),
-        Some(&args.paths),
-    )?;
+    let sel = selection_for(args)?;
     let resolved = sel.resolve_in(conn, &SelectionCtx::default(), &ctx.library)?;
     let hashes: Vec<String> = match resolved.hashes {
         Some(h) => h.into_iter().collect(),

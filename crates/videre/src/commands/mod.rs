@@ -3,6 +3,7 @@ pub mod config;
 pub mod dedupe;
 pub mod embed;
 pub mod export;
+pub mod export_jsonl;
 pub mod faces;
 pub mod fix_dates;
 pub mod gallery;
