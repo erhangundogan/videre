@@ -397,25 +397,8 @@ impl LibraryContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::library_test_support::write_past_test_capture;
     use std::os::unix::fs::PermissionsExt;
-
-    /// Writes to the process's real stderr, bypassing libtest's output
-    /// capture. A skip is a passing test, and libtest captures the print
-    /// macros for passing tests, so an `eprintln!` skip message is invisible
-    /// in a normal `cargo test` run and only appears under `--nocapture`;
-    /// writing to fd 2 directly sidesteps the capture. Same pattern as the
-    /// integration suite's `common::write_past_test_capture`, local here
-    /// because videre-core unit tests have no shared helper. `ManuallyDrop`
-    /// because dropping a `File` built from a borrowed fd would close fd 2
-    /// for the rest of the process.
-    fn write_past_test_capture(msg: &str) {
-        use std::io::Write;
-        use std::os::fd::FromRawFd;
-
-        let mut stderr = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(2) });
-        let _ = stderr.write_all(msg.as_bytes());
-        let _ = stderr.flush();
-    }
 
     #[test]
     fn paths_are_local_and_root_aliases_share_identity() {

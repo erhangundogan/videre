@@ -427,25 +427,8 @@ pub fn edit(ctx: &LibraryContext, key: ConfigKey, value: Option<toml::Value>) ->
 mod tests {
     use super::*;
     use crate::library::LibraryContext;
+    use crate::library_test_support::write_past_test_capture;
     use std::os::unix::fs::PermissionsExt;
-
-    /// Writes to the process's real stderr, bypassing libtest's output
-    /// capture. A skip is a passing test, and libtest captures the print
-    /// macros for passing tests, so an `eprintln!` skip message is invisible
-    /// in a normal `cargo test` run and only appears under `--nocapture`;
-    /// writing to fd 2 directly sidesteps the capture. Same pattern as
-    /// library.rs's test module, local here for the same reason:
-    /// videre-core unit tests have no shared helper. `ManuallyDrop` because
-    /// dropping a `File` built from a borrowed fd would close fd 2 for the
-    /// rest of the process.
-    fn write_past_test_capture(msg: &str) {
-        use std::io::Write;
-        use std::os::fd::FromRawFd;
-
-        let mut stderr = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(2) });
-        let _ = stderr.write_all(msg.as_bytes());
-        let _ = stderr.flush();
-    }
 
     /// One library whose config file holds `body`, if any. All path
     /// expectations are built from the context itself: construction
@@ -777,6 +760,37 @@ mod tests {
             .collect();
         assert_eq!(entries.len(), 1, "only the config may remain: {entries:?}");
         assert_eq!(entries[0], "config.toml");
+    }
+
+    #[test]
+    fn a_config_read_past_its_budget_fails_closed_without_restatting_the_file() {
+        // The config layer routes every filesystem touch through
+        // `library::bounded_op` with the stat ceiling (`read_config`,
+        // `write_config`), and a real wedged mount cannot be produced
+        // portably, so the bound is proven the way `library.rs` and
+        // `library_guard.rs` prove theirs: the layer's own operation on the
+        // layer's own path, under a budget too small to cover even the
+        // thread spawn plus one read. The margin is several orders of
+        // magnitude, so there is no timing to flake on.
+        let (_t, ctx) = library_with_config("custom = \"keep\"\n");
+        let start = std::time::Instant::now();
+        let owned = ctx.paths.config.clone();
+        let err = crate::library::bounded_op(
+            &ctx.paths.config,
+            "read",
+            std::time::Duration::from_nanos(1),
+            move || std::fs::read_to_string(owned).map(|_| ()),
+        )
+        .unwrap_err();
+        // The file is removed before the message is formatted: an error that
+        // still names the exact path and phrasing cannot have consulted the
+        // filesystem to build itself, which is the unbounded re-stat mistake
+        // `TimedOutAfter::describe` exists to prevent.
+        std::fs::remove_file(&ctx.paths.config).unwrap();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("did not respond"), "{msg}");
+        assert!(msg.contains("config.toml"), "{msg}");
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
     }
 
     #[test]

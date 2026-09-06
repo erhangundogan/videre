@@ -29,3 +29,18 @@ fn child_context_is_explicit_without_mutating_parent_environment() {
     assert!(!a.db().exists());
     assert!(!b.db().exists());
 }
+
+#[test]
+fn explicit_core_libraries_do_not_create_global_state() {
+    let a = common::TestLibrary::new();
+    let b = common::TestLibrary::new();
+    let ca = videre_core::library::LibraryContext::new(&a.root, &a.home.join(".cache")).unwrap();
+    let cb = videre_core::library::LibraryContext::new(&b.root, &b.home.join(".cache")).unwrap();
+    drop(videre_core::library_db::initialize(&ca).unwrap());
+    drop(videre_core::library_db::initialize(&cb).unwrap());
+    assert!(a.db().is_file());
+    assert!(b.db().is_file());
+    assert!(!a.home.join(".videre").exists());
+    assert!(!b.home.join(".videre").exists());
+    assert_ne!(ca.cache.thumbnails, cb.cache.thumbnails);
+}

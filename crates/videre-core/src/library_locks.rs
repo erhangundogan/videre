@@ -567,4 +567,45 @@ mod tests {
         let other = LibraryContext::new(&other_root, &temp.path().join("cache")).unwrap();
         assert!(guard.ensure_matches(&other, "scan").is_err());
     }
+
+    #[test]
+    fn a_lock_file_open_past_its_budget_fails_closed_without_restatting_it() {
+        // Lock acquisition itself cannot time out: the flock is non-blocking
+        // by design and fails immediately when held, which the contention
+        // tests above prove. The bounded surface is the stat-and-open path
+        // every acquisition runs first (`lstat_maybe`, then
+        // `acquire_lock_file`'s open), so that is what carries the injected
+        // budget, the same 1ns-under-margin pattern as `library.rs` and
+        // `library_guard.rs`.
+        let (_t, ctx) = locked_library();
+        let lock = lock_path(&ctx, "activity");
+        std::fs::write(&lock, b"").unwrap();
+        let start = std::time::Instant::now();
+        let owned = lock.clone();
+        let err = crate::library::bounded_op(
+            &lock,
+            "open",
+            std::time::Duration::from_nanos(1),
+            move || {
+                OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .open(&owned)
+                    .map(|_| ())
+            },
+        )
+        .unwrap_err();
+        // The file is removed before the message is formatted: an error that
+        // still names the exact path and phrasing cannot have consulted the
+        // filesystem to build itself, which is the unbounded re-stat mistake
+        // `TimedOutAfter::describe` exists to prevent. The abandoned worker
+        // thread may open the (existing) file before or after the removal;
+        // either way its result is discarded and nothing is asserted on it.
+        std::fs::remove_file(&lock).unwrap();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("did not respond"), "{msg}");
+        assert!(msg.contains("activity.lock"), "{msg}");
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    }
 }

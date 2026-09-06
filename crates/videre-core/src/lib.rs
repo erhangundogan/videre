@@ -20,6 +20,8 @@ pub mod library_guard;
 pub mod library_io;
 pub mod library_locks;
 pub mod library_stats;
+#[cfg(test)]
+pub(crate) mod library_test_support;
 pub mod location;
 pub mod location_cluster;
 pub mod marks;

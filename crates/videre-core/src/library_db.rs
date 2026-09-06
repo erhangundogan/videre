@@ -349,6 +349,29 @@ fn require_supported_library(conn: &Connection, db: &Path) -> Result<()> {
     Ok(())
 }
 
+// Counts rows the containment validation has judged, in tests, so a scale
+// test can prove the validation really ran over every row while the guard
+// layer's resolution counter stays flat: zero per-row filesystem probes.
+// Thread-local for the same reason as library_guard's counter: libtest runs
+// each test on its own thread, so a process-global counter would attribute
+// neighbouring tests' validations to whoever read it.
+#[cfg(test)]
+thread_local! {
+    static ROWS_VALIDATED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Test-only read of the containment row counter.
+#[cfg(test)]
+pub(crate) fn count_rows_validated() -> u64 {
+    ROWS_VALIDATED.with(std::cell::Cell::get)
+}
+
+/// Test-only bump of the containment row counter.
+#[cfg(test)]
+fn note_row_validated() {
+    ROWS_VALIDATED.with(|c| c.set(c.get() + 1));
+}
+
 /// Validate every indexed path against the canonical root, once per context,
 /// before any write and before any row is served.
 ///
@@ -375,6 +398,8 @@ fn validate_row_containment(ctx: &LibraryContext, conn: &Connection) -> Result<(
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let path: String = row.get(0)?;
+            #[cfg(test)]
+            note_row_validated();
             let stored = Path::new(&path);
             let dot_component = stored
                 .components()
@@ -1189,5 +1214,122 @@ mod tests {
         }
         assert!(ctx.paths.state.join("notes.txt").exists());
         assert!(ctx.paths.db.exists());
+    }
+
+    #[test]
+    fn a_refused_foreign_row_validation_is_never_memoized_as_success() {
+        let (_t, ctx) = library();
+        // A reader context separate from the initializing one, so its
+        // validation memo starts clear: initialize marks its own context's
+        // memo, and the refusal below must be observed by a context that has
+        // not yet validated anything.
+        let reader = LibraryContext::new(&ctx.paths.root, &ctx.cache.base).unwrap();
+        {
+            let conn = initialize(&ctx).unwrap();
+            conn.execute(
+                "INSERT INTO file_hashes (path, hash) VALUES (?1, 'h')",
+                params!["/elsewhere-not-this-library/x.jpg"],
+            )
+            .unwrap();
+        }
+        let err = open_existing(&reader).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("outside the library root"),
+            "{err:#}"
+        );
+        // The refusal left no memo. Had the failure been recorded the way a
+        // success is, the next open on this same context would skip
+        // validation and quietly serve the mixed library.
+        assert!(
+            !reader.index_validated(),
+            "a refused validation must not be memoized"
+        );
+        // The operator repair: the foreign row removed directly via SQL, no
+        // videre involvement, exactly the fix a copied database needs.
+        {
+            let conn = rusqlite::Connection::open(&ctx.paths.db).unwrap();
+            let removed = conn
+                .execute(
+                    "DELETE FROM file_hashes WHERE path = '/elsewhere-not-this-library/x.jpg'",
+                    [],
+                )
+                .unwrap();
+            assert_eq!(removed, 1);
+        }
+        // The same context, which has now both refused and could have
+        // remembered the refusal, revalidates and succeeds; and so does a
+        // context built after the repair.
+        drop(open_existing(&reader).unwrap());
+        assert!(reader.index_validated());
+        let fresh = LibraryContext::new(&ctx.paths.root, &ctx.cache.base).unwrap();
+        drop(open_existing(&fresh).unwrap());
+    }
+
+    #[test]
+    fn opening_a_seventy_thousand_row_library_validates_with_zero_filesystem_probes() {
+        let (_t, ctx) = library();
+        const ROWS: u32 = 70_000;
+        {
+            let mut conn = initialize(&ctx).unwrap();
+            // Synthetic index rows, the order of magnitude of the real
+            // library this refactor serves: bare path strings under the root,
+            // batched in one transaction. No media files exist, which is the
+            // point; containment judges which library a row belongs to, not
+            // whether its media is mounted.
+            let tx = conn.transaction().unwrap();
+            {
+                let mut stmt = tx
+                    .prepare("INSERT INTO file_hashes (path, hash) VALUES (?1, 'h')")
+                    .unwrap();
+                for i in 0..ROWS {
+                    let path = ctx.paths.root.join(format!(
+                        "Trips/album-{:02}/img-{:05}.jpg",
+                        i / 1000,
+                        i
+                    ));
+                    stmt.execute(params![path.to_str().unwrap()]).unwrap();
+                }
+            }
+            tx.commit().unwrap();
+        }
+        // A fresh context has no memoized validation, so this open validates
+        // every row. Two instruments answer the two halves of the claim: the
+        // guard layer's resolution counter is the filesystem-probe instrument
+        // and must not move at all, and the containment row counter must have
+        // judged exactly 70,000 rows, so a flat probe count cannot be explained
+        // by a validation that never ran.
+        let fresh = LibraryContext::new(&ctx.paths.root, &ctx.cache.base).unwrap();
+        let probes_before = crate::library_guard::count_resolutions();
+        let rows_before = count_rows_validated();
+        let start = std::time::Instant::now();
+        let conn = open_existing(&fresh).unwrap();
+        let elapsed = start.elapsed();
+        assert!(
+            fresh.index_validated(),
+            "a successful open records the memo"
+        );
+        assert_eq!(
+            crate::library_guard::count_resolutions() - probes_before,
+            0,
+            "containment validation must not touch the filesystem per row"
+        );
+        assert_eq!(
+            count_rows_validated() - rows_before,
+            u64::from(ROWS),
+            "every row must have been judged"
+        );
+        // Materially fast: the bound is loose enough for CI noise and tight
+        // enough to catch an accidental quadratic walk (70,000 rows would
+        // need billions of comparisons, not the fraction of a second a linear
+        // pass over in-memory strings takes). The load-bearing assertion is
+        // the zero-probe count above, not this clock.
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "validating {ROWS} rows took {elapsed:?}"
+        );
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM file_hashes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, i64::from(ROWS));
     }
 }

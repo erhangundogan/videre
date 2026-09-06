@@ -272,6 +272,16 @@ impl TestLibrary {
         std::fs::copy(src, &dst).unwrap();
         dst
     }
+
+    /// A core-level context for this library, for tests that exercise the
+    /// foundation layers directly rather than through the binary.
+    ///
+    /// The cache base sits under the private home, matching what `cmd()`
+    /// gives a child, so an in-process context and a spawned child see the
+    /// same cache namespace for one library.
+    pub fn context(&self) -> videre_core::library::LibraryContext {
+        videre_core::library::LibraryContext::new(&self.root, &self.home.join(".cache")).unwrap()
+    }
 }
 
 /// Writes to the process's real stderr, bypassing libtest's output capture.

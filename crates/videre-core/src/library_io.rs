@@ -507,27 +507,12 @@ fn already_exists(e: &anyhow::Error) -> bool {
 mod tests {
     use super::*;
     use crate::library::LibraryContext;
+    use crate::library_test_support::write_past_test_capture;
     use std::ffi::OsStr;
     use std::fs::File;
     use std::io::Read;
     use std::os::unix::fs::{FileTypeExt, PermissionsExt};
     use std::path::Path;
-
-    /// Writes to the process's real stderr, bypassing libtest's output
-    /// capture. A skip is a passing test, and libtest captures the print
-    /// macros for passing tests, so an `eprintln!` skip message is invisible
-    /// in a normal `cargo test` run and only appears under `--nocapture`;
-    /// writing to fd 2 directly sidesteps the capture. Same pattern as
-    /// `library.rs`, local here because videre-core unit tests have no shared
-    /// helper.
-    fn write_past_test_capture(msg: &str) {
-        use std::io::Write;
-        use std::os::fd::FromRawFd;
-
-        let mut stderr = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(2) });
-        let _ = stderr.write_all(msg.as_bytes());
-        let _ = stderr.flush();
-    }
 
     /// One library whose canonical root is ready for fixtures. Fixtures are
     /// built under `ctx.paths.root` (already canonical) rather than the
