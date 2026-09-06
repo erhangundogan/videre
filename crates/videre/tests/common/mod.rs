@@ -10,6 +10,10 @@
 
 #![allow(dead_code)] // Each test binary uses a different subset of this.
 
+/// The seeded two-library fixture and logical snapshot helpers, shared by the
+/// directory-local command tests.
+pub mod feature_fixture;
+
 use std::path::{Path, PathBuf};
 
 /// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.

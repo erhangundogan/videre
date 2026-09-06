@@ -1,5 +1,57 @@
 use std::path::PathBuf;
 
+const FACE_CACHE_FORMAT_VERSION: u8 = 1;
+
+/// Path to a content thumbnail in one selected library's cache namespace.
+pub fn thumb_path_in(cache: &crate::library::CachePaths, hash: &str, size: u32) -> PathBuf {
+    cache.thumbnails.join(format!("{hash}_{size}.jpg"))
+}
+
+/// Path to a cached full-resolution conversion in one selected library.
+pub fn original_path_in(cache: &crate::library::CachePaths, hash: &str) -> PathBuf {
+    cache.thumbnails.join(format!("{hash}_original.jpg"))
+}
+
+/// Path to a face crop whose identity includes its complete source geometry.
+pub fn face_thumb_path_in(
+    cache: &crate::library::CachePaths,
+    hash: &str,
+    face_id: i64,
+    bbox: [f32; 4],
+    size: u32,
+) -> PathBuf {
+    let mut key = blake3::Hasher::new();
+    key.update(&[FACE_CACHE_FORMAT_VERSION]);
+    key.update(hash.as_bytes());
+    key.update(&face_id.to_le_bytes());
+    for value in bbox {
+        key.update(&value.to_bits().to_le_bytes());
+    }
+    key.update(&size.to_le_bytes());
+    cache.thumbnails.join(format!(
+        "{hash}_face-{}_{size}.jpg",
+        key.finalize().to_hex()
+    ))
+}
+
+pub fn thumb_exists_in(cache: &crate::library::CachePaths, hash: &str, size: u32) -> bool {
+    thumb_path_in(cache, hash, size).is_file()
+}
+
+pub fn original_exists_in(cache: &crate::library::CachePaths, hash: &str) -> bool {
+    original_path_in(cache, hash).is_file()
+}
+
+pub fn face_thumb_exists_in(
+    cache: &crate::library::CachePaths,
+    hash: &str,
+    face_id: i64,
+    bbox: [f32; 4],
+    size: u32,
+) -> bool {
+    face_thumb_path_in(cache, hash, face_id, bbox, size).is_file()
+}
+
 /// Directory holding pre-converted HEIC thumbnails, keyed by content hash
 /// rather than file path, the same photo scanned into different databases
 /// only needs converting once. Mirrors the convention hf-hub already uses for
@@ -141,6 +193,72 @@ fn migrate_dir(old: &std::path::Path, new: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn contexts() -> (
+        tempfile::TempDir,
+        crate::library::LibraryContext,
+        crate::library::LibraryContext,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let a = temp.path().join("a");
+        let b = temp.path().join("b");
+        let cache = temp.path().join("cache");
+        std::fs::create_dir(&a).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        let a = crate::library::LibraryContext::new(&a, &cache).unwrap();
+        let b = crate::library::LibraryContext::new(&b, &cache).unwrap();
+        (temp, a, b)
+    }
+
+    #[test]
+    fn explicit_cache_paths_are_isolated_by_library() {
+        let (_temp, a, b) = contexts();
+        assert_ne!(
+            thumb_path_in(&a.cache, "hash", 240),
+            thumb_path_in(&b.cache, "hash", 240)
+        );
+        assert_ne!(
+            original_path_in(&a.cache, "hash"),
+            original_path_in(&b.cache, "hash")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn aliases_of_one_library_share_the_same_cache_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        let alias = temp.path().join("alias");
+        let cache = temp.path().join("cache");
+        std::fs::create_dir(&root).unwrap();
+        std::os::unix::fs::symlink(&root, &alias).unwrap();
+        let direct = crate::library::LibraryContext::new(&root, &cache).unwrap();
+        let aliased = crate::library::LibraryContext::new(&alias, &cache).unwrap();
+        assert_eq!(direct.cache, aliased.cache);
+    }
+
+    #[test]
+    fn face_keys_include_id_geometry_size_and_format_version() {
+        let (_temp, a, _b) = contexts();
+        let base = face_thumb_path_in(&a.cache, "hash", 1, [1.0, 2.0, 3.0, 4.0], 140);
+        assert_ne!(
+            base,
+            face_thumb_path_in(&a.cache, "hash", 2, [1.0, 2.0, 3.0, 4.0], 140)
+        );
+        assert_ne!(
+            base,
+            face_thumb_path_in(&a.cache, "hash", 1, [1.0, 2.0, 3.0, 5.0], 140)
+        );
+        assert_ne!(
+            base,
+            face_thumb_path_in(&a.cache, "hash", 1, [1.0, 2.0, 3.0, 4.0], 280)
+        );
+        assert!(base
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("hash_face-"));
+    }
 
     #[test]
     fn thumb_path_is_keyed_by_hash_and_size() {

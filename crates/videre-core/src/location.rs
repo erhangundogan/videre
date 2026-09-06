@@ -1,6 +1,7 @@
 use reverse_geocoder::ReverseGeocoder;
 use rusqlite::Connection;
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Our own GeoNames extract, carrying real UTF-8 place names.
 ///
@@ -27,6 +28,72 @@ use std::sync::OnceLock;
 /// `name` and `cc`, nothing in videre reads the other two, and dropping them
 /// makes this smaller than the file it replaces: 5.7MB against 7.5MB.
 const CITIES_CSV: &str = include_str!("../data/cities.csv");
+
+static EXPLICIT_GEOCODERS: OnceLock<Mutex<HashMap<std::path::PathBuf, Arc<ReverseGeocoder>>>> =
+    OnceLock::new();
+
+fn materialize_cities_csv_in(
+    cache: &crate::library::CachePaths,
+) -> anyhow::Result<std::path::PathBuf> {
+    use std::io::Write;
+
+    let digest = blake3::hash(CITIES_CSV.as_bytes()).to_hex();
+    let path = cache.geo.join(digest.as_str()).join("cities.csv");
+    if path.exists() {
+        let bytes = std::fs::read(&path)
+            .map_err(anyhow::Error::new)
+            .map_err(|error| error.context(format!("read {}", path.display())))?;
+        anyhow::ensure!(
+            bytes == CITIES_CSV.as_bytes(),
+            "cached place-name data at {} does not match its content hash",
+            path.display()
+        );
+        return Ok(path);
+    }
+    crate::atomic_file::publish(&path, |file| {
+        file.write_all(CITIES_CSV.as_bytes())?;
+        Ok(())
+    })?;
+    Ok(path)
+}
+
+/// Return a reverse geocoder backed by the explicit shared cache.
+///
+/// Only successfully materialized and parsed datasets are cached. A failure
+/// from one cache path therefore cannot become a fallback for another.
+pub fn geocoder_in(cache: &crate::library::CachePaths) -> anyhow::Result<Arc<ReverseGeocoder>> {
+    let path = materialize_cities_csv_in(cache)?;
+    let geocoders = EXPLICIT_GEOCODERS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(geocoder) = geocoders.lock().unwrap().get(&path).cloned() {
+        return Ok(geocoder);
+    }
+    let geocoder = Arc::new(
+        ReverseGeocoder::from_path(&path)
+            .map_err(anyhow::Error::new)
+            .map_err(|error| error.context(format!("load {}", path.display())))?,
+    );
+    let mut locked = geocoders.lock().unwrap();
+    Ok(locked
+        .entry(path)
+        .or_insert_with(|| geocoder.clone())
+        .clone())
+}
+
+/// Resolve one coordinate using the selected explicit cache.
+pub fn location_name_in(
+    cache: &crate::library::CachePaths,
+    lat: f64,
+    lon: f64,
+) -> anyhow::Result<Option<String>> {
+    let geocoder = geocoder_in(cache)?;
+    let result = geocoder.search((lat, lon));
+    let record = &result.record;
+    if record.name.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(format!("{}, {}", record.name, record.cc)))
+    }
+}
 
 /// Idempotent migration: adds `file_hashes.location_name` if it doesn't
 /// already exist. Mirrors the `ALTER TABLE faces ADD COLUMN is_primary`
@@ -126,6 +193,50 @@ pub fn location_name(lat: f64, lon: f64) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn cache(temp: &tempfile::TempDir) -> crate::library::CachePaths {
+        crate::library::CachePaths {
+            base: temp.path().to_path_buf(),
+            thumbnails: temp.path().join("thumbnails"),
+            geo: temp.path().join("geo"),
+        }
+    }
+
+    #[test]
+    fn explicit_dataset_is_content_addressed_and_exact() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = cache(&temp);
+        let path = materialize_cities_csv_in(&cache).unwrap();
+        let digest = blake3::hash(CITIES_CSV.as_bytes()).to_hex();
+        assert_eq!(path, cache.geo.join(digest.as_str()).join("cities.csv"));
+        assert_eq!(std::fs::read(path).unwrap(), CITIES_CSV.as_bytes());
+    }
+
+    #[test]
+    fn explicit_geocoder_preserves_utf8_place_names() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = cache(&temp);
+        let got = location_name_in(&cache, 41.02274, 29.01366)
+            .unwrap()
+            .unwrap();
+        assert!(got.starts_with("Üsküdar"), "expected Üsküdar, got {got}");
+        assert!(!got.contains("UEskuedar"), "still ASCII-mangled: {got}");
+    }
+
+    #[test]
+    fn materialization_errors_do_not_fall_back_or_poison_another_cache() {
+        let blocked = tempfile::tempdir().unwrap();
+        std::fs::write(blocked.path().join("geo"), b"not a directory").unwrap();
+        let blocked_cache = cache(&blocked);
+        assert!(geocoder_in(&blocked_cache).is_err());
+
+        let working = tempfile::tempdir().unwrap();
+        let working_cache = cache(&working);
+        let got = location_name_in(&working_cache, 55.60587, 13.00073)
+            .unwrap()
+            .unwrap();
+        assert!(got.starts_with("Malmö"), "expected Malmö, got {got}");
+    }
+
     #[test]
     fn ensure_location_column_is_idempotent() {
         let conn = Connection::open_in_memory().unwrap();
@@ -144,7 +255,10 @@ mod tests {
     #[test]
     fn location_name_resolves_known_city() {
         // Coordinates for central Paris, France.
-        let name = location_name(48.8566, 2.3522).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let name = location_name_in(&cache(&temp), 48.8566, 2.3522)
+            .unwrap()
+            .unwrap();
         assert!(
             name.contains("FR"),
             "expected France country code, got: {name}"
@@ -158,11 +272,13 @@ mod tests {
         // "Malmoe". Asserting the mangled forms are *absent* matters as much as
         // the correct ones being present, because the fallback path in
         // `geocoder()` would still return a plausible-looking name.
+        let temp = tempfile::tempdir().unwrap();
+        let cache = cache(&temp);
         for (lat, lon, want, mangled) in [
             (41.02274, 29.01366, "Üsküdar", "UEskuedar"),
             (55.60587, 13.00073, "Malmö", "Malmoe"),
         ] {
-            let got = location_name(lat, lon).unwrap();
+            let got = location_name_in(&cache, lat, lon).unwrap().unwrap();
             assert!(got.starts_with(want), "expected {want}, got {got}");
             assert!(!got.contains(mangled), "still ASCII-mangled: {got}");
         }
@@ -174,7 +290,10 @@ mod tests {
         // "Sector 1, RO". GeoNames lists Bucharest's six sectors as PPLX
         // entries, and a sector centroid can sit closer to the photos than the
         // city's own entry, so nearest-match picked the slice.
-        let got = location_name(44.4897, 26.0884).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let got = location_name_in(&cache(&temp), 44.4897, 26.0884)
+            .unwrap()
+            .unwrap();
         assert!(
             got.starts_with("Bucharest"),
             "expected Bucharest, got {got}"

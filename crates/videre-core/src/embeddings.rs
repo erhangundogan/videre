@@ -46,6 +46,16 @@ pub fn is_video_ext(ext: &str) -> bool {
 /// simply starts from zero and needs its own `videre embed` run.
 pub const DEFAULT_MODEL_ID: &str = "google/siglip-base-patch16-224";
 
+/// Resolve the model from one selected library's validated settings.
+pub fn resolve_model_id_from(
+    config: &crate::library_config::LibraryConfig,
+    explicit: Option<&str>,
+) -> anyhow::Result<String> {
+    let id = explicit.unwrap_or(&config.default_model).to_string();
+    validate_model_id(&id)?;
+    Ok(id)
+}
+
 /// The model to use, given an explicit home: `--model` > `config.toml` > the
 /// built-in default.
 ///
@@ -214,6 +224,21 @@ pub fn paths_for_hash(conn: &Connection, hash: &str) -> Result<Vec<String>> {
 mod tests {
     use super::*;
     use rusqlite::Connection;
+
+    #[test]
+    fn library_config_model_is_used_unless_an_explicit_model_wins() {
+        let mut config = crate::library_config::LibraryConfig::default();
+        config.default_model = "owner/configured".into();
+        assert_eq!(
+            resolve_model_id_from(&config, None).unwrap(),
+            "owner/configured"
+        );
+        assert_eq!(
+            resolve_model_id_from(&config, Some("owner/explicit")).unwrap(),
+            "owner/explicit"
+        );
+        assert!(resolve_model_id_from(&config, Some("invalid")).is_err());
+    }
 
     /// A main database with `file_hashes`, plus a real attached model
     /// database. In-memory main with an on-disk `emb` mirrors production: the

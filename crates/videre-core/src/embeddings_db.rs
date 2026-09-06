@@ -66,6 +66,27 @@ pub fn db_path(db_path: &Path, model_id: &str) -> Result<PathBuf> {
     Ok(library_dir(db_path)?.join(format!("{}.{DB_EXT}", model_slug(model_id))))
 }
 
+fn validate_context_storage(ctx: &crate::library::LibraryContext) -> Result<()> {
+    ctx.ensure_root_identity()?;
+    crate::library_locks::reject_dir_redirect(&ctx.paths.embeddings, "the embeddings directory")?;
+    Ok(())
+}
+
+/// Full path to one model database inside the selected library.
+///
+/// This is a path-only lookup. It validates the root and any existing state
+/// redirection, but creates no directory or database.
+pub fn db_path_in(ctx: &crate::library::LibraryContext, model_id: &str) -> Result<PathBuf> {
+    crate::embeddings::validate_model_id(model_id)?;
+    validate_context_storage(ctx)?;
+    let path = ctx
+        .paths
+        .embeddings
+        .join(format!("{}.{DB_EXT}", model_slug(model_id)));
+    crate::library_locks::reject_redirect(&path, "the model database")?;
+    Ok(path)
+}
+
 /// Page size for model databases, overriding SQLite's 4096 default.
 ///
 /// Measured 2026-08-05 over 20,000 synthetic rows, extrapolated to 70,587:
@@ -162,6 +183,58 @@ pub fn attach(conn: &Connection, db_path: &Path, model_id: &str, create: bool) -
     Ok(())
 }
 
+/// Attach one model database from the selected library as `emb`.
+pub fn attach_in(
+    conn: &Connection,
+    ctx: &crate::library::LibraryContext,
+    model_id: &str,
+    create: bool,
+) -> Result<()> {
+    crate::library_locks::verify_state(ctx)?;
+    let path = db_path_in(ctx, model_id)?;
+    if !path.exists() {
+        if !create {
+            let available = list_models_in(ctx).unwrap_or_default();
+            let available = if available.is_empty() {
+                "(none)".to_string()
+            } else {
+                available.join(", ")
+            };
+            anyhow::bail!(
+                "no embeddings for {model_id} in this library\n  \
+                 expected: {}\n  available: {available}\n  \
+                 run: videre embed --model {model_id}",
+                path.display()
+            );
+        }
+        std::fs::create_dir_all(&ctx.paths.embeddings)
+            .with_context(|| format!("create {}", ctx.paths.embeddings.display()))?;
+        validate_context_storage(ctx)?;
+        init_model_db(&path)?;
+    }
+    crate::library_locks::reject_redirect(&path, "the model database")?;
+    let meta =
+        std::fs::symlink_metadata(&path).with_context(|| format!("inspect {}", path.display()))?;
+    anyhow::ensure!(meta.is_file(), "{} is not a regular file", path.display());
+    conn.execute(
+        &format!("ATTACH DATABASE ?1 AS {ATTACH_ALIAS}"),
+        [path.to_string_lossy().as_ref()],
+    )
+    .with_context(|| format!("attach {}", path.display()))?;
+    if create {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS emb.embeddings (
+                hash        TEXT PRIMARY KEY NOT NULL,
+                model_id    TEXT NOT NULL,
+                embedding   BLOB NOT NULL,
+                embedded_at TEXT NOT NULL
+            );",
+        )
+        .with_context(|| format!("ensure schema in {}", path.display()))?;
+    }
+    Ok(())
+}
+
 /// Model ids with an existing database for this library, sorted.
 ///
 /// A missing directory is an empty list, not an error: a library that has
@@ -179,6 +252,35 @@ pub fn list_models(db_path: &Path) -> Result<Vec<String>> {
         .filter(|p| p.extension().is_some_and(|x| x == DB_EXT))
         .filter_map(|p| p.file_stem().map(|s| model_from_slug(&s.to_string_lossy())))
         .collect();
+    models.sort();
+    Ok(models)
+}
+
+/// Model ids with a database in the selected library, sorted.
+pub fn list_models_in(ctx: &crate::library::LibraryContext) -> Result<Vec<String>> {
+    validate_context_storage(ctx)?;
+    let entries = match std::fs::read_dir(&ctx.paths.embeddings) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("read {}", ctx.paths.embeddings.display()))
+        }
+    };
+    let mut models = Vec::new();
+    for entry in entries {
+        let entry = entry.with_context(|| format!("read {}", ctx.paths.embeddings.display()))?;
+        let path = entry.path();
+        if path.extension().is_none_or(|extension| extension != DB_EXT) {
+            continue;
+        }
+        crate::library_locks::reject_redirect(&path, "the model database")?;
+        let meta = std::fs::symlink_metadata(&path)
+            .with_context(|| format!("inspect {}", path.display()))?;
+        anyhow::ensure!(meta.is_file(), "{} is not a regular file", path.display());
+        if let Some(stem) = path.file_stem() {
+            models.push(model_from_slug(&stem.to_string_lossy()));
+        }
+    }
     models.sort();
     Ok(models)
 }
@@ -224,6 +326,37 @@ pub fn counts_by_model(db_path: &Path) -> Result<Vec<ModelEmbeddingCount>> {
     Ok(out)
 }
 
+/// Row count, dimensions and file size for each model in the selected library.
+pub fn counts_by_model_in(
+    ctx: &crate::library::LibraryContext,
+) -> Result<Vec<ModelEmbeddingCount>> {
+    let mut out = Vec::new();
+    for model_id in list_models_in(ctx)? {
+        let path = db_path_in(ctx, &model_id)?;
+        let size_bytes = std::fs::metadata(&path)
+            .with_context(|| format!("inspect {}", path.display()))?
+            .len() as i64;
+        let conn = Connection::open(&path).with_context(|| format!("open {}", path.display()))?;
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM embeddings", [], |row| row.get(0))
+            .unwrap_or(0);
+        let dims: i64 = conn
+            .query_row(
+                "SELECT LENGTH(embedding) / 2 FROM embeddings LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        out.push(ModelEmbeddingCount {
+            model_id,
+            count,
+            dims,
+            size_bytes,
+        });
+    }
+    Ok(out)
+}
+
 /// Attach for a reader: a missing model database is an error naming the models
 /// that do exist.
 ///
@@ -233,6 +366,15 @@ pub fn counts_by_model(db_path: &Path) -> Result<Vec<ModelEmbeddingCount>> {
 /// 0.11.0, as `LEGACY_FALLBACK_REMOVE_IN` scheduled.
 pub fn attach_for_read(conn: &Connection, db_path: &Path, model_id: &str) -> Result<()> {
     attach(conn, db_path, model_id, false)
+}
+
+/// Attach a selected library's existing model database for reading.
+pub fn attach_for_read_in(
+    conn: &Connection,
+    ctx: &crate::library::LibraryContext,
+    model_id: &str,
+) -> Result<()> {
+    attach_in(conn, ctx, model_id, false)
 }
 
 /// DETACH the model database. Needed before attaching a different model on
@@ -283,6 +425,70 @@ pub(crate) fn test_library(tag: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn explicit_context(parent: &Path, name: &str) -> crate::library::LibraryContext {
+        let root = parent.join(name);
+        std::fs::create_dir(&root).unwrap();
+        crate::library::LibraryContext::new(&root, &parent.join("cache")).unwrap()
+    }
+
+    #[test]
+    fn explicit_model_stores_are_isolated_and_keep_f16_dimensions() {
+        let temp = tempfile::tempdir().unwrap();
+        let a = explicit_context(temp.path(), "a");
+        let b = explicit_context(temp.path(), "b");
+        let a_conn = crate::library_db::initialize(&a).unwrap();
+        let b_conn = crate::library_db::initialize(&b).unwrap();
+        for model in ["owner/model-a", "owner/model-b"] {
+            attach_in(&a_conn, &a, model, true).unwrap();
+            a_conn
+                .execute(
+                    "INSERT INTO emb.embeddings (hash, model_id, embedding, embedded_at)
+                     VALUES ('shared', ?1, zeroblob(1536), 'now')",
+                    [model],
+                )
+                .unwrap();
+            detach(&a_conn).unwrap();
+        }
+        attach_in(&b_conn, &b, "owner/model-a", true).unwrap();
+        b_conn
+            .execute(
+                "INSERT INTO emb.embeddings (hash, model_id, embedding, embedded_at)
+                 VALUES ('shared', ?1, zeroblob(8), 'now')",
+                ["owner/model-a"],
+            )
+            .unwrap();
+        detach(&b_conn).unwrap();
+
+        assert_eq!(
+            list_models_in(&a).unwrap(),
+            vec!["owner/model-a", "owner/model-b"]
+        );
+        let a_counts = counts_by_model_in(&a).unwrap();
+        assert_eq!(a_counts.len(), 2);
+        assert!(a_counts
+            .iter()
+            .all(|count| count.count == 1 && count.dims == 768));
+        let b_counts = counts_by_model_in(&b).unwrap();
+        assert_eq!(b_counts[0].count, 1);
+        assert_eq!(b_counts[0].dims, 4);
+        assert_ne!(
+            db_path_in(&a, "owner/model-a").unwrap(),
+            db_path_in(&b, "owner/model-a").unwrap()
+        );
+    }
+
+    #[test]
+    fn explicit_read_attachment_does_not_create_a_missing_store() {
+        let temp = tempfile::tempdir().unwrap();
+        let ctx = explicit_context(temp.path(), "library");
+        let conn = crate::library_db::initialize(&ctx).unwrap();
+        let expected = db_path_in(&ctx, "owner/missing").unwrap();
+        let error = attach_for_read_in(&conn, &ctx, "owner/missing").unwrap_err();
+        assert!(format!("{error:#}").contains("no embeddings for owner/missing"));
+        assert!(!expected.exists());
+        assert!(!ctx.paths.embeddings.exists());
+    }
 
     /// Gives one test its own directory under the shared per-binary
     /// `VIDERE_HOME`. See `test_home` for why the home is not set per test.

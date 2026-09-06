@@ -1,6 +1,6 @@
 [package]
 name = "videre-core"
-version = "0.25.11"
+version = "0.25.12"
 edition = "2021"
 description = "Shared SQLite, caching, and search helpers for the videre media library CLI"
 license = "Apache-2.0"
@@ -31,7 +31,7 @@ ctrlc = "3"
 chrono = "0.4"
 ureq = { version = "3", features = ["json"] }
 matrixmultiply = "0.3"
+tempfile = "3"
 
 [dev-dependencies]
 libc = "0.2"
-tempfile = "3"

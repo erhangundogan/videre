@@ -1,3 +1,4 @@
+pub mod atomic_file;
 pub mod classify;
 pub mod db;
 pub mod disk;

@@ -10,6 +10,65 @@ use tempfile::tempdir;
 const MODEL_A: &str = "google/siglip2-base-patch16-384";
 const MODEL_B: &str = "google/siglip-base-patch16-224";
 
+#[test]
+fn model_stores_follow_the_library_not_the_launch_directory() {
+    let a = common::TestLibrary::new();
+    let b = common::TestLibrary::new();
+    let ca = a.context();
+    let cb = b.context();
+    let conn = videre_core::library_db::initialize(&ca).unwrap();
+    let model = videre_core::embeddings::DEFAULT_MODEL_ID;
+    videre_core::embeddings_db::attach_in(&conn, &ca, model, true).unwrap();
+    let pa = videre_core::embeddings_db::db_path_in(&ca, model).unwrap();
+    let pb = videre_core::embeddings_db::db_path_in(&cb, model).unwrap();
+    assert_eq!(
+        pa,
+        ca.paths
+            .embeddings
+            .join("google--siglip-base-patch16-224.db")
+    );
+    assert!(pa.exists());
+    assert!(!pb.exists());
+    assert_ne!(pa, pb);
+}
+
+#[test]
+fn feature_fixture_seeds_divergent_libraries_isolated_by_root() {
+    use common::feature_fixture::{snapshot_database, FeatureFixture, MODEL_A, MODEL_B};
+
+    let fx = FeatureFixture::build();
+    let a = snapshot_database(&fx.a.db());
+    let b_before = snapshot_database(&fx.b.db());
+
+    // The shared content hash carries different marks, tags and confirmed
+    // people in each library.
+    assert_ne!(a["marks"], b_before["marks"]);
+    assert_ne!(a["photo_tags"], b_before["photo_tags"]);
+    assert_ne!(a["people"], b_before["people"]);
+
+    // A has two model stores with different counts; B has the one its config
+    // chose.
+    let a_ctx = fx.a.context();
+    let b_ctx = fx.b.context();
+    assert_eq!(
+        videre_core::embeddings_db::list_models_in(&a_ctx).unwrap(),
+        vec![MODEL_A.to_string(), MODEL_B.to_string()]
+    );
+    assert_eq!(
+        videre_core::embeddings_db::list_models_in(&b_ctx).unwrap(),
+        vec![MODEL_B.to_string()]
+    );
+    let a_counts = videre_core::embeddings_db::counts_by_model_in(&a_ctx).unwrap();
+    assert_eq!(a_counts.iter().map(|c| c.count).sum::<i64>(), 3);
+
+    // A mutation confined to A must leave B's logical state byte-for-byte equal.
+    fx.a.conn()
+        .execute("UPDATE marks SET rating = 1", [])
+        .unwrap();
+    let b_after = snapshot_database(&fx.b.db());
+    assert_eq!(b_before, b_after);
+}
+
 /// A scanned library with one synthetic embedding in each of two models.
 ///
 /// Synthetic vectors on purpose: this covers routing and cleanup, not
