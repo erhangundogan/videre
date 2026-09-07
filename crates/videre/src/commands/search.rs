@@ -410,6 +410,45 @@ fn resolve_sort(args: &SearchArgs) -> Result<Vec<SortKey>> {
     Ok(keys)
 }
 
+/// Assemble the row selection for a search through the one shared assembler, so
+/// search honours every predicate exactly as the other row-backed commands do
+/// and the two cannot drift.
+///
+/// Search keeps its own `--person`/`--category`/`--location`/`--radius`/
+/// `--after`/`--before`/`--date` flag declarations, which predate the shared
+/// groups; rather than regress that surface, their values are packed into the
+/// shared group types here. Dates arrive already resolved (see `resolve_dates`),
+/// so `--date` expansion and bound normalisation are preserved and the date
+/// group is passed with its raw `--date` cleared.
+fn selection_for(
+    args: &SearchArgs,
+    dates: &(Option<String>, Option<String>),
+) -> Result<videre_core::selection::RowSelection> {
+    let date_group = super::selection_args::DateArgs {
+        after: dates.0.clone(),
+        before: dates.1.clone(),
+        date: None,
+    };
+    let place_group = super::selection_args::PlaceArgs {
+        location: args.location.clone(),
+        radius: args.radius,
+    };
+    let people_group = super::selection_args::PeopleArgs {
+        person: args.person.clone(),
+        category: args.category.clone(),
+    };
+    super::selection_args::row_selection(
+        Some(&args.media),
+        Some(&date_group),
+        Some(&place_group),
+        Some(&people_group),
+        Some(&args.presence),
+        Some(&args.paths),
+        Some(&args.marks),
+        Some(&args.tags),
+    )
+}
+
 /// `--date` shorthand, or the normalised `--after`/`--before` pair.
 fn resolve_dates(args: &SearchArgs) -> Result<(Option<String>, Option<String>)> {
     match args.date.as_deref() {
@@ -549,40 +588,18 @@ fn collect_hits(
         &ctx.library.settings,
         args.model.as_deref(),
     )?;
-    let (has, missing) = args.presence.fields()?;
-
-    // One selection, resolved in one place. `--location` is part of it rather
-    // than a separate pass: `resolve` geocodes the place name, intersects, and
-    // carries the per-hash distances that `--sort distance` reads.
-    let selection = videre_core::selection::RowSelection {
-        person: args.person.clone(),
-        category: args.category.clone(),
-        place: args
-            .location
-            .as_ref()
-            .map(|p| videre_core::selection::PlaceQuery::Named {
-                place: p.clone(),
-                radius_km: args.radius,
-            }),
-        after: dates.0.clone(),
-        before: dates.1.clone(),
-        kinds: args.media.kinds()?,
-        exts: args.media.ext.clone(),
-        mimes: args.media.mime.clone(),
-        has,
-        missing,
-        paths: args.paths.path.clone(),
-        min_rating: args.marks.rating,
-        pick: args.marks.pick_state(),
-        label: args.marks.label.clone(),
-        liked: args.marks.like,
-        tags: args.tags.tags.clone(),
-    };
+    // One selection, resolved in one place, and built by the shared assembler so
+    // search honours the same vocabulary as every other row-backed command.
+    // `--location` is part of it rather than a separate pass: `resolve` geocodes
+    // the place name, intersects, and carries the per-hash distances that
+    // `--sort distance` reads.
+    let selection = selection_for(args, &dates)?;
     anyhow::ensure!(
         is_ranked(args) || !selection.is_empty(),
         "provide a text query, --image <path>, or at least one filter \
          (--person, --category, --location, --date, --after, --before, \
-          --type, --ext, --mime, --path, --has, --missing)"
+          --type, --ext, --mime, --path, --has, --missing, \
+          --rating, --pick, --label, --like, --tag)"
     );
 
     // Only a ranking query reads vectors. Attaching for a pure filter query
@@ -764,6 +781,135 @@ mod tests {
 
     fn parse(argv: &[&str]) -> SearchArgs {
         Standalone::parse_from(argv).inner
+    }
+
+    #[test]
+    fn search_parses_a_bare_query_image_and_the_full_filter_vocabulary() {
+        // A bare text query.
+        assert_eq!(
+            parse(&["videre", "sunset"]).query.as_deref(),
+            Some("sunset")
+        );
+        // An example image, no positional query.
+        assert_eq!(
+            parse(&["videre", "--image", "/e.jpg"]).image.as_deref(),
+            Some(std::path::Path::new("/e.jpg"))
+        );
+        // Every filter, including the mark/tag ones, parses together with a query.
+        let a = parse(&[
+            "videre",
+            "cat",
+            "--person",
+            "Ada",
+            "--category",
+            "photo",
+            "--location",
+            "Berlin",
+            "--radius",
+            "10",
+            "--type",
+            "image",
+            "--ext",
+            "jpg",
+            "--mime",
+            "image/jpeg",
+            "--path",
+            "/x",
+            "--has",
+            "gps",
+            "--missing",
+            "date",
+            "--rating",
+            "3",
+            "--pick",
+            "keep",
+            "--label",
+            "Green",
+            "--like",
+            "--tag",
+            "beach",
+        ]);
+        assert_eq!(a.person.as_deref(), Some("Ada"));
+        assert_eq!(a.marks.rating, Some(3));
+        assert_eq!(a.marks.label.as_deref(), Some("Green"));
+        assert!(a.marks.like);
+        assert_eq!(a.tags.tags, vec!["beach".to_string()]);
+    }
+
+    #[test]
+    fn image_and_a_positional_query_conflict() {
+        assert!(Standalone::try_parse_from(["videre", "sunset", "--image", "/e.jpg"]).is_err());
+    }
+
+    #[test]
+    fn selection_for_matches_a_hand_built_selection() {
+        // The refactor routes search's RowSelection through the shared assembler.
+        // For a representative argument set the result must be identical to the
+        // hand-built selection search used before (full ISO dates so bound
+        // normalisation is a no-op and the expected strings are exact).
+        let args = parse(&[
+            "videre",
+            "--person",
+            "Ada",
+            "--category",
+            "photo",
+            "--location",
+            "Berlin",
+            "--radius",
+            "10",
+            "--after",
+            "2024-01-01T00:00:00",
+            "--before",
+            "2025-01-01T00:00:00",
+            "--type",
+            "image",
+            "--ext",
+            "jpg",
+            "--mime",
+            "image/jpeg",
+            "--path",
+            "/x",
+            "--has",
+            "gps",
+            "--missing",
+            "date",
+            "--rating",
+            "3",
+            "--pick",
+            "keep",
+            "--label",
+            "Green",
+            "--like",
+            "--tag",
+            "beach",
+            "--tag",
+            "sea",
+        ]);
+        let dates = resolve_dates(&args).unwrap();
+        let got = selection_for(&args, &dates).unwrap();
+
+        let want = videre_core::selection::RowSelection {
+            person: Some("Ada".into()),
+            category: Some("photo".into()),
+            place: Some(videre_core::selection::PlaceQuery::Named {
+                place: "Berlin".into(),
+                radius_km: 10.0,
+            }),
+            after: Some("2024-01-01T00:00:00".into()),
+            before: Some("2025-01-01T00:00:00".into()),
+            has: vec![videre_core::selection::PresenceField::Gps],
+            missing: vec![videre_core::selection::PresenceField::Date],
+            kinds: vec![videre_core::selection::MediaKind::Image],
+            exts: vec!["jpg".into()],
+            mimes: vec!["image/jpeg".into()],
+            paths: vec!["/x".into()],
+            min_rating: Some(3),
+            pick: Some(videre_core::marks::Pick::Keep),
+            label: Some("Green".into()),
+            liked: true,
+            tags: vec!["beach".into(), "sea".into()],
+        };
+        assert_eq!(got.describe(), want.describe());
     }
 
     /// A `SearchArgs` with nothing set, so each test names only what it is about.
