@@ -212,3 +212,68 @@ fn root_alias_and_explicit_selection_share_the_same_command_lock() {
     // The alias canonicalizes to the same root, so it is the same lock.
     assert!(library_locks::try_command(&other, "scan").is_err());
 }
+
+#[test]
+fn concurrent_publication_never_exposes_mixed_bytes() {
+    // Each publish writes its own temp file and atomically renames it into
+    // place, so a reader after the race sees exactly one writer's bytes, never
+    // an interleaving of both.
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("result.bin");
+    std::thread::scope(|scope| {
+        for byte in [17u8, 91u8] {
+            let path = target.clone();
+            scope.spawn(move || {
+                videre_core::atomic_file::publish(&path, |file| {
+                    use std::io::Write;
+                    file.write_all(&vec![byte; 8192])?;
+                    Ok(())
+                })
+                .unwrap();
+            });
+        }
+    });
+    let actual = std::fs::read(&target).unwrap();
+    assert!(
+        actual == vec![17u8; 8192] || actual == vec![91u8; 8192],
+        "the published file must be exactly one writer's bytes"
+    );
+}
+
+#[test]
+fn a_failed_publication_leaves_the_previous_bytes_intact() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("result.bin");
+    videre_core::atomic_file::publish(&target, |file| {
+        use std::io::Write;
+        file.write_all(b"original")?;
+        Ok(())
+    })
+    .unwrap();
+
+    // A writer that fails mid-write must not replace the destination.
+    let result =
+        videre_core::atomic_file::publish(&target, |_file| anyhow::bail!("the write failed"));
+    assert!(result.is_err());
+    assert_eq!(
+        std::fs::read(&target).unwrap(),
+        b"original",
+        "a failed publish must leave the previously published bytes in place"
+    );
+}
+
+#[test]
+fn a_face_crop_key_changes_with_its_geometry() {
+    // The cached crop's identity includes the bbox and size, so re-cropping the
+    // same face at a different geometry cannot return a stale cached image.
+    let lib = TestLibrary::new();
+    let cache = lib.context().cache;
+    let base =
+        videre_core::thumb_cache::face_thumb_path_in(&cache, "hash", 1, [1.0, 2.0, 3.0, 4.0], 140);
+    let moved =
+        videre_core::thumb_cache::face_thumb_path_in(&cache, "hash", 1, [1.0, 2.0, 3.0, 5.0], 140);
+    let resized =
+        videre_core::thumb_cache::face_thumb_path_in(&cache, "hash", 1, [1.0, 2.0, 3.0, 4.0], 280);
+    assert_ne!(base, moved, "a changed bbox must change the cache key");
+    assert_ne!(base, resized, "a changed size must change the cache key");
+}
