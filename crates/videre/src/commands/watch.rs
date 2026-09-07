@@ -126,6 +126,10 @@ fn tracked_stage(
 }
 
 fn run_cycle(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
+    // Recheck before every cycle: a root renamed or replaced under a
+    // long-running watch must fail the cycle rather than process whatever now
+    // sits at the path. open_existing rechecks again at the write boundary.
+    ctx.library.ensure_root_identity()?;
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
     if args.scan {
         // A scan failure this cycle does not invalidate earlier rows; log and

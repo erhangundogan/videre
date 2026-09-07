@@ -195,13 +195,23 @@ impl Drop for Server {
 
 impl Server {
     fn start(lib: &TestLibrary) -> Server {
+        Server::spawn(lib.cmd())
+    }
+
+    /// Start a gallery pinned to `lib` but invoked from a different working
+    /// directory (`cwd`), via `--library`. Proves the server binds to the
+    /// selected library rather than to wherever it was launched.
+    fn start_in(lib: &TestLibrary, cwd: &Path) -> Server {
+        Server::spawn(lib.from(cwd))
+    }
+
+    fn spawn(mut cmd: std::process::Command) -> Server {
         let port = TcpListener::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
             .unwrap()
             .port();
-        let child = lib
-            .cmd()
+        let child = cmd
             .args(["gallery", "--port", &port.to_string()])
             .spawn()
             .expect("failed to spawn videre gallery");
@@ -321,5 +331,45 @@ fn the_people_page_already_fetches_its_data() {
         len <= CEILING,
         "/people served {len} bytes, over the {CEILING} byte ceiling. It fetches \
          from /api/faces, so this should not be possible without a regression."
+    );
+}
+
+/// Two gallery servers, each pinned to its own library but both invoked from a
+/// third, empty directory, must never serve each other's rows, and neither may
+/// bring the invocation directory into existence as a library.
+#[test]
+fn two_servers_do_not_cross_library_rows() {
+    let a = TestLibrary::new();
+    let b = TestLibrary::new();
+    let c = TestLibrary::new();
+    a.copy_fixture("tiny.jpg", "a-only.jpg");
+    b.copy_fixture("sample_with_exif.jpg", "b-only.jpg");
+    a.scan();
+    b.scan();
+
+    let server_a = Server::start_in(&a, &c.root);
+    let server_b = Server::start_in(&b, &c.root);
+    let body_a = server_a.get_body("/api/files");
+    let body_b = server_b.get_body("/api/files");
+
+    assert!(
+        body_a.contains("a-only.jpg"),
+        "server A must serve its own file"
+    );
+    assert!(
+        !body_a.contains("b-only.jpg"),
+        "server A must not serve B's file"
+    );
+    assert!(
+        body_b.contains("b-only.jpg"),
+        "server B must serve its own file"
+    );
+    assert!(
+        !body_b.contains("a-only.jpg"),
+        "server B must not serve A's file"
+    );
+    assert!(
+        !c.db().exists(),
+        "the invocation directory must not become a library"
     );
 }

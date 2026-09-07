@@ -300,8 +300,29 @@ fn api_status(e: videre_api::Error) -> StatusCode {
         videre_api::Error::NotFound => StatusCode::NOT_FOUND,
         videre_api::Error::Invalid => StatusCode::BAD_REQUEST,
         videre_api::Error::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        videre_api::Error::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
         videre_api::Error::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
+}
+
+/// The per-operation guard every blocking server operation runs first: verify
+/// the startup-bound library's root still names that library, then take its
+/// shared activity lease. A replaced root or a library held by exclusive
+/// maintenance yields a retryable 503 rather than serving from, or mutating,
+/// whatever now sits at the path. The returned guard must be held for the whole
+/// operation (decode and cache publication included), so callers bind it.
+fn guard_operation(
+    state: &AppState,
+) -> Result<videre_core::library_locks::ActivityGuard, StatusCode> {
+    let library = &state.context.library;
+    library
+        .ensure_root_identity()
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    videre_core::library_locks::try_activity(
+        library,
+        videre_core::library_locks::ActivityMode::Shared,
+    )
+    .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
 }
 
 #[derive(Deserialize)]
@@ -711,6 +732,9 @@ async fn handle_location(
     Query(q): Query<LocationQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<AxumJson<LocationResponse>, StatusCode> {
+    // Reads the cache, geocodes into it and writes location_name back, so it
+    // takes the same per-operation guard as the image routes.
+    let _guard = guard_operation(&state)?;
     let conn = state
         .conn
         .lock()
@@ -1166,6 +1190,10 @@ async fn handle_face_image(
     // behind one mutex, which is the actual cause of multi-second-per-thumbnail
     // rendering in a library with thousands of faces.
     let bytes = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, StatusCode> {
+        // Held across the DB lookup and the decode/crop/cache-publish below, so
+        // a root replaced mid-request is refused and exclusive maintenance is
+        // excluded from the cache write.
+        let _guard = guard_operation(&state)?;
         let lookup = {
             let conn = state
                 .conn
@@ -1346,6 +1374,7 @@ async fn handle_original_image(
     let state = state.clone();
     let (content_type, bytes) =
         tokio::task::spawn_blocking(move || -> Result<(&'static str, Vec<u8>), StatusCode> {
+            let _guard = guard_operation(&state)?;
             let lookup = {
                 let conn = state
                     .conn
