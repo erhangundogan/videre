@@ -277,3 +277,20 @@ fn a_face_crop_key_changes_with_its_geometry() {
     assert_ne!(base, moved, "a changed bbox must change the cache key");
     assert_ne!(base, resized, "a changed size must change the cache key");
 }
+
+#[test]
+fn independent_libraries_run_exclusive_maintenance_at_the_same_time() {
+    // No global lock: two libraries can each be under exclusive maintenance
+    // simultaneously. A single shared resource lock would serialize them.
+    let a = TestLibrary::new();
+    let b = TestLibrary::new();
+    let ca = a.context();
+    let cb = b.context();
+    drop(library_db::initialize(&ca).unwrap());
+    drop(library_db::initialize(&cb).unwrap());
+
+    let ex_a = library_locks::try_activity(&ca, ActivityMode::Exclusive).unwrap();
+    let ex_b = library_locks::try_activity(&cb, ActivityMode::Exclusive).unwrap();
+    drop(ex_a);
+    drop(ex_b);
+}
