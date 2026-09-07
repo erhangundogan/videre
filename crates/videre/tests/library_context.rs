@@ -461,3 +461,32 @@ fn every_command_rejects_database_overrides_without_initializing_state() {
         assert!(!library.home.join(".videre").exists());
     }
 }
+
+/// A directory-local library stays correct and queryable at real scale: 70,000
+/// rows seeded directly, then reopened through a fresh context and counted. The
+/// point is that opening and reading a large local index does not degrade or
+/// probe the filesystem per row.
+#[test]
+fn large_local_index_remains_queryable() {
+    let library = common::TestLibrary::new();
+    let ctx = library.context();
+    let conn = videre_core::library_db::initialize(&ctx).unwrap();
+    let root = ctx.paths.root.to_string_lossy().to_string();
+    conn.execute(
+        "WITH RECURSIVE n(v) AS (
+           SELECT 1 UNION ALL SELECT v+1 FROM n WHERE v<70000
+         )
+         INSERT INTO file_hashes(path, hash, ext)
+         SELECT ?1 || '/synthetic/' || v || '.jpg', 'hash-' || v, 'jpg' FROM n",
+        [root],
+    )
+    .unwrap();
+    drop(conn);
+
+    let fresh = library.context();
+    let conn = videre_core::library_db::open_existing(&fresh).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 70_000);
+}

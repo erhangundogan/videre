@@ -24,6 +24,14 @@ version number and are released together.
   command locks all live under its own root, so two libraries never share
   state and running a command in the wrong directory can no longer touch an
   unrelated library.
+- **`scan` and `watch` take no positional directory or `--path`.** They walk
+  the selected library's own root; to work on a different tree, select a
+  different library. The database-backed commands (`search`, `embed`, `faces`,
+  `classify`, `mark`, `export`, `tag`) keep `--path`, which is now a filter
+  confined to a subtree of the library and rejected if it escapes the root.
+- **JSONL is an explicit export.** `videre export --jsonl` writes
+  `.videre/hashes.jsonl` as an atomic snapshot of the selected files; `scan`
+  no longer streams JSONL.
 
 ### Removed
 
