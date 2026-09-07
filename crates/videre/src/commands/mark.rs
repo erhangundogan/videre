@@ -8,7 +8,10 @@ use videre_core::selection::SelectionCtx;
 pub struct MarkArgs {
     // Targeting uses the standard selection groups MINUS the mark predicates: a
     // mark flag here means *set*, not *filter*, so allowing both would be
-    // circular, exactly as embed/faces exclude --person/--category.
+    // circular, exactly as embed/faces exclude --person/--category. The one
+    // mark/tag filter it does take is `--tag`, which narrows the target set to
+    // already-tagged files before setting a mark; tags are not a mark setter
+    // here, so there is no collision.
     #[command(flatten)]
     media: super::selection_args::MediaArgs,
     #[command(flatten)]
@@ -21,6 +24,8 @@ pub struct MarkArgs {
     presence: super::selection_args::PresenceArgs,
     #[command(flatten)]
     paths: super::selection_args::PathArgs,
+    #[command(flatten)]
+    tags: super::selection_args::TagFilterArgs,
 
     /// Set the star rating (0-5; 0 clears)
     #[arg(long, value_name = "N")]
@@ -121,7 +126,7 @@ pub(crate) fn resolve_targets(
         Some(&a.presence),
         Some(&a.paths),
         None,
-        None,
+        Some(&a.tags),
     )?;
     let resolved = sel.resolve_in(conn, &SelectionCtx::default(), &ctx.library)?;
     match resolved.hashes {
@@ -148,4 +153,44 @@ fn all_hashes(conn: &rusqlite::Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare("SELECT DISTINCT hash FROM file_hashes")?;
     let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Wrap {
+        #[command(flatten)]
+        a: MarkArgs,
+    }
+
+    #[test]
+    fn mark_flags_are_setters_and_tag_is_the_only_filter_it_takes() {
+        // --rating/--pick/--label/--like are setters here; --tag is the one
+        // mark/tag filter, narrowing the target set. They land on distinct
+        // fields and do not collide.
+        let a = Wrap::try_parse_from([
+            "mark", "--rating", "5", "--pick", "keep", "--label", "Green", "--like", "--tag",
+            "vacation",
+        ])
+        .expect("mark's setters must coexist with the --tag filter")
+        .a;
+        assert_eq!(a.rating, Some(5));
+        assert_eq!(a.pick.as_deref(), Some("keep"));
+        assert_eq!(a.label.as_deref(), Some("Green"));
+        assert!(a.like);
+        assert_eq!(a.tags.tags, vec!["vacation".to_string()]);
+    }
+
+    #[test]
+    fn mark_like_and_no_like_conflict() {
+        assert!(Wrap::try_parse_from(["mark", "--like", "--no-like"]).is_err());
+    }
+
+    #[test]
+    fn mark_pick_rejects_an_unknown_keyword() {
+        assert!(Wrap::try_parse_from(["mark", "--pick", "maybe"]).is_err());
+    }
 }

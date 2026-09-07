@@ -1,8 +1,10 @@
 //! `videre tag <selection> add|remove <tag>...`: free-form tags on photos,
 //! stored by content hash so they follow a photo across duplicates and moves.
-//! Selection resolves the same way `videre mark` does. A `--tag` filter would be
-//! circular here (it means "set", not "filter"), so this command does not take
-//! one.
+//! Selection resolves the same way `videre mark` does, and accepts the full
+//! filter vocabulary including the mark and `--tag` filters: `--add`/`--remove`
+//! are the setters, while a `--tag` here *narrows the input set* to files that
+//! already carry that tag before adding or removing another. The two never
+//! collide because the setters use their own `--add`/`--remove` flags.
 
 use crate::command_context::CommandContext;
 use anyhow::{bail, Result};
@@ -29,6 +31,10 @@ pub struct TagArgs {
     presence: super::selection_args::PresenceArgs,
     #[command(flatten)]
     paths: super::selection_args::PathArgs,
+    #[command(flatten)]
+    marks: super::selection_args::MarkArgs,
+    #[command(flatten)]
+    tags: super::selection_args::TagFilterArgs,
 
     /// No per-run output
     #[arg(long)]
@@ -70,8 +76,8 @@ pub fn run(args: TagArgs, ctx: &CommandContext) -> Result<()> {
         Some(&args.people),
         Some(&args.presence),
         Some(&args.paths),
-        None,
-        None,
+        Some(&args.marks),
+        Some(&args.tags),
     )?;
     let resolved = sel.resolve_in(&conn, &SelectionCtx::default(), &ctx.library)?;
     let hashes: Vec<String> = match resolved.hashes {
@@ -96,4 +102,48 @@ pub fn run(args: TagArgs, ctx: &CommandContext) -> Result<()> {
         videre_core::tags::set_tags(&conn, &hashes, &add)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Wrap {
+        #[command(flatten)]
+        a: TagArgs,
+    }
+
+    #[test]
+    fn tag_accepts_setters_alongside_the_full_filter_vocabulary() {
+        // --add/--remove are the setters; the mark and --tag groups are filters
+        // that narrow which files are (un)tagged. They land on distinct fields.
+        let a = Wrap::try_parse_from([
+            "tag",
+            "--add",
+            "keeper",
+            "--remove",
+            "old",
+            "--label",
+            "Green",
+            "--tag",
+            "other",
+            "--rating",
+            "5",
+            "--person",
+            "Ada",
+            "--category",
+            "photo",
+        ])
+        .expect("tag must accept its setters together with every filter group")
+        .a;
+        assert_eq!(a.add, vec!["keeper".to_string()]);
+        assert_eq!(a.remove, vec!["old".to_string()]);
+        assert_eq!(a.marks.label.as_deref(), Some("Green"));
+        assert_eq!(a.marks.rating, Some(5));
+        assert_eq!(a.tags.tags, vec!["other".to_string()]);
+        assert_eq!(a.people.person.as_deref(), Some("Ada"));
+        assert_eq!(a.people.category.as_deref(), Some("photo"));
+    }
 }
