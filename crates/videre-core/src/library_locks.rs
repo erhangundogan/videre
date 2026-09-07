@@ -576,8 +576,10 @@ mod tests {
         // tests above prove. The bounded surface is the stat-and-open path
         // every acquisition runs first (`lstat_maybe`, then
         // `acquire_lock_file`'s open), so that is what carries the injected
-        // budget, the same 1ns-under-margin pattern as `library.rs` and
-        // `library_guard.rs`.
+        // budget, driven with a body that reliably outlasts it. A tiny budget
+        // against an instantaneous open would race (the worker can buffer its
+        // result before the main thread reaches recv_timeout); a 50ms budget
+        // against a 5s-sleeping body always times out first.
         let (_t, ctx) = locked_library();
         let lock = lock_path(&ctx, "activity");
         std::fs::write(&lock, b"").unwrap();
@@ -586,8 +588,9 @@ mod tests {
         let err = crate::library::bounded_op(
             &lock,
             "open",
-            std::time::Duration::from_nanos(1),
+            std::time::Duration::from_millis(50),
             move || {
+                std::thread::sleep(std::time::Duration::from_secs(5));
                 OpenOptions::new()
                     .read(true)
                     .write(true)
