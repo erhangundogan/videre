@@ -41,6 +41,20 @@ version number and are released together.
   command with no `--library` uses the working directory rather than a global
   default, and `--db` is rejected at parse time.
 
+## [0.24.1] - 2026-09-03
+
+### Fixed
+
+- **Code examples use matching light and dark syntax themes.** Documentation
+  builds now force content regeneration and fail when generated pages reference
+  missing local CSS or JavaScript assets.
+
+### Changed
+
+- **The workflow pipeline is easier to follow.** Its tree now uses consistent
+  branch characters and shows where gallery views, marking, tagging, cleanup,
+  and metadata export fit into the processing sequence.
+
 ## [0.24.0] - 2026-09-02
 
 ### Added
@@ -1541,7 +1555,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.24.1...HEAD
+[0.24.1]: https://github.com/erhangundogan/videre/compare/v0.24.0...v0.24.1
 [0.24.0]: https://github.com/erhangundogan/videre/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/erhangundogan/videre/compare/v0.22.2...v0.23.0
 [0.22.2]: https://github.com/erhangundogan/videre/compare/v0.22.1...v0.22.2
