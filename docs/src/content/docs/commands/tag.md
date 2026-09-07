@@ -27,12 +27,15 @@ both in one run: removals apply first, then additions).
 
 The selection flags narrow the library the same way `search` does: `--person`,
 `--category`, `--date`/`--after`/`--before`, `--location`/`--radius`, `--type`,
-`--ext`, `--mime`, `--path`, `--has`, `--missing`. See
+`--ext`, `--mime`, `--path`, `--has`, `--missing`, plus the mark and tag
+filters `--rating`, `--pick`, `--label`, `--like` and `--tag`. See
 [scoping a run](/guides/scoping-a-run/). A run prints `N of M`. With no
 selection, every file is tagged.
 
-There is no `--tag` filter here: on this command a tag means *set*, not filter.
-To retag by an existing tag, select the files another way.
+`--add`/`--remove` are the setters; `--tag` is a *filter* here, narrowing which
+files are (un)tagged to those that already carry it. The two never collide
+because they use different flags: `videre tag --add printed --tag beach` adds
+`printed` only to files already tagged `beach`.
 
 ## Finding photos by tag
 

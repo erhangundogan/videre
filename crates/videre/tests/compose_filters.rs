@@ -88,3 +88,120 @@ fn embed_like_on_a_library_with_no_likes_processes_nothing_without_a_model() {
         "embed --like with no matches must not download a model"
     );
 }
+
+/// `mark --tag t --rating 5` rates only the tagged file: the `--tag` filter is a
+/// row-side narrower, while `--rating` remains the setter. Proves mark's new
+/// `--tag` filter and its setters coexist and land on the right files.
+#[test]
+fn mark_rating_scoped_by_tag_rates_only_the_tagged_file() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "a.jpg");
+    lib.copy_fixture("sample_with_exif.jpg", "b.jpg");
+    lib.scan();
+
+    let conn = lib.conn();
+    let a_hash: String = conn
+        .query_row(
+            "SELECT hash FROM file_hashes WHERE path LIKE '%a.jpg'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let b_hash: String = conn
+        .query_row(
+            "SELECT hash FROM file_hashes WHERE path LIKE '%b.jpg'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    videre_core::tags::ensure_photo_tags_table(&conn).unwrap();
+    videre_core::tags::set_tags(
+        &conn,
+        std::slice::from_ref(&a_hash),
+        &["keeper".to_string()],
+    )
+    .unwrap();
+    drop(conn);
+
+    let out = lib
+        .cmd()
+        .args(["mark", "--tag", "keeper", "--rating", "5", "--silent"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let conn = lib.conn();
+    assert_eq!(
+        videre_core::marks::get(&conn, &a_hash).unwrap().rating,
+        Some(5),
+        "the tagged file must be rated"
+    );
+    assert_eq!(
+        videre_core::marks::get(&conn, &b_hash).unwrap().rating,
+        None,
+        "an untagged file must be untouched by --tag-scoped mark"
+    );
+}
+
+/// `tag --add x --label Green` tags only the green file: `--add` is the setter,
+/// `--label` is a mark-side filter narrowing which files are tagged. Proves
+/// tag's setters and the mark filter group coexist.
+#[test]
+fn tag_add_scoped_by_label_tags_only_the_labelled_file() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "a.jpg");
+    lib.copy_fixture("sample_with_exif.jpg", "b.jpg");
+    lib.scan();
+
+    let conn = lib.conn();
+    let a_hash: String = conn
+        .query_row(
+            "SELECT hash FROM file_hashes WHERE path LIKE '%a.jpg'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let b_hash: String = conn
+        .query_row(
+            "SELECT hash FROM file_hashes WHERE path LIKE '%b.jpg'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    videre_core::marks::ensure_marks_table(&conn).unwrap();
+    videre_core::marks::set(
+        &conn,
+        std::slice::from_ref(&a_hash),
+        &videre_core::marks::change_from_parts(None, None, Some("Green"), None),
+    )
+    .unwrap();
+    drop(conn);
+
+    let out = lib
+        .cmd()
+        .args(["tag", "--add", "keeper", "--label", "Green", "--silent"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let conn = lib.conn();
+    assert_eq!(
+        videre_core::tags::tags_for_hash(&conn, &a_hash).unwrap(),
+        vec!["keeper".to_string()],
+        "the labelled file must be tagged"
+    );
+    assert!(
+        videre_core::tags::tags_for_hash(&conn, &b_hash)
+            .unwrap()
+            .is_empty(),
+        "an unlabelled file must not be tagged by a --label-scoped tag"
+    );
+}

@@ -225,7 +225,8 @@ pub struct MarkArgs {
 }
 
 /// `--tag` as a *filter* (row-side: tags are stored per hash). `videre tag` uses
-/// tags as *setters* instead, so it does not flatten this group.
+/// its own `--add`/`--remove` as the tag *setters*, so it can flatten this group
+/// too: here `--tag` narrows which files are (un)tagged rather than setting one.
 #[derive(clap::Args, Clone, Debug, Default)]
 pub struct TagFilterArgs {
     /// Only files carrying this tag. Repeatable; all must be present
