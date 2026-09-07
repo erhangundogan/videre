@@ -149,6 +149,95 @@ fn row_backed_commands_accept_presence_filters() {
     }
 }
 
+/// The mark/tag composition filters, as one value-carrying probe each. `--like`
+/// is a bare bool; the rest take a value clap must accept before the command
+/// runs.
+const MARK_TAG_PROBES: [&[&str]; 5] = [
+    &["--rating", "1"],
+    &["--pick", "keep"],
+    &["--label", "Green"],
+    &["--like"],
+    &["--tag", "t"],
+];
+
+/// The subcommands `videre --help` lists, minus the `help` pseudo-command.
+///
+/// Derived from the binary rather than hard-coded so a newly added subcommand
+/// joins the matrix below automatically: it will be neither in the honouring set
+/// nor excused, and its filters will be exercised, so a command wired to the
+/// wrong vocabulary fails here rather than shipping.
+fn subcommands(lib: &TestLibrary) -> Vec<String> {
+    let out = lib.cmd().arg("--help").output().unwrap();
+    let help = String::from_utf8_lossy(&out.stdout);
+    let mut names = Vec::new();
+    let mut in_commands = false;
+    for line in help.lines() {
+        if line.starts_with("Commands:") {
+            in_commands = true;
+            continue;
+        }
+        if in_commands {
+            if line.trim().is_empty() || line.starts_with("Options:") {
+                break;
+            }
+            // "  name   description" -> "name".
+            if let Some(name) = line.trim_start().split_whitespace().next() {
+                if name != "help" {
+                    names.push(name.to_string());
+                }
+            }
+        }
+    }
+    assert!(
+        names.len() > 10,
+        "help parsing found too few subcommands: {names:?}"
+    );
+    names
+}
+
+/// Which commands accept the mark/tag flags at parse time.
+///
+/// `search`/`export`/`classify`/`embed`/`faces`/`tag` accept all five as
+/// *filters*. `mark` also parses all five, but its `--rating`/`--pick`/`--label`/
+/// `--like` are *setters* and only `--tag` is a filter; that setter-versus-filter
+/// distinction is not observable at parse time and is pinned by the unit tests in
+/// `commands::mark` and the behavioural test in `tests/compose_filters.rs`, so
+/// here `mark` sits with the accepting set. Every other command - `scan`/`watch`
+/// (path-only) and the non-selection commands - must reject all five.
+fn accepts_mark_tag_flags(cmd: &str) -> bool {
+    matches!(
+        cmd,
+        "search" | "export" | "classify" | "embed" | "faces" | "tag" | "mark"
+    )
+}
+
+#[test]
+fn the_mark_tag_filter_matrix_holds_for_every_subcommand() {
+    let lib = library();
+    for cmd in subcommands(&lib) {
+        let expected = accepts_mark_tag_flags(&cmd);
+        for probe in MARK_TAG_PROBES {
+            let mut args = vec![cmd.as_str()];
+            args.extend_from_slice(probe);
+            let label = args.join(" ");
+            let (_, text) = run(&lib, &args);
+            assert_no_panic(&label, &text);
+            let rejected_at_parse = text.contains("unexpected argument");
+            if expected {
+                assert!(
+                    !rejected_at_parse,
+                    "{label} must parse: {cmd} accepts this filter\n{text}"
+                );
+            } else {
+                assert!(
+                    rejected_at_parse,
+                    "{label} must be rejected: {cmd} does not take mark/tag filters\n{text}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn degenerate_values_error_or_clamp_but_never_panic() {
     // `--batch 0` reached slice::chunks(0) before 0.15.2; `--model foo` reached
