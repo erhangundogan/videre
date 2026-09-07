@@ -748,3 +748,56 @@ fn a_media_filter_is_named_rather_than_mislabeled_as_a_date_query() {
         v["query"]
     );
 }
+
+/// A search with neither a ranking query nor any filter must refuse, and its
+/// message must name every filter it accepts, including the mark/tag ones that
+/// were folded in when search moved onto the shared row-selection assembler.
+/// Before that, the hard-coded message omitted them.
+#[test]
+fn empty_selection_error_names_the_mark_and_tag_filters() {
+    let lib = dates_library();
+    let out = lib.cmd().arg("search").output().unwrap();
+    assert!(
+        !out.status.success(),
+        "a search with no query and no filter must error"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    for flag in ["--rating", "--pick", "--label", "--like", "--tag"] {
+        assert!(
+            stderr.contains(flag),
+            "the empty-selection message must name {flag}: {stderr}"
+        );
+    }
+}
+
+/// The mark and tag filters narrow `search` end-to-end, just like every other
+/// predicate: `--label` returns only the labelled file, and `--tag` intersected
+/// with `--rating` returns a file only when it satisfies both.
+#[test]
+fn mark_and_tag_filters_narrow_search() {
+    let lib = dates_library();
+    let conn = lib.conn();
+    videre_core::marks::ensure_marks_table(&conn).unwrap();
+    videre_core::marks::set(
+        &conn,
+        &["h1".to_string()],
+        &videre_core::marks::change_from_parts(Some(5), None, Some("Green"), None),
+    )
+    .unwrap();
+    videre_core::tags::ensure_photo_tags_table(&conn).unwrap();
+    videre_core::tags::set_tags(&conn, &["h1".to_string()], &["beach".to_string()]).unwrap();
+    drop(conn);
+
+    // --label alone returns only the labelled file (h1 -> may.jpg).
+    assert_eq!(search_rel(&lib, &["--label", "Green"]), vec!["may.jpg"]);
+
+    // --tag intersected with --rating still returns h1, which has both.
+    assert_eq!(
+        search_rel(&lib, &["--tag", "beach", "--rating", "5"]),
+        vec!["may.jpg"]
+    );
+
+    // A tag no file carries intersects to nothing, even paired with a rating
+    // some file meets.
+    assert!(search_rel(&lib, &["--rating", "1", "--tag", "sea"]).is_empty());
+}
