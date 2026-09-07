@@ -56,31 +56,6 @@ pub fn resolve_model_id_from(
     Ok(id)
 }
 
-/// The model to use, given an explicit home: `--model` > `config.toml` > the
-/// built-in default.
-///
-/// Takes the home directly instead of reading `VIDERE_HOME`, so tests can pass
-/// one rather than mutating the environment. Tests share a process and run in
-/// parallel, so a per-test `set_var` races every concurrent `getenv`.
-///
-/// Note the return type is `anyhow::Result`, not this module's `Result`, which
-/// is `rusqlite::Result`. It returns a Result at all so a malformed
-/// `config.toml` stays a hard error; silently falling back to the default
-/// would mask a typo in the one file the user edits by hand.
-pub fn resolve_model_id_in(
-    home: &std::path::Path,
-    explicit: Option<&str>,
-) -> anyhow::Result<String> {
-    let id = match explicit {
-        Some(id) => id.to_string(),
-        None => crate::home::load_config(home)?
-            .default_model
-            .unwrap_or_else(|| DEFAULT_MODEL_ID.to_string()),
-    };
-    validate_model_id(&id)?;
-    Ok(id)
-}
-
 /// Reject anything that is not `owner/name`.
 ///
 /// Not cosmetic: `videre_ml::model::Embedder::load` does
@@ -108,15 +83,6 @@ pub fn validate_model_id(id: &str) -> anyhow::Result<()> {
              e.g. google/siglip-base-patch16-224"
         ),
     }
-}
-
-/// `resolve_model_id_in` against the resolved videre home.
-///
-/// `VIDERE_EMBED_MODEL` was removed rather than demoted. Two ways to set one
-/// thing is confusing, and an export made months ago silently outranking the
-/// config file is a bad failure mode. `--model` covers the one-off case.
-pub fn resolve_model_id(explicit: Option<&str>) -> anyhow::Result<String> {
-    resolve_model_id_in(&crate::home::videre_home()?, explicit)
 }
 
 #[derive(Debug, Clone)]
@@ -245,7 +211,7 @@ mod tests {
     /// split is the thing under test, so faking it with a plain local table
     /// would test nothing and would hide the `sqlite_master` trap entirely.
     fn test_db_attached(tag: &str) -> Connection {
-        let lib = crate::embeddings_db::test_library(tag);
+        let ctx = crate::embeddings_db::test_context(tag);
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE file_hashes (
@@ -266,7 +232,7 @@ mod tests {
         )
         .unwrap();
         ensure_embeddings_index(&conn).unwrap();
-        crate::embeddings_db::attach(&conn, &lib, "test-model", true).unwrap();
+        crate::embeddings_db::attach_in(&conn, &ctx, "owner/test-model", true).unwrap();
         conn
     }
 
@@ -461,63 +427,6 @@ mod tests {
         );
     }
 
-    fn cfg_home(tag: &str, toml_text: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("videre_rmi_{}_{}", tag, std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        if !toml_text.is_empty() {
-            std::fs::write(dir.join("config.toml"), toml_text).unwrap();
-        }
-        dir
-    }
-
-    #[test]
-    fn resolve_model_id_prefers_the_explicit_argument() {
-        let home = cfg_home("explicit", "default_model = \"owner/from-config\"\n");
-        assert_eq!(
-            resolve_model_id_in(&home, Some("owner/explicit")).unwrap(),
-            "owner/explicit"
-        );
-        let _ = std::fs::remove_dir_all(&home);
-    }
-
-    #[test]
-    fn resolve_model_id_uses_config_when_there_is_no_flag() {
-        let home = cfg_home("fromconfig", "default_model = \"owner/from-config\"\n");
-        assert_eq!(
-            resolve_model_id_in(&home, None).unwrap(),
-            "owner/from-config"
-        );
-        let _ = std::fs::remove_dir_all(&home);
-    }
-
-    #[test]
-    fn resolve_model_id_falls_back_to_the_builtin_default() {
-        let home = cfg_home("builtin", "");
-        assert_eq!(resolve_model_id_in(&home, None).unwrap(), DEFAULT_MODEL_ID);
-        let _ = std::fs::remove_dir_all(&home);
-    }
-
-    #[test]
-    fn videre_embed_model_env_var_has_no_effect() {
-        // The env var is gone. Written to fail against the old implementation,
-        // since deleting a branch is exactly the change that gets half-done.
-        // Safe to set: after this change nothing reads it.
-        let home = cfg_home("noenv", "");
-        std::env::set_var("VIDERE_EMBED_MODEL", "owner/should-be-ignored");
-        let got = resolve_model_id_in(&home, None).unwrap();
-        std::env::remove_var("VIDERE_EMBED_MODEL");
-        assert_eq!(got, DEFAULT_MODEL_ID, "VIDERE_EMBED_MODEL must be ignored");
-        let _ = std::fs::remove_dir_all(&home);
-    }
-
-    #[test]
-    fn a_malformed_config_is_an_error_not_a_silent_default() {
-        let home = cfg_home("malformed", "not = = toml\n");
-        assert!(resolve_model_id_in(&home, None).is_err());
-        let _ = std::fs::remove_dir_all(&home);
-    }
-
     #[test]
     fn is_video_ext_matches_mov_and_mp4_case_insensitively() {
         assert!(is_video_ext("mov"));
@@ -553,10 +462,10 @@ mod model_id_tests {
     fn the_explicit_flag_is_validated_not_just_the_config_file() {
         // The bug: validation lived in commands/config.rs and guarded only
         // `videre config set`, so --model reached the panic directly.
-        let dir = tempfile::tempdir().unwrap();
-        assert!(resolve_model_id_in(dir.path(), Some("foo")).is_err());
+        let config = crate::library_config::LibraryConfig::default();
+        assert!(resolve_model_id_from(&config, Some("foo")).is_err());
         assert_eq!(
-            resolve_model_id_in(dir.path(), Some("owner/name")).unwrap(),
+            resolve_model_id_from(&config, Some("owner/name")).unwrap(),
             "owner/name"
         );
     }

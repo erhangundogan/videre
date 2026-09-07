@@ -11,13 +11,13 @@
 //! pinning exact messages, so it stays true as wording changes.
 
 mod common;
-use common::videre_bin;
+use common::TestLibrary;
 use std::fs;
-use std::process::Command;
-use tempfile::{tempdir, TempDir};
 
-/// A scanned library, so commands get past their "no database" guard and the
-/// arguments themselves are what gets exercised.
+/// A scanned library, so commands get past their "not initialized" guard and
+/// the arguments themselves are what gets exercised. Commands resolve this
+/// library from their working directory (`cmd()` runs with `cwd = root`); there
+/// is no database override to pass.
 ///
 /// The one file is a **`.dng` on purpose**. This file spawns `videre embed`
 /// and `videre classify` to check their argument handling, and with an
@@ -32,53 +32,15 @@ use tempfile::{tempdir, TempDir};
 /// picked up SigLIP weights it is not supposed to have on Linux, which made
 /// `cpu_batch_matches_single_image_baseline` stop skipping and start running
 /// for real - taking the Ubuntu job past 35 minutes.
-fn library() -> (TempDir, std::path::PathBuf) {
-    let dir = tempdir().unwrap();
-    let pics = dir.path().join("pics");
-    fs::create_dir_all(&pics).unwrap();
-    fs::write(pics.join("a.dng"), b"a").unwrap();
-    let db = dir.path().join("t.db");
-    let ok = Command::new(videre_bin())
-        .env("VIDERE_HOME", dir.path())
-        .args(["scan"])
-        .arg(&pics)
-        .arg("--db")
-        .arg(&db)
-        .arg("--silent")
-        .status()
-        .unwrap();
-    assert!(ok.success());
-    (dir, db)
+fn library() -> TestLibrary {
+    let lib = TestLibrary::new();
+    fs::write(lib.root.join("a.dng"), b"a").unwrap();
+    lib.scan();
+    lib
 }
 
-fn run(home: &std::path::Path, db: &std::path::Path, args: &[&str]) -> (bool, String) {
-    let needs_db = matches!(
-        args[0],
-        "search"
-            | "embed"
-            | "faces"
-            | "classify"
-            | "dedupe"
-            | "prune"
-            | "stats"
-            | "locations"
-            | "mark"
-            | "tag"
-            | "export"
-    );
-    let mut c = Command::new(videre_bin());
-    // Point the weights cache at the temp dir too. Nothing here should reach a
-    // model load, and the guard below asserts it; this makes a regression cost
-    // a failing test rather than silently filling the developer's real cache
-    // (and, on CI, the cached artifact that decides whether the slow
-    // CPU-inference test skips).
-    c.env("VIDERE_HOME", home)
-        .env("HF_HOME", home.join("hf"))
-        .args(args);
-    if needs_db && !args.contains(&"--db") {
-        c.arg("--db").arg(db);
-    }
-    let out = c.output().unwrap();
+fn run(lib: &TestLibrary, args: &[&str]) -> (bool, String) {
+    let out = lib.cmd().args(args).output().unwrap();
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stderr),
@@ -100,7 +62,7 @@ fn assert_no_panic(label: &str, text: &str) {
 
 #[test]
 fn an_unknown_flag_is_rejected_by_every_subcommand() {
-    let (dir, db) = library();
+    let lib = library();
     for cmd in [
         "scan",
         "search",
@@ -118,7 +80,7 @@ fn an_unknown_flag_is_rejected_by_every_subcommand() {
         "config",
         "mcp",
     ] {
-        let (ok, text) = run(dir.path(), &db, &[cmd, "--definitely-not-a-flag"]);
+        let (ok, text) = run(&lib, &[cmd, "--definitely-not-a-flag"]);
         assert_no_panic(cmd, &text);
         assert!(!ok, "{cmd} accepted an unknown flag");
     }
@@ -130,22 +92,20 @@ fn a_flag_a_command_cannot_answer_fails_to_parse() {
     // file, so scan and watch cannot answer --date or --location, and embed and
     // faces refuse --person and --category because both are derived from the
     // data those commands produce.
-    let (dir, db) = library();
-    let pics = dir.path().join("pics");
-    let p = pics.to_str().unwrap();
+    let lib = library();
     for args in [
-        vec!["scan", p, "--person", "Alice"],
-        vec!["scan", p, "--date", "2024"],
-        vec!["watch", p, "--location", "Berlin"],
-        vec!["watch", p, "--category", "screenshot"],
+        vec!["scan", "--person", "Alice"],
+        vec!["scan", "--date", "2024"],
+        vec!["watch", "--location", "Berlin"],
+        vec!["watch", "--category", "screenshot"],
         vec!["embed", "--person", "Alice"],
         vec!["embed", "--category", "screenshot"],
         vec!["faces", "--person", "Alice"],
         vec!["faces", "--category", "screenshot"],
         vec!["locations", "--type", "video"],
     ] {
-        let label = format!("{} {}", args[0], args[args.len() - 2]);
-        let (ok, text) = run(dir.path(), &db, &args);
+        let label = format!("{} {}", args[0], args[1]);
+        let (ok, text) = run(&lib, &args);
         assert_no_panic(&label, &text);
         assert!(!ok, "{label} must not parse: the command cannot answer it");
     }
@@ -153,18 +113,16 @@ fn a_flag_a_command_cannot_answer_fails_to_parse() {
 
 #[test]
 fn path_backed_commands_reject_presence_filters() {
-    let (dir, db) = library();
-    let pics = dir.path().join("pics");
-    let p = pics.to_str().unwrap();
+    let lib = library();
     for args in [
-        vec!["scan", p, "--missing", "gps"],
-        vec!["scan", p, "--has", "date"],
-        vec!["watch", p, "--missing", "gps"],
-        vec!["watch", p, "--has", "date"],
+        vec!["scan", "--missing", "gps"],
+        vec!["scan", "--has", "date"],
+        vec!["watch", "--missing", "gps"],
+        vec!["watch", "--has", "date"],
         vec!["locations", "--missing", "gps"],
     ] {
         let label = args.join(" ");
-        let (ok, text) = run(dir.path(), &db, &args);
+        let (ok, text) = run(&lib, &args);
         assert_no_panic(&label, &text);
         assert!(!ok, "{label} must not parse: the command cannot answer it");
     }
@@ -172,7 +130,7 @@ fn path_backed_commands_reject_presence_filters() {
 
 #[test]
 fn row_backed_commands_accept_presence_filters() {
-    let (dir, db) = library();
+    let lib = library();
     for args in [
         vec!["embed", "--has", "gps", "--batch", "0"],
         vec!["faces", "--missing", "date", "--dry-run"],
@@ -182,7 +140,7 @@ fn row_backed_commands_accept_presence_filters() {
         vec!["export", "--missing", "gps", "--xmp", "--dry-run"],
     ] {
         let label = args.join(" ");
-        let (_, text) = run(dir.path(), &db, &args);
+        let (_, text) = run(&lib, &args);
         assert_no_panic(&label, &text);
         assert!(
             !text.contains("unexpected argument"),
@@ -195,7 +153,7 @@ fn row_backed_commands_accept_presence_filters() {
 fn degenerate_values_error_or_clamp_but_never_panic() {
     // `--batch 0` reached slice::chunks(0) before 0.15.2; `--model foo` reached
     // split_once('/').expect(). Both are here permanently.
-    let (dir, db) = library();
+    let lib = library();
     for args in [
         vec!["embed", "--batch", "0"],
         vec!["faces", "--batch", "0"],
@@ -212,26 +170,21 @@ fn degenerate_values_error_or_clamp_but_never_panic() {
         vec!["classify", "--margin", "-5"],
     ] {
         let label = args.join(" ");
-        let (_, text) = run(dir.path(), &db, &args);
+        let (_, text) = run(&lib, &args);
         assert_no_panic(&label, &text);
     }
 }
 
 #[test]
 fn conflicting_flags_are_refused_rather_than_silently_resolved() {
-    let (dir, db) = library();
-    let pics = dir.path().join("pics");
-    let p = pics.to_str().unwrap();
-    let dbs = db.to_str().unwrap();
+    let lib = library();
     for args in [
-        vec!["scan", p, "--db", dbs, "--output", "x.jsonl"],
-        vec!["scan", p, "--output", "o.jsonl", "--retry-incomplete"],
         vec!["search", "text", "--image", "/tmp/nope.jpg"],
         vec!["search", "--date", "2024", "--after", "2020-01-01"],
         vec!["search", "x", "--radius", "5"], // --radius needs --location
     ] {
         let label = args.join(" ");
-        let (ok, text) = run(dir.path(), &db, &args);
+        let (ok, text) = run(&lib, &args);
         assert_no_panic(&label, &text);
         assert!(!ok, "{label} should be refused");
     }
@@ -242,7 +195,7 @@ fn hostile_strings_do_not_reach_the_database_as_sql() {
     // Every filter is a parameterised query, but this is the assertion that
     // proves it rather than assuming it. A bare `.execute` with format! would
     // pass every other test in the suite and fail this one.
-    let (dir, db) = library();
+    let lib = library();
     let inj = "'; DROP TABLE file_hashes; --";
     for args in [
         vec!["search", "x", "--person", inj],
@@ -254,11 +207,11 @@ fn hostile_strings_do_not_reach_the_database_as_sql() {
         vec!["config", "set", "model", inj],
     ] {
         let label = args.join(" ");
-        let (_, text) = run(dir.path(), &db, &args);
+        let (_, text) = run(&lib, &args);
         assert_no_panic(&label, &text);
     }
 
-    let conn = rusqlite::Connection::open(&db).unwrap();
+    let conn = rusqlite::Connection::open(lib.db()).unwrap();
     let rows: i64 = conn
         .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
         .unwrap();
@@ -267,7 +220,7 @@ fn hostile_strings_do_not_reach_the_database_as_sql() {
 
 #[test]
 fn odd_but_harmless_input_is_tolerated() {
-    let (dir, db) = library();
+    let lib = library();
     let long = "x".repeat(5000);
     for args in [
         vec!["search", "x", "--person", "🙂"],
@@ -282,7 +235,7 @@ fn odd_but_harmless_input_is_tolerated() {
             args[0],
             &args[args.len() - 1][..args[args.len() - 1].len().min(20)]
         );
-        let (_, text) = run(dir.path(), &db, &args);
+        let (_, text) = run(&lib, &args);
         assert_no_panic(&label, &text);
     }
 }
@@ -296,8 +249,8 @@ fn sweeping_the_argument_surface_downloads_no_model_weights() {
     // invisible locally - a developer's cache is already warm, so the download
     // never happens and nothing looks wrong. It only shows up on CI, as a
     // cached artifact that quietly changes which *other* tests skip.
-    let (dir, db) = library();
-    let hf = dir.path().join("hf");
+    let lib = library();
+    let hf = lib.home.join(".cache/huggingface");
 
     for args in [
         vec!["embed"],
@@ -307,7 +260,7 @@ fn sweeping_the_argument_surface_downloads_no_model_weights() {
         vec!["search", "anything"],
     ] {
         let label = args.join(" ");
-        let (_, text) = run(dir.path(), &db, &args);
+        let (_, text) = run(&lib, &args);
         assert_no_panic(&label, &text);
     }
 
@@ -347,7 +300,7 @@ fn walk_size(p: &std::path::Path) -> u64 {
 
 #[test]
 fn a_missing_required_value_errors_cleanly() {
-    let (dir, db) = library();
+    let lib = library();
     for args in [
         vec!["search"],
         vec!["config", "set", "model"],
@@ -355,7 +308,7 @@ fn a_missing_required_value_errors_cleanly() {
         vec!["search", "x", "--top-k"],
     ] {
         let label = args.join(" ");
-        let (ok, text) = run(dir.path(), &db, &args);
+        let (ok, text) = run(&lib, &args);
         assert_no_panic(&label, &text);
         assert!(!ok, "{label} should be refused");
     }

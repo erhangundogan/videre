@@ -706,30 +706,31 @@ fn load_image(
         #[cfg(target_os = "macos")]
         {
             // `videre watch --heic` may have already cached a full-resolution
-            // decode for this hash (`thumb_cache::original_path`), reuse it
+            // decode for this hash (`thumb_cache::original_path_in`), reuse it
             // instead of paying for a second qlmanage subprocess. Detection's
             // bbox coordinates are stored relative to whatever image
             // detection ran on, so this cached JPEG must be a full-res
             // decode too (which `watch --heic` guarantees. See
             // `run_heic_stage`), not one of the smaller 240/1200px
-            // thumbnails. Falls back to a fresh full-res qlmanage decode
-            // (None) when the cache hasn't been populated for this hash yet,
-            // so detection works correctly even if `watch --heic` never ran.
-            let cached_path = match cache {
-                Some(c) => videre_core::thumb_cache::original_path_in(c, hash),
-                None => videre_core::thumb_cache::original_path(hash),
-            };
-            if cached_path.exists() {
-                let timeout_path = cached_path.clone();
-                let result = videre_core::io_timeout::run_with_timeout(
-                    videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
-                    move || image::open(&timeout_path),
-                );
-                if let Ok(Ok(img)) = result {
-                    return Ok(img);
+            // thumbnails. With no library cache in scope, or when the cache
+            // has not been populated for this hash yet, falls back to a fresh
+            // full-res qlmanage decode, so detection works correctly even if
+            // `watch --heic` never ran.
+            if let Some(cached_path) =
+                cache.map(|c| videre_core::thumb_cache::original_path_in(c, hash))
+            {
+                if cached_path.exists() {
+                    let timeout_path = cached_path.clone();
+                    let result = videre_core::io_timeout::run_with_timeout(
+                        videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
+                        move || image::open(&timeout_path),
+                    );
+                    if let Ok(Ok(img)) = result {
+                        return Ok(img);
+                    }
+                    // Cached file missing/corrupt/timed out: fall through to a
+                    // fresh decode rather than failing outright.
                 }
-                // Cached file missing/corrupt/timed out: fall through to a
-                // fresh decode rather than failing outright.
             }
             return videre_core::heic::heic_via_quicklook(path, "faces", None).ok_or_else(|| {
                 format!(
@@ -848,8 +849,12 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn load_image_reuses_cached_original_for_heic_hash_instead_of_decoding() {
+        let temp = tempfile::tempdir().unwrap();
+        let ctx =
+            videre_core::library::LibraryContext::new(temp.path(), &temp.path().join("cache"))
+                .unwrap();
         let hash = format!("test-pipeline-cache-hash-{}", std::process::id());
-        let cache_path = videre_core::thumb_cache::original_path(&hash);
+        let cache_path = videre_core::thumb_cache::original_path_in(&ctx.cache, &hash);
         std::fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
         let img = image::RgbImage::from_pixel(2, 2, image::Rgb([255, 0, 0]));
         image::DynamicImage::ImageRgb8(img)
@@ -860,10 +865,13 @@ mod tests {
         // load_image fell through to a fresh qlmanage decode instead of
         // using the cache, this would fail rather than return the cached
         // 2x2 image.
-        let result = load_image("/nonexistent/should-not-be-read.heic", &hash, None).unwrap();
+        let result = load_image(
+            "/nonexistent/should-not-be-read.heic",
+            &hash,
+            Some(&ctx.cache),
+        )
+        .unwrap();
         assert_eq!((result.width(), result.height()), (2, 2));
-
-        let _ = std::fs::remove_file(&cache_path);
     }
 
     #[test]

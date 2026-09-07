@@ -515,15 +515,6 @@ mod stage_query_tests {
     }
 
     #[test]
-    fn table_check_distinguishes_a_missing_table_from_an_empty_one() {
-        // watch runs against a database another command may not have created
-        // yet, so "no table" has to be survivable rather than an error.
-        let empty = Connection::open_in_memory().unwrap();
-        assert!(!file_hashes_table_exists(&empty).unwrap());
-        assert!(file_hashes_table_exists(&db_with(&[])).unwrap());
-    }
-
-    #[test]
     fn the_faces_filter_takes_images_including_heic_and_no_video() {
         let c = db_with(&[
             ("/a.jpg", "h1", "jpg"),
@@ -595,30 +586,32 @@ mod scoping_tests {
     }
 
     fn parse(extra: &[&str]) -> WatchArgs {
-        let mut v = vec!["watch", "/tmp"];
+        let mut v = vec!["watch"];
         v.extend_from_slice(extra);
         Wrap::parse_from(v).args
     }
 
     #[test]
-    fn watch_accepts_the_path_side_flags_only() {
-        // A walk has not opened the file, so it cannot answer --date or
-        // --location. Those must fail to parse rather than fail at runtime.
-        let a = parse(&["--type", "image", "--ext", "heic", "--path", "/tmp/x"]);
-        let sel =
-            super::super::selection_args::path_selection(Some(&a.media), Some(&a.paths)).unwrap();
+    fn watch_accepts_the_media_flags_only() {
+        // The walk is rooted at the invocation library and has not opened any
+        // file, so it can answer only the media flags (--type/--ext). --date,
+        // --location and the data-derived selectors must fail to parse rather
+        // than fail at runtime.
+        let a = parse(&["--type", "image", "--ext", "heic"]);
+        let sel = super::super::selection_args::path_selection(Some(&a.media), None).unwrap();
         assert!(!sel.is_empty());
 
         for bad in [
-            vec!["watch", "/tmp", "--date", "2024"],
-            vec!["watch", "/tmp", "--location", "Berlin"],
-            vec!["watch", "/tmp", "--person", "Alice"],
-            vec!["watch", "/tmp", "--category", "screenshot"],
+            vec!["watch", "--date", "2024"],
+            vec!["watch", "--location", "Berlin"],
+            vec!["watch", "--person", "Alice"],
+            vec!["watch", "--category", "screenshot"],
+            vec!["watch", "--path", "/tmp/x"],
         ] {
             assert!(
                 Wrap::try_parse_from(&bad).is_err(),
-                "watch must reject {:?}: a walk cannot answer it",
-                bad[2]
+                "watch must reject {:?}: it is not part of watch's vocabulary",
+                bad[1]
             );
         }
     }
@@ -626,8 +619,7 @@ mod scoping_tests {
     #[test]
     fn no_flags_means_an_empty_selection_that_accepts_everything() {
         let a = parse(&[]);
-        let sel =
-            super::super::selection_args::path_selection(Some(&a.media), Some(&a.paths)).unwrap();
+        let sel = super::super::selection_args::path_selection(Some(&a.media), None).unwrap();
         assert!(sel.is_empty(), "an unscoped watch must not filter the walk");
         assert!(sel.accepts(std::path::Path::new("/anything/at/all.mov")));
     }
@@ -635,8 +627,7 @@ mod scoping_tests {
     #[test]
     fn a_type_filter_narrows_the_walk_the_same_way_scan_does() {
         let a = parse(&["--type", "video"]);
-        let sel =
-            super::super::selection_args::path_selection(Some(&a.media), Some(&a.paths)).unwrap();
+        let sel = super::super::selection_args::path_selection(Some(&a.media), None).unwrap();
         assert!(sel.accepts(std::path::Path::new("/x/clip.mov")));
         assert!(!sel.accepts(std::path::Path::new("/x/photo.jpg")));
     }

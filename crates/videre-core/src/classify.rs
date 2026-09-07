@@ -140,7 +140,7 @@ mod tests {
     /// attached model database holding `embeddings`. Faking the split with a
     /// plain local table would hide the very thing under test.
     fn test_db_attached(tag: &str) -> Connection {
-        let lib = crate::embeddings_db::test_library(tag);
+        let ctx = crate::embeddings_db::test_context(tag);
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE file_hashes (
@@ -152,7 +152,7 @@ mod tests {
         .unwrap();
         crate::db::ensure_file_hashes_columns(&conn);
         ensure_classifications_table(&conn).unwrap();
-        crate::embeddings_db::attach(&conn, &lib, "test-model", true).unwrap();
+        crate::embeddings_db::attach_in(&conn, &ctx, "owner/test-model", true).unwrap();
         conn
     }
 
@@ -228,7 +228,7 @@ mod tests {
         // Each model owns a separate database, so this genuinely swaps the
         // attached one rather than putting two model_ids in one table, which
         // the hash primary key would not allow anyway.
-        let lib = crate::embeddings_db::test_library("cls_secondmodel");
+        let ctx = crate::embeddings_db::test_context("cls_secondmodel");
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL, ext TEXT);",
@@ -237,13 +237,13 @@ mod tests {
         crate::db::ensure_file_hashes_columns(&conn);
         ensure_classifications_table(&conn).unwrap();
 
-        crate::embeddings_db::attach(&conn, &lib, "model-a", true).unwrap();
+        crate::embeddings_db::attach_in(&conn, &ctx, "owner/model-a", true).unwrap();
         insert_embedding(&conn, "h1", "model-a");
         insert_classifications(&conn, "model-a", &[("h1".to_string(), "photo", 0.9)]).unwrap();
         assert!(pending_hashes(&conn, "model-a").unwrap().is_empty());
         crate::embeddings_db::detach(&conn).unwrap();
 
-        crate::embeddings_db::attach(&conn, &lib, "model-b", true).unwrap();
+        crate::embeddings_db::attach_in(&conn, &ctx, "owner/model-b", true).unwrap();
         insert_embedding(&conn, "h1", "model-b");
         assert_eq!(
             pending_hashes(&conn, "model-b").unwrap(),

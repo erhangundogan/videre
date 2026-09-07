@@ -13,6 +13,26 @@ to `0.x` itself may break your build or require action on your library.
 All four crates (`videre`, `videre-core`, `videre-api`, `videre-ml`) share a
 version number and are released together.
 
+## [Unreleased]
+
+### Changed
+
+- **Directory-local libraries.** Every command now resolves its library from
+  the working directory (or an explicit `--library <DIR>`), operating on the
+  `.videre` state directory at that root. A library is fully self-contained:
+  its database, per-model embedding stores, thumbnail and geocoding caches, and
+  command locks all live under its own root, so two libraries never share
+  state and running a command in the wrong directory can no longer touch an
+  unrelated library.
+
+### Removed
+
+- **Global library resolution.** The `--db` flag, the `VIDERE_HOME`
+  environment variable, and the persisted `default_db` / `default_path`
+  config keys are gone, along with the built-in fallback database path. A
+  command with no `--library` uses the working directory rather than a global
+  default, and `--db` is rejected at parse time.
+
 ## [0.24.0] - 2026-09-02
 
 ### Added
@@ -1513,6 +1533,7 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.24.0...HEAD
 [0.24.0]: https://github.com/erhangundogan/videre/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/erhangundogan/videre/compare/v0.22.2...v0.23.0
 [0.22.2]: https://github.com/erhangundogan/videre/compare/v0.22.1...v0.22.2

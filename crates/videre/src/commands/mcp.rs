@@ -129,8 +129,8 @@ struct DateRange {
     max: String,
 }
 
-fn build_stats(db: &std::path::Path) -> anyhow::Result<StatsJson> {
-    let conn = videre_core::db::open_wal(db)?;
+fn build_stats(ctx: &crate::command_context::CommandContext) -> anyhow::Result<StatsJson> {
+    let conn = videre_core::db::open_wal(&ctx.library.paths.db)?;
 
     let (total_files, total_size_bytes, unique_hashes, files_with_gps, exif_date_range) =
         if videre_core::db::table_exists(&conn, "file_hashes")? {
@@ -159,7 +159,7 @@ fn build_stats(db: &std::path::Path) -> anyhow::Result<StatsJson> {
     // per-model database, an unfiltered count would either miss it entirely
     // or, once several models exist, double-count hashes embedded by more
     // than one of them.
-    let embedded_count: u64 = videre_core::embeddings_db::counts_by_model(db)
+    let embedded_count: u64 = videre_core::embeddings_db::counts_by_model_in(&ctx.library)
         .map(|counts| counts.iter().map(|c| c.count.max(0) as u64).sum())
         .unwrap_or(0);
 
@@ -364,8 +364,8 @@ impl VidereServer {
         description = "Summary of the videre library: total files, total size, unique hashes, embedded count, face count, labeled people, files with GPS, and the EXIF date range. Results reflect the database (kept fresh by 'videre watch' or CLI scans)."
     )]
     async fn stats(&self) -> Result<CallToolResult, McpError> {
-        let db = self.db.clone();
-        match blocking(move || build_stats(&db)).await? {
+        let context = self.context.clone();
+        match blocking(move || build_stats(&context)).await? {
             Ok(doc) => json_result(&doc),
             Err(e) => Ok(tool_error(&e)),
         }

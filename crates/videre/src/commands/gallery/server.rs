@@ -1173,7 +1173,8 @@ async fn handle_face_image(
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             videre_api::face_lookup(&conn, face_id).map_err(|_| StatusCode::NOT_FOUND)?
         };
-        videre_api::face_bytes_from_lookup(&lookup, face_id).map_err(|_| StatusCode::NOT_FOUND)
+        videre_api::face_bytes_from_lookup(&lookup, face_id, &state.context.library.cache)
+            .map_err(|_| StatusCode::NOT_FOUND)
     })
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
@@ -1352,7 +1353,7 @@ async fn handle_original_image(
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
                 videre_api::original_lookup(&conn, face_id).map_err(|_| StatusCode::NOT_FOUND)?
             };
-            videre_api::original_bytes_from_lookup(&lookup, face_id)
+            videre_api::original_bytes_from_lookup(&lookup, face_id, &state.context.library.cache)
                 .map_err(|_| StatusCode::NOT_FOUND)
         })
         .await
@@ -1399,7 +1400,11 @@ async fn serve_faces_async(
     // similarity search with a note rather than failing the whole report,
     // which works perfectly well without embeddings.
     if opts.report_all {
-        if let Err(e) = videre_core::embeddings_db::attach_for_read(&conn, db, &opts.model_id) {
+        if let Err(e) = videre_core::embeddings_db::attach_for_read_in(
+            &conn,
+            &opts.context.library,
+            &opts.model_id,
+        ) {
             eprintln!("note: similarity search disabled ({e})");
         }
     }

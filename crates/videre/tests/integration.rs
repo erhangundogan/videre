@@ -1,43 +1,37 @@
 mod common;
-use common::videre_bin;
+use common::TestLibrary;
 use std::process::Command;
-use tempfile::tempdir;
 
-/// Runs `scan <dir> --output-sqlite <db> --silent [extra_scan_args...]`, then
-/// returns the db path. Fails the test via panic if the scan itself fails.
-fn scan_into_db(dir: &std::path::Path, db: &std::path::Path, extra: &[&str]) {
-    let mut cmd = Command::new(videre_bin());
-    cmd.arg("scan")
-        .arg("--silent")
-        .arg("--output-sqlite")
-        .arg(db);
-    for a in extra {
-        cmd.arg(a);
-    }
-    cmd.arg(dir);
-    let status = cmd.status().expect("failed to run videre scan");
+/// Scan this library, having written its files under the root. `extra` passes
+/// through additional scan flags (e.g. `--similar`).
+fn scan(lib: &TestLibrary, extra: &[&str]) {
+    let status = lib
+        .cmd()
+        .args(["scan", "--silent"])
+        .args(extra)
+        .status()
+        .expect("failed to run videre scan");
     assert!(status.success(), "scan step failed");
+}
+
+/// Run `dedupe` in this library with the given extra flags, returning its output.
+fn dedupe(lib: &TestLibrary, extra: &[&str]) -> std::process::Output {
+    lib.cmd()
+        .args(["dedupe", "--silent"])
+        .args(extra)
+        .output()
+        .expect("failed to run videre dedupe")
 }
 
 #[test]
 fn dedupe_prints_remove_paths_for_exact_duplicates() {
-    let scan_dir = tempdir().unwrap();
-    let home = tempdir().unwrap();
-    let db = home.path().join("hashes.db");
+    let lib = TestLibrary::new();
+    std::fs::write(lib.root.join("a.jpg"), b"same content").unwrap();
+    std::fs::write(lib.root.join("b.jpg"), b"same content").unwrap();
+    std::fs::write(lib.root.join("c.jpg"), b"different").unwrap();
+    scan(&lib, &[]);
 
-    std::fs::write(scan_dir.path().join("a.jpg"), b"same content").unwrap();
-    std::fs::write(scan_dir.path().join("b.jpg"), b"same content").unwrap();
-    std::fs::write(scan_dir.path().join("c.jpg"), b"different").unwrap();
-
-    scan_into_db(scan_dir.path(), &db, &[]);
-
-    let out = Command::new(videre_bin())
-        .arg("dedupe")
-        .arg("--silent")
-        .arg("--db")
-        .arg(&db)
-        .output()
-        .expect("failed to run videre dedupe");
+    let out = dedupe(&lib, &[]);
     assert!(
         out.status.success(),
         "{}",
@@ -55,7 +49,9 @@ fn dedupe_prints_remove_paths_for_exact_duplicates() {
 
 #[test]
 fn dedupe_rejects_a_directory_positional() {
-    let out = Command::new(videre_bin())
+    let lib = TestLibrary::new();
+    let out = lib
+        .cmd()
         .arg("dedupe")
         .arg("/some/directory")
         .output()
@@ -67,41 +63,25 @@ fn dedupe_rejects_a_directory_positional() {
 }
 
 #[test]
-fn dedupe_explicit_db_must_exist() {
-    let home = tempdir().unwrap();
-    let out = Command::new(videre_bin())
-        .arg("dedupe")
-        .arg("--db")
-        .arg(home.path().join("nope.db"))
-        .output()
-        .expect("failed to run videre dedupe");
+fn dedupe_on_an_uninitialized_library_prints_a_friendly_error() {
+    // No scan has run, so the library has no database yet. dedupe must say so
+    // rather than serve or create an empty one.
+    let lib = TestLibrary::new();
+    let out = dedupe(&lib, &[]);
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("no database found at"), "{stderr}");
-    assert!(stderr.contains("videre scan"), "{stderr}");
+    assert!(stderr.contains("not initialized"), "{stderr}");
 }
 
 #[test]
 fn dedupe_similar_reports_empty_when_no_phash_data() {
-    let scan_dir = tempdir().unwrap();
-    let home = tempdir().unwrap();
-    let db = home.path().join("hashes.db");
-
-    std::fs::write(scan_dir.path().join("a.jpg"), b"content one").unwrap();
-    std::fs::write(scan_dir.path().join("b.jpg"), b"content two").unwrap();
-
+    let lib = TestLibrary::new();
+    std::fs::write(lib.root.join("a.jpg"), b"content one").unwrap();
+    std::fs::write(lib.root.join("b.jpg"), b"content two").unwrap();
     // scanned WITHOUT --similar: no phash data in the db
-    scan_into_db(scan_dir.path(), &db, &[]);
+    scan(&lib, &[]);
 
-    let out = Command::new(videre_bin())
-        .arg("dedupe")
-        .arg("--silent")
-        .arg("--db")
-        .arg(&db)
-        .arg("--similar")
-        .arg("--json")
-        .output()
-        .expect("failed to run videre dedupe");
+    let out = dedupe(&lib, &["--similar", "--json"]);
     assert!(out.status.success());
     let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let similar = doc["similar_groups"]
@@ -122,32 +102,12 @@ fn dedupe_similar_groups_a_video_and_its_recompressed_variant() {
     // that couldn't discriminate content at all. See
     // tests/fixtures/testsrc_1s.mp4.txt for the measured Hamming distances
     // that justify this fixture choice.
-    let scan_dir = tempdir().unwrap();
-    let home = tempdir().unwrap();
-    let db = home.path().join("hashes.db");
+    let lib = TestLibrary::new();
+    lib.copy_fixture("testsrc_1s.mp4", "a.mp4");
+    lib.copy_fixture("testsrc_1s_recompressed.mp4", "b.mp4");
+    scan(&lib, &["--similar"]);
 
-    std::fs::copy(
-        "tests/fixtures/testsrc_1s.mp4",
-        scan_dir.path().join("a.mp4"),
-    )
-    .unwrap();
-    std::fs::copy(
-        "tests/fixtures/testsrc_1s_recompressed.mp4",
-        scan_dir.path().join("b.mp4"),
-    )
-    .unwrap();
-
-    scan_into_db(scan_dir.path(), &db, &["--similar"]);
-
-    let out = Command::new(videre_bin())
-        .arg("dedupe")
-        .arg("--silent")
-        .arg("--db")
-        .arg(&db)
-        .arg("--similar")
-        .arg("--json")
-        .output()
-        .expect("failed to run videre dedupe");
+    let out = dedupe(&lib, &["--similar", "--json"]);
     assert!(
         out.status.success(),
         "{}",
@@ -194,28 +154,12 @@ fn dedupe_similar_does_not_group_two_visually_different_videos() {
     // tests/fixtures/testsrc_1s.mp4.txt). Without this test, an
     // implementation that grouped every video together (e.g. a bug that
     // always returned the same dHash) would still pass the positive test.
-    let scan_dir = tempdir().unwrap();
-    let home = tempdir().unwrap();
-    let db = home.path().join("hashes.db");
+    let lib = TestLibrary::new();
+    lib.copy_fixture("red_1s.mp4", "a.mp4");
+    lib.copy_fixture("testsrc_1s.mp4", "b.mp4");
+    scan(&lib, &["--similar"]);
 
-    std::fs::copy("tests/fixtures/red_1s.mp4", scan_dir.path().join("a.mp4")).unwrap();
-    std::fs::copy(
-        "tests/fixtures/testsrc_1s.mp4",
-        scan_dir.path().join("b.mp4"),
-    )
-    .unwrap();
-
-    scan_into_db(scan_dir.path(), &db, &["--similar"]);
-
-    let out = Command::new(videre_bin())
-        .arg("dedupe")
-        .arg("--silent")
-        .arg("--db")
-        .arg(&db)
-        .arg("--similar")
-        .arg("--json")
-        .output()
-        .expect("failed to run videre dedupe");
+    let out = dedupe(&lib, &["--similar", "--json"]);
     assert!(
         out.status.success(),
         "{}",
@@ -234,25 +178,13 @@ fn dedupe_similar_does_not_group_two_visually_different_videos() {
 
 #[test]
 fn json_output_reports_duplicate_groups() {
-    let scan_dir = tempdir().unwrap();
-    let home = tempdir().unwrap();
-    let db = home.path().join("hashes.db");
+    let lib = TestLibrary::new();
+    std::fs::write(lib.root.join("a.jpg"), b"same content").unwrap();
+    std::fs::write(lib.root.join("b.jpg"), b"same content").unwrap();
+    std::fs::write(lib.root.join("c.jpg"), b"different").unwrap();
+    scan(&lib, &[]);
 
-    std::fs::write(scan_dir.path().join("a.jpg"), b"same content").unwrap();
-    std::fs::write(scan_dir.path().join("b.jpg"), b"same content").unwrap();
-    std::fs::write(scan_dir.path().join("c.jpg"), b"different").unwrap();
-
-    scan_into_db(scan_dir.path(), &db, &[]);
-
-    let out = Command::new(videre_bin())
-        .arg("dedupe")
-        .arg("--silent")
-        .arg("--db")
-        .arg(&db)
-        .arg("--json")
-        .output()
-        .expect("failed to run videre dedupe");
-
+    let out = dedupe(&lib, &["--json"]);
     assert!(out.status.success());
     let doc: serde_json::Value =
         serde_json::from_slice(&out.stdout).expect("stdout must be one valid JSON object");
@@ -282,26 +214,13 @@ fn json_output_reports_duplicate_groups() {
 
 #[test]
 fn json_with_similar_flag_includes_similar_groups_key() {
-    let scan_dir = tempdir().unwrap();
-    let home = tempdir().unwrap();
-    let db = home.path().join("hashes.db");
-
+    let lib = TestLibrary::new();
     // Not decodable as images, so no phash -> similar_groups is present but empty
-    std::fs::write(scan_dir.path().join("a.jpg"), b"content one").unwrap();
-    std::fs::write(scan_dir.path().join("b.jpg"), b"content two").unwrap();
+    std::fs::write(lib.root.join("a.jpg"), b"content one").unwrap();
+    std::fs::write(lib.root.join("b.jpg"), b"content two").unwrap();
+    scan(&lib, &["--similar"]);
 
-    scan_into_db(scan_dir.path(), &db, &["--similar"]);
-
-    let out = Command::new(videre_bin())
-        .arg("dedupe")
-        .arg("--silent")
-        .arg("--db")
-        .arg(&db)
-        .arg("--similar")
-        .arg("--json")
-        .output()
-        .expect("failed to run videre dedupe");
-
+    let out = dedupe(&lib, &["--similar", "--json"]);
     assert!(out.status.success());
     let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let similar = doc["similar_groups"]
@@ -312,37 +231,37 @@ fn json_with_similar_flag_includes_similar_groups_key() {
 
 #[test]
 fn dedupe_json_matches_mcp_find_duplicates_shape() {
-    // Build a db the same way tests/mcp.rs's make_db does, so both surfaces
-    // can be exercised against identical data without cross-test-binary imports.
-    let dir = tempdir().unwrap();
-    let db = dir.path().join("test.db");
-    let conn = rusqlite::Connection::open(&db).unwrap();
-    conn.execute_batch(
-        "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL,
-         size_bytes INTEGER, created_at TEXT, modified_at TEXT, ext TEXT,
-         phash INTEGER, exif_date TEXT, gps_lat REAL, gps_lon REAL,
-         width INTEGER, height INTEGER);
-         INSERT INTO file_hashes (path, hash, size_bytes, modified_at, ext) VALUES
-           ('/tmp/alice1.jpg', 'hash1', 10, '2020-01-01T00:00:00+00:00', 'jpg'),
-           ('/tmp/alice1_copy.jpg', 'hash1', 10, '2024-01-01T00:00:00+00:00', 'jpg'),
-           ('/tmp/alice2.jpg', 'hash2', 10, '2021-01-01T00:00:00+00:00', 'jpg');",
+    // Seed a library database directly with a duplicate pair, then exercise
+    // both surfaces against it. All paths sit under the library root so the
+    // row-containment guard accepts the database.
+    let lib = TestLibrary::new();
+    let conn = lib.init_db();
+    let a1 = lib.context().paths.root.join("alice1.jpg");
+    let a1_copy = lib.context().paths.root.join("alice1_copy.jpg");
+    let a2 = lib.context().paths.root.join("alice2.jpg");
+    conn.execute(
+        "INSERT INTO file_hashes (path, hash, size_bytes, modified_at, ext) VALUES
+           (?1, 'hash1', 10, '2020-01-01T00:00:00+00:00', 'jpg'),
+           (?2, 'hash1', 10, '2024-01-01T00:00:00+00:00', 'jpg'),
+           (?3, 'hash2', 10, '2021-01-01T00:00:00+00:00', 'jpg')",
+        rusqlite::params![
+            a1.to_string_lossy(),
+            a1_copy.to_string_lossy(),
+            a2.to_string_lossy()
+        ],
     )
     .unwrap();
-    videre_core::db::ensure_file_hashes_columns(&conn);
     drop(conn);
 
-    let out = Command::new(videre_bin())
-        .arg("dedupe")
-        .arg("--silent")
-        .arg("--db")
-        .arg(&db)
-        .arg("--json")
-        .output()
-        .expect("failed to run videre dedupe");
-    assert!(out.status.success());
+    let out = dedupe(&lib, &["--json"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let dedupe_doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
 
-    let mcp_out = mcp_find_duplicates(&db);
+    let mcp_out = mcp_find_duplicates(&lib);
 
     assert_eq!(
         dedupe_doc, mcp_out,
@@ -350,18 +269,17 @@ fn dedupe_json_matches_mcp_find_duplicates_shape() {
     );
 }
 
-/// Minimal raw JSON-RPC call to `videre mcp --db <db>`'s find_duplicates tool,
-/// returning the structuredContent value. Mirrors tests/mcp.rs's McpClient at
-/// the minimum needed for one call (that file's harness is not importable
-/// from a separate integration test binary).
-fn mcp_find_duplicates(db: &std::path::Path) -> serde_json::Value {
+/// Minimal raw JSON-RPC call to this library's `videre mcp` find_duplicates
+/// tool, returning the structuredContent value. Mirrors tests/mcp.rs's
+/// McpClient at the minimum needed for one call (that file's harness is not
+/// importable from a separate integration test binary).
+fn mcp_find_duplicates(lib: &TestLibrary) -> serde_json::Value {
     use std::io::{BufRead, BufReader, Write};
     use std::process::Stdio;
 
-    let mut child = Command::new(videre_bin())
+    let mut child = lib
+        .cmd()
         .arg("mcp")
-        .arg("--db")
-        .arg(db)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

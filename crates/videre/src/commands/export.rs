@@ -221,11 +221,25 @@ mod tests {
     use super::*;
     use videre_core::marks;
 
+    fn test_context(root: &std::path::Path, cache: &std::path::Path) -> CommandContext {
+        let library =
+            std::sync::Arc::new(videre_core::library::LibraryContext::new(root, cache).unwrap());
+        // The confined sidecar writer verifies the library's state directory.
+        std::fs::create_dir_all(&library.paths.state).unwrap();
+        CommandContext {
+            library,
+            invocation_dir: root.to_path_buf(),
+            source: crate::command_context::LibrarySource::Cwd,
+        }
+    }
+
     #[test]
-    fn export_all_writes_sidecar_for_a_rated_file() {
-        // The path the watch export stage drives: no selection, every file.
+    fn export_all_in_writes_sidecar_for_a_rated_file() {
+        // The path the watch export stage drives: no selection, every file,
+        // published through the confined library writer.
         let dir = tempfile::tempdir().unwrap();
-        let photo = dir.path().join("IMG.jpg");
+        let ctx = test_context(dir.path(), &dir.path().join("cache"));
+        let photo = ctx.library.paths.root.join("IMG.jpg");
         std::fs::write(&photo, b"x").unwrap();
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
@@ -246,7 +260,7 @@ mod tests {
         )
         .unwrap();
 
-        let n = export_all(&conn).unwrap();
+        let n = export_all_in(&conn, &ctx).unwrap();
         assert_eq!(n, 1);
         let side = crate::xmp::write::sidecar_path(&photo);
         assert!(side.exists());
