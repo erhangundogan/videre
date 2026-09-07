@@ -24,6 +24,10 @@ pub struct ExportArgs {
     presence: super::selection_args::PresenceArgs,
     #[command(flatten)]
     paths: super::selection_args::PathArgs,
+    #[command(flatten)]
+    marks: super::selection_args::MarkArgs,
+    #[command(flatten)]
+    tags: super::selection_args::TagFilterArgs,
 
     /// Write XMP sidecars beside each photo
     #[arg(long)]
@@ -97,8 +101,8 @@ fn selection_for(args: &ExportArgs) -> Result<videre_core::selection::RowSelecti
         Some(&args.people),
         Some(&args.presence),
         Some(&args.paths),
-        None,
-        None,
+        Some(&args.marks),
+        Some(&args.tags),
     )
 }
 
@@ -229,6 +233,29 @@ fn write_sidecars_for(
 mod tests {
     use super::*;
     use videre_core::marks;
+
+    #[test]
+    fn export_accepts_the_mark_and_tag_filters() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Wrap {
+            #[command(flatten)]
+            a: ExportArgs,
+        }
+        let a = Wrap::try_parse_from([
+            "export", "--label", "Green", "--tag", "t", "--tag", "u", "--rating", "4", "--pick",
+            "keep", "--like", "--type", "image", "--path", "Trips",
+        ])
+        .expect("mark/tag filters must parse on export")
+        .a;
+        assert_eq!(a.marks.label.as_deref(), Some("Green"));
+        assert_eq!(a.marks.rating, Some(4));
+        assert_eq!(a.marks.pick.as_deref(), Some("keep"));
+        assert!(a.marks.like);
+        assert_eq!(a.tags.tags, vec!["t".to_string(), "u".to_string()]);
+        // An invented flag is still rejected.
+        assert!(Wrap::try_parse_from(["export", "--nonsense"]).is_err());
+    }
 
     fn test_context(root: &std::path::Path, cache: &std::path::Path) -> CommandContext {
         let library =

@@ -23,6 +23,10 @@ pub struct FacesArgs {
     presence: super::selection_args::PresenceArgs,
     #[command(flatten)]
     paths: super::selection_args::PathArgs,
+    #[command(flatten)]
+    marks: super::selection_args::MarkArgs,
+    #[command(flatten)]
+    tags: super::selection_args::TagFilterArgs,
 
     /// How XMP face regions in a sidecar interact with detected faces: db (the
     /// database wins, imports only fill unconfirmed faces), file (the sidecar
@@ -172,8 +176,8 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
         None,
         Some(&args.presence),
         Some(&args.paths),
-        None,
-        None,
+        Some(&args.marks),
+        Some(&args.tags),
     )?;
     // Shares `narrow` with embed and classify: same filtering, same "N of M"
     // line, one implementation.
@@ -435,6 +439,27 @@ pub(crate) fn format_clustering_only_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn faces_accepts_mark_and_tag_filters_but_refuses_derived_selectors() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Wrap {
+            #[command(flatten)]
+            a: FacesArgs,
+        }
+        let a = Wrap::try_parse_from([
+            "faces", "--label", "Green", "--tag", "t", "--rating", "5", "--like",
+        ])
+        .expect("mark/tag filters must parse on faces")
+        .a;
+        assert_eq!(a.marks.label.as_deref(), Some("Green"));
+        assert_eq!(a.tags.tags, vec!["t".to_string()]);
+        assert!(a.marks.like);
+        // The derived-data gap holds: person/category are not part of faces's vocabulary.
+        assert!(Wrap::try_parse_from(["faces", "--person", "Ada"]).is_err());
+        assert!(Wrap::try_parse_from(["faces", "--category", "photo"]).is_err());
+    }
 
     #[test]
     fn format_summary_no_errors() {

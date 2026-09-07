@@ -19,6 +19,10 @@ pub struct ClassifyArgs {
     presence: super::selection_args::PresenceArgs,
     #[command(flatten)]
     paths: super::selection_args::PathArgs,
+    #[command(flatten)]
+    marks: super::selection_args::MarkArgs,
+    #[command(flatten)]
+    tags: super::selection_args::TagFilterArgs,
 
     /// Re-classify every embedded hash, including ones already classified
     #[arg(long)]
@@ -95,8 +99,8 @@ fn run_classify(
         Some(&args.people),
         Some(&args.presence),
         Some(&args.paths),
-        None,
-        None,
+        Some(&args.marks),
+        Some(&args.tags),
     )?;
     let work = videre_core::work::narrow_in(
         hashes,
@@ -169,6 +173,35 @@ fn format_summary(done: usize, elapsed: std::time::Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classify_accepts_the_mark_and_tag_filters() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Wrap {
+            #[command(flatten)]
+            a: ClassifyArgs,
+        }
+        let a = Wrap::try_parse_from([
+            "classify",
+            "--label",
+            "Green",
+            "--tag",
+            "t",
+            "--rating",
+            "4",
+            "--pick",
+            "reject",
+            "--like",
+            "--category",
+            "photo",
+        ])
+        .expect("mark/tag filters must parse on classify")
+        .a;
+        assert_eq!(a.marks.label.as_deref(), Some("Green"));
+        assert_eq!(a.tags.tags, vec!["t".to_string()]);
+        assert!(Wrap::try_parse_from(["classify", "--nonsense"]).is_err());
+    }
 
     /// A directory-local library with one embedded jpeg, nothing classified
     /// yet. Returns the temp dir (kept alive), its context and an open

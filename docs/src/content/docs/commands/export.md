@@ -63,7 +63,8 @@ safe and idempotent.
 The selection flags narrow the library exactly as [`videre search`](/commands/search/)
 does: `--path`, `--person`, `--date`/`--after`/`--before`,
 `--location`/`--radius`, `--type`, `--ext`, `--mime`, `--category`, `--has`,
-`--missing`. See [scoping a run](/guides/scoping-a-run/). With no selection,
+`--missing`, and the mark/tag filters `--rating`, `--pick`, `--label`,
+`--like`, `--tag`. See [scoping a run](/guides/scoping-a-run/). With no selection,
 every file with something to write gets a sidecar.
 
 A run prints `N of M`, so a filter matching nothing is distinguishable from an
