@@ -28,6 +28,10 @@ pub struct EmbedArgs {
     presence: super::selection_args::PresenceArgs,
     #[command(flatten)]
     paths: super::selection_args::PathArgs,
+    #[command(flatten)]
+    marks: super::selection_args::MarkArgs,
+    #[command(flatten)]
+    tags: super::selection_args::TagFilterArgs,
 
     /// Inference batch size (clamped to videre_ml::model::MAX_SAFE_BATCH)
     #[arg(long, default_value_t = 32)]
@@ -91,8 +95,8 @@ fn run_embed(
         None,
         Some(&args.presence),
         Some(&args.paths),
-        None,
-        None,
+        Some(&args.marks),
+        Some(&args.tags),
     )?;
     let work = videre_core::work::narrow_in(
         pending,
@@ -193,6 +197,27 @@ fn format_summary(done: usize, failed: usize, elapsed: std::time::Duration) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embed_accepts_mark_and_tag_filters_but_refuses_derived_selectors() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Wrap {
+            #[command(flatten)]
+            a: EmbedArgs,
+        }
+        let a = Wrap::try_parse_from([
+            "embed", "--label", "Green", "--tag", "t", "--rating", "5", "--like",
+        ])
+        .expect("mark/tag filters must parse on embed")
+        .a;
+        assert_eq!(a.marks.label.as_deref(), Some("Green"));
+        assert_eq!(a.tags.tags, vec!["t".to_string()]);
+        assert!(a.marks.like);
+        // The derived-data gap holds: person/category are not part of embed's vocabulary.
+        assert!(Wrap::try_parse_from(["embed", "--person", "Ada"]).is_err());
+        assert!(Wrap::try_parse_from(["embed", "--category", "photo"]).is_err());
+    }
 
     #[test]
     fn format_summary_no_skips() {

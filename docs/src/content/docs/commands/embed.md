@@ -155,6 +155,11 @@ each condition must hold.
 | `--path` | only files under this directory. Repeatable |
 | `--has` | only files with this metadata. Supported fields: `gps`, `date` |
 | `--missing` | only files missing this metadata. Supported fields: `gps`, `date` |
+| `--rating` | only photos rated at least this many stars (0-5) |
+| `--pick` | only photos with this pick state: `keep` or `reject` |
+| `--label` | only photos with this colour label |
+| `--like` | only liked photos |
+| `--tag` | only files carrying this tag. Repeatable; all must be present |
 
 `--person` and `--category` are deliberately absent: both are derived from data
 this command produces, so selecting its input by one would be circular.
