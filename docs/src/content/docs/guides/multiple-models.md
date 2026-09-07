@@ -89,12 +89,12 @@ again under it, which is quick since it reuses the vectors.
 Each model's data is one file:
 
 ```
-~/.videre/embeddings/<library>-<hash>/<owner>--<model>.db
+<library>/.videre/embeddings/<owner>--<model>.db
 ```
 
 ```bash
-ls -la ~/.videre/embeddings/*/
-rm ~/.videre/embeddings/hashes-3f9a1c04e7b25d68/google--siglip2-base-patch16-384.db
+ls -la .videre/embeddings/
+rm .videre/embeddings/google--siglip2-base-patch16-384.db
 ```
 
 Deleting it removes only that model's vectors. Rerun `videre embed --model ...`

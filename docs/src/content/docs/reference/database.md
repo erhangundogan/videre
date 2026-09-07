@@ -8,7 +8,7 @@ format, no daemon holding it open, nothing you need videre itself to read. If
 you want to answer a question videre has no command for, write the query.
 
 ```bash
-sqlite3 ~/.videre/hashes.db
+sqlite3 .videre/hashes.db   # run from inside the library
 ```
 
 See [where your data lives](/reference/paths/) for how that path is resolved.
@@ -236,7 +236,7 @@ value, `crashed`, is never written: it is computed when reading, when a row says
 ## The embeddings database
 
 Embeddings are **not** in the main file. Each library and model pair gets its
-own database under `~/.videre/embeddings/`, attached when needed:
+own database under `<library>/.videre/embeddings/`, attached when needed:
 
 ```sql
 CREATE TABLE embeddings (
@@ -253,7 +253,7 @@ explains the layout and why it is split out.
 To query it alongside the main database, attach it yourself:
 
 ```sql
-ATTACH DATABASE '~/.videre/embeddings/<library>/<model>.db' AS emb;
+ATTACH DATABASE '.videre/embeddings/<owner>--<model>.db' AS emb;
 SELECT COUNT(*) FROM emb.embeddings;
 ```
 

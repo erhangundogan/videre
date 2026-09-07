@@ -90,7 +90,7 @@ reported so you can see how many.
 videre --library ~/Takeout scan
 ```
 
-This records what you have in a database at `~/.videre/hashes.db`. It reads
+This records what you have in a database at `.videre/hashes.db` inside the library. It reads
 every file, so on a large library it takes a while. Your photos are not
 modified.
 

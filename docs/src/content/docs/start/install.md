@@ -73,7 +73,7 @@ This removes **one file**, the binary the script installed. Your library and
 the downloaded models are left exactly where they are, and the script prints
 both paths with their sizes so you can remove them yourself if you want to:
 
-- `~/.videre/` holds the database, your config and the search embeddings. An
+- `<library>/.videre/` holds the database, your config and the search embeddings. An
   embedding costs hours to recompute, so nothing here is deleted for you.
 - `~/.cache/huggingface/` holds the models, and is shared with any other tool
   that uses the Hugging Face cache.
@@ -201,7 +201,7 @@ In the standard Hugging Face cache, shared with any other tool that uses it:
 ```
 
 Set `HF_HOME` to put it elsewhere. This is separate from
-[videre's own directory](/reference/paths/), so removing `~/.videre` does not
+[videre's own directory](/reference/paths/), so removing a library's `.videre/` does not
 delete the models, and deleting the cache means the next `embed` or `faces` run
 downloads them again.
 
