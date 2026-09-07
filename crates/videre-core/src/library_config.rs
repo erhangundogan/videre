@@ -832,19 +832,22 @@ mod tests {
         // The config layer routes every filesystem touch through
         // `library::bounded_op` with the stat ceiling (`read_config`,
         // `write_config`), and a real wedged mount cannot be produced
-        // portably, so the bound is proven the way `library.rs` and
-        // `library_guard.rs` prove theirs: the layer's own operation on the
-        // layer's own path, under a budget too small to cover even the
-        // thread spawn plus one read. The margin is several orders of
-        // magnitude, so there is no timing to flake on.
+        // portably, so the bound is proven on the layer's own operation and
+        // path with a body that reliably outlasts the budget. A tiny budget
+        // against an instantaneous read would race (the worker can buffer its
+        // result before the main thread reaches recv_timeout); a 50ms budget
+        // against a 5s-sleeping body always times out first.
         let (_t, ctx) = library_with_config("custom = \"keep\"\n");
         let start = std::time::Instant::now();
         let owned = ctx.paths.config.clone();
         let err = crate::library::bounded_op(
             &ctx.paths.config,
             "read",
-            std::time::Duration::from_nanos(1),
-            move || std::fs::read_to_string(owned).map(|_| ()),
+            std::time::Duration::from_millis(50),
+            move || {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                std::fs::read_to_string(owned).map(|_| ())
+            },
         )
         .unwrap_err();
         // The file is removed before the message is formatted: an error that

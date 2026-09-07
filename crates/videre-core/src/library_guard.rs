@@ -577,15 +577,29 @@ mod tests {
 
     #[test]
     fn a_resolution_past_its_budget_is_cut_off_and_names_the_path() {
-        // A wedged mount cannot be produced portably, so the bound is proven
-        // the way `library.rs` proves bounded_op's own: a budget too small to
-        // cover even the thread spawn plus one component walk. The margin is
-        // several orders of magnitude, so there is no timing to flake on.
         let temp = tempfile::tempdir().unwrap();
         let dir = temp.path().join("a");
         std::fs::create_dir_all(&dir).unwrap();
+
+        // A real directory resolves within a generous budget.
+        resolve_budgeted(&dir, Duration::from_secs(5)).unwrap();
+
+        // A wedged mount cannot be produced portably, so the timeout is driven
+        // through the same `bounded_op` call `resolve_budgeted` makes (op label
+        // "resolve", the same path), with a body that reliably outlasts the
+        // budget. A tiny budget against an instantaneous walk would race: the
+        // worker can finish and buffer its result before the main thread reaches
+        // recv_timeout, which is how this flaked on CI. A 50ms budget against a
+        // body that sleeps 5s always times out first, with a several-second
+        // margin instead of a sub-microsecond one.
+        let owned = dir.clone();
         let start = std::time::Instant::now();
-        let err = resolve_budgeted(&dir, Duration::from_nanos(1)).unwrap_err();
+        let err =
+            crate::library::bounded_op(&dir, "resolve", Duration::from_millis(50), move || {
+                std::thread::sleep(Duration::from_secs(5));
+                walk(&owned).map(|_| ())
+            })
+            .unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("did not respond"), "{msg}");
         assert!(msg.contains(&dir.display().to_string()), "{msg}");
