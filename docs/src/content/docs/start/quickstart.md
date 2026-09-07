@@ -20,15 +20,19 @@ platform notes.
 
 ## Scan a folder
 
+Your photo folder *is* the library. Run videre inside it:
+
 ```bash
-videre scan ~/Photos
+cd ~/Photos
+videre scan
 ```
 
-That builds a database at `~/.videre/hashes.db` describing what you have, and
-everything below reads from it. **It does not change your photos.**
+That builds a database at `~/Photos/.videre/hashes.db` describing what you have,
+and everything below reads from it. **It does not change your photos.**
 
-It also remembers `~/Photos` as your default folder, so later commands can be
-run without repeating it. It says so when it happens.
+Every command acts on the library it runs in, so the rest of this page assumes
+you are still in `~/Photos`. From anywhere else, name it explicitly with
+`videre --library ~/Photos <command>`.
 
 ## Clean up duplicates
 
@@ -95,7 +99,7 @@ videre search --location "Berlin"
 videre fix-dates                       # set file dates from EXIF
 videre gallery                    # browse the whole library
 videre stats                           # what's in the library
-videre watch ~/Photos                  # keep everything fresh in the background
+videre watch                           # keep everything fresh in the background
 ```
 
 ## Working with other tools

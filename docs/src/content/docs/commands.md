@@ -31,7 +31,7 @@ Most commands share these:
 
 | Option | Effect |
 |---|---|
-| `--db <path>` | Use a specific database instead of the [resolved default](/reference/paths/) |
+| `--library <dir>` | Operate on the library at `<dir>` instead of the [invocation directory](/reference/paths/) |
 | `--silent` | Suppress progress output on stderr |
 | `--json` | Print one JSON object on stdout instead of human-readable text |
 | `--model <id>` | Use a specific [search model](/reference/models/) (`embed`, `search`, `classify`, `gallery`, `mcp`) |

@@ -87,7 +87,7 @@ reported so you can see how many.
 ## 5. Build the library
 
 ```bash
-videre scan ~/Takeout
+videre --library ~/Takeout scan
 ```
 
 This records what you have in a database at `~/.videre/hashes.db`. It reads
@@ -147,7 +147,7 @@ satisfied, they are just a duplicate copy of what you already have.
 If you add photos later, the same three commands bring them in:
 
 ```bash
-videre scan ~/Takeout --retry-incomplete
+videre --library ~/Takeout scan --retry-incomplete
 videre embed
 videre faces
 ```

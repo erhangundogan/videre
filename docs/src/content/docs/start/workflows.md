@@ -82,7 +82,7 @@ in `stats`, and their embeddings and cached thumbnails still occupy disk.
 ### Set up a library from scratch
 
 ```bash
-videre scan ~/Photos           # minutes; reads every byte
+videre --library ~/Photos scan           # minutes; reads every byte
 videre embed                   # hours; downloads ~780 MB first
 videre faces                   # hours; downloads ~180 MB first
 videre classify                # minutes; reuses embed's work
@@ -98,7 +98,7 @@ capability. `embed` and `faces` are both resumable, so Ctrl-C is safe.
 ```bash
 videre import ~/Takeout --dry-run   # see what it found
 videre import ~/Takeout             # fix the dates the exporter mangled
-videre scan ~/Takeout               # now record them
+videre --library ~/Takeout scan               # now record them
 videre dedupe                       # collapse the copies albums created
 videre prune
 ```
@@ -111,7 +111,7 @@ point it at the library and it works out the rest. See
 ### Clean up duplicates safely
 
 ```bash
-videre scan ~/Photos
+videre --library ~/Photos scan
 videre dedupe --html                  # review groups with KEEP/REMOVE badges
 videre dedupe | xargs trash    # delete, once you agree
 videre prune                   # reclaim database rows and derived data
@@ -125,7 +125,7 @@ are reported for review only and never included in the delete list.
 If you scanned a while ago and now want semantic search:
 
 ```bash
-videre scan ~/Photos --retry-incomplete   # pick up anything new, fast
+videre --library ~/Photos scan --retry-incomplete   # pick up anything new, fast
 videre embed
 videre search "sunset over water"
 ```
@@ -133,7 +133,7 @@ videre search "sunset over water"
 ### Name people
 
 ```bash
-videre watch ~/Photos --heic   # optional: makes the next step ~70x faster on HEIC
+videre --library ~/Photos watch --heic   # optional: makes the next step ~70x faster on HEIC
 videre faces
 videre gallery          # drag clusters onto people
 videre search --person "Alice"
@@ -149,7 +149,7 @@ videre faces --recluster       # once, at the end
 ### Fix wrong dates
 
 ```bash
-videre scan ~/Photos
+videre --library ~/Photos scan
 videre fix-dates --dry-run     # check first; this writes to your files
 videre fix-dates
 videre prune                   # re-sync the timestamps videre stores
@@ -165,7 +165,7 @@ nothing left to reconcile.
 ### Keep everything current
 
 ```bash
-videre watch ~/Photos
+videre --library ~/Photos watch
 ```
 
 That covers scanning, faces, HEIC caching and place names on a loop. It does
@@ -183,13 +183,13 @@ du -sh ~/.cache/videre/thumbnails/        # the cache is often the bulk of it
 videre stats                              # what each model is using
 ```
 
-The [thumbnail cache](/reference/paths/#thumbnail-cache) can be deleted
+The [thumbnail cache](/guides/caches/#thumbnail-cache) can be deleted
 outright; everything in it regenerates.
 
 ### After moving files around
 
 ```bash
-videre scan ~/Photos     # records the new paths
+videre --library ~/Photos scan     # records the new paths
 videre prune             # removes the old ones
 ```
 

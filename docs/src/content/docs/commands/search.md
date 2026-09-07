@@ -296,7 +296,7 @@ v0.14.0 or later. `--retry-incomplete` will not pick them up, since it looks for
 files with no recorded type and these have one:
 
 ```bash
-videre scan ~/Pictures
+videre --library ~/Pictures scan
 ```
 :::
 

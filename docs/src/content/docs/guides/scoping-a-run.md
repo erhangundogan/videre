@@ -6,8 +6,8 @@ description: Narrow any long-running command to part of your library with the sa
 Most videre commands work through your whole library. On a large one that can
 mean hours. The same filter flags that narrow a
 [search](/guides/compositional-search/) also narrow the *work*, so you can
-embed only your videos, detect faces only in last summer's photos, or scan only
-one subfolder.
+embed only your videos, detect faces only in last summer's photos, or process
+only one subfolder.
 
 The flags mean the same thing everywhere. What changes is which ones a command
 offers, and a command only offers the ones it can actually answer.
@@ -15,7 +15,7 @@ offers, and a command only offers the ones it can actually answer.
 ```bash
 videre embed --type video                      # only videos
 videre faces --after 2024-06 --before 2024-09  # only that summer
-videre scan ~/Photos --ext heic,mov            # only these two formats
+videre --library ~/Photos scan --ext heic,mov # record only these two formats
 videre classify --location "Berlin, Germany"   # only photos taken near Berlin
 videre search --missing gps                     # photos with no coordinates
 ```
@@ -48,15 +48,17 @@ Combining flags narrows further: every condition must hold. `--type video
 | [`search`](/commands/search/) | all of them |
 | [`classify`](/commands/classify/) | all of them |
 | [`embed`](/commands/embed/), [`faces`](/commands/faces/) | everything except `--person` and `--category` |
-| [`scan`](/commands/scan/), [`watch`](/commands/watch/) | `--type`, `--ext`, `--mime`, `--path` |
+| [`scan`](/commands/scan/), [`watch`](/commands/watch/) | `--type`, `--ext`, `--mime` |
 | [`mark`](/commands/mark/), [`tag`](/commands/tag/), [`export --xmp`](/commands/export/) | all search filters that select files |
 
 The gaps are deliberate rather than unfinished.
 
-`scan` and `watch` walk the filesystem, and a walk has not opened the file yet.
-Nothing on disk says when a photo was taken until something reads it, and
-reading every file is the expensive work you were trying to narrow. So they
-take only the flags answerable from a path.
+`scan` and `watch` walk the whole selected library, and a walk has not opened
+the file yet. Nothing on disk says when a photo was taken until something reads
+it, and reading every file is the expensive work you were trying to narrow. So
+they take only the flags answerable from a filename (`--type`, `--ext`,
+`--mime`), and no `--path`: their scope is the library you select, so to walk a
+different subset you point them at a different library.
 
 `embed` and `faces` decline `--person` and `--category`, because both are
 derived from the very data those commands produce. Selecting the input by a
@@ -112,19 +114,21 @@ are present; a file missing either coordinate matches `--missing gps`.
 this gets the recent material usable first and leaves the backlog for overnight.
 
 ```bash
-videre scan ~/Photos                       # cheap, do it all at once
+cd ~/Photos
+videre scan                                # cheap, do it all at once
 videre embed --after 2025-01-01            # this year first
 videre embed --type video                  # then the videos
 videre embed                               # then the rest, skipping both above
 ```
 
-**Only the part of the disk that changed.** A folder you just imported into,
-without rewalking a library of tens of thousands of files.
+**Only the part of the library that changed.** `scan` always walks the whole
+library, but it is cheap on unchanged files, and the expensive stages take
+`--path`, so you bound *those* to the subfolder you just imported into.
 
 ```bash
-videre scan ~/Photos --path ~/Photos/2026-01-import
-videre embed --path ~/Photos/2026-01-import
-videre faces --path ~/Photos/2026-01-import
+videre scan                                    # refresh the whole library (cheap)
+videre embed --path ~/Photos/2026-01-import    # embed only the new subfolder
+videre faces --path ~/Photos/2026-01-import    # detect only there
 ```
 
 **Faces from one event.** Detection is the expensive stage, so bounding it by
@@ -148,11 +152,11 @@ videre embed --ext jpg,png,mp4             # fast formats now
 videre embed --ext heic                    # the slow ones separately
 ```
 
-**Watch only what matters.** An inbox folder, images only, leaving the archive
-alone.
+**Watch only what matters.** An inbox that is its own library, images only,
+leaving the archive alone.
 
 ```bash
-videre watch ~/Photos --path ~/Photos/Inbox --type image
+videre --library ~/Photos/Inbox watch --type image
 ```
 
 **Find it afterwards, with the same vocabulary.**

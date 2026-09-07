@@ -27,7 +27,7 @@ Review in a browser first. That is what [`videre dedupe --html`](/commands/dedup
 for, and it takes one extra command:
 
 ```bash
-videre scan ~/Photos           # 1. record what you have
+videre --library ~/Photos scan           # 1. record what you have
 videre dedupe --html                  # 2. review the groups visually
 videre dedupe | xargs trash    # 3. delete, once you agree
 videre prune                   # 4. tidy the database afterwards
@@ -86,7 +86,7 @@ Members of a group are byte-identical, so whichever is kept, the file you end up
 with is the same file. The only thing that differs is **which path** remains,
 which is why reviewing in `videre dedupe --html` is worth it: the KEEP copy may be in a
 folder you would not have chosen, especially across
-[multiple scanned folders](/reference/paths/#scanning-more-than-one-folder).
+[multiple scanned folders](/guides/multiple-libraries/).
 
 If two copies have identical dates, the choice between them is arbitrary. Again,
 the bytes are the same.
@@ -128,7 +128,7 @@ files added since then are missing. Re-scan first if in doubt.
 **It spans every folder in the database.** If you scanned several roots into one
 database, a group can contain copies from different drives, and the KEEP copy
 may be on the one you consider the backup. See
-[scanning more than one folder](/reference/paths/#scanning-more-than-one-folder).
+[scanning more than one folder](/guides/multiple-libraries/).
 
 **Deleting duplicates does not free everything.** Embeddings and cached
 thumbnails for those photos remain until [`videre prune`](/commands/prune/)

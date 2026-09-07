@@ -73,8 +73,9 @@ Each search model keeps its own data, roughly 130 MB to 190 MB per model for a
 Only `videre prune` reclaims any of it, and nothing warns you first.
 `videre stats` shows what each model is using.
 
-## `videre scan` remembers the first folder you give it
+## A command acts on the directory you run it in
 
-It adopts that folder as your default so later commands can be run without
-repeating it. It says so when it happens, and `videre config set path` changes
-it.
+There is no remembered library and no default folder. `videre scan` with no
+`--library` scans the current directory; run it from the wrong place and it
+initializes a library there. `videre --library <dir>` makes the target explicit
+from anywhere.

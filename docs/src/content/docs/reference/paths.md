@@ -1,244 +1,140 @@
 ---
 title: Where your data lives
-description: The home directory, how a database is resolved, and what VIDERE_HOME changes.
+description: How a library is selected, what it stores, and where its caches live.
 ---
 
-Everything videre creates lives in one place:
+A videre library is a directory. Everything it accumulates lives in one state
+directory at its root:
 
 ```
-~/.videre/
+<library>/.videre/
   hashes.db      # the database
-  config.toml    # your defaults
-  hashes.jsonl   # only if you use `scan --output`
+  config.toml    # this library's settings
+  hashes.jsonl   # only after `videre export --jsonl`
   locks/         # marks which command is currently running
   embeddings/    # per-model search data
-  cache/         # thumbnails, when VIDERE_HOME is set
 ```
 
 Nothing is created until you actually write something. Commands that only read
 never create a directory or a database.
 
-## How a database is resolved
+## How a library is selected
 
-Every command resolves its database the same way. First match wins:
+Every command resolves its library the same way. First match wins:
 
-1. An explicit `--db <path>`
-2. If `VIDERE_HOME` is set, `<VIDERE_HOME>/hashes.db`
-3. `default_db` in `config.toml`, set via `videre config set db`
-4. `~/.videre/hashes.db`
+1. The directory given by `--library <dir>`
+2. The invocation directory (the current working directory)
 
-That means the shortest form is:
-
-```text
---db > VIDERE_HOME > config default_db > ~/.videre/hashes.db
-```
-
-`VIDERE_HOME` selects a whole home directory, so its database is the
-`hashes.db` inside that home. When `VIDERE_HOME` is set, a `default_db` value in
-that home's config is ignored for database selection. Pass `--db` when you want
-one command to use a different database without changing the selected home.
-
-Readers never create a database. If the resolved path does not exist they print
-this and exit nonzero, rather than silently creating an empty one:
-
-```
-no database found at <path>; run 'videre scan <dir>' first
-```
-
-Run `videre config` at any time to see what everything currently resolves to.
-
-## Scanning more than one folder
-
-Nothing stops you pointing `videre scan` at several folders in turn:
+There is no saved default, no environment variable, and no ancestor search: the
+library is always exactly the directory you named or the one you are standing
+in. The authoritative database is `<library>/.videre/hashes.db`, and its
+location is fixed; no command takes a database or output-location selector.
 
 ```bash
-videre scan ~/Photos
-videre scan /Volumes/Archive/Photos
+cd ~/Photos && videre stats        # the library at ~/Photos
+videre --library ~/Photos stats    # the same library, from anywhere
 ```
 
-Both end up in the **same database**, as rows in one table. There is no notion
-of a library inside a database: a database *is* the library, however many roots
-were scanned into it.
-
-That is often exactly what you want. A collection split across an internal disk
-and an external drive is one library, and treating it as one is the point.
-
-### Everything then works database-wide, not folder-wide
-
-This is the part that surprises people. No command takes a folder to limit
-itself to:
-
-| Command | What it acts on |
-|---|---|
-| [`dedupe`](/commands/dedupe/) | Every row, so it finds copies **across** folders |
-| [`prune`](/commands/prune/) | Every row, whichever folder it came from |
-| [`gallery`](/commands/gallery/), [`search`](/commands/search/), [`stats`](/commands/stats/) | Everything in the database |
-
-Cross-folder duplicate detection is usually the reason to combine folders: it is
-how you find that the archive drive holds copies of what is already on your
-laptop. But it means `videre dedupe` may propose deleting a file in a folder you
-were not thinking about, and the KEEP copy may live on the other drive.
-
-Review before piping, and remember that KEEP is chosen by oldest EXIF date, not
-by which folder you prefer.
-
-### The stale-folder trap
-
-`videre scan` with no argument scans your configured default folder, which is
-the **first** folder you ever scanned:
-
-```bash
-videre scan ~/Photos                      # adopts ~/Photos as the default
-videre scan /Volumes/Archive/Photos       # scanned, but does not change the default
-videre scan                               # refreshes ~/Photos only
-```
-
-After that third command, the archive's rows are still there but no longer
-match what is on disk. Files you deleted from it are still listed, and files you
-added are missing.
-
-Keep each root explicit when you have more than one:
-
-```bash
-videre scan ~/Photos
-videre scan /Volumes/Archive/Photos
-```
-
-The same applies to [`videre watch`](/commands/watch/), which takes a single
-folder. Watching two roots means running two `watch` processes, and they should
-not run their HEIC or faces stages simultaneously.
-
-### Keeping folders genuinely separate
-
-If two collections should not see each other at all, give them their own
-databases rather than sharing one:
-
-```bash
-videre scan --db ~/personal.db ~/Photos
-videre scan --db ~/work.db ~/WorkShoots
-
-videre dedupe --db ~/work.db          # only ever considers work photos
-```
-
-Separate databases also get separate embeddings and separate locks, so the two
-never interfere. See
-[keeping libraries separate](/guides/multiple-libraries/) for what is still
-shared between them, and when `VIDERE_HOME` is the better tool.
-
-:::caution[An unplugged drive is handled, but know the rule]
-With several roots in one database, some of them may be offline at any time.
-[`videre prune`](/commands/prune/) only removes a row when the file is missing
-**and** its parent folder still exists, so an unmounted drive is skipped rather
-than wiped. It reports how many rows it skipped and which directories were
-missing.
-:::
-
-## `VIDERE_HOME`
-
-Setting `VIDERE_HOME` moves the entire home directory, so the database, config,
-locks, embeddings and cache all relocate together.
-
-This is what makes a separate library genuinely separate: pointing
-`VIDERE_HOME` at another directory gives you an independent config, an
-independent default database, and independent locks. Work done under one home
-does not affect the other.
-
-**Setting it** is covered in
-[keeping libraries separate](/guides/multiple-libraries/#separate-homes): the
-one-command prefix, exporting it for a session in bash, zsh or fish, and a
-wrapper script that pins one library permanently.
-
-### Checking which home is in use
-
-`videre config` prints it on the first line:
+Readers never create a database. If the selected library has no `.videre/`
+state yet, they print that it is not initialized and exit nonzero rather than
+silently creating an empty one:
 
 ```
-home:          /Users/you/.another
-config:        /Users/you/.another/config.toml
-resolved db:   /Users/you/.another/hashes.db
+library <path> is not initialized: run 'videre scan' there first
 ```
 
-If `home:` is not what you expected, nothing else on that output matters yet.
+Only [`scan`](/commands/scan/) and [`watch`](/commands/watch/) bring a library
+into being; [`config`](/commands/config/) may create the local config file.
 
-### What it does and does not override
+## Settings resolution
 
-| | Set by | Beats |
+Within a selected library, a value is resolved:
+
+1. A flag on the command (for example `--model`)
+2. The library's own `.videre/config.toml`
+3. The built-in default
+
+The config keys are fixed: `db = "hashes.db"`, `jsonl = "hashes.jsonl"`,
+`default_model`, `xmp_precedence`, and `export_xmp_on_watch`. Each library has
+its own config, so a setting in one is invisible in another. Your `$HOME` has no
+special role: `~/.videre` is a library only if you deliberately select `~` as a
+library root.
+
+## Sources, filters, and operands
+
+Three kinds of path appear on the command line, and they are not the same:
+
+| Kind | Example | Resolved against |
 |---|---|---|
-| Which **home** | `VIDERE_HOME` | nothing else selects it |
-| Which **database** | `--db` | the home's configured default |
-| Everything else | `config.toml` **inside that home** | built-in defaults |
+| The **library** | `--library ~/Photos` | itself (named or the cwd) |
+| A **filter** | `search --path Trips` | the library root; must stay inside it |
+| A file **operand** | `import ~/Takeout` | the invocation directory |
 
-So `VIDERE_HOME` picks the home, `--db` picks the database within (or outside)
-it, and config supplies the rest. `--db` still wins for the database even when
-`VIDERE_HOME` is set - the home decides where config, locks, embeddings and
-caches live, not which file you opened:
+A `--path` filter is a subtree of the library. It is accepted in its given and
+canonical forms, and a path that resolves outside the library root, or through a
+symlink that escapes it, is rejected rather than silently widening the request.
+Only the database-backed commands (`search`, `embed`, `faces`, `classify`,
+`mark`, `export`, `tag`) take `--path`; `scan` and `watch` walk the whole
+library. Existing `.videre` state is never treated as media.
 
-```bash
-# Reads a.db, while locks, embeddings and cache stay under the chosen home.
-env VIDERE_HOME=$HOME/.another videre stats --db ~/photos/a.db
-```
+## One library is one directory tree
 
-Note that `videre config` itself takes no `--db`: it reports the home and what
-that home resolves to.
+A library is rooted at a single directory and covers everything beneath it. A
+collection split across, say, an internal disk and an external drive is one
+library only if you root it at a directory that contains both; otherwise each
+tree is its own library. Combining unrelated trees into a single library is no
+longer possible, and two collections in two directories are already fully
+separate. See [keeping libraries separate](/guides/multiple-libraries/).
 
-:::caution[A typo gives you an empty library, not an error]
-Pointing at a directory that does not exist is not an error. Reading commands
-say so - `videre config` prints the path with `(absent)` beside it - but the
-first command that *writes*, such as [`scan`](/commands/scan/), creates the
-directory and starts a fresh library there.
-
-That is exactly what you want for a throwaway setup, and the trap when the path
-has a typo. `videre config` first is the cheap check.
-:::
-
-:::note
-`VIDERE_HOME` and `videre config` are different mechanisms. The environment
-variable chooses *which* home directory to use; `config.toml` lives *inside*
-whichever home is selected and sets defaults within it. Changing one home's
-config never touches another's.
+:::caution[An unplugged drive is handled]
+[`videre prune`](/commands/prune/) only removes a row when the file is missing
+**and** its parent folder still exists, so an unmounted drive under the library
+is skipped rather than wiped. It reports how many rows it skipped and which
+directories were missing.
 :::
 
 ## Locks
 
-Each database gets one lock file per command, under `<home>/locks/`. This is
-what lets `videre stats` report a command as currently running, and what stops
-the same command running twice against one database.
+Each library gets one lock file per command, under `<library>/.videre/locks/`.
+This is what lets `videre stats` report a command as currently running, what
+stops the same command running twice against one library, and what lets
+maintenance (`prune`) exclude other work in that library while unrelated
+libraries proceed.
 
-Lock names include a hash of the database's canonicalised path, not just its
-filename. Two libraries can both be called `photos.db` in different folders, and
-keying on the name alone would make them share a lock, silently serializing
-unrelated work. Canonicalising first also means a symlink and a relative path to
-the same database resolve to the same lock.
+Lock names include a hash of the library root's canonicalised path, so a
+symlink or a relative path to the same library resolves to the same locks, and
+two libraries in different directories never share one.
 
-Two *different* commands can run at once against the same database.
+## Caches
+
+Two caches sit outside the library, under your user cache directory:
+
+```
+~/.cache/videre/            # per-library thumbnail and geocoding caches
+~/.cache/huggingface/hub/   # shared model weights (honours HF_HOME)
+```
+
+Each library has its own thumbnail and geocoding cache namespace, so one
+library's [`prune`](/commands/prune/) only reclaims its own entries. The Hugging
+Face model-weights cache is shared across every library on the machine, so a
+model is downloaded once. Deleting a cache is safe; everything in it regenerates
+on demand. [Caches and disk use](/guides/caches/) covers what each costs to lose.
 
 ## Environment variables
 
 | Variable | Effect |
 |----------|--------|
-| `VIDERE_HOME` | Use a different home directory instead of `~/.videre` |
+| `HF_HOME` | Where model weights are cached (default `~/.cache/huggingface`) |
 | `VIDERE_EMBED_DTYPE` | `f16` for slightly faster search preparation. Does not affect existing data. |
 
 Model choice is deliberately not an environment variable. Use
 `videre config set model <id>`, or `--model <id>` for a single command.
 
-## Thumbnail cache
+## Upgrading from earlier versions
 
-Decoded images are cached so a slow HEIC conversion happens once rather than
-every time.
-
-```
-~/.cache/videre/thumbnails/          # normally
-<VIDERE_HOME>/cache/thumbnails/      # when VIDERE_HOME is set
-```
-
-Keyed by content hash, so the same photo in two databases is converted once.
-This is the one store that reaches **tens of GB**, because it keeps a
-full-resolution decode per HEIC file, and it has no size limit or expiry. Only
-[`videre prune`](/commands/prune/) reclaims anything, and only for photos no
-longer in the database.
-
-Deleting the directory is safe; everything in it regenerates on demand.
-
-[Caches and disk use](/guides/caches/) covers all three caches, what each costs
-to lose, and how to work through reclaiming space.
+Earlier videre kept one global home under `~/.videre` selected by a `VIDERE_HOME`
+variable, with a configurable default database path and per-command database and
+output-location flags. Those are all gone: a command now always operates on the
+directory you select, and its database is fixed inside that directory's
+`.videre/`. Move an old collection by running videre in its directory (or
+passing `--library`); the first `scan` there initializes its local state.

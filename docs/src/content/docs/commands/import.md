@@ -13,7 +13,12 @@ videre import ~/Pictures                    # find whatever is in there
 videre import ~/Takeout                     # a Google Takeout export
 videre import ~/Pictures/Photos\ Library.photoslibrary
 videre import                               # search the usual places
+videre --library ~/Photos import ~/Takeout  # import into a selected library
 ```
+
+Import brings files into the library it is run in: the invocation directory, or
+the one named by `--library <DIR>`. The source path you pass is where the photos
+come *from*; the library is where their records go.
 
 The bare path is the main form. You do not need to know whether you have a
 `.photoslibrary`, a `.lrcat` or a Takeout dump, and you do not need to know
@@ -77,7 +82,7 @@ the order matters:
 
 ```bash
 videre import ~/Takeout      # fix the dates Takeout mangled
-videre scan ~/Takeout        # now record them
+videre --library ~/Takeout scan        # now record them
 videre dedupe                # collapse the copies albums created
 videre prune                 # tidy up
 ```

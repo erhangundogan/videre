@@ -79,10 +79,10 @@ photos, and only 95.6 MB of it disposable. **Embeddings dominate** because that
 library has three models prepared.
 
 :::note[Embeddings are counted per library]
-They live in a separate directory per database, so `stats` reports only the ones
-belonging to the database you asked about. If other libraries share the same
-[`VIDERE_HOME`](/guides/multiple-libraries/), theirs appear as a separate
-`embeddings (other libraries)` row - real disk use, but not this library's.
+They live under this library's own `.videre/embeddings/`, so `stats` reports
+only the ones belonging to the library you asked about. Another library's
+embeddings live under its own root and never appear here. See
+[keeping libraries separate](/guides/multiple-libraries/).
 :::
 
 **Duplicates** counts exact, byte-identical copies only. "Wasted" is what you
@@ -173,7 +173,7 @@ videre stats --check || echo "videre needs attention" | mail -s "videre" me@exam
 
 ```bash
 # crontab: nightly refresh, alert only on failure
-0 3 * * * videre scan ~/Photos --retry-incomplete --silent && videre stats --check
+0 3 * * * videre --library ~/Photos scan --retry-incomplete --silent && videre stats --check
 ```
 
 A cleanly interrupted run (Ctrl-C) counts as `interrupted`, not a problem, so

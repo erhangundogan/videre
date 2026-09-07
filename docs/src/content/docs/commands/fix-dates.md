@@ -31,7 +31,7 @@ The date the camera recorded is still there, in EXIF, untouched by any of that.
 This copies it onto the file itself.
 
 ```bash
-videre scan ~/Photos           # read the EXIF dates
+videre --library ~/Photos scan           # read the EXIF dates
 videre fix-dates --dry-run     # see what would change
 videre fix-dates               # apply
 ```

@@ -20,18 +20,18 @@ under [backing up](/guides/backup/).
 The big one, and the only one that grows without limit.
 
 ```
-~/.cache/videre/thumbnails/          # normally
-<VIDERE_HOME>/cache/thumbnails/      # when VIDERE_HOME is set
+~/.cache/videre/libraries/<library-key>/thumbnails/
 ```
 
-Files are named by content hash:
+Each library has its own thumbnail directory, keyed by a hash of its root path,
+so two libraries never share cached decodes. Files are named by content hash:
 
 | File | What |
 |---|---|
 | `<hash>_240.jpg` | Grid thumbnail |
 | `<hash>_1200.jpg` | Lightbox size |
 | `<hash>_original.jpg` | **Full-resolution decode** |
-| `<hash>_face<id>_<size>.jpg` | Cropped face |
+| `<hash>_face-<key>_<size>.jpg` | Cropped face, keyed by its crop geometry |
 
 The full-resolution copies are what make it large. They exist because
 [`videre faces`](/commands/faces/) needs full resolution to place face boxes,
@@ -42,14 +42,13 @@ and reusing one is roughly 70x faster than decoding again (~108 ms against
 
 ```bash
 videre stats                                # how big, alongside everything else
-rm -rf ~/.cache/videre/thumbnails/          # safe, regenerates on demand
+rm -rf ~/.cache/videre/libraries/          # safe, regenerates on demand
 ```
 
 [`videre stats`](/commands/stats/) has a **Disk use** section listing every store
 largest first and marking which are rebuildable, so you can see whether the cache
-is actually the thing worth clearing before clearing it. It also knows where the
-cache is, which `du` needs telling - the path differs depending on whether
-`VIDERE_HOME` is set.
+is actually the thing worth clearing before clearing it. It also knows where this
+library's cache is, which `du` needs telling.
 
 Deleting it is genuinely safe. Every file is derived, and the only cost is
 re-conversion the next time something needs the image.
@@ -59,23 +58,20 @@ cleanup is [`videre prune`](/commands/prune/), and it only removes entries for
 photos that are no longer in the database. Cache for photos you still own is
 never reclaimed.
 
-### It is shared between databases
+### It is private to each library
 
-Keyed by content and stored in one directory, so the same photo in two libraries
-is converted once. The consequence is that **one library's `prune` can delete
-another's entries**, since prune can only see its own database.
-
-That is accepted deliberately: a thumbnail costs milliseconds to rebuild, so the
-same flaw that would be unacceptable for embeddings is unimportant here.
-
-Because the location follows `VIDERE_HOME`, switching homes means starting from
-an empty cache and leaving the old one behind. See
+Each library's thumbnails live under its own key, so
+[`videre prune`](/commands/prune/) reclaims only the entries for its own library
+and can never delete another's. The same photo in two libraries is decoded once
+per library; that small duplication buys complete isolation, which matters
+because a wrong deletion across libraries would be silent. A thumbnail costs
+milliseconds to rebuild in any case. See
 [keeping libraries separate](/guides/multiple-libraries/).
 
 ### Warming it deliberately
 
 ```bash
-videre watch ~/Photos --heic     # decode and cache everything, then Ctrl-C
+videre --library ~/Photos watch --heic     # decode and cache everything, then Ctrl-C
 videre faces                     # now reads the cache instead of decoding
 ```
 
@@ -127,9 +123,9 @@ offline.
 ## Where disk actually goes
 
 ```bash
-du -sh ~/.videre/                     # database, config, embeddings
-du -sh ~/.videre/embeddings/          # ~130-190 MB per model per 70k photos
-du -sh ~/.cache/videre/thumbnails/    # usually the largest
+du -sh <library>/.videre/            # database, config, embeddings
+du -sh <library>/.videre/embeddings/ # ~130-190 MB per model per 70k photos
+du -sh ~/.cache/videre/libraries/     # usually the largest
 du -sh ~/.cache/huggingface/hub/      # ~960 MB with defaults
 videre stats                          # per-model embedding sizes
 ```

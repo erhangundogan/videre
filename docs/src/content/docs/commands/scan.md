@@ -37,9 +37,10 @@ The first scan creates this state inside the selected library:
 └── locks/
 ```
 
-The database location is fixed. `scan` has no directory operand, `--path`,
-`--db`, `--output`, or `--output-sqlite` option. To scan another collection,
-run the command from that directory or select it with `--library`.
+The database location is fixed at `.videre/hashes.db` inside the library. `scan`
+takes no directory operand, no path filter, and no database or output-location
+selector: the library is chosen the same way for every command. To scan another
+collection, run the command from that directory or select it with `--library`.
 
 Re-running is safe. Existing rows are updated by path while annotations and
 location fields owned by later processing are preserved.

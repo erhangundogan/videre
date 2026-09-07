@@ -194,11 +194,11 @@ after the other.
 already-decoded images when they exist, about 108 ms against 7.6 s:
 
 ```bash
-videre watch ~/Photos --heic     # then Ctrl-C once it settles
+videre --library ~/Photos watch --heic     # then Ctrl-C once it settles
 videre faces
 ```
 
-See the [thumbnail cache](/reference/paths/#thumbnail-cache) for what that
+See the [thumbnail cache](/guides/caches/#thumbnail-cache) for what that
 stores and how much space it takes.
 
 **Names live on faces, not on groups.** Group numbers are reassigned on every

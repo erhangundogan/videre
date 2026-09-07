@@ -46,9 +46,9 @@ One JSON object per line, appended:
 The fields match the [database columns](/reference/database/) of the same names.
 Absent values, such as EXIF on a PNG, are `null` or omitted.
 
-**Appended, not replaced.** Scanning twice to the same file gives two entries per
-path. That suits a log, and it means you should not treat the file as a current
-snapshot without deduplicating it yourself.
+**Replaced, not appended.** Each `export --jsonl` writes the current snapshot
+atomically over the previous one, so the file is always a single consistent
+picture of the selected files, never an accumulating log.
 
 ## Working with it
 
@@ -69,15 +69,16 @@ jq -r 'select(.gps_lat) | [.path, .gps_lat, .gps_lon] | @csv' hashes.jsonl
 jq -s 'sort_by(-.size_bytes) | .[:10] | .[] | "\(.size_bytes)\t\(.path)"' -r hashes.jsonl
 ```
 
-Because it is line-delimited, it also streams:
+Because it is line-delimited, every line-oriented tool reads it directly, so an
+export feeds straight into a filter:
 
 ```bash
-videre scan ~/Photos --output /dev/stdout --silent | jq -c 'select(.width > 4000)'
+videre export --jsonl && jq -c 'select(.width > 4000)' .videre/hashes.jsonl
 ```
 
 ## What you give up
 
-JSONL is scan output only. Nothing else reads it:
+JSONL is an export snapshot only. Nothing else reads it:
 
 | Command | Works from JSONL? |
 |---|---|

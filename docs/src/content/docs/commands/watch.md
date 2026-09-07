@@ -56,27 +56,27 @@ Note that [`embed`](/commands/embed/) and [`classify`](/commands/classify/) are
 **Everything, and forget about it.** The common case:
 
 ```bash
-videre watch ~/Photos
+videre --library ~/Photos watch
 ```
 
 **Just keep the index current**, leaving face detection for when you are not
 using the machine:
 
 ```bash
-videre watch ~/Photos --scan --location --interval 120
+videre --library ~/Photos watch --scan --location --interval 120
 ```
 
 **Warm the cache before a big job**, then stop it:
 
 ```bash
-videre watch ~/Photos --heic       # Ctrl-C once the per-cycle counts settle
+videre --library ~/Photos watch --heic       # Ctrl-C once the per-cycle counts settle
 videre faces
 ```
 
 **Include cleanup**, if your photos live on an always-connected disk:
 
 ```bash
-videre watch ~/Photos --scan --faces --heic --location --prune
+videre --library ~/Photos watch --scan --faces --heic --location --prune
 ```
 
 Passing `--prune` requires listing the other stages you want, since naming any
@@ -89,10 +89,10 @@ interrupted.
 
 ```bash
 # a tmux pane
-tmux new -s videre 'videre watch ~/Photos'
+tmux new -s videre 'videre --library ~/Photos watch'
 
 # or with a log
-videre watch ~/Photos 2>> ~/.videre/watch.log
+videre --library ~/Photos watch 2>> ~/Photos/.videre/watch.log
 ```
 
 For something that survives a reboot, wrap it in a launchd agent on macOS or a
@@ -143,12 +143,13 @@ An unplugged drive is skipped rather than wiped. See
 **The HEIC cache grows without limit.** `--heic` caches a full-resolution decode
 per HEIC file, which is what makes face detection fast, and can reach tens of
 GB. Only `prune` reclaims any of it, and only for photos no longer in the
-database. See the [thumbnail cache](/reference/paths/#thumbnail-cache).
+database. See the [thumbnail cache](/guides/caches/#thumbnail-cache).
 
-**One folder per process.** `watch` takes a single directory. Watching two roots
-means two processes, and they should not run their HEIC or faces stages at the
-same time, for the reason above. See
-[scanning more than one folder](/reference/paths/#scanning-more-than-one-folder).
+**One library per process.** `watch` watches the single library it was started
+in (or the one named by `--library`). Watching two libraries means two
+processes, and they should not run their HEIC or faces stages at the same time,
+for the reason above. See
+[keeping libraries separate](/guides/multiple-libraries/).
 
 **Reading while it runs is fine.** The database is opened in WAL mode, so
 [`videre gallery`](/commands/gallery/), `search`, `stats` and your own
@@ -168,9 +169,9 @@ each condition must hold.
 | `--type` | `image` or `video`. Repeatable, or comma-separated |
 | `--ext` | file extension, e.g. `mov`. Repeatable, or comma-separated |
 | `--mime` | exact type, e.g. `video/quicktime`. Repeatable, or comma-separated |
-| `--path` | only files under this directory. Repeatable |
 
-`--date` and `--location` are deliberately absent: this walks the filesystem and
+`--path`, `--date` and `--location` are deliberately absent: this walks the
+selected library's own root and
 has not opened the file yet, so it cannot answer them without doing the
 expensive work the filter exists to avoid.
 

@@ -26,7 +26,7 @@ work, it would leave everything outside that part unclustered.
 ## The workflow
 
 ```bash
-videre scan ~/Photos       # GPS comes from EXIF during the scan
+videre --library ~/Photos scan       # GPS comes from EXIF during the scan
 videre locations           # group those coordinates into places
 ```
 

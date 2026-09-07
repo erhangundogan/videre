@@ -173,19 +173,9 @@ Add arguments the same way you would on the command line:
 }
 ```
 
-Or set a whole different home, which also switches config and caches:
-
-```json
-{
-  "mcpServers": {
-    "videre": {
-      "command": "/opt/homebrew/bin/videre",
-      "args": ["mcp"],
-      "env": { "VIDERE_HOME": "/Users/you/videre-work" }
-    }
-  }
-}
-```
+The server binds to one library at startup, chosen by the `--library` argument
+(or, with no argument, the directory the client launches it in). There is no
+per-tool library override: one server serves one library for its lifetime.
 
 Nothing stops you registering several, one per library, under different names.
 See [keeping libraries separate](/guides/multiple-libraries/).
