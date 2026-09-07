@@ -52,7 +52,21 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+        # `os` names the job (and the branch-protection required check), so it
+        # stays `macos-latest`; `runner` is the image actually used. They are
+        # pinned apart because the `macos-latest` label moved onto the macOS-26
+        # arm64 image build 20260831, which intermittently fails SQLite and lock
+        # *writes* with SQLITE_IOERR (extended code 778, "disk I/O error"). The
+        # same commit passed and failed on it on the same day, and it hit `main`
+        # too, so it is the image, not our code. macos-15 is the last image that
+        # ran this suite green. Revisit once a later macOS image is stable; do
+        # not rename the `os` values without updating the required checks on main.
+        include:
+          - os: ubuntu-latest
+            runner: ubuntu-latest
+          - os: macos-latest
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
 
