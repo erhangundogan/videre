@@ -120,6 +120,8 @@ pub(crate) fn resolve_targets(
         Some(&a.people),
         Some(&a.presence),
         Some(&a.paths),
+        None,
+        None,
     )?;
     let resolved = sel.resolve_in(conn, &SelectionCtx::default(), &ctx.library)?;
     match resolved.hashes {

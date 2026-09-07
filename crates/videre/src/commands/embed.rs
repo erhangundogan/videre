@@ -91,6 +91,8 @@ fn run_embed(
         None,
         Some(&args.presence),
         Some(&args.paths),
+        None,
+        None,
     )?;
     let work = videre_core::work::narrow_in(
         pending,
