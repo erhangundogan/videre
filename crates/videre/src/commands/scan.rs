@@ -59,6 +59,13 @@ fn report_json_error(error: anyhow::Error) -> anyhow::Result<()> {
 
 fn run_inner(args: &ScanArgs, ctx: &CommandContext) -> anyhow::Result<ScanJson> {
     let conn = videre_core::library_db::initialize(&ctx.library)?;
+    // initialize has already done any exclusive schema preparation and released
+    // its init lock; the scan itself is ordinary shared work, coexisting with
+    // readers and excluded only by exclusive maintenance.
+    let _activity = videre_core::library_locks::try_activity(
+        &ctx.library,
+        videre_core::library_locks::ActivityMode::Shared,
+    )?;
     let guard = videre_core::library_locks::try_command(&ctx.library, "scan")?;
     if let Err(error) =
         videre_core::pipeline_runs::install_sigint_handler_in(ctx.library.clone(), "scan")

@@ -46,6 +46,12 @@ pub fn run(args: ClassifyArgs, ctx: &CommandContext) -> Result<()> {
     videre_core::library_guard::validate_paths(&ctx.library, &args.paths.path)?;
 
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    // Classify writes classification rows but coexists with readers and other
+    // ordinary work; only exclusive maintenance locks it out.
+    let _activity = videre_core::library_locks::try_activity(
+        &ctx.library,
+        videre_core::library_locks::ActivityMode::Shared,
+    )?;
     let model_id = videre_core::embeddings::resolve_model_id_from(
         &ctx.library.settings,
         args.model.as_deref(),

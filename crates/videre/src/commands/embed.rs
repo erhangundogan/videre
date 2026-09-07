@@ -48,6 +48,13 @@ pub fn run(args: EmbedArgs, ctx: &CommandContext) -> Result<()> {
     videre_core::library_guard::validate_paths(&ctx.library, &args.paths.path)?;
 
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    // Embedding is an ordinary writer: it coexists with readers and other
+    // ordinary work in this library, but exclusive maintenance (prune) locks
+    // it out. Held for the whole run, released when this returns.
+    let _activity = videre_core::library_locks::try_activity(
+        &ctx.library,
+        videre_core::library_locks::ActivityMode::Shared,
+    )?;
     let model_id = videre_core::embeddings::resolve_model_id_from(
         &ctx.library.settings,
         args.model.as_deref(),

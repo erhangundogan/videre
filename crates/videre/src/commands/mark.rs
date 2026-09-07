@@ -54,6 +54,11 @@ pub fn run(args: MarkArgs, ctx: &CommandContext) -> Result<()> {
     // Guard every --path against the selected root before any mutation.
     videre_core::library_guard::validate_paths(&ctx.library, &args.paths.path)?;
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    // Marking is ordinary shared work, excluded only by exclusive maintenance.
+    let _activity = videre_core::library_locks::try_activity(
+        &ctx.library,
+        videre_core::library_locks::ActivityMode::Shared,
+    )?;
 
     if args.export_xmp {
         return super::mark_export::run(&args, ctx, &conn);

@@ -49,6 +49,10 @@ pub fn run(args: StatsArgs, ctx: &CommandContext) -> anyhow::Result<()> {
 
 fn run_text(args: &StatsArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    let _activity = videre_core::library_locks::try_activity(
+        &ctx.library,
+        videre_core::library_locks::ActivityMode::Shared,
+    )?;
     let library = videre_core::library_stats::compute_full_in(&conn, &ctx.library)?;
     let pipelines = videre_core::pipeline_runs::read_all_in(&conn, &ctx.library)?;
 
@@ -164,6 +168,10 @@ fn run_text(args: &StatsArgs, ctx: &CommandContext) -> anyhow::Result<()> {
 fn run_json(args: &StatsArgs, ctx: &CommandContext) -> anyhow::Result<StatsJson> {
     let _ = args;
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    let _activity = videre_core::library_locks::try_activity(
+        &ctx.library,
+        videre_core::library_locks::ActivityMode::Shared,
+    )?;
     let library = videre_core::library_stats::compute_full_in(&conn, &ctx.library)?;
     let pipelines = videre_core::pipeline_runs::read_all_in(&conn, &ctx.library)?;
     Ok(StatsJson {

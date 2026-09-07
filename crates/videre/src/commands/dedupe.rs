@@ -76,6 +76,16 @@ fn run_text(args: DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
             process::exit(1);
         }
     };
+    let _activity = match videre_core::library_locks::try_activity(
+        &ctx.library,
+        videre_core::library_locks::ActivityMode::Shared,
+    ) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("Error: {e:#}");
+            process::exit(1);
+        }
+    };
     let guard = match videre_core::library_locks::try_command(&ctx.library, "dedupe") {
         Ok(g) => g,
         Err(e) => {
@@ -139,6 +149,10 @@ fn run_json(
     ctx: &CommandContext,
 ) -> anyhow::Result<videre::types::FindDuplicatesJson> {
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    let _activity = videre_core::library_locks::try_activity(
+        &ctx.library,
+        videre_core::library_locks::ActivityMode::Shared,
+    )?;
     let guard = videre_core::library_locks::try_command(&ctx.library, "dedupe")?;
     videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "dedupe", || {
         super::build_find_duplicates_from(&conn, args.similar)

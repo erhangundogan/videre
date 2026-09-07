@@ -538,6 +538,12 @@ fn collect_hits(
 
     let db = ctx.library.paths.db.clone();
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    // Search is a reader; it takes the library's shared activity lease so its
+    // query cannot run against rows an exclusive maintenance pass is removing.
+    let _activity = videre_core::library_locks::try_activity(
+        &ctx.library,
+        videre_core::library_locks::ActivityMode::Shared,
+    )?;
 
     let model_id = videre_core::embeddings::resolve_model_id_from(
         &ctx.library.settings,

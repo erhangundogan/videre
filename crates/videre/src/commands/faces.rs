@@ -136,6 +136,17 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
     videre_core::library_guard::validate_paths(&ctx.library, &args.paths.path)?;
 
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    // Reprocessing (clearing and re-detecting every face) or reclustering
+    // rewrites the whole face partition, so it takes the library's exclusive
+    // activity lease and locks out every other operation; ordinary incremental
+    // detection is shared work that coexists with readers. Held for the whole
+    // run, released when this returns.
+    let activity_mode = if args.reprocess || args.recluster {
+        videre_core::library_locks::ActivityMode::Exclusive
+    } else {
+        videre_core::library_locks::ActivityMode::Shared
+    };
+    let _activity = videre_core::library_locks::try_activity(&ctx.library, activity_mode)?;
     face_db::create_faces_table(&conn)?;
     // Held for the whole run, both the detection and the recluster-only paths,
     // so a second faces run against this library is refused rather than racing.

@@ -20,6 +20,12 @@ use super::confirm;
 
 pub fn run(args: FixDatesArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    // Ordinary writer: coexists with readers and other ordinary work, excluded
+    // only by exclusive maintenance.
+    let _activity = videre_core::library_locks::try_activity(
+        &ctx.library,
+        videre_core::library_locks::ActivityMode::Shared,
+    )?;
 
     if args.dry_run && !args.silent {
         eprintln!("Dry run: no files will be modified.");

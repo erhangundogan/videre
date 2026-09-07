@@ -48,6 +48,13 @@ pub fn run(args: ExportArgs, ctx: &CommandContext) -> Result<()> {
     // write, so an out-of-root filter is rejected before work.
     videre_core::library_guard::validate_paths(&ctx.library, &args.paths.path)?;
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    // Export reads rows and writes sidecars/JSONL beside them; ordinary shared
+    // work, excluded only by exclusive maintenance. Held across both the JSONL
+    // snapshot and the per-file sidecar paths.
+    let _activity = videre_core::library_locks::try_activity(
+        &ctx.library,
+        videre_core::library_locks::ActivityMode::Shared,
+    )?;
 
     if args.jsonl {
         return export_jsonl_snapshot(ctx, &conn, &args);

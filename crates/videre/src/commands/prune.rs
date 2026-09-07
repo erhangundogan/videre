@@ -113,17 +113,20 @@ fn needs_sync(stored: Option<&str>, current: &str) -> bool {
 }
 
 pub fn run(args: PruneArgs, ctx: &CommandContext) -> anyhow::Result<()> {
-    let conn = videre_core::library_db::open_existing(&ctx.library)?;
-
     if args.dry_run && !args.silent {
         eprintln!("Dry run: no changes will be made to the database.");
     }
 
-    let guard = videre_core::library_locks::try_command(&ctx.library, "prune")?;
-    let errors =
-        videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "prune", || {
-            run_prune(&args, &ctx.library, &conn)
-        })?;
+    // Prune takes the library's exclusive activity lease: it removes rows and
+    // sweeps orphaned embeddings and cache entries, so it must not overlap any
+    // other operation in this library (an embed writing the very rows it is
+    // deciding are orphaned, say). Unrelated libraries are untouched.
+    let errors = crate::command_context::with_tracked_command(
+        ctx,
+        "prune",
+        videre_core::library_locks::ActivityMode::Exclusive,
+        |conn| run_prune(&args, &ctx.library, conn),
+    )?;
 
     if errors > 0 {
         std::process::exit(1);

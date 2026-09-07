@@ -71,3 +71,31 @@ impl CommandContext {
         }
     }
 }
+
+/// The standard boundary for one of the eight tracked commands against an
+/// already-initialized library: open the database, take the library's activity
+/// lease in `mode`, take the per-command lock, and run `work` under pipeline-run
+/// bookkeeping.
+///
+/// The acquisition order is fixed and shared by every tracked command so two
+/// commands can never deadlock by taking the same locks in different orders:
+/// database open (any exclusive schema preparation happens and releases inside
+/// `open_existing`), then the activity lease, then the command lock. `Shared`
+/// lets ordinary operations run alongside each other and alongside readers;
+/// `Exclusive` is for maintenance that must not overlap anything else in the
+/// same library (prune, and destructive face reprocessing/reclustering). Both
+/// contend only within one library: an unrelated library is a different set of
+/// lock files.
+pub fn with_tracked_command<T>(
+    ctx: &CommandContext,
+    command_name: &str,
+    mode: videre_core::library_locks::ActivityMode,
+    work: impl FnOnce(&rusqlite::Connection) -> Result<T>,
+) -> Result<T> {
+    let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    let _activity = videre_core::library_locks::try_activity(&ctx.library, mode)?;
+    let command = videre_core::library_locks::try_command(&ctx.library, command_name)?;
+    videre_core::pipeline_runs::track_in(&conn, &ctx.library, &command, command_name, || {
+        work(&conn)
+    })
+}

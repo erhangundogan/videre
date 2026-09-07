@@ -56,6 +56,11 @@ pub fn run(args: TagArgs, ctx: &CommandContext) -> Result<()> {
     // tag mutation.
     videre_core::library_guard::validate_paths(&ctx.library, &args.paths.path)?;
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    // Tagging is ordinary shared work, excluded only by exclusive maintenance.
+    let _activity = videre_core::library_locks::try_activity(
+        &ctx.library,
+        videre_core::library_locks::ActivityMode::Shared,
+    )?;
     videre_core::tags::ensure_photo_tags_table(&conn)?;
 
     let sel = super::selection_args::row_selection(

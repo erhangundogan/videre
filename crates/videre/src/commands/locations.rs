@@ -44,6 +44,13 @@ struct ClusterJson {
 
 pub fn run(args: LocationsArgs, ctx: &CommandContext) -> Result<()> {
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    // A recompute of the location partition, self-contained within the
+    // location tables; ordinary shared activity, excluded only by exclusive
+    // maintenance.
+    let _activity = videre_core::library_locks::try_activity(
+        &ctx.library,
+        videre_core::library_locks::ActivityMode::Shared,
+    )?;
     let guard = videre_core::library_locks::try_command(&ctx.library, "locations")?;
 
     if args.json {

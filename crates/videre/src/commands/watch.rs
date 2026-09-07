@@ -92,16 +92,28 @@ pub fn run(mut args: WatchArgs, ctx: &CommandContext) -> Result<()> {
     }
 }
 
-/// Run a tracked stage under its own command lock. A busy lock (a standalone
-/// command is running that stage against this library) is reported and skipped;
-/// the next cycle retries. Never reacquires the watch lifetime lock.
+/// Run a tracked stage under the library's activity lease and its own command
+/// lock, in that order. A busy activity lease (an exclusive maintenance pass,
+/// or another shared operation when this stage needs exclusive) or a busy
+/// command lock (a standalone run of that stage) is reported and skipped; the
+/// next cycle retries. Never reacquires the watch lifetime lock.
 fn tracked_stage(
     ctx: &CommandContext,
     conn: &rusqlite::Connection,
     command: &str,
+    mode: videre_core::library_locks::ActivityMode,
     silent: bool,
     f: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
+    let _activity = match videre_core::library_locks::try_activity(&ctx.library, mode) {
+        Ok(guard) => guard,
+        Err(_) => {
+            if !silent {
+                eprintln!("videre watch: {command} stage busy (the library is in use); will retry next cycle");
+            }
+            return Ok(());
+        }
+    };
     match videre_core::library_locks::try_command(&ctx.library, command) {
         Ok(guard) => videre_core::pipeline_runs::track_in(conn, &ctx.library, &guard, command, f),
         Err(_) => {
@@ -174,13 +186,20 @@ fn run_prune_stage(
     conn: &rusqlite::Connection,
 ) -> Result<()> {
     let prune_args = super::prune::PruneArgs::for_watch_stage(args.silent);
-    tracked_stage(ctx, conn, "prune", args.silent, || {
-        let errors = super::prune::run_prune(&prune_args, &ctx.library, conn)?;
-        if !args.silent && errors > 0 {
-            eprintln!("videre watch: prune stage finished with {errors} error(s)");
-        }
-        Ok(())
-    })
+    tracked_stage(
+        ctx,
+        conn,
+        "prune",
+        videre_core::library_locks::ActivityMode::Exclusive,
+        args.silent,
+        || {
+            let errors = super::prune::run_prune(&prune_args, &ctx.library, conn)?;
+            if !args.silent && errors > 0 {
+                eprintln!("videre watch: prune stage finished with {errors} error(s)");
+            }
+            Ok(())
+        },
+    )
 }
 
 /// Queries (path, hash) pairs from file_hashes matching a SQL WHERE clause,
@@ -222,61 +241,68 @@ fn run_faces_stage(
     ctx: &CommandContext,
     conn: &rusqlite::Connection,
 ) -> Result<()> {
-    tracked_stage(ctx, conn, "faces", args.silent, || {
-        let all_paths = dedup_paths_by_hash(conn, PathExtFilter::Faces)?;
-        // Skip already-scanned hashes (marker includes no-face images), unioned with
-        // hashes that already have faces for pre-marker migration, same resumable
-        // skip set as `videre faces`.
-        let mut skip_hashes: std::collections::HashSet<String> =
-            face_db::scanned_hashes(conn)?.into_iter().collect();
-        skip_hashes.extend(face_db::hashes_with_faces(conn)?);
-        let to_process: Vec<(String, String)> = all_paths
-            .into_iter()
-            .filter(|(_, hash)| !skip_hashes.contains(hash))
-            .collect();
+    tracked_stage(
+        ctx,
+        conn,
+        "faces",
+        videre_core::library_locks::ActivityMode::Shared,
+        args.silent,
+        || {
+            let all_paths = dedup_paths_by_hash(conn, PathExtFilter::Faces)?;
+            // Skip already-scanned hashes (marker includes no-face images), unioned with
+            // hashes that already have faces for pre-marker migration, same resumable
+            // skip set as `videre faces`.
+            let mut skip_hashes: std::collections::HashSet<String> =
+                face_db::scanned_hashes(conn)?.into_iter().collect();
+            skip_hashes.extend(face_db::hashes_with_faces(conn)?);
+            let to_process: Vec<(String, String)> = all_paths
+                .into_iter()
+                .filter(|(_, hash)| !skip_hashes.contains(hash))
+                .collect();
 
-        if !to_process.is_empty() {
-            let workers = std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(4);
-            let result = run_face_pipeline_in(
-                &ctx.library,
+            if !to_process.is_empty() {
+                let workers = std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(4);
+                let result = run_face_pipeline_in(
+                    &ctx.library,
+                    conn,
+                    &to_process,
+                    8,
+                    false,
+                    args.silent,
+                    None,
+                    workers,
+                )?;
+                if !args.silent {
+                    eprintln!(
+                        "videre watch: faces stage processed {} new hash(es), {} face(s)",
+                        to_process.len(),
+                        result.total_faces
+                    );
+                }
+            }
+            let clustering = run_clustering(
                 conn,
-                &to_process,
-                8,
-                false,
+                0.6,
+                3,
+                videre_core::face_cluster::DEFAULT_MERGE_SIM,
+                videre_core::face_cluster::DEFAULT_MIN_FACE_PX,
+                videre_core::face_cluster::DEFAULT_MAX_GENERIC_SIM,
+                videre_core::face_cluster::DEFAULT_MAX_LANDMARK_ERR,
+                videre_core::face_cluster::DEFAULT_MIN_BLUR,
+                1.0,
                 args.silent,
-                None,
-                workers,
             )?;
             if !args.silent {
                 eprintln!(
-                    "videre watch: faces stage processed {} new hash(es), {} face(s)",
-                    to_process.len(),
-                    result.total_faces
+                    "videre watch: {}",
+                    format_clustering_only_summary(clustering, 0.6)
                 );
             }
-        }
-        let clustering = run_clustering(
-            conn,
-            0.6,
-            3,
-            videre_core::face_cluster::DEFAULT_MERGE_SIM,
-            videre_core::face_cluster::DEFAULT_MIN_FACE_PX,
-            videre_core::face_cluster::DEFAULT_MAX_GENERIC_SIM,
-            videre_core::face_cluster::DEFAULT_MAX_LANDMARK_ERR,
-            videre_core::face_cluster::DEFAULT_MIN_BLUR,
-            1.0,
-            args.silent,
-        )?;
-        if !args.silent {
-            eprintln!(
-                "videre watch: {}",
-                format_clustering_only_summary(clustering, 0.6)
-            );
-        }
-        Ok(())
-    })
+            Ok(())
+        },
+    )
 }
 
 /// Writes `img` as a JPEG to `tmp_path`, then atomically renames it to
@@ -422,38 +448,45 @@ fn run_scan_stage(
 ) -> Result<()> {
     let selection = super::selection_args::path_selection(Some(&args.media), None)?;
     let root = ctx.library.paths.root.clone();
-    tracked_stage(ctx, conn, "scan", args.silent, || {
-        // Exclude the .videre state directory from the walk, exactly as scan does.
-        let paths: Vec<_> = scanner::scan(&root)
-            .into_iter()
-            .filter(|p| !p.components().any(|c| c.as_os_str() == ".videre"))
-            .collect();
-        let walked = paths.len();
-        let paths: Vec<_> = if selection.is_empty() {
-            paths
-        } else {
-            paths.into_iter().filter(|p| selection.accepts(p)).collect()
-        };
-        if !selection.is_empty() && !args.silent {
-            eprintln!(
-                "videre watch: scan stage considering {} of {} file(s) ({})",
-                paths.len(),
-                walked,
-                selection.describe()
-            );
-        }
-        let records: Vec<types::FileRecord> = paths
-            .par_iter()
-            .filter_map(|path| hasher::hash_file(path).ok())
-            .collect();
-        sqlite_output::write_records_in(conn, &ctx.library, &records)?;
-        let prec = args.xmp.resolve_from(&ctx.library.settings)?;
-        crate::xmp::import_xmp_for_records_in(conn, &ctx.library, &records, prec, args.silent)?;
-        if !args.silent {
-            eprintln!("videre watch: scan stage wrote {} record(s)", records.len());
-        }
-        Ok(())
-    })
+    tracked_stage(
+        ctx,
+        conn,
+        "scan",
+        videre_core::library_locks::ActivityMode::Shared,
+        args.silent,
+        || {
+            // Exclude the .videre state directory from the walk, exactly as scan does.
+            let paths: Vec<_> = scanner::scan(&root)
+                .into_iter()
+                .filter(|p| !p.components().any(|c| c.as_os_str() == ".videre"))
+                .collect();
+            let walked = paths.len();
+            let paths: Vec<_> = if selection.is_empty() {
+                paths
+            } else {
+                paths.into_iter().filter(|p| selection.accepts(p)).collect()
+            };
+            if !selection.is_empty() && !args.silent {
+                eprintln!(
+                    "videre watch: scan stage considering {} of {} file(s) ({})",
+                    paths.len(),
+                    walked,
+                    selection.describe()
+                );
+            }
+            let records: Vec<types::FileRecord> = paths
+                .par_iter()
+                .filter_map(|path| hasher::hash_file(path).ok())
+                .collect();
+            sqlite_output::write_records_in(conn, &ctx.library, &records)?;
+            let prec = args.xmp.resolve_from(&ctx.library.settings)?;
+            crate::xmp::import_xmp_for_records_in(conn, &ctx.library, &records, prec, args.silent)?;
+            if !args.silent {
+                eprintln!("videre watch: scan stage wrote {} record(s)", records.len());
+            }
+            Ok(())
+        },
+    )
 }
 
 #[cfg(test)]

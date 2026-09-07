@@ -137,6 +137,67 @@ fn activity_shared_coexists_but_exclusive_is_local_and_nonblocking() {
     drop(other);
 }
 
+#[test]
+fn prune_is_excluded_while_a_shared_operation_holds_the_library() {
+    // A held shared lease (a reader or ordinary writer) must lock out prune's
+    // exclusive maintenance: prune removes rows the shared operation may be
+    // acting on. Proven across processes: the in-process lease is a real flock
+    // the spawned `videre prune` contends with.
+    let lib = TestLibrary::new();
+    std::fs::write(lib.root.join("a.jpg"), b"content").unwrap();
+    lib.scan();
+
+    let ctx = lib.context();
+    let held = library_locks::try_activity(&ctx, ActivityMode::Shared).unwrap();
+
+    let out = lib.cmd().args(["prune", "--silent"]).output().unwrap();
+    assert!(
+        !out.status.success(),
+        "prune must not run while a shared lease is held"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("in use"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    drop(held);
+    // Once the lease is released, prune runs.
+    let out = lib.cmd().args(["prune", "--silent"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn a_reader_is_excluded_while_exclusive_maintenance_holds_the_library() {
+    // The converse: while prune-style exclusive maintenance holds the library,
+    // an ordinary shared operation (stats) is refused rather than reading a
+    // library mid-rewrite.
+    let lib = TestLibrary::new();
+    std::fs::write(lib.root.join("a.jpg"), b"content").unwrap();
+    lib.scan();
+
+    let ctx = lib.context();
+    let held = library_locks::try_activity(&ctx, ActivityMode::Exclusive).unwrap();
+
+    let out = lib.cmd().args(["stats"]).output().unwrap();
+    assert!(
+        !out.status.success(),
+        "stats must not read during exclusive maintenance"
+    );
+
+    drop(held);
+    let out = lib.cmd().args(["stats"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn root_alias_and_explicit_selection_share_the_same_command_lock() {
