@@ -87,8 +87,15 @@ fn a_relative_path_filter_resolves_against_the_library_root() {
         .args(["export", "--jsonl", "--path", "Trips"])
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let jsonl = std::fs::read_to_string(lib.root.join(".videre/hashes.jsonl")).unwrap();
     assert!(jsonl.contains("Trips/a.jpg"));
-    assert!(!jsonl.contains("Other/b.jpg"), "the filter must exclude other subtrees");
+    assert!(
+        !jsonl.contains("Other/b.jpg"),
+        "the filter must exclude other subtrees"
+    );
 }
