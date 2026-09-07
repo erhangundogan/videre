@@ -346,14 +346,27 @@ pub(crate) fn from_moov(moov: &[u8]) -> VideoMeta {
 pub fn read(path: &Path) -> VideoMeta {
     let path = path.to_path_buf();
     crate::io_timeout::run_with_timeout(crate::io_timeout::DEFAULT_IO_TIMEOUT, move || {
-        let mut f = std::fs::File::open(&path).ok()?;
-        let end = f.seek(SeekFrom::End(0)).ok()?;
-        f.seek(SeekFrom::Start(0)).ok()?;
-        crate::video_probe::read_moov(&mut f, end).map(|moov| from_moov(&moov))
+        read_file_inner(std::fs::File::open(&path).ok()?)
     })
     .ok()
     .flatten()
     .unwrap_or_default()
+}
+
+/// Read metadata from an already-confined file handle.
+pub fn read_file(file: std::fs::File) -> VideoMeta {
+    crate::io_timeout::run_with_timeout(crate::io_timeout::DEFAULT_IO_TIMEOUT, move || {
+        read_file_inner(file)
+    })
+    .ok()
+    .flatten()
+    .unwrap_or_default()
+}
+
+fn read_file_inner(mut file: std::fs::File) -> Option<VideoMeta> {
+    let end = file.seek(SeekFrom::End(0)).ok()?;
+    file.seek(SeekFrom::Start(0)).ok()?;
+    crate::video_probe::read_moov(&mut file, end).map(|moov| from_moov(&moov))
 }
 
 #[cfg(test)]

@@ -17,7 +17,7 @@ videre fix-dates --dry-run             # show what would change, touch nothing
 videre fix-dates                       # apply (asks for confirmation first)
 videre fix-dates --yes                 # apply without asking (for scripts)
 videre fix-dates --silent              # no per-file output
-videre fix-dates --db ~/photos.db      # use a specific database
+videre --library ~/Photos fix-dates    # select a different library
 ```
 
 ## Why you would want this
@@ -31,7 +31,7 @@ The date the camera recorded is still there, in EXIF, untouched by any of that.
 This copies it onto the file itself.
 
 ```bash
-videre scan ~/Photos           # read the EXIF dates
+videre --library ~/Photos scan           # read the EXIF dates
 videre fix-dates --dry-run     # see what would change
 videre fix-dates               # apply
 ```

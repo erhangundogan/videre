@@ -1,45 +1,60 @@
 use crate::types::FileRecord;
 use rusqlite::{params, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub fn write_records(records: &[FileRecord], db_path: &Path) -> Result<()> {
     let conn = videre_core::db::open_wal(db_path)?;
 
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS file_hashes (
-            path        TEXT PRIMARY KEY,
-            hash        TEXT NOT NULL,
-            size_bytes  INTEGER,
-            created_at  TEXT,
-            modified_at TEXT,
-            ext         TEXT,
-            mime        TEXT,
-            phash       INTEGER,
-            exif_date   TEXT,
-            gps_lat     REAL,
-            gps_lon     REAL,
-            width       INTEGER,
-            height      INTEGER
-        );",
-    )?;
+    // One implementation of the scan schema, in core: this used to own a
+    // duplicate of the DDL plus the swallowed-ALTER migrations, which is
+    // exactly the shape that drifts from the real schema. The core version
+    // inspects PRAGMA table_info and adds only the columns that are missing.
+    videre_core::library_db::ensure_scan_schema(&conn)?;
 
-    // Existing databases predate this column. Same idempotent pattern
-    // location.rs uses for location_name: attempt it, ignore the
-    // duplicate-column error.
-    let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN mime TEXT;");
-    let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN duration_secs REAL;");
-    let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN codec TEXT;");
+    write_records_to(&conn, records)
+}
 
+pub fn write_records_in(
+    conn: &rusqlite::Connection,
+    ctx: &videre_core::library::LibraryContext,
+    records: &[FileRecord],
+) -> anyhow::Result<()> {
+    let paths: Vec<PathBuf> = records
+        .iter()
+        .map(|record| PathBuf::from(&record.path))
+        .collect();
+    videre_core::library_guard::validate_paths(ctx, &paths)?;
+    write_records_to(conn, records)?;
+    Ok(())
+}
+
+fn write_records_to(conn: &rusqlite::Connection, records: &[FileRecord]) -> Result<()> {
+    videre_core::library_db::ensure_scan_schema(conn)?;
     let tx = conn.unchecked_transaction()?;
 
     {
         let mut stmt = tx.prepare(
-            "INSERT OR REPLACE INTO file_hashes
+            "INSERT INTO file_hashes
                 (path, hash, size_bytes, created_at, modified_at, ext, mime,
                  phash, exif_date, gps_lat, gps_lon, width, height,
                  duration_secs, codec)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                     ?14, ?15)",
+                     ?14, ?15)
+             ON CONFLICT(path) DO UPDATE SET
+                hash = excluded.hash,
+                size_bytes = excluded.size_bytes,
+                created_at = excluded.created_at,
+                modified_at = excluded.modified_at,
+                ext = excluded.ext,
+                mime = excluded.mime,
+                phash = excluded.phash,
+                exif_date = excluded.exif_date,
+                gps_lat = excluded.gps_lat,
+                gps_lon = excluded.gps_lon,
+                width = excluded.width,
+                height = excluded.height,
+                duration_secs = excluded.duration_secs,
+                codec = excluded.codec",
         )?;
 
         for r in records {
@@ -69,34 +84,54 @@ pub fn write_records(records: &[FileRecord], db_path: &Path) -> Result<()> {
 
 /// Read every file_hashes row back as FileRecords (the inverse of write_records;
 /// used by consumers that need records without re-scanning the filesystem).
+/// Load every file record from a path, opening its own connection.
+///
+/// Retained for the still-inactive callers (MCP's duplicate tool) that hold no
+/// connection yet. Directory-local commands hold a validated connection already
+/// and use [`load_records_from`] instead, which never opens or creates a file.
 pub fn load_records(db_path: &Path) -> Result<Vec<FileRecord>> {
     let conn = videre_core::db::open_wal(db_path)?;
-    let mut stmt = conn.prepare(
-        "SELECT path, hash, size_bytes, created_at, modified_at, ext, mime,
-                phash, exif_date, gps_lat, gps_lon, width, height,
-                duration_secs, codec
-         FROM file_hashes",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok(FileRecord {
-            path: row.get(0)?,
-            hash: row.get(1)?,
-            size_bytes: row.get::<_, i64>(2)? as u64,
-            created_at: row.get(3)?,
-            modified_at: row.get(4)?,
-            ext: row.get(5)?,
-            mime: row.get(6)?,
-            phash: row.get::<_, Option<i64>>(7)?.map(|p| p as u64),
-            exif_date: row.get(8)?,
-            gps_lat: row.get(9)?,
-            gps_lon: row.get(10)?,
-            width: row.get(11)?,
-            height: row.get(12)?,
-            duration_secs: row.get(13)?,
-            codec: row.get(14)?,
-        })
-    })?;
+    load_records_from(&conn)
+}
+
+/// Load every file record from an already-open, validated connection.
+///
+/// The directory-local reader path: the caller has opened the selected
+/// library's database through `library_db::open_existing`, so this must not
+/// open or create anything of its own.
+pub fn load_records_from(conn: &rusqlite::Connection) -> Result<Vec<FileRecord>> {
+    let mut stmt = conn.prepare(&format!("SELECT {FILE_RECORD_COLUMNS} FROM file_hashes"))?;
+    let rows = stmt.query_map([], file_record_from_row)?;
     rows.collect()
+}
+
+/// The `file_hashes` columns a [`FileRecord`] reads, in the order
+/// [`file_record_from_row`] expects. Shared by every reader (dedupe, the JSONL
+/// snapshot) so the projection and the mapping cannot drift apart.
+pub const FILE_RECORD_COLUMNS: &str =
+    "path, hash, size_bytes, created_at, modified_at, ext, mime, phash, \
+     exif_date, gps_lat, gps_lon, width, height, duration_secs, codec";
+
+/// Map one `file_hashes` row, projected as [`FILE_RECORD_COLUMNS`], into a
+/// [`FileRecord`]. The JSONL snapshot streams rows straight through this.
+pub fn file_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileRecord> {
+    Ok(FileRecord {
+        path: row.get(0)?,
+        hash: row.get(1)?,
+        size_bytes: row.get::<_, i64>(2)? as u64,
+        created_at: row.get(3)?,
+        modified_at: row.get(4)?,
+        ext: row.get(5)?,
+        mime: row.get(6)?,
+        phash: row.get::<_, Option<i64>>(7)?.map(|p| p as u64),
+        exif_date: row.get(8)?,
+        gps_lat: row.get(9)?,
+        gps_lon: row.get(10)?,
+        width: row.get(11)?,
+        height: row.get(12)?,
+        duration_secs: row.get(13)?,
+        codec: row.get(14)?,
+    })
 }
 
 #[cfg(test)]
@@ -186,5 +221,34 @@ mod tests {
         let back = load_records(&db).unwrap();
         assert_eq!(back.len(), 2);
         assert!(back.iter().all(|r| r.mime.is_none()));
+    }
+
+    #[test]
+    fn rescanning_preserves_location_fields_owned_by_location_processing() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("hashes.db");
+        let first = rec("/a.jpg", "h1");
+        write_records(&[first.clone()], &db).unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute(
+            "UPDATE file_hashes SET location_name = 'Üsküdar', location_cluster_id = 17 WHERE path = '/a.jpg'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let mut rescanned = first;
+        rescanned.modified_at = Some("2026-09-06T12:00:00+00:00".into());
+        write_records(&[rescanned], &db).unwrap();
+
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let location: (String, i64) = conn
+            .query_row(
+                "SELECT location_name, location_cluster_id FROM file_hashes WHERE path = '/a.jpg'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(location, ("Üsküdar".into(), 17));
     }
 }

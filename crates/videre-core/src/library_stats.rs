@@ -115,14 +115,14 @@ pub fn compute(conn: &Connection) -> Result<LibraryStats> {
     })
 }
 
-/// `compute`, plus the per-model embedding inventory.
-///
-/// Separate from `compute` because embeddings live outside the connection, in
-/// files addressed by the library's own path. The gallery's stats tile
-/// keeps calling `compute` and is unaffected.
-pub fn compute_full(conn: &Connection, db_path: &std::path::Path) -> anyhow::Result<LibraryStats> {
+/// Compute database and model-store statistics for one selected library.
+pub fn compute_full_in(
+    conn: &Connection,
+    ctx: &crate::library::LibraryContext,
+) -> anyhow::Result<LibraryStats> {
+    ctx.ensure_root_identity()?;
     let mut stats = compute(conn)?;
-    stats.embeddings = crate::embeddings_db::counts_by_model(db_path)?;
+    stats.embeddings = crate::embeddings_db::counts_by_model_in(ctx)?;
     Ok(stats)
 }
 
@@ -271,6 +271,19 @@ mod tests {
         let stats = compute(&conn).unwrap();
         assert_eq!(stats.faces_detected, 0);
         assert_eq!(stats.people_named, 0);
+    }
+
+    #[test]
+    fn compute_full_in_reads_models_without_creating_missing_stores() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("library");
+        let cache = temp.path().join("cache");
+        std::fs::create_dir(&root).unwrap();
+        let ctx = crate::library::LibraryContext::new(&root, &cache).unwrap();
+        let conn = crate::library_db::initialize(&ctx).unwrap();
+        let stats = compute_full_in(&conn, &ctx).unwrap();
+        assert!(stats.embeddings.is_empty());
+        assert!(!ctx.paths.embeddings.exists());
     }
 }
 

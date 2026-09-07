@@ -3,11 +3,16 @@
 //! `mark::resolve_targets` as a set, so export and set always act on the same
 //! files.
 
+use crate::command_context::CommandContext;
 use anyhow::Result;
 use videre_core::marks;
 
-pub fn run(args: &super::mark::MarkArgs, conn: &rusqlite::Connection) -> Result<()> {
-    let hashes = super::mark::resolve_targets(args, conn)?;
+pub fn run(
+    args: &super::mark::MarkArgs,
+    ctx: &CommandContext,
+    conn: &rusqlite::Connection,
+) -> Result<()> {
+    let hashes = super::mark::resolve_targets(args, ctx, conn)?;
     let mut written = 0usize;
     for h in &hashes {
         let m = marks::get(conn, h)?;
@@ -30,7 +35,7 @@ pub fn run(args: &super::mark::MarkArgs, conn: &rusqlite::Connection) -> Result<
                     "would write {}",
                     crate::xmp::write::sidecar_path(&path).display()
                 );
-            } else if crate::xmp::write::write_sidecar(&path, &owned)? {
+            } else if crate::xmp::write::write_sidecar_in(&ctx.library, &path, &owned)? {
                 written += 1;
             }
         }

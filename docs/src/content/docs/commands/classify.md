@@ -12,7 +12,7 @@ videre classify                        # classify everything not done yet
 videre classify --reprocess            # redo everything, including already-tagged
 videre classify --margin 0.05          # how confident it must be (default 0.05)
 videre classify --silent               # no per-image progress
-videre classify --db ~/photos.db       # use a specific database
+videre --library ~/Photos classify     # select a different library
 videre classify --model <id>           # classify a specific model's data
 videre classify --type image           # only images
 videre classify --person Ada           # only photos of a labelled person

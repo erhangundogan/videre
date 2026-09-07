@@ -1,0 +1,937 @@
+//! Library-scoped settings: the type, its built-in defaults, and the
+//! `config.toml` under the library's reserved state directory.
+//!
+//! `db` and `jsonl` are fixed declarations, not relocation settings: if
+//! present they must equal the exact filenames the paths layer already
+//! derives, so a config copied from another library can never redirect a
+//! process into that library. A missing file means the defaults and creates
+//! nothing; a file that fails validation, or does not parse, is an error
+//! rather than a silent fallback, because a typo in the config must surface,
+//! not vanish. Unknown keys (including nested tables) are preserved by
+//! edits, which rewrite by renaming a synced scratch file into place. The
+//! bounded worker prepares only the scratch file; publication happens after
+//! that worker returns, so an I/O failure or timeout leaves prior bytes
+//! unchanged and cannot publish stale settings later.
+
+use crate::embeddings::{validate_model_id, DEFAULT_MODEL_ID};
+use crate::library::{bounded_op, root_cause_is_not_found, LibraryContext, LibraryPaths};
+use crate::marks::XmpPrecedence;
+use anyhow::{bail, Context, Result};
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Settings governing how one library is processed.
+///
+/// Absent settings mean the built-in default, mirroring the global config's
+/// convention where a missing key falls back rather than erroring.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibraryConfig {
+    /// Embedding model id, e.g. `google/siglip-base-patch16-224`. A plain
+    /// string, not a path: it must never be absolutized, the same rule the
+    /// global config's `default_model` follows.
+    pub default_model: String,
+    /// How a mark read from a file's XMP reconciles with the db on
+    /// scan/watch/import; the default is db wins and XMP fills the gaps.
+    pub xmp_precedence: XmpPrecedence,
+    /// Whether `videre watch` runs the XMP export stage each cycle. Opt-in:
+    /// absent means off, matching the global config.
+    pub export_xmp_on_watch: bool,
+    /// Assumed floor read rate in MB/s used to scale I/O timeouts to file
+    /// size; `None` means the built-in default applies
+    /// (`io_timeout::MIN_READ_RATE_MB_S_DEFAULT`).
+    pub min_read_rate_mb_s: Option<u64>,
+}
+
+impl Default for LibraryConfig {
+    /// The built-in defaults: the built-in embedding model, db-first XMP
+    /// precedence, no export on watch, and the timeout floor left at its
+    /// built-in value.
+    fn default() -> Self {
+        Self {
+            default_model: DEFAULT_MODEL_ID.to_string(),
+            xmp_precedence: XmpPrecedence::default(),
+            export_xmp_on_watch: false,
+            min_read_rate_mb_s: None,
+        }
+    }
+}
+
+/// Which supported setting an [`edit`] addresses.
+///
+/// The fixed declarations `db` and `jsonl` are deliberately absent from
+/// this vocabulary: they are not settings, and no edit can redirect library
+/// storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigKey {
+    /// `default_model`, validated by `embeddings::validate_model_id`.
+    Model,
+    /// `min_read_rate_mb_s`, a positive integer or absent.
+    ReadRate,
+    /// `xmp_precedence`, one of the spellings `XmpPrecedence::parse` knows.
+    Xmp,
+    /// `export_xmp_on_watch`, a boolean.
+    ExportXmpOnWatch,
+}
+
+impl ConfigKey {
+    /// The serialized key this variant addresses.
+    fn name(self) -> &'static str {
+        match self {
+            ConfigKey::Model => "default_model",
+            ConfigKey::ReadRate => "min_read_rate_mb_s",
+            ConfigKey::Xmp => "xmp_precedence",
+            ConfigKey::ExportXmpOnWatch => "export_xmp_on_watch",
+        }
+    }
+}
+
+/// The serialized spelling of one precedence value. `XmpPrecedence` has no
+/// `Display`; a total match here means a new variant fails to compile
+/// rather than serializing as the wrong setting.
+fn xmp_precedence_str(p: XmpPrecedence) -> &'static str {
+    match p {
+        XmpPrecedence::Db => "db",
+        XmpPrecedence::File => "file",
+        XmpPrecedence::Newest => "newest",
+    }
+}
+
+/// The table a first edit writes: the two fixed storage declarations and
+/// every supported setting at its built-in default, so a fresh library's
+/// config documents the storage names instead of leaving them implicit.
+/// Only ever the starting point when no file exists; defaults are never
+/// written over an existing file.
+fn initial_table() -> toml::Table {
+    let defaults = LibraryConfig::default();
+    let mut table = toml::Table::new();
+    table.insert("db".into(), toml::Value::String("hashes.db".into()));
+    table.insert("jsonl".into(), toml::Value::String("hashes.jsonl".into()));
+    table.insert(
+        "default_model".into(),
+        toml::Value::String(defaults.default_model),
+    );
+    table.insert(
+        "xmp_precedence".into(),
+        toml::Value::String(xmp_precedence_str(defaults.xmp_precedence).into()),
+    );
+    table.insert(
+        "export_xmp_on_watch".into(),
+        toml::Value::Boolean(defaults.export_xmp_on_watch),
+    );
+    table
+}
+
+/// Read one string-valued setting; absent means the built-in `default`.
+/// A value of the wrong type is a hard error, matching the global config's
+/// readers: silent fallback would mask a typo.
+fn string_setting(table: &toml::Table, file: &Path, key: &str, default: &str) -> Result<String> {
+    match table.get(key) {
+        None => Ok(default.to_string()),
+        Some(toml::Value::String(s)) => Ok(s.clone()),
+        Some(other) => bail!(
+            "malformed config {}: {key} must be a string, got {}",
+            file.display(),
+            other.type_str()
+        ),
+    }
+}
+
+/// Read one boolean-valued setting; absent means the built-in `default`.
+/// A string `"true"` where a bare `true` belongs is the typo this catches.
+fn bool_setting(table: &toml::Table, file: &Path, key: &str, default: bool) -> Result<bool> {
+    match table.get(key) {
+        None => Ok(default),
+        Some(toml::Value::Boolean(b)) => Ok(*b),
+        Some(other) => bail!(
+            "malformed config {}: {key} must be a boolean, got {}",
+            file.display(),
+            other.type_str()
+        ),
+    }
+}
+
+/// Read `min_read_rate_mb_s`: absent, or a positive integer. Zero is
+/// rejected rather than clamped: as a read rate it means an unbounded
+/// timeout, which is the hang the timeout exists to prevent, and silently
+/// substituting a different number would hide a typo (the same rule the
+/// global config's `positive_int_key` states).
+fn read_rate_setting(table: &toml::Table, file: &Path) -> Result<Option<u64>> {
+    const KEY: &str = "min_read_rate_mb_s";
+    match table.get(KEY) {
+        None => Ok(None),
+        Some(toml::Value::Integer(n)) if *n > 0 => Ok(Some(*n as u64)),
+        Some(toml::Value::Integer(n)) => bail!(
+            "malformed config {}: {KEY} must be greater than 0, got {n}",
+            file.display()
+        ),
+        Some(other) => bail!(
+            "malformed config {}: {KEY} must be an integer, got {}",
+            file.display(),
+            other.type_str()
+        ),
+    }
+}
+
+/// Refuse one way a local config could try to move the library's storage:
+/// a `db` or `jsonl` key that does not equal the exact fixed filename.
+fn validate_fixed(table: &toml::Table, key: &str, expected: &str) -> Result<()> {
+    if let Some(value) = table.get(key) {
+        anyhow::ensure!(
+            value.as_str() == Some(expected),
+            "{key} must be {expected:?}; library storage cannot be redirected"
+        );
+    }
+    Ok(())
+}
+
+/// Refuse every way a local config could try to move the library's storage.
+///
+/// `db` and `jsonl` are fixed declarations relative to the state directory,
+/// not settings: if present they must equal the exact filenames the paths
+/// layer already derives, so a config copied from another library can never
+/// redirect a process into that library, and their absence resolves to the
+/// same filenames. `default_db` and `default_path` are the removed global
+/// settings; in a local config they can only be a copy-paste mistake, and
+/// interpreting them as paths would reintroduce the redirect this layout
+/// exists to make impossible. Runs before any setting is read, so a storage
+/// error is raised before any library work rather than during it.
+fn validate_storage(table: &toml::Table) -> Result<()> {
+    validate_fixed(table, "db", "hashes.db")?;
+    validate_fixed(table, "jsonl", "hashes.jsonl")?;
+    for key in ["default_db", "default_path"] {
+        anyhow::ensure!(!table.contains_key(key), "remove obsolete setting {key}");
+    }
+    Ok(())
+}
+
+/// Validate a whole parsed config table into settings.
+///
+/// Every supported key is validated, whether or not the caller is about to
+/// consume it, so one load answers for the whole file and an invalid value
+/// surfaces here, at the entrance, rather than mid-command. Absent keys
+/// resolve to the built-in defaults, the same convention the global config
+/// follows.
+fn config_from_table(table: &toml::Table, file: &Path) -> Result<LibraryConfig> {
+    validate_storage(table).with_context(|| format!("malformed config {}", file.display()))?;
+    let default_model = string_setting(table, file, "default_model", DEFAULT_MODEL_ID)?;
+    validate_model_id(&default_model)
+        .with_context(|| format!("malformed config {}", file.display()))?;
+    let xmp_default = xmp_precedence_str(XmpPrecedence::default());
+    let xmp_precedence =
+        XmpPrecedence::parse(&string_setting(table, file, "xmp_precedence", xmp_default)?)
+            .with_context(|| format!("malformed config {}", file.display()))?;
+    Ok(LibraryConfig {
+        default_model,
+        xmp_precedence,
+        export_xmp_on_watch: bool_setting(table, file, "export_xmp_on_watch", false)?,
+        min_read_rate_mb_s: read_rate_setting(table, file)?,
+    })
+}
+
+/// Read the config file, bounded: a library root can sit on a volume that
+/// stopped responding, and an unbounded read there would hang the very
+/// command that is only trying to start up. `Ok(None)` means absent, which
+/// is the only non-error way to have no config.
+fn read_config(path: &Path) -> Result<Option<String>> {
+    let owned = path.to_path_buf();
+    match bounded_op(path, "read", crate::io_timeout::STAT_TIMEOUT, move || {
+        std::fs::read_to_string(owned)
+    }) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if root_cause_is_not_found(&e) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Load the library's config: built-in defaults when the file is absent
+/// (creating nothing), an error when it is corrupt or fails validation.
+/// Never a fallback on top of bytes that are there.
+pub fn load(paths: &LibraryPaths) -> Result<LibraryConfig> {
+    let path = &paths.config;
+    let table = match read_config(path)? {
+        None => return Ok(LibraryConfig::default()),
+        Some(text) => text
+            .parse::<toml::Table>()
+            .with_context(|| format!("malformed config {}", path.display()))?,
+    };
+    config_from_table(&table, path)
+}
+
+/// Whether the local config file exists, using the same bounded read as load.
+pub fn exists(paths: &LibraryPaths) -> Result<bool> {
+    Ok(read_config(&paths.config)?.is_some())
+}
+
+/// Check one incoming value against its key's rules before it can reach
+/// the file. The shapes mirror the load-time readers: what `load` would
+/// reject, `edit` must refuse to write, or the file and the edit disagree.
+fn validate_value(key: ConfigKey, value: &toml::Value) -> Result<()> {
+    match (key, value) {
+        (ConfigKey::Model, toml::Value::String(s)) => validate_model_id(s),
+        (ConfigKey::ReadRate, toml::Value::Integer(n)) if *n > 0 => Ok(()),
+        (ConfigKey::Xmp, toml::Value::String(s)) => XmpPrecedence::parse(s).map(|_| ()),
+        (ConfigKey::ExportXmpOnWatch, toml::Value::Boolean(_)) => Ok(()),
+        (ConfigKey::ReadRate, toml::Value::Integer(n)) => {
+            bail!("min_read_rate_mb_s must be greater than 0, got {n}")
+        }
+        (ConfigKey::Model, other) => {
+            bail!("default_model must be a string, got {}", other.type_str())
+        }
+        (ConfigKey::ReadRate, other) => bail!(
+            "min_read_rate_mb_s must be an integer, got {}",
+            other.type_str()
+        ),
+        (ConfigKey::Xmp, other) => {
+            bail!("xmp_precedence must be a string, got {}", other.type_str())
+        }
+        (ConfigKey::ExportXmpOnWatch, other) => bail!(
+            "export_xmp_on_watch must be a boolean, got {}",
+            other.type_str()
+        ),
+    }
+}
+
+/// Sequence counter making the scratch name unique within a process; the
+/// pid makes it unique across processes.
+static SCRATCH_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Write the table by renaming a synced scratch file into place, the same
+/// shape `location::materialize_cities_csv` uses. The scratch file lives in
+/// the state directory so the rename never crosses a filesystem, which is
+/// what makes it atomic; validation has already completed by the time this
+/// runs, and an I/O failure at any step leaves the existing bytes untouched
+/// because the rename is the last thing to happen. After a successful rename
+/// the state directory is synced (via `library_db::sync_dir`), the same
+/// crash-durability step the database publication path takes. The bounded
+/// worker prepares and syncs the scratch file but never publishes it. Only a
+/// worker that returned within its budget reaches the rename in the calling
+/// thread, so a timed-out worker cannot overwrite a later edit. The scratch
+/// file is deliberately not removed on failure: the failing volume is why
+/// the write failed, and touching it again from the error path is the
+/// unbounded re-stat mistake `TimedOutAfter::describe` exists to prevent.
+fn write_config_with_budget_and_hooks<BeforePublish, AfterWorker>(
+    state: &Path,
+    path: &Path,
+    table: &toml::Table,
+    budget: std::time::Duration,
+    before_publish: BeforePublish,
+    after_worker: AfterWorker,
+) -> Result<()>
+where
+    BeforePublish: FnOnce() + Send + 'static,
+    AfterWorker: FnOnce() + Send + 'static,
+{
+    use std::io::Write;
+
+    let text = toml::to_string_pretty(table).context("serialize the library config")?;
+    let scratch = state.join(format!(
+        "config.toml.{}.{}.tmp",
+        std::process::id(),
+        SCRATCH_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let state = state.to_path_buf();
+    let owned_scratch = scratch.clone();
+    let write_state = state.clone();
+    bounded_op(path, "write", budget, move || {
+        std::fs::create_dir_all(&write_state)?;
+        let mut file = std::fs::File::create(&owned_scratch)?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        before_publish();
+        after_worker();
+        Ok(())
+    })?;
+    std::fs::rename(&scratch, path)
+        .with_context(|| format!("publish library config {}", path.display()))?;
+    crate::library_db::sync_dir(&state)
+}
+
+fn write_config(state: &Path, path: &Path, table: &toml::Table) -> Result<()> {
+    write_config_with_budget_and_hooks(
+        state,
+        path,
+        table,
+        crate::io_timeout::STAT_TIMEOUT,
+        || {},
+        || {},
+    )
+}
+
+/// Write the initial five-declaration config, only when none exists.
+///
+/// Read-before-write, so a repeated call never rewrites what is there: the
+/// config `initialize` leaves behind is the one every later open sees.
+/// Crate visible because it is part of initialization, not the editing
+/// surface; it runs under the caller's init lock.
+pub(crate) fn write_initial_if_absent(ctx: &LibraryContext) -> Result<()> {
+    if read_config(&ctx.paths.config)?.is_some() {
+        return Ok(());
+    }
+    write_config(&ctx.paths.state, &ctx.paths.config, &initial_table())
+}
+
+/// Edit one supported setting in this library's `config.toml`; `None`
+/// removes the key.
+///
+/// Allowed to create the state directory and an initial config: configuring
+/// a library before its first scan is legitimate. It creates no database,
+/// writes no defaults over an existing file, and preserves unknown keys,
+/// including nested tables, through the rewrite. Unsetting against an
+/// absent config is a no-op that creates nothing; an existing file must
+/// pass the same validation `load` applies before even a no-op unset
+/// returns, so success is never a quiet blessing of a config `load` would
+/// reject. A redirected config (a symlink, or a file hard-linked into
+/// another library) is refused under the lock rather than read through the
+/// link and replaced by a local file, so an edit never silently decouples
+/// a library from whatever the link points at.
+///
+/// Concurrency: serialized against initialization and every other edit by
+/// the library's init lock (`library_locks::try_init`), held for the whole
+/// read-validate-write, so concurrent first-touch writers cannot interleave.
+/// The file is reread under that lock: the pre-lock read only decides
+/// whether this is the one no-op that must create nothing, so a file
+/// written in between is seen as it now stands. `edit` takes the init lock
+/// only and never the activity lock, so configuring a library neither waits
+/// for nor delays running work. A timed-out worker may finish its scratch
+/// file later, but it never publishes, so releasing the lock after an error
+/// cannot allow stale bytes to overwrite a later edit.
+pub fn edit(ctx: &LibraryContext, key: ConfigKey, value: Option<toml::Value>) -> Result<()> {
+    let path = &ctx.paths.config;
+    // The one case that must create nothing at all is decided before any
+    // lock: acquiring the init lock creates the locks directory, which is
+    // fine for a write but must not happen for a no-op against an absent
+    // config.
+    if value.is_none() && read_config(path)?.is_none() {
+        return Ok(());
+    }
+    // A writer creates the state the init lock lives in; an edit is a write
+    // even when validation later refuses it, because the locks directory is
+    // the library's own coordination state, not config content.
+    crate::library_locks::ensure_state_and_locks(ctx)?;
+    let _init = crate::library_locks::try_init(ctx)?;
+    // The config itself must not be redirected: without this check the
+    // rewrite below would replace a symlink with a local file, silently
+    // decoupling the library from the file it was pointing at. Absent is
+    // fine, so the no-op against a missing config keeps creating nothing.
+    crate::library_locks::reject_redirect(path, "the library config")?;
+    let mut table = match read_config(path)? {
+        Some(text) => {
+            let table = text
+                .parse::<toml::Table>()
+                .with_context(|| format!("malformed config {}", path.display()))?;
+            // The file as it stands must load before anything is done with
+            // it, including nothing: an edit can never launder a broken
+            // file into place and leave the failure to surface mid-scan,
+            // and a no-op against one must surface the breakage rather
+            // than bless it by succeeding. This is the reread under the
+            // init lock: the file may have changed since the pre-lock
+            // read, and validation answers for what is on disk now.
+            config_from_table(&table, path)?;
+            table
+        }
+        None => initial_table(),
+    };
+    match value {
+        Some(v) => {
+            validate_value(key, &v)?;
+            table.insert(key.name().to_string(), v);
+        }
+        None => {
+            if table.remove(key.name()).is_none() {
+                // The key is not there; rewriting the file would move bytes
+                // for no setting change at all. The file as a whole has
+                // already been validated above, so returning without
+                // rewriting cannot leave a broken file unexamined.
+                return Ok(());
+            }
+        }
+    }
+    write_config(&ctx.paths.state, path, &table)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::library::LibraryContext;
+    use crate::library_test_support::write_past_test_capture;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// One library whose config file holds `body`, if any. All path
+    /// expectations are built from the context itself: construction
+    /// canonicalizes the root, and on macOS a tempdir resolves under
+    /// /private, so the spelling the test created is not where the state
+    /// directory lives. The TempDir is returned so it outlives the
+    /// assertions that read the files inside it.
+    fn library_with_config(body: &str) -> (tempfile::TempDir, LibraryContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("photos");
+        std::fs::create_dir(&root).unwrap();
+        let ctx = LibraryContext::new(&root, &temp.path().join("cache")).unwrap();
+        std::fs::create_dir(&ctx.paths.state).unwrap();
+        if !body.is_empty() {
+            std::fs::write(&ctx.paths.config, body).unwrap();
+        }
+        (temp, ctx)
+    }
+
+    #[test]
+    fn local_config_rejects_redirects_and_preserves_unknown_fields() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("photos");
+        std::fs::create_dir(&root).unwrap();
+        let ctx = crate::library::LibraryContext::new(&root, &temp.path().join("cache")).unwrap();
+        std::fs::create_dir(&ctx.paths.state).unwrap();
+        std::fs::write(&ctx.paths.config, "db = \"elsewhere.db\"\n").unwrap();
+        assert!(load(&ctx.paths).is_err());
+        std::fs::write(&ctx.paths.config, "custom = \"keep\"\n").unwrap();
+        edit(&ctx, ConfigKey::ReadRate, Some(toml::Value::Integer(42))).unwrap();
+        let text = std::fs::read_to_string(&ctx.paths.config).unwrap();
+        let table: toml::Table = toml::from_str(&text).unwrap();
+        assert_eq!(table["custom"].as_str(), Some("keep"));
+        assert_eq!(load(&ctx.paths).unwrap().min_read_rate_mb_s, Some(42));
+        assert!(!ctx.paths.db.exists());
+    }
+
+    #[test]
+    fn an_absent_config_means_defaults_and_creates_nothing() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("photos");
+        std::fs::create_dir(&root).unwrap();
+        let ctx = LibraryContext::new(&root, &temp.path().join("cache")).unwrap();
+        // Looking at a library must not bring its state directory into
+        // being, and reading settings must not conjure a config file.
+        assert!(!ctx.paths.state.exists());
+        assert_eq!(ctx.settings, LibraryConfig::default());
+        assert_eq!(load(&ctx.paths).unwrap(), LibraryConfig::default());
+        assert!(!ctx.paths.config.exists());
+    }
+
+    #[test]
+    fn fixed_declarations_accept_only_the_exact_filenames() {
+        for (key, fixed) in [("db", "hashes.db"), ("jsonl", "hashes.jsonl")] {
+            // The exact fixed filename passes.
+            let (_t, ctx) = library_with_config(&format!("{key} = \"{fixed}\"\n"));
+            assert!(load(&ctx.paths).is_ok(), "{key} at its fixed value");
+            // Absence resolves to the same filename, so the declarations
+            // are optional, not load-bearing.
+            let (_t, ctx) = library_with_config("custom = \"x\"\n");
+            assert!(load(&ctx.paths).is_ok(), "{key} absent");
+            // Any other value, or any other type, is an error before any
+            // library work: these are declarations, not settings.
+            for body in [
+                format!("{key} = \"elsewhere-{key}.db\"\n"),
+                format!("{key} = 3\n"),
+                format!("{key} = true\n"),
+            ] {
+                let (_t, ctx) = library_with_config(&body);
+                let err = load(&ctx.paths).unwrap_err();
+                let msg = format!("{err:#}");
+                assert!(msg.contains(key), "{body}: {msg}");
+                assert!(msg.contains("cannot be redirected"), "{body}: {msg}");
+            }
+        }
+    }
+
+    #[test]
+    fn removed_global_keys_are_rejected_with_an_actionable_error() {
+        for key in ["default_db", "default_path"] {
+            let (_t, ctx) = library_with_config(&format!("{key} = \"/elsewhere/hashes.db\"\n"));
+            let err = load(&ctx.paths).unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(msg.contains(key), "{key}: {msg}");
+            assert!(msg.contains("remove"), "{key}: {msg}");
+        }
+    }
+
+    #[test]
+    fn an_invalid_model_id_is_rejected_at_load() {
+        let (_t, ctx) = library_with_config("default_model = \"owner-only-no-slash\"\n");
+        let err = load(&ctx.paths).unwrap_err();
+        assert!(format!("{err:#}").contains("invalid model id"), "{err:#}");
+        // The wrong type is the same class of error as any typed setting.
+        let (_t, ctx) = library_with_config("default_model = 42\n");
+        let err = load(&ctx.paths).unwrap_err();
+        assert!(format!("{err:#}").contains("must be a string"), "{err:#}");
+    }
+
+    #[test]
+    fn an_unknown_xmp_precedence_is_rejected_and_known_values_load() {
+        let (_t, ctx) = library_with_config("xmp_precedence = \"sideways\"\n");
+        let err = load(&ctx.paths).unwrap_err();
+        assert!(format!("{err:#}").contains("sideways"), "{err:#}");
+        for value in ["db", "file", "newest"] {
+            let (_t, ctx) = library_with_config(&format!("xmp_precedence = \"{value}\"\n"));
+            assert!(load(&ctx.paths).is_ok(), "{value}");
+        }
+        let (_t, ctx) = library_with_config("xmp_precedence = 3\n");
+        let err = load(&ctx.paths).unwrap_err();
+        assert!(format!("{err:#}").contains("must be a string"), "{err:#}");
+    }
+
+    #[test]
+    fn a_non_boolean_export_flag_is_rejected() {
+        let (_t, ctx) = library_with_config("export_xmp_on_watch = \"yes\"\n");
+        let err = load(&ctx.paths).unwrap_err();
+        assert!(format!("{err:#}").contains("must be a boolean"), "{err:#}");
+        let (_t, ctx) = library_with_config("export_xmp_on_watch = true\n");
+        assert!(load(&ctx.paths).unwrap().export_xmp_on_watch);
+    }
+
+    #[test]
+    fn read_rate_rejects_zero_negative_noninteger_and_overflow() {
+        for body in [
+            "min_read_rate_mb_s = 0\n",
+            "min_read_rate_mb_s = -5\n",
+            "min_read_rate_mb_s = \"fast\"\n",
+            // One past i64::MAX is not a TOML integer at all, so it fails
+            // the parse; the point is that it is rejected, not defaulted.
+            "min_read_rate_mb_s = 9223372036854775808\n",
+        ] {
+            let (_t, ctx) = library_with_config(body);
+            assert!(load(&ctx.paths).is_err(), "{body}");
+        }
+    }
+
+    #[test]
+    fn a_corrupt_file_is_an_error_never_defaults() {
+        let (_t, ctx) = library_with_config("not = = toml\n");
+        let err = load(&ctx.paths).unwrap_err();
+        assert!(format!("{err:#}").contains("malformed config"), "{err:#}");
+    }
+
+    #[test]
+    fn unset_against_an_absent_config_is_a_noop_creating_nothing() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("photos");
+        std::fs::create_dir(&root).unwrap();
+        let ctx = LibraryContext::new(&root, &temp.path().join("cache")).unwrap();
+        edit(&ctx, ConfigKey::Model, None).unwrap();
+        // Not even the state directory may come into being for a no-op.
+        assert!(!ctx.paths.state.exists());
+        assert!(!ctx.paths.config.exists());
+        assert!(!ctx.paths.db.exists());
+    }
+
+    #[test]
+    fn a_noop_unset_still_validates_the_existing_file() {
+        // The unset targets a key the file does not carry, so no setting
+        // would change and no bytes need to move; the file is still one
+        // load() and LibraryContext::new reject, and a no-op succeeding
+        // against it would bless it.
+        let (_t, ctx) = library_with_config("db = \"elsewhere.db\"\n");
+        let before = std::fs::read_to_string(&ctx.paths.config).unwrap();
+        let err = edit(&ctx, ConfigKey::ReadRate, None).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("cannot be redirected"),
+            "{err:#}"
+        );
+        assert_eq!(std::fs::read_to_string(&ctx.paths.config).unwrap(), before);
+    }
+
+    #[test]
+    fn an_edit_refuses_a_config_symlinked_outside_the_library() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("photos");
+        std::fs::create_dir(&root).unwrap();
+        let ctx = LibraryContext::new(&root, &temp.path().join("cache")).unwrap();
+        std::fs::create_dir(&ctx.paths.state).unwrap();
+        // The config is a symlink to some unrelated file outside the state
+        // directory. Reading it through the link is what an unguarded edit
+        // would do before replacing the link with a local file.
+        let outside = temp.path().join("outside.toml");
+        std::fs::write(&outside, "custom = \"keep\"\n").unwrap();
+        std::os::unix::fs::symlink(&outside, &ctx.paths.config).unwrap();
+        let err = edit(&ctx, ConfigKey::ReadRate, Some(toml::Value::Integer(7))).unwrap_err();
+        assert!(format!("{err:#}").contains("symlink"), "{err:#}");
+        // The outside file is unchanged, and the link itself was not
+        // silently replaced by a local config.
+        assert_eq!(std::fs::read(&outside).unwrap(), b"custom = \"keep\"\n");
+        assert!(std::fs::symlink_metadata(&ctx.paths.config)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        // An unset against the same redirected file is refused too, not
+        // quietly succeeded as a no-op against somebody else's bytes.
+        let err = edit(&ctx, ConfigKey::ReadRate, None).unwrap_err();
+        assert!(format!("{err:#}").contains("symlink"), "{err:#}");
+    }
+
+    #[test]
+    fn an_edit_refuses_a_hard_linked_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("photos");
+        std::fs::create_dir(&root).unwrap();
+        let ctx = LibraryContext::new(&root, &temp.path().join("cache")).unwrap();
+        std::fs::create_dir(&ctx.paths.state).unwrap();
+        // A second library's config, hard-linked at this library's config
+        // path: two names for one file, which an unguarded edit would
+        // rewrite for both libraries at once.
+        let other_root = temp.path().join("other-photos");
+        std::fs::create_dir(&other_root).unwrap();
+        let other = LibraryContext::new(&other_root, &temp.path().join("cache")).unwrap();
+        std::fs::create_dir(&other.paths.state).unwrap();
+        std::fs::write(&other.paths.config, "custom = \"keep\"\n").unwrap();
+        std::fs::hard_link(&other.paths.config, &ctx.paths.config).unwrap();
+        let err = edit(&ctx, ConfigKey::ReadRate, Some(toml::Value::Integer(7))).unwrap_err();
+        assert!(format!("{err:#}").contains("hard-linked"), "{err:#}");
+        // The shared bytes are unchanged: the other library's config is not
+        // this edit's to rewrite.
+        assert_eq!(
+            std::fs::read_to_string(&other.paths.config).unwrap(),
+            "custom = \"keep\"\n"
+        );
+    }
+
+    #[test]
+    fn an_edit_preserves_unknown_nested_tables() {
+        let (_t, ctx) = library_with_config("[future]\nsub = \"keep\"\n");
+        edit(
+            &ctx,
+            ConfigKey::ExportXmpOnWatch,
+            Some(toml::Value::Boolean(true)),
+        )
+        .unwrap();
+        let table: toml::Table =
+            toml::from_str(&std::fs::read_to_string(&ctx.paths.config).unwrap()).unwrap();
+        assert_eq!(table["future"]["sub"].as_str(), Some("keep"));
+        assert_eq!(table["export_xmp_on_watch"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn an_edit_does_not_launder_an_already_broken_file() {
+        let (_t, ctx) =
+            library_with_config("export_xmp_on_watch = \"yes\"\nmin_read_rate_mb_s = 10\n");
+        let before = std::fs::read_to_string(&ctx.paths.config).unwrap();
+        // The key being edited is valid; the file as a whole is not, and a
+        // rewrite would bless the broken half. The edit must fail with the
+        // file's own bytes unchanged.
+        assert!(edit(&ctx, ConfigKey::ReadRate, Some(toml::Value::Integer(20))).is_err());
+        assert_eq!(std::fs::read_to_string(&ctx.paths.config).unwrap(), before);
+    }
+
+    #[test]
+    fn an_invalid_edit_value_changes_no_bytes() {
+        let (_t, ctx) = library_with_config("min_read_rate_mb_s = 10\n");
+        let before = std::fs::read_to_string(&ctx.paths.config).unwrap();
+        assert!(edit(&ctx, ConfigKey::ReadRate, Some(toml::Value::Integer(0))).is_err());
+        assert!(edit(&ctx, ConfigKey::ReadRate, Some(toml::Value::Integer(-3))).is_err());
+        assert!(edit(
+            &ctx,
+            ConfigKey::ReadRate,
+            Some(toml::Value::String("fast".into()))
+        )
+        .is_err());
+        assert!(edit(
+            &ctx,
+            ConfigKey::Model,
+            Some(toml::Value::String("no-slash".into()))
+        )
+        .is_err());
+        assert!(edit(
+            &ctx,
+            ConfigKey::Xmp,
+            Some(toml::Value::String("sideways".into()))
+        )
+        .is_err());
+        assert!(edit(
+            &ctx,
+            ConfigKey::ExportXmpOnWatch,
+            Some(toml::Value::Integer(1))
+        )
+        .is_err());
+        assert_eq!(std::fs::read_to_string(&ctx.paths.config).unwrap(), before);
+    }
+
+    #[test]
+    fn a_failed_write_leaves_the_prior_bytes_unchanged() {
+        let (_t, ctx) = library_with_config("custom = \"keep\"\n");
+        // The locks directory exists before the failure is staged, so the
+        // failure lands on the write itself rather than on creating the
+        // init lock's directory (which is also a legitimate write, just not
+        // the one under test here).
+        std::fs::create_dir_all(&ctx.paths.locks).unwrap();
+        // Root bypasses permission bits entirely (a stock Docker image runs
+        // as root), so the behaviour is probed rather than the uid checked,
+        // the same probe the integration suite's permissions_are_enforced
+        // uses.
+        let probe = ctx.paths.root.join("probe");
+        std::fs::write(&probe, b"x").unwrap();
+        std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&probe).is_ok() {
+            write_past_test_capture(
+                "SKIP: running as root, so chmod 000 does not block creating a file\n",
+            );
+            return;
+        }
+        std::fs::set_permissions(&ctx.paths.state, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let err = edit(&ctx, ConfigKey::ReadRate, Some(toml::Value::Integer(7))).unwrap_err();
+        // Restore first, so the tempdir can clean itself up even if an
+        // assertion below fails.
+        let _ = std::fs::set_permissions(&ctx.paths.state, std::fs::Permissions::from_mode(0o755));
+        let msg = format!("{err:#}");
+        assert!(msg.contains("write"), "{msg}");
+        assert!(msg.contains("config.toml"), "{msg}");
+        assert_eq!(
+            std::fs::read_to_string(&ctx.paths.config).unwrap(),
+            "custom = \"keep\"\n"
+        );
+        // The scratch file was never created, and nothing else appeared.
+        // The locks directory is expected: taking the init lock creates it,
+        // and it is the lock, not a leftover, so it is allowed beside the
+        // config.
+        let entries: Vec<_> = std::fs::read_dir(&ctx.paths.state)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name != "locks")
+            .collect();
+        assert_eq!(entries.len(), 1, "only the config may remain: {entries:?}");
+        assert_eq!(entries[0], "config.toml");
+    }
+
+    #[test]
+    fn a_timed_out_config_write_cannot_publish_after_a_later_edit() {
+        let (_t, ctx) = library_with_config("custom = \"before\"\n");
+        let mut table = toml::Table::new();
+        table.insert("custom".into(), toml::Value::String("stale".into()));
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+
+        let err = write_config_with_budget_and_hooks(
+            &ctx.paths.state,
+            &ctx.paths.config,
+            &table,
+            std::time::Duration::from_millis(25),
+            move || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            },
+            move || finished_tx.send(()).unwrap(),
+        )
+        .unwrap_err();
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        assert!(format!("{err:#}").contains("did not respond"), "{err:#}");
+
+        std::fs::write(&ctx.paths.config, "custom = \"newer\"\n").unwrap();
+        release_tx.send(()).unwrap();
+        finished_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&ctx.paths.config).unwrap(),
+            "custom = \"newer\"\n"
+        );
+    }
+
+    #[test]
+    fn a_config_read_past_its_budget_fails_closed_without_restatting_the_file() {
+        // The config layer routes every filesystem touch through
+        // `library::bounded_op` with the stat ceiling (`read_config`,
+        // `write_config`), and a real wedged mount cannot be produced
+        // portably, so the bound is proven the way `library.rs` and
+        // `library_guard.rs` prove theirs: the layer's own operation on the
+        // layer's own path, under a budget too small to cover even the
+        // thread spawn plus one read. The margin is several orders of
+        // magnitude, so there is no timing to flake on.
+        let (_t, ctx) = library_with_config("custom = \"keep\"\n");
+        let start = std::time::Instant::now();
+        let owned = ctx.paths.config.clone();
+        let err = crate::library::bounded_op(
+            &ctx.paths.config,
+            "read",
+            std::time::Duration::from_nanos(1),
+            move || std::fs::read_to_string(owned).map(|_| ()),
+        )
+        .unwrap_err();
+        // The file is removed before the message is formatted: an error that
+        // still names the exact path and phrasing cannot have consulted the
+        // filesystem to build itself, which is the unbounded re-stat mistake
+        // `TimedOutAfter::describe` exists to prevent.
+        std::fs::remove_file(&ctx.paths.config).unwrap();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("did not respond"), "{msg}");
+        assert!(msg.contains("config.toml"), "{msg}");
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn a_first_edit_writes_the_five_declarations_and_no_database() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("photos");
+        std::fs::create_dir(&root).unwrap();
+        let ctx = LibraryContext::new(&root, &temp.path().join("cache")).unwrap();
+        edit(&ctx, ConfigKey::ReadRate, Some(toml::Value::Integer(42))).unwrap();
+        let table: toml::Table =
+            toml::from_str(&std::fs::read_to_string(&ctx.paths.config).unwrap()).unwrap();
+        // The five exact declarations, so a fresh library's config documents
+        // the fixed storage names instead of leaving them implicit.
+        assert_eq!(table["db"].as_str(), Some("hashes.db"));
+        assert_eq!(table["jsonl"].as_str(), Some("hashes.jsonl"));
+        assert_eq!(
+            table["default_model"].as_str(),
+            Some(crate::embeddings::DEFAULT_MODEL_ID)
+        );
+        assert_eq!(table["xmp_precedence"].as_str(), Some("db"));
+        assert_eq!(table["export_xmp_on_watch"].as_bool(), Some(false));
+        assert_eq!(table["min_read_rate_mb_s"].as_integer(), Some(42));
+        assert_eq!(load(&ctx.paths).unwrap().min_read_rate_mb_s, Some(42));
+        // Configuring a library before its first scan is legitimate; that
+        // must not conjure a database.
+        assert!(!ctx.paths.db.exists());
+    }
+
+    #[test]
+    fn a_context_does_not_mutate_when_its_config_is_later_edited() {
+        let (_t, ctx) = library_with_config("min_read_rate_mb_s = 10\n");
+        let before = ctx.settings.clone();
+        edit(&ctx, ConfigKey::ReadRate, Some(toml::Value::Integer(99))).unwrap();
+        assert_eq!(ctx.settings, before, "a context is a snapshot, not a view");
+        // A context built after the edit sees the new value.
+        let fresh = LibraryContext::new(&ctx.paths.root, &ctx.cache.base).unwrap();
+        assert_eq!(fresh.settings.min_read_rate_mb_s, Some(99));
+    }
+
+    #[test]
+    fn a_context_refuses_to_load_an_invalid_config() {
+        let (_t, ctx) = library_with_config("db = \"elsewhere.db\"\n");
+        let err = LibraryContext::new(&ctx.paths.root, &ctx.cache.base).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("cannot be redirected"), "{msg}");
+        // Corrupt bytes fail construction the same way: a malformed local
+        // config must not silently fall back to defaults.
+        let (_t, ctx) = library_with_config("not = = toml\n");
+        let err = LibraryContext::new(&ctx.paths.root, &ctx.cache.base).unwrap_err();
+        assert!(format!("{err:#}").contains("malformed config"), "{err:#}");
+    }
+
+    #[test]
+    fn unset_removes_only_its_key() {
+        let (_t, ctx) =
+            library_with_config("default_model = \"owner/custom\"\nmin_read_rate_mb_s = 10\n");
+        edit(&ctx, ConfigKey::ReadRate, None).unwrap();
+        let cfg = load(&ctx.paths).unwrap();
+        assert_eq!(cfg.min_read_rate_mb_s, None);
+        assert_eq!(cfg.default_model, "owner/custom");
+    }
+
+    #[test]
+    fn a_complete_valid_file_loads_every_setting() {
+        let (_t, ctx) = library_with_config(
+            "db = \"hashes.db\"\n\
+             jsonl = \"hashes.jsonl\"\n\
+             default_model = \"owner/custom\"\n\
+             xmp_precedence = \"file\"\n\
+             export_xmp_on_watch = true\n\
+             min_read_rate_mb_s = 12\n",
+        );
+        let cfg = load(&ctx.paths).unwrap();
+        assert_eq!(cfg.default_model, "owner/custom");
+        assert_eq!(cfg.xmp_precedence, crate::marks::XmpPrecedence::File);
+        assert!(cfg.export_xmp_on_watch);
+        assert_eq!(cfg.min_read_rate_mb_s, Some(12));
+    }
+}

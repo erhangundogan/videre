@@ -10,6 +10,10 @@
 
 #![allow(dead_code)] // Each test binary uses a different subset of this.
 
+/// The seeded two-library fixture and logical snapshot helpers, shared by the
+/// directory-local command tests.
+pub mod feature_fixture;
+
 use std::path::{Path, PathBuf};
 
 /// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.
@@ -184,6 +188,129 @@ pub fn stderr_without_library_noise(stderr: &str) -> String {
 /// and it needs no libc dependency.
 pub fn permissions_are_enforced(unreadable_path: &Path) -> bool {
     std::fs::read(unreadable_path).is_err()
+}
+
+/// An owned, per-child temporary library.
+///
+/// One `TestLibrary` is one throwaway world: a `root` directory standing in
+/// for the user's library folder, and a private `home` so the child's caches
+/// and locks can never reach the developer's real `~/.videre` or Hugging Face
+/// cache. The `TempDir` is held in `_temp` precisely so it outlives every
+/// child spawned from this instance; dropping the `TestLibrary` drops the
+/// directory.
+///
+/// Deliberately does **not** go through [`videre_bin`], which sets a
+/// process-global `VIDERE_HOME` for this test process. That helper remains
+/// the right one for the legacy tests, but the whole point here is explicit
+/// per-child context: each command gets its own cwd, HOME, and HF_HOME, and
+/// `VIDERE_HOME` is removed rather than inherited, so what a child sees is
+/// exactly what was configured and nothing ambient. Nothing in this helper
+/// mutates the test process's own cwd or environment.
+pub struct TestLibrary {
+    _temp: tempfile::TempDir,
+    /// The library directory the child treats as its working library.
+    pub root: PathBuf,
+    /// The child's private HOME, holding caches and locks.
+    pub home: PathBuf,
+}
+
+impl TestLibrary {
+    /// Creates the library and home directories under a fresh temp dir.
+    pub fn new() -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("library");
+        let home = temp.path().join("home");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&home).unwrap();
+        Self {
+            _temp: temp,
+            root,
+            home,
+        }
+    }
+
+    /// Where this library's database lives, under `.videre/` in the root.
+    pub fn db(&self) -> PathBuf {
+        self.root.join(".videre/hashes.db")
+    }
+
+    /// A `videre` command rooted in this library, with an explicit context.
+    ///
+    /// The child runs with `cwd = root`, a private `HOME`, and an `HF_HOME`
+    /// inside that home, so no model cache is exposed by default and no real
+    /// user state is reachable. `VIDERE_HOME` is removed rather than pointed
+    /// somewhere: a child of this helper must not silently inherit the
+    /// process-global isolation dir either.
+    pub fn cmd(&self) -> std::process::Command {
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_videre"));
+        cmd.current_dir(&self.root)
+            .env("HOME", &self.home)
+            .env("HF_HOME", self.home.join(".cache/huggingface"))
+            .env_remove("VIDERE_HOME");
+        cmd
+    }
+
+    /// A `videre` command run from `cwd` but pinned to this library.
+    ///
+    /// Passing `--library root` is what makes the context explicit: the child
+    /// operates on this library no matter which directory it was invoked
+    /// from, which is the behaviour the directory-local-libraries tests build
+    /// on.
+    pub fn from(&self, cwd: &Path) -> std::process::Command {
+        let mut cmd = self.cmd();
+        cmd.current_dir(cwd).arg("--library").arg(&self.root);
+        cmd
+    }
+
+    /// Copies a fixture from `tests/fixtures/` into this library.
+    ///
+    /// `source` is relative to the fixtures directory, `target` relative to
+    /// the library root; parent directories of the target are created as
+    /// needed. Returns the destination path.
+    pub fn copy_fixture(&self, source: &str, target: &str) -> PathBuf {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(source);
+        let dst = self.root.join(target);
+        std::fs::create_dir_all(dst.parent().unwrap()).unwrap();
+        std::fs::copy(src, &dst).unwrap();
+        dst
+    }
+
+    /// A core-level context for this library, for tests that exercise the
+    /// foundation layers directly rather than through the binary.
+    ///
+    /// The cache base sits under the private home, matching what `cmd()`
+    /// gives a child, so an in-process context and a spawned child see the
+    /// same cache namespace for one library.
+    pub fn context(&self) -> videre_core::library::LibraryContext {
+        videre_core::library::LibraryContext::new(&self.root, &self.home.join(".cache")).unwrap()
+    }
+
+    /// Scan this library through the directory-local command surface.
+    pub fn scan(&self) {
+        let output = self.cmd().args(["scan", "--silent"]).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Open the existing local database without creating one.
+    pub fn conn(&self) -> rusqlite::Connection {
+        videre_core::library_db::open_existing(&self.context()).unwrap()
+    }
+
+    /// Initialize this library's `.videre/hashes.db` with the full schema, as a
+    /// scan would, and return a connection for direct seeding.
+    ///
+    /// For tests that build a specific database by hand rather than by scanning
+    /// real files: the command under test is then selected by cwd (`cmd()`) or
+    /// `--library` (`from()`), never a `--db` path.
+    pub fn init_db(&self) -> rusqlite::Connection {
+        videre_core::library_db::initialize(&self.context()).unwrap()
+    }
 }
 
 /// Writes to the process's real stderr, bypassing libtest's output capture.

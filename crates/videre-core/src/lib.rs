@@ -1,3 +1,4 @@
+pub mod atomic_file;
 pub mod classify;
 pub mod db;
 pub mod disk;
@@ -9,11 +10,18 @@ pub mod face_match;
 pub mod geocode;
 pub mod heic;
 pub mod hf_cache;
-pub mod home;
 pub mod import_location;
 pub mod import_providers;
 pub mod io_timeout;
+pub mod library;
+pub mod library_config;
+pub mod library_db;
+pub mod library_guard;
+pub mod library_io;
+pub mod library_locks;
 pub mod library_stats;
+#[cfg(test)]
+pub(crate) mod library_test_support;
 pub mod location;
 pub mod location_cluster;
 pub mod marks;

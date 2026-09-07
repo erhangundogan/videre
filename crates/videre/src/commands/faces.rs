@@ -1,8 +1,8 @@
+use crate::command_context::CommandContext;
 use anyhow::Result;
-use std::path::PathBuf;
 use videre_core::face_db;
 use videre_ml::pipeline::{
-    format_profile_report, run_clustering, run_face_pipeline, ClusteringResult, FacesRunResult,
+    format_profile_report, run_clustering, run_face_pipeline_in, ClusteringResult, FacesRunResult,
     ProfileStats,
 };
 
@@ -23,10 +23,6 @@ pub struct FacesArgs {
     presence: super::selection_args::PresenceArgs,
     #[command(flatten)]
     paths: super::selection_args::PathArgs,
-
-    /// SQLite database (default: resolved from ~/.videre; see 'videre config')
-    #[arg(long)]
-    db: Option<PathBuf>,
 
     /// How XMP face regions in a sidecar interact with detected faces: db (the
     /// database wins, imports only fill unconfirmed faces), file (the sidecar
@@ -127,7 +123,7 @@ pub struct FacesArgs {
     qlmanage_concurrency: Option<usize>,
 }
 
-pub fn run(args: FacesArgs) -> Result<()> {
+pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
     // Must happen before any HEIC file could be converted (the semaphore is a
     // OnceLock: first use wins for the life of this process). Clamped to at
     // least 1, a literal 0 would make every HEIC conversion block forever.
@@ -135,12 +131,26 @@ pub fn run(args: FacesArgs) -> Result<()> {
         videre_core::heic::set_qlmanage_concurrency(n.max(1));
     }
 
-    let db = super::resolve_reader_db(args.db.clone())?;
-    if !db.exists() {
-        anyhow::bail!("{:?} does not exist", db);
-    }
-    let conn = videre_core::db::open_wal(&db)?;
+    // Guard every --path against the selected root before any work; faces is a
+    // reader of models, so it never creates a model store.
+    videre_core::library_guard::validate_paths(&ctx.library, &args.paths.path)?;
+
+    let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    // Reprocessing (clearing and re-detecting every face) or reclustering
+    // rewrites the whole face partition, so it takes the library's exclusive
+    // activity lease and locks out every other operation; ordinary incremental
+    // detection is shared work that coexists with readers. Held for the whole
+    // run, released when this returns.
+    let activity_mode = if args.reprocess || args.recluster {
+        videre_core::library_locks::ActivityMode::Exclusive
+    } else {
+        videre_core::library_locks::ActivityMode::Shared
+    };
+    let _activity = videre_core::library_locks::try_activity(&ctx.library, activity_mode)?;
     face_db::create_faces_table(&conn)?;
+    // Held for the whole run, both the detection and the recluster-only paths,
+    // so a second faces run against this library is refused rather than racing.
+    let guard = videre_core::library_locks::try_command(&ctx.library, "faces")?;
 
     // 1. Determine which hashes to process
     let all_paths: Vec<(String, String)> = {
@@ -173,12 +183,13 @@ pub fn run(args: FacesArgs) -> Result<()> {
     // command. `faces` also loads its models inside `run_detection_and_
     // clustering`, which the `to_process.is_empty()` branch below already sits
     // in front of.
-    let (all_paths, already_reported) = match videre_core::work::narrow(
+    let (all_paths, already_reported) = match videre_core::work::narrow_in(
         all_paths,
         |(_, hash)| hash.as_str(),
         &selection,
         &conn,
         &videre_core::selection::SelectionCtx::default(),
+        &ctx.library,
         videre_core::work::Words::new("detect faces in", "Detecting faces in")
             .saying("No eligible files to scan for faces."),
         // `--recluster` skips detection entirely, so neither the "N of M" line
@@ -240,17 +251,20 @@ pub fn run(args: FacesArgs) -> Result<()> {
         return Ok(());
     }
 
-    if let Err(e) = videre_core::pipeline_runs::install_sigint_handler(&db, "faces") {
+    if let Err(e) =
+        videre_core::pipeline_runs::install_sigint_handler_in(ctx.library.clone(), "faces")
+    {
         eprintln!("Warning: could not install interrupt handler: {e:#}");
     }
-    let outcome = videre_core::pipeline_runs::track(&conn, &db, "faces", || {
-        run_detection_and_clustering(&args, &conn, &to_process)
-    })?;
+    let outcome =
+        videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "faces", || {
+            run_detection_and_clustering(&args, ctx, &conn, &to_process)
+        })?;
 
     // Import any face names from XMP sidecars onto the faces just detected,
     // symmetric with the marks read-back on scan. Governed by the shared --xmp
     // precedence; db (the default) fills only unconfirmed faces.
-    let imported = import_face_regions(&args, &conn, &to_process)?;
+    let imported = import_face_regions(&args, ctx, &conn, &to_process)?;
     if imported > 0 && !args.silent {
         eprintln!("Imported {imported} face name(s) from XMP");
     }
@@ -266,16 +280,17 @@ pub fn run(args: FacesArgs) -> Result<()> {
 /// per hash: an unreadable sidecar or an unmatched region simply imports nothing.
 fn import_face_regions(
     args: &FacesArgs,
+    ctx: &CommandContext,
     conn: &rusqlite::Connection,
     to_process: &[(String, String)],
 ) -> Result<usize> {
-    let prec = args.xmp.precedence()?;
+    let prec = args.xmp.resolve_from(&ctx.library.settings)?;
     if matches!(prec, videre_core::marks::XmpPrecedence::Newest) && !args.silent {
         eprintln!("Warning: --xmp newest is not yet implemented; treating as db");
     }
     let mut imported = 0usize;
     for (path, hash) in to_process {
-        let data = crate::xmp::read::read_data(std::path::Path::new(path));
+        let data = crate::xmp::read::read_data_in(&ctx.library, std::path::Path::new(path));
         if data.regions.is_empty() {
             continue;
         }
@@ -289,9 +304,10 @@ struct FacesOutcome {
     detect_errors: usize,
 }
 
-/// The detection-plus-clustering work, wrapped by `track()` above.
+/// The detection-plus-clustering work, wrapped by `track_in()` above.
 fn run_detection_and_clustering(
     args: &FacesArgs,
+    ctx: &CommandContext,
     conn: &rusqlite::Connection,
     to_process: &[(String, String)],
 ) -> Result<FacesOutcome> {
@@ -303,7 +319,8 @@ fn run_detection_and_clustering(
             .unwrap_or(4);
         cores * 2
     });
-    let result = run_face_pipeline(
+    let result = run_face_pipeline_in(
+        &ctx.library,
         conn,
         to_process,
         // Shared with embed: 0 would reach slice::chunks(0) and panic. No upper

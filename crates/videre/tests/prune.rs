@@ -1,50 +1,25 @@
 mod common;
-use common::isolated_home;
+use common::TestLibrary;
+use std::path::PathBuf;
 
-use rusqlite::Connection;
-use std::process::Command;
-use tempfile::tempdir;
+const MODEL: &str = videre_core::embeddings::DEFAULT_MODEL_ID;
 
-fn prune_bin() -> std::path::PathBuf {
-    isolated_home();
-    let mut path = std::env::current_exe().unwrap();
-    path.pop(); // deps/
-    path.pop(); // debug/
-    path.push("videre");
-    path
-}
-
-/// Fixture with two real files and one phantom path (never created on disk).
-/// Returns (db_path, path_a, path_b, phantom_path).
-fn fixture_db(
-    dir: &std::path::Path,
-) -> (
-    std::path::PathBuf,
-    std::path::PathBuf,
-    std::path::PathBuf,
-    String,
-) {
-    let a = dir.join("a.jpg");
-    let b = dir.join("b.jpg");
+/// A library with two real files and one phantom path (never created on disk),
+/// all under the root. Returns (library, path_a, path_b, phantom_path).
+fn fixture_library() -> (TestLibrary, PathBuf, PathBuf, String) {
+    let lib = TestLibrary::new();
+    let root = lib.context().paths.root;
+    let a = root.join("a.jpg");
+    let b = root.join("b.jpg");
     std::fs::write(&a, b"img_a").unwrap();
     std::fs::write(&b, b"img_b").unwrap();
-    let phantom = dir.join("gone.jpg").to_str().unwrap().to_string();
+    let phantom = root.join("gone.jpg").to_string_lossy().into_owned();
 
-    let db = dir.join("test.db");
-    let conn = Connection::open(&db).unwrap();
-    conn.execute_batch(
-        "CREATE TABLE file_hashes (
-            path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
-            created_at TEXT, modified_at TEXT, ext TEXT, phash INTEGER,
-            exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER
-        );",
-    )
-    .unwrap();
-    videre_core::db::ensure_file_hashes_columns(&conn);
+    let conn = lib.init_db();
     for (path, hash) in [
-        (a.to_str().unwrap(), "haaa"),
-        (b.to_str().unwrap(), "hbbb"),
-        (phantom.as_str(), "hphantom"),
+        (a.to_string_lossy().into_owned(), "haaa"),
+        (b.to_string_lossy().into_owned(), "hbbb"),
+        (phantom.clone(), "hphantom"),
     ] {
         conn.execute(
             "INSERT INTO file_hashes (path, hash, modified_at) VALUES (?1, ?2, '2020-01-01T00:00:00+00:00')",
@@ -52,148 +27,140 @@ fn fixture_db(
         )
         .unwrap();
     }
-    (db, a, b, phantom)
+    (lib, a, b, phantom)
 }
 
-/// Writes embeddings into the per-model database for `db`, which is where
-/// they live now, rather than into the main library file.
-fn add_embeddings(db: &std::path::Path, hashes: &[&str]) {
-    isolated_home(); // must precede any embeddings_db call; see its doc comment
-    let conn = Connection::open(db).unwrap();
-    videre_core::embeddings_db::attach(&conn, db, "test-model", true).unwrap();
+/// Seed embeddings into this library's per-model store.
+fn add_embeddings(lib: &TestLibrary, hashes: &[&str]) {
+    let conn = lib.conn();
+    videre_core::embeddings_db::attach_in(&conn, &lib.context(), MODEL, true).unwrap();
     for hash in hashes {
         conn.execute(
-            "INSERT OR IGNORE INTO emb.embeddings VALUES (?1, 'test-model', X'0000', 'now')",
-            rusqlite::params![hash],
+            "INSERT OR IGNORE INTO emb.embeddings VALUES (?1, ?2, X'0000', 'now')",
+            rusqlite::params![hash, MODEL],
         )
         .unwrap();
     }
 }
 
-fn row_exists(db: &std::path::Path, path: &str) -> bool {
-    let conn = Connection::open(db).unwrap();
+fn row_exists(lib: &TestLibrary, path: &str) -> bool {
+    lib.conn()
+        .query_row(
+            "SELECT COUNT(*) FROM file_hashes WHERE path = ?1",
+            [path],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+        > 0
+}
+
+fn get_modified_at(lib: &TestLibrary, path: &str) -> Option<String> {
+    lib.conn()
+        .query_row(
+            "SELECT modified_at FROM file_hashes WHERE path = ?1",
+            [path],
+            |r| r.get(0),
+        )
+        .ok()
+}
+
+fn embedding_exists(lib: &TestLibrary, hash: &str) -> bool {
+    let path = videre_core::embeddings_db::db_path_in(&lib.context(), MODEL).unwrap();
+    if !path.exists() {
+        return false;
+    }
+    let conn = rusqlite::Connection::open(path).unwrap();
     conn.query_row(
-        "SELECT COUNT(*) FROM file_hashes WHERE path = ?1",
-        rusqlite::params![path],
+        "SELECT COUNT(*) FROM embeddings WHERE hash = ?1",
+        [hash],
         |r| r.get::<_, i64>(0),
     )
     .unwrap()
         > 0
 }
 
-fn get_modified_at(db: &std::path::Path, path: &str) -> Option<String> {
-    let conn = Connection::open(db).unwrap();
-    conn.query_row(
-        "SELECT modified_at FROM file_hashes WHERE path = ?1",
-        rusqlite::params![path],
-        |r| r.get(0),
-    )
-    .ok()
+fn run_prune(lib: &TestLibrary, dry_run: bool) {
+    let mut cmd = lib.cmd();
+    cmd.arg("prune").arg("--silent");
+    if dry_run {
+        cmd.arg("--dry-run");
+    }
+    assert!(cmd.status().expect("failed to run videre prune").success());
 }
 
-fn embedding_exists(db: &std::path::Path, hash: &str) -> bool {
-    isolated_home();
-    let conn = Connection::open(db).unwrap();
-    videre_core::embeddings_db::attach(&conn, db, "test-model", false).unwrap();
-    conn.query_row(
-        "SELECT COUNT(*) FROM emb.embeddings WHERE hash = ?1",
-        rusqlite::params![hash],
-        |r| r.get::<_, i64>(0),
-    )
-    .unwrap()
-        > 0
+#[test]
+fn pruning_a_does_not_remove_b_models_or_cache() {
+    let a = TestLibrary::new();
+    let b = TestLibrary::new();
+    a.copy_fixture("tiny.jpg", "gone.jpg");
+    a.scan();
+    b.copy_fixture("tiny.jpg", "keep.jpg");
+    b.scan();
+
+    let cb = b.context();
+    std::fs::create_dir_all(&cb.cache.thumbnails).unwrap();
+    let cache = cb
+        .cache
+        .thumbnails
+        .join(format!("{}_240.jpg", "b".repeat(64)));
+    std::fs::write(&cache, b"untouched").unwrap();
+    let before = common::feature_fixture::snapshot_database(&b.db());
+
+    std::fs::remove_file(a.root.join("gone.jpg")).unwrap();
+    let out = a.cmd().arg("prune").output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert_eq!(common::feature_fixture::snapshot_database(&b.db()), before);
+    assert_eq!(std::fs::read(&cache).unwrap(), b"untouched");
 }
 
 #[test]
 fn missing_default_db_prints_friendly_error() {
-    let home = tempdir().unwrap();
-    let out = Command::new(prune_bin())
-        .arg("prune")
-        .arg("--dry-run")
-        .env("VIDERE_HOME", home.path())
+    let lib = TestLibrary::new();
+    let out = lib
+        .cmd()
+        .args(["prune", "--dry-run"])
         .output()
         .expect("failed to run videre prune");
     assert!(!out.status.success());
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("no database found at"), "{stderr}");
-    assert!(stderr.contains("videre scan"), "{stderr}");
-}
-
-/// Runs `videre prune`.
-///
-/// Critical for safety, not just tidiness: prune deletes orphaned thumbnail
-/// cache entries relative to whatever db it is given, and every fixture db
-/// here has 2-3 rows, so against the real cache every one of thousands of real
-/// thumbnails reads as an orphan and is deleted.
-///
-/// The isolation comes from `VIDERE_HOME`, which `videre_bin()` sets once per
-/// test binary and every child inherits. This used to be a per-command `HOME`
-/// override, which worked here but had to be repeated at every spawn site;
-/// `multi_model.rs` never did it, and its prune tests wiped the developer's
-/// real cache on every `cargo test --workspace`. Isolation that has to be
-/// remembered eventually is not.
-fn run_prune(db: &std::path::Path, dry_run: bool) {
-    let mut cmd = Command::new(prune_bin());
-    cmd.arg("prune").arg("--db").arg(db).arg("--silent");
-    if dry_run {
-        cmd.arg("--dry-run");
-    }
-    let status = cmd.status().expect("failed to run videre prune");
-    assert!(status.success());
-}
-
-/// `run_prune` with `VIDERE_HOME` pinned to `home`, giving the caller its own
-/// thumbnail cache.
-///
-/// The cache tests need this because the binary-wide `VIDERE_HOME` means one
-/// shared cache directory, and *every* non-dry-run prune in this file deletes
-/// everything there that is orphaned relative to its own 2-3 row fixture db.
-/// That includes the cache tests' fixtures, so without a private home they are
-/// destroyed by unrelated tests running in parallel.
-///
-/// The embedding tests deliberately keep the shared home: they seed through
-/// `embeddings_db` from this process, which resolves the same variable, so
-/// pinning it only for the child would leave the two looking in different
-/// places.
-fn run_prune_in(db: &std::path::Path, dry_run: bool, home: &std::path::Path) {
-    let mut cmd = Command::new(prune_bin());
-    cmd.arg("prune")
-        .arg("--db")
-        .arg(db)
-        .arg("--silent")
-        .env("VIDERE_HOME", home);
-    if dry_run {
-        cmd.arg("--dry-run");
-    }
-    let status = cmd.status().expect("failed to run videre prune");
-    assert!(status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("not initialized"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
 fn removes_row_for_missing_file() {
-    let dir = tempdir().unwrap();
-    let (db, _, _, phantom) = fixture_db(dir.path());
-    assert!(row_exists(&db, &phantom));
-    run_prune(&db, false);
-    assert!(!row_exists(&db, &phantom), "phantom row should be removed");
+    let (lib, _, _, phantom) = fixture_library();
+    assert!(row_exists(&lib, &phantom));
+    run_prune(&lib, false);
+    assert!(!row_exists(&lib, &phantom), "phantom row should be removed");
 }
 
 #[test]
 fn preserves_rows_for_existing_files() {
-    let dir = tempdir().unwrap();
-    let (db, a, b, _) = fixture_db(dir.path());
-    run_prune(&db, false);
-    assert!(row_exists(&db, a.to_str().unwrap()), "a.jpg should be kept");
-    assert!(row_exists(&db, b.to_str().unwrap()), "b.jpg should be kept");
+    let (lib, a, b, _) = fixture_library();
+    run_prune(&lib, false);
+    assert!(
+        row_exists(&lib, a.to_str().unwrap()),
+        "a.jpg should be kept"
+    );
+    assert!(
+        row_exists(&lib, b.to_str().unwrap()),
+        "b.jpg should be kept"
+    );
 }
 
 #[test]
 fn syncs_modified_at_for_existing_files() {
-    let dir = tempdir().unwrap();
-    let (db, a, _, _) = fixture_db(dir.path());
-    // DB has a stale '2020-01-01T00:00:00+00:00'; actual mtime is now
-    run_prune(&db, false);
-    let new_val = get_modified_at(&db, a.to_str().unwrap()).unwrap();
+    let (lib, a, _, _) = fixture_library();
+    run_prune(&lib, false);
+    let new_val = get_modified_at(&lib, a.to_str().unwrap()).unwrap();
     assert_ne!(
         new_val, "2020-01-01T00:00:00+00:00",
         "modified_at should be refreshed"
@@ -202,16 +169,15 @@ fn syncs_modified_at_for_existing_files() {
 
 #[test]
 fn dry_run_makes_no_changes() {
-    let dir = tempdir().unwrap();
-    let (db, a, _, phantom) = fixture_db(dir.path());
-    let original_mtime = get_modified_at(&db, a.to_str().unwrap());
-    run_prune(&db, true);
+    let (lib, a, _, phantom) = fixture_library();
+    let original_mtime = get_modified_at(&lib, a.to_str().unwrap());
+    run_prune(&lib, true);
     assert!(
-        row_exists(&db, &phantom),
+        row_exists(&lib, &phantom),
         "dry-run must not remove phantom row"
     );
     assert_eq!(
-        get_modified_at(&db, a.to_str().unwrap()),
+        get_modified_at(&lib, a.to_str().unwrap()),
         original_mtime,
         "dry-run must not update modified_at"
     );
@@ -219,78 +185,57 @@ fn dry_run_makes_no_changes() {
 
 #[test]
 fn removes_orphan_embeddings_after_pruning() {
-    let dir = tempdir().unwrap();
-    let (db, _, _, _) = fixture_db(dir.path());
-    // hphantom has an embedding; haaa and hbbb do not
-    add_embeddings(&db, &["hphantom", "haaa"]);
-    run_prune(&db, false);
+    let (lib, _, _, _) = fixture_library();
+    add_embeddings(&lib, &["hphantom", "haaa"]);
+    run_prune(&lib, false);
     assert!(
-        !embedding_exists(&db, "hphantom"),
+        !embedding_exists(&lib, "hphantom"),
         "orphan embedding should be removed"
     );
     assert!(
-        embedding_exists(&db, "haaa"),
+        embedding_exists(&lib, "haaa"),
         "embedding for surviving file should be kept"
     );
 }
 
 #[test]
 fn preserves_embedding_when_hash_shared_with_surviving_file() {
-    let dir = tempdir().unwrap();
-    let (db, a, _, _) = fixture_db(dir.path());
-    // Give 'gone.jpg' the same hash as a.jpg so the hash still has a surviving row
-    let conn = Connection::open(&db).unwrap();
-    conn.execute(
-        "UPDATE file_hashes SET hash = 'haaa' WHERE path LIKE '%gone%'",
-        [],
-    )
-    .unwrap();
-    drop(conn);
-    add_embeddings(&db, &["haaa"]);
-    run_prune(&db, false);
-    // gone.jpg row is removed, but haaa embedding must stay (a.jpg still uses it)
-    assert!(!row_exists(
-        &db,
-        &dir.path().join("gone.jpg").to_str().unwrap().to_string()
-    ));
+    let (lib, _, _, _) = fixture_library();
+    lib.conn()
+        .execute(
+            "UPDATE file_hashes SET hash = 'haaa' WHERE path LIKE '%gone%'",
+            [],
+        )
+        .unwrap();
+    add_embeddings(&lib, &["haaa"]);
+    run_prune(&lib, false);
+    let gone = lib.context().paths.root.join("gone.jpg");
+    assert!(!row_exists(&lib, gone.to_str().unwrap()));
     assert!(
-        embedding_exists(&db, "haaa"),
+        embedding_exists(&lib, "haaa"),
         "shared-hash embedding must not be pruned"
     );
-    let _ = a;
 }
 
-/// A real BLAKE3-length (64 hex char) hash, distinct per `seed`, so tests
-/// can build cache filenames `hash_from_cache_filename` will actually parse
-/// (unlike the short synthetic hashes, "haaa" etc., used elsewhere in this
-/// file for db-only fixtures).
+/// A real BLAKE3-length (64 hex char) hash, so cache filenames parse.
 fn cache_test_hash(seed: char) -> String {
     seed.to_string().repeat(64)
 }
 
 #[test]
 fn removes_orphan_cache_files_after_pruning() {
-    let dir = tempdir().unwrap();
-    let (db, _, _, _) = fixture_db(dir.path());
+    let (lib, _, _, _) = fixture_library();
     let live_hash = cache_test_hash('1');
-    let orphan_hash = cache_test_hash('9'); // no file_hashes row for this one
+    let orphan_hash = cache_test_hash('9');
 
-    // Give one of fixture_db's real rows this exact hash so it counts as "live".
-    let conn = Connection::open(&db).unwrap();
-    conn.execute(
-        "UPDATE file_hashes SET hash = ?1 WHERE path LIKE '%a.jpg'",
-        rusqlite::params![live_hash],
-    )
-    .unwrap();
-    drop(conn);
+    lib.conn()
+        .execute(
+            "UPDATE file_hashes SET hash = ?1 WHERE path LIKE '%a.jpg'",
+            [live_hash.as_str()],
+        )
+        .unwrap();
 
-    // Derived from VIDERE_HOME, which `videre_bin()` sets once for this whole
-    // test binary and which every spawned child inherits. This used to be built
-    // from a per-command `HOME` override, which worked but had to be remembered
-    // at every spawn site: `multi_model.rs` did not, so its prune tests deleted
-    // the developer's real `~/.cache/videre/thumbnails` on every suite run.
-    let home = dir.path().join("home");
-    let cache_dir = home.join("cache").join("thumbnails");
+    let cache_dir = lib.context().cache.thumbnails;
     std::fs::create_dir_all(&cache_dir).unwrap();
     let live_thumb = cache_dir.join(format!("{live_hash}_240.jpg"));
     let orphan_thumb = cache_dir.join(format!("{orphan_hash}_240.jpg"));
@@ -300,19 +245,16 @@ fn removes_orphan_cache_files_after_pruning() {
         std::fs::write(f, b"x").unwrap();
     }
 
-    run_prune_in(&db, false, &home);
+    run_prune(&lib, false);
 
     assert!(
         live_thumb.exists(),
         "cache entry for a surviving hash must be kept"
     );
-    assert!(
-        !orphan_thumb.exists(),
-        "cache entry for a hash with no file_hashes row must be removed"
-    );
+    assert!(!orphan_thumb.exists(), "orphan thumbnail must be removed");
     assert!(
         !orphan_original.exists(),
-        "original-cache entry for an orphaned hash must be removed too"
+        "orphan original-cache entry must be removed"
     );
     assert!(
         orphan_tmp.exists(),
@@ -322,63 +264,33 @@ fn removes_orphan_cache_files_after_pruning() {
 
 #[test]
 fn dry_run_does_not_remove_orphan_cache_files() {
-    let dir = tempdir().unwrap();
-    let (db, _, _, _) = fixture_db(dir.path());
+    let (lib, _, _, _) = fixture_library();
     let orphan_hash = cache_test_hash('9');
-
-    // Derived from VIDERE_HOME, which `videre_bin()` sets once for this whole
-    // test binary and which every spawned child inherits. This used to be built
-    // from a per-command `HOME` override, which worked but had to be remembered
-    // at every spawn site: `multi_model.rs` did not, so its prune tests deleted
-    // the developer's real `~/.cache/videre/thumbnails` on every suite run.
-    let home = dir.path().join("home");
-    let cache_dir = home.join("cache").join("thumbnails");
+    let cache_dir = lib.context().cache.thumbnails;
     std::fs::create_dir_all(&cache_dir).unwrap();
     let orphan_thumb = cache_dir.join(format!("{orphan_hash}_240.jpg"));
     std::fs::write(&orphan_thumb, b"x").unwrap();
 
-    run_prune(&db, true);
-
+    run_prune(&lib, true);
     assert!(
         orphan_thumb.exists(),
         "dry-run must not delete any cache file"
     );
 }
 
-/// **The regression test for the unmounted-volume bug.**
-///
-/// `prune` used to treat any `metadata()` failure as "this file was deleted",
-/// so unplugging a drive deleted every row for it. The rows are the cheap part:
-/// once they are gone their hashes look orphaned, and the embeddings and cached
-/// thumbnails for them are deleted too. That is hours of recompute (a HEIC
-/// full-resolution decode is ~7.6s) against minutes to re-scan rows.
-///
-/// Simulates the unmount by deleting the whole directory, which is what an
-/// absent volume looks like from the filesystem's point of view: neither the
-/// files nor their parent exist.
-///
-/// The embedding assertion is the point of this test.
+/// The regression test for the unmounted-volume bug: an absent directory keeps
+/// its rows and their expensive embeddings.
 #[test]
 fn an_unreachable_directory_does_not_delete_rows_or_embeddings() {
-    let dir = tempdir().unwrap();
-    let sub = dir.path().join("on_the_drive");
+    let lib = TestLibrary::new();
+    let sub = lib.context().paths.root.join("on_the_drive");
     std::fs::create_dir_all(&sub).unwrap();
     let a = sub.join("a.jpg");
     let b = sub.join("b.jpg");
     std::fs::write(&a, b"img_a").unwrap();
     std::fs::write(&b, b"img_b").unwrap();
 
-    let db = dir.path().join("test.db");
-    let conn = Connection::open(&db).unwrap();
-    conn.execute_batch(
-        "CREATE TABLE file_hashes (
-            path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
-            created_at TEXT, modified_at TEXT, ext TEXT, phash INTEGER,
-            exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER
-        );",
-    )
-    .unwrap();
-    videre_core::db::ensure_file_hashes_columns(&conn);
+    let conn = lib.init_db();
     for (p, h) in [(&a, "hdrive_a"), (&b, "hdrive_b")] {
         conn.execute(
             "INSERT INTO file_hashes (path, hash, modified_at) VALUES (?1, ?2, '2020-01-01T00:00:00+00:00')",
@@ -387,111 +299,73 @@ fn an_unreachable_directory_does_not_delete_rows_or_embeddings() {
         .unwrap();
     }
     drop(conn);
-    add_embeddings(&db, &["hdrive_a", "hdrive_b"]);
+    add_embeddings(&lib, &["hdrive_a", "hdrive_b"]);
 
-    // The drive goes away: files and their containing directory vanish at once.
     std::fs::remove_dir_all(&sub).unwrap();
-
-    run_prune(&db, false);
+    run_prune(&lib, false);
 
     assert!(
-        row_exists(&db, a.to_str().unwrap()),
+        row_exists(&lib, a.to_str().unwrap()),
         "row for an unreachable volume must survive"
     );
-    assert!(row_exists(&db, b.to_str().unwrap()), "ditto");
+    assert!(row_exists(&lib, b.to_str().unwrap()), "ditto");
     assert!(
-        embedding_exists(&db, "hdrive_a"),
-        "embedding must survive: this is the expensive half, hours to recompute"
+        embedding_exists(&lib, "hdrive_a"),
+        "embedding must survive, hours to recompute"
     );
-    assert!(embedding_exists(&db, "hdrive_b"), "ditto");
+    assert!(embedding_exists(&lib, "hdrive_b"), "ditto");
 }
 
-/// The inverse, so the guard cannot be satisfied by simply never deleting:
-/// a single file removed while its directory remains is a real deletion.
 #[test]
 fn a_deleted_file_in_a_present_directory_is_still_pruned() {
-    let dir = tempdir().unwrap();
-    let (db, a, _, _) = fixture_db(dir.path());
+    let (lib, a, _, _) = fixture_library();
     std::fs::remove_file(&a).unwrap();
-
-    run_prune(&db, false);
-
+    run_prune(&lib, false);
     assert!(
-        !row_exists(&db, a.to_str().unwrap()),
+        !row_exists(&lib, a.to_str().unwrap()),
         "a genuinely deleted file must still be pruned"
     );
 }
 
-/// `--prune-unreachable` is the documented way out for a folder that really is
-/// gone. Without it the guard would be a one-way door.
 #[test]
 fn prune_unreachable_removes_what_the_guard_skipped() {
-    let dir = tempdir().unwrap();
-    let sub = dir.path().join("gone_for_good");
+    let lib = TestLibrary::new();
+    let sub = lib.context().paths.root.join("gone_for_good");
     std::fs::create_dir_all(&sub).unwrap();
     let a = sub.join("a.jpg");
     std::fs::write(&a, b"img").unwrap();
 
-    let db = dir.path().join("test.db");
-    let conn = Connection::open(&db).unwrap();
-    conn.execute_batch(
-        "CREATE TABLE file_hashes (
-            path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
-            created_at TEXT, modified_at TEXT, ext TEXT, phash INTEGER,
-            exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER
-        );",
-    )
-    .unwrap();
-    videre_core::db::ensure_file_hashes_columns(&conn);
-    conn.execute(
-        "INSERT INTO file_hashes (path, hash) VALUES (?1, 'hgone')",
-        rusqlite::params![a.to_str().unwrap()],
-    )
-    .unwrap();
-    drop(conn);
+    lib.init_db()
+        .execute(
+            "INSERT INTO file_hashes (path, hash) VALUES (?1, 'hgone')",
+            [a.to_str().unwrap()],
+        )
+        .unwrap();
 
     std::fs::remove_dir_all(&sub).unwrap();
 
-    // Default: kept.
-    run_prune(&db, false);
-    assert!(row_exists(&db, a.to_str().unwrap()), "kept by default");
+    run_prune(&lib, false);
+    assert!(row_exists(&lib, a.to_str().unwrap()), "kept by default");
 
-    // Explicit: removed.
-    let status = Command::new(prune_bin())
-        .arg("prune")
-        .arg("--db")
-        .arg(&db)
-        .arg("--silent")
-        .arg("--prune-unreachable")
+    let status = lib
+        .cmd()
+        .args(["prune", "--silent", "--prune-unreachable"])
         .status()
         .unwrap();
     assert!(status.success());
     assert!(
-        !row_exists(&db, a.to_str().unwrap()),
+        !row_exists(&lib, a.to_str().unwrap()),
         "--prune-unreachable must remove it"
     );
 }
 
-/// The bulk guard needs BOTH conditions, so a small library where most files
-/// were legitimately deleted still prunes. 3 of 5 rows is 60%, far over the
-/// fraction, but under the row floor.
 #[test]
 fn the_bulk_guard_does_not_block_a_small_library() {
-    let dir = tempdir().unwrap();
-    let db = dir.path().join("test.db");
-    let conn = Connection::open(&db).unwrap();
-    conn.execute_batch(
-        "CREATE TABLE file_hashes (
-            path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
-            created_at TEXT, modified_at TEXT, ext TEXT, phash INTEGER,
-            exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER
-        );",
-    )
-    .unwrap();
-    videre_core::db::ensure_file_hashes_columns(&conn);
-    // Two survive, three are deleted files whose directory still exists.
+    let lib = TestLibrary::new();
+    let root = lib.context().paths.root;
+    let conn = lib.init_db();
     for i in 0..5 {
-        let p = dir.path().join(format!("f{i}.jpg"));
+        let p = root.join(format!("f{i}.jpg"));
         if i < 2 {
             std::fs::write(&p, b"x").unwrap();
         }
@@ -503,29 +377,24 @@ fn the_bulk_guard_does_not_block_a_small_library() {
     }
     drop(conn);
 
-    run_prune(&db, false);
+    run_prune(&lib, false);
 
-    let left: i64 = Connection::open(&db)
-        .unwrap()
+    let left: i64 = lib
+        .conn()
         .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
         .unwrap();
     assert_eq!(left, 2, "60% removal under the row floor must still prune");
 }
 
-/// The summary's synced count, from a run that is not `--silent`.
-///
-/// `run_prune` above passes `--silent`, which suppresses the summary line as
-/// well as the per-file output, so a test asserting on counts needs its own
-/// invocation.
-fn prune_synced_count(db: &std::path::Path, dry_run: bool) -> usize {
-    let mut cmd = Command::new(prune_bin());
-    cmd.arg("prune").arg("--db").arg(db);
+/// The summary's synced count from a non-silent run.
+fn prune_synced_count(lib: &TestLibrary, dry_run: bool) -> usize {
+    let mut cmd = lib.cmd();
+    cmd.arg("prune");
     if dry_run {
         cmd.arg("--dry-run");
     }
     let out = cmd.output().expect("failed to run videre prune");
     assert!(out.status.success());
-    // The summary goes to stderr; the per-file lines go to stdout.
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -536,9 +405,8 @@ fn prune_synced_count(db: &std::path::Path, dry_run: bool) -> usize {
         .find(|l| l.contains("row(s) checked"))
         .unwrap_or_else(|| panic!("no summary line in prune output:\n{text}"))
         .to_string();
-    let line = line.as_str();
-    // "... 0 were removed, 3 were synced, 0 error(s)."
     let (before, _) = line
+        .as_str()
         .split_once(" synced")
         .expect("summary names a sync count");
     before
@@ -548,48 +416,36 @@ fn prune_synced_count(db: &std::path::Path, dry_run: bool) -> usize {
         .unwrap_or_else(|| panic!("could not read a sync count from: {line}"))
 }
 
-/// prune must converge: a second pass over an unchanged tree syncs nothing.
-///
-/// It used to sync every extant row on every run. The query selected only
-/// `path`, so the stored `modified_at` was never read and the classifier pushed
-/// a `Sync` unconditionally for any file that existed. The count therefore meant
-/// "rows that exist", not "rows that differ": on an untouched library every run
-/// rewrote every row with the value already there and reported the whole library
-/// as synced, so genuine drift was indistinguishable from the background, and
-/// `watch --prune` repeated it every cycle.
 #[test]
 fn prune_syncs_nothing_on_a_second_pass() {
-    let dir = tempdir().unwrap();
-    let (db, a, _, _) = fixture_db(dir.path());
+    let (lib, a, _, _) = fixture_library();
 
-    // The fixture seeds a stale modified_at, so the first pass has real work.
-    let first = prune_synced_count(&db, false);
+    let first = prune_synced_count(&lib, false);
     assert!(
         first > 0,
-        "the fixture's stale timestamps should give the first pass something to do"
+        "the fixture's stale timestamps should give the first pass work"
     );
 
     assert_eq!(
-        prune_synced_count(&db, false),
+        prune_synced_count(&lib, false),
         0,
-        "nothing changed on disk, so the second pass must sync nothing"
+        "an unchanged pass must sync nothing"
     );
     assert_eq!(
-        prune_synced_count(&db, true),
+        prune_synced_count(&lib, true),
         0,
-        "a dry run must agree with the real run about there being no work"
+        "a dry run must agree there is no work"
     );
 
-    // A real change is still detected, and only that one row.
     std::thread::sleep(std::time::Duration::from_millis(1100));
     std::fs::write(&a, b"img_a_changed").unwrap();
     assert_eq!(
-        prune_synced_count(&db, false),
+        prune_synced_count(&lib, false),
         1,
         "exactly the touched file should sync"
     );
     assert_eq!(
-        prune_synced_count(&db, false),
+        prune_synced_count(&lib, false),
         0,
         "and it must converge again afterwards"
     );

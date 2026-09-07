@@ -15,20 +15,21 @@ use videre::types::SCHEMA_VERSION;
 
 #[derive(clap::Args)]
 pub struct McpArgs {
-    /// SQLite database (default: resolved from ~/.videre; see 'videre config')
-    #[arg(long)]
-    db: Option<PathBuf>,
-
     /// Embedding model to serve searches from (default: 'videre config set model',
-    /// else the built-in default). Bound once at startup, like --db, so a
-    /// bad value fails before the server accepts a single call.
+    /// else the built-in default). Bound once at startup, so a bad value fails
+    /// before the server accepts a single call.
     #[arg(long, value_parser = super::parse_model_id)]
     model: Option<String>,
 }
 
-pub fn run(args: McpArgs) -> Result<()> {
-    let db = super::resolve_reader_db_must_exist(args.db)?;
-    let model_id = videre_core::embeddings::resolve_model_id(args.model.as_deref())?;
+pub fn run(args: McpArgs, ctx: &crate::command_context::CommandContext) -> Result<()> {
+    // Validate the selected library exists before binding the server to it.
+    let _ = videre_core::library_db::open_existing(&ctx.library)?;
+    let db = ctx.library.paths.db.clone();
+    let model_id = videre_core::embeddings::resolve_model_id_from(
+        &ctx.library.settings,
+        args.model.as_deref(),
+    )?;
     // Probed at startup so a typo in --model is visible immediately rather
     // than minutes later inside an agent's search result, but NOT fatal:
     // find_duplicates and stats do not touch embeddings, and refusing to
@@ -36,8 +37,8 @@ pub fn run(args: McpArgs) -> Result<()> {
     // scanned but never embedded, which is a perfectly normal state. The
     // search tool re-checks per call and returns a clear tool-level error.
     let embeddings_ready = {
-        let probe = videre_core::db::open_wal(&db)?;
-        match videre_core::embeddings_db::attach_for_read(&probe, &db, &model_id) {
+        let probe = videre_core::library_db::open_existing(&ctx.library)?;
+        match videre_core::embeddings_db::attach_for_read_in(&probe, &ctx.library, &model_id) {
             Ok(()) => true,
             Err(e) => {
                 eprintln!("videre mcp: search unavailable ({e})");
@@ -55,9 +56,10 @@ pub fn run(args: McpArgs) -> Result<()> {
         }
     );
 
+    let context = Arc::new(ctx.clone());
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async move {
-        let service = VidereServer::new(db, model_id).serve(stdio()).await?;
+        let service = VidereServer::new(context, model_id).serve(stdio()).await?;
         service.waiting().await?;
         Ok(())
     })
@@ -66,15 +68,17 @@ pub fn run(args: McpArgs) -> Result<()> {
 #[derive(Clone)]
 struct VidereServer {
     db: PathBuf,
+    context: Arc<crate::command_context::CommandContext>,
     model_id: String,
     embedder: Arc<std::sync::Mutex<Option<videre_ml::model::Embedder>>>,
     tool_router: ToolRouter<Self>,
 }
 
 impl VidereServer {
-    fn new(db: PathBuf, model_id: String) -> Self {
+    fn new(context: Arc<crate::command_context::CommandContext>, model_id: String) -> Self {
         Self {
-            db,
+            db: context.library.paths.db.clone(),
+            context,
             model_id,
             embedder: Arc::new(std::sync::Mutex::new(None)),
             tool_router: Self::tool_router(),
@@ -125,8 +129,8 @@ struct DateRange {
     max: String,
 }
 
-fn build_stats(db: &std::path::Path) -> anyhow::Result<StatsJson> {
-    let conn = videre_core::db::open_wal(db)?;
+fn build_stats(ctx: &crate::command_context::CommandContext) -> anyhow::Result<StatsJson> {
+    let conn = videre_core::db::open_wal(&ctx.library.paths.db)?;
 
     let (total_files, total_size_bytes, unique_hashes, files_with_gps, exif_date_range) =
         if videre_core::db::table_exists(&conn, "file_hashes")? {
@@ -155,7 +159,7 @@ fn build_stats(db: &std::path::Path) -> anyhow::Result<StatsJson> {
     // per-model database, an unfiltered count would either miss it entirely
     // or, once several models exist, double-count hashes embedded by more
     // than one of them.
-    let embedded_count: u64 = videre_core::embeddings_db::counts_by_model(db)
+    let embedded_count: u64 = videre_core::embeddings_db::counts_by_model_in(&ctx.library)
         .map(|counts| counts.iter().map(|c| c.count.max(0) as u64).sum())
         .unwrap_or(0);
 
@@ -269,7 +273,7 @@ struct SearchParams {
 /// only MCP-specific parts are the two validity checks, whose wording names
 /// tool parameters rather than CLI flags, and the cached embedder.
 fn build_search(
-    db: &std::path::Path,
+    ctx: &crate::command_context::CommandContext,
     model_id: &str,
     embedder_cell: &std::sync::Mutex<Option<videre_ml::model::Embedder>>,
     params: &SearchParams,
@@ -326,8 +330,8 @@ fn build_search(
         },
         marks: super::selection_args::MarkArgs::default(),
         tags: Default::default(),
-        // Both bound at startup, so a call cannot retarget the server.
-        db: Some(db.to_path_buf()),
+        // Bound at startup through the context, so a call cannot retarget the
+        // server at another library.
         model: Some(model_id.to_string()),
         query: params.query.clone(),
         image: params.image_path.as_deref().map(std::path::PathBuf::from),
@@ -348,7 +352,7 @@ fn build_search(
         json: true,
     };
 
-    search_cmd::run_json(&args, &search_cmd::CachedEmbedder(embedder_cell))
+    search_cmd::run_json_in(&args, &search_cmd::CachedEmbedder(embedder_cell), ctx)
 }
 
 #[tool_router]
@@ -360,8 +364,8 @@ impl VidereServer {
         description = "Summary of the videre library: total files, total size, unique hashes, embedded count, face count, labeled people, files with GPS, and the EXIF date range. Results reflect the database (kept fresh by 'videre watch' or CLI scans)."
     )]
     async fn stats(&self) -> Result<CallToolResult, McpError> {
-        let db = self.db.clone();
-        match blocking(move || build_stats(&db)).await? {
+        let context = self.context.clone();
+        match blocking(move || build_stats(&context)).await? {
             Ok(doc) => json_result(&doc),
             Err(e) => Ok(tool_error(&e)),
         }
@@ -390,10 +394,10 @@ impl VidereServer {
         &self,
         Parameters(params): Parameters<SearchParams>,
     ) -> Result<CallToolResult, McpError> {
-        let db = self.db.clone();
+        let context = self.context.clone();
         let model_id = self.model_id.clone();
         let embedder = self.embedder.clone();
-        match blocking(move || build_search(&db, &model_id, &embedder, &params)).await? {
+        match blocking(move || build_search(&context, &model_id, &embedder, &params)).await? {
             Ok(doc) => json_result(&doc),
             Err(e) => Ok(tool_error(&e)),
         }

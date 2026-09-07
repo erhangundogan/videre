@@ -95,7 +95,7 @@ videre stats                      # confirm it reads
 If the photos moved to different paths, re-scan and prune:
 
 ```bash
-videre scan /new/location/Photos
+videre --library /new/location/Photos scan
 videre prune
 ```
 
@@ -106,21 +106,31 @@ same files.
 
 ## Verifying a backup
 
-A backup you have never restored is a hypothesis. Testing one costs nothing,
-because `VIDERE_HOME` gives you a throwaway setup:
-
-```bash
-mkdir -p /tmp/videre-restore-test
-cp /backups/videre/2026-08-11/hashes.db /tmp/videre-restore-test/hashes.db
-VIDERE_HOME=/tmp/videre-restore-test videre stats
-```
-
-That reads the restored database in complete isolation from your real one. If
-`stats` reports the file counts and people you expect, the backup is good.
+A backup you have never restored is a hypothesis. Check the file itself with
+SQLite's integrity check, which needs no videre and touches nothing else:
 
 ```bash
 sqlite3 /backups/videre/2026-08-11/hashes.db "PRAGMA integrity_check;"
 ```
+
+To test it functionally, restore it into a copy of its **original** library
+root and run `stats` there:
+
+```bash
+mkdir -p /tmp/restore-test/.videre
+cp /backups/videre/2026-08-11/hashes.db /tmp/restore-test/.videre/hashes.db
+# only works if the library was rooted at /tmp/restore-test; see the caution below
+videre --library /tmp/restore-test stats
+```
+
+If `stats` reports the file counts and people you expect, the backup is good.
+
+:::caution[A database is bound to its library root]
+videre refuses a database whose stored paths fall outside the library root it
+is opened under, so you cannot verify a backup by dropping the database alone
+into an arbitrary directory. Restore into the original root, or copy the whole
+`.videre/` tree together, so the paths and the root still agree.
+:::
 
 ## Caveats
 

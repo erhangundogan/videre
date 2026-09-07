@@ -3,7 +3,9 @@
 //! reads EXIF, not XMP, so this is separate. Best-effort: any parse failure
 //! yields no marks rather than an error, so a malformed packet never fails a scan.
 
-use std::path::Path;
+use std::ffi::{OsStr, OsString};
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 const XMP_NS: &str = "http://ns.adobe.com/xap/1.0/";
 const MWG_RS_NS: &str = "http://www.metadataworkinggroup.com/schemas/regions/";
@@ -148,30 +150,65 @@ pub fn parse_xmp_data(doc: &str) -> XmpData {
 }
 
 /// Read the full XMP data for a photo: sidecar first, then the embedded packet.
-/// Never errors; a missing or malformed source yields an
-/// empty `XmpData`.
-pub fn read_data(path: &Path) -> XmpData {
-    let sidecar = path.with_extension(match path.extension().and_then(|e| e.to_str()) {
-        Some(ext) => format!("{ext}.xmp"),
-        None => "xmp".to_string(),
-    });
-    if let Ok(doc) = std::fs::read_to_string(&sidecar) {
-        let d = parse_xmp_data(&doc);
-        if d != XmpData::default() {
-            return d;
+/// Never errors; a missing or malformed source yields an empty `XmpData`. Both
+/// reads are confined to the library through `open_media`, so a sidecar or
+/// photo resolving outside the root simply reads as absent.
+pub fn read_data_in(ctx: &videre_core::library::LibraryContext, path: &Path) -> XmpData {
+    let sidecar = sidecar_path(path);
+    if let Some(doc) = read_confined(ctx, &sidecar).and_then(|bytes| String::from_utf8(bytes).ok())
+    {
+        let data = parse_xmp_data(&doc);
+        if data != XmpData::default() {
+            return data;
         }
     }
-    if let Some(doc) = embedded_packet(path) {
-        return parse_xmp_data(&doc);
+    if let Some(bytes) = read_confined(ctx, path) {
+        if let Some(doc) = embedded_packet_bytes(&bytes) {
+            return parse_xmp_data(&doc);
+        }
     }
     XmpData::default()
+}
+
+fn sidecar_path(path: &Path) -> PathBuf {
+    let mut extension = path
+        .extension()
+        .unwrap_or_else(|| OsStr::new(""))
+        .to_os_string();
+    if !extension.is_empty() {
+        extension.push(".xmp");
+    } else {
+        extension = OsString::from("xmp");
+    }
+    path.with_extension(extension)
+}
+
+fn read_confined(ctx: &videre_core::library::LibraryContext, path: &Path) -> Option<Vec<u8>> {
+    let file = videre_core::library_io::open_media(ctx, path).ok()?;
+    let stat = file.try_clone().ok()?;
+    let size = videre_core::io_timeout::run_with_timeout(
+        videre_core::io_timeout::STAT_TIMEOUT,
+        move || stat.metadata().map(|metadata| metadata.len()),
+    )
+    .ok()?
+    .ok()?;
+    let budget = videre_core::io_timeout::timeout_for_size(
+        size,
+        videre_core::io_timeout::min_read_rate_mb_s(),
+    );
+    videre_core::io_timeout::run_with_timeout(budget, move || {
+        let mut file = file;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).map(|_| bytes)
+    })
+    .ok()?
+    .ok()
 }
 
 /// Extract the embedded XMP packet from a file's bytes, best-effort: find the
 /// `<x:xmpmeta ...> ... </x:xmpmeta>` span. Works across JPEG/HEIC/PNG because
 /// the packet is stored as UTF-8 text regardless of container.
-fn embedded_packet(path: &Path) -> Option<String> {
-    let bytes = std::fs::read(path).ok()?;
+fn embedded_packet_bytes(bytes: &[u8]) -> Option<String> {
     let text = String::from_utf8_lossy(&bytes);
     let start = text.find("<x:xmpmeta")?;
     let end = text[start..].find("</x:xmpmeta>")? + start + "</x:xmpmeta>".len();
@@ -235,10 +272,13 @@ mod tests {
     #[test]
     fn read_data_reads_a_region_from_an_adjacent_sidecar() {
         let dir = tempfile::tempdir().unwrap();
-        let photo = dir.path().join("IMG.jpg");
+        let ctx = videre_core::library::LibraryContext::new(dir.path(), &dir.path().join("cache"))
+            .unwrap();
+        let root = ctx.paths.root.clone();
+        let photo = root.join("IMG.jpg");
         std::fs::write(&photo, b"not-a-real-jpeg").unwrap();
         std::fs::write(
-            dir.path().join("IMG.jpg.xmp"),
+            root.join("IMG.jpg.xmp"),
             r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF
  xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
  <rdf:Description rdf:about=""
@@ -252,7 +292,7 @@ mod tests {
  </rdf:Description></rdf:RDF></x:xmpmeta>"#,
         )
         .unwrap();
-        let d = read_data(&photo);
+        let d = read_data_in(&ctx, &photo);
         assert_eq!(d.regions.len(), 1);
         assert_eq!(d.regions[0].name, "Ayşe");
     }

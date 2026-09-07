@@ -64,7 +64,7 @@ If you keep `watch` running, stop it first or restrict it to stages that do not
 decode:
 
 ```bash
-videre watch ~/Photos --scan --location    # safe alongside a manual embed
+videre --library ~/Photos watch --scan --location    # safe alongside a manual embed
 ```
 
 **`videre locations` blocks writers for its whole run.** It does its work in a
@@ -136,8 +136,8 @@ stats reports it as `crashed`. Simply rerun the command.
 ## Suggested order for a fresh library
 
 ```bash
-videre scan ~/Photos          # first, everything depends on it
-videre watch ~/Photos --heic  # optional: makes faces ~70x faster on HEIC, then Ctrl-C
+videre --library ~/Photos scan          # first, everything depends on it
+videre --library ~/Photos watch --heic  # optional: makes faces ~70x faster on HEIC, then Ctrl-C
 videre embed                  # hours
 videre faces                  # hours
 videre classify               # minutes, needs embed

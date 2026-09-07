@@ -41,7 +41,7 @@ open from disk, because both need something running to answer.
 
 | Flag | What it does |
 |------|--------------|
-| `--db <DB>` | SQLite database (default: resolved from `~/.videre`) |
+| `--library <DIR>` | Select a different library (default: the current directory) |
 | `--model <MODEL>` | Embedding model backing similarity search |
 | `--port <PORT>` | Port to listen on (default 7878) |
 | `--browse` | Open a browser once the server is listening |

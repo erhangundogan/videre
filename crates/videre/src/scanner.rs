@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -8,6 +9,7 @@ const SUPPORTED_EXTENSIONS: &[&str] = &[
 pub fn scan(dir: &Path) -> Vec<PathBuf> {
     WalkDir::new(dir)
         .into_iter()
+        .filter_entry(|entry| entry.file_name() != OsStr::new(".videre"))
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
         .filter(|e| {
@@ -70,5 +72,17 @@ mod tests {
     fn scan_empty_dir_returns_empty() {
         let dir = tempdir().unwrap();
         assert!(scan(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn scan_never_descends_into_videre_state_directories() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("photo.jpg"), b"media").unwrap();
+        fs::create_dir_all(dir.path().join("child/.videre/cache")).unwrap();
+        fs::write(dir.path().join("child/.videre/cache/private.jpg"), b"state").unwrap();
+
+        let results = scan(dir.path());
+
+        assert_eq!(results, vec![dir.path().join("photo.jpg")]);
     }
 }

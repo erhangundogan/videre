@@ -7,15 +7,13 @@
 //! integration tests: it skips on a cold cache and holds the shared-cache lock.
 
 mod common;
-use common::{face_models_cached, shared_cache_guard, skip_without_models, videre_bin as bin};
+use common::{face_models_cached, shared_cache_guard, skip_without_models, TestLibrary};
 
 use rusqlite::Connection;
 use std::path::Path;
-use std::process::Command;
-use tempfile::tempdir;
 
-fn run(args: &[&str]) {
-    let out = Command::new(bin()).args(args).output().expect("run videre");
+fn run(lib: &TestLibrary, args: &[&str]) {
+    let out = lib.cmd().args(args).output().expect("run videre");
     assert!(
         out.status.success(),
         "videre {args:?} failed:\n{}",
@@ -49,23 +47,17 @@ fn imports_a_face_name_from_an_xmp_region() {
         return;
     }
 
-    let dir = tempdir().unwrap();
-    let photos = dir.path().join("photos");
-    std::fs::create_dir(&photos).unwrap();
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ai-generated-couple.jpg");
-    let photo = photos.join("couple.jpg");
-    std::fs::copy(&src, &photo).unwrap();
-    let db = dir.path().join("hashes.db");
-    let (photos_s, db_s) = (photos.to_str().unwrap(), db.to_str().unwrap());
+    let lib = TestLibrary::new();
+    let photo = lib.copy_fixture("ai-generated-couple.jpg", "photos/couple.jpg");
 
     // Scan (width/height come from the image header) and detect faces.
-    run(&["scan", photos_s, "--db", db_s, "--silent"]);
-    run(&["faces", "--db", db_s, "--min-cluster-size", "1", "--silent"]);
+    run(&lib, &["scan", "--silent"]);
+    run(&lib, &["faces", "--min-cluster-size", "1", "--silent"]);
 
     // Read a detected face's bbox and the image dimensions, so the region we
     // write overlaps a real face regardless of the model's exact output.
     let (bbox, iw, ih): (String, f64, f64) = {
-        let conn = Connection::open(&db).unwrap();
+        let conn = lib.conn();
         let bbox: String = conn
             .query_row("SELECT bbox FROM faces ORDER BY id LIMIT 1", [], |r| {
                 r.get(0)
@@ -82,21 +74,23 @@ fn imports_a_face_name_from_an_xmp_region() {
 
     // Write a sidecar naming that face, then re-run faces to import it.
     write_region_sidecar(&photo, "Ayşe", &bbox, iw, ih);
-    run(&[
-        "faces",
-        "--db",
-        db_s,
-        "--reprocess",
-        "--min-cluster-size",
-        "1",
-        "--xmp",
-        "file",
-        "--silent",
-    ]);
+    run(
+        &lib,
+        &[
+            "faces",
+            "--reprocess",
+            "--min-cluster-size",
+            "1",
+            "--xmp",
+            "file",
+            "--silent",
+        ],
+    );
 
     // The imported name is now searchable, and lands on a confirmed face.
-    let out = Command::new(bin())
-        .args(["search", "--person", "Ayşe", "--db", db_s])
+    let out = lib
+        .cmd()
+        .args(["search", "--person", "Ayşe"])
         .output()
         .unwrap();
     assert!(out.status.success());
@@ -106,8 +100,8 @@ fn imports_a_face_name_from_an_xmp_region() {
         "expected the imported person to be searchable; got: {stdout}"
     );
 
-    let conn = Connection::open(&db).unwrap();
-    let confirmed: i64 = conn
+    let confirmed: i64 = lib
+        .conn()
         .query_row(
             "SELECT count(*) FROM faces WHERE person_label = 'ayse' AND confirmed = 1",
             [],

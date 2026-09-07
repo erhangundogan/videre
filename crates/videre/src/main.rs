@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand};
+use std::ffi::{OsStr, OsString};
 
+mod command_context;
 mod commands;
 mod render;
 mod xmp;
@@ -11,6 +13,16 @@ mod xmp;
     about = "Local-first media library toolkit: dedupe, semantic search, faces, and browsing over one SQLite database"
 )]
 struct Cli {
+    /// Library root (default: invocation directory)
+    #[arg(
+        long,
+        global = true,
+        value_name = "DIR",
+        value_parser = library_value_parser(),
+        overrides_with = "library"
+    )]
+    library: Option<std::path::PathBuf>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -41,7 +53,7 @@ enum Command {
     Classify(commands::classify::ClassifyArgs),
     /// Background loop keeping scan/faces/HEIC-cache/location data fresh
     Watch(commands::watch::WatchArgs),
-    /// Show or edit videre's config and default paths (~/.videre)
+    /// Show or edit the selected library's configuration
     Config(commands::config::ConfigArgs),
     /// Serve read-only MCP tools (search, find_duplicates, stats) over stdio for LLM agents
     Mcp(commands::mcp::McpArgs),
@@ -55,19 +67,32 @@ enum Command {
     Tag(commands::tag::TagArgs),
 }
 
-/// Pushes the configured floor read rate into `io_timeout` before any command
-/// runs, since the timeout is resolved process-wide rather than threaded
-/// through `hash_file`'s 13 call sites. A missing or unreadable config is not
-/// an error: the built-in default applies, exactly as it did before this key
-/// existed.
-fn apply_configured_read_rate() {
-    if let Ok(home) = videre_core::home::videre_home() {
-        if let Ok(cfg) = videre_core::home::load_config(&home) {
-            if let Some(rate) = cfg.min_read_rate_mb_s {
-                videre_core::io_timeout::set_min_read_rate_mb_s(rate);
-            }
+fn library_value_parser() -> impl clap::builder::TypedValueParser<Value = std::path::PathBuf> {
+    use clap::builder::TypedValueParser;
+    clap::builder::OsStringValueParser::new().try_map(|raw: OsString| {
+        if raw.is_empty() {
+            Err("library directory must not be empty".to_string())
+        } else {
+            Ok(std::path::PathBuf::from(raw))
         }
-    }
+    })
+}
+
+/// Count selectors exactly as supplied, stopping at the option terminator.
+/// Clap propagates global options into nested matches, so the original argv is
+/// the only unambiguous source for detecting duplicates across those levels.
+fn library_option_count(args: &[OsString]) -> usize {
+    args.iter()
+        .skip(1)
+        .take_while(|arg| arg.as_os_str() != OsStr::new("--"))
+        .filter(|arg| {
+            arg.as_os_str() == OsStr::new("--library")
+                || arg
+                    .as_os_str()
+                    .as_encoded_bytes()
+                    .starts_with(b"--library=")
+        })
+        .count()
 }
 
 /// Appends `Full documentation: https://docs.videre.sh/commands/<name>/` to
@@ -91,35 +116,65 @@ fn with_docs_links(cmd: clap::Command) -> clap::Command {
 }
 
 fn main() {
+    let raw: Vec<OsString> = std::env::args_os().collect();
     let cli = {
         use clap::{CommandFactory, FromArgMatches};
-        let matches = with_docs_links(Cli::command()).get_matches();
+        let matches = match with_docs_links(Cli::command()).try_get_matches_from(&raw) {
+            Ok(matches) => matches,
+            Err(error) => error.exit(),
+        };
+        if library_option_count(&raw) > 1 {
+            clap::Error::raw(
+                clap::error::ErrorKind::ArgumentConflict,
+                "--library may be supplied only once",
+            )
+            .exit();
+        }
         match Cli::from_arg_matches(&matches) {
             Ok(c) => c,
             Err(e) => e.exit(),
         }
     };
-    videre_core::thumb_cache::migrate_legacy_dupe_cache();
-    apply_configured_read_rate();
-    let result = match cli.command {
-        Command::Dedupe(args) => commands::dedupe::run(args),
-        Command::Gallery(args) => commands::gallery::run(args),
-        Command::Scan(args) => commands::scan::run(args),
-        Command::FixDates(args) => commands::fix_dates::run(args),
-        Command::Import(args) => commands::import::run(args),
-        Command::Prune(args) => commands::prune::run(args),
-        Command::Locations(args) => commands::locations::run(args),
-        Command::Embed(args) => commands::embed::run(args),
-        Command::Search(args) => commands::search::run(args),
-        Command::Faces(args) => commands::faces::run(args),
-        Command::Classify(args) => commands::classify::run(args),
-        Command::Watch(args) => commands::watch::run(args),
-        Command::Config(args) => commands::config::run(args),
-        Command::Mcp(args) => commands::mcp::run(args),
-        Command::Stats(args) => commands::stats::run(args),
-        Command::Mark(args) => commands::mark::run(args),
-        Command::Export(args) => commands::export::run(args),
-        Command::Tag(args) => commands::tag::run(args),
+    let Cli { library, command } = cli;
+    let result = match command {
+        Command::Scan(args) => match command_context::CommandContext::capture(library) {
+            Ok(ctx) => commands::scan::run(args, &ctx),
+            Err(error) => commands::scan::report_startup_error(args, error),
+        },
+        Command::Config(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::config::run(args, &ctx)),
+        Command::Dedupe(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::dedupe::run(args, &ctx)),
+        Command::Gallery(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::gallery::run(args, &ctx)),
+        Command::FixDates(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::fix_dates::run(args, &ctx)),
+        Command::Import(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::import::run(args, &ctx)),
+        Command::Prune(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::prune::run(args, &ctx)),
+        Command::Locations(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::locations::run(args, &ctx)),
+        Command::Embed(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::embed::run(args, &ctx)),
+        Command::Search(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::search::run(args, &ctx)),
+        Command::Faces(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::faces::run(args, &ctx)),
+        Command::Classify(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::classify::run(args, &ctx)),
+        Command::Watch(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::watch::run(args, &ctx)),
+        Command::Mcp(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::mcp::run(args, &ctx)),
+        Command::Stats(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::stats::run(args, &ctx)),
+        Command::Mark(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::mark::run(args, &ctx)),
+        Command::Export(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::export::run(args, &ctx)),
+        Command::Tag(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::tag::run(args, &ctx)),
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");

@@ -95,6 +95,38 @@ pub fn narrow<T>(
     words: Words,
     silent: bool,
 ) -> Result<Work<T>> {
+    narrow_resolved(pending, hash_of, selection, words, silent, || {
+        selection.resolve(conn, ctx)
+    })
+}
+
+/// The directory-local twin of [`narrow`]: the selection is resolved through
+/// [`RowSelection::resolve_in`](crate::selection::RowSelection::resolve_in), so
+/// every `--path` is guarded against the selected root before any work.
+#[allow(clippy::too_many_arguments)]
+pub fn narrow_in<T>(
+    pending: Vec<T>,
+    hash_of: impl Fn(&T) -> &str,
+    selection: &RowSelection,
+    conn: &Connection,
+    ctx: &SelectionCtx,
+    library: &crate::library::LibraryContext,
+    words: Words,
+    silent: bool,
+) -> Result<Work<T>> {
+    narrow_resolved(pending, hash_of, selection, words, silent, || {
+        selection.resolve_in(conn, ctx, library)
+    })
+}
+
+fn narrow_resolved<T>(
+    pending: Vec<T>,
+    hash_of: impl Fn(&T) -> &str,
+    selection: &RowSelection,
+    words: Words,
+    silent: bool,
+    resolve: impl FnOnce() -> Result<crate::selection::Resolved>,
+) -> Result<Work<T>> {
     if pending.is_empty() {
         return Ok(Work::Nothing(match words.nothing_pending {
             Some(m) => m.to_string(),
@@ -109,7 +141,7 @@ pub fn narrow<T>(
     let items = if selection.is_empty() {
         pending
     } else {
-        let resolved = selection.resolve(conn, ctx)?;
+        let resolved = resolve()?;
         match resolved.hashes {
             // `None` means the selection put no constraint on hashes, so
             // everything pending survives. It does NOT mean "matched nothing":

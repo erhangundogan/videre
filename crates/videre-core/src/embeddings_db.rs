@@ -33,37 +33,25 @@ pub fn model_from_slug(slug: &str) -> String {
     slug.replacen("--", "/", 1)
 }
 
-/// Directory holding every model database for one library:
-/// `<home>/embeddings/<db stem>-<hash16>`.
-///
-/// The hash of the canonical path is load-bearing, not decoration, exactly as
-/// in `pipeline_runs::lock_path_for`: two libraries can both be named
-/// `photos.db` in different directories, and keying on the stem alone would
-/// silently merge their embeddings. Canonicalizing first also collapses a
-/// symlink and a relative path to one directory.
-///
-/// Path only; creating the directory is the caller's job, so readers never
-/// bring videre's home into existence just by looking.
-pub fn library_dir(db_path: &Path) -> Result<PathBuf> {
-    use std::hash::{Hash, Hasher};
-    let canonical = db_path
-        .canonicalize()
-        .with_context(|| format!("canonicalize {}", db_path.display()))?;
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    canonical.hash(&mut hasher);
-    let stem = canonical
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "db".to_string());
-    Ok(crate::home::videre_home()?
-        .join("embeddings")
-        .join(format!("{stem}-{:016x}", hasher.finish())))
+fn validate_context_storage(ctx: &crate::library::LibraryContext) -> Result<()> {
+    ctx.ensure_root_identity()?;
+    crate::library_locks::reject_dir_redirect(&ctx.paths.embeddings, "the embeddings directory")?;
+    Ok(())
 }
 
-/// Full path to one model's database for one library. Path only; creates
-/// nothing.
-pub fn db_path(db_path: &Path, model_id: &str) -> Result<PathBuf> {
-    Ok(library_dir(db_path)?.join(format!("{}.{DB_EXT}", model_slug(model_id))))
+/// Full path to one model database inside the selected library.
+///
+/// This is a path-only lookup. It validates the root and any existing state
+/// redirection, but creates no directory or database.
+pub fn db_path_in(ctx: &crate::library::LibraryContext, model_id: &str) -> Result<PathBuf> {
+    crate::embeddings::validate_model_id(model_id)?;
+    validate_context_storage(ctx)?;
+    let path = ctx
+        .paths
+        .embeddings
+        .join(format!("{}.{DB_EXT}", model_slug(model_id)));
+    crate::library_locks::reject_redirect(&path, "the model database")?;
+    Ok(path)
 }
 
 /// Page size for model databases, overriding SQLite's 4096 default.
@@ -110,16 +98,18 @@ fn init_model_db(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// ATTACH the model database for `(db_path, model_id)` as `emb`.
-///
-/// With `create`, a missing file is initialised first; this is reached only
-/// from `videre embed`. Without, a missing file is an error naming the models
-/// that do exist, so the user is never left guessing why search is empty.
-pub fn attach(conn: &Connection, db_path: &Path, model_id: &str, create: bool) -> Result<()> {
-    let path = self::db_path(db_path, model_id)?;
+/// Attach one model database from the selected library as `emb`.
+pub fn attach_in(
+    conn: &Connection,
+    ctx: &crate::library::LibraryContext,
+    model_id: &str,
+    create: bool,
+) -> Result<()> {
+    crate::library_locks::verify_state(ctx)?;
+    let path = db_path_in(ctx, model_id)?;
     if !path.exists() {
         if !create {
-            let available = list_models(db_path).unwrap_or_default();
+            let available = list_models_in(ctx).unwrap_or_default();
             let available = if available.is_empty() {
                 "(none)".to_string()
             } else {
@@ -132,23 +122,21 @@ pub fn attach(conn: &Connection, db_path: &Path, model_id: &str, create: bool) -
                 path.display()
             );
         }
+        std::fs::create_dir_all(&ctx.paths.embeddings)
+            .with_context(|| format!("create {}", ctx.paths.embeddings.display()))?;
+        validate_context_storage(ctx)?;
         init_model_db(&path)?;
     }
+    crate::library_locks::reject_redirect(&path, "the model database")?;
+    let meta =
+        std::fs::symlink_metadata(&path).with_context(|| format!("inspect {}", path.display()))?;
+    anyhow::ensure!(meta.is_file(), "{} is not a regular file", path.display());
     conn.execute(
         &format!("ATTACH DATABASE ?1 AS {ATTACH_ALIAS}"),
         [path.to_string_lossy().as_ref()],
     )
     .with_context(|| format!("attach {}", path.display()))?;
     if create {
-        // `path.exists()` above is not sufficient on its own: a file can exist
-        // without the table, if initialisation was interrupted by a crash or a
-        // full disk, or if two processes create it at once. Attaching such a
-        // file leaves it broken forever, since every later call sees the file
-        // and skips init. Re-asserting the schema is idempotent and cheap.
-        //
-        // page_size is deliberately NOT set here: it only takes effect on an
-        // empty database, so it belongs in `init_model_db` before any table
-        // exists. A recovered file keeps whatever page size it was born with.
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS emb.embeddings (
                 hash        TEXT PRIMARY KEY NOT NULL,
@@ -162,23 +150,31 @@ pub fn attach(conn: &Connection, db_path: &Path, model_id: &str, create: bool) -
     Ok(())
 }
 
-/// Model ids with an existing database for this library, sorted.
-///
-/// A missing directory is an empty list, not an error: a library that has
-/// never been embedded is a normal state, not a fault.
-pub fn list_models(db_path: &Path) -> Result<Vec<String>> {
-    let dir = library_dir(db_path)?;
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(e).with_context(|| format!("read {}", dir.display())),
+/// Model ids with a database in the selected library, sorted.
+pub fn list_models_in(ctx: &crate::library::LibraryContext) -> Result<Vec<String>> {
+    validate_context_storage(ctx)?;
+    let entries = match std::fs::read_dir(&ctx.paths.embeddings) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("read {}", ctx.paths.embeddings.display()))
+        }
     };
-    let mut models: Vec<String> = entries
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == DB_EXT))
-        .filter_map(|p| p.file_stem().map(|s| model_from_slug(&s.to_string_lossy())))
-        .collect();
+    let mut models = Vec::new();
+    for entry in entries {
+        let entry = entry.with_context(|| format!("read {}", ctx.paths.embeddings.display()))?;
+        let path = entry.path();
+        if path.extension().is_none_or(|extension| extension != DB_EXT) {
+            continue;
+        }
+        crate::library_locks::reject_redirect(&path, "the model database")?;
+        let meta = std::fs::symlink_metadata(&path)
+            .with_context(|| format!("inspect {}", path.display()))?;
+        anyhow::ensure!(meta.is_file(), "{} is not a regular file", path.display());
+        if let Some(stem) = path.file_stem() {
+            models.push(model_from_slug(&stem.to_string_lossy()));
+        }
+    }
     models.sort();
     Ok(models)
 }
@@ -195,23 +191,25 @@ pub struct ModelEmbeddingCount {
     pub size_bytes: i64,
 }
 
-/// Row count, dimensions, and file size for every model in this library.
-pub fn counts_by_model(db_path: &Path) -> Result<Vec<ModelEmbeddingCount>> {
+/// Row count, dimensions and file size for each model in the selected library.
+pub fn counts_by_model_in(
+    ctx: &crate::library::LibraryContext,
+) -> Result<Vec<ModelEmbeddingCount>> {
     let mut out = Vec::new();
-    for model_id in list_models(db_path)? {
-        let path = self::db_path(db_path, &model_id)?;
+    for model_id in list_models_in(ctx)? {
+        let path = db_path_in(ctx, &model_id)?;
         let size_bytes = std::fs::metadata(&path)
-            .map(|m| m.len() as i64)
-            .unwrap_or(0);
+            .with_context(|| format!("inspect {}", path.display()))?
+            .len() as i64;
         let conn = Connection::open(&path).with_context(|| format!("open {}", path.display()))?;
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM embeddings", [], |row| row.get(0))
             .unwrap_or(0);
         let dims: i64 = conn
             .query_row(
                 "SELECT LENGTH(embedding) / 2 FROM embeddings LIMIT 1",
                 [],
-                |r| r.get(0),
+                |row| row.get(0),
             )
             .unwrap_or(0);
         out.push(ModelEmbeddingCount {
@@ -227,12 +225,15 @@ pub fn counts_by_model(db_path: &Path) -> Result<Vec<ModelEmbeddingCount>> {
 /// Attach for a reader: a missing model database is an error naming the models
 /// that do exist.
 ///
-/// Kept as a distinct name from `attach(.., false)` so call sites read as
-/// intent rather than as a boolean. It previously tolerated a missing database
-/// when the main one still held pre-0.10 rows; that fallback was removed in
-/// 0.11.0, as `LEGACY_FALLBACK_REMOVE_IN` scheduled.
-pub fn attach_for_read(conn: &Connection, db_path: &Path, model_id: &str) -> Result<()> {
-    attach(conn, db_path, model_id, false)
+/// Attach a selected library's existing model database for reading. Kept as a
+/// distinct name from `attach_in(.., false)` so call sites read as intent
+/// rather than as a boolean.
+pub fn attach_for_read_in(
+    conn: &Connection,
+    ctx: &crate::library::LibraryContext,
+    model_id: &str,
+) -> Result<()> {
+    attach_in(conn, ctx, model_id, false)
 }
 
 /// DETACH the model database. Needed before attaching a different model on
@@ -243,62 +244,97 @@ pub fn detach(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// The one `VIDERE_HOME` for this test binary, set exactly once.
-///
-/// Shared by every module's tests rather than each setting its own. Tests
-/// share a process and run in parallel, so a per-test `set_var` races every
-/// concurrent `getenv`, and deleting that directory afterwards pulls the home
-/// out from under unrelated tests mid-run. Doing exactly that made two
-/// `pipeline_runs` lock tests fail. Isolation comes from per-test
-/// subdirectories instead, which suffices because `library_dir` keys on the
-/// database's canonical path.
-#[cfg(test)]
-pub(crate) fn test_home() -> &'static Path {
-    static HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    HOME.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("videre-embdb-home-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("create isolated test home");
-        std::env::set_var("VIDERE_HOME", &dir);
-        dir
-    })
-}
-
-/// Test-only: a fresh library directory plus an empty database file at
-/// `<test home>/<tag>/<tag>.db`, ready to hand to `attach`.
+/// Test-only: a fully initialized [`LibraryContext`](crate::library::LibraryContext)
+/// under a fresh per-tag directory, ready to hand to the `_in` model-store
+/// helpers. No process-global environment is touched: each library's stores
+/// live under its own root, so parallel tests never collide.
 ///
 /// **`tag` must be unique across the whole test binary.** This wipes its
-/// directory on entry, so two tests sharing a tag delete each other's database
-/// mid-run and fail intermittently with `canonicalize ...: No such file or
-/// directory`. That happened once already, by reusing `emb_dng`.
+/// directory on entry, so two tests sharing a tag delete each other's store
+/// mid-run and fail intermittently.
 #[cfg(test)]
-pub(crate) fn test_library(tag: &str) -> PathBuf {
-    let dir = test_home().join(tag);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let lib = dir.join(format!("{tag}.db"));
-    std::fs::write(&lib, b"").unwrap();
-    lib
+pub(crate) fn test_context(tag: &str) -> crate::library::LibraryContext {
+    let base = std::env::temp_dir().join(format!("videre-embdb-{}-{}", tag, std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let root = base.join("lib");
+    std::fs::create_dir_all(&root).unwrap();
+    let ctx = crate::library::LibraryContext::new(&root, &base.join("cache")).unwrap();
+    // The model-store helpers verify the state directory exists before
+    // attaching, the one thing `library_db::initialize` would otherwise set up.
+    std::fs::create_dir_all(&ctx.paths.state).unwrap();
+    ctx
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn explicit_context(parent: &Path, name: &str) -> crate::library::LibraryContext {
+        let root = parent.join(name);
+        std::fs::create_dir(&root).unwrap();
+        crate::library::LibraryContext::new(&root, &parent.join("cache")).unwrap()
+    }
+
+    #[test]
+    fn explicit_model_stores_are_isolated_and_keep_f16_dimensions() {
+        let temp = tempfile::tempdir().unwrap();
+        let a = explicit_context(temp.path(), "a");
+        let b = explicit_context(temp.path(), "b");
+        let a_conn = crate::library_db::initialize(&a).unwrap();
+        let b_conn = crate::library_db::initialize(&b).unwrap();
+        for model in ["owner/model-a", "owner/model-b"] {
+            attach_in(&a_conn, &a, model, true).unwrap();
+            a_conn
+                .execute(
+                    "INSERT INTO emb.embeddings (hash, model_id, embedding, embedded_at)
+                     VALUES ('shared', ?1, zeroblob(1536), 'now')",
+                    [model],
+                )
+                .unwrap();
+            detach(&a_conn).unwrap();
+        }
+        attach_in(&b_conn, &b, "owner/model-a", true).unwrap();
+        b_conn
+            .execute(
+                "INSERT INTO emb.embeddings (hash, model_id, embedding, embedded_at)
+                 VALUES ('shared', ?1, zeroblob(8), 'now')",
+                ["owner/model-a"],
+            )
+            .unwrap();
+        detach(&b_conn).unwrap();
+
+        assert_eq!(
+            list_models_in(&a).unwrap(),
+            vec!["owner/model-a", "owner/model-b"]
+        );
+        let a_counts = counts_by_model_in(&a).unwrap();
+        assert_eq!(a_counts.len(), 2);
+        assert!(a_counts
+            .iter()
+            .all(|count| count.count == 1 && count.dims == 768));
+        let b_counts = counts_by_model_in(&b).unwrap();
+        assert_eq!(b_counts[0].count, 1);
+        assert_eq!(b_counts[0].dims, 4);
+        assert_ne!(
+            db_path_in(&a, "owner/model-a").unwrap(),
+            db_path_in(&b, "owner/model-a").unwrap()
+        );
+    }
+
+    #[test]
+    fn explicit_read_attachment_does_not_create_a_missing_store() {
+        let temp = tempfile::tempdir().unwrap();
+        let ctx = explicit_context(temp.path(), "library");
+        let conn = crate::library_db::initialize(&ctx).unwrap();
+        let expected = db_path_in(&ctx, "owner/missing").unwrap();
+        let error = attach_for_read_in(&conn, &ctx, "owner/missing").unwrap_err();
+        assert!(format!("{error:#}").contains("no embeddings for owner/missing"));
+        assert!(!expected.exists());
+        assert!(!ctx.paths.embeddings.exists());
+    }
+
     /// Gives one test its own directory under the shared per-binary
     /// `VIDERE_HOME`. See `test_home` for why the home is not set per test.
-    fn with_home<T>(tag: &str, f: impl FnOnce(&Path) -> T) -> T {
-        let dir = test_home().join(tag);
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        f(&dir)
-    }
-
-    fn touch_db(dir: &Path, name: &str) -> PathBuf {
-        let p = dir.join(name);
-        std::fs::write(&p, b"").unwrap();
-        p
-    }
-
     #[test]
     fn model_slug_replaces_the_owner_separator() {
         assert_eq!(
@@ -326,89 +362,52 @@ mod tests {
     }
 
     #[test]
-    fn two_libraries_sharing_a_stem_get_different_directories() {
-        with_home("stem", |home| {
-            let a_dir = home.join("a");
-            let b_dir = home.join("b");
-            std::fs::create_dir_all(&a_dir).unwrap();
-            std::fs::create_dir_all(&b_dir).unwrap();
-            let a = touch_db(&a_dir, "photos.db");
-            let b = touch_db(&b_dir, "photos.db");
-
-            let da = library_dir(&a).unwrap();
-            let db_ = library_dir(&b).unwrap();
-            assert_ne!(da, db_, "same stem in different dirs must not collide");
-            assert!(da
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with("photos-"));
-        });
-    }
-
-    #[test]
-    fn relative_and_absolute_paths_resolve_to_one_directory() {
-        with_home("canon", |home| {
-            let abs = touch_db(home, "hashes.db");
-            let canonical_home = home.canonicalize().unwrap();
-            let rel = canonical_home.join(".").join("hashes.db");
-            assert_eq!(library_dir(&abs).unwrap(), library_dir(&rel).unwrap());
-        });
-    }
-
-    #[test]
-    fn db_path_joins_library_dir_and_model_slug() {
-        with_home("dbpath", |home| {
-            let lib = touch_db(home, "hashes.db");
-            let p = db_path(&lib, "google/siglip2-base-patch16-384").unwrap();
-            assert_eq!(
-                p.file_name().unwrap(),
-                "google--siglip2-base-patch16-384.db"
-            );
-            assert_eq!(p.parent().unwrap(), library_dir(&lib).unwrap());
-        });
+    fn db_path_in_joins_the_embeddings_dir_and_model_slug() {
+        let ctx = test_context("dbpath");
+        let p = db_path_in(&ctx, "google/siglip2-base-patch16-384").unwrap();
+        assert_eq!(
+            p.file_name().unwrap(),
+            "google--siglip2-base-patch16-384.db"
+        );
+        assert_eq!(p.parent().unwrap(), ctx.paths.embeddings);
     }
 
     #[test]
     fn attach_with_create_makes_a_database_with_the_chosen_page_size() {
-        with_home("create", |home| {
-            let lib = touch_db(home, "hashes.db");
-            let conn = Connection::open_in_memory().unwrap();
-            attach(&conn, &lib, "google/siglip2-base-patch16-384", true).unwrap();
+        let ctx = test_context("create");
+        let conn = Connection::open_in_memory().unwrap();
+        attach_in(&conn, &ctx, "google/siglip2-base-patch16-384", true).unwrap();
 
-            // Read the pragma back rather than assuming the write took: a
-            // page_size set after the file has content is silently ignored.
-            let ps: i64 = conn
-                .query_row("PRAGMA emb.page_size", [], |r| r.get(0))
-                .unwrap();
-            assert_eq!(ps, PAGE_SIZE);
-        });
+        // Read the pragma back rather than assuming the write took: a
+        // page_size set after the file has content is silently ignored.
+        let ps: i64 = conn
+            .query_row("PRAGMA emb.page_size", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ps, PAGE_SIZE);
     }
 
     #[test]
     fn attach_with_create_is_idempotent_and_preserves_rows() {
-        with_home("idem", |home| {
-            let lib = touch_db(home, "hashes.db");
-            let model = "google/siglip2-base-patch16-384";
+        let ctx = test_context("idem");
+        let model = "google/siglip2-base-patch16-384";
 
-            let c1 = Connection::open_in_memory().unwrap();
-            attach(&c1, &lib, model, true).unwrap();
-            c1.execute(
-                "INSERT INTO emb.embeddings (hash, model_id, embedding, embedded_at)
-                 VALUES ('h1', ?1, X'0102', '2026-08-05T00:00:00')",
-                [model],
-            )
+        let c1 = Connection::open_in_memory().unwrap();
+        attach_in(&c1, &ctx, model, true).unwrap();
+        c1.execute(
+            "INSERT INTO emb.embeddings (hash, model_id, embedding, embedded_at)
+             VALUES ('h1', ?1, X'0102', '2026-08-05T00:00:00')",
+            [model],
+        )
+        .unwrap();
+        detach(&c1).unwrap();
+        drop(c1);
+
+        let c2 = Connection::open_in_memory().unwrap();
+        attach_in(&c2, &ctx, model, true).unwrap();
+        let n: i64 = c2
+            .query_row("SELECT COUNT(*) FROM emb.embeddings", [], |r| r.get(0))
             .unwrap();
-            detach(&c1).unwrap();
-            drop(c1);
-
-            let c2 = Connection::open_in_memory().unwrap();
-            attach(&c2, &lib, model, true).unwrap();
-            let n: i64 = c2
-                .query_row("SELECT COUNT(*) FROM emb.embeddings", [], |r| r.get(0))
-                .unwrap();
-            assert_eq!(n, 1, "re-attaching must not clobber existing rows");
-        });
+        assert_eq!(n, 1, "re-attaching must not clobber existing rows");
     }
 
     #[test]
@@ -417,67 +416,61 @@ mod tests {
         // by a crash or a full disk, and attaching the resulting file leaves it
         // broken forever because every later call sees the file and skips init.
         // Surfaced as an intermittent "no such table: emb.embeddings" in tests.
-        with_home("repair", |home| {
-            let lib = touch_db(home, "hashes.db");
-            let model = "google/siglip2-base-patch16-384";
-            let path = db_path(&lib, model).unwrap();
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, b"").unwrap(); // exists, but empty
+        let ctx = test_context("repair");
+        let model = "google/siglip2-base-patch16-384";
+        let path = db_path_in(&ctx, model).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"").unwrap(); // exists, but empty
 
-            let conn = Connection::open_in_memory().unwrap();
-            attach(&conn, &lib, model, true).unwrap();
-            let n: i64 = conn
-                .query_row("SELECT COUNT(*) FROM emb.embeddings", [], |r| r.get(0))
-                .expect("the table must exist after attach(create: true)");
-            assert_eq!(n, 0);
-        });
+        let conn = Connection::open_in_memory().unwrap();
+        attach_in(&conn, &ctx, model, true).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM emb.embeddings", [], |r| r.get(0))
+            .expect("the table must exist after attach_in(create: true)");
+        assert_eq!(n, 0);
     }
 
     #[test]
     fn attach_without_create_errors_and_names_available_models() {
-        with_home("missing", |home| {
-            let lib = touch_db(home, "hashes.db");
-            let conn = Connection::open_in_memory().unwrap();
-            attach(&conn, &lib, "google/siglip2-base-patch16-384", true).unwrap();
-            detach(&conn).unwrap();
+        let ctx = test_context("missing");
+        let conn = Connection::open_in_memory().unwrap();
+        attach_in(&conn, &ctx, "google/siglip2-base-patch16-384", true).unwrap();
+        detach(&conn).unwrap();
 
-            let err = attach(&conn, &lib, "google/siglip-base-patch16-224", false).unwrap_err();
-            let msg = format!("{err:#}");
-            assert!(
-                msg.contains("no embeddings for google/siglip-base-patch16-224"),
-                "{msg}"
-            );
-            assert!(
-                msg.contains("google/siglip2-base-patch16-384"),
-                "error must list what IS available: {msg}"
-            );
-            assert!(msg.contains("videre embed --model"), "{msg}");
-        });
+        let err = attach_in(&conn, &ctx, "google/siglip-base-patch16-224", false).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("no embeddings for google/siglip-base-patch16-224"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("google/siglip2-base-patch16-384"),
+            "error must list what IS available: {msg}"
+        );
+        assert!(msg.contains("videre embed --model"), "{msg}");
     }
 
     #[test]
     fn two_models_do_not_see_each_others_rows() {
-        with_home("isolate", |home| {
-            let lib = touch_db(home, "hashes.db");
-            let a = "google/siglip2-base-patch16-384";
-            let b = "google/siglip-base-patch16-224";
+        let ctx = test_context("isolate");
+        let a = "google/siglip2-base-patch16-384";
+        let b = "google/siglip-base-patch16-224";
 
-            let conn = Connection::open_in_memory().unwrap();
-            attach(&conn, &lib, a, true).unwrap();
-            conn.execute(
-                "INSERT INTO emb.embeddings (hash, model_id, embedding, embedded_at)
-                 VALUES ('h1', ?1, X'0102', 'now')",
-                [a],
-            )
+        let conn = Connection::open_in_memory().unwrap();
+        attach_in(&conn, &ctx, a, true).unwrap();
+        conn.execute(
+            "INSERT INTO emb.embeddings (hash, model_id, embedding, embedded_at)
+             VALUES ('h1', ?1, X'0102', 'now')",
+            [a],
+        )
+        .unwrap();
+        detach(&conn).unwrap();
+
+        attach_in(&conn, &ctx, b, true).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM emb.embeddings", [], |r| r.get(0))
             .unwrap();
-            detach(&conn).unwrap();
-
-            attach(&conn, &lib, b, true).unwrap();
-            let n: i64 = conn
-                .query_row("SELECT COUNT(*) FROM emb.embeddings", [], |r| r.get(0))
-                .unwrap();
-            assert_eq!(n, 0, "model b must not see model a's rows");
-        });
+        assert_eq!(n, 0, "model b must not see model a's rows");
     }
 
     #[test]
@@ -486,144 +479,120 @@ mod tests {
         // form returns 0 once the table is attached, and every caller treats
         // 0 as "not embedded yet" rather than as an error, so the failure is
         // silent. This test fails against the unqualified query.
-        with_home("master", |home| {
-            let lib = touch_db(home, "hashes.db");
-            let conn = Connection::open_in_memory().unwrap();
-            attach(&conn, &lib, "google/siglip2-base-patch16-384", true).unwrap();
+        let ctx = test_context("master");
+        let conn = Connection::open_in_memory().unwrap();
+        attach_in(&conn, &ctx, "google/siglip2-base-patch16-384", true).unwrap();
 
-            let found: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM emb.sqlite_master
-                     WHERE type='table' AND name='embeddings'",
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(found, 1);
+        let found: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM emb.sqlite_master
+                 WHERE type='table' AND name='embeddings'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(found, 1);
 
-            let unqualified: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM sqlite_master
-                     WHERE type='table' AND name='embeddings'",
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(unqualified, 0, "documents exactly why emb. is required");
-        });
-    }
-
-    #[test]
-    fn attach_for_read_still_errors_when_there_is_nothing_at_all_to_read() {
-        with_home("readnothing", |home| {
-            let lib = home.join("hashes.db");
-            std::fs::write(&lib, b"").unwrap();
-            let conn = Connection::open_in_memory().unwrap();
-
-            let err = attach_for_read(&conn, &lib, "google/siglip2-base-patch16-384").unwrap_err();
-            assert!(format!("{err:#}").contains("no embeddings for"), "{err:#}");
-        });
+        let unqualified: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='table' AND name='embeddings'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(unqualified, 0, "documents exactly why emb. is required");
     }
 
     #[test]
     fn detach_allows_attaching_a_different_model_on_the_same_connection() {
-        with_home("reattach", |home| {
-            let lib = touch_db(home, "hashes.db");
-            let conn = Connection::open_in_memory().unwrap();
-            attach(&conn, &lib, "google/siglip2-base-patch16-384", true).unwrap();
-            detach(&conn).unwrap();
-            attach(&conn, &lib, "google/siglip-base-patch16-224", true).unwrap();
-            detach(&conn).unwrap();
-        });
+        let ctx = test_context("reattach");
+        let conn = Connection::open_in_memory().unwrap();
+        attach_in(&conn, &ctx, "google/siglip2-base-patch16-384", true).unwrap();
+        detach(&conn).unwrap();
+        attach_in(&conn, &ctx, "google/siglip-base-patch16-224", true).unwrap();
+        detach(&conn).unwrap();
     }
 
     #[test]
     fn list_models_returns_sorted_ids_and_ignores_unrelated_files() {
-        with_home("list", |home| {
-            let lib = touch_db(home, "hashes.db");
-            let conn = Connection::open_in_memory().unwrap();
-            for m in [
-                "google/siglip2-base-patch16-384",
-                "google/siglip-base-patch16-224",
-            ] {
-                attach(&conn, &lib, m, true).unwrap();
-                detach(&conn).unwrap();
-            }
-            // WAL sidecars and stray files must not be mistaken for models.
-            let dir = library_dir(&lib).unwrap();
-            std::fs::write(dir.join("notes.txt"), b"x").unwrap();
+        let ctx = test_context("list");
+        let conn = Connection::open_in_memory().unwrap();
+        for m in [
+            "google/siglip2-base-patch16-384",
+            "google/siglip-base-patch16-224",
+        ] {
+            attach_in(&conn, &ctx, m, true).unwrap();
+            detach(&conn).unwrap();
+        }
+        // WAL sidecars and stray files must not be mistaken for models.
+        std::fs::write(ctx.paths.embeddings.join("notes.txt"), b"x").unwrap();
 
-            let models = list_models(&lib).unwrap();
-            assert_eq!(
-                models,
-                vec![
-                    "google/siglip-base-patch16-224".to_string(),
-                    "google/siglip2-base-patch16-384".to_string(),
-                ]
-            );
-        });
+        let models = list_models_in(&ctx).unwrap();
+        assert_eq!(
+            models,
+            vec![
+                "google/siglip-base-patch16-224".to_string(),
+                "google/siglip2-base-patch16-384".to_string(),
+            ]
+        );
     }
 
     #[test]
     fn list_models_on_a_library_with_no_embeddings_is_empty_not_an_error() {
-        with_home("listempty", |home| {
-            let lib = touch_db(home, "hashes.db");
-            assert!(list_models(&lib).unwrap().is_empty());
-        });
+        let ctx = test_context("listempty");
+        assert!(list_models_in(&ctx).unwrap().is_empty());
     }
 
     #[test]
     fn counts_by_model_reports_rows_dims_and_size() {
-        with_home("counts", |home| {
-            let lib = touch_db(home, "hashes.db");
-            let model = "google/siglip2-base-patch16-384";
-            let conn = Connection::open_in_memory().unwrap();
-            attach(&conn, &lib, model, true).unwrap();
-            // 768 dims f16 = 1536 bytes
-            conn.execute(
-                "INSERT INTO emb.embeddings (hash, model_id, embedding, embedded_at)
-                 VALUES ('h1', ?1, zeroblob(1536), 'now')",
-                [model],
-            )
-            .unwrap();
-            detach(&conn).unwrap();
+        let ctx = test_context("counts");
+        let model = "google/siglip2-base-patch16-384";
+        let conn = Connection::open_in_memory().unwrap();
+        attach_in(&conn, &ctx, model, true).unwrap();
+        // 768 dims f16 = 1536 bytes
+        conn.execute(
+            "INSERT INTO emb.embeddings (hash, model_id, embedding, embedded_at)
+             VALUES ('h1', ?1, zeroblob(1536), 'now')",
+            [model],
+        )
+        .unwrap();
+        detach(&conn).unwrap();
 
-            let counts = counts_by_model(&lib).unwrap();
-            assert_eq!(counts.len(), 1);
-            assert_eq!(counts[0].model_id, model);
-            assert_eq!(counts[0].count, 1);
-            assert_eq!(
-                counts[0].dims, 768,
-                "dims derive from blob length, not a table"
-            );
-            assert!(counts[0].size_bytes > 0);
-        });
+        let counts = counts_by_model_in(&ctx).unwrap();
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts[0].model_id, model);
+        assert_eq!(counts[0].count, 1);
+        assert_eq!(
+            counts[0].dims, 768,
+            "dims derive from blob length, not a table"
+        );
+        assert!(counts[0].size_bytes > 0);
     }
 
     #[test]
     fn counts_by_model_reports_zero_dims_for_an_empty_model_database() {
-        with_home("countsempty", |home| {
-            let lib = touch_db(home, "hashes.db");
-            let conn = Connection::open_in_memory().unwrap();
-            attach(&conn, &lib, "google/siglip2-base-patch16-384", true).unwrap();
-            detach(&conn).unwrap();
+        let ctx = test_context("countsempty");
+        let conn = Connection::open_in_memory().unwrap();
+        attach_in(&conn, &ctx, "google/siglip2-base-patch16-384", true).unwrap();
+        detach(&conn).unwrap();
 
-            let counts = counts_by_model(&lib).unwrap();
-            assert_eq!(counts.len(), 1);
-            assert_eq!(counts[0].count, 0);
-            assert_eq!(counts[0].dims, 0);
-        });
+        let counts = counts_by_model_in(&ctx).unwrap();
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts[0].count, 0);
+        assert_eq!(counts[0].dims, 0);
     }
 
     #[test]
     fn path_computation_creates_nothing() {
-        // Readers must be able to ask "which models exist" without bringing
-        // videre's home into existence, same rule locks_dir follows.
-        with_home("nocreate", |home| {
-            let lib = touch_db(home, "hashes.db");
-            let dir = library_dir(&lib).unwrap();
-            let _ = db_path(&lib, "google/siglip2-base-patch16-384").unwrap();
-            assert!(!dir.exists(), "path computation must not create {dir:?}");
-        });
+        // Readers must be able to ask "which model database would this be"
+        // without bringing the store directory into existence.
+        let ctx = test_context("nocreate");
+        let _ = db_path_in(&ctx, "google/siglip2-base-patch16-384").unwrap();
+        assert!(
+            !ctx.paths.embeddings.exists(),
+            "path computation must not create {:?}",
+            ctx.paths.embeddings
+        );
     }
 }

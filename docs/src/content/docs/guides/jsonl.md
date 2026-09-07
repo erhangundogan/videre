@@ -3,9 +3,9 @@ title: JSONL output
 description: Scan to a text stream instead of a database, and what you give up.
 ---
 
-[`videre scan`](/commands/scan/) can write one JSON object per line instead of a
-database. It is a way to get scan results into other tools without touching
-SQLite.
+[`videre export --jsonl`](/commands/export/) writes one JSON object per file to
+`.videre/hashes.jsonl`. It is a way to get the scan inventory into other tools
+without touching SQLite.
 
 ## Two outputs, two jobs
 
@@ -13,25 +13,27 @@ They are not competing formats, and neither is the lesser one:
 
 | | For |
 |---|---|
-| **SQLite** (`--db`) | the *library*. Everything that accumulates - embeddings, faces, classifications, location clusters - and everything that reads them: `search`, `gallery`, `dedupe`, the MCP server. |
-| **JSONL** (`--output`) | *composability*. One line per file, straight into `jq`, `awk`, a spreadsheet or another program, with no SQLite dependency and no schema to learn. |
+| **SQLite** (`.videre/hashes.db`) | the *library*. Everything that accumulates - embeddings, faces, classifications, location clusters - and everything that reads them: `search`, `gallery`, `dedupe`, the MCP server. |
+| **JSONL** (`export --jsonl`) | *composability*. One line per file, straight into `jq`, `awk`, a spreadsheet or another program, with no SQLite dependency and no schema to learn. |
 
-Use SQLite when videre is your library. Use JSONL when videre is one step in a
-pipeline you are building. A scan writes one or the other, never both, because
-`--output` and `--db` are mutually exclusive.
+Use SQLite when videre is your library. Export JSONL when videre is one step in
+a pipeline you are building. The database is always authoritative; the JSONL
+snapshot is derived from it on demand.
 
 What JSONL gives up is everything that comes *after* a scan: it holds the facts
-about each file and nothing else, so no command reads it back.
+about each file and nothing else, so no command reads it back. It is a
+scan-inventory snapshot, not an annotations or embeddings backup.
 
 ```bash
-videre scan ~/Photos --output              # writes ~/.videre/hashes.jsonl
-videre scan ~/Photos --output out.jsonl    # writes a specific file
+videre export --jsonl                       # snapshot every file to .videre/hashes.jsonl
+videre export --jsonl --path 2024           # snapshot just one subfolder
+videre export --jsonl --dry-run             # count what would be written
 ```
 
-:::caution[A bare `--output` must come after the folder]
-`videre scan --output ~/Photos` treats `~/Photos` as the *filename*, because
-`--output` takes an optional value. Put the folder first.
-:::
+`videre scan` and `videre watch` never write JSONL; the snapshot is always an
+explicit `export`. Each run **replaces** the previous snapshot atomically, so a
+scoped export (`--path`, `--type`, a date range) writes only the selected files
+and a selection that matches nothing leaves an empty file, never a partial one.
 
 ## The format
 
@@ -44,9 +46,9 @@ One JSON object per line, appended:
 The fields match the [database columns](/reference/database/) of the same names.
 Absent values, such as EXIF on a PNG, are `null` or omitted.
 
-**Appended, not replaced.** Scanning twice to the same file gives two entries per
-path. That suits a log, and it means you should not treat the file as a current
-snapshot without deduplicating it yourself.
+**Replaced, not appended.** Each `export --jsonl` writes the current snapshot
+atomically over the previous one, so the file is always a single consistent
+picture of the selected files, never an accumulating log.
 
 ## Working with it
 
@@ -67,15 +69,16 @@ jq -r 'select(.gps_lat) | [.path, .gps_lat, .gps_lon] | @csv' hashes.jsonl
 jq -s 'sort_by(-.size_bytes) | .[:10] | .[] | "\(.size_bytes)\t\(.path)"' -r hashes.jsonl
 ```
 
-Because it is line-delimited, it also streams:
+Because it is line-delimited, every line-oriented tool reads it directly, so an
+export feeds straight into a filter:
 
 ```bash
-videre scan ~/Photos --output /dev/stdout --silent | jq -c 'select(.width > 4000)'
+videre export --jsonl && jq -c 'select(.width > 4000)' .videre/hashes.jsonl
 ```
 
 ## What you give up
 
-JSONL is scan output only. Nothing else reads it:
+JSONL is an export snapshot only. Nothing else reads it:
 
 | Command | Works from JSONL? |
 |---|---|

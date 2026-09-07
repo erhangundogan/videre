@@ -23,11 +23,11 @@ pub struct Usage {
 /// Returns `(0, 0)` for a missing path rather than erroring: every caller is
 /// reporting, and "not there" and "empty" mean the same thing to a reader.
 pub fn dir_size(path: &Path) -> (u64, u64) {
-    if !path.exists() {
+    let Ok(root_meta) = std::fs::symlink_metadata(path) else {
         return (0, 0);
-    }
-    if path.is_file() {
-        return (path.metadata().map(|m| m.len()).unwrap_or(0), 1);
+    };
+    if !root_meta.is_dir() {
+        return (root_meta.len(), 1);
     }
     let (mut bytes, mut files) = (0u64, 0u64);
     let mut stack = vec![path.to_path_buf()];
@@ -38,7 +38,9 @@ pub fn dir_size(path: &Path) -> (u64, u64) {
         for entry in entries.flatten() {
             // symlink_metadata, so a link into the library is counted as the
             // link it is rather than the gigabytes it points at.
-            let Ok(md) = entry.metadata() else { continue };
+            let Ok(md) = entry.path().symlink_metadata() else {
+                continue;
+            };
             if md.is_dir() {
                 stack.push(entry.path());
             } else {
@@ -48,6 +50,56 @@ pub fn dir_size(path: &Path) -> (u64, u64) {
         }
     }
     (bytes, files)
+}
+
+/// Everything stored for one selected library, largest first.
+pub fn usage_in(ctx: &crate::library::LibraryContext) -> Vec<Usage> {
+    if ctx.ensure_root_identity().is_err() {
+        return Vec::new();
+    }
+
+    fn row(label: &'static str, path: PathBuf, rebuildable: bool) -> Option<Usage> {
+        let (bytes, files) = dir_size(&path);
+        (bytes > 0).then_some(Usage {
+            label,
+            path,
+            bytes,
+            files,
+            rebuildable,
+        })
+    }
+
+    let mut out = Vec::new();
+    out.extend(row("database", ctx.paths.db.clone(), false));
+    let (mut journal_bytes, mut journal_files) = (0, 0);
+    for suffix in ["-wal", "-shm"] {
+        let mut path = ctx.paths.db.as_os_str().to_owned();
+        path.push(suffix);
+        let (bytes, files) = dir_size(Path::new(&path));
+        journal_bytes += bytes;
+        journal_files += files;
+    }
+    if journal_bytes > 0 {
+        let mut path = ctx.paths.db.as_os_str().to_owned();
+        path.push("-wal");
+        out.push(Usage {
+            label: "database journal",
+            path: PathBuf::from(path),
+            bytes: journal_bytes,
+            files: journal_files,
+            rebuildable: true,
+        });
+    }
+    out.extend(row("embeddings", ctx.paths.embeddings.clone(), false));
+    out.extend(row("thumbnails", ctx.cache.thumbnails.clone(), true));
+    out.extend(row(
+        "place names (shared cache)",
+        ctx.cache.geo.clone(),
+        true,
+    ));
+    out.extend(row("locks", ctx.paths.locks.clone(), true));
+    out.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+    out
 }
 
 /// Everything videre stores, largest first.
@@ -263,5 +315,41 @@ mod tests {
             u.iter().all(|x| x.bytes > 0 || x.files > 0),
             "empty locations must not be listed"
         );
+    }
+
+    #[test]
+    fn explicit_usage_reports_only_the_selected_library_and_labels_shared_geo() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("library");
+        let cache = temp.path().join("cache");
+        std::fs::create_dir(&root).unwrap();
+        let ctx = crate::library::LibraryContext::new(&root, &cache).unwrap();
+        std::fs::create_dir_all(&ctx.paths.embeddings).unwrap();
+        std::fs::create_dir_all(&ctx.cache.thumbnails).unwrap();
+        std::fs::create_dir_all(&ctx.cache.geo).unwrap();
+        std::fs::write(&ctx.paths.db, vec![0u8; 16]).unwrap();
+        std::fs::write(ctx.paths.embeddings.join("model.db"), vec![0u8; 32]).unwrap();
+        std::fs::write(ctx.cache.thumbnails.join("thumb.jpg"), vec![0u8; 64]).unwrap();
+        std::fs::write(ctx.cache.geo.join("cities.csv"), vec![0u8; 8]).unwrap();
+
+        let usage = usage_in(&ctx);
+        let labels: Vec<_> = usage.iter().map(|item| item.label).collect();
+        assert!(labels.contains(&"database"));
+        assert!(labels.contains(&"embeddings"));
+        assert!(labels.contains(&"thumbnails"));
+        assert!(labels.contains(&"place names (shared cache)"));
+        assert!(!labels.contains(&"embeddings (other libraries)"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_size_does_not_follow_symlinks() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("large"), vec![0u8; 4096]).unwrap();
+        std::os::unix::fs::symlink(outside.path(), temp.path().join("link")).unwrap();
+        let (bytes, files) = dir_size(temp.path());
+        assert_eq!(files, 1);
+        assert!(bytes < 4096);
     }
 }

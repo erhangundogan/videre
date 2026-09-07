@@ -134,7 +134,7 @@ opens immediately instead of taking minutes on a HEIC-heavy library.
 Warm the cache first and the first click is fast too:
 
 ```bash
-videre watch ~/Photos --heic     # Ctrl-C once counts settle
+videre --library ~/Photos watch --heic     # Ctrl-C once counts settle
 videre gallery
 ```
 

@@ -7,7 +7,7 @@ description: Library totals and what has run recently, in one shot.
 videre stats                           # library totals and what has run recently
 videre stats --json                    # print one JSON object instead
 videre stats --check                   # exit non-zero if anything failed or crashed (for cron)
-videre stats --db ~/photos.db          # use a specific database
+videre --library ~/Photos stats        # select a different library
 ```
 
 ## Reading the output
@@ -79,10 +79,10 @@ photos, and only 95.6 MB of it disposable. **Embeddings dominate** because that
 library has three models prepared.
 
 :::note[Embeddings are counted per library]
-They live in a separate directory per database, so `stats` reports only the ones
-belonging to the database you asked about. If other libraries share the same
-[`VIDERE_HOME`](/guides/multiple-libraries/), theirs appear as a separate
-`embeddings (other libraries)` row - real disk use, but not this library's.
+They live under this library's own `.videre/embeddings/`, so `stats` reports
+only the ones belonging to the library you asked about. Another library's
+embeddings live under its own root and never appear here. See
+[keeping libraries separate](/guides/multiple-libraries/).
 :::
 
 **Duplicates** counts exact, byte-identical copies only. "Wasted" is what you
@@ -173,7 +173,7 @@ videre stats --check || echo "videre needs attention" | mail -s "videre" me@exam
 
 ```bash
 # crontab: nightly refresh, alert only on failure
-0 3 * * * videre scan ~/Photos --retry-incomplete --silent && videre stats --check
+0 3 * * * videre --library ~/Photos scan --retry-incomplete --silent && videre stats --check
 ```
 
 A cleanly interrupted run (Ctrl-C) counts as `interrupted`, not a problem, so
@@ -231,8 +231,8 @@ videre stats --json | jq -r '.pipelines[] | select(.status != "success") | .comm
 until [`videre prune`](/commands/prune/) runs, which is the usual reason a
 freshly cleaned library still reports duplicates.
 
-**It requires an existing database.** Unlike `embed` or `classify`, pointing
-`--db` at a path that does not exist fails cleanly instead of creating an empty
+**It requires an existing database.** Unlike `embed` or `classify`, running in a
+library that has not been scanned yet fails cleanly instead of creating an empty
 one.
 
 **Sizes are what the files claim**, taken from the database rather than measured

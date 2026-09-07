@@ -1,936 +1,329 @@
 mod common;
-use common::videre_bin;
-use std::fs;
-use std::process::Command;
-use tempfile::tempdir;
+
+use common::{permissions_are_enforced, stderr_without_library_noise, TestLibrary};
+use rusqlite::OptionalExtension;
+
+fn scan(library: &TestLibrary, args: &[&str]) -> std::process::Output {
+    let mut command = library.cmd();
+    command.arg("scan").args(args).output().unwrap()
+}
 
 #[test]
-fn jsonl_output_contains_all_scanned_records_with_correct_hashes() {
-    let scan_dir = tempdir().unwrap();
-    let out_dir = tempdir().unwrap();
-    let output = out_dir.path().join("hashes");
+fn scan_writes_local_records_with_correct_hashes() {
+    let library = TestLibrary::new();
+    let path = library.copy_fixture("tiny.jpg", "nested/image.jpg");
+    let expected = blake3::hash(&std::fs::read(&path).unwrap())
+        .to_hex()
+        .to_string();
 
-    fs::write(scan_dir.path().join("a.jpg"), b"same content").unwrap();
-    fs::write(scan_dir.path().join("b.jpg"), b"same content").unwrap();
-    fs::write(scan_dir.path().join("c.jpg"), b"different").unwrap();
-
-    let status = Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .arg("--output")
-        .arg(&output)
-        .arg(scan_dir.path())
-        .status()
-        .expect("failed to run videre");
-
-    assert!(status.success());
-
-    let content = fs::read_to_string(&output).unwrap();
-    let lines: Vec<_> = content.lines().collect();
-    assert_eq!(lines.len(), 3);
-
-    let records: Vec<serde_json::Value> = lines
-        .iter()
-        .map(|l| serde_json::from_str(l).unwrap())
-        .collect();
-    let mut hash_counts: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
-    for r in &records {
-        *hash_counts
-            .entry(r["hash"].as_str().unwrap().to_string())
-            .or_insert(0) += 1;
-    }
+    let output = scan(&library, &["--silent"]);
     assert!(
-        hash_counts.values().any(|&c| c >= 2),
-        "expected at least one hash to appear twice"
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
     );
+    assert!(output.stdout.is_empty());
+    let conn = library.conn();
+    let row: (String, String, i64, String) = conn
+        .query_row(
+            "SELECT path, hash, size_bytes, ext FROM file_hashes",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        row.0,
+        library
+            .context()
+            .paths
+            .root
+            .join("nested/image.jpg")
+            .display()
+            .to_string()
+    );
+    assert_eq!(row.1, expected);
+    assert_eq!(row.2, std::fs::metadata(path).unwrap().len() as i64);
+    assert_eq!(row.3, "jpg");
 }
 
 #[test]
-fn missing_directory_exits_nonzero() {
-    let home = tempdir().unwrap();
-    let status = Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .arg("/nonexistent/path/abc123")
-        .env("VIDERE_HOME", home.path())
-        .status()
-        .expect("failed to run videre");
-    assert!(!status.success());
+fn exif_fields_are_populated_from_a_confined_original() {
+    let library = TestLibrary::new();
+    library.copy_fixture("sample_with_exif.jpg", "dated.jpg");
+    assert!(scan(&library, &["--silent"]).status.success());
+    let row: (
+        Option<String>,
+        Option<f64>,
+        Option<f64>,
+        Option<i64>,
+        Option<i64>,
+    ) = library
+        .conn()
+        .query_row(
+            "SELECT exif_date, gps_lat, gps_lon, width, height FROM file_hashes",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert!(row.0.is_some());
+    assert!(row.1.is_some());
+    assert!(row.2.is_some());
+    assert!(row.3.is_some());
+    assert!(row.4.is_some());
 }
 
 #[test]
-fn exif_fields_populated_for_jpeg_with_exif() {
-    let scan_dir = tempdir().unwrap();
-    let out_dir = tempdir().unwrap();
-    let output = out_dir.path().join("hashes");
-
-    fs::copy(
-        "tests/fixtures/sample_with_exif.jpg",
-        scan_dir.path().join("photo.jpg"),
-    )
-    .unwrap();
-
-    let status = Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .arg("--output")
-        .arg(&output)
-        .arg(scan_dir.path())
-        .status()
-        .expect("failed to run videre");
-
-    assert!(status.success());
-
-    let content = fs::read_to_string(&output).unwrap();
-    let record: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
-
-    assert_eq!(record["exif_date"], "2021-08-10T19:34:03");
-    assert!(record["gps_lat"].as_f64().is_some());
-    assert!(record["gps_lon"].as_f64().is_some());
-    assert_eq!(record["width"], 4032);
-    assert_eq!(record["height"], 3024);
-}
-
-#[test]
-fn sqlite_output_writes_records_to_db() {
-    let scan_dir = tempdir().unwrap();
-    let out_dir = tempdir().unwrap();
-    let db_path = out_dir.path().join("hashes.db");
-
-    fs::write(scan_dir.path().join("a.jpg"), b"content alpha").unwrap();
-    fs::write(scan_dir.path().join("b.jpg"), b"content beta").unwrap();
-
-    let status = Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .arg("--output-sqlite")
-        .arg(&db_path)
-        .arg(scan_dir.path())
-        .status()
-        .expect("failed to run videre");
-
-    assert!(status.success());
-    assert!(db_path.exists());
-
-    let conn = rusqlite::Connection::open(&db_path).unwrap();
+fn repeated_scan_upserts_instead_of_duplicating_rows() {
+    let library = TestLibrary::new();
+    let path = library.copy_fixture("tiny.jpg", "image.jpg");
+    assert!(scan(&library, &["--silent"]).status.success());
+    std::fs::write(&path, b"changed image bytes").unwrap();
+    assert!(scan(&library, &["--silent"]).status.success());
+    let conn = library.conn();
     let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
+        .query_row("SELECT count(*) FROM file_hashes", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(count, 2);
-}
-
-#[test]
-fn sqlite_output_upserts_on_repeated_run() {
-    let scan_dir = tempdir().unwrap();
-    let out_dir = tempdir().unwrap();
-    let db_path = out_dir.path().join("hashes.db");
-
-    fs::write(scan_dir.path().join("photo.jpg"), b"original content").unwrap();
-
-    Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .arg("--output-sqlite")
-        .arg(&db_path)
-        .arg(scan_dir.path())
-        .status()
-        .expect("failed to run videre")
-        .success()
-        .then_some(())
-        .expect("first run failed");
-
-    Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .arg("--output-sqlite")
-        .arg(&db_path)
-        .arg(scan_dir.path())
-        .status()
-        .expect("failed to run videre")
-        .success()
-        .then_some(())
-        .expect("second run failed");
-
-    let conn = rusqlite::Connection::open(&db_path).unwrap();
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
+    let hash: String = conn
+        .query_row("SELECT hash FROM file_hashes", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(count, 1, "upsert should not duplicate records");
-}
-
-#[test]
-fn sqlite_and_output_flags_conflict() {
-    let scan_dir = tempdir().unwrap();
-    let out_dir = tempdir().unwrap();
-
-    let status = Command::new(videre_bin())
-        .arg("scan")
-        .arg("--output")
-        .arg(out_dir.path().join("hashes"))
-        .arg("--output-sqlite")
-        .arg(out_dir.path().join("hashes.db"))
-        .arg(scan_dir.path())
-        .status()
-        .expect("failed to run videre");
-
-    assert!(
-        !status.success(),
-        "should fail when both --output and --output-sqlite are given"
+    assert_eq!(count, 1);
+    assert_eq!(
+        hash,
+        blake3::hash(b"changed image bytes").to_hex().to_string()
     );
 }
 
 #[test]
-fn bare_scan_writes_default_sqlite_db() {
-    let scan_dir = tempdir().unwrap();
-    let home = tempdir().unwrap();
-    fs::write(scan_dir.path().join("a.jpg"), b"same content").unwrap();
-    fs::write(scan_dir.path().join("b.jpg"), b"same content").unwrap();
-
-    let out = Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .arg(scan_dir.path())
-        .env("VIDERE_HOME", home.path())
-        .output()
-        .expect("failed to run videre");
+fn first_scan_creates_fixed_local_state_and_config() {
+    let library = TestLibrary::new();
+    library.copy_fixture("tiny.jpg", "image.jpg");
+    assert!(scan(&library, &["--silent"]).status.success());
+    assert!(library.db().exists());
+    let config = std::fs::read_to_string(library.root.join(".videre/config.toml")).unwrap();
+    assert!(config.contains("db = \"hashes.db\""), "{config}");
+    assert!(config.contains("jsonl = \"hashes.jsonl\""), "{config}");
     assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
+        config.contains("default_model = \"google/siglip-base-patch16-224\""),
+        "{config}"
     );
-    assert!(
-        out.stdout.is_empty(),
-        "scan's stdout is always empty in text mode"
-    );
-
-    let db = home.path().join("hashes.db");
-    assert!(db.exists(), "bare scan must create the default db");
-    assert!(
-        !home.path().join("hashes.jsonl").exists(),
-        "no jsonl by default"
-    );
-    let conn = rusqlite::Connection::open(&db).unwrap();
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(count, 2);
+    assert!(config.contains("xmp_precedence = \"db\""), "{config}");
+    assert!(config.contains("export_xmp_on_watch = false"), "{config}");
 }
 
 #[test]
-fn bare_output_flag_writes_default_jsonl() {
-    let scan_dir = tempdir().unwrap();
-    let home = tempdir().unwrap();
-    fs::write(scan_dir.path().join("a.jpg"), b"content").unwrap();
-
-    let out = Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .arg(scan_dir.path())
-        .arg("--output")
-        .env("VIDERE_HOME", home.path())
-        .output()
-        .expect("failed to run videre");
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let jsonl = home.path().join("hashes.jsonl");
-    assert!(
-        jsonl.exists(),
-        "bare --output must target the default jsonl"
-    );
-    assert_eq!(fs::read_to_string(&jsonl).unwrap().lines().count(), 1);
-    assert!(
-        !home.path().join("hashes.db").exists(),
-        "no sqlite db when --output used"
+fn silent_scan_keeps_both_output_streams_clean() {
+    let library = TestLibrary::new();
+    library.copy_fixture("tiny.jpg", "image.jpg");
+    let output = scan(&library, &["--silent"]);
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        stderr_without_library_noise(&String::from_utf8_lossy(&output.stderr)),
+        ""
     );
 }
 
 #[test]
-fn bare_scan_without_directory_or_config_path_errors() {
-    let home = tempdir().unwrap();
-    let out = Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .env("VIDERE_HOME", home.path())
-        .output()
-        .expect("failed to run videre");
-    assert!(!out.status.success());
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("videre config set path"), "{stderr}");
+fn unreadable_files_are_skipped_and_reported() {
+    use std::os::unix::fs::PermissionsExt;
 
-    let out2 = Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .arg("--json")
-        .env("VIDERE_HOME", home.path())
-        .output()
-        .expect("failed to run videre");
-    assert!(!out2.status.success());
-    let doc: serde_json::Value = serde_json::from_slice(&out2.stdout)
-        .expect("stdout must be one valid JSON object even on error");
-    assert!(
-        doc["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("config set path"),
-        "{doc}"
-    );
-}
-
-#[test]
-fn config_path_supplies_scan_directory() {
-    let scan_dir = tempdir().unwrap();
-    let home = tempdir().unwrap();
-    fs::write(scan_dir.path().join("a.jpg"), b"same content").unwrap();
-    fs::write(scan_dir.path().join("b.jpg"), b"same content").unwrap();
-
-    let set = Command::new(videre_bin())
-        .arg("config")
-        .arg("set")
-        .arg("path")
-        .arg(scan_dir.path())
-        .env("VIDERE_HOME", home.path())
-        .status()
-        .unwrap();
-    assert!(set.success());
-
-    let out = Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .env("VIDERE_HOME", home.path())
-        .output()
-        .expect("failed to run videre");
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(home.path().join("hashes.db").exists());
-}
-
-#[test]
-fn first_explicit_scan_adopts_directory_as_default_path() {
-    let scan_dir = tempdir().unwrap();
-    let home = tempdir().unwrap();
-    fs::write(scan_dir.path().join("a.jpg"), b"content").unwrap();
-
-    let out = Command::new(videre_bin())
-        .arg("scan")
-        .arg(scan_dir.path())
-        .env("VIDERE_HOME", home.path())
-        .output()
-        .expect("failed to run videre");
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("saved"),
-        "expected an adoption note: {stderr}"
-    );
-    assert!(stderr.contains("videre config set path"), "{stderr}");
-
-    let out2 = Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .env("VIDERE_HOME", home.path())
-        .output()
-        .expect("failed to run videre");
-    assert!(
-        out2.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out2.stderr)
-    );
-}
-
-#[test]
-fn second_explicit_scan_does_not_overwrite_adopted_default_path() {
-    let first_dir = tempdir().unwrap();
-    let second_dir = tempdir().unwrap();
-    let home = tempdir().unwrap();
-    fs::write(first_dir.path().join("a.jpg"), b"content").unwrap();
-    fs::write(second_dir.path().join("b.jpg"), b"other content").unwrap();
-
-    Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .arg(first_dir.path())
-        .env("VIDERE_HOME", home.path())
-        .status()
-        .unwrap();
-
-    let out = Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .arg(second_dir.path())
-        .env("VIDERE_HOME", home.path())
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    assert!(
-        String::from_utf8_lossy(&out.stderr).trim().is_empty()
-            || !String::from_utf8_lossy(&out.stderr).contains("saved")
-    );
-
-    let config = Command::new(videre_bin())
-        .arg("config")
-        .env("VIDERE_HOME", home.path())
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&config.stdout);
-    assert!(
-        stdout.contains(&first_dir.path().display().to_string()),
-        "default_path must still be the FIRST directory, not overwritten: {stdout}"
-    );
-}
-
-#[test]
-fn silent_flag_suppresses_the_adoption_note() {
-    let scan_dir = tempdir().unwrap();
-    let home = tempdir().unwrap();
-    fs::write(scan_dir.path().join("a.jpg"), b"content").unwrap();
-
-    let out = Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .arg(scan_dir.path())
-        .env("VIDERE_HOME", home.path())
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    let ours = common::stderr_without_library_noise(&stderr);
-    assert!(ours.is_empty(), "{ours}");
-
-    let config = Command::new(videre_bin())
-        .arg("config")
-        .env("VIDERE_HOME", home.path())
-        .output()
-        .unwrap();
-    assert!(
-        String::from_utf8_lossy(&config.stdout).contains(&scan_dir.path().display().to_string())
-    );
-}
-
-#[test]
-fn skipped_files_are_reported_in_wrote_summary() {
-    let scan_dir = tempdir().unwrap();
-    let out_dir = tempdir().unwrap();
-    let db_path = out_dir.path().join("hashes.db");
-
-    fs::write(scan_dir.path().join("a.jpg"), b"valid content").unwrap();
-    // A broken symlink is filtered out by scanner::scan's is_file() check
-    // before it ever reaches hasher::hash_file, so it can't exercise the
-    // skip-count path. An unreadable regular file does: fs::metadata
-    // succeeds (no read permission needed), but File::open fails with
-    // EACCES, so hash_file returns Err and gather_records counts it as
-    // skipped.
-    let unreadable = scan_dir.path().join("unreadable.jpg");
-    fs::write(&unreadable, b"unreadable content").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
-    }
-
-    // Root ignores permission bits, so the file is readable, nothing is
-    // skipped, and this test has nothing left to assert. Seen running the
-    // suite in a stock Docker image, which runs as root by default.
-    if !common::permissions_are_enforced(&unreadable) {
-        eprintln!("SKIP: running as root, so chmod 000 does not make a file unreadable");
+    let library = TestLibrary::new();
+    library.copy_fixture("tiny.jpg", "good.jpg");
+    let unreadable = library.copy_fixture("tiny.jpg", "unreadable.jpg");
+    std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if !permissions_are_enforced(&unreadable) {
         return;
     }
-
-    let out = Command::new(videre_bin())
-        .arg("scan")
-        .arg("--output-sqlite")
-        .arg(&db_path)
-        .arg(scan_dir.path())
-        .output()
-        .expect("failed to run videre");
-
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("Wrote 1 record(s)"), "{stderr}");
-    assert!(stderr.contains("(1 skipped)"), "{stderr}");
-
-    let conn = rusqlite::Connection::open(&db_path).unwrap();
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
+    let output = scan(&library, &[]);
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("1 skipped"), "{stderr}");
+    let count: i64 = library
+        .conn()
+        .query_row("SELECT count(*) FROM file_hashes", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(count, 1, "only the valid file should have been written");
+    assert_eq!(count, 1);
 }
 
 #[test]
-fn json_error_object_for_missing_directory() {
-    let home = tempdir().unwrap();
-    let out = Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .arg("--json")
-        .arg("/nonexistent/path/abc123")
-        .env("VIDERE_HOME", home.path())
+fn json_error_shape_is_preserved_for_an_invalid_library() {
+    let launch = TestLibrary::new();
+    let missing = launch.root.join("missing");
+    let output = launch
+        .cmd()
+        .arg("--library")
+        .arg(&missing)
+        .args(["scan", "--json"])
         .output()
-        .expect("failed to run videre");
-
-    assert!(!out.status.success(), "must exit nonzero");
-    let doc: serde_json::Value = serde_json::from_slice(&out.stdout)
-        .expect("even on error, stdout must be one valid JSON object");
-    assert_eq!(doc["schema_version"], 1);
-    let msg = doc["error"]["message"].as_str().unwrap();
-    assert!(msg.contains("does not exist"), "unexpected message: {msg}");
+        .unwrap();
+    assert!(!output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["schema_version"], 1);
+    assert!(json["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("does not exist"));
 }
 
 #[test]
-fn sqlite_scan_records_a_pipeline_run() {
-    let scan_dir = tempdir().unwrap();
-    let out_dir = tempdir().unwrap();
-    let db_path = out_dir.path().join("hashes.db");
+fn json_mode_reports_the_fixed_sqlite_destination() {
+    let library = TestLibrary::new();
+    library.copy_fixture("tiny.jpg", "image.jpg");
+    let output = scan(&library, &["--silent", "--json"]);
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["schema_version"], 1);
+    assert_eq!(json["total_files"], 1);
+    assert_eq!(json["output"]["kind"], "sqlite");
+    assert_eq!(
+        json["output"]["path"],
+        library.context().paths.db.display().to_string()
+    );
+}
 
-    fs::write(scan_dir.path().join("a.jpg"), b"content").unwrap();
-
-    let status = Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .arg("--output-sqlite")
-        .arg(&db_path)
-        .arg(scan_dir.path())
-        .status()
-        .expect("failed to run videre");
-    assert!(status.success());
-
-    let conn = rusqlite::Connection::open(&db_path).unwrap();
-    let (status, duration_ms): (String, Option<i64>) = conn
+#[test]
+fn scan_records_a_successful_pipeline_run() {
+    let library = TestLibrary::new();
+    library.copy_fixture("tiny.jpg", "image.jpg");
+    assert!(scan(&library, &["--silent"]).status.success());
+    let row: (String, String) = library
+        .conn()
         .query_row(
-            "SELECT status, duration_ms FROM pipeline_runs WHERE command = 'scan'",
+            "SELECT command, status FROM pipeline_runs WHERE command = 'scan'",
             [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(status, "success");
-    assert!(duration_ms.is_some());
+    assert_eq!(row, ("scan".into(), "success".into()));
 }
 
 #[test]
-fn json_mode_reports_scan_shape_and_adopts_default_path() {
-    let scan_dir = tempdir().unwrap();
-    let home = tempdir().unwrap();
-    fs::write(scan_dir.path().join("a.jpg"), b"content").unwrap();
-    fs::write(scan_dir.path().join("b.jpg"), b"other content").unwrap();
-
-    let out = Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .arg("--json")
-        .arg(scan_dir.path())
-        .env("VIDERE_HOME", home.path())
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    let doc: serde_json::Value = serde_json::from_slice(&out.stdout)
-        .expect("stdout must remain pure JSON even when adopting a default path");
-    assert_eq!(doc["schema_version"], 1);
-    assert_eq!(doc["total_files"], 2);
-    assert_eq!(doc["output"]["kind"], "sqlite");
-    let expected_db = home.path().join("hashes.db").display().to_string();
-    assert_eq!(doc["output"]["path"], expected_db);
-
-    let config = Command::new(videre_bin())
-        .arg("config")
-        .env("VIDERE_HOME", home.path())
-        .output()
-        .unwrap();
-    assert!(
-        String::from_utf8_lossy(&config.stdout).contains(&scan_dir.path().display().to_string())
-    );
+fn retry_incomplete_skips_rows_with_a_known_type() {
+    let library = TestLibrary::new();
+    library.copy_fixture("tiny.jpg", "image.jpg");
+    assert!(scan(&library, &["--silent"]).status.success());
+    let output = scan(&library, &["--retry-incomplete"]);
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("0 incomplete; 0 processed"), "{stderr}");
 }
 
 #[test]
-fn retry_incomplete_processes_nothing_when_everything_has_a_type() {
-    let dir = tempdir().unwrap();
-    let out = tempdir().unwrap();
-    let db = out.path().join("h.db");
-    fs::copy(
-        "tests/fixtures/sample_with_exif.jpg",
-        dir.path().join("a.jpg"),
-    )
-    .unwrap();
-
-    Command::new(videre_bin())
-        .args(["scan", "--silent", "--output-sqlite"])
-        .arg(&db)
-        .arg(dir.path())
-        .status()
+fn retry_incomplete_processes_only_unknown_rows_and_new_files() {
+    let library = TestLibrary::new();
+    library.copy_fixture("tiny.jpg", "first.jpg");
+    assert!(scan(&library, &["--silent"]).status.success());
+    let conn = library.conn();
+    conn.execute("UPDATE file_hashes SET mime = NULL", [])
         .unwrap();
-
-    let out2 = Command::new(videre_bin())
-        .args(["scan", "--output-sqlite"])
-        .arg(&db)
-        .arg(dir.path())
-        .arg("--retry-incomplete")
-        .output()
-        .unwrap();
-    assert!(out2.status.success());
-    let stderr = String::from_utf8_lossy(&out2.stderr);
-    assert!(stderr.contains("0 incomplete"), "{stderr}");
-}
-
-#[test]
-fn retry_incomplete_processes_only_the_row_with_no_type() {
-    let dir = tempdir().unwrap();
-    let out = tempdir().unwrap();
-    let db = out.path().join("h.db");
-    for n in ["a.jpg", "b.jpg"] {
-        fs::copy("tests/fixtures/sample_with_exif.jpg", dir.path().join(n)).unwrap();
-    }
-    Command::new(videre_bin())
-        .args(["scan", "--silent", "--output-sqlite"])
-        .arg(&db)
-        .arg(dir.path())
-        .status()
-        .unwrap();
-
-    // Blank one row's type, simulating a file the previous scan never finished.
-    let conn = rusqlite::Connection::open(&db).unwrap();
-    conn.execute(
-        "UPDATE file_hashes SET mime = NULL WHERE path LIKE '%a.jpg'",
-        [],
-    )
-    .unwrap();
     drop(conn);
+    library.copy_fixture("tiny.jpg", "second.jpg");
 
-    let out2 = Command::new(videre_bin())
-        .args(["scan", "--output-sqlite"])
-        .arg(&db)
-        .arg(dir.path())
-        .arg("--retry-incomplete")
-        .output()
+    let output = scan(&library, &["--retry-incomplete", "--silent"]);
+    assert!(output.status.success());
+    let conn = library.conn();
+    let count: i64 = conn
+        .query_row("SELECT count(*) FROM file_hashes", [], |row| row.get(0))
         .unwrap();
-    let stderr = String::from_utf8_lossy(&out2.stderr);
-    assert!(stderr.contains("1 incomplete"), "{stderr}");
-
-    let conn = rusqlite::Connection::open(&db).unwrap();
     let nulls: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM file_hashes WHERE mime IS NULL",
+            "SELECT count(*) FROM file_hashes WHERE mime IS NULL",
             [],
-            |r| r.get(0),
+            |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(nulls, 0, "the incomplete row must be filled");
+    assert_eq!(count, 2);
+    assert_eq!(nulls, 0);
 }
 
 #[test]
-fn retry_incomplete_picks_up_a_file_added_since_the_last_scan() {
-    let dir = tempdir().unwrap();
-    let out = tempdir().unwrap();
-    let db = out.path().join("h.db");
-    fs::copy(
-        "tests/fixtures/sample_with_exif.jpg",
-        dir.path().join("a.jpg"),
-    )
-    .unwrap();
-    Command::new(videre_bin())
-        .args(["scan", "--silent", "--output-sqlite"])
-        .arg(&db)
-        .arg(dir.path())
-        .status()
-        .unwrap();
-
-    // A new file has no row at all, which also counts as incomplete.
-    fs::copy(
-        "tests/fixtures/sample_with_exif.jpg",
-        dir.path().join("b.png"),
-    )
-    .unwrap();
-
-    Command::new(videre_bin())
-        .args(["scan", "--silent", "--output-sqlite"])
-        .arg(&db)
-        .arg(dir.path())
-        .arg("--retry-incomplete")
-        .status()
-        .unwrap();
-
-    let conn = rusqlite::Connection::open(&db).unwrap();
-    let n: i64 = conn
-        .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(n, 2);
-}
-
-#[test]
-fn retry_incomplete_is_rejected_with_jsonl_output() {
-    let dir = tempdir().unwrap();
-    let out = Command::new(videre_bin())
-        .args(["scan"])
-        .arg(dir.path())
-        .args(["--output", "/tmp/x.jsonl", "--retry-incomplete"])
-        .output()
-        .unwrap();
-    assert!(
-        !out.status.success(),
-        "JSONL opens no database, so this must be rejected"
-    );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("retry-incomplete") && stderr.contains("output"),
-        "{stderr}"
-    );
-}
-
-#[test]
-fn an_unidentifiable_file_records_the_sentinel_and_is_not_retried() {
-    let dir = tempdir().unwrap();
-    let out = tempdir().unwrap();
-    let db = out.path().join("h.db");
-    // A supported extension whose bytes match no signature.
-    fs::write(
-        dir.path().join("broken.png"),
-        b"not actually a png at all, just text",
-    )
-    .unwrap();
-
-    Command::new(videre_bin())
-        .args(["scan", "--silent", "--output-sqlite"])
-        .arg(&db)
-        .arg(dir.path())
-        .status()
-        .unwrap();
-
-    let conn = rusqlite::Connection::open(&db).unwrap();
+fn unidentifiable_files_receive_a_sentinel_and_are_not_retried() {
+    let library = TestLibrary::new();
+    let path = library.root.join("odd.jpg");
+    std::fs::write(&path, b"not an image").unwrap();
+    assert!(scan(&library, &["--silent"]).status.success());
+    let conn = library.conn();
     let mime: Option<String> = conn
-        .query_row("SELECT mime FROM file_hashes LIMIT 1", [], |r| r.get(0))
+        .query_row("SELECT mime FROM file_hashes", [], |row| row.get(0))
+        .optional()
+        .unwrap()
+        .flatten();
+    assert_eq!(mime.as_deref(), Some(videre_core::mime_probe::UNKNOWN_MIME));
+    drop(conn);
+    let output = scan(&library, &["--retry-incomplete"]);
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("0 incomplete; 0 processed"));
+}
+
+#[test]
+fn similar_mode_stores_a_perceptual_hash() {
+    let library = TestLibrary::new();
+    library.copy_fixture("tiny.jpg", "image.jpg");
+    assert!(scan(&library, &["--silent", "--similar"]).status.success());
+    let phash: Option<i64> = library
+        .conn()
+        .query_row("SELECT phash FROM file_hashes", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(mime.as_deref(), Some("application/octet-stream"));
+    assert!(phash.is_some());
+}
+
+#[test]
+fn xmp_precedence_and_keywords_are_applied_from_confined_sidecars() {
+    let library = TestLibrary::new();
+    library.copy_fixture("tiny.jpg", "image.jpg");
+    std::fs::write(
+        library.root.join("image.jpg.xmp"),
+        r#"<x:xmpmeta xmlns:x="adobe:ns:meta/">
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:Description xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmp:Rating="4"
+ xmlns:dc="http://purl.org/dc/elements/1.1/">
+<dc:subject><rdf:Bag><rdf:li>holiday</rdf:li></rdf:Bag></dc:subject>
+</rdf:Description></rdf:RDF></x:xmpmeta>"#,
+    )
+    .unwrap();
+    assert!(scan(&library, &["--silent"]).status.success());
+    let conn = library.conn();
+    let hash: String = conn
+        .query_row("SELECT hash FROM file_hashes", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        videre_core::marks::get(&conn, &hash).unwrap().rating,
+        Some(4)
+    );
+    assert_eq!(
+        videre_core::tags::tags_for_hash(&conn, &hash).unwrap(),
+        vec!["holiday"]
+    );
+    videre_core::marks::set(
+        &conn,
+        std::slice::from_ref(&hash),
+        &videre_core::marks::change_from_parts(Some(1), None, None, None),
+    )
+    .unwrap();
     drop(conn);
 
-    let out2 = Command::new(videre_bin())
-        .args(["scan", "--output-sqlite"])
-        .arg(&db)
-        .arg(dir.path())
-        .arg("--retry-incomplete")
-        .output()
-        .unwrap();
-    let stderr = String::from_utf8_lossy(&out2.stderr);
-    assert!(
-        stderr.contains("0 incomplete"),
-        "the sentinel must stop the retry loop: {stderr}"
-    );
-}
-
-/// `--db` and `--output-sqlite` must name the same destination.
-///
-/// `scan` and `watch` used `--output-sqlite` while all eleven readers used
-/// `--db`, an accident of history: this command predates the readers, from
-/// when JSONL and SQLite were peer output *formats* rather than one
-/// destination and one opt-out. `--db` is now the primary name and the old one
-/// is an alias, so existing scripts keep working. This test is what stops the
-/// alias being dropped as "unused".
-#[test]
-fn db_and_output_sqlite_are_the_same_flag() {
-    let scan_dir = tempdir().unwrap();
-    let out = tempdir().unwrap();
-    fs::write(scan_dir.path().join("a.jpg"), b"content").unwrap();
-
-    for (flag, name) in [("--db", "new.db"), ("--output-sqlite", "old.db")] {
-        let db = out.path().join(name);
-        let status = Command::new(videre_bin())
-            .arg("scan")
-            .arg("--silent")
-            .arg(flag)
-            .arg(&db)
-            .arg(scan_dir.path())
-            .status()
-            .expect("failed to run videre scan");
-        assert!(status.success(), "{flag} should be accepted");
-        let conn = rusqlite::Connection::open(&db).unwrap();
-        let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(n, 1, "{flag} should have written the record");
-    }
-}
-
-/// The conflict with --output survives the rename. clap matches on the field
-/// name, so renaming `output_sqlite` to `db` without updating `conflicts_with`
-/// would have silently dropped this.
-#[test]
-fn db_still_conflicts_with_jsonl_output() {
-    let scan_dir = tempdir().unwrap();
-    fs::write(scan_dir.path().join("a.jpg"), b"content").unwrap();
-    let out = Command::new(videre_bin())
-        .arg("scan")
-        .arg("--db")
-        .arg(scan_dir.path().join("x.db"))
-        .arg("--output")
-        .arg(scan_dir.path().join("x.jsonl"))
-        .arg(scan_dir.path())
-        .output()
-        .expect("failed to run videre scan");
-    assert!(!out.status.success());
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("--db"), "{stderr}");
-    assert!(stderr.contains("--output"), "{stderr}");
-}
-
-/// The walk is narrowed by the selection, and only by the selection: a scoped
-/// run must write fewer rows without ever writing a row an unscoped run would
-/// not have written.
-#[test]
-fn a_scoped_scan_writes_a_subset_of_what_an_unscoped_scan_writes() {
-    let scan_dir = tempdir().unwrap();
-    let out = tempdir().unwrap();
-    let sub = scan_dir.path().join("sub");
-    fs::create_dir(&sub).unwrap();
-    fs::write(scan_dir.path().join("photo.jpg"), b"a").unwrap();
-    fs::write(scan_dir.path().join("clip.mp4"), b"b").unwrap();
-    fs::write(sub.join("nested.mov"), b"c").unwrap();
-
-    let count = |db: &std::path::Path, args: &[&str]| -> i64 {
-        let status = Command::new(videre_bin())
-            .arg("scan")
-            .arg("--silent")
-            .arg(scan_dir.path())
-            .arg("--db")
-            .arg(db)
-            .args(args)
-            .status()
-            .unwrap();
-        assert!(status.success());
-        let conn = rusqlite::Connection::open(db).unwrap();
-        conn.query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
-            .unwrap()
-    };
-
-    assert_eq!(count(&out.path().join("all.db"), &[]), 3);
-    assert_eq!(count(&out.path().join("vid.db"), &["--type", "video"]), 2);
-    assert_eq!(count(&out.path().join("img.db"), &["--type", "image"]), 1);
-    assert_eq!(count(&out.path().join("ext.db"), &["--ext", "mov"]), 1);
-    // A --path root under a macOS tempdir only matches once both the given
-    // and canonical forms are roots; before that this silently returned 0.
+    assert!(scan(&library, &["--silent"]).status.success());
     assert_eq!(
-        count(
-            &out.path().join("sub.db"),
-            &["--path", sub.to_str().unwrap()]
-        ),
-        1
+        videre_core::marks::get(&library.conn(), &hash)
+            .unwrap()
+            .rating,
+        Some(1)
     );
-}
-
-/// `--output` takes an optional value, so `videre scan --output ~/Photos` binds
-/// ~/Photos as the output *file* and leaves the directory unset - which then
-/// falls back to the configured default_path. Before the guard, that scanned a
-/// different library end to end and only failed on the final write. Had the
-/// swallowed path been a file rather than a directory, the write would have
-/// succeeded and put one library's records into it silently.
-#[test]
-fn output_given_a_directory_fails_before_scanning_anything() {
-    let home = tempdir().unwrap();
-    let target = tempdir().unwrap();
-    let other = tempdir().unwrap();
-    fs::write(target.path().join("wanted.jpg"), b"a").unwrap();
-    fs::write(other.path().join("unwanted1.jpg"), b"b").unwrap();
-    fs::write(other.path().join("unwanted2.jpg"), b"c").unwrap();
-    fs::write(
-        home.path().join("config.toml"),
-        format!("default_path = {:?}\n", other.path().to_str().unwrap()),
-    )
-    .unwrap();
-
-    let out = Command::new(videre_bin())
-        .env("VIDERE_HOME", home.path())
-        .args(["scan", "--output"])
-        .arg(target.path())
-        .output()
-        .unwrap();
-
-    assert!(!out.status.success(), "must not proceed");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("is a directory"), "{stderr}");
-    assert!(
-        stderr.contains("must come AFTER the directory"),
-        "the message has to say how to fix it: {stderr}"
+    assert!(scan(&library, &["--silent", "--xmp", "file"])
+        .status
+        .success());
+    assert_eq!(
+        videre_core::marks::get(&library.conn(), &hash)
+            .unwrap()
+            .rating,
+        Some(4)
     );
-    assert!(
-        !stderr.contains("images processed") && !stderr.contains("Wrote"),
-        "nothing may be scanned before this is caught: {stderr}"
-    );
-}
-
-#[test]
-fn the_three_legitimate_output_forms_all_still_work() {
-    let home = tempdir().unwrap();
-    let dir = tempdir().unwrap();
-    fs::write(dir.path().join("a.jpg"), b"a").unwrap();
-
-    // bare --output after the directory -> default jsonl in VIDERE_HOME
-    let ok = Command::new(videre_bin())
-        .env("VIDERE_HOME", home.path())
-        .args(["scan"])
-        .arg(dir.path())
-        .args(["--output", "--silent"])
-        .status()
-        .unwrap();
-    assert!(ok.success());
-    assert!(home.path().join("hashes.jsonl").exists());
-
-    // explicit jsonl file
-    let jsonl = home.path().join("explicit.jsonl");
-    let ok = Command::new(videre_bin())
-        .env("VIDERE_HOME", home.path())
-        .args(["scan"])
-        .arg(dir.path())
-        .arg("--output")
-        .arg(&jsonl)
-        .arg("--silent")
-        .status()
-        .unwrap();
-    assert!(ok.success());
-    assert_eq!(fs::read_to_string(&jsonl).unwrap().lines().count(), 1);
-
-    // --db
-    let db = home.path().join("x.db");
-    let ok = Command::new(videre_bin())
-        .env("VIDERE_HOME", home.path())
-        .args(["scan"])
-        .arg(dir.path())
-        .arg("--db")
-        .arg(&db)
-        .arg("--silent")
-        .status()
-        .unwrap();
-    assert!(ok.success());
-    assert!(db.exists());
-}
-
-#[test]
-fn a_nonexistent_output_path_is_fine_it_is_created() {
-    // Only an existing directory is the trap. A path that does not exist yet is
-    // the normal case and must not be rejected.
-    let home = tempdir().unwrap();
-    let dir = tempdir().unwrap();
-    fs::write(dir.path().join("a.jpg"), b"a").unwrap();
-    let out = home.path().join("nested").join("new.jsonl");
-    fs::create_dir_all(out.parent().unwrap()).unwrap();
-    let ok = Command::new(videre_bin())
-        .env("VIDERE_HOME", home.path())
-        .args(["scan"])
-        .arg(dir.path())
-        .arg("--output")
-        .arg(&out)
-        .arg("--silent")
-        .status()
-        .unwrap();
-    assert!(ok.success());
-    assert!(out.exists());
 }

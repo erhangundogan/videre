@@ -148,9 +148,10 @@ jobs:
       # failure mode this project has hit three times in other forms. Exercise
       # the real thing on a runner that never compiled it.
       #
-      # No model downloads, so it stays fast. VIDERE_HOME is pinned to a temp
-      # directory so the smoke test cannot touch the runner's real home, the
-      # same discipline the test suite uses.
+      # No model downloads, so it stays fast. The library is a temp directory
+      # so the smoke test cannot touch the runner's real home or leave state in
+      # the checked-out tree: the fixtures are copied into it, never scanned in
+      # place.
       #
       # Asserts the exit code and a non-zero file count, not an exact count:
       # Linux skips HEIC and video frames, so counts legitimately differ by
@@ -159,13 +160,17 @@ jobs:
         shell: bash
         run: |
           set -eux
-          export VIDERE_HOME="$(mktemp -d)"
-          ./videre --version
-          ./videre scan crates/videre/tests/fixtures --db "$VIDERE_HOME/t.db" --silent
-          ./videre stats --db "$VIDERE_HOME/t.db"
-          n=$(./videre stats --db "$VIDERE_HOME/t.db" --json | grep -oE '"total_files":[0-9]+' | grep -oE '[0-9]+')
+          bin="$PWD/videre"
+          library="$(mktemp -d)"
+          cp crates/videre/tests/fixtures/*.jpg "$library/"
+          "$bin" --version
+          ( cd "$library" && "$bin" scan --silent )
+          "$bin" --library "$library" stats
+          n=$("$bin" --library "$library" stats --json | grep -oE '"total_files":[0-9]+' | grep -oE '[0-9]+')
           echo "scanned $n file(s)"
           test "$n" -gt 0
+          test -f "$library/.videre/hashes.db"
+          test ! -e crates/videre/tests/fixtures/.videre
 
   # The gate. Only a release whose artifacts have been downloaded onto a clean
   # runner and actually executed becomes visible. If smoke fails, the draft

@@ -2,13 +2,11 @@
 //! `search --tag`, then remove it and confirm it no longer matches.
 
 mod common;
-use common::videre_bin as bin;
+use common::TestLibrary;
 use std::path::Path;
-use std::process::Command;
-use tempfile::tempdir;
 
-fn run(args: &[&str]) -> String {
-    let out = Command::new(bin()).args(args).output().expect("run videre");
+fn run(lib: &TestLibrary, args: &[&str]) -> String {
+    let out = lib.cmd().args(args).output().expect("run videre");
     assert!(
         out.status.success(),
         "videre {args:?} failed:\n{}",
@@ -18,30 +16,50 @@ fn run(args: &[&str]) -> String {
 }
 
 #[test]
-fn tag_add_is_searchable_and_remove_clears_it() {
-    let dir = tempdir().unwrap();
-    let photos = dir.path().join("photos");
-    std::fs::create_dir(&photos).unwrap();
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tiny.jpg");
-    std::fs::copy(&src, photos.join("IMG.jpg")).unwrap();
-    let db = dir.path().join("hashes.db");
-    let (photos_s, db_s) = (photos.to_str().unwrap(), db.to_str().unwrap());
-
-    run(&["scan", photos_s, "--db", db_s, "--silent"]);
-    run(&[
-        "tag", "--add", "beach", "--path", photos_s, "--db", db_s, "--silent",
-    ]);
-
+fn invalid_path_rejects_tag_mutation_even_with_valid_selection() {
+    let a = TestLibrary::new();
+    let b = TestLibrary::new();
+    a.copy_fixture("tiny.jpg", "Trips/a.jpg");
+    a.scan();
+    let before = common::feature_fixture::snapshot_database(&a.db());
+    let out = a
+        .cmd()
+        .args(["tag", "--add", "holiday", "--path", "Trips", "--path"])
+        .arg(&b.root)
+        .output()
+        .unwrap();
     assert!(
-        run(&["search", "--tag", "beach", "--db", db_s]).contains("IMG.jpg"),
+        !out.status.success(),
+        "an out-of-root path must reject the mutation"
+    );
+    assert_eq!(
+        common::feature_fixture::snapshot_database(&a.db()),
+        before,
+        "a rejected tag must leave the database unchanged"
+    );
+}
+
+#[test]
+fn tag_add_is_searchable_and_remove_clears_it() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "photos/IMG.jpg");
+    lib.scan();
+
+    run(
+        &lib,
+        &["tag", "--add", "beach", "--path", "photos", "--silent"],
+    );
+    assert!(
+        run(&lib, &["search", "--tag", "beach"]).contains("IMG.jpg"),
         "the tagged file should be searchable by --tag"
     );
 
-    run(&[
-        "tag", "--remove", "beach", "--path", photos_s, "--db", db_s, "--silent",
-    ]);
+    run(
+        &lib,
+        &["tag", "--remove", "beach", "--path", "photos", "--silent"],
+    );
     assert!(
-        !run(&["search", "--tag", "beach", "--db", db_s]).contains("IMG.jpg"),
+        !run(&lib, &["search", "--tag", "beach"]).contains("IMG.jpg"),
         "removing the tag should stop it matching"
     );
 }
@@ -49,46 +67,35 @@ fn tag_add_is_searchable_and_remove_clears_it() {
 #[test]
 fn scan_imports_dc_subject_keywords_as_tags_from_a_real_sidecar() {
     // Use the genuine exiftool-produced sidecar (dc:subject = holiday, beach) as
-    // the photo's sidecar, so the import path is exercised against real third-party
-    // output, not a hand-written approximation.
-    let dir = tempdir().unwrap();
-    let photos = dir.path().join("photos");
-    std::fs::create_dir(&photos).unwrap();
-    let img = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tiny.jpg");
-    std::fs::copy(&img, photos.join("IMG.jpg")).unwrap();
+    // the photo's sidecar, so the import path is exercised against real
+    // third-party output, not a hand-written approximation.
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "photos/IMG.jpg");
     let sidecar_src =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/xmp/thirdparty-lightroom.xmp");
-    std::fs::copy(&sidecar_src, photos.join("IMG.jpg.xmp")).unwrap();
-    let db = dir.path().join("hashes.db");
-    let (photos_s, db_s) = (photos.to_str().unwrap(), db.to_str().unwrap());
+    std::fs::copy(&sidecar_src, lib.root.join("photos/IMG.jpg.xmp")).unwrap();
+    lib.scan();
 
-    run(&["scan", photos_s, "--db", db_s, "--silent"]);
     assert!(
-        run(&["search", "--tag", "holiday", "--db", db_s]).contains("IMG.jpg"),
+        run(&lib, &["search", "--tag", "holiday"]).contains("IMG.jpg"),
         "dc:subject keywords in the sidecar must import as tags"
     );
-    assert!(run(&["search", "--tag", "beach", "--db", db_s]).contains("IMG.jpg"));
+    assert!(run(&lib, &["search", "--tag", "beach"]).contains("IMG.jpg"));
 }
 
 #[test]
 fn export_writes_tags_as_dc_subject_keywords() {
-    let dir = tempdir().unwrap();
-    let photos = dir.path().join("photos");
-    std::fs::create_dir(&photos).unwrap();
-    let img = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tiny.jpg");
-    std::fs::copy(&img, photos.join("IMG.jpg")).unwrap();
-    let db = dir.path().join("hashes.db");
-    let (photos_s, db_s) = (photos.to_str().unwrap(), db.to_str().unwrap());
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "photos/IMG.jpg");
+    lib.scan();
 
-    run(&["scan", photos_s, "--db", db_s, "--silent"]);
-    run(&[
-        "tag", "--add", "sunset", "--path", photos_s, "--db", db_s, "--silent",
-    ]);
-    run(&[
-        "export", "--xmp", "--path", photos_s, "--db", db_s, "--silent",
-    ]);
+    run(
+        &lib,
+        &["tag", "--add", "sunset", "--path", "photos", "--silent"],
+    );
+    run(&lib, &["export", "--xmp", "--path", "photos", "--silent"]);
 
-    let sidecar = photos.join("IMG.jpg.xmp");
+    let sidecar = lib.root.join("photos/IMG.jpg.xmp");
     let doc = std::fs::read_to_string(sidecar).unwrap();
     assert!(
         doc.contains("<rdf:li>sunset</rdf:li>"),

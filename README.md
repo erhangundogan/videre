@@ -98,14 +98,18 @@ Full install notes, including the extra flag needed to build on ARM64 Linux:
 
 ## Quickstart
 
-Start here. Everything else reads from what this creates.
+Start here. Your photo folder is the library: run videre inside it, and
+everything else reads from what this creates.
 
 ```bash
-videre scan ~/Photos
+cd ~/Photos
+videre scan
 ```
 
-That builds a database at `~/.videre/hashes.db` describing what you have. It
-does not change your photos.
+That builds a database at `~/Photos/.videre/hashes.db` describing what you have.
+It does not change your photos. Every command acts on the library it runs in, so
+the rest assumes you are still in `~/Photos`; from elsewhere, name it with
+`videre --library ~/Photos <command>`.
 
 ```bash
 videre dedupe                 # list which copies could go

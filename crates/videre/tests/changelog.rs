@@ -108,3 +108,44 @@ fn unreleased_carries_its_own_link_when_present() {
          reference, so the heading renders as literal text."
     );
 }
+
+/// The four crates ship as one coherent version. A breaking-minor release that
+/// bumped some crates but not others, or left an internal dependency pin
+/// behind, would install a mismatched set.
+#[test]
+fn local_library_release_has_one_workspace_version() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let metadata = std::process::Command::new("cargo")
+        .args([
+            "metadata",
+            "--format-version",
+            "1",
+            "--no-deps",
+            "--offline",
+        ])
+        .current_dir(&root)
+        .output()
+        .expect("run cargo metadata");
+    assert!(
+        metadata.status.success(),
+        "{}",
+        String::from_utf8_lossy(&metadata.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&metadata.stdout).unwrap();
+    let packages = doc["packages"].as_array().unwrap();
+    let videre: std::collections::BTreeSet<_> = packages
+        .iter()
+        .map(|p| (p["name"].as_str().unwrap(), p["version"].as_str().unwrap()))
+        .filter(|(name, _)| name.starts_with("videre"))
+        .map(|(_, version)| version.to_owned())
+        .collect();
+    assert_eq!(videre.len(), 1, "all videre crates must share one version");
+    assert_eq!(
+        packages
+            .iter()
+            .filter(|p| p["name"].as_str().unwrap().starts_with("videre"))
+            .count(),
+        4,
+        "the workspace has exactly four videre crates"
+    );
+}

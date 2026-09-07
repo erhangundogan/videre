@@ -5075,7 +5075,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "videre"
-version = "0.24.1"
+version = "0.25.26"
 dependencies = [
  "anyhow",
  "askama",
@@ -5086,6 +5086,7 @@ dependencies = [
  "clap",
  "filetime",
  "fs2",
+ "half",
  "image",
  "kamadak-exif",
  "rayon",
@@ -5097,6 +5098,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "toml",
  "videre-api",
  "videre-core",
  "videre-ml",
@@ -5105,7 +5107,7 @@ dependencies = [
 
 [[package]]
 name = "videre-api"
-version = "0.24.1"
+version = "0.25.26"
 dependencies = [
  "anyhow",
  "image",
@@ -5118,18 +5120,21 @@ dependencies = [
 
 [[package]]
 name = "videre-core"
-version = "0.24.1"
+version = "0.25.26"
 dependencies = [
  "anyhow",
+ "blake3",
  "chrono",
  "ctrlc",
  "fs2",
  "half",
  "image",
  "indicatif",
+ "libc",
  "matrixmultiply",
  "reverse_geocoder",
  "rusqlite",
+ "rustix",
  "serde",
  "tempfile",
  "toml",
@@ -5138,7 +5143,7 @@ dependencies = [
 
 [[package]]
 name = "videre-ml"
-version = "0.24.1"
+version = "0.25.26"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -5151,6 +5156,7 @@ dependencies = [
  "ort",
  "rusqlite",
  "serde_json",
+ "tempfile",
  "tokenizers 0.20.4",
  "videre-core",
 ]

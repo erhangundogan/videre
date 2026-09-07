@@ -4,8 +4,8 @@
 //! circular here (it means "set", not "filter"), so this command does not take
 //! one.
 
+use crate::command_context::CommandContext;
 use anyhow::{bail, Result};
-use std::path::PathBuf;
 use videre_core::selection::SelectionCtx;
 
 #[derive(clap::Args)]
@@ -30,15 +30,12 @@ pub struct TagArgs {
     #[command(flatten)]
     paths: super::selection_args::PathArgs,
 
-    /// SQLite database (default: resolved from ~/.videre; see 'videre config')
-    #[arg(long)]
-    db: Option<PathBuf>,
     /// No per-run output
     #[arg(long)]
     silent: bool,
 }
 
-pub fn run(args: TagArgs) -> Result<()> {
+pub fn run(args: TagArgs, ctx: &CommandContext) -> Result<()> {
     let add: Vec<String> = args
         .add
         .iter()
@@ -55,8 +52,15 @@ pub fn run(args: TagArgs) -> Result<()> {
         bail!("give at least one --add <tag> or --remove <tag>");
     }
 
-    let db = super::resolve_reader_db(args.db.clone())?;
-    let conn = videre_core::db::open_wal(&db)?;
+    // Guard every --path against the selected root before any table setup or
+    // tag mutation.
+    videre_core::library_guard::validate_paths(&ctx.library, &args.paths.path)?;
+    let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    // Tagging is ordinary shared work, excluded only by exclusive maintenance.
+    let _activity = videre_core::library_locks::try_activity(
+        &ctx.library,
+        videre_core::library_locks::ActivityMode::Shared,
+    )?;
     videre_core::tags::ensure_photo_tags_table(&conn)?;
 
     let sel = super::selection_args::row_selection(
@@ -67,7 +71,7 @@ pub fn run(args: TagArgs) -> Result<()> {
         Some(&args.presence),
         Some(&args.paths),
     )?;
-    let resolved = sel.resolve(&conn, &SelectionCtx::default())?;
+    let resolved = sel.resolve_in(&conn, &SelectionCtx::default(), &ctx.library)?;
     let hashes: Vec<String> = match resolved.hashes {
         Some(h) => h.into_iter().collect(),
         None => {

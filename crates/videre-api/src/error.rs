@@ -8,6 +8,11 @@ pub enum Error {
     Invalid,
     /// Underlying database failure.
     Db(rusqlite::Error),
+    /// The library is momentarily unavailable: its root no longer names the
+    /// library the server bound to, or exclusive maintenance holds it. Distinct
+    /// from a permanent failure so the caller can map it to a retryable status
+    /// (503) rather than a 500.
+    Unavailable(String),
     /// Any other failure surfaced as a plain message (e.g. from videre-core
     /// functions that return anyhow::Error, like pipeline_runs).
     Other(String),
@@ -31,6 +36,7 @@ impl std::fmt::Display for Error {
             Error::NotFound => write!(f, "not found"),
             Error::Invalid => write!(f, "invalid input"),
             Error::Db(e) => write!(f, "database error: {e}"),
+            Error::Unavailable(msg) => write!(f, "library unavailable: {msg}"),
             Error::Other(msg) => write!(f, "{msg}"),
         }
     }
@@ -48,6 +54,10 @@ mod tests {
     fn display_matches_each_variant() {
         assert_eq!(Error::NotFound.to_string(), "not found");
         assert_eq!(Error::Invalid.to_string(), "invalid input");
+        assert_eq!(
+            Error::Unavailable("root gone".to_string()).to_string(),
+            "library unavailable: root gone"
+        );
         assert_eq!(Error::Other("boom".to_string()).to_string(), "boom");
     }
 

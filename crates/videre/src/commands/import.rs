@@ -6,6 +6,7 @@
 //! data in `videre_core::import_providers`) and how to recover per-file
 //! metadata. Nothing here knows what a Takeout sidecar is.
 
+use crate::command_context::CommandContext;
 use filetime::FileTime;
 use std::path::{Path, PathBuf};
 use videre_core::import_location::{locate_with_database, LocateOptions, Located};
@@ -66,28 +67,31 @@ pub(crate) struct Summary {
     pub aborted: bool,
 }
 
-pub fn run(args: ImportArgs) -> anyhow::Result<()> {
+pub fn run(args: ImportArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     if let Some(into) = &args.into {
         anyhow::bail!(
             "--into ({}) is not implemented yet; import currently corrects \
              timestamps in place. Copy the files yourself, then run \
              'videre import' on the copy.",
-            into.display()
+            ctx.operand(into).display()
         );
     }
 
+    // A relative provider path is invocation-relative, like any explicit file
+    // operand; bare discovery searches the selected library root.
     let targets = match &args.path {
         Some(path) => {
+            let path = ctx.operand(path);
             anyhow::ensure!(path.exists(), "{} does not exist", path.display());
-            match import_providers::detect(path) {
-                Some(provider) => vec![(path.clone(), provider)],
+            match import_providers::detect(&path) {
+                Some(provider) => vec![(path, provider)],
                 None => {
-                    report_nothing_importable(path);
+                    report_nothing_importable(&path);
                     return Ok(());
                 }
             }
         }
-        None => match choose_from_the_usual_places()? {
+        None => match choose_from_the_usual_places(&ctx.library.paths.root)? {
             Some(chosen) => chosen,
             None => return Ok(()),
         },
@@ -95,7 +99,7 @@ pub fn run(args: ImportArgs) -> anyhow::Result<()> {
 
     let mut summaries = Vec::new();
     for (root, provider) in targets {
-        match import_one(&root, provider, &args)? {
+        match import_one(&root, provider, &args, ctx)? {
             Some(summary) => summaries.push(summary),
             // Location failed. Already reported in full; nothing to summarise.
             None => std::process::exit(1),
@@ -118,6 +122,7 @@ fn import_one(
     root: &Path,
     provider: &'static ProviderDescriptor,
     args: &ImportArgs,
+    ctx: &CommandContext,
 ) -> anyhow::Result<Option<Summary>> {
     if !args.silent {
         eprintln!("Importing from {}", root.display());
@@ -125,7 +130,8 @@ fn import_one(
     }
 
     let opts = LocateOptions {
-        originals_override: args.originals.clone(),
+        // A relative --originals is invocation-relative, like the provider path.
+        originals_override: args.originals.as_ref().map(|o| ctx.operand(o)),
         use_database: args.use_library_db,
     };
 
@@ -152,6 +158,12 @@ fn import_one(
         .iter()
         .flat_map(|r| videre::scanner::scan(r))
         .collect();
+
+    // Whole-batch containment check before any preflight, confirmation or
+    // write, including under --yes: import only ever corrects the mtime of
+    // files inside the selected library. The provider path and any metadata it
+    // reads may be outside, but the originals it writes to may not.
+    videre_core::library_guard::validate_paths(&ctx.library, &files)?;
 
     let mut summary = Summary {
         provider: provider.display.to_string(),
@@ -196,7 +208,7 @@ fn import_one(
         return Ok(Some(summary));
     }
 
-    apply_dates(&pending, &mut summary, args);
+    apply_dates(&pending, &mut summary, args, ctx);
 
     if !args.silent {
         // Every located root, since a Lightroom catalog routinely has several
@@ -349,15 +361,27 @@ fn recover_takeout_dates(
 ///
 /// `filetime::set_file_mtime` is the same call `fix-dates` uses, so the two
 /// commands cannot disagree about what "correcting a date" means.
-fn apply_dates(pending: &[PendingDate], summary: &mut Summary, args: &ImportArgs) {
+fn apply_dates(
+    pending: &[PendingDate],
+    summary: &mut Summary,
+    args: &ImportArgs,
+    ctx: &CommandContext,
+) {
     for (file, taken) in pending {
         if !args.dry_run {
-            if let Err(e) = filetime::set_file_mtime(file, FileTime::from_unix_time(*taken, 0)) {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    // Moved or trashed since the walk; not this run's problem.
-                    continue;
+            // Revalidate through the confined writer at the moment of mutation,
+            // so a symlink swapped in since the batch check is not followed.
+            let ft = FileTime::from_unix_time(*taken, 0);
+            let result = videre_core::library_io::open_media(&ctx.library, file)
+                .and_then(|f| Ok(filetime::set_file_handle_times(&f, None, Some(ft))?));
+            if let Err(e) = result {
+                if let Some(io) = e.downcast_ref::<std::io::Error>() {
+                    if io.kind() == std::io::ErrorKind::NotFound {
+                        // Moved or trashed since the walk; not this run's problem.
+                        continue;
+                    }
                 }
-                eprintln!("Error: {}: {e}", file.display());
+                eprintln!("Error: {}: {e:#}", file.display());
                 summary.errors += 1;
                 continue;
             }
@@ -489,8 +513,9 @@ fn report_not_found(root: &Path, provider: &ProviderDescriptor, tried: &[String]
 /// Detection narrows the question; it never removes the confirmation.
 #[allow(clippy::type_complexity)]
 fn choose_from_the_usual_places(
+    search_root: &Path,
 ) -> anyhow::Result<Option<Vec<(PathBuf, &'static ProviderDescriptor)>>> {
-    let found = import_providers::discover();
+    let found = import_providers::discover_in(&[search_root.to_path_buf()]);
     if found.is_empty() {
         eprintln!("Nothing importable found in the usual places.");
         eprintln!("  If your library is somewhere else, point videre at it:");

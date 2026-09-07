@@ -1,33 +1,24 @@
 mod common;
-use common::videre_bin;
-use rusqlite::Connection;
+use common::TestLibrary;
 use std::io::Write;
-use std::process::{Command, Stdio};
-use tempfile::tempdir;
+use std::path::PathBuf;
+use std::process::Stdio;
 
-/// One file with a known exif_date, no created_at/modified_at set.
-/// Returns (db_path, file_path).
-fn fixture_db(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
-    let file = dir.join("a.jpg");
+/// A library with one on-disk file whose row carries a known exif_date and no
+/// created_at/modified_at. The file path sits under the canonical root so the
+/// row-containment guard accepts the database. Returns the file path.
+fn fixture_library() -> (TestLibrary, PathBuf) {
+    let lib = TestLibrary::new();
+    let file = lib.context().paths.root.join("a.jpg");
     std::fs::write(&file, b"img_a").unwrap();
-
-    let db = dir.join("test.db");
-    let conn = Connection::open(&db).unwrap();
-    conn.execute_batch(
-        "CREATE TABLE file_hashes (
-            path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
-            created_at TEXT, modified_at TEXT, ext TEXT, phash INTEGER,
-            exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER
-        );",
-    )
-    .unwrap();
-    videre_core::db::ensure_file_hashes_columns(&conn);
-    conn.execute(
-        "INSERT INTO file_hashes (path, hash, exif_date) VALUES (?1, 'haaa', '2019-06-15T10:00:00')",
-        rusqlite::params![file.to_str().unwrap()],
-    )
-    .unwrap();
-    (db, file)
+    lib.init_db()
+        .execute(
+            "INSERT INTO file_hashes (path, hash, exif_date)
+             VALUES (?1, 'haaa', '2019-06-15T10:00:00')",
+            [file.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+    (lib, file)
 }
 
 fn mtime_year(path: &std::path::Path) -> i32 {
@@ -41,12 +32,12 @@ fn mtime_year(path: &std::path::Path) -> i32 {
 }
 
 fn run_fix_dates(
-    db: &std::path::Path,
+    lib: &TestLibrary,
     extra_args: &[&str],
     stdin_input: Option<&str>,
 ) -> std::process::Output {
-    let mut cmd = Command::new(videre_bin());
-    cmd.arg("fix-dates").arg("--db").arg(db).args(extra_args);
+    let mut cmd = lib.cmd();
+    cmd.arg("fix-dates").args(extra_args);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -66,11 +57,10 @@ fn run_fix_dates(
 
 #[test]
 fn declining_the_prompt_leaves_the_file_unmodified() {
-    let dir = tempdir().unwrap();
-    let (db, file) = fixture_db(dir.path());
+    let (lib, file) = fixture_library();
     let before = mtime_year(&file);
 
-    let out = run_fix_dates(&db, &[], Some("n\n"));
+    let out = run_fix_dates(&lib, &[], Some("n\n"));
     assert!(out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("Aborted"), "{stderr}");
@@ -79,11 +69,13 @@ fn declining_the_prompt_leaves_the_file_unmodified() {
 
 #[test]
 fn accepting_the_prompt_updates_the_file() {
-    let dir = tempdir().unwrap();
-    let (db, file) = fixture_db(dir.path());
-
-    let out = run_fix_dates(&db, &[], Some("y\n"));
-    assert!(out.status.success());
+    let (lib, file) = fixture_library();
+    let out = run_fix_dates(&lib, &[], Some("y\n"));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(
         mtime_year(&file),
         2019,
@@ -93,13 +85,14 @@ fn accepting_the_prompt_updates_the_file() {
 
 #[test]
 fn yes_flag_skips_the_prompt_entirely() {
-    let dir = tempdir().unwrap();
-    let (db, file) = fixture_db(dir.path());
-
-    // No stdin provided at all, if the prompt were shown, this would hang
-    // (read_line would block); --yes must bypass it.
-    let out = run_fix_dates(&db, &["--yes"], None);
-    assert!(out.status.success());
+    let (lib, file) = fixture_library();
+    // No stdin provided at all: if the prompt were shown this would hang.
+    let out = run_fix_dates(&lib, &["--yes"], None);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(
         mtime_year(&file),
         2019,
@@ -109,12 +102,10 @@ fn yes_flag_skips_the_prompt_entirely() {
 
 #[test]
 fn dry_run_never_prompts() {
-    let dir = tempdir().unwrap();
-    let (db, file) = fixture_db(dir.path());
+    let (lib, file) = fixture_library();
     let before = mtime_year(&file);
 
-    // No stdin provided, dry-run must not block on a prompt either.
-    let out = run_fix_dates(&db, &["--dry-run"], None);
+    let out = run_fix_dates(&lib, &["--dry-run"], None);
     assert!(out.status.success());
     assert_eq!(
         mtime_year(&file),
@@ -125,13 +116,11 @@ fn dry_run_never_prompts() {
 
 #[test]
 fn eof_on_stdin_is_treated_as_no() {
-    let dir = tempdir().unwrap();
-    let (db, file) = fixture_db(dir.path());
+    let (lib, file) = fixture_library();
     let before = mtime_year(&file);
 
-    // Empty stdin (immediate EOF, as when stdin is /dev/null) must be treated
-    // as declining, not accepted and not a hang.
-    let out = run_fix_dates(&db, &[], Some(""));
+    // Empty stdin (immediate EOF) must be treated as declining, not a hang.
+    let out = run_fix_dates(&lib, &[], Some(""));
     assert!(out.status.success());
     assert_eq!(
         mtime_year(&file),

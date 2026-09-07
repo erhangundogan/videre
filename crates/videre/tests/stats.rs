@@ -1,66 +1,46 @@
 mod common;
-use common::videre_bin;
-use std::fs;
-use std::process::Command;
-use tempfile::tempdir;
+
+/// Scan one real fixture into a fresh directory-local library.
+fn library_with_one_file() -> common::TestLibrary {
+    let lib = common::TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "a.jpg");
+    lib.scan();
+    lib
+}
 
 #[test]
 fn stats_reports_library_totals_and_never_run_pipelines() {
-    let scan_dir = tempdir().unwrap();
-    let out_dir = tempdir().unwrap();
-    let db_path = out_dir.path().join("hashes.db");
-
-    fs::write(scan_dir.path().join("a.jpg"), b"content").unwrap();
-
-    let status = Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .arg("--output-sqlite")
-        .arg(&db_path)
-        .arg(scan_dir.path())
-        .status()
-        .expect("failed to run videre scan");
-    assert!(status.success());
-
-    let out = Command::new(videre_bin())
+    let lib = library_with_one_file();
+    let out = lib
+        .cmd()
         .arg("stats")
-        .arg("--db")
-        .arg(&db_path)
         .output()
         .expect("failed to run videre stats");
-    assert!(out.status.success());
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("Library: 1 file(s)"), "{stdout}");
     assert!(stdout.contains("scan"), "{stdout}");
-    // faces never ran against this db
+    // faces never ran against this library
     assert!(stdout.contains("faces"), "{stdout}");
 }
 
 #[test]
 fn stats_json_includes_library_and_pipelines() {
-    let scan_dir = tempdir().unwrap();
-    let out_dir = tempdir().unwrap();
-    let db_path = out_dir.path().join("hashes.db");
-
-    fs::write(scan_dir.path().join("a.jpg"), b"content").unwrap();
-
-    Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .arg("--output-sqlite")
-        .arg(&db_path)
-        .arg(scan_dir.path())
-        .status()
-        .expect("failed to run videre scan");
-
-    let out = Command::new(videre_bin())
-        .arg("stats")
-        .arg("--db")
-        .arg(&db_path)
-        .arg("--json")
+    let lib = library_with_one_file();
+    let out = lib
+        .cmd()
+        .args(["stats", "--json"])
         .output()
         .expect("failed to run videre stats");
-    assert!(out.status.success());
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let doc: serde_json::Value =
         serde_json::from_slice(&out.stdout).expect("stdout must be one valid JSON object");
     assert_eq!(doc["schema_version"], 1);
@@ -78,38 +58,29 @@ fn stats_json_includes_library_and_pipelines() {
 
 #[test]
 fn stats_tracks_prune_runs() {
-    let scan_dir = tempdir().unwrap();
-    let out_dir = tempdir().unwrap();
-    let db_path = out_dir.path().join("hashes.db");
+    let lib = library_with_one_file();
+    // `prune` gains its directory-local entry point in a later task, so its run
+    // is seeded directly here: this test is about `stats` reporting a tracked
+    // command's status, not about running prune.
+    lib.conn()
+        .execute(
+            "INSERT OR REPLACE INTO pipeline_runs
+                 (command, started_at, finished_at, status, duration_ms, summary)
+             VALUES ('prune', '2026-01-01 00:00:00', '2026-01-01 00:00:01', 'success', 5, NULL)",
+            [],
+        )
+        .unwrap();
 
-    fs::write(scan_dir.path().join("a.jpg"), b"content").unwrap();
-
-    Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .arg("--output-sqlite")
-        .arg(&db_path)
-        .arg(scan_dir.path())
-        .status()
-        .expect("failed to run videre scan");
-
-    let status = Command::new(videre_bin())
-        .arg("prune")
-        .arg("--db")
-        .arg(&db_path)
-        .arg("--silent")
-        .status()
-        .expect("failed to run videre prune");
-    assert!(status.success());
-
-    let out = Command::new(videre_bin())
-        .arg("stats")
-        .arg("--db")
-        .arg(&db_path)
-        .arg("--json")
+    let out = lib
+        .cmd()
+        .args(["stats", "--json"])
         .output()
         .expect("failed to run videre stats");
-    assert!(out.status.success());
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let pipelines = doc["pipelines"].as_array().unwrap();
     let prune_entry = pipelines.iter().find(|p| p["command"] == "prune").unwrap();
@@ -118,48 +89,36 @@ fn stats_tracks_prune_runs() {
 
 #[test]
 fn stats_tracks_locations_runs() {
-    let dir = tempdir().unwrap();
-    let db_path = dir.path().join("test.db");
-    let conn = rusqlite::Connection::open(&db_path).unwrap();
-    conn.execute_batch(
-        "CREATE TABLE file_hashes (
-            path        TEXT PRIMARY KEY,
-            hash        TEXT NOT NULL,
-            size_bytes  INTEGER,
-            created_at  TEXT,
-            modified_at TEXT,
-            ext         TEXT,
-            phash       INTEGER,
-            exif_date   TEXT,
-            gps_lat     REAL,
-            gps_lon     REAL,
-            width       INTEGER,
-            height      INTEGER,
-            location_name TEXT,
-            location_cluster_id INTEGER
-        );",
-    )
-    .unwrap();
-    videre_core::db::ensure_file_hashes_columns(&conn);
-    drop(conn);
+    let lib = common::TestLibrary::new();
+    // A GPS row so locations has something to cluster, seeded directly rather
+    // than scanned so the coordinate is the fixture. The path must sit under the
+    // canonical root or the row-containment guard rejects the whole database.
+    let path = lib.context().paths.root.join("a.jpg");
+    lib.init_db()
+        .execute(
+            "INSERT INTO file_hashes (path, hash, gps_lat, gps_lon)
+             VALUES (?1, 'h1', 41.0082, 28.9784)",
+            [path.to_string_lossy().as_ref()],
+        )
+        .unwrap();
 
-    let status = Command::new(videre_bin())
-        .arg("locations")
-        .arg("--db")
-        .arg(&db_path)
-        .arg("--silent")
+    let status = lib
+        .cmd()
+        .args(["locations", "--silent"])
         .status()
         .expect("failed to run videre locations");
     assert!(status.success());
 
-    let out = Command::new(videre_bin())
-        .arg("stats")
-        .arg("--db")
-        .arg(&db_path)
-        .arg("--json")
+    let out = lib
+        .cmd()
+        .args(["stats", "--json"])
         .output()
         .expect("failed to run videre stats");
-    assert!(out.status.success());
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let pipelines = doc["pipelines"].as_array().unwrap();
     let entry = pipelines
@@ -171,27 +130,12 @@ fn stats_tracks_locations_runs() {
 
 #[test]
 fn stats_check_exits_zero_when_nothing_failed_or_crashed() {
-    let scan_dir = tempdir().unwrap();
-    let out_dir = tempdir().unwrap();
-    let db_path = out_dir.path().join("hashes.db");
-
-    fs::write(scan_dir.path().join("a.jpg"), b"content").unwrap();
-
-    Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .arg("--output-sqlite")
-        .arg(&db_path)
-        .arg(scan_dir.path())
-        .status()
-        .expect("failed to run videre scan");
+    let lib = library_with_one_file();
 
     // Both text and --json modes should compose with --check.
-    let text = Command::new(videre_bin())
-        .arg("stats")
-        .arg("--db")
-        .arg(&db_path)
-        .arg("--check")
+    let text = lib
+        .cmd()
+        .args(["stats", "--check"])
         .status()
         .expect("failed to run videre stats --check");
     assert!(
@@ -199,12 +143,9 @@ fn stats_check_exits_zero_when_nothing_failed_or_crashed() {
         "no tracked command has failed/crashed, so --check must exit 0"
     );
 
-    let json = Command::new(videre_bin())
-        .arg("stats")
-        .arg("--db")
-        .arg(&db_path)
-        .arg("--json")
-        .arg("--check")
+    let json = lib
+        .cmd()
+        .args(["stats", "--json", "--check"])
         .status()
         .expect("failed to run videre stats --json --check");
     assert!(json.success());
@@ -212,37 +153,21 @@ fn stats_check_exits_zero_when_nothing_failed_or_crashed() {
 
 #[test]
 fn stats_check_exits_nonzero_when_a_command_failed() {
-    let scan_dir = tempdir().unwrap();
-    let out_dir = tempdir().unwrap();
-    let db_path = out_dir.path().join("hashes.db");
-
-    fs::write(scan_dir.path().join("a.jpg"), b"content").unwrap();
-
-    Command::new(videre_bin())
-        .arg("scan")
-        .arg("--silent")
-        .arg("--output-sqlite")
-        .arg(&db_path)
-        .arg(scan_dir.path())
-        .status()
-        .expect("failed to run videre scan");
+    let lib = library_with_one_file();
 
     // Simulate a prior failed run by writing directly into pipeline_runs.
     // Exercising the CLI's own failure path for every tracked command would
     // be its own large test; this isolates --check's exit-code contract.
-    let conn = rusqlite::Connection::open(&db_path).unwrap();
-    conn.execute(
-        "INSERT OR REPLACE INTO pipeline_runs (command, started_at, finished_at, status, duration_ms, summary)
-         VALUES ('faces', '2026-01-01 00:00:00', '2026-01-01 00:00:01', 'failed', 1000, 'boom')",
-        [],
-    ).unwrap();
-    drop(conn);
+    lib.conn()
+        .execute(
+            "INSERT OR REPLACE INTO pipeline_runs (command, started_at, finished_at, status, duration_ms, summary)
+             VALUES ('faces', '2026-01-01 00:00:00', '2026-01-01 00:00:01', 'failed', 1000, 'boom')",
+            [],
+        ).unwrap();
 
-    let out = Command::new(videre_bin())
-        .arg("stats")
-        .arg("--db")
-        .arg(&db_path)
-        .arg("--check")
+    let out = lib
+        .cmd()
+        .args(["stats", "--check"])
         .output()
         .expect("failed to run videre stats --check");
     assert!(
@@ -253,12 +178,9 @@ fn stats_check_exits_nonzero_when_a_command_failed() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("faces"), "{stdout}");
 
-    let json_out = Command::new(videre_bin())
-        .arg("stats")
-        .arg("--db")
-        .arg(&db_path)
-        .arg("--json")
-        .arg("--check")
+    let json_out = lib
+        .cmd()
+        .args(["stats", "--json", "--check"])
         .output()
         .expect("failed to run videre stats --json --check");
     assert!(!json_out.status.success());
@@ -271,17 +193,16 @@ fn stats_check_exits_nonzero_when_a_command_failed() {
 
 #[test]
 fn stats_errors_cleanly_on_missing_db_without_creating_one() {
-    let home = tempdir().unwrap();
-    let db_path = home.path().join("does-not-exist.db");
+    // A library that was never initialized: no .videre database.
+    let lib = common::TestLibrary::new();
 
-    let out = Command::new(videre_bin())
+    let out = lib
+        .cmd()
         .arg("stats")
-        .arg("--db")
-        .arg(&db_path)
         .output()
         .expect("failed to run videre stats");
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("no database found"), "{stderr}");
-    assert!(!db_path.exists(), "stats must not create a database file");
+    assert!(stderr.contains("not initialized"), "{stderr}");
+    assert!(!lib.db().exists(), "stats must not create a database file");
 }

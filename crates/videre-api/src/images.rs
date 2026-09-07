@@ -199,14 +199,11 @@ pub fn face_lookup(conn: &Connection, face_id: i64) -> Result<FaceLookup> {
 /// The expensive part of `face_image_bytes`: cache check, decode/crop/encode,
 /// write-through. Takes no `Connection`, so it can run without holding the
 /// shared DB lock.
-pub fn face_bytes_from_lookup(lookup: &FaceLookup, face_id: i64) -> Result<Vec<u8>> {
-    let cache = videre_core::thumb_cache::face_thumb_path(&lookup.hash, face_id, FACE_THUMB_SIZE);
-    if videre_core::thumb_cache::face_thumb_exists(&lookup.hash, face_id, FACE_THUMB_SIZE) {
-        if let Ok(bytes) = read_with_timeout(&cache.to_string_lossy()) {
-            return Ok(bytes);
-        }
-    }
-
+pub fn face_bytes_from_lookup(
+    lookup: &FaceLookup,
+    face_id: i64,
+    cache: &videre_core::library::CachePaths,
+) -> Result<Vec<u8>> {
     let parts: Vec<f32> = lookup
         .bbox_json
         .split(',')
@@ -216,6 +213,28 @@ pub fn face_bytes_from_lookup(lookup: &FaceLookup, face_id: i64) -> Result<Vec<u
         return Err(Error::NotFound);
     }
     let bbox = [parts[0], parts[1], parts[0] + parts[2], parts[1] + parts[3]];
+
+    // The crop's cache identity includes its full geometry, so the path is
+    // known only once the bbox is parsed.
+    let cache_path = videre_core::thumb_cache::face_thumb_path_in(
+        cache,
+        &lookup.hash,
+        face_id,
+        bbox,
+        FACE_THUMB_SIZE,
+    );
+    if videre_core::thumb_cache::face_thumb_exists_in(
+        cache,
+        &lookup.hash,
+        face_id,
+        bbox,
+        FACE_THUMB_SIZE,
+    ) {
+        if let Ok(bytes) = read_with_timeout(&cache_path.to_string_lossy()) {
+            return Ok(bytes);
+        }
+    }
+
     let thumb = make_face_thumb(&lookup.file_path, bbox, face_id).ok_or(Error::NotFound)?;
     let mut buf = Vec::new();
     thumb
@@ -226,12 +245,12 @@ pub fn face_bytes_from_lookup(lookup: &FaceLookup, face_id: i64) -> Result<Vec<u
         .map_err(|_| Error::NotFound)?;
 
     // Best-effort write-through (a cache-write failure must not fail the read).
-    if let Some(parent) = cache.parent() {
+    if let Some(parent) = cache_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let tmp = cache.with_extension(format!("tmp{}", std::process::id()));
+    let tmp = cache_path.with_extension(format!("tmp{}", std::process::id()));
     if std::fs::write(&tmp, &buf).is_ok() {
-        let _ = std::fs::rename(&tmp, &cache);
+        let _ = std::fs::rename(&tmp, &cache_path);
     }
     Ok(buf)
 }
@@ -246,9 +265,13 @@ pub fn face_bytes_from_lookup(lookup: &FaceLookup, face_id: i64) -> Result<Vec<u
 /// share `conn` behind a lock across many concurrent requests should call
 /// `face_lookup`/`face_bytes_from_lookup` directly instead, releasing the
 /// lock between the two.
-pub fn face_image_bytes(conn: &Connection, face_id: i64) -> Result<Vec<u8>> {
+pub fn face_image_bytes(
+    conn: &Connection,
+    face_id: i64,
+    cache: &videre_core::library::CachePaths,
+) -> Result<Vec<u8>> {
     let lookup = face_lookup(conn, face_id)?;
-    face_bytes_from_lookup(&lookup, face_id)
+    face_bytes_from_lookup(&lookup, face_id, cache)
 }
 
 /// The single-row query `original_image_bytes` needs before any image I/O.
@@ -276,6 +299,7 @@ pub fn original_lookup(conn: &Connection, face_id: i64) -> Result<OriginalLookup
 pub fn original_bytes_from_lookup(
     lookup: &OriginalLookup,
     face_id: i64,
+    cache: &videre_core::library::CachePaths,
 ) -> Result<(&'static str, Vec<u8>)> {
     let file_path = &lookup.file_path;
     let hash = &lookup.hash;
@@ -286,9 +310,9 @@ pub fn original_bytes_from_lookup(
         .to_lowercase();
 
     if ext == "heic" {
-        if let Ok(bytes) =
-            read_with_timeout(&videre_core::thumb_cache::original_path(&hash).to_string_lossy())
-        {
+        if let Ok(bytes) = read_with_timeout(
+            &videre_core::thumb_cache::original_path_in(cache, hash).to_string_lossy(),
+        ) {
             return Ok(("image/jpeg", bytes));
         }
         // None: this serves the true original image, so it must stay at
@@ -302,7 +326,7 @@ pub fn original_bytes_from_lookup(
             image::ImageFormat::Jpeg,
         )
         .map_err(|_| Error::NotFound)?;
-        let final_path = videre_core::thumb_cache::original_path(&hash);
+        let final_path = videre_core::thumb_cache::original_path_in(cache, hash);
         if let Some(parent) = final_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -329,9 +353,13 @@ pub fn original_bytes_from_lookup(
 /// that share `conn` behind a lock across many concurrent requests should
 /// call `original_lookup`/`original_bytes_from_lookup` directly instead,
 /// releasing the lock between the two.
-pub fn original_image_bytes(conn: &Connection, face_id: i64) -> Result<(&'static str, Vec<u8>)> {
+pub fn original_image_bytes(
+    conn: &Connection,
+    face_id: i64,
+    cache: &videre_core::library::CachePaths,
+) -> Result<(&'static str, Vec<u8>)> {
     let lookup = original_lookup(conn, face_id)?;
-    original_bytes_from_lookup(&lookup, face_id)
+    original_bytes_from_lookup(&lookup, face_id, cache)
 }
 
 #[cfg(test)]
@@ -582,9 +610,16 @@ mod tests {
         videre_core::face_db::create_faces_table(&conn).unwrap();
         conn.execute_batch("CREATE TABLE file_hashes (hash TEXT PRIMARY KEY, path TEXT);")
             .unwrap();
-        assert!(matches!(face_image_bytes(&conn, 999), Err(Error::NotFound)));
+        let temp = tempfile::tempdir().unwrap();
+        let ctx =
+            videre_core::library::LibraryContext::new(temp.path(), &temp.path().join("cache"))
+                .unwrap();
         assert!(matches!(
-            original_image_bytes(&conn, 999),
+            face_image_bytes(&conn, 999, &ctx.cache),
+            Err(Error::NotFound)
+        ));
+        assert!(matches!(
+            original_image_bytes(&conn, 999, &ctx.cache),
             Err(Error::NotFound)
         ));
     }

@@ -3,136 +3,90 @@ title: Keeping libraries separate
 description: Run several collections without them interfering with each other.
 ---
 
-There are two ways to keep collections apart, and they separate different
-amounts.
+A library is a directory. Everything a collection accumulates lives in the
+`.videre/` state directory at its root, so two collections in two different
+directories are already completely separate: separate database, separate
+per-model embeddings, separate locks, separate config, and separate caches.
+There is nothing to configure and no shared default to get wrong.
 
-| | `--db` / `config set db` | `VIDERE_HOME` |
-|---|---|---|
-| Database | separate | separate |
-| Embeddings | separate | separate |
-| Locks | separate | separate |
-| Settings (`config.toml`) | **shared** | separate |
-| Thumbnail cache | **shared** | separate |
+You pick which library a command acts on the same way every time: it is the
+directory you run the command in, or the one named by `--library <dir>`. See
+[where your data lives](/reference/paths/) for the full resolution rule.
 
-Start with separate databases. Reach for `VIDERE_HOME` only when you want two
-completely independent setups.
-
-:::note[One database can hold several folders]
-Scanning two folders into the *same* database is a different thing, and often
-the right one: a collection spread over an internal disk and an external drive
-is one library. See
-[scanning more than one folder](/reference/paths/#scanning-more-than-one-folder).
-
-This page is about collections that should **not** see each other.
+:::note[One library can hold several folders]
+Scanning a tree that spans more than one folder into the *same* library is a
+different thing, and often the right one: a collection split across an internal
+disk and an external drive is one library rooted at their common parent. This
+page is about collections that should **not** see each other.
 :::
 
-## Separate databases
+## Two collections, side by side
 
 ```bash
-videre scan --db ~/personal.db ~/Photos
-videre scan --db ~/work.db ~/WorkShoots
+videre --library ~/Photos scan          # the personal library
+videre --library ~/WorkShoots scan      # the work library
 
-videre dedupe --db ~/work.db        # only ever considers work photos
-videre search --db ~/work.db "client logo"
+videre --library ~/WorkShoots dedupe    # only ever considers work photos
+videre --library ~/WorkShoots search "client logo"
 ```
 
-Each database gets its own embeddings directory and its own locks, so the two
-never block or contaminate each other. `videre dedupe` on one cannot propose
-deleting a file recorded in the other, because it cannot see it.
-
-To avoid typing `--db` constantly, set the one you use most as the default and
-pass `--db` for the other:
+Or run each command from inside the library, with no flag at all:
 
 ```bash
-videre config set db ~/personal.db
-videre config set path ~/Photos
-
-videre scan                          # personal, no arguments needed
-videre scan --db ~/work.db ~/WorkShoots
+cd ~/WorkShoots
+videre scan
+videre dedupe                           # still only work photos
 ```
 
-## Separate homes
+Each library keeps its own embeddings directory and its own locks, so the two
+never block or contaminate each other. `dedupe` on one cannot propose deleting
+a file recorded in the other, because it cannot see it.
 
-`VIDERE_HOME` relocates everything: database, settings, locks, embeddings and
-cache.
+## What each library owns
 
-For a single command, prefix it:
+| | Per library |
+|---|---|
+| Database (`.videre/hashes.db`) | separate |
+| Per-model embeddings | separate |
+| Locks | separate |
+| Config (`.videre/config.toml`) | separate |
+| Thumbnail and geocoding caches | separate |
 
-```bash
-env VIDERE_HOME=~/videre-work videre stats
-```
-
-For a whole session, export it:
-
-```bash
-export VIDERE_HOME=~/videre-work     # bash, zsh
-set -x VIDERE_HOME ~/videre-work     # fish
-
-videre scan ~/WorkShoots             # own db, own config, own cache
-videre config                        # shows the work home's settings
-```
-
-`videre config` prints the active home on its first line, which is the quickest
-way to confirm you are pointed where you think. Full detail, including what
-`--db` still overrides, is in
-[where your data lives](/reference/paths/#videre_home).
-
-Each home has its own `config.toml`, so defaults set in one are invisible in the
-other. That is the point: two setups that share nothing.
-
-A wrapper keeps it manageable:
-
-```bash
-# ~/.local/bin/videre-work
-#!/bin/sh
-VIDERE_HOME="$HOME/videre-work" exec videre "$@"
-```
+A command run against one library cannot read or write another's state, and
+`prune` sweeps only the cache entries belonging to the library it runs in, so it
+can never delete another library's cached thumbnails.
 
 ## What is still shared
 
 **The Hugging Face model cache**, at `~/.cache/huggingface/hub/`, is shared by
-everything on the machine unless you set `HF_HOME`. That is a benefit: models
-are downloaded once, not once per library.
+everything on the machine unless you set `HF_HOME`. That is a benefit, not a
+leak: model *weights* are downloaded once and reused, while each library's own
+*embeddings* stay private to it. See [caches](/guides/caches/).
 
-**The thumbnail cache is shared between databases** but not between homes, since
-its location follows `VIDERE_HOME`. Two consequences:
+## A scratch library
 
-- Sharing is mostly good. The same photo in two libraries is converted once.
-- **One library's `prune` can delete another's cached thumbnails**, because
-  prune removes entries whose hash is absent from *its own* database and cannot
-  see the other. Harmless: the affected photos are simply converted again when
-  next viewed.
-
-That tradeoff is deliberate. Embeddings are kept per library precisely because
-losing those costs hours, while a thumbnail costs milliseconds. See
-[caches](/guides/caches/).
-
-## Choosing which
-
-**Separate databases** for collections you work with side by side, sharing
-models and cache. Personal and work photos on one machine.
-
-**Separate homes** when you want genuinely independent state: a scratch library
-for experiments, a shared machine where two people should not see each other's
-settings, or testing without touching your real setup.
+Because a library is just a directory, an experiment is a throwaway directory:
 
 ```bash
-VIDERE_HOME=/tmp/videre-scratch videre scan ~/some-folder
+videre --library /tmp/videre-scratch scan ~/some-folder
 ```
 
-That last one is worth knowing. It is the safe way to try something without
-risking your real database, config, or cache.
+Nothing you do there can touch a real collection: its database, config and
+caches all live under `/tmp/videre-scratch/.videre/`, and deleting the directory
+removes every trace.
 
 ## Caveats
 
-**Nothing warns you when you point at the wrong library.** A missing `--db` uses
-the default silently. `videre config` shows what everything resolves to, and its
-`resolved db` line is the one to check.
+**Nothing warns you when you point at the wrong library.** A command run in the
+wrong directory, or with the wrong `--library`, acts on whatever library is
+there. The scoped output always prints `N of M`, so a filter matching nothing in
+the library you meant is visible rather than silent.
 
-**`videre scan` adopts the first folder it ever sees** as the default path *for
-that home*, so the first scan under a new `VIDERE_HOME` sets that home's
-default. It never overwrites one you set yourself.
+**A directory with no `.videre/` is not yet a library.** The commands that read
+a library (`search`, `stats`, `dedupe`, and the rest) report that it is not
+initialized rather than creating an empty one; only `scan` and `watch` bring a
+library into being.
 
-**Locks are keyed by the canonical database path**, so two databases both named
-`photos.db` in different directories do not share a lock, and a symlink or
-relative path to the same database resolves to the same one.
+**Locks are keyed by the canonical library root**, so a symlink or a relative
+path to the same library resolves to the same locks, and two libraries in
+different directories never share one.

@@ -15,41 +15,35 @@
 //! `200 OK` would be a poor trade.
 
 mod common;
-use common::isolated_home;
+use common::TestLibrary;
 
-use rusqlite::Connection;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::path::Path;
+use std::process::{Child, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 /// A database with one file, one face, and one named person, so the gallery has
 /// something to render on every view rather than only exercising empty states.
-fn fixture(dir: &Path) -> PathBuf {
-    let db = dir.join("gallery.db");
-    let conn = Connection::open(&db).unwrap();
+fn fixture() -> TestLibrary {
+    let lib = TestLibrary::new();
+    let path = lib.context().paths.root.join("a.jpg");
+    let conn = lib.init_db();
+    conn.execute(
+        "INSERT INTO file_hashes (path, hash, ext, size_bytes, exif_date)
+           VALUES (?1, 'abc123', 'jpg', 1024, '2025-06-03T15:08:23')",
+        [path.to_string_lossy().as_ref()],
+    )
+    .unwrap();
     conn.execute_batch(
-        "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL,
-         size_bytes INTEGER, created_at TEXT, modified_at TEXT, ext TEXT,
-         phash INTEGER, exif_date TEXT, gps_lat REAL, gps_lon REAL,
-         width INTEGER, height INTEGER);
-         CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL,
-         bbox TEXT NOT NULL, landmark TEXT, embedding BLOB NOT NULL,
-         cluster_id INTEGER, person_label TEXT, confirmed INTEGER DEFAULT 0,
-         is_primary INTEGER DEFAULT 0);
-         CREATE TABLE people (name TEXT PRIMARY KEY, full_name TEXT);
-         INSERT INTO file_hashes (path, hash, ext, size_bytes, exif_date)
-           VALUES ('/tmp/a.jpg', 'abc123', 'jpg', 1024, '2025-06-03T15:08:23');
-         INSERT INTO faces (hash, bbox, embedding, cluster_id, person_label, confirmed)
+        "INSERT INTO faces (hash, bbox, embedding, cluster_id, person_label, confirmed)
            VALUES ('abc123', '0,0,50,50', X'0000', 1, 'ozgur_demirtas', 1);
          INSERT INTO people (name, full_name) VALUES ('ozgur_demirtas', 'Özgür');",
     )
     .unwrap();
-    videre_core::db::ensure_file_hashes_columns(&conn);
-    db
+    lib
 }
 
 /// Ask the OS for a free port, then let it go so the server can take it.
@@ -90,23 +84,18 @@ impl Server {
     /// Starts the gallery and waits until the port actually accepts a
     /// connection. Sleeping a fixed interval instead makes a slow machine look
     /// like a broken server.
-    fn start(db: &Path) -> Server {
-        Server::start_with_hf_home(db, None)
+    fn start(lib: &TestLibrary) -> Server {
+        Server::start_with_hf_home(lib, None)
     }
 
     /// `hf_home` points the child's model cache somewhere fresh, so a download
     /// that should not happen lands where a test can see it instead of being
     /// absorbed by the developer's warm cache.
-    fn start_with_hf_home(db: &Path, hf_home: Option<&Path>) -> Server {
-        isolated_home();
+    fn start_with_hf_home(lib: &TestLibrary, hf_home: Option<&Path>) -> Server {
         let _serialised = STARTUP.lock().unwrap_or_else(|e| e.into_inner());
         let port = free_port();
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_videre"));
-        cmd.arg("gallery")
-            .arg("--db")
-            .arg(db)
-            .arg("--port")
-            .arg(port.to_string());
+        let mut cmd = lib.cmd();
+        cmd.arg("gallery").arg("--port").arg(port.to_string());
         if let Some(hf) = hf_home {
             cmd.env("HF_HOME", hf);
         }
@@ -152,9 +141,8 @@ impl Server {
 
 #[test]
 fn every_live_route_answers() {
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = fixture();
+    let server = Server::start(&lib);
 
     for path in ["/", "/people", "/date"] {
         let (status, body) = server.get(path);
@@ -168,9 +156,8 @@ fn every_live_route_answers() {
 
 #[test]
 fn date_prefix_routes_render_with_initial_state() {
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = fixture();
+    let server = Server::start(&lib);
 
     for (path, prefix) in [
         ("/date/2025", "\"value\":\"2025\""),
@@ -190,9 +177,8 @@ fn date_prefix_routes_render_with_initial_state() {
 
 #[test]
 fn date_range_routes_render_with_normalized_initial_state() {
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = fixture();
+    let server = Server::start(&lib);
 
     let (status, body) = server.get("/date?from=2016-05&to=2017");
     assert_eq!(status, 200);
@@ -208,9 +194,8 @@ fn date_range_routes_render_with_normalized_initial_state() {
 
 #[test]
 fn invalid_date_page_routes_return_the_right_status() {
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = fixture();
+    let server = Server::start(&lib);
 
     for path in [
         "/date/abcd",
@@ -235,9 +220,8 @@ fn invalid_date_page_routes_return_the_right_status() {
 
 #[test]
 fn live_date_pages_link_the_drill_down_routes() {
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = fixture();
+    let server = Server::start(&lib);
 
     let (status, body) = server.get("/date");
     assert_eq!(status, 200);
@@ -264,9 +248,8 @@ fn live_date_pages_link_the_drill_down_routes() {
 // even if `/map` were deleted from the router entirely.
 #[test]
 fn a_reserved_route_returns_404_with_an_explanation() {
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = fixture();
+    let server = Server::start(&lib);
 
     for path in ["/map", "/events", "/smart"] {
         let (status, body) = server.get(path);
@@ -280,9 +263,8 @@ fn a_reserved_route_returns_404_with_an_explanation() {
 
 #[test]
 fn an_unregistered_path_404s_with_no_such_explanation() {
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = fixture();
+    let server = Server::start(&lib);
 
     let (status, body) = server.get("/definitely-not-a-route");
     assert_eq!(status, 404);
@@ -302,9 +284,8 @@ fn the_people_data_carries_identity_and_display_name_separately() {
     // `ozgur_demirtas` is shown as `Özgür`. That divergence is the point, the
     // same shape videre-api's person_surfaces tests use, because a surface that
     // only ever sees agreeing values proves nothing.
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = fixture();
+    let server = Server::start(&lib);
 
     let (status, body) = server.get("/api/faces");
     assert_eq!(status, 200);
@@ -320,9 +301,8 @@ fn the_people_data_carries_identity_and_display_name_separately() {
 
 #[test]
 fn a_person_page_renders() {
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = fixture();
+    let server = Server::start(&lib);
 
     let (status, _) = server.get("/people/person/ozgur_demirtas");
     assert_eq!(status, 200, "a labelled person's page should render");
@@ -339,9 +319,8 @@ fn a_person_page_renders() {
 
 #[test]
 fn the_labeling_sub_pages_live_under_people_on_a_gallery() {
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = fixture();
+    let server = Server::start(&lib);
 
     for path in ["/people/cluster/1", "/people/person/ozgur_demirtas"] {
         let (status, _) = server.get(path);
@@ -358,9 +337,8 @@ fn the_labeling_sub_pages_live_under_people_on_a_gallery() {
 
 #[test]
 fn the_back_link_returns_to_the_labeling_ui_not_the_file_list() {
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = fixture();
+    let server = Server::start(&lib);
 
     for path in ["/people/cluster/1", "/people/person/ozgur_demirtas"] {
         let (_, body) = server.get(path);
@@ -378,9 +356,8 @@ fn the_back_link_returns_to_the_labeling_ui_not_the_file_list() {
 
 #[test]
 fn the_api_the_labeling_ui_depends_on_answers_json() {
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = fixture();
+    let server = Server::start(&lib);
 
     let (status, body) = server.get("/api/faces");
     assert_eq!(status, 200, "/api/faces did not return 200");
@@ -397,16 +374,11 @@ fn the_api_the_labeling_ui_depends_on_answers_json() {
 /// serialise.
 #[test]
 fn port_zero_announces_the_port_it_actually_bound() {
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    isolated_home();
+    let lib = fixture();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_videre"))
-        .arg("gallery")
-        .arg("--db")
-        .arg(&db)
-        .arg("--port")
-        .arg("0")
+    let mut child = lib
+        .cmd()
+        .args(["gallery", "--port", "0"])
         .stderr(Stdio::piped())
         .spawn()
         .expect("failed to spawn videre gallery --port 0");
@@ -456,9 +428,8 @@ fn files_page(server: &Server, query: &str) -> (i64, usize) {
 
 #[test]
 fn the_files_endpoint_pages_both_views() {
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = fixture();
+    let server = Server::start(&lib);
 
     // The fixture holds one file, so both views see it and paging is trivial
     // but real: the arithmetic is what is being pinned, not the volume.
@@ -471,9 +442,8 @@ fn the_files_endpoint_pages_both_views() {
 
 #[test]
 fn an_offset_past_the_end_is_an_empty_page_not_an_error() {
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = fixture();
+    let server = Server::start(&lib);
 
     let (total, n) = files_page(&server, "offset=9999&limit=10");
     assert_eq!(total, 1, "total must describe the view, not the page");
@@ -484,9 +454,8 @@ fn an_offset_past_the_end_is_an_empty_page_not_an_error() {
 fn limit_is_capped_so_a_client_cannot_ask_for_the_library() {
     // The whole point of the endpoint is that no single response carries
     // everything, so an unbounded limit would defeat it.
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = fixture();
+    let server = Server::start(&lib);
 
     let (_, n) = files_page(&server, "limit=100000");
     assert!(n <= 500, "limit was not capped: {n} rows returned");
@@ -496,9 +465,8 @@ fn limit_is_capped_so_a_client_cannot_ask_for_the_library() {
 fn each_row_carries_its_copy_count() {
     // `copies` is why the client no longer needs the whole array: it used to
     // scan everything to count files per hash, a number the database had.
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = fixture();
+    let server = Server::start(&lib);
 
     let (status, body) = server.get("/api/files?limit=1");
     assert_eq!(status, 200);
@@ -516,9 +484,8 @@ fn each_row_carries_its_copy_count() {
 fn an_unknown_view_falls_back_rather_than_failing() {
     // An unknown view is a client bug. Rejecting it would render as an empty
     // gallery with no explanation, which is worse than showing all files.
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = fixture();
+    let server = Server::start(&lib);
 
     let (total, n) = files_page(&server, "view=nonsense&limit=10");
     assert_eq!(total, 1);
@@ -529,9 +496,8 @@ fn an_unknown_view_falls_back_rather_than_failing() {
 
 #[test]
 fn the_date_tree_comes_from_the_whole_library() {
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = fixture();
+    let server = Server::start(&lib);
 
     let (status, body) = server.get("/api/dates?level=year");
     assert_eq!(status, 200);
@@ -550,9 +516,8 @@ fn the_date_tree_comes_from_the_whole_library() {
 
 #[test]
 fn drilling_down_narrows_the_tree() {
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = fixture();
+    let server = Server::start(&lib);
 
     for (q, key) in [
         ("level=month&parent=2025", "2025-06"),
@@ -571,9 +536,8 @@ fn drilling_down_narrows_the_tree() {
 // swallowed by a default.
 #[test]
 fn a_dated_page_agrees_with_its_own_total() {
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = fixture();
+    let server = Server::start(&lib);
 
     let (status, body) = server.get("/api/files?view=date&date=2025-06-03&limit=100");
     assert_eq!(status, 200);
@@ -591,9 +555,8 @@ fn a_dated_page_agrees_with_its_own_total() {
 fn a_date_that_matches_nothing_is_empty_rather_than_everything() {
     // A filter that fails to apply would return the whole library, which reads
     // as a working day view containing every photo ever taken.
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = fixture();
+    let server = Server::start(&lib);
 
     let (status, body) = server.get("/api/files?view=date&date=1999-01-01&limit=100");
     assert_eq!(status, 200);
@@ -604,9 +567,8 @@ fn a_date_that_matches_nothing_is_empty_rather_than_everything() {
 
 #[test]
 fn the_files_endpoint_filters_date_ranges() {
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = fixture();
+    let server = Server::start(&lib);
 
     let (status, body) = server.get("/api/files?view=date&from=2025-06-01&to=2025-07-01&limit=100");
     assert_eq!(status, 200);
@@ -623,9 +585,8 @@ fn the_files_endpoint_filters_date_ranges() {
 
 #[test]
 fn invalid_files_endpoint_date_ranges_are_bad_requests() {
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = fixture();
+    let server = Server::start(&lib);
 
     for path in [
         "/api/files?view=date&from=banana",
@@ -645,9 +606,8 @@ fn invalid_files_endpoint_date_ranges_are_bad_requests() {
 // how a person would get there. These two do.
 #[test]
 fn every_gallery_view_links_to_the_others() {
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = fixture();
+    let server = Server::start(&lib);
 
     for path in ["/", "/duplicates", "/date", "/people"] {
         let (status, body) = server.get(path);
@@ -674,9 +634,8 @@ fn every_gallery_view_links_to_the_others() {
 /// styling glitch rather than a bug.
 #[test]
 fn the_current_section_is_marked_on_each_view() {
-    let dir = tempdir().unwrap();
-    let db = fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = fixture();
+    let server = Server::start(&lib);
 
     for (path, expected) in [
         ("/", "<a href=\"/\" class=\"on\">"),
@@ -699,11 +658,11 @@ fn the_current_section_is_marked_on_each_view() {
 
 /// Embeddings for the search tests: three orthogonal-ish vectors so the ranking
 /// has a knowable answer rather than an arbitrary one.
-fn seed_search_embeddings(db: &Path, hashes: &[(&str, [f32; 4])]) {
+fn seed_search_embeddings(lib: &TestLibrary, hashes: &[(&str, [f32; 4])]) {
     let model = videre_core::embeddings::DEFAULT_MODEL_ID;
-    let path = videre_core::embeddings_db::db_path(db, model).unwrap();
+    let path = videre_core::embeddings_db::db_path_in(&lib.context(), model).unwrap();
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let conn = Connection::open(&path).unwrap();
+    let conn = rusqlite::Connection::open(&path).unwrap();
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS embeddings
          (hash TEXT PRIMARY KEY, model_id TEXT NOT NULL, embedding BLOB NOT NULL);",
@@ -722,40 +681,23 @@ fn seed_search_embeddings(db: &Path, hashes: &[(&str, [f32; 4])]) {
 }
 
 /// A library of four files with known embeddings, for ranking assertions.
-fn search_fixture(dir: &Path) -> PathBuf {
-    // :warning: Before anything resolves a path. The embeddings database lives
-    // under the videre home, and `isolated_home` sets that once per test binary
-    // in a `OnceLock`. Seeding first writes it wherever the developer's real
-    // home points, and the server then finds nothing.
-    //
-    // These tests passed anyway until one of them was run in isolation: with
-    // several tests sharing a process, whichever reached `Server::start` first
-    // set the home for all of them, so the ordering hid it. Same fault as the
-    // one `gallery_payload.rs` documents.
-    isolated_home();
-    let db = dir.join("search.db");
-    let conn = Connection::open(&db).unwrap();
-    conn.execute_batch(
-        "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL,
-         size_bytes INTEGER, created_at TEXT, modified_at TEXT, ext TEXT,
-         phash INTEGER, exif_date TEXT, gps_lat REAL, gps_lon REAL,
-         width INTEGER, height INTEGER);
-         CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL,
-         bbox TEXT NOT NULL, landmark TEXT, embedding BLOB NOT NULL,
-         cluster_id INTEGER, person_label TEXT, confirmed INTEGER DEFAULT 0,
-         is_primary INTEGER DEFAULT 0);
-         CREATE TABLE people (name TEXT PRIMARY KEY, full_name TEXT);
-         INSERT INTO file_hashes (path, hash, ext, size_bytes) VALUES
-           ('/tmp/a.jpg', 'aaaa', 'jpg', 10),
-           ('/tmp/b.jpg', 'bbbb', 'jpg', 10),
-           ('/tmp/c.jpg', 'cccc', 'jpg', 10),
-           ('/tmp/d.jpg', 'dddd', 'jpg', 10);",
+fn search_fixture() -> TestLibrary {
+    let lib = TestLibrary::new();
+    let root = lib.context().paths.root;
+    let p = |name: &str| root.join(name).to_string_lossy().into_owned();
+    let conn = lib.init_db();
+    conn.execute(
+        "INSERT INTO file_hashes (path, hash, ext, size_bytes) VALUES
+           (?1, 'aaaa', 'jpg', 10),
+           (?2, 'bbbb', 'jpg', 10),
+           (?3, 'cccc', 'jpg', 10),
+           (?4, 'dddd', 'jpg', 10)",
+        rusqlite::params![p("a.jpg"), p("b.jpg"), p("c.jpg"), p("d.jpg")],
     )
     .unwrap();
-    videre_core::db::ensure_file_hashes_columns(&conn);
     drop(conn);
     seed_search_embeddings(
-        &db,
+        &lib,
         &[
             ("aaaa", [1.0, 0.0, 0.0, 0.0]),
             ("bbbb", [0.9, 0.1, 0.0, 0.0]),
@@ -763,7 +705,7 @@ fn search_fixture(dir: &Path) -> PathBuf {
             ("dddd", [0.0, 1.0, 0.0, 0.0]),
         ],
     );
-    db
+    lib
 }
 
 // :warning: These use `?like=`, never `?q=`. A text query needs the model, and
@@ -773,9 +715,8 @@ fn search_fixture(dir: &Path) -> PathBuf {
 
 #[test]
 fn similarity_ranks_by_closeness_to_the_example() {
-    let dir = tempdir().unwrap();
-    let db = search_fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = search_fixture();
+    let server = Server::start(&lib);
 
     let (status, body) = server.get("/api/search?like=aaaa&limit=10");
     assert_eq!(status, 200);
@@ -797,9 +738,8 @@ fn similarity_ranks_by_closeness_to_the_example() {
 /// best result slot is spent showing the picture you already clicked.
 #[test]
 fn the_example_is_absent_from_its_own_results() {
-    let dir = tempdir().unwrap();
-    let db = search_fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = search_fixture();
+    let server = Server::start(&lib);
 
     let (_, body) = server.get("/api/search?like=aaaa&limit=10");
     assert!(
@@ -810,9 +750,8 @@ fn the_example_is_absent_from_its_own_results() {
 
 #[test]
 fn a_search_needs_exactly_one_ranker() {
-    let dir = tempdir().unwrap();
-    let db = search_fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = search_fixture();
+    let server = Server::start(&lib);
 
     for path in ["/api/search", "/api/search?q=cat&like=aaaa"] {
         let (status, _) = server.get(path);
@@ -826,9 +765,8 @@ fn a_search_needs_exactly_one_ranker() {
 /// because "no similar images" reads as an answer.
 #[test]
 fn an_example_with_no_embedding_is_an_error() {
-    let dir = tempdir().unwrap();
-    let db = search_fixture(dir.path());
-    let server = Server::start(&db);
+    let lib = search_fixture();
+    let server = Server::start(&lib);
 
     let (status, _) = server.get("/api/search?like=nosuchhash");
     assert_eq!(status, 500);
@@ -846,10 +784,9 @@ fn an_example_with_no_embedding_is_an_error() {
 /// a person hits without searching and asserts nothing was fetched.
 #[test]
 fn browsing_the_gallery_touches_no_model_cache() {
-    let dir = tempdir().unwrap();
-    let db = search_fixture(dir.path());
+    let lib = search_fixture();
     let hf_home = tempdir().unwrap();
-    let server = Server::start_with_hf_home(&db, Some(hf_home.path()));
+    let server = Server::start_with_hf_home(&lib, Some(hf_home.path()));
 
     for path in [
         "/",

@@ -1,11 +1,12 @@
 use crate::types::FileRecord;
 use chrono::{DateTime, Utc};
 use exif::{In, Reader, Tag, Value};
-use std::fs::{self, File};
-use std::io::{self, BufReader, Read};
+use std::fs::File;
+use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::time::SystemTime;
 
+#[derive(Default)]
 struct ExifData {
     exif_date: Option<String>,
     gps_lat: Option<f64>,
@@ -90,19 +91,11 @@ fn extract_gps(exif: &exif::Exif, coord_tag: Tag, ref_tag: Tag, negative_ref: u8
     }
 }
 
-fn extract_exif(path: &Path) -> ExifData {
-    let mut result = ExifData {
-        exif_date: None,
-        gps_lat: None,
-        gps_lon: None,
-        width: None,
-        height: None,
-    };
-
-    let file = match File::open(path) {
-        Ok(f) => f,
-        Err(_) => return result,
-    };
+fn extract_exif_file(mut file: File) -> ExifData {
+    let mut result = ExifData::default();
+    if file.seek(SeekFrom::Start(0)).is_err() {
+        return result;
+    }
     let exif = match Reader::new().read_from_container(&mut BufReader::new(file)) {
         Ok(e) => e,
         Err(_) => return result,
@@ -149,6 +142,11 @@ fn extract_exif(path: &Path) -> ExifData {
     result
 }
 
+#[cfg(test)]
+fn extract_exif(path: &Path) -> ExifData {
+    File::open(path).map(extract_exif_file).unwrap_or_default()
+}
+
 /// Bounds the whole read+hash+EXIF operation so a disconnected/stale mount
 /// point (which can block `fs::metadata`/`File::open`/`read` indefinitely on
 /// macOS rather than fail fast) turns into a returned error instead of
@@ -172,14 +170,55 @@ pub fn hash_file(path: &Path) -> io::Result<FileRecord> {
     })
 }
 
+/// Hash one original through the selected library's pinned I/O boundary.
+pub fn hash_file_in(
+    ctx: &videre_core::library::LibraryContext,
+    path: &Path,
+) -> io::Result<FileRecord> {
+    let file = videre_core::library_io::open_media(ctx, path).map_err(io::Error::other)?;
+    let stat_file = file.try_clone()?;
+    let size = videre_core::io_timeout::run_with_timeout(
+        videre_core::io_timeout::STAT_TIMEOUT,
+        move || stat_file.metadata().map(|metadata| metadata.len()),
+    )
+    .map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!(
+                "could not read {} after the filesystem timeout",
+                path.display()
+            ),
+        )
+    })??;
+    let budget = videre_core::io_timeout::timeout_for_size(
+        size,
+        videre_core::io_timeout::min_read_rate_mb_s(),
+    );
+    let owned = path.to_path_buf();
+    videre_core::io_timeout::run_with_timeout(budget, move || hash_open_file(&owned, file))
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "timed out reading {} after {}s",
+                    path.display(),
+                    budget.as_secs()
+                ),
+            )
+        })?
+}
+
 fn hash_file_inner(path: &Path) -> io::Result<FileRecord> {
-    let metadata = fs::metadata(path)?;
+    hash_open_file(path, File::open(path)?)
+}
+
+fn hash_open_file(path: &Path, file: File) -> io::Result<FileRecord> {
+    let metadata = file.metadata()?;
     let size_bytes = metadata.len();
     let created_at = metadata.created().ok().map(system_time_to_iso);
     let modified_at = metadata.modified().ok().map(system_time_to_iso);
 
     let mut hasher = blake3::Hasher::new();
-    let file = File::open(path)?;
     let mut reader = BufReader::new(file);
     let mut buffer = [0u8; 65536];
     let mut mime: Option<String> = None;
@@ -205,6 +244,7 @@ fn hash_file_inner(path: &Path) -> io::Result<FileRecord> {
         hasher.update(&buffer[..n]);
     }
     let hash = hasher.finalize().to_hex().to_string();
+    let file = reader.into_inner();
 
     let ext = path
         .extension()
@@ -213,13 +253,19 @@ fn hash_file_inner(path: &Path) -> io::Result<FileRecord> {
         .to_lowercase();
 
     let mut meta = match videre_core::mime_probe::effective_mime(mime.as_deref(), &ext) {
-        Some(m) if videre_core::mime_probe::EXIF_MIMES.contains(&m) => extract_exif(path).into(),
+        Some(m) if videre_core::mime_probe::EXIF_MIMES.contains(&m) => file
+            .try_clone()
+            .map(extract_exif_file)
+            .unwrap_or_default()
+            .into(),
         // QuickTime atoms are not EXIF, so `EXIF_MIMES` is deliberately not
         // widened to cover video; it would be a lie the next reader has to
         // unpick. See `videre_core::video_meta`.
-        Some(m) if videre_core::mime_probe::is_video_mime(m) => {
-            videre_core::video_meta::read(path).into()
-        }
+        Some(m) if videre_core::mime_probe::is_video_mime(m) => file
+            .try_clone()
+            .map(videre_core::video_meta::read_file)
+            .unwrap_or_default()
+            .into(),
         _ => ExtractedMeta::default(),
     };
 
@@ -232,9 +278,20 @@ fn hash_file_inner(path: &Path) -> io::Result<FileRecord> {
     let is_video = videre_core::mime_probe::effective_mime(mime.as_deref(), &ext)
         .is_some_and(videre_core::mime_probe::is_video_mime);
     if !is_video && (meta.width.is_none() || meta.height.is_none()) {
-        if let Ok((w, h)) = image::image_dimensions(path) {
-            meta.width = Some(w);
-            meta.height = Some(h);
+        if let Ok(mut image_file) = file.try_clone() {
+            let dimensions = image_file
+                .seek(SeekFrom::Start(0))
+                .ok()
+                .and_then(|_| {
+                    image::ImageReader::new(BufReader::new(image_file))
+                        .with_guessed_format()
+                        .ok()
+                })
+                .and_then(|reader| reader.into_dimensions().ok());
+            if let Some((w, h)) = dimensions {
+                meta.width = Some(w);
+                meta.height = Some(h);
+            }
         }
     }
 
@@ -295,6 +352,53 @@ pub fn compute_dhash(path: &Path, mime: Option<&str>) -> Option<u64> {
             let left = small.get_pixel(col, row)[0];
             let right = small.get_pixel(col + 1, row)[0];
             hash = (hash << 1) | if left > right { 1 } else { 0 };
+        }
+    }
+    Some(hash)
+}
+
+/// Compute a perceptual hash without reopening the validated original path.
+pub fn compute_dhash_in(
+    ctx: &videre_core::library::LibraryContext,
+    path: &Path,
+    mime: Option<&str>,
+) -> Option<u64> {
+    let ext = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_lowercase)
+        .unwrap_or_default();
+    let mime = videre_core::mime_probe::effective_mime(mime, &ext)?;
+    if !videre_core::mime_probe::PHASH_MIMES.contains(&mime) {
+        return None;
+    }
+    let file = videre_core::library_io::open_media(ctx, path).ok()?;
+    let image = if videre_core::mime_probe::is_video_mime(mime) || mime == "image/heic" {
+        let staged = videre_core::library_io::staged_copy(ctx, &file, path.extension()?).ok()?;
+        if videre_core::mime_probe::is_video_mime(mime) {
+            videre_ml::preprocess::decode_via_quicklook(staged.path(), 64, "scan-similar-video")
+                .ok()?
+        } else {
+            videre_core::heic::heic_via_quicklook(
+                staged.path().to_str()?,
+                "scan-similar-heic",
+                Some(64),
+            )?
+        }
+    } else {
+        image::ImageReader::new(BufReader::new(file))
+            .with_guessed_format()
+            .ok()?
+            .decode()
+            .ok()?
+    };
+    let small = resize(&image.to_luma8(), 9, 8, FilterType::Lanczos3);
+    let mut hash = 0u64;
+    for row in 0..8u32 {
+        for col in 0..8u32 {
+            let left = small.get_pixel(col, row)[0];
+            let right = small.get_pixel(col + 1, row)[0];
+            hash = (hash << 1) | u64::from(left > right);
         }
     }
     Some(hash)

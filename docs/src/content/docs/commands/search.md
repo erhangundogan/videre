@@ -13,7 +13,7 @@ videre search "a dog" -k 50                # more results, default 20 (--top-k w
 videre search "a dog" --scores             # show how well each result matched
 videre search "a dog" --json               # print one JSON object instead
 videre search --location "Rome" --radius 5 # tighter radius in km (default 20)
-videre search "a dog" --db ~/photos.db     # use a specific database
+videre --library ~/Photos search "a dog"   # select a different library
 videre search "a dog" --model <model-id>   # search a specific model's data
 videre search --date 2019-09               # only that month
 videre search --after 2020-01-01           # inclusive lower bound
@@ -296,7 +296,7 @@ v0.14.0 or later. `--retry-incomplete` will not pick them up, since it looks for
 files with no recorded type and these have one:
 
 ```bash
-videre scan ~/Pictures
+videre --library ~/Pictures scan
 ```
 :::
 

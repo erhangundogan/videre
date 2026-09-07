@@ -1,12 +1,8 @@
+use crate::command_context::CommandContext;
 use filetime::FileTime;
-use std::path::PathBuf;
 
 #[derive(clap::Args)]
 pub struct FixDatesArgs {
-    /// SQLite database (default: resolved from ~/.videre; see 'videre config')
-    #[arg(long)]
-    db: Option<PathBuf>,
-
     /// Preview changes without modifying any files
     #[arg(long)]
     dry_run: bool,
@@ -22,22 +18,24 @@ pub struct FixDatesArgs {
 
 use super::confirm;
 
-pub fn run(args: FixDatesArgs) -> anyhow::Result<()> {
-    let db = super::resolve_reader_db(args.db.clone())?;
-
-    if !db.exists() {
-        eprintln!("Error: {:?} does not exist", db);
-        std::process::exit(1);
-    }
+pub fn run(args: FixDatesArgs, ctx: &CommandContext) -> anyhow::Result<()> {
+    let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    // Ordinary writer: coexists with readers and other ordinary work, excluded
+    // only by exclusive maintenance.
+    let _activity = videre_core::library_locks::try_activity(
+        &ctx.library,
+        videre_core::library_locks::ActivityMode::Shared,
+    )?;
 
     if args.dry_run && !args.silent {
         eprintln!("Dry run: no files will be modified.");
     }
 
-    let conn = videre_core::db::open_wal(&db).expect("failed to open database");
-
+    let guard = videre_core::library_locks::try_command(&ctx.library, "fix-dates")?;
     let errors =
-        videre_core::pipeline_runs::track(&conn, &db, "fix-dates", || run_fix_dates(&args, &conn))?;
+        videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "fix-dates", || {
+            run_fix_dates(&args, ctx, &conn)
+        })?;
 
     if errors > 0 {
         std::process::exit(1);
@@ -49,7 +47,11 @@ pub fn run(args: FixDatesArgs) -> anyhow::Result<()> {
 /// The actual fix-dates work, wrapped by `track()` above. Returns the error
 /// count so the caller can decide the exit code after tracking has already
 /// finalized the run.
-fn run_fix_dates(args: &FixDatesArgs, conn: &rusqlite::Connection) -> anyhow::Result<usize> {
+fn run_fix_dates(
+    args: &FixDatesArgs,
+    ctx: &CommandContext,
+    conn: &rusqlite::Connection,
+) -> anyhow::Result<usize> {
     let mut stmt = conn
         .prepare(
             "SELECT path, exif_date FROM file_hashes \
@@ -105,15 +107,31 @@ fn run_fix_dates(args: &FixDatesArgs, conn: &rusqlite::Connection) -> anyhow::Re
         let ft = FileTime::from_unix_time(local_dt.timestamp(), 0);
 
         if !args.dry_run {
-            if let Err(e) = filetime::set_file_mtime(path, ft) {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    // File was trashed or moved after the scan; skip silently.
-                    skipped += 1;
+            // The row's path is already confined to the selected root by
+            // open_existing's containment check; open it through the confined
+            // writer and set the time on the handle, so a symlink swapped in
+            // after the check is not followed.
+            match videre_core::library_io::open_media(&ctx.library, std::path::Path::new(path)) {
+                Ok(file) => {
+                    if let Err(e) = filetime::set_file_handle_times(&file, None, Some(ft)) {
+                        eprintln!("Error: {path}: {e}");
+                        errors += 1;
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    // A missing or offline original is not this run's problem;
+                    // skip it silently as before.
+                    if let Some(io) = e.downcast_ref::<std::io::Error>() {
+                        if io.kind() == std::io::ErrorKind::NotFound {
+                            skipped += 1;
+                            continue;
+                        }
+                    }
+                    eprintln!("Error: {path}: {e:#}");
+                    errors += 1;
                     continue;
                 }
-                eprintln!("Error: {path}: {e}");
-                errors += 1;
-                continue;
             }
         }
 

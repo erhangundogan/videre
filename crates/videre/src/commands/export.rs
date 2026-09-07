@@ -3,9 +3,11 @@
 //! preserved. The deliberate-handoff surface; the same shared writer also runs
 //! from the watch export stage.
 
+use crate::command_context::CommandContext;
 use crate::xmp::model::{Area, OwnedXmp, Region};
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use std::path::PathBuf;
+use videre_core::library::LibraryContext;
 use videre_core::selection::SelectionCtx;
 
 #[derive(clap::Args)]
@@ -23,49 +25,97 @@ pub struct ExportArgs {
     #[command(flatten)]
     paths: super::selection_args::PathArgs,
 
-    /// Write XMP sidecars (currently the only export format)
+    /// Write XMP sidecars beside each photo
     #[arg(long)]
     xmp: bool,
+    /// Write a JSONL scan-inventory snapshot to .videre/hashes.jsonl, replacing
+    /// any previous snapshot atomically
+    #[arg(long, conflicts_with = "xmp")]
+    jsonl: bool,
     /// Show what would be written, write nothing
     #[arg(long)]
     dry_run: bool,
     /// No summary output
     #[arg(long)]
     silent: bool,
-    /// SQLite database (default: resolved from ~/.videre; see 'videre config')
-    #[arg(long)]
-    db: Option<PathBuf>,
 }
 
-pub fn run(args: ExportArgs) -> Result<()> {
-    if !args.xmp {
-        bail!("nothing to export: pass --xmp");
+pub fn run(args: ExportArgs, ctx: &CommandContext) -> Result<()> {
+    if !args.xmp && !args.jsonl {
+        bail!("nothing to export: pass --xmp or --jsonl");
     }
-    let db = super::resolve_reader_db(args.db.clone())?;
-    let conn = videre_core::db::open_wal(&db).with_context(|| format!("open {}", db.display()))?;
+    // Guard every --path against the selected root before any table setup or
+    // write, so an out-of-root filter is rejected before work.
+    videre_core::library_guard::validate_paths(&ctx.library, &args.paths.path)?;
+    let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    // Export reads rows and writes sidecars/JSONL beside them; ordinary shared
+    // work, excluded only by exclusive maintenance. Held across both the JSONL
+    // snapshot and the per-file sidecar paths.
+    let _activity = videre_core::library_locks::try_activity(
+        &ctx.library,
+        videre_core::library_locks::ActivityMode::Shared,
+    )?;
 
-    export_selection(&conn, &args)
+    if args.jsonl {
+        return export_jsonl_snapshot(ctx, &conn, &args);
+    }
+    export_selection(ctx, &conn, &args)
 }
 
-/// Resolve the selection and export sidecars for it. Split from `run` so the
-/// watch stage can drive an export over an already-open connection.
-fn export_selection(conn: &rusqlite::Connection, args: &ExportArgs) -> Result<()> {
-    ensure_optional_tables(conn);
-    let sel = super::selection_args::row_selection(
+/// Resolve the selection and publish the JSONL snapshot for it, holding the
+/// export command lock across selection and publication.
+fn export_jsonl_snapshot(
+    ctx: &CommandContext,
+    conn: &rusqlite::Connection,
+    args: &ExportArgs,
+) -> Result<()> {
+    let selection = selection_for(args)?;
+    let _lock = videre_core::library_locks::try_command(&ctx.library, "export")?;
+    let written = super::export_jsonl::write_snapshot(ctx, conn, &selection, args.dry_run)?;
+    if !args.silent {
+        if args.dry_run {
+            eprintln!(
+                "would write {written} record(s) to {}",
+                ctx.library.paths.jsonl.display()
+            );
+        } else {
+            eprintln!(
+                "Wrote {written} record(s) to {}",
+                ctx.library.paths.jsonl.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The row selection this export was scoped to.
+fn selection_for(args: &ExportArgs) -> Result<videre_core::selection::RowSelection> {
+    super::selection_args::row_selection(
         Some(&args.media),
         Some(&args.dates),
         Some(&args.place),
         Some(&args.people),
         Some(&args.presence),
         Some(&args.paths),
-    )?;
-    let resolved = sel.resolve(conn, &SelectionCtx::default())?;
+    )
+}
+
+/// Resolve the selection and export sidecars for it. Split from `run` so the
+/// watch stage can drive an export over an already-open connection.
+fn export_selection(
+    ctx: &CommandContext,
+    conn: &rusqlite::Connection,
+    args: &ExportArgs,
+) -> Result<()> {
+    ensure_optional_tables(conn);
+    let sel = selection_for(args)?;
+    let resolved = sel.resolve_in(conn, &SelectionCtx::default(), &ctx.library)?;
     let hashes: Vec<String> = match resolved.hashes {
         Some(h) => h.into_iter().collect(),
         None => all_hashes(conn)?,
     };
     let total: i64 = conn.query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))?;
-    let written = write_sidecars_for(conn, &hashes, args.dry_run)?;
+    let written = write_sidecars_for(conn, &hashes, args.dry_run, Some(&ctx.library))?;
     if !args.silent && !args.dry_run {
         eprintln!(
             "Wrote {written} sidecar(s) for {} of {} file(s)",
@@ -76,12 +126,12 @@ fn export_selection(conn: &rusqlite::Connection, args: &ExportArgs) -> Result<()
     Ok(())
 }
 
-/// Export sidecars for every file in the library. The unscoped entry point the
-/// watch export stage calls; returns the number of sidecars written.
-pub fn export_all(conn: &rusqlite::Connection) -> Result<usize> {
+/// Export sidecars for every file in the selected library, publishing each
+/// through the confined library writer.
+pub fn export_all_in(conn: &rusqlite::Connection, ctx: &CommandContext) -> Result<usize> {
     ensure_optional_tables(conn);
     let hashes = all_hashes(conn)?;
-    write_sidecars_for(conn, &hashes, false)
+    write_sidecars_for(conn, &hashes, false, Some(&ctx.library))
 }
 
 /// Ensure the optional tables/columns exist so gathering never hits a missing
@@ -109,6 +159,7 @@ fn write_sidecars_for(
     conn: &rusqlite::Connection,
     hashes: &[String],
     dry_run: bool,
+    ctx: Option<&LibraryContext>,
 ) -> Result<usize> {
     let faces = videre_core::face_db::labeled_faces_by_hash(conn)?;
     let mut written = 0usize;
@@ -158,7 +209,13 @@ fn write_sidecars_for(
                     "would write {}",
                     crate::xmp::write::sidecar_path(&path).display()
                 );
-            } else if crate::xmp::write::write_sidecar(&path, &owned)? {
+                continue;
+            }
+            let wrote = match ctx {
+                Some(library) => crate::xmp::write::write_sidecar_in(library, &path, &owned)?,
+                None => crate::xmp::write::write_sidecar(&path, &owned)?,
+            };
+            if wrote {
                 written += 1;
             }
         }
@@ -171,11 +228,25 @@ mod tests {
     use super::*;
     use videre_core::marks;
 
+    fn test_context(root: &std::path::Path, cache: &std::path::Path) -> CommandContext {
+        let library =
+            std::sync::Arc::new(videre_core::library::LibraryContext::new(root, cache).unwrap());
+        // The confined sidecar writer verifies the library's state directory.
+        std::fs::create_dir_all(&library.paths.state).unwrap();
+        CommandContext {
+            library,
+            invocation_dir: root.to_path_buf(),
+            source: crate::command_context::LibrarySource::Cwd,
+        }
+    }
+
     #[test]
-    fn export_all_writes_sidecar_for_a_rated_file() {
-        // The path the watch export stage drives: no selection, every file.
+    fn export_all_in_writes_sidecar_for_a_rated_file() {
+        // The path the watch export stage drives: no selection, every file,
+        // published through the confined library writer.
         let dir = tempfile::tempdir().unwrap();
-        let photo = dir.path().join("IMG.jpg");
+        let ctx = test_context(dir.path(), &dir.path().join("cache"));
+        let photo = ctx.library.paths.root.join("IMG.jpg");
         std::fs::write(&photo, b"x").unwrap();
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
@@ -196,7 +267,7 @@ mod tests {
         )
         .unwrap();
 
-        let n = export_all(&conn).unwrap();
+        let n = export_all_in(&conn, &ctx).unwrap();
         assert_eq!(n, 1);
         let side = crate::xmp::write::sidecar_path(&photo);
         assert!(side.exists());

@@ -11,7 +11,7 @@ already gone.
 videre prune --dry-run                 # show what would be removed
 videre prune                           # remove stale entries and refresh metadata
 videre prune --silent                  # no per-file output
-videre prune --db ~/photos.db          # use a specific database
+videre --library ~/Photos prune        # select a different library
 videre prune --prune-unreachable       # also drop entries whose folder is gone
 videre prune --force                   # allow an unusually large cleanup
 ```
@@ -45,7 +45,7 @@ videre prune --dry-run
    changed since the last pass
 3. Deletes embeddings whose photo is gone, across **every**
    [model](/reference/models/)
-4. Deletes [cached thumbnails](/reference/paths/#thumbnail-cache) whose photo is
+4. Deletes [cached thumbnails](/guides/caches/#thumbnail-cache) whose photo is
    gone
 
 Steps 3 and 4 are the reason to prune at all rather than ignoring stale rows:
@@ -118,7 +118,7 @@ problem: nothing is half-done in a way a second run cannot finish.
 **It acts on the whole database, not a folder.** If you scanned several roots
 into one database, prune considers all of them, and there is no way to limit it
 to one. See
-[scanning more than one folder](/reference/paths/#scanning-more-than-one-folder).
+[scanning more than one folder](/guides/multiple-libraries/).
 
 **It is the only thing that reclaims cache space**, and only for photos already
 removed from the database. Cache for photos you still own grows without bound

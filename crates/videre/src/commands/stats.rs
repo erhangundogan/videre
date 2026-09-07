@@ -1,14 +1,10 @@
-use std::path::PathBuf;
+use crate::command_context::CommandContext;
 use std::process;
 use videre::types::{ErrorJson, StatsJson, SCHEMA_VERSION};
 use videre_core::pipeline_runs::PipelineRunStatus;
 
 #[derive(clap::Args)]
 pub struct StatsArgs {
-    /// SQLite database (default: resolved from ~/.videre; see 'videre config')
-    #[arg(long)]
-    db: Option<PathBuf>,
-
     /// Emit a single JSON object on stdout instead of human-readable text
     #[arg(long)]
     json: bool,
@@ -31,9 +27,9 @@ fn has_problem(pipelines: &[PipelineRunStatus]) -> bool {
         .any(|p| matches!(p.status.as_deref(), Some("failed") | Some("crashed")))
 }
 
-pub fn run(args: StatsArgs) -> anyhow::Result<()> {
+pub fn run(args: StatsArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     if args.json {
-        match run_json(&args) {
+        match run_json(&args, ctx) {
             Ok(doc) => {
                 println!("{}", serde_json::to_string(&doc)?);
                 if args.check && has_problem(&doc.pipelines) {
@@ -47,22 +43,18 @@ pub fn run(args: StatsArgs) -> anyhow::Result<()> {
             }
         }
     } else {
-        run_text(&args)
+        run_text(&args, ctx)
     }
 }
 
-fn resolve_and_open(
-    args: &StatsArgs,
-) -> anyhow::Result<(std::path::PathBuf, rusqlite::Connection)> {
-    let db = super::resolve_reader_db_must_exist(args.db.clone())?;
-    let conn = videre_core::db::open_wal(&db)?;
-    Ok((db, conn))
-}
-
-fn run_text(args: &StatsArgs) -> anyhow::Result<()> {
-    let (db, conn) = resolve_and_open(args)?;
-    let library = videre_core::library_stats::compute_full(&conn, &db)?;
-    let pipelines = videre_core::pipeline_runs::read_all(&conn, &db)?;
+fn run_text(args: &StatsArgs, ctx: &CommandContext) -> anyhow::Result<()> {
+    let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    let _activity = videre_core::library_locks::try_activity(
+        &ctx.library,
+        videre_core::library_locks::ActivityMode::Shared,
+    )?;
+    let library = videre_core::library_stats::compute_full_in(&conn, &ctx.library)?;
+    let pipelines = videre_core::pipeline_runs::read_all_in(&conn, &ctx.library)?;
 
     println!(
         "Library: {} file(s) ({}), {} photo(s), {} video(s)",
@@ -119,23 +111,10 @@ fn run_text(args: &StatsArgs) -> anyhow::Result<()> {
 
     println!();
     println!("Disk use:");
-    // Both locations are resolved here and passed in, never looked up inside
-    // `usage`. The thumbnail cache does not always live under the home
-    // directory, and embeddings are per library rather than per home
-    // (`<home>/embeddings/<db stem>-<hash16>`), so a helper that guessed either
-    // would report another library's vectors as this one's.
-    let usage = match videre_core::home::videre_home() {
-        Ok(h) => {
-            let lib = videre_core::embeddings_db::library_dir(&db).ok();
-            videre_core::disk::usage(
-                &h,
-                Some(&db),
-                &videre_core::thumb_cache::cache_dir(),
-                lib.as_deref(),
-            )
-        }
-        Err(_) => Vec::new(),
-    };
+    // Every location is derived from the selected library context, so a run
+    // reports only that library's own database, embeddings and locks plus the
+    // caches it uses, never another library's vectors or thumbnails.
+    let usage = videre_core::disk::usage_in(&ctx.library);
     if usage.is_empty() {
         println!("  nothing stored yet");
     } else {
@@ -186,10 +165,15 @@ fn run_text(args: &StatsArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_json(args: &StatsArgs) -> anyhow::Result<StatsJson> {
-    let (db, conn) = resolve_and_open(args)?;
-    let library = videre_core::library_stats::compute_full(&conn, &db)?;
-    let pipelines = videre_core::pipeline_runs::read_all(&conn, &db)?;
+fn run_json(args: &StatsArgs, ctx: &CommandContext) -> anyhow::Result<StatsJson> {
+    let _ = args;
+    let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    let _activity = videre_core::library_locks::try_activity(
+        &ctx.library,
+        videre_core::library_locks::ActivityMode::Shared,
+    )?;
+    let library = videre_core::library_stats::compute_full_in(&conn, &ctx.library)?;
+    let pipelines = videre_core::pipeline_runs::read_all_in(&conn, &ctx.library)?;
     Ok(StatsJson {
         schema_version: SCHEMA_VERSION,
         library,

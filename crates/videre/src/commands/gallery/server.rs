@@ -300,8 +300,29 @@ fn api_status(e: videre_api::Error) -> StatusCode {
         videre_api::Error::NotFound => StatusCode::NOT_FOUND,
         videre_api::Error::Invalid => StatusCode::BAD_REQUEST,
         videre_api::Error::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        videre_api::Error::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
         videre_api::Error::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
+}
+
+/// The per-operation guard every blocking server operation runs first: verify
+/// the startup-bound library's root still names that library, then take its
+/// shared activity lease. A replaced root or a library held by exclusive
+/// maintenance yields a retryable 503 rather than serving from, or mutating,
+/// whatever now sits at the path. The returned guard must be held for the whole
+/// operation (decode and cache publication included), so callers bind it.
+fn guard_operation(
+    state: &AppState,
+) -> Result<videre_core::library_locks::ActivityGuard, StatusCode> {
+    let library = &state.context.library;
+    library
+        .ensure_root_identity()
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    videre_core::library_locks::try_activity(
+        library,
+        videre_core::library_locks::ActivityMode::Shared,
+    )
+    .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
 }
 
 #[derive(Deserialize)]
@@ -358,10 +379,11 @@ struct AppState {
     /// configuration where `/`, `/date` and `/people` all exist, so the one
     /// where a section strip can link to them.
     gallery: bool,
-    /// Bound at startup, like `model_id`, so a request cannot retarget the
-    /// server at another library. `search::run_json` opens its own connection
-    /// from this, which is what keeps a ranking query off the shared one.
-    db: std::path::PathBuf,
+    /// The startup-bound library context. A ranking search runs through
+    /// `search::run_json_in` against this, and a location lookup geocodes into
+    /// this library's cache, so no request can retarget the server at another
+    /// library.
+    context: Arc<crate::command_context::CommandContext>,
     /// Loaded on the first ranking search and kept for the process's life. Empty
     /// until then: a gallery whose library nobody searches never loads a model.
     embedder: Mutex<Option<videre_ml::model::Embedder>>,
@@ -505,8 +527,7 @@ async fn handle_search(
             presence: crate::commands::selection_args::PresenceArgs::default(),
             marks: crate::commands::selection_args::MarkArgs::default(),
             tags: Default::default(),
-            // Both bound at startup, so a request cannot retarget the server.
-            db: Some(state.db.clone()),
+            // Bound at startup, so a request cannot retarget the server.
             model: Some(state.model_id.clone()),
             query: sq.q.clone(),
             image: None,
@@ -523,9 +544,10 @@ async fn handle_search(
             scores: false,
             json: true,
         };
-        crate::commands::search::run_json(
+        crate::commands::search::run_json_in(
             &args,
             &crate::commands::search::CachedEmbedder(&state.embedder),
+            &state.context,
         )
     })
     .await
@@ -710,6 +732,9 @@ async fn handle_location(
     Query(q): Query<LocationQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<AxumJson<LocationResponse>, StatusCode> {
+    // Reads the cache, geocodes into it and writes location_name back, so it
+    // takes the same per-operation guard as the image routes.
+    let _guard = guard_operation(&state)?;
     let conn = state
         .conn
         .lock()
@@ -733,7 +758,11 @@ async fn handle_location(
     if let Some(name) = cached {
         return Ok(AxumJson(LocationResponse { name: Some(name) }));
     }
-    let name = videre_core::location::location_name(q.lat, q.lon);
+    // Best-effort, like the old ambient lookup: a geocoder failure yields no
+    // name and no cache write rather than a request error.
+    let name = videre_core::location::location_name_in(&state.context.library.cache, q.lat, q.lon)
+        .ok()
+        .flatten();
     if let Some(ref n) = name {
         let _ = conn.execute(
             "UPDATE file_hashes SET location_name = ?1 \
@@ -1161,6 +1190,10 @@ async fn handle_face_image(
     // behind one mutex, which is the actual cause of multi-second-per-thumbnail
     // rendering in a library with thousands of faces.
     let bytes = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, StatusCode> {
+        // Held across the DB lookup and the decode/crop/cache-publish below, so
+        // a root replaced mid-request is refused and exclusive maintenance is
+        // excluded from the cache write.
+        let _guard = guard_operation(&state)?;
         let lookup = {
             let conn = state
                 .conn
@@ -1168,7 +1201,8 @@ async fn handle_face_image(
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             videre_api::face_lookup(&conn, face_id).map_err(|_| StatusCode::NOT_FOUND)?
         };
-        videre_api::face_bytes_from_lookup(&lookup, face_id).map_err(|_| StatusCode::NOT_FOUND)
+        videre_api::face_bytes_from_lookup(&lookup, face_id, &state.context.library.cache)
+            .map_err(|_| StatusCode::NOT_FOUND)
     })
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
@@ -1264,7 +1298,8 @@ async fn handle_raw_file(
     // that directly instead of paying for a live qlmanage conversion.
     if ext == "heic" {
         if let Some(size) = q.size {
-            let cached_path = videre_core::thumb_cache::thumb_path(&hash, size);
+            let cached_path =
+                videre_core::thumb_cache::thumb_path_in(&state.context.library.cache, &hash, size);
             if let Ok(bytes) = tokio::fs::read(&cached_path).await {
                 return Ok(([(axum::http::header::CONTENT_TYPE, "image/jpeg")], bytes));
             }
@@ -1339,6 +1374,7 @@ async fn handle_original_image(
     let state = state.clone();
     let (content_type, bytes) =
         tokio::task::spawn_blocking(move || -> Result<(&'static str, Vec<u8>), StatusCode> {
+            let _guard = guard_operation(&state)?;
             let lookup = {
                 let conn = state
                     .conn
@@ -1346,7 +1382,7 @@ async fn handle_original_image(
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
                 videre_api::original_lookup(&conn, face_id).map_err(|_| StatusCode::NOT_FOUND)?
             };
-            videre_api::original_bytes_from_lookup(&lookup, face_id)
+            videre_api::original_bytes_from_lookup(&lookup, face_id, &state.context.library.cache)
                 .map_err(|_| StatusCode::NOT_FOUND)
         })
         .await
@@ -1366,6 +1402,8 @@ struct ServeOptions {
     /// `videre gallery`: serve every view on its own route rather than one page
     /// whose content depends on which flags started the server.
     gallery: bool,
+    /// The startup-bound library context, stored in `AppState` for search.
+    context: Arc<crate::command_context::CommandContext>,
     port: u16,
     browse: bool,
 }
@@ -1391,7 +1429,11 @@ async fn serve_faces_async(
     // similarity search with a note rather than failing the whole report,
     // which works perfectly well without embeddings.
     if opts.report_all {
-        if let Err(e) = videre_core::embeddings_db::attach_for_read(&conn, db, &opts.model_id) {
+        if let Err(e) = videre_core::embeddings_db::attach_for_read_in(
+            &conn,
+            &opts.context.library,
+            &opts.model_id,
+        ) {
             eprintln!("note: similarity search disabled ({e})");
         }
     }
@@ -1404,7 +1446,7 @@ async fn serve_faces_async(
         report_heic_original: opts.report_heic_original,
         serve_faces_ui: opts.serve_faces_ui,
         gallery: opts.gallery,
-        db: db.to_path_buf(),
+        context: opts.context.clone(),
         embedder: Mutex::new(None),
     });
 
@@ -1506,11 +1548,12 @@ async fn serve_faces_async(
 /// This module is the HTTP layer only. The renderer it shares with
 /// `dedupe --html` and `search --html` lives in `crate::render`.
 pub(crate) fn serve_gallery(
-    db: &Path,
+    ctx: &crate::command_context::CommandContext,
     model_id: String,
     port: u16,
     browse: bool,
 ) -> anyhow::Result<()> {
+    let db = ctx.library.paths.db.clone();
     let opts = ServeOptions {
         serve_faces_ui: true,
         report_all: true,
@@ -1518,10 +1561,11 @@ pub(crate) fn serve_gallery(
         report_heic_original: false,
         model_id,
         gallery: true,
+        context: Arc::new(ctx.clone()),
         port,
         browse,
     };
-    serve_faces(db, opts).map_err(|e| anyhow::anyhow!("{e}"))
+    serve_faces(&db, opts).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 fn serve_faces(db: &Path, opts: ServeOptions) -> Result<(), Box<dyn std::error::Error>> {

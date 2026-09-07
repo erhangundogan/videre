@@ -1,14 +1,11 @@
+use crate::command_context::CommandContext;
 use chrono::{DateTime, Utc};
 use rusqlite::Connection;
-use std::path::PathBuf;
 use std::time::SystemTime;
+use videre_core::library::LibraryContext;
 
 #[derive(clap::Args)]
 pub struct PruneArgs {
-    /// SQLite database (default: resolved from ~/.videre; see 'videre config')
-    #[arg(long)]
-    db: Option<PathBuf>,
-
     /// Preview changes without modifying the database
     #[arg(long)]
     pub(crate) dry_run: bool,
@@ -40,7 +37,6 @@ impl PruneArgs {
     /// wants the real (non-preview) pass, so only `silent` is exposed.
     pub(crate) fn for_watch_stage(silent: bool) -> Self {
         Self {
-            db: None,
             dry_run: false,
             silent,
             // Never overridable from `watch`: it runs unattended on a loop and
@@ -116,22 +112,21 @@ fn needs_sync(stored: Option<&str>, current: &str) -> bool {
     stored != Some(current)
 }
 
-pub fn run(args: PruneArgs) -> anyhow::Result<()> {
-    let db = super::resolve_reader_db(args.db.clone())?;
-
-    if !db.exists() {
-        eprintln!("Error: {:?} does not exist", db);
-        std::process::exit(1);
-    }
-
+pub fn run(args: PruneArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     if args.dry_run && !args.silent {
         eprintln!("Dry run: no changes will be made to the database.");
     }
 
-    let conn = videre_core::db::open_wal(&db).expect("failed to open database");
-
-    let errors =
-        videre_core::pipeline_runs::track(&conn, &db, "prune", || run_prune(&args, &conn, &db))?;
+    // Prune takes the library's exclusive activity lease: it removes rows and
+    // sweeps orphaned embeddings and cache entries, so it must not overlap any
+    // other operation in this library (an embed writing the very rows it is
+    // deciding are orphaned, say). Unrelated libraries are untouched.
+    let errors = crate::command_context::with_tracked_command(
+        ctx,
+        "prune",
+        videre_core::library_locks::ActivityMode::Exclusive,
+        |conn| run_prune(&args, &ctx.library, conn),
+    )?;
 
     if errors > 0 {
         std::process::exit(1);
@@ -147,8 +142,8 @@ pub fn run(args: PruneArgs) -> anyhow::Result<()> {
 /// the orphan-cleanup logic.
 pub(crate) fn run_prune(
     args: &PruneArgs,
+    library: &LibraryContext,
     conn: &Connection,
-    db: &std::path::Path,
 ) -> anyhow::Result<usize> {
     // `modified_at` is selected because the sync below compares against it.
     // Without it there is nothing to compare to, so every extant row looked
@@ -334,8 +329,8 @@ pub(crate) fn run_prune(
     // In dry-run mode the file_hashes rows were not deleted yet, so counts
     // reflect only pre-existing orphans and are a lower bound.
     let mut orphans = 0usize;
-    for model_id in videre_core::embeddings_db::list_models(db).unwrap_or_default() {
-        if videre_core::embeddings_db::attach(conn, db, &model_id, false).is_err() {
+    for model_id in videre_core::embeddings_db::list_models_in(library).unwrap_or_default() {
+        if videre_core::embeddings_db::attach_in(conn, library, &model_id, false).is_err() {
             continue;
         }
         let removed = if args.dry_run {
@@ -402,7 +397,7 @@ pub(crate) fn run_prune(
     // `hash_from_cache_filename`'s doc comment) so an in-flight write from a
     // concurrently running `videre watch` is never touched.
     let mut cache_orphans = 0usize;
-    if let Ok(entries) = std::fs::read_dir(videre_core::thumb_cache::cache_dir()) {
+    if let Ok(entries) = std::fs::read_dir(&library.cache.thumbnails) {
         let live_hashes: std::collections::HashSet<String> = {
             let mut stmt = conn
                 .prepare("SELECT DISTINCT hash FROM file_hashes")
