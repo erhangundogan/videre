@@ -172,6 +172,8 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
         None,
         Some(&args.presence),
         Some(&args.paths),
+        None,
+        None,
     )?;
     // Shares `narrow` with embed and classify: same filtering, same "N of M"
     // line, one implementation.

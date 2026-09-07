@@ -165,6 +165,8 @@ pub fn row_selection(
     people: Option<&PeopleArgs>,
     presence: Option<&PresenceArgs>,
     paths: Option<&PathArgs>,
+    marks: Option<&MarkArgs>,
+    tags: Option<&TagFilterArgs>,
 ) -> anyhow::Result<RowSelection> {
     let (after, before) = match dates {
         Some(d) => d.bounds()?,
@@ -189,7 +191,14 @@ pub fn row_selection(
         has,
         missing,
         paths: paths.map(|p| p.path.clone()).unwrap_or_default(),
-        ..Default::default()
+        // Mark and tag predicates are stored per hash, so both are row-side
+        // filters. A command that sets marks (`mark`) or manages tags (`tag`)
+        // passes `None` for the group it uses as a setter instead of a filter.
+        min_rating: marks.and_then(|m| m.rating),
+        pick: marks.and_then(|m| m.pick_state()),
+        label: marks.and_then(|m| m.label.clone()),
+        liked: marks.is_some_and(|m| m.like),
+        tags: tags.map(|t| t.tags.clone()).unwrap_or_default(),
     })
 }
 
@@ -286,16 +295,181 @@ mod tests {
     fn a_command_omitting_a_group_gets_no_predicate_from_it() {
         // The point of grouping: faces passes None for people, so --category
         // cannot arrive at all rather than failing later.
-        let s = row_selection(None, None, None, None, None, None).unwrap();
+        let s = row_selection(None, None, None, None, None, None, None, None).unwrap();
         assert!(s.is_empty());
 
         let media = MediaArgs {
             media_type: vec!["video".into()],
             ..Default::default()
         };
-        let s = row_selection(Some(&media), None, None, None, None, None).unwrap();
+        let s = row_selection(Some(&media), None, None, None, None, None, None, None).unwrap();
         assert_eq!(s.kinds.len(), 1);
         assert!(s.person.is_none() && s.category.is_none());
         assert!(!s.is_empty());
+    }
+
+    // ---- Appendix A: row_selection() assembler ----
+
+    fn full_mark_args() -> MarkArgs {
+        MarkArgs {
+            rating: Some(4),
+            pick: Some("keep".into()),
+            label: Some("Green".into()),
+            like: true,
+        }
+    }
+
+    #[test]
+    fn mark_and_tag_groups_populate_the_row_selection() {
+        let marks = full_mark_args();
+        let tags = TagFilterArgs {
+            tags: vec!["trip".into(), "beach".into()],
+        };
+        let s = row_selection(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&marks),
+            Some(&tags),
+        )
+        .unwrap();
+        assert_eq!(s.min_rating, Some(4));
+        assert_eq!(s.pick, Some(videre_core::marks::Pick::Keep));
+        assert_eq!(s.label.as_deref(), Some("Green"));
+        assert!(s.liked);
+        assert_eq!(s.tags, vec!["trip".to_string(), "beach".to_string()]);
+        assert!(!s.is_empty());
+    }
+
+    #[test]
+    fn omitting_the_mark_and_tag_groups_leaves_their_fields_default() {
+        // Every other group None too, so only the mark/tag defaults are under
+        // test: the selection must read as empty.
+        let s = row_selection(None, None, None, None, None, None, None, None).unwrap();
+        assert_eq!(s.min_rating, None);
+        assert_eq!(s.pick, None);
+        assert_eq!(s.label, None);
+        assert!(!s.liked);
+        assert!(s.tags.is_empty());
+        assert!(s.is_empty());
+    }
+
+    #[test]
+    fn empty_mark_and_tag_groups_do_not_make_a_selection_nonempty() {
+        // A command flattens the groups unconditionally, so the common case is
+        // the user supplying none of their flags: default groups must not
+        // fabricate a predicate.
+        let marks = MarkArgs::default();
+        let tags = TagFilterArgs::default();
+        let s = row_selection(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&marks),
+            Some(&tags),
+        )
+        .unwrap();
+        assert!(s.is_empty(), "default mark/tag groups must select nothing");
+    }
+
+    #[test]
+    fn each_group_in_isolation_sets_only_its_own_fields() {
+        // marks alone
+        let marks = full_mark_args();
+        let s = row_selection(None, None, None, None, None, None, Some(&marks), None).unwrap();
+        assert!(s.min_rating.is_some() && s.pick.is_some() && s.label.is_some() && s.liked);
+        assert!(s.tags.is_empty() && s.person.is_none() && s.kinds.is_empty());
+
+        // tags alone
+        let tags = TagFilterArgs {
+            tags: vec!["only".into()],
+        };
+        let s = row_selection(None, None, None, None, None, None, None, Some(&tags)).unwrap();
+        assert_eq!(s.tags, vec!["only".to_string()]);
+        assert!(s.min_rating.is_none() && s.pick.is_none() && s.label.is_none() && !s.liked);
+    }
+
+    #[test]
+    fn pick_state_maps_each_keyword() {
+        let keep = MarkArgs {
+            pick: Some("keep".into()),
+            ..Default::default()
+        };
+        assert_eq!(keep.pick_state(), Some(videre_core::marks::Pick::Keep));
+        let reject = MarkArgs {
+            pick: Some("reject".into()),
+            ..Default::default()
+        };
+        assert_eq!(reject.pick_state(), Some(videre_core::marks::Pick::Reject));
+        assert_eq!(MarkArgs::default().pick_state(), None);
+        let unknown = MarkArgs {
+            pick: Some("bogus".into()),
+            ..Default::default()
+        };
+        assert_eq!(unknown.pick_state(), None);
+    }
+
+    #[test]
+    fn every_group_together_populates_every_field() {
+        let media = MediaArgs {
+            media_type: vec!["image".into()],
+            ext: vec!["heic".into()],
+            mime: vec!["image/heic".into()],
+        };
+        let dates = DateArgs {
+            date: Some("2024".into()),
+            ..Default::default()
+        };
+        let place = PlaceArgs {
+            location: Some("Berlin, Germany".into()),
+            radius: 10.0,
+        };
+        let people = PeopleArgs {
+            person: Some("Ada".into()),
+            category: Some("photo".into()),
+        };
+        let presence = PresenceArgs {
+            has: vec!["gps".into()],
+            missing: vec!["date".into()],
+        };
+        let paths = PathArgs {
+            path: vec!["Trips".into()],
+        };
+        let marks = full_mark_args();
+        let tags = TagFilterArgs {
+            tags: vec!["t".into()],
+        };
+        let s = row_selection(
+            Some(&media),
+            Some(&dates),
+            Some(&place),
+            Some(&people),
+            Some(&presence),
+            Some(&paths),
+            Some(&marks),
+            Some(&tags),
+        )
+        .unwrap();
+        assert_eq!(s.person.as_deref(), Some("Ada"));
+        assert_eq!(s.category.as_deref(), Some("photo"));
+        assert!(s.place.is_some());
+        assert!(s.after.is_some() && s.before.is_some());
+        assert_eq!(s.kinds.len(), 1);
+        assert_eq!(s.exts, vec!["heic".to_string()]);
+        assert_eq!(s.mimes, vec!["image/heic".to_string()]);
+        assert_eq!(s.has.len(), 1);
+        assert_eq!(s.missing.len(), 1);
+        assert_eq!(s.paths.len(), 1);
+        assert_eq!(s.min_rating, Some(4));
+        assert_eq!(s.pick, Some(videre_core::marks::Pick::Keep));
+        assert_eq!(s.label.as_deref(), Some("Green"));
+        assert!(s.liked);
+        assert_eq!(s.tags, vec!["t".to_string()]);
     }
 }

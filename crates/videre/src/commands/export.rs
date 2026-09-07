@@ -97,6 +97,8 @@ fn selection_for(args: &ExportArgs) -> Result<videre_core::selection::RowSelecti
         Some(&args.people),
         Some(&args.presence),
         Some(&args.paths),
+        None,
+        None,
     )
 }
 

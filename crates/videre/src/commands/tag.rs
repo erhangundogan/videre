@@ -70,6 +70,8 @@ pub fn run(args: TagArgs, ctx: &CommandContext) -> Result<()> {
         Some(&args.people),
         Some(&args.presence),
         Some(&args.paths),
+        None,
+        None,
     )?;
     let resolved = sel.resolve_in(&conn, &SelectionCtx::default(), &ctx.library)?;
     let hashes: Vec<String> = match resolved.hashes {

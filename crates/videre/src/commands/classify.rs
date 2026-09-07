@@ -95,6 +95,8 @@ fn run_classify(
         Some(&args.people),
         Some(&args.presence),
         Some(&args.paths),
+        None,
+        None,
     )?;
     let work = videre_core::work::narrow_in(
         hashes,
@@ -306,6 +308,8 @@ mod tests {
             Some(&a.people),
             Some(&a.presence),
             Some(&a.paths),
+            None,
+            None,
         )
         .unwrap();
         assert!(sel.is_empty(), "no flags must not narrow anything");
