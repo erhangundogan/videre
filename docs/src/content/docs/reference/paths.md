@@ -132,9 +132,8 @@ Model choice is deliberately not an environment variable. Use
 
 ## Upgrading from earlier versions
 
-Earlier videre kept one global home under `~/.videre` selected by a `VIDERE_HOME`
-variable, with a configurable default database path and per-command database and
-output-location flags. Those are all gone: a command now always operates on the
-directory you select, and its database is fixed inside that directory's
-`.videre/`. Move an old collection by running videre in its directory (or
-passing `--library`); the first `scan` there initializes its local state.
+Earlier videre kept a single global library under your home directory and let a
+command point at other databases directly. That is gone: a command now always
+operates on the directory you select, and its database is fixed inside that
+directory's `.videre/`. To bring an old collection forward, run videre in its
+directory (or pass `--library`); the first `scan` there builds its local state.
