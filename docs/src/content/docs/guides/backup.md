@@ -23,13 +23,16 @@ them, and no rerun brings them back.
 
 ## What to copy
 
+Run these from inside the library (the directory whose `.videre/` you are
+backing up):
+
 ```
-~/.videre/hashes.db          # the database: names, faces, scan rows, everything
-~/.videre/config.toml        # small, and annoying to reconstruct
-~/.videre/embeddings/        # optional, saves hours of recompute
+.videre/hashes.db          # the database: names, faces, scan rows, everything
+.videre/config.toml        # small, and annoying to reconstruct
+.videre/embeddings/        # optional, saves hours of recompute
 ```
 
-Skip `~/.cache/videre/thumbnails/` and `~/.cache/huggingface/`. Both are
+Skip `~/.cache/videre/` and `~/.cache/huggingface/`. Both are
 derived, both regenerate, and both are large.
 
 If you only back up one thing, make it `hashes.db`. It holds the names.
@@ -43,13 +46,13 @@ capture a torn state.
 Use SQLite's own backup, which is safe on a live database:
 
 ```bash
-sqlite3 ~/.videre/hashes.db ".backup /backups/videre-$(date +%F).db"
+sqlite3 .videre/hashes.db ".backup /backups/videre-$(date +%F).db"
 ```
 
 Or, to get a compacted copy:
 
 ```bash
-sqlite3 ~/.videre/hashes.db "VACUUM INTO '/backups/videre-$(date +%F).db'"
+sqlite3 .videre/hashes.db "VACUUM INTO '/backups/videre-$(date +%F).db'"
 ```
 
 Both produce a single self-contained file with no `-wal` or `-shm` alongside.
@@ -59,13 +62,13 @@ If you would rather just copy files, stop any running
 too if they exist:
 
 ```bash
-cp ~/.videre/hashes.db* /backups/
+cp .videre/hashes.db* /backups/
 ```
 
 Embeddings are ordinary SQLite files as well, so the same applies:
 
 ```bash
-cp -r ~/.videre/embeddings /backups/
+cp -r .videre/embeddings /backups/
 ```
 
 ## A whole-setup backup
@@ -75,9 +78,9 @@ cp -r ~/.videre/embeddings /backups/
 set -e
 DEST="/backups/videre/$(date +%F)"
 mkdir -p "$DEST"
-sqlite3 ~/.videre/hashes.db ".backup $DEST/hashes.db"
-cp ~/.videre/config.toml "$DEST/" 2>/dev/null || true
-cp -r ~/.videre/embeddings "$DEST/" 2>/dev/null || true
+sqlite3 .videre/hashes.db ".backup $DEST/hashes.db"
+cp .videre/config.toml "$DEST/" 2>/dev/null || true
+cp -r .videre/embeddings "$DEST/" 2>/dev/null || true
 ```
 
 Run it after a labeling session, which is when the irreplaceable part changes.
@@ -87,8 +90,8 @@ Run it after a labeling session, which is when the irreplaceable part changes.
 Put the files back and carry on:
 
 ```bash
-cp /backups/videre/2026-08-11/hashes.db ~/.videre/hashes.db
-cp -r /backups/videre/2026-08-11/embeddings ~/.videre/
+cp /backups/videre/2026-08-11/hashes.db .videre/hashes.db
+cp -r /backups/videre/2026-08-11/embeddings .videre/
 videre stats                      # confirm it reads
 ```
 

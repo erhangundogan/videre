@@ -16,7 +16,7 @@ and many readers at once. All of these are fine against a live
 videre search "sunset"          # reads stored vectors
 videre stats                    # reads the database
 videre gallery      # serves a live page
-sqlite3 ~/.videre/hashes.db "SELECT COUNT(*) FROM file_hashes"
+sqlite3 .videre/hashes.db "SELECT COUNT(*) FROM file_hashes"
 ```
 
 `videre watch` and `videre gallery` are specifically designed to run

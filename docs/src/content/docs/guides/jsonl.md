@@ -54,7 +54,7 @@ picture of the selected files, never an accumulating log.
 
 ```bash
 # every HEIC file
-jq 'select(.ext == "heic")' ~/.videre/hashes.jsonl
+jq 'select(.ext == "heic")' .videre/hashes.jsonl
 
 # duplicate hashes
 jq -r '.hash' hashes.jsonl | sort | uniq -d
