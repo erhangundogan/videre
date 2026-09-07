@@ -74,7 +74,7 @@ that works without it.
 Not in the main database. Each library and model pair gets its own file:
 
 ```
-~/.videre/embeddings/<library>-<hash>/<owner>--<model>.db
+<library>/.videre/embeddings/<owner>--<model>.db
 ```
 
 Per library rather than one shared file per model, because

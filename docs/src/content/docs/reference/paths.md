@@ -57,7 +57,7 @@ Within a selected library, a value is resolved:
 The config keys are fixed: `db = "hashes.db"`, `jsonl = "hashes.jsonl"`,
 `default_model`, `xmp_precedence`, and `export_xmp_on_watch`. Each library has
 its own config, so a setting in one is invisible in another. Your `$HOME` has no
-special role: `~/.videre` is a library only if you deliberately select `~` as a
+special role: it becomes a library only if you deliberately select it as a
 library root.
 
 ## Sources, filters, and operands
@@ -132,8 +132,8 @@ Model choice is deliberately not an environment variable. Use
 
 ## Upgrading from earlier versions
 
-Earlier videre kept one global home under `~/.videre` selected by a `VIDERE_HOME`
-variable, with a configurable default database path and per-command database and
+Earlier videre kept a single global library under your home directory, selected by
+a `VIDERE_HOME` variable, with a configurable default database path and per-command database and
 output-location flags. Those are all gone: a command now always operates on the
 directory you select, and its database is fixed inside that directory's
 `.videre/`. Move an old collection by running videre in its directory (or
