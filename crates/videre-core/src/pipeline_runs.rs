@@ -107,22 +107,45 @@ where
     F: FnOnce() -> Result<T>,
 {
     guard.ensure_matches(ctx, command)?;
+    // The guard's match is a wiring check on path strings; this rechecks that
+    // the root still names the same library before any run row is written, so
+    // a root swapped out between guard acquisition and now is refused rather
+    // than recorded against whatever now sits at the path.
+    ctx.ensure_root_identity()?;
     ensure_pipeline_runs_table(conn)?;
     start_run(conn, command)?;
     let started = std::time::Instant::now();
     let result = f();
-    let duration_ms = started.elapsed().as_millis() as i64;
-    match &result {
-        Ok(_) => finish_run(conn, command, "success", duration_ms, None)?,
-        Err(e) => finish_run(conn, command, "failed", duration_ms, Some(&e.to_string()))?,
+    let duration_ms = started.elapsed().as_millis().min(i64::MAX as u128) as i64;
+    match result {
+        Ok(value) => {
+            finish_run(conn, command, "success", duration_ms, None)?;
+            Ok(value)
+        }
+        Err(error) => {
+            // Record the failure, but never let a bookkeeping error mask the
+            // real one: the original error is what the caller acted on.
+            if let Err(record_error) = finish_run(
+                conn,
+                command,
+                "failed",
+                duration_ms,
+                Some(&error.to_string()),
+            ) {
+                return Err(error.context(format!(
+                    "also could not record the failed run: {record_error}"
+                )));
+            }
+            Err(error)
+        }
     }
-    result
 }
 
-/// The context-aware twin of [`read_all`]: liveness probed through the
-/// library's own lock files (`library_locks::command_locked`) instead of
-/// the global home-keyed locks, so a library-scoped command shows up as
-/// running exactly when a library-scoped reader asks.
+/// Every tracked command's last run and current liveness. Liveness is probed
+/// through the library's own lock files (`library_locks::command_locked`), so a
+/// library-scoped command shows up as running exactly when a library-scoped
+/// reader asks; a `running` row whose lock no live process holds reads back as
+/// `crashed`.
 pub fn read_all_in(
     conn: &Connection,
     ctx: &crate::library::LibraryContext,
@@ -160,8 +183,8 @@ pub fn read_all_in(
     Ok(out)
 }
 
-/// The context-aware twin of [`install_sigint_handler`]: marks `command`'s
-/// row `interrupted` and exits 130, against the library the context pins.
+/// Install a SIGINT handler that marks `command`'s row `interrupted` and exits
+/// 130, against the library the context pins.
 ///
 /// The library's identity is validated before the handler is installed (and
 /// again inside it): a handler bound to a root that no longer names its
