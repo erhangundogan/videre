@@ -412,3 +412,52 @@ fn home_and_its_photos_child_can_be_scanned_independently() {
     assert!(home.join(".videre/hashes.db").exists());
     assert!(photos.join(".videre/hashes.db").exists());
 }
+
+/// The removed `--db` override must be rejected by the parser for every
+/// subcommand, and rejection must happen before any command opens or creates
+/// state. The list is the full clap inventory, so a newly added command that
+/// reintroduced a `--db` flag would fail here rather than silently resurrect
+/// global resolution.
+#[test]
+fn every_command_rejects_database_overrides_without_initializing_state() {
+    let commands = [
+        "scan",
+        "watch",
+        "search",
+        "embed",
+        "faces",
+        "classify",
+        "locations",
+        "fix-dates",
+        "prune",
+        "stats",
+        "mcp",
+        "dedupe",
+        "gallery",
+        "mark",
+        "export",
+        "tag",
+        "import",
+        "config",
+    ];
+    for name in commands {
+        let library = common::TestLibrary::new();
+        let out = library
+            .cmd()
+            .args([name, "--db", "foreign.db"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{name} did not reject --db during parsing"
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("unexpected argument '--db'"),
+            "{name} stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!library.root.join(".videre").exists());
+        assert!(!library.home.join(".videre").exists());
+    }
+}

@@ -253,7 +253,7 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
     // Import any face names from XMP sidecars onto the faces just detected,
     // symmetric with the marks read-back on scan. Governed by the shared --xmp
     // precedence; db (the default) fills only unconfirmed faces.
-    let imported = import_face_regions(&args, &conn, &to_process)?;
+    let imported = import_face_regions(&args, ctx, &conn, &to_process)?;
     if imported > 0 && !args.silent {
         eprintln!("Imported {imported} face name(s) from XMP");
     }
@@ -269,16 +269,17 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
 /// per hash: an unreadable sidecar or an unmatched region simply imports nothing.
 fn import_face_regions(
     args: &FacesArgs,
+    ctx: &CommandContext,
     conn: &rusqlite::Connection,
     to_process: &[(String, String)],
 ) -> Result<usize> {
-    let prec = args.xmp.precedence()?;
+    let prec = args.xmp.resolve_from(&ctx.library.settings)?;
     if matches!(prec, videre_core::marks::XmpPrecedence::Newest) && !args.silent {
         eprintln!("Warning: --xmp newest is not yet implemented; treating as db");
     }
     let mut imported = 0usize;
     for (path, hash) in to_process {
-        let data = crate::xmp::read::read_data(std::path::Path::new(path));
+        let data = crate::xmp::read::read_data_in(&ctx.library, std::path::Path::new(path));
         if data.regions.is_empty() {
             continue;
         }

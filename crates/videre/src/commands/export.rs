@@ -119,15 +119,6 @@ fn export_selection(
     Ok(())
 }
 
-/// Export sidecars for every file in the library, through the ambient writer.
-/// The legacy unscoped entry point the still-inactive watch export stage calls;
-/// replaced by [`export_all_in`] once watch is converted.
-pub fn export_all(conn: &rusqlite::Connection) -> Result<usize> {
-    ensure_optional_tables(conn);
-    let hashes = all_hashes(conn)?;
-    write_sidecars_for(conn, &hashes, false, None)
-}
-
 /// Export sidecars for every file in the selected library, publishing each
 /// through the confined library writer.
 pub fn export_all_in(conn: &rusqlite::Connection, ctx: &CommandContext) -> Result<usize> {

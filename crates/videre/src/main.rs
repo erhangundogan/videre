@@ -95,12 +95,6 @@ fn library_option_count(args: &[OsString]) -> usize {
         .count()
 }
 
-fn unconverted(name: &str) -> anyhow::Result<()> {
-    anyhow::bail!(
-        "'{name}' is temporarily unavailable while its directory-local library support is being completed"
-    )
-}
-
 /// Appends `Full documentation: https://docs.videre.sh/commands/<name>/` to
 /// every subcommand's `--help`.
 ///

@@ -52,7 +52,7 @@ pub fn snapshot_database(path: &Path) -> BTreeMap<String, Vec<Vec<Value>>> {
     let mut snapshot = BTreeMap::new();
     for table in tables {
         let quoted = format!("\"{}\"", table.replace('"', "\"\""));
-        let mut stmt = conn.prepare(&format!("SELECT * FROM {quoted}")).unwrap();
+        let stmt = conn.prepare(&format!("SELECT * FROM {quoted}")).unwrap();
         let column_count = stmt.column_count();
         // Order by every column position so row order never depends on storage.
         let order = (1..=column_count)

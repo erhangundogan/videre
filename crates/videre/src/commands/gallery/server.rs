@@ -358,14 +358,10 @@ struct AppState {
     /// configuration where `/`, `/date` and `/people` all exist, so the one
     /// where a section strip can link to them.
     gallery: bool,
-    /// Bound at startup, like `model_id`, so a request cannot retarget the
-    /// server at another library. `search::run_json` opens its own connection
-    /// from this, which is what keeps a ranking query off the shared one.
-    db: std::path::PathBuf,
     /// The startup-bound library context. A ranking search runs through
-    /// `search::run_json_in` against this, so no request can retarget the
-    /// server at another library. Full request/image/cache binding is C8's
-    /// work; today only search consumes it.
+    /// `search::run_json_in` against this, and a location lookup geocodes into
+    /// this library's cache, so no request can retarget the server at another
+    /// library.
     context: Arc<crate::command_context::CommandContext>,
     /// Loaded on the first ranking search and kept for the process's life. Empty
     /// until then: a gallery whose library nobody searches never loads a model.
@@ -738,7 +734,11 @@ async fn handle_location(
     if let Some(name) = cached {
         return Ok(AxumJson(LocationResponse { name: Some(name) }));
     }
-    let name = videre_core::location::location_name(q.lat, q.lon);
+    // Best-effort, like the old ambient lookup: a geocoder failure yields no
+    // name and no cache write rather than a request error.
+    let name = videre_core::location::location_name_in(&state.context.library.cache, q.lat, q.lon)
+        .ok()
+        .flatten();
     if let Some(ref n) = name {
         let _ = conn.execute(
             "UPDATE file_hashes SET location_name = ?1 \
@@ -1412,7 +1412,6 @@ async fn serve_faces_async(
         report_heic_original: opts.report_heic_original,
         serve_faces_ui: opts.serve_faces_ui,
         gallery: opts.gallery,
-        db: db.to_path_buf(),
         context: opts.context.clone(),
         embedder: Mutex::new(None),
     });
