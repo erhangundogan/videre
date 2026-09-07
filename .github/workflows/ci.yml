@@ -102,12 +102,13 @@ jobs:
         if: steps.models.outputs.cache-hit != 'true'
         run: |
           set -eux
+          bin="$PWD/target/debug/videre"
           mkdir -p /tmp/warm
           cp crates/videre/tests/fixtures/sample_with_exif.jpg /tmp/warm/
-          ./target/debug/videre scan --silent --output-sqlite /tmp/warm.db /tmp/warm
-          ./target/debug/videre faces --db /tmp/warm.db --silent
+          "$bin" --library /tmp/warm scan --silent
+          "$bin" --library /tmp/warm faces --silent
           if [ "$RUNNER_OS" = "macOS" ]; then
-            ./target/debug/videre embed --db /tmp/warm.db --silent
+            "$bin" --library /tmp/warm embed --silent
           fi
 
       # VIDERE_TEST_REQUIRE_MODELS turns a cold-cache skip into a failure. A
