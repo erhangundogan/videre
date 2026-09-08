@@ -51,7 +51,7 @@ jobs:
       # Running both is the entire point of the matrix.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [macos-14]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -119,10 +119,29 @@ jobs:
       # hides every later one: a Linux-only failure in videre-core's lib tests
       # meant the videre integration tests never ran on Linux at all, and their
       # result was unknown rather than green.
-      - name: Test
-        env:
-          VIDERE_TEST_REQUIRE_MODELS: 1
-        run: cargo test --workspace --no-fail-fast
+      # CONTROL (throwaway branch): does the OLD macOS image flake at all?
+      # Runs the full suite in a loop at DEFAULT threads - the exact condition
+      # that failed 6/30 on the 0831 image - and tallies. Model tests skip on a
+      # cold cache (no warm step); they are not the flaky ones. If this is 0/N,
+      # the image is the differentiator, full stop.
+      - name: Control - full suite in a loop on the old image
+        run: |
+          set -u
+          echo "ImageOS=$ImageOS ImageVersion=$ImageVersion  ncpu=$(sysctl -n hw.ncpu)"
+          sw_vers || true
+          iters=15
+          fails=0
+          for i in $(seq 1 "$iters"); do
+            echo "===== iteration $i / $iters ====="
+            cargo test --workspace --no-fail-fast > /tmp/out.txt 2>&1 || true
+            if grep -qaE ' \.\.\. FAILED|test result: FAILED|SQLITE_IOERR|disk I/O error' /tmp/out.txt; then
+              fails=$((fails + 1))
+              echo "::warning::iteration $i FAILED"
+              grep -aE ' \.\.\. FAILED|SQLITE_IOERR|778|disk I/O error' /tmp/out.txt | head -6 || true
+            fi
+          done
+          echo "########## CONTROL: $fails / $iters FAILED  (image $ImageVersion) ##########"
+          exit 0
 
       # Tests never download model weights, and this is what enforces it rather
       # than trusting it.
