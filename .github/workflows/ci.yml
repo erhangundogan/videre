@@ -59,16 +59,17 @@ jobs:
           # locally, on Linux, and on the prior image). We cannot fix the runner,
           # so we defend in depth. `test_threads: 2` caps parallelism, which
           # removes the concurrency-driven failures (measured: full suite 6/30
-          # failed at the default 3 threads, 0/30 at 2). `test_attempts: 3`
-          # retries the whole step, so a residual single-write transient (which
-          # throttling cannot prevent) is absorbed rather than red-failing a good
-          # commit; a real failure still fails all three attempts. Linux sets
-          # neither, so it runs once at full speed. Revisit when a later macOS
+          # failed at the default 3 threads, 0/30 at 2). `test_attempts: 2`
+          # runs the step at most twice, so a residual single-write transient
+          # (which throttling cannot prevent) is absorbed by one rerun rather
+          # than red-failing a good commit; a real failure fails both attempts.
+          # Linux sets neither, so it runs once at full speed. Revisit when a
+          # later macOS
           # image is stable. `os` still names the job (and the branch-protection
           # check), so do not rename it.
           - os: macos-latest
             test_threads: "2"
-            test_attempts: "3"
+            test_attempts: "2"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
