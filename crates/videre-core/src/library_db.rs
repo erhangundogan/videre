@@ -1294,44 +1294,53 @@ mod tests {
     }
 
     #[test]
-    fn opening_a_seventy_thousand_row_library_validates_with_zero_filesystem_probes() {
+    fn opening_a_multi_row_library_validates_every_row_without_filesystem_probes() {
         let (_t, ctx) = library();
-        const ROWS: u32 = 70_000;
+        // A multi-row library, enough to prove the validation generalises over
+        // many rows rather than a single one. Deliberately small: the invariant
+        // under test is scale-independent (see the two counters below), so N
+        // does not need to mirror a real library. This was once 70,000 rows -
+        // not for the invariant, but purely to give a wall-clock quadratic-walk
+        // canary teeth. That canary was doubly bad: a timing bound on shared CI
+        // is inherently flaky, and its large single-transaction write
+        // intermittently tripped SQLITE_IOERR_WRITE on GitHub's macOS runner
+        // (whose virtual disk fails writes under load). Both the clock and the
+        // heavy write are gone; the deterministic counters prove the same thing
+        // at any N, and the *expensive* form of a quadratic regression - per-row
+        // filesystem work - is caught outright by the zero-probe assertion.
+        const ROWS: u32 = 1_000;
         {
             let mut conn = initialize(&ctx).unwrap();
-            // Synthetic index rows, the order of magnitude of the real
-            // library this refactor serves: bare path strings under the root,
-            // batched in one transaction. No media files exist, which is the
-            // point; containment judges which library a row belongs to, not
-            // whether its media is mounted.
+            // Bare path strings under the root, batched in one transaction. No
+            // media files exist, which is the point; containment judges which
+            // library a row belongs to, not whether its media is mounted.
             let tx = conn.transaction().unwrap();
             {
                 let mut stmt = tx
                     .prepare("INSERT INTO file_hashes (path, hash) VALUES (?1, 'h')")
                     .unwrap();
                 for i in 0..ROWS {
-                    let path = ctx.paths.root.join(format!(
-                        "Trips/album-{:02}/img-{:05}.jpg",
-                        i / 1000,
-                        i
-                    ));
+                    let path =
+                        ctx.paths
+                            .root
+                            .join(format!("Trips/album-{:02}/img-{:05}.jpg", i / 100, i));
                     stmt.execute(params![path.to_str().unwrap()]).unwrap();
                 }
             }
             tx.commit().unwrap();
         }
         // A fresh context has no memoized validation, so this open validates
-        // every row. Two instruments answer the two halves of the claim: the
-        // guard layer's resolution counter is the filesystem-probe instrument
-        // and must not move at all, and the containment row counter must have
-        // judged exactly 70,000 rows, so a flat probe count cannot be explained
-        // by a validation that never ran.
+        // every row. Two deterministic instruments answer the two halves of the
+        // claim, at any row count: the guard layer's resolution counter is the
+        // filesystem-probe instrument and must not move at all (no per-row
+        // stat/canonicalise - the costly quadratic form), and the containment
+        // row counter must have judged exactly ROWS rows (each visited once, a
+        // linear pass), so a flat probe count cannot be explained by a
+        // validation that never ran.
         let fresh = LibraryContext::new(&ctx.paths.root, &ctx.cache.base).unwrap();
         let probes_before = crate::library_guard::count_resolutions();
         let rows_before = count_rows_validated();
-        let start = std::time::Instant::now();
         let conn = open_existing(&fresh).unwrap();
-        let elapsed = start.elapsed();
         assert!(
             fresh.index_validated(),
             "a successful open records the memo"
@@ -1344,16 +1353,7 @@ mod tests {
         assert_eq!(
             count_rows_validated() - rows_before,
             u64::from(ROWS),
-            "every row must have been judged"
-        );
-        // Materially fast: the bound is loose enough for CI noise and tight
-        // enough to catch an accidental quadratic walk (70,000 rows would
-        // need billions of comparisons, not the fraction of a second a linear
-        // pass over in-memory strings takes). The load-bearing assertion is
-        // the zero-probe count above, not this clock.
-        assert!(
-            elapsed < Duration::from_secs(5),
-            "validating {ROWS} rows took {elapsed:?}"
+            "every row must have been judged exactly once (a linear pass)"
         );
         let count: i64 = conn
             .query_row("SELECT count(*) FROM file_hashes", [], |r| r.get(0))

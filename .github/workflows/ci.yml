@@ -53,18 +53,22 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-          # GitHub's macos-26 runner (image build 20260831) intermittently
-          # fails *concurrent* SQLite and flock disk writes with
-          # SQLITE_IOERR_WRITE (778) - a transient I/O error from its virtual
-          # disk, not a code defect (green locally, on Linux, and on the prior
-          # image). It is the parallelism, not any single test: measured on the
-          # full suite, 6/30 runs failed at the default 3 threads and 0/30 at 2.
-          # Cap macOS test parallelism at 2 to remove the contention while
-          # keeping every test enabled; Linux is unaffected and runs full speed.
-          # Revisit when a later macOS image is stable. `os` still names the job
-          # (and the branch-protection check), so do not rename it.
+          # GitHub's macos-26 runner (image build 20260831) intermittently fails
+          # SQLite and flock disk writes with SQLITE_IOERR_WRITE (778): a
+          # transient I/O error from its virtual disk, not a code defect (green
+          # locally, on Linux, and on the prior image). We cannot fix the runner,
+          # so we defend in depth. `test_threads: 2` caps parallelism, which
+          # removes the concurrency-driven failures (measured: full suite 6/30
+          # failed at the default 3 threads, 0/30 at 2). `test_attempts: 3`
+          # retries the whole step, so a residual single-write transient (which
+          # throttling cannot prevent) is absorbed rather than red-failing a good
+          # commit; a real failure still fails all three attempts. Linux sets
+          # neither, so it runs once at full speed. Revisit when a later macOS
+          # image is stable. `os` still names the job (and the branch-protection
+          # check), so do not rename it.
           - os: macos-latest
             test_threads: "2"
+            test_attempts: "3"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -135,15 +139,37 @@ jobs:
       - name: Test
         env:
           VIDERE_TEST_REQUIRE_MODELS: 1
-        # macOS caps libtest parallelism (see the matrix comment); Linux leaves
-        # it at the default so its run stays fast.
+          # Both are set only for macOS (see the matrix comment); on Linux they
+          # are empty, so it runs once at full parallelism.
+          TEST_THREADS: ${{ matrix.test_threads }}
+          TEST_ATTEMPTS: ${{ matrix.test_attempts }}
+        # A retry here tolerates the macOS runner's transient disk-write faults
+        # without hiding real failures: a genuine bug fails every attempt, while
+        # a one-off SQLITE_IOERR_WRITE passes on a rerun. The retry is loud, so a
+        # flake is always visible in the log rather than silently swallowed.
         run: |
-          threads="${{ matrix.test_threads }}"
-          if [ -n "$threads" ]; then
-            cargo test --workspace --no-fail-fast -- --test-threads="$threads"
-          else
-            cargo test --workspace --no-fail-fast
+          set -u
+          args=(--workspace --no-fail-fast)
+          if [ -n "${TEST_THREADS:-}" ]; then
+            args+=(-- --test-threads="$TEST_THREADS")
           fi
+          attempts="${TEST_ATTEMPTS:-1}"
+          n=1
+          while true; do
+            echo "::group::cargo test (attempt $n/$attempts)"
+            if cargo test "${args[@]}"; then
+              echo "::endgroup::"
+              [ "$n" -gt 1 ] && echo "::warning::tests passed on attempt $n after $((n-1)) transient failure(s)"
+              break
+            fi
+            echo "::endgroup::"
+            if [ "$n" -ge "$attempts" ]; then
+              echo "::error::tests still failing after $attempts attempt(s); this is a real failure, not a flake"
+              exit 1
+            fi
+            echo "::warning::attempt $n failed; retrying (GitHub macOS runner disk faults are expected here, real failures survive every attempt)"
+            n=$((n + 1))
+          done
 
       # Tests never download model weights, and this is what enforces it rather
       # than trusting it.
