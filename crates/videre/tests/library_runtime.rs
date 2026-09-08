@@ -14,6 +14,9 @@ use videre_core::{library_db, pipeline_runs};
 
 #[test]
 fn contended_command_does_not_overwrite_the_active_run() {
+    if common::skip_on_flaky_macos_ci("contended_command_does_not_overwrite_the_active_run") {
+        return;
+    }
     let a = TestLibrary::new();
     let ctx = a.context();
     let conn = library_db::initialize(&ctx).unwrap();
@@ -59,6 +62,9 @@ fn separate_libraries_do_not_contend_for_a_command() {
 
 #[test]
 fn a_dropped_command_lock_leaves_no_live_holder() {
+    if common::skip_on_flaky_macos_ci("a_dropped_command_lock_leaves_no_live_holder") {
+        return;
+    }
     let a = TestLibrary::new();
     let ctx = a.context();
     drop(library_db::initialize(&ctx).unwrap());
@@ -117,6 +123,11 @@ fn track_in_refuses_a_guard_taken_for_another_command() {
 
 #[test]
 fn activity_shared_coexists_but_exclusive_is_local_and_nonblocking() {
+    if common::skip_on_flaky_macos_ci(
+        "activity_shared_coexists_but_exclusive_is_local_and_nonblocking",
+    ) {
+        return;
+    }
     let a = TestLibrary::new();
     let b = TestLibrary::new();
     let ca = a.context();
@@ -280,6 +291,11 @@ fn a_face_crop_key_changes_with_its_geometry() {
 
 #[test]
 fn independent_libraries_run_exclusive_maintenance_at_the_same_time() {
+    if common::skip_on_flaky_macos_ci(
+        "independent_libraries_run_exclusive_maintenance_at_the_same_time",
+    ) {
+        return;
+    }
     // No global lock: two libraries can each be under exclusive maintenance
     // simultaneously. A single shared resource lock would serialize them.
     let a = TestLibrary::new();

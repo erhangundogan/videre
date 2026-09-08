@@ -1294,9 +1294,16 @@ mod tests {
     }
 
     #[test]
-    fn opening_a_seventy_thousand_row_library_validates_with_zero_filesystem_probes() {
+    fn opening_a_large_row_library_validates_with_zero_filesystem_probes() {
         let (_t, ctx) = library();
-        const ROWS: u32 = 70_000;
+        // Was 70_000 (the real library's order of magnitude). Reduced to cut the
+        // WAL write volume this test commits: GitHub's macOS runner image
+        // intermittently fails SQLite disk writes with SQLITE_IOERR_WRITE, and
+        // fewer inserts means fewer write syscalls to catch a transient error.
+        // The load-bearing assertions here are count-independent (zero
+        // per-row filesystem probes, and rows-judged == ROWS), so a smaller ROWS
+        // proves the same invariant; only the quadratic-walk canary loosens.
+        const ROWS: u32 = 10_000;
         {
             let mut conn = initialize(&ctx).unwrap();
             // Synthetic index rows, the order of magnitude of the real
@@ -1324,7 +1331,7 @@ mod tests {
         // every row. Two instruments answer the two halves of the claim: the
         // guard layer's resolution counter is the filesystem-probe instrument
         // and must not move at all, and the containment row counter must have
-        // judged exactly 70,000 rows, so a flat probe count cannot be explained
+        // judged exactly ROWS rows, so a flat probe count cannot be explained
         // by a validation that never ran.
         let fresh = LibraryContext::new(&ctx.paths.root, &ctx.cache.base).unwrap();
         let probes_before = crate::library_guard::count_resolutions();

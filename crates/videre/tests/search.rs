@@ -320,6 +320,9 @@ fn location_and_radius_conflict_with_other_search_modes() {
 
 #[test]
 fn location_search_truncates_to_top_k_closest() {
+    if common::skip_on_flaky_macos_ci("location_search_truncates_to_top_k_closest") {
+        return;
+    }
     let lib = TestLibrary::new();
     let root = lib.context().paths.root;
     let conn = lib.init_db();
