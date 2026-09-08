@@ -33,10 +33,21 @@ videre search --missing gps                     # photos with no coordinates
 | `--category` | how [`videre classify`](/commands/classify/) labelled it |
 | `--path` | which folder it is in |
 | `--has`, `--missing` | whether metadata exists. Supported fields: `gps`, `date` |
+| `--rating` | [rated](/commands/mark/) at least this many stars (0-5) |
+| `--pick` | pick state: `keep` or `reject` |
+| `--label` | colour label, e.g. `Green` |
+| `--like` | only liked (favourite) files |
+| `--tag` | carries this [tag](/commands/tag/). Repeatable; all must be present |
 
-`--type`, `--ext`, `--mime`, `--has` and `--missing` are repeatable and accept
-comma-separated lists: `--ext mov,avi` and `--ext mov --ext avi` are the same
-request, as are `--missing gps,date` and `--missing gps --missing date`.
+`--type`, `--ext`, `--mime`, `--has`, `--missing` and `--tag` are repeatable and
+accept comma-separated lists where a list makes sense: `--ext mov,avi` and
+`--ext mov --ext avi` are the same request, as are `--missing gps,date` and
+`--missing gps --missing date`. Multiple `--tag` values are ANDed: every named
+tag must be present.
+
+The last five - `--rating`, `--pick`, `--label`, `--like`, `--tag` - filter on
+the marks and tags you set with [`videre mark`](/commands/mark/) and
+[`videre tag`](/commands/tag/). They compose with everything above.
 
 Combining flags narrows further: every condition must hold. `--type video
 --after 2024-01-01` means videos *and* taken this year, never either.
@@ -45,11 +56,11 @@ Combining flags narrows further: every condition must hold. `--type video
 
 | Command | Flags |
 |---|---|
-| [`search`](/commands/search/) | all of them |
-| [`classify`](/commands/classify/) | all of them |
+| [`search`](/commands/search/), [`classify`](/commands/classify/), [`export`](/commands/export/) | all of them |
+| [`tag`](/commands/tag/) | all of them (its own `--add`/`--remove` are the setters) |
 | [`embed`](/commands/embed/), [`faces`](/commands/faces/) | everything except `--person` and `--category` |
+| [`mark`](/commands/mark/) | all except the mark-value filters; the only mark/tag filter it takes is `--tag` |
 | [`scan`](/commands/scan/), [`watch`](/commands/watch/) | `--type`, `--ext`, `--mime` |
-| [`mark`](/commands/mark/), [`tag`](/commands/tag/), [`export --xmp`](/commands/export/) | all search filters that select files |
 
 The gaps are deliberate rather than unfinished.
 
@@ -64,6 +75,14 @@ different subset you point them at a different library.
 derived from the very data those commands produce. Selecting the input by a
 label that only exists once the run has finished is circular, so the flag does
 not exist rather than quietly matching nothing.
+
+`mark` is the one command where `--rating`, `--pick`, `--label` and `--like` are
+*setters*, not filters: `videre mark --rating 5` gives files five stars. So on
+`mark` those four cannot also filter, and the only mark/tag filter it accepts is
+`--tag` (narrowing which files get the mark, e.g. `videre mark --tag vacation
+--rating 5`). `tag` has the opposite arrangement: its setters are the separate
+`--add`/`--remove` flags, so every filter above - including `--tag` - is free to
+narrow which files it (un)tags.
 
 [`videre locations`](/commands/locations/) takes no filters at all. It
 recalculates every location cluster from scratch each time, so a scoped run

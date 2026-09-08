@@ -15,6 +15,20 @@ version number and are released together.
 
 ## [Unreleased]
 
+### Added
+
+- **Mark and tag filters compose across the command surface.** The
+  `--rating`/`--pick`/`--label`/`--like`/`--tag` filters, previously accepted
+  only by `search`, now narrow `export`, `classify`, `embed`, `faces` and `tag`
+  as well, and `mark` gains `--tag`. So you can `embed --like`, `faces --tag
+  portraits`, `export --label Green --xmp`, or `tag --add printed --tag beach`.
+  On `mark` the mark flags remain setters, so its only mark/tag filter is
+  `--tag` (`mark --tag vacation --rating 5`); on `tag` the setters are the
+  separate `--add`/`--remove`, so every filter is free to narrow. `search` now
+  builds its selection through the same shared assembler as every other
+  command, so the vocabularies cannot drift; its `--help` and behaviour are
+  unchanged.
+
 ### Changed
 
 - **Directory-local libraries.** Every command now resolves its library from
