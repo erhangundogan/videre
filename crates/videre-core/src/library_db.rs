@@ -1308,7 +1308,7 @@ mod tests {
         // heavy write are gone; the deterministic counters prove the same thing
         // at any N, and the *expensive* form of a quadratic regression - per-row
         // filesystem work - is caught outright by the zero-probe assertion.
-        const ROWS: u32 = 1_000;
+        const ROWS: u32 = 10_000;
         {
             let mut conn = initialize(&ctx).unwrap();
             // Bare path strings under the root, batched in one transaction. No
