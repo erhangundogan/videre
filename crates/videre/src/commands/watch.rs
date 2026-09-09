@@ -478,13 +478,24 @@ fn run_scan_stage(
                     selection.describe()
                 );
             }
+            // Incremental, like `scan`: skip files whose row is already current,
+            // so each cycle only hashes new or changed files rather than the
+            // whole library. `--similar` is not a watch concept, so no phash.
+            let sigs = videre_core::db::stored_signatures(conn).unwrap_or_default();
+            let paths: Vec<_> = paths
+                .into_iter()
+                .filter(|p| videre::incremental::needs_processing(&sigs, p, false))
+                .collect();
             let records: Vec<types::FileRecord> = paths
                 .par_iter()
                 .filter_map(|path| hasher::hash_file(path).ok())
                 .collect();
             sqlite_output::write_records_in(conn, &ctx.library, &records)?;
             let prec = args.xmp.resolve_from(&ctx.library.settings)?;
-            crate::xmp::import_xmp_for_records_in(conn, &ctx.library, &records, prec, args.silent)?;
+            // Reconcile XMP over the whole library, not just files hashed this
+            // cycle (see scan.rs): the incremental skip must not change XMP
+            // behaviour.
+            crate::xmp::import_xmp_all_in(conn, &ctx.library, prec, args.silent)?;
             if !args.silent {
                 eprintln!("videre watch: scan stage wrote {} record(s)", records.len());
             }

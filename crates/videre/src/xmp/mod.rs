@@ -72,21 +72,34 @@ fn apply_xmp_data(
     Ok(())
 }
 
-/// Apply XMP marks for a batch of freshly written records under `prec`. The one
-/// loop scan/watch/import all call, so the ingest behaviour is defined once.
-/// `newest` is not yet implemented; it warns once and behaves as `db`.
-pub fn import_xmp_for_records_in(
+/// Reconcile XMP for every file recorded in the library, not only the ones a
+/// run just hashed.
+///
+/// Scan is incremental and skips files whose bytes are unchanged, but a
+/// sidecar's marks can change without the media file changing, and `--xmp file`
+/// is an explicit request to reconcile from sidecars. Keying the XMP pass on the
+/// stored rows (each carries the hash marks are stored under) keeps XMP
+/// behaviour exactly as it was before scanning became incremental: the reconcile
+/// covers the whole library every run, independent of the hash skip. Cheap,
+/// because a file with no sidecar is a single failed `open`.
+pub fn import_xmp_all_in(
     conn: &Connection,
     ctx: &videre_core::library::LibraryContext,
-    records: &[videre::types::FileRecord],
     prec: XmpPrecedence,
     silent: bool,
 ) -> Result<()> {
     if matches!(prec, XmpPrecedence::Newest) && !silent {
         eprintln!("Warning: --xmp newest is not yet implemented; treating as db");
     }
-    for record in records {
-        import_xmp_for_in(conn, ctx, Path::new(&record.path), &record.hash, prec)?;
+    if !videre_core::db::table_exists(conn, "file_hashes")? {
+        return Ok(());
+    }
+    let mut stmt = conn.prepare("SELECT path, hash FROM file_hashes")?;
+    let rows: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (path, hash) in &rows {
+        import_xmp_for_in(conn, ctx, Path::new(path), hash, prec)?;
     }
     Ok(())
 }

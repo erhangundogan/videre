@@ -1,7 +1,6 @@
 use crate::command_context::CommandContext;
 use rayon::prelude::*;
 use rusqlite::Connection;
-use std::collections::HashSet;
 use std::process;
 use videre::{
     hasher, scanner, sqlite_output,
@@ -14,9 +13,15 @@ pub struct ScanArgs {
     #[arg(long)]
     similar: bool,
 
-    /// Only process files no scan has finished
+    /// Deprecated alias: scan is incremental by default now, so this no longer
+    /// changes what is processed. Kept so existing scripts do not error.
     #[arg(long)]
     retry_incomplete: bool,
+
+    /// Re-read and re-hash every file, ignoring the unchanged-since-last-scan
+    /// skip. The honest full pass (and what a future integrity check wants).
+    #[arg(long)]
+    force: bool,
 
     /// Suppress progress output on stderr
     #[arg(long)]
@@ -75,17 +80,15 @@ fn run_inner(args: &ScanArgs, ctx: &CommandContext) -> anyhow::Result<ScanJson> 
 
     let (records, skipped, walked) =
         videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "scan", || {
-            let completed = completed_paths(&conn, args)?;
-            let (records, skipped, walked) = gather_records(args, ctx, &completed);
+            let (records, skipped, walked) = gather_records(args, ctx, &conn);
             sqlite_output::write_records_in(&conn, &ctx.library, &records)?;
             let precedence = args.xmp.resolve_from(&ctx.library.settings)?;
-            crate::xmp::import_xmp_for_records_in(
-                &conn,
-                &ctx.library,
-                &records,
-                precedence,
-                args.silent,
-            )?;
+            // XMP is reconciled over the whole library, not just the files this
+            // run hashed: incremental scan skips unchanged media, but a sidecar's
+            // marks can change on their own and `--xmp file` is an explicit
+            // reconcile request. This keeps XMP behaviour as it was before scan
+            // became incremental.
+            crate::xmp::import_xmp_all_in(&conn, &ctx.library, precedence, args.silent)?;
             Ok((records, skipped, walked))
         })?;
 
@@ -113,24 +116,25 @@ fn run_inner(args: &ScanArgs, ctx: &CommandContext) -> anyhow::Result<ScanJson> 
     })
 }
 
-fn completed_paths(conn: &Connection, args: &ScanArgs) -> anyhow::Result<HashSet<String>> {
-    if args.retry_incomplete {
-        Ok(videre_core::db::paths_with_known_mime(conn)?)
-    } else {
-        Ok(HashSet::new())
-    }
-}
-
 fn gather_records(
     args: &ScanArgs,
     ctx: &CommandContext,
-    completed: &HashSet<String>,
+    conn: &Connection,
 ) -> (Vec<videre::types::FileRecord>, usize, usize) {
+    // Incremental by default: skip a file whose row is already current. `--force`
+    // loads no signatures, so everything is reprocessed. A file the walk sees
+    // but cannot stat, and any new path, falls through to the hash path.
+    let sigs = if args.force {
+        std::collections::HashMap::new()
+    } else {
+        videre_core::db::stored_signatures(conn).unwrap_or_default()
+    };
+    let want_similar = args.similar;
     let all_paths = scanner::scan(&ctx.library.paths.root);
     let walked = all_paths.len();
     let paths: Vec<_> = all_paths
         .into_iter()
-        .filter(|path| !completed.contains(path.to_string_lossy().as_ref()))
+        .filter(|path| videre::incremental::needs_processing(&sigs, path, want_similar))
         .collect();
     let progress = videre_core::progress::Progress::new(paths.len() as u64, args.silent);
 

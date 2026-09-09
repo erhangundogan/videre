@@ -15,6 +15,20 @@ version number and are released together.
 
 ## [Unreleased]
 
+### Changed
+
+- **`scan` is incremental by default.** A file whose recorded row is already
+  current (unchanged size and mtime, type identified, and a perceptual hash
+  present when `--similar` is used) is skipped instead of re-read and re-hashed,
+  so re-scanning a large library that has barely changed is a cheap walk rather
+  than a full re-read of every byte. New and changed files are still processed.
+  `--force` re-reads and re-hashes everything; `--retry-incomplete` becomes a
+  deprecated no-op alias of the new default. `watch`'s scan stage is incremental
+  the same way, and `fix-dates` now records the mtime it writes so it does not
+  trigger a full re-hash on the next scan. A sidecar-only change (re-rating in
+  another tool without touching the media file) is not detected by an
+  incremental scan; run `videre scan --force` to pick those up.
+
 ### Added
 
 - **Mark and tag filters compose across the command surface.** The
