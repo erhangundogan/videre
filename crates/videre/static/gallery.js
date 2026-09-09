@@ -25,10 +25,16 @@ function buildPreview(f){
   var ext=f.ext,path=f.path;
   var metaAttr=escA(JSON.stringify(f.meta));
   if(ext==='jpg'||ext==='jpeg'||ext==='png'||ext==='gif'||ext==='webp'||ext==='bmp'){
-    var url=rawUrl(f);
-    return '<a href="'+escA(url)+'" target="_blank" data-lb-url="'+escA(url)+'" data-lb-type="image" '+
+    // Grid tile is a small server-downscaled thumbnail (240px), not the full
+    // original: serving originals as tiles saturates the browser's connection
+    // pool on a large library and most tiles never load. The lightbox gets a
+    // larger 1200px render; the link still points at the full original.
+    var thumbUrl=rawUrl(f,240);
+    var lbUrl=rawUrl(f,1200);
+    var full=rawUrl(f);
+    return '<a href="'+escA(full)+'" target="_blank" data-lb-url="'+escA(lbUrl)+'" data-lb-type="image" '+
       'data-lb-meta="'+metaAttr+'">'+
-      '<img src="'+escA(url)+'" class="thumb" loading="lazy" '+
+      '<img src="'+escA(thumbUrl)+'" class="thumb" loading="lazy" '+
       'onerror="this.parentElement.innerHTML=\'<span class=no-prev>no preview</span>\'"></a>';
   }
   if(ext==='heic'){

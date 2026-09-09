@@ -1209,6 +1209,35 @@ async fn handle_face_image(
     Ok(([(axum::http::header::CONTENT_TYPE, "image/jpeg")], bytes))
 }
 
+/// Formats the gallery grid renders as `<img>` and that the `image` crate can
+/// decode, so a downscaled JPEG thumbnail can stand in for the full original.
+/// HEIC has its own QuickLook path; video, DNG and TIFF are not thumbnailed.
+fn is_thumbnailable_raster(ext: &str) -> bool {
+    matches!(ext, "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp")
+}
+
+/// Decode `bytes`, downscale so the longest edge is at most `max_px` (never
+/// upscaling), and re-encode as JPEG. Returns `None` if the bytes do not
+/// decode, so the caller can fall back to serving the original untouched
+/// rather than a broken tile. Generating this once and caching it per
+/// (hash, size) is what stops the grid from streaming full multi-megabyte
+/// originals off a slow drive for every tile.
+fn render_raster_thumbnail(bytes: &[u8], max_px: u32) -> Option<Vec<u8>> {
+    let img = image::load_from_memory(bytes).ok()?;
+    let img = if img.width() > max_px || img.height() > max_px {
+        img.resize(max_px, max_px, image::imageops::FilterType::Triangle)
+    } else {
+        img
+    };
+    let mut buf = Vec::new();
+    img.write_to(
+        &mut std::io::Cursor::new(&mut buf),
+        image::ImageFormat::Jpeg,
+    )
+    .ok()?;
+    Some(buf)
+}
+
 fn mime_for_ext(ext: &str) -> &'static str {
     videre_api::mime_for_ext(ext)
 }
@@ -1293,10 +1322,11 @@ async fn handle_raw_file(
         .unwrap_or("")
         .to_lowercase();
 
-    // videre watch's `--heic` stage may have already pre-converted and cached
-    // a thumbnail for this file's content hash at this exact size, serve
-    // that directly instead of paying for a live qlmanage conversion.
-    if ext == "heic" {
+    // A thumbnail may already be cached for this content hash at this size:
+    // videre watch's `--heic` stage pre-converts HEIC, and the raster branch
+    // below caches whatever it renders. Serve the cached JPEG directly and skip
+    // both a QuickLook conversion and re-reading the full original off disk.
+    if ext == "heic" || is_thumbnailable_raster(&ext) {
         if let Some(size) = q.size {
             let cached_path =
                 videre_core::thumb_cache::thumb_path_in(&state.context.library.cache, &hash, size);
@@ -1307,6 +1337,19 @@ async fn handle_raw_file(
     }
 
     let size = q.size;
+    // Where a freshly rendered raster thumbnail should be cached (atomic tmp ->
+    // rename), computed here so only owned paths cross into the blocking task.
+    // `None` unless this is a sized request for a thumbnailable raster format
+    // (a full-size original, a video, or HEIC does not take this path).
+    let raster_cache = match (is_thumbnailable_raster(&ext), size) {
+        (true, Some(px)) => Some((
+            px,
+            state.context.library.cache.thumbnails.clone(),
+            videre_core::thumb_cache::thumb_tmp_path_in(&state.context.library.cache, &hash, px),
+            videre_core::thumb_cache::thumb_path_in(&state.context.library.cache, &hash, px),
+        )),
+        _ => None,
+    };
     let (content_type, bytes) =
         tokio::task::spawn_blocking(move || -> Option<(&'static str, Vec<u8>)> {
             if ext == "heic" {
@@ -1352,6 +1395,21 @@ async fn handle_raw_file(
                         return None;
                     }
                 };
+                // A raster grid tile is served as a small cached JPEG, not the
+                // full original: rendering a downscaled thumbnail once (and
+                // caching it) is what keeps a large library on a slow drive from
+                // saturating the browser's connection pool with multi-megabyte
+                // transfers for every tile. If the bytes do not decode, fall
+                // back to the original untouched so nothing regresses.
+                if let Some((px, dir, tmp, final_)) = &raster_cache {
+                    if let Some(buf) = render_raster_thumbnail(&bytes, *px) {
+                        let _ = std::fs::create_dir_all(dir);
+                        if std::fs::write(tmp, &buf).is_ok() {
+                            let _ = std::fs::rename(tmp, final_);
+                        }
+                        return Some(("image/jpeg", buf));
+                    }
+                }
                 Some((mime_for_ext(&ext), bytes))
             }
         })
@@ -1571,4 +1629,54 @@ pub(crate) fn serve_gallery(
 fn serve_faces(db: &Path, opts: ServeOptions) -> Result<(), Box<dyn std::error::Error>> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(serve_faces_async(db, opts))
+}
+
+#[cfg(test)]
+mod thumbnail_tests {
+    use super::*;
+
+    #[test]
+    fn render_raster_thumbnail_downscales_and_encodes_jpeg() {
+        // A grid tile must be served as a small JPEG, not the full original, or
+        // a large library on a slow drive starves the browser's connection pool
+        // and most tiles never load. Encode an 800x600 source, ask for a 240px
+        // thumbnail, and assert it comes back as a JPEG bounded to 240px.
+        let mut src = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            800,
+            600,
+            image::Rgb([120, 130, 140]),
+        ))
+        .write_to(&mut std::io::Cursor::new(&mut src), image::ImageFormat::Png)
+        .unwrap();
+
+        let out = render_raster_thumbnail(&src, 240).expect("should render a thumbnail");
+        assert_eq!(&out[..2], &[0xFF, 0xD8], "JPEG SOI marker expected");
+        let decoded = image::load_from_memory(&out).expect("thumbnail must decode");
+        assert!(
+            decoded.width() <= 240 && decoded.height() <= 240,
+            "thumbnail must be bounded to 240px, got {}x{}",
+            decoded.width(),
+            decoded.height()
+        );
+        assert_eq!(decoded.width(), 240, "the long edge should scale to 240");
+    }
+
+    #[test]
+    fn render_raster_thumbnail_rejects_non_image_bytes() {
+        assert!(render_raster_thumbnail(b"not an image", 240).is_none());
+    }
+
+    #[test]
+    fn only_browser_raster_formats_are_thumbnailed() {
+        for e in ["jpg", "jpeg", "png", "gif", "webp", "bmp"] {
+            assert!(is_thumbnailable_raster(e), "{e} should be thumbnailed");
+        }
+        for e in ["heic", "mp4", "mov", "dng", "tiff", ""] {
+            assert!(
+                !is_thumbnailable_raster(e),
+                "{e} must not go through raster thumbnailing"
+            );
+        }
+    }
 }
