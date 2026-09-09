@@ -38,6 +38,14 @@ version number and are released together.
   It now announces the phase (`Reading metadata for N file(s)`) and shows its
   own progress bar, so a long run reads as working rather than hung. `watch`'s
   scan stage does the same.
+- **`videre gallery` thumbnails no longer fail to load on a large library.**
+  The grid served the full-resolution original for every raster tile (only
+  HEIC was downscaled), so a big library, especially on a slow or external
+  drive, saturated the browser's handful of connections with multi-megabyte
+  transfers and most tiles never loaded. The grid now requests a 240px
+  thumbnail that the server renders and caches per content hash (the lightbox
+  gets 1200px, the link still opens the full original), so each tile is tens of
+  kilobytes and a reopen is served from cache.
 
 ### Added
 
