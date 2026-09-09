@@ -478,6 +478,14 @@ fn run_scan_stage(
                     selection.describe()
                 );
             }
+            // Incremental, like `scan`: skip files whose row is already current,
+            // so each cycle only hashes new or changed files rather than the
+            // whole library. `--similar` is not a watch concept, so no phash.
+            let sigs = videre_core::db::stored_signatures(conn).unwrap_or_default();
+            let paths: Vec<_> = paths
+                .into_iter()
+                .filter(|p| videre::incremental::needs_processing(&sigs, p, false))
+                .collect();
             let records: Vec<types::FileRecord> = paths
                 .par_iter()
                 .filter_map(|path| hasher::hash_file(path).ok())

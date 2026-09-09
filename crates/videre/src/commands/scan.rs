@@ -135,24 +135,7 @@ fn gather_records(
     let walked = all_paths.len();
     let paths: Vec<_> = all_paths
         .into_iter()
-        .filter(|path| {
-            let key = path.to_string_lossy();
-            match sigs.get(key.as_ref()) {
-                None => true,
-                Some(sig) => match std::fs::metadata(path) {
-                    Err(_) => true,
-                    Ok(meta) => {
-                        let cur_mtime = meta.modified().ok().map(videre_core::db::mtime_iso);
-                        !videre_core::db::is_current(
-                            sig,
-                            meta.len(),
-                            cur_mtime.as_deref(),
-                            want_similar,
-                        )
-                    }
-                },
-            }
-        })
+        .filter(|path| videre::incremental::needs_processing(&sigs, path, want_similar))
         .collect();
     let progress = videre_core::progress::Progress::new(paths.len() as u64, args.silent);
 
