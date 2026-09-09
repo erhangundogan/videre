@@ -57,11 +57,17 @@ merged, you confirm that:
 - the contribution is your own work, or you otherwise have the right to submit
   it,
 - it is contributed under the Apache License 2.0, like the rest of the project,
-  and
-- you grant the project maintainer a perpetual, worldwide, non-exclusive,
-  transferable and sublicensable right to use your contribution, **including the
-  right to distribute it under different licence terms in future versions of
-  videre**.
+- you grant the project maintainer, and their successors and assigns, a
+  perpetual, worldwide, non-exclusive, transferable and sublicensable right to
+  use your contribution, **including the right to distribute it under different
+  licence terms in future versions of videre**, and
+- you grant the project maintainer, and their successors and assigns, a
+  perpetual, worldwide, non-exclusive, royalty-free, irrevocable patent licence
+  to make, use, offer to sell, sell, import and otherwise transfer your
+  contribution, alone or combined with the project, with the same right to
+  sublicense it under any licence the project later adopts. This patent licence
+  ends for any party who initiates patent litigation claiming the contribution
+  or the project infringes.
 
 **You keep the copyright in what you write.** This exists so the project can
 change its licence later without having to find and ask every past contributor,

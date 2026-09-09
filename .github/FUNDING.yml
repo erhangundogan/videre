@@ -1,0 +1,8 @@
+# Adds the "Sponsor" button to the repository. The github: key activates once
+# the account is enrolled as a sponsored developer at
+# https://github.com/sponsors. Other platforms (ko_fi, liberapay, custom) work
+# immediately without enrollment; uncomment and fill in if you want one live now.
+github: erhangundogan
+# ko_fi: your-handle
+# liberapay: your-handle
+# custom: ["https://docs.videre.sh/sponsor"]
