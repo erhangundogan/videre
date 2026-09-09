@@ -1602,7 +1602,9 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.24.1...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.25.34...HEAD
+[0.25.34]: https://github.com/erhangundogan/videre/compare/v0.25.33...v0.25.34
+[0.25.33]: https://github.com/erhangundogan/videre/compare/v0.24.1...v0.25.33
 [0.24.1]: https://github.com/erhangundogan/videre/compare/v0.24.0...v0.24.1
 [0.24.0]: https://github.com/erhangundogan/videre/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/erhangundogan/videre/compare/v0.22.2...v0.23.0
