@@ -20,7 +20,7 @@ pub struct ScanArgs {
 
     /// Re-read and re-hash every file, ignoring the unchanged-since-last-scan
     /// skip. The honest full pass (and what a future integrity check wants).
-    #[arg(long, alias = "rescan")]
+    #[arg(long)]
     force: bool,
 
     /// Suppress progress output on stderr
@@ -83,13 +83,12 @@ fn run_inner(args: &ScanArgs, ctx: &CommandContext) -> anyhow::Result<ScanJson> 
             let (records, skipped, walked) = gather_records(args, ctx, &conn);
             sqlite_output::write_records_in(&conn, &ctx.library, &records)?;
             let precedence = args.xmp.resolve_from(&ctx.library.settings)?;
-            crate::xmp::import_xmp_for_records_in(
-                &conn,
-                &ctx.library,
-                &records,
-                precedence,
-                args.silent,
-            )?;
+            // XMP is reconciled over the whole library, not just the files this
+            // run hashed: incremental scan skips unchanged media, but a sidecar's
+            // marks can change on their own and `--xmp file` is an explicit
+            // reconcile request. This keeps XMP behaviour as it was before scan
+            // became incremental.
+            crate::xmp::import_xmp_all_in(&conn, &ctx.library, precedence, args.silent)?;
             Ok((records, skipped, walked))
         })?;
 
