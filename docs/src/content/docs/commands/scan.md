@@ -9,9 +9,9 @@ that library. Run this first. Other commands read the database it creates.
 
 ```bash
 cd ~/Photos
-videre scan                    # scan the current directory
+videre scan                    # scan the current directory (only new and changed files)
 videre scan --similar          # also prepare near-duplicate matching
-videre scan --retry-incomplete # process new or unfinished files only
+videre scan --force            # re-read and re-hash every file
 videre scan --silent           # suppress progress output
 videre scan --json             # print one JSON summary object
 ```
@@ -56,20 +56,28 @@ Scan does not prepare semantic search or detect faces. Run
 [`videre embed`](/commands/embed/) and [`videre faces`](/commands/faces/)
 separately for those features.
 
-## `--retry-incomplete`
+## Incremental by default
 
-A normal scan reads every byte of every supported file. This is the expensive
-part of scanning a large library.
-
-`--retry-incomplete` still walks the library, but opens only files with no row
-or no recorded media type. It also picks up files added since the previous
-scan. A file whose bytes were read but whose type could not be identified gets
-an explicit sentinel, so later retry runs do not repeatedly read it.
+Scan skips a file whose recorded row is already current: the same size and
+modification time as the last scan, with its type already identified (and a
+perceptual hash already present when `--similar` is used). New files, and files
+that changed since the last scan, are processed; everything else costs a cheap
+`stat`, not a re-read. So re-scanning a large library that has barely changed is
+fast, and re-running is always safe.
 
 ```bash
-videre scan                    # full refresh
-videre scan --retry-incomplete # quick incremental pass
+videre scan          # only new and changed files
+videre scan --force  # re-read and re-hash every file
 ```
+
+`--force` ignores the skip and re-reads every file. Reach for it
+after restoring from a backup, or to re-examine files whose contents changed
+without their modification time changing (rare, but some tools preserve mtime).
+`--retry-incomplete` is still accepted as a deprecated alias of the default and
+no longer changes what is processed.
+
+A file whose bytes were read but whose type could not be identified gets an
+explicit sentinel, so it counts as complete and is not re-read on every scan.
 
 ## `--similar`
 
@@ -102,6 +110,11 @@ videre config set xmp db
 Keywords are imported as additive [tags](/commands/tag/), independently of
 the rating and label precedence.
 
+Because scan is incremental, a change to a sidecar **alone** (you re-rate a
+photo in another tool but the media file itself is untouched) is not noticed on
+a normal scan, since the media file looks unchanged. Run `videre scan --force`
+to re-read files and re-import marks from sidecars that changed on their own.
+
 ## Nested libraries
 
 A parent scan includes media in nested directories, even when one of those
@@ -120,12 +133,14 @@ and leaves the old row until [`videre prune`](/commands/prune/) removes it.
 Faces, embeddings, marks, and tags are keyed by content hash.
 
 **Unreadable files are skipped.** Permission failures and files that time out
-are reported without stopping the rest of the scan. Use
-`--retry-incomplete` after fixing the underlying problem.
+are reported without stopping the rest of the scan. A file with no recorded row
+is always retried, so just run `videre scan` again after fixing the underlying
+problem.
 
-**A full scan reads every byte.** On external drives and network shares, disk
-speed usually dominates. Set a lower local read-rate assumption for a slower
-mount:
+**Reading a file's bytes is the expensive part.** A first scan, a changed
+file, or a `--force` pass reads every byte; on external drives and network
+shares disk speed usually dominates. Set a lower local read-rate assumption for
+a slower mount:
 
 ```bash
 videre config set read-rate 5

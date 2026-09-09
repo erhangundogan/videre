@@ -47,6 +47,10 @@ opt-in per run with `--export-xmp`, or always-on by setting
 `videre config set export-xmp-on-watch true`. It merges into existing sidecars,
 so it never clobbers another tool's data.
 
+The scan stage is [incremental](/commands/scan/#incremental-by-default), like
+`videre scan`: each cycle only hashes files that are new or changed since the
+last one, not the whole library.
+
 Note that [`embed`](/commands/embed/) and [`classify`](/commands/classify/) are
 **not** stages. Semantic search data is not kept current automatically; run
 `videre embed` yourself after adding a batch of photos.
