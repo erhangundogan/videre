@@ -79,3 +79,24 @@ fn similar_reprocesses_an_unchanged_file_that_has_no_phash() {
         "now current for --similar"
     );
 }
+
+#[test]
+fn scan_after_fix_dates_processes_nothing() {
+    // fix-dates rewrites on-disk mtimes to EXIF dates. If it does not also update
+    // the stored modified_at, the next incremental scan sees every fixed file as
+    // changed and re-hashes the whole library. This guards that it does not.
+    let lib = TestLibrary::new();
+    lib.copy_fixture("sample_with_exif.jpg", "a.jpg"); // has EXIF, so fix-dates touches it
+    scan_processed(&lib, &[]);
+    let out = lib.cmd().args(["fix-dates", "--yes"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        scan_processed(&lib, &[]),
+        0,
+        "fix-dates must not force a re-hash on the next scan"
+    );
+}

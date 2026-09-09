@@ -118,6 +118,18 @@ fn run_fix_dates(
                         errors += 1;
                         continue;
                     }
+                    // Keep the stored modified_at in step with the mtime just
+                    // written, so an incremental scan does not treat every
+                    // fix-dated file as changed and re-hash the whole library.
+                    // Re-read the handle rather than reusing `ft`, so the stored
+                    // value is exactly what a later scan will read (a filesystem
+                    // that rounds the mtime then still compares equal).
+                    if let Ok(mtime) = file.metadata().and_then(|m| m.modified()) {
+                        let _ = conn.execute(
+                            "UPDATE file_hashes SET modified_at = ?1 WHERE path = ?2",
+                            rusqlite::params![videre_core::db::mtime_iso(mtime), path],
+                        );
+                    }
                 }
                 Err(e) => {
                     // A missing or offline original is not this run's problem;
