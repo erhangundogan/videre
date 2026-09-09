@@ -98,8 +98,21 @@ pub fn import_xmp_all_in(
     let rows: Vec<(String, String)> = stmt
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
+    // This reconcile reads XMP for every row in the library, so it is a slow
+    // phase that begins after the scan progress bar has already reached 100%
+    // and been cleared. Without its own indicator the whole run looks frozen
+    // here (worst on a large library, and it happens even on an unchanged
+    // rescan). Announce the phase and give it a progress bar of its own,
+    // gated by `silent` like every other progress surface.
+    if !silent && !rows.is_empty() {
+        eprintln!("Reading metadata for {} file(s)", rows.len());
+    }
+    let progress =
+        videre_core::progress::Progress::new_counting(rows.len() as u64, silent, "files");
     for (path, hash) in &rows {
         import_xmp_for_in(conn, ctx, Path::new(path), hash, prec)?;
+        progress.tick();
     }
+    progress.finish();
     Ok(())
 }

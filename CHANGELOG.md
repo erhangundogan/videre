@@ -29,6 +29,16 @@ version number and are released together.
   another tool without touching the media file) is not detected by an
   incremental scan; run `videre scan --force` to pick those up.
 
+### Fixed
+
+- **`scan` no longer looks frozen after the progress bar reaches 100%.** Once
+  hashing finishes, `scan` reads XMP for every file in the library (the
+  whole-library reconcile), a phase that previously ran with no indicator and
+  can take minutes on a large library, even on an otherwise unchanged rescan.
+  It now announces the phase (`Reading metadata for N file(s)`) and shows its
+  own progress bar, so a long run reads as working rather than hung. `watch`'s
+  scan stage does the same.
+
 ### Added
 
 - **Mark and tag filters compose across the command surface.** The
