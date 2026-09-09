@@ -1,5 +1,70 @@
+use chrono::{DateTime, Utc};
 use rusqlite::Connection;
+use std::collections::HashMap;
 use std::path::Path;
+
+/// Canonical stored form of a filesystem mtime: `DateTime<Utc>` then rfc3339.
+///
+/// Identical to `videre`'s `hasher::system_time_to_iso`, so a value stored at
+/// scan time and one computed freshly here compare as equal strings. That
+/// string equality is exact rather than lucky: both sides go through the same
+/// `DateTime<Utc>` then `to_rfc3339()`, so timezone and format never diverge
+/// (the rule BUG:21 established for prune's sync).
+pub fn mtime_iso(t: std::time::SystemTime) -> String {
+    let dt: DateTime<Utc> = t.into();
+    dt.to_rfc3339()
+}
+
+/// The stored facts change-detection needs about one row, so scan and watch can
+/// decide whether to skip a file without opening it.
+#[derive(Clone, Debug)]
+pub struct RowSig {
+    pub size_bytes: u64,
+    pub modified_at: Option<String>,
+    pub has_mime: bool,
+    pub has_phash: bool,
+}
+
+/// True when the stored row is current for the requested work, so the file can
+/// be skipped without reading it: unchanged (same size and mtime) AND complete
+/// (a known mime, and a phash when `--similar` needs one). A file the walk sees
+/// but cannot stat, or a row with no stored mtime, is never current.
+pub fn is_current(
+    sig: &RowSig,
+    cur_size: u64,
+    cur_mtime: Option<&str>,
+    want_similar: bool,
+) -> bool {
+    sig.has_mime
+        && (!want_similar || sig.has_phash)
+        && sig.size_bytes == cur_size
+        && cur_mtime.is_some()
+        && sig.modified_at.as_deref() == cur_mtime
+}
+
+/// Load every row's signature in one query, keyed by path. Empty when the
+/// table does not exist, so a first scan (no table yet) skips nothing.
+pub fn stored_signatures(conn: &Connection) -> rusqlite::Result<HashMap<String, RowSig>> {
+    if !table_exists(conn, "file_hashes")? {
+        return Ok(HashMap::new());
+    }
+    let mut stmt = conn.prepare(
+        "SELECT path, size_bytes, modified_at, mime IS NOT NULL, phash IS NOT NULL \
+         FROM file_hashes",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            RowSig {
+                size_bytes: r.get::<_, Option<i64>>(1)?.unwrap_or(0) as u64,
+                modified_at: r.get::<_, Option<String>>(2)?,
+                has_mime: r.get::<_, bool>(3)?,
+                has_phash: r.get::<_, bool>(4)?,
+            },
+        ))
+    })?;
+    rows.collect()
+}
 
 /// Opens a SQLite connection and switches it to WAL journal mode, allows
 /// one writer plus many concurrent readers without "database is locked"
@@ -78,6 +143,66 @@ pub fn paths_with_known_mime(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn is_current_only_when_unchanged_and_complete() {
+        let base = RowSig {
+            size_bytes: 10,
+            modified_at: Some("2024-01-01T00:00:00+00:00".to_string()),
+            has_mime: true,
+            has_phash: false,
+        };
+        let m = base.modified_at.as_deref();
+        // unchanged + known mime, not asking for similar -> current (skip)
+        assert!(is_current(&base, 10, m, false));
+        // size differs -> not current
+        assert!(!is_current(&base, 11, m, false));
+        // mtime differs -> not current
+        assert!(!is_current(
+            &base,
+            10,
+            Some("2024-02-02T00:00:00+00:00"),
+            false
+        ));
+        // missing mtime on disk -> not current
+        assert!(!is_current(&base, 10, None, false));
+        // mime unknown -> not current even if unchanged (backfill mime)
+        let no_mime = RowSig {
+            has_mime: false,
+            ..base.clone()
+        };
+        assert!(!is_current(&no_mime, 10, m, false));
+        // --similar with no phash -> not current (backfill phash)
+        assert!(!is_current(&base, 10, m, true));
+        // --similar with phash present -> current
+        let with_phash = RowSig {
+            has_phash: true,
+            ..base.clone()
+        };
+        assert!(is_current(&with_phash, 10, m, true));
+    }
+
+    #[test]
+    fn stored_signatures_reads_size_mtime_and_completeness() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT, size_bytes INTEGER,
+                modified_at TEXT, mime TEXT, phash INTEGER);
+             INSERT INTO file_hashes VALUES ('a.jpg','h',10,'2024-01-01T00:00:00+00:00','image/jpeg',NULL);
+             INSERT INTO file_hashes VALUES ('b.dng','h2',20,'2024-01-02T00:00:00+00:00',NULL,NULL);",
+        )
+        .unwrap();
+        let sigs = stored_signatures(&conn).unwrap();
+        assert_eq!(sigs["a.jpg"].size_bytes, 10);
+        assert!(sigs["a.jpg"].has_mime && !sigs["a.jpg"].has_phash);
+        assert!(!sigs["b.dng"].has_mime);
+    }
+
+    #[test]
+    fn stored_signatures_empty_without_the_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert!(stored_signatures(&conn).unwrap().is_empty());
+    }
 
     #[test]
     fn table_exists_true_for_existing_table() {
