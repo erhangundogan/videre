@@ -1,7 +1,5 @@
 use crate::command_context::CommandContext;
-use chrono::{DateTime, Utc};
 use rusqlite::Connection;
-use std::time::SystemTime;
 use videre_core::library::LibraryContext;
 
 #[derive(clap::Args)]
@@ -88,11 +86,6 @@ fn abort_on_repeated_errors(
         eprintln!("  first error: {e}");
     }
     eprintln!("  the volume may be failing; earlier changes are already committed and prune is idempotent, so re-run once the cause is fixed");
-}
-
-fn system_time_to_iso(t: SystemTime) -> String {
-    let dt: DateTime<Utc> = t.into();
-    dt.to_rfc3339()
 }
 
 /// Whether a row's stored `modified_at` needs replacing with the file's current
@@ -214,9 +207,9 @@ pub(crate) fn run_prune(
                 //
                 // A plain string comparison is sound because both sides come
                 // from the same `to_rfc3339()` formatting: `hasher.rs` writes it
-                // at scan time, `system_time_to_iso` reproduces it here.
+                // at scan time, `videre_core::db::mtime_iso` reproduces it here.
                 Ok(t) => {
-                    let current = system_time_to_iso(t);
+                    let current = videre_core::db::mtime_iso(t);
                     if needs_sync(stored_mtime.as_deref(), &current) {
                         planned.push((path, Fate::Sync(current)));
                     }
