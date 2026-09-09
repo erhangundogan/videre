@@ -327,3 +327,24 @@ fn xmp_precedence_and_keywords_are_applied_from_confined_sidecars() {
         Some(4)
     );
 }
+
+#[test]
+fn scan_announces_the_metadata_phase_after_hashing() {
+    // After the hash bar reaches 100%, scan still reads XMP for every row in
+    // the library (the whole-library reconcile), which on a large library
+    // looks frozen because it ran silently. A non-silent scan must announce
+    // that phase so the user knows work is still happening.
+    let library = TestLibrary::new();
+    library.copy_fixture("tiny.jpg", "a.jpg");
+    let output = scan(&library, &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Reading metadata for"),
+        "expected a metadata-phase message so the user knows to wait; got: {stderr}"
+    );
+}
