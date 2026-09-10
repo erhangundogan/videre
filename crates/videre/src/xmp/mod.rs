@@ -121,6 +121,19 @@ pub fn decide_reconcile(
     }
 }
 
+/// The sidecar's current state string for change detection: its rfc3339 mtime
+/// when the sidecar exists, else `""` (absent). Canonicalized through
+/// `mtime_iso`, the same form the DB stores, so equal states compare as equal
+/// strings. A sidecar that exists but cannot be stat'd reads as `""`, so a
+/// transient stat failure at worst triggers one extra sidecar-only read.
+pub fn current_sidecar_state(path: &Path) -> String {
+    let side = crate::xmp::write::sidecar_path(path);
+    match std::fs::metadata(&side).and_then(|m| m.modified()) {
+        Ok(t) => videre_core::db::mtime_iso(t),
+        Err(_) => String::new(),
+    }
+}
+
 pub fn import_xmp_all_in(
     conn: &Connection,
     ctx: &videre_core::library::LibraryContext,
@@ -182,5 +195,24 @@ mod tests {
         assert_eq!(decide_reconcile(Db, false, Some("t1"), "t2"), ReconcileAction::SidecarOnly);
         assert_eq!(decide_reconcile(Db, false, Some(""), "t"), ReconcileAction::SidecarOnly);
         assert_eq!(decide_reconcile(Db, false, Some("t"), ""), ReconcileAction::SidecarOnly);
+    }
+
+    #[test]
+    fn current_sidecar_state_is_empty_when_absent_and_a_timestamp_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let photo = dir.path().join("IMG.jpg");
+
+        // No sidecar yet.
+        assert_eq!(current_sidecar_state(&photo), "");
+
+        // Write the sidecar; state becomes a non-empty rfc3339 mtime that matches
+        // mtime_iso of the file's modified time.
+        let side = crate::xmp::write::sidecar_path(&photo);
+        std::fs::write(&side, b"<x:xmpmeta/>").unwrap();
+        let state = current_sidecar_state(&photo);
+        assert!(!state.is_empty(), "a present sidecar must yield a timestamp");
+        let want =
+            videre_core::db::mtime_iso(std::fs::metadata(&side).unwrap().modified().unwrap());
+        assert_eq!(state, want);
     }
 }
