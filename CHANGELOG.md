@@ -15,6 +15,8 @@ version number and are released together.
 
 ## [Unreleased]
 
+## [0.25.35] - 2026-09-10
+
 ### Changed
 
 - **XMP metadata is now read incrementally.** Scan and watch previously re-read
@@ -1615,7 +1617,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.25.34...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.25.35...HEAD
+[0.25.35]: https://github.com/erhangundogan/videre/compare/v0.25.34...v0.25.35
 [0.25.34]: https://github.com/erhangundogan/videre/compare/v0.25.33...v0.25.34
 [0.25.33]: https://github.com/erhangundogan/videre/compare/v0.24.1...v0.25.33
 [0.24.1]: https://github.com/erhangundogan/videre/compare/v0.24.0...v0.24.1
