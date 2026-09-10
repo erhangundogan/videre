@@ -35,21 +35,6 @@ impl XmpArg {
     }
 }
 
-/// Read a photo's XMP and fold it into the database under `prec`. Shared by scan,
-/// watch and every import path so all three apply XMP identically. Marks (rating
-/// and label) obey `prec`; `dc:subject` keywords become tags additively (a set,
-/// so precedence does not apply and re-import is idempotent). Best-effort read: a
-/// read or parse failure yields no change, never an error.
-pub fn import_xmp_for_in(
-    conn: &Connection,
-    ctx: &videre_core::library::LibraryContext,
-    path: &Path,
-    hash: &str,
-    prec: XmpPrecedence,
-) -> Result<()> {
-    apply_xmp_data(conn, hash, read::read_data_in(ctx, path), prec)
-}
-
 fn apply_xmp_data(
     conn: &Connection,
     hash: &str,
