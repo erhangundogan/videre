@@ -15,6 +15,8 @@ version number and are released together.
 
 ## [Unreleased]
 
+## [0.25.36] - 2026-09-10
+
 ### Changed
 
 - **`watch` no longer re-clusters faces on every cycle.** The faces stage ran
@@ -1626,7 +1628,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.25.35...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.25.36...HEAD
+[0.25.36]: https://github.com/erhangundogan/videre/compare/v0.25.35...v0.25.36
 [0.25.35]: https://github.com/erhangundogan/videre/compare/v0.25.34...v0.25.35
 [0.25.34]: https://github.com/erhangundogan/videre/compare/v0.25.33...v0.25.34
 [0.25.33]: https://github.com/erhangundogan/videre/compare/v0.24.1...v0.25.33
