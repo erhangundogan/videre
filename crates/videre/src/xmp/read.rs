@@ -302,7 +302,11 @@ xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\">\
         )
         .unwrap();
 
-        assert_eq!(read_data_in(&ctx, &photo).rating, Some(5), "embedded packet is readable");
+        assert_eq!(
+            read_data_in(&ctx, &photo).rating,
+            Some(5),
+            "embedded packet is readable"
+        );
         assert_eq!(
             read_sidecar_in(&ctx, &photo),
             XmpData::default(),

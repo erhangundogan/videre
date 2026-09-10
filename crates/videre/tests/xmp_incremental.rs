@@ -48,7 +48,10 @@ fn second_scan_reconciles_nothing_when_unchanged() {
 
     // First scan imports the rating and reports one file reconciled.
     let first = scan_stderr(&lib, &["scan"]);
-    assert!(first.contains("Reading metadata for 1 file"), "got: {first}");
+    assert!(
+        first.contains("Reading metadata for 1 file"),
+        "got: {first}"
+    );
     assert!(rating_matches(&lib, "3"));
 
     // Second scan, nothing changed: no metadata reading phase at all.
@@ -68,7 +71,10 @@ fn a_sidecar_appearing_after_the_first_scan_is_imported_on_rescan() {
     let lib = TestLibrary::new();
     lib.copy_fixture("tiny.jpg", "photos/IMG.jpg"); // no sidecar at first scan
     lib.scan();
-    assert!(!rating_matches(&lib, "4"), "no rating before the sidecar exists");
+    assert!(
+        !rating_matches(&lib, "4"),
+        "no rating before the sidecar exists"
+    );
 
     // The sidecar appears; the media file is untouched.
     write_sidecar(&lib, "photos/IMG.jpg.xmp", 4);
