@@ -134,10 +134,25 @@ pub fn current_sidecar_state(path: &Path) -> String {
     }
 }
 
-pub fn import_xmp_all_in(
+/// Reconcile XMP for the library incrementally. A row is reconciled only when
+/// its media changed this run (`changed` holds its path) or its sidecar changed
+/// since the last reconcile; otherwise it is skipped without any read. `--xmp
+/// file`/`newest` force a full reconcile of every row (the revert path). The
+/// per-row decision is `decide_reconcile`; the current state is
+/// `current_sidecar_state`. `xmp_sidecar_mtime` is updated to the current state
+/// after any read, so the next run can skip an unchanged file.
+///
+/// This replaces the pre-incremental whole-library reconcile: that phase began
+/// after the scan progress bar had reached 100% and re-read every file's XMP
+/// (and, without a sidecar, its entire bytes) on every run, so a large library
+/// looked frozen and an unchanged rescan paid the full cost. Now the phase
+/// counts only the files that actually need a read, so an unchanged library
+/// reads nothing and prints no metadata line at all.
+pub fn reconcile_xmp_in(
     conn: &Connection,
     ctx: &videre_core::library::LibraryContext,
     prec: XmpPrecedence,
+    changed: &std::collections::HashSet<String>,
     silent: bool,
 ) -> Result<()> {
     if matches!(prec, XmpPrecedence::Newest) && !silent {
@@ -146,23 +161,54 @@ pub fn import_xmp_all_in(
     if !videre_core::db::table_exists(conn, "file_hashes")? {
         return Ok(());
     }
-    let mut stmt = conn.prepare("SELECT path, hash FROM file_hashes")?;
-    let rows: Vec<(String, String)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+    let mut stmt = conn.prepare("SELECT path, hash, xmp_sidecar_mtime FROM file_hashes")?;
+    let rows: Vec<(String, String, Option<String>)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?;
-    // This reconcile reads XMP for every row in the library, so it is a slow
-    // phase that begins after the scan progress bar has already reached 100%
-    // and been cleared. Without its own indicator the whole run looks frozen
-    // here (worst on a large library, and it happens even on an unchanged
-    // rescan). Announce the phase and give it a progress bar of its own,
-    // gated by `silent` like every other progress surface.
-    if !silent && !rows.is_empty() {
-        eprintln!("Reading metadata for {} file(s)", rows.len());
+
+    // Decide first (a cheap stat per row), so the progress phase counts only the
+    // files that actually need a read. On an unchanged library this is zero and
+    // the whole phase is silent and instant.
+    struct Work {
+        path: String,
+        hash: String,
+        action: ReconcileAction,
+        current: String,
     }
-    let progress =
-        videre_core::progress::Progress::new_counting(rows.len() as u64, silent, "files");
-    for (path, hash) in &rows {
-        import_xmp_for_in(conn, ctx, Path::new(path), hash, prec)?;
+    let work: Vec<Work> = rows
+        .into_iter()
+        .map(|(path, hash, stored)| {
+            let current = current_sidecar_state(Path::new(&path));
+            let media_changed = changed.contains(&path);
+            let action = decide_reconcile(prec, media_changed, stored.as_deref(), &current);
+            Work {
+                path,
+                hash,
+                action,
+                current,
+            }
+        })
+        .collect();
+
+    let todo = work
+        .iter()
+        .filter(|w| w.action != ReconcileAction::Skip)
+        .count();
+    if !silent && todo > 0 {
+        eprintln!("Reading metadata for {todo} file(s)");
+    }
+    let progress = videre_core::progress::Progress::new_counting(todo as u64, silent, "files");
+    for w in &work {
+        let data = match w.action {
+            ReconcileAction::Skip => continue,
+            ReconcileAction::Full => read::read_data_in(ctx, Path::new(&w.path)),
+            ReconcileAction::SidecarOnly => read::read_sidecar_in(ctx, Path::new(&w.path)),
+        };
+        apply_xmp_data(conn, &w.hash, data, prec)?;
+        conn.execute(
+            "UPDATE file_hashes SET xmp_sidecar_mtime = ?1 WHERE path = ?2",
+            rusqlite::params![w.current, w.path],
+        )?;
         progress.tick();
     }
     progress.finish();
