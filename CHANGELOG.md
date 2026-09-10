@@ -15,6 +15,15 @@ version number and are released together.
 
 ## [Unreleased]
 
+### Changed
+
+- **`watch` no longer re-clusters faces on every cycle.** The faces stage ran
+  the global face-clustering pass (an O(n^2) step over every face in the
+  library) once per cycle regardless of whether the cycle detected anything new,
+  so an idle library re-clustered its entire face set every interval for no
+  change. Clustering now runs only when a cycle actually detects new faces; an
+  idle cycle does none. A cycle that adds a face still does one full recluster.
+
 ## [0.25.35] - 2026-09-10
 
 ### Changed

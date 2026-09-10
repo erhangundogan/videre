@@ -264,6 +264,7 @@ fn run_faces_stage(
                 .filter(|(_, hash)| !skip_hashes.contains(hash))
                 .collect();
 
+            let mut new_faces = 0usize;
             if !to_process.is_empty() {
                 let workers = std::thread::available_parallelism()
                     .map(|n| n.get())
@@ -278,6 +279,7 @@ fn run_faces_stage(
                     None,
                     workers,
                 )?;
+                new_faces = result.total_faces;
                 if !args.silent {
                     eprintln!(
                         "videre watch: faces stage processed {} new hash(es), {} face(s)",
@@ -286,23 +288,31 @@ fn run_faces_stage(
                     );
                 }
             }
-            let clustering = run_clustering(
-                conn,
-                0.6,
-                3,
-                videre_core::face_cluster::DEFAULT_MERGE_SIM,
-                videre_core::face_cluster::DEFAULT_MIN_FACE_PX,
-                videre_core::face_cluster::DEFAULT_MAX_GENERIC_SIM,
-                videre_core::face_cluster::DEFAULT_MAX_LANDMARK_ERR,
-                videre_core::face_cluster::DEFAULT_MIN_BLUR,
-                1.0,
-                args.silent,
-            )?;
-            if !args.silent {
-                eprintln!(
-                    "videre watch: {}",
-                    format_clustering_only_summary(clustering, 0.6)
-                );
+            // Re-cluster only when this cycle actually added faces. run_clustering
+            // is a global O(n^2) pass over every face in the library; running it
+            // on a cycle that detected nothing new just recomputes the same
+            // assignment, which on the default 300s loop is pure waste. A cycle
+            // that adds a face still does one full recluster (making that
+            // incremental is separate, larger work); an idle cycle now does none.
+            if new_faces > 0 {
+                let clustering = run_clustering(
+                    conn,
+                    0.6,
+                    3,
+                    videre_core::face_cluster::DEFAULT_MERGE_SIM,
+                    videre_core::face_cluster::DEFAULT_MIN_FACE_PX,
+                    videre_core::face_cluster::DEFAULT_MAX_GENERIC_SIM,
+                    videre_core::face_cluster::DEFAULT_MAX_LANDMARK_ERR,
+                    videre_core::face_cluster::DEFAULT_MIN_BLUR,
+                    1.0,
+                    args.silent,
+                )?;
+                if !args.silent {
+                    eprintln!(
+                        "videre watch: {}",
+                        format_clustering_only_summary(clustering, 0.6)
+                    );
+                }
             }
             Ok(())
         },
