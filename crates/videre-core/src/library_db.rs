@@ -77,6 +77,12 @@ const FILE_HASHES_COLUMNS: &[(&str, &str)] = &[
     ("codec", "TEXT"),
     ("location_name", "TEXT"),
     ("location_cluster_id", "INTEGER"),
+    // Incremental XMP reconcile: three-state per row. NULL = never reconciled
+    // (reconcile once); '' = reconciled, no sidecar present at the time; an
+    // rfc3339 timestamp = the sidecar's mtime at the last reconcile. Compared
+    // against the sidecar's current mtime to decide whether a re-import is
+    // needed, so unchanged files are never re-read.
+    ("xmp_sidecar_mtime", "TEXT"),
 ];
 
 /// The complete current `faces` schema, for the same add-missing treatment:
@@ -695,6 +701,22 @@ mod tests {
     use crate::library::LibraryContext;
     use crate::library_locks;
     use rusqlite::params;
+
+    #[test]
+    fn migration_adds_xmp_sidecar_mtime_to_an_older_file_hashes() {
+        let conn = Connection::open_in_memory().unwrap();
+        // An older library: file_hashes without the new column.
+        conn.execute_batch("CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL);")
+            .unwrap();
+        assert!(!column_exists(&conn, "file_hashes", "xmp_sidecar_mtime").unwrap());
+
+        ensure_scan_schema(&conn).unwrap();
+
+        assert!(
+            column_exists(&conn, "file_hashes", "xmp_sidecar_mtime").unwrap(),
+            "ensure_scan_schema must add the xmp_sidecar_mtime column to an older table"
+        );
+    }
 
     /// One library root plus a context on it. All path expectations are built
     /// from the context: construction canonicalizes the root, and on macOS a

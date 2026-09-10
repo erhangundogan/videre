@@ -492,10 +492,12 @@ fn run_scan_stage(
                 .collect();
             sqlite_output::write_records_in(conn, &ctx.library, &records)?;
             let prec = args.xmp.resolve_from(&ctx.library.settings)?;
-            // Reconcile XMP over the whole library, not just files hashed this
-            // cycle (see scan.rs): the incremental skip must not change XMP
-            // behaviour.
-            crate::xmp::import_xmp_all_in(conn, &ctx.library, prec, args.silent)?;
+            // Reconcile XMP incrementally (see scan.rs): files hashed this cycle
+            // get a full reconcile, files whose sidecar changed get a sidecar-only
+            // read, everything else is skipped, so each cycle is cheap.
+            let changed: std::collections::HashSet<String> =
+                records.iter().map(|r| r.path.clone()).collect();
+            crate::xmp::reconcile_xmp_in(conn, &ctx.library, prec, &changed, args.silent)?;
             if !args.silent {
                 eprintln!("videre watch: scan stage wrote {} record(s)", records.len());
             }

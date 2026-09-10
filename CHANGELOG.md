@@ -15,6 +15,19 @@ version number and are released together.
 
 ## [Unreleased]
 
+### Changed
+
+- **XMP metadata is now read incrementally.** Scan and watch previously re-read
+  every file's XMP on every run, and for a file with no sidecar read its entire
+  contents to search for an embedded packet, so a repeat scan or each watch
+  cycle paid the full cost even when nothing had changed. A file's XMP is now
+  read the first time it is scanned and again only when the media or its sidecar
+  changes; an unchanged file is skipped, so a repeat scan reads no metadata at
+  all. A sidecar edited in another tool is detected from its modification time
+  and re-read without touching the media. `--xmp file` and `--xmp newest` still
+  reconcile every file. A new `xmp_sidecar_mtime` column tracks each file's
+  sidecar state and is added automatically on the next scan.
+
 ## [0.25.34] - 2026-09-09
 
 ### Fixed

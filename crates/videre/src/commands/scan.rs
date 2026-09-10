@@ -83,12 +83,13 @@ fn run_inner(args: &ScanArgs, ctx: &CommandContext) -> anyhow::Result<ScanJson> 
             let (records, skipped, walked) = gather_records(args, ctx, &conn);
             sqlite_output::write_records_in(&conn, &ctx.library, &records)?;
             let precedence = args.xmp.resolve_from(&ctx.library.settings)?;
-            // XMP is reconciled over the whole library, not just the files this
-            // run hashed: incremental scan skips unchanged media, but a sidecar's
-            // marks can change on their own and `--xmp file` is an explicit
-            // reconcile request. This keeps XMP behaviour as it was before scan
-            // became incremental.
-            crate::xmp::import_xmp_all_in(&conn, &ctx.library, precedence, args.silent)?;
+            // Reconcile XMP incrementally: files this run hashed get a full
+            // reconcile, files whose sidecar changed get a sidecar-only read,
+            // everything else is skipped. `--xmp file`/`newest` still reconcile
+            // every row so the revert semantics hold.
+            let changed: std::collections::HashSet<String> =
+                records.iter().map(|r| r.path.clone()).collect();
+            crate::xmp::reconcile_xmp_in(&conn, &ctx.library, precedence, &changed, args.silent)?;
             Ok((records, skipped, walked))
         })?;
 

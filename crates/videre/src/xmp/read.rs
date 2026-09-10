@@ -170,6 +170,20 @@ pub fn read_data_in(ctx: &videre_core::library::LibraryContext, path: &Path) -> 
     XmpData::default()
 }
 
+/// Read XMP from the sidecar only, never the media. Used by the incremental
+/// reconcile when a sidecar changed but the media did not: the embedded packet
+/// cannot have changed without the media changing, so there is no reason to pay
+/// a full-media read here. Never errors; a missing or malformed sidecar yields
+/// an empty `XmpData`.
+pub fn read_sidecar_in(ctx: &videre_core::library::LibraryContext, path: &Path) -> XmpData {
+    let sidecar = sidecar_path(path);
+    if let Some(doc) = read_confined(ctx, &sidecar).and_then(|bytes| String::from_utf8(bytes).ok())
+    {
+        return parse_xmp_data(&doc);
+    }
+    XmpData::default()
+}
+
 fn sidecar_path(path: &Path) -> PathBuf {
     let mut extension = path
         .extension()
@@ -267,6 +281,56 @@ mod tests {
     #[test]
     fn garbage_yields_no_regions_not_an_error() {
         assert_eq!(parse_xmp_data("not xml"), XmpData::default());
+    }
+
+    #[test]
+    fn read_sidecar_in_ignores_the_embedded_packet() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = videre_core::library::LibraryContext::new(dir.path(), &dir.path().join("cache"))
+            .unwrap();
+        let root = ctx.paths.root.clone();
+        let photo = root.join("IMG.jpg");
+        // The media carries an embedded XMP packet with a rating, and there is
+        // NO sidecar. read_data_in would find the embedded rating; read_sidecar_in
+        // must not read the media at all, so it sees nothing.
+        std::fs::write(
+            &photo,
+            b"\xff\xd8\xff\xe1<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF \
+xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" \
+xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\">\
+<rdf:Description xmp:Rating=\"5\"/></rdf:RDF></x:xmpmeta>",
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_data_in(&ctx, &photo).rating,
+            Some(5),
+            "embedded packet is readable"
+        );
+        assert_eq!(
+            read_sidecar_in(&ctx, &photo),
+            XmpData::default(),
+            "read_sidecar_in must ignore the embedded packet (no sidecar present)"
+        );
+    }
+
+    #[test]
+    fn read_sidecar_in_reads_an_adjacent_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = videre_core::library::LibraryContext::new(dir.path(), &dir.path().join("cache"))
+            .unwrap();
+        let root = ctx.paths.root.clone();
+        let photo = root.join("IMG.jpg");
+        std::fs::write(&photo, b"not-a-real-jpeg").unwrap();
+        std::fs::write(
+            root.join("IMG.jpg.xmp"),
+            r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF
+ xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+ xmlns:xmp="http://ns.adobe.com/xap/1.0/">
+ <rdf:Description xmp:Rating="3"/></rdf:RDF></x:xmpmeta>"#,
+        )
+        .unwrap();
+        assert_eq!(read_sidecar_in(&ctx, &photo).rating, Some(3));
     }
 
     #[test]
