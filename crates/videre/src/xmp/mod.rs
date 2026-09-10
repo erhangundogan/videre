@@ -82,6 +82,45 @@ fn apply_xmp_data(
 /// behaviour exactly as it was before scanning became incremental: the reconcile
 /// covers the whole library every run, independent of the hash skip. Cheap,
 /// because a file with no sidecar is a single failed `open`.
+/// What a reconcile pass should do for one row, decided without reading the
+/// media file. See `decide_reconcile`.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum ReconcileAction {
+    /// Nothing changed since the last reconcile: read nothing.
+    Skip,
+    /// The sidecar changed (appeared, was edited, or removed) but the media did
+    /// not: read only the sidecar, never the media.
+    SidecarOnly,
+    /// The media changed or was never reconciled, or the caller forces it: read
+    /// the sidecar and, if absent, the embedded packet (full `read_data_in`).
+    Full,
+}
+
+/// Decide the reconcile action for one row purely from the precedence, whether
+/// this run already reprocessed the file's bytes, the stored sidecar state
+/// (`None` for a SQL NULL), and the sidecar's current state (`""` when there is
+/// no sidecar, else its rfc3339 mtime). Pure and total, so it is table-tested.
+pub fn decide_reconcile(
+    prec: XmpPrecedence,
+    media_changed: bool,
+    stored: Option<&str>,
+    current: &str,
+) -> ReconcileAction {
+    // --xmp file / newest are explicit "reconcile from the file" requests and
+    // must bypass the skip, or the revert stops working.
+    if matches!(prec, XmpPrecedence::File | XmpPrecedence::Newest) {
+        return ReconcileAction::Full;
+    }
+    if media_changed {
+        return ReconcileAction::Full;
+    }
+    match stored {
+        None => ReconcileAction::Full,
+        Some(s) if s == current => ReconcileAction::Skip,
+        Some(_) => ReconcileAction::SidecarOnly,
+    }
+}
+
 pub fn import_xmp_all_in(
     conn: &Connection,
     ctx: &videre_core::library::LibraryContext,
@@ -115,4 +154,33 @@ pub fn import_xmp_all_in(
     }
     progress.finish();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use videre_core::marks::XmpPrecedence::{Db, File, Newest};
+
+    #[test]
+    fn decide_reconcile_covers_every_case() {
+        // Explicit precedence always forces a full reconcile, whatever the state.
+        assert_eq!(decide_reconcile(File, false, Some("t"), "t"), ReconcileAction::Full);
+        assert_eq!(decide_reconcile(Newest, false, Some("t"), "t"), ReconcileAction::Full);
+
+        // Db + media changed: full reconcile as part of processing the file.
+        assert_eq!(decide_reconcile(Db, true, Some("t"), "t"), ReconcileAction::Full);
+
+        // Db + never reconciled (NULL): one full reconcile (fresh or pre-upgrade).
+        assert_eq!(decide_reconcile(Db, false, None, ""), ReconcileAction::Full);
+        assert_eq!(decide_reconcile(Db, false, None, "t"), ReconcileAction::Full);
+
+        // Db + unchanged: skip. Both "no sidecar, still none" and "same mtime".
+        assert_eq!(decide_reconcile(Db, false, Some(""), ""), ReconcileAction::Skip);
+        assert_eq!(decide_reconcile(Db, false, Some("t"), "t"), ReconcileAction::Skip);
+
+        // Db + sidecar changed / appeared / removed: sidecar-only read.
+        assert_eq!(decide_reconcile(Db, false, Some("t1"), "t2"), ReconcileAction::SidecarOnly);
+        assert_eq!(decide_reconcile(Db, false, Some(""), "t"), ReconcileAction::SidecarOnly);
+        assert_eq!(decide_reconcile(Db, false, Some("t"), ""), ReconcileAction::SidecarOnly);
+    }
 }
