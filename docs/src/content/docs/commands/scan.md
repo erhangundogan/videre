@@ -110,10 +110,15 @@ videre config set xmp db
 Keywords are imported as additive [tags](/commands/tag/), independently of
 the rating and label precedence.
 
-Because scan is incremental, a change to a sidecar **alone** (you re-rate a
-photo in another tool but the media file itself is untouched) is not noticed on
-a normal scan, since the media file looks unchanged. Run `videre scan --force`
-to re-read files and re-import marks from sidecars that changed on their own.
+Reading is incremental. A file's XMP is read the first time it is scanned and
+again whenever it changes: either the media file itself changes, or its sidecar
+changes on its own (you re-rate a photo in another tool while the media file is
+untouched). A sidecar change is detected from the sidecar's modification time,
+so re-rating in another tool is picked up on the next scan without re-reading
+the media. A file whose media and sidecar are both unchanged is skipped
+entirely, so a repeat scan reads no metadata at all. `--xmp file` and `--xmp
+newest` still reconcile every file, unchanged or not, because they exist to
+overwrite the database from the file.
 
 ## Nested libraries
 

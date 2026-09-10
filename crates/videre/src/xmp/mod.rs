@@ -72,16 +72,6 @@ fn apply_xmp_data(
     Ok(())
 }
 
-/// Reconcile XMP for every file recorded in the library, not only the ones a
-/// run just hashed.
-///
-/// Scan is incremental and skips files whose bytes are unchanged, but a
-/// sidecar's marks can change without the media file changing, and `--xmp file`
-/// is an explicit request to reconcile from sidecars. Keying the XMP pass on the
-/// stored rows (each carries the hash marks are stored under) keeps XMP
-/// behaviour exactly as it was before scanning became incremental: the reconcile
-/// covers the whole library every run, independent of the hash skip. Cheap,
-/// because a file with no sidecar is a single failed `open`.
 /// What a reconcile pass should do for one row, decided without reading the
 /// media file. See `decide_reconcile`.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -223,24 +213,51 @@ mod tests {
     #[test]
     fn decide_reconcile_covers_every_case() {
         // Explicit precedence always forces a full reconcile, whatever the state.
-        assert_eq!(decide_reconcile(File, false, Some("t"), "t"), ReconcileAction::Full);
-        assert_eq!(decide_reconcile(Newest, false, Some("t"), "t"), ReconcileAction::Full);
+        assert_eq!(
+            decide_reconcile(File, false, Some("t"), "t"),
+            ReconcileAction::Full
+        );
+        assert_eq!(
+            decide_reconcile(Newest, false, Some("t"), "t"),
+            ReconcileAction::Full
+        );
 
         // Db + media changed: full reconcile as part of processing the file.
-        assert_eq!(decide_reconcile(Db, true, Some("t"), "t"), ReconcileAction::Full);
+        assert_eq!(
+            decide_reconcile(Db, true, Some("t"), "t"),
+            ReconcileAction::Full
+        );
 
         // Db + never reconciled (NULL): one full reconcile (fresh or pre-upgrade).
         assert_eq!(decide_reconcile(Db, false, None, ""), ReconcileAction::Full);
-        assert_eq!(decide_reconcile(Db, false, None, "t"), ReconcileAction::Full);
+        assert_eq!(
+            decide_reconcile(Db, false, None, "t"),
+            ReconcileAction::Full
+        );
 
         // Db + unchanged: skip. Both "no sidecar, still none" and "same mtime".
-        assert_eq!(decide_reconcile(Db, false, Some(""), ""), ReconcileAction::Skip);
-        assert_eq!(decide_reconcile(Db, false, Some("t"), "t"), ReconcileAction::Skip);
+        assert_eq!(
+            decide_reconcile(Db, false, Some(""), ""),
+            ReconcileAction::Skip
+        );
+        assert_eq!(
+            decide_reconcile(Db, false, Some("t"), "t"),
+            ReconcileAction::Skip
+        );
 
         // Db + sidecar changed / appeared / removed: sidecar-only read.
-        assert_eq!(decide_reconcile(Db, false, Some("t1"), "t2"), ReconcileAction::SidecarOnly);
-        assert_eq!(decide_reconcile(Db, false, Some(""), "t"), ReconcileAction::SidecarOnly);
-        assert_eq!(decide_reconcile(Db, false, Some("t"), ""), ReconcileAction::SidecarOnly);
+        assert_eq!(
+            decide_reconcile(Db, false, Some("t1"), "t2"),
+            ReconcileAction::SidecarOnly
+        );
+        assert_eq!(
+            decide_reconcile(Db, false, Some(""), "t"),
+            ReconcileAction::SidecarOnly
+        );
+        assert_eq!(
+            decide_reconcile(Db, false, Some("t"), ""),
+            ReconcileAction::SidecarOnly
+        );
     }
 
     #[test]
@@ -256,7 +273,10 @@ mod tests {
         let side = crate::xmp::write::sidecar_path(&photo);
         std::fs::write(&side, b"<x:xmpmeta/>").unwrap();
         let state = current_sidecar_state(&photo);
-        assert!(!state.is_empty(), "a present sidecar must yield a timestamp");
+        assert!(
+            !state.is_empty(),
+            "a present sidecar must yield a timestamp"
+        );
         let want =
             videre_core::db::mtime_iso(std::fs::metadata(&side).unwrap().modified().unwrap());
         assert_eq!(state, want);
