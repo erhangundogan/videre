@@ -148,6 +148,12 @@ content-length: 0
 Serves bytes for one library file. The optional `size` query asks the gallery
 to return a thumbnail-sized rendition when it can.
 
+MP4 and MOV responses support one standard `Range: bytes=...` request and are
+streamed from disk. A satisfiable range returns `206 Partial Content` with
+`Accept-Ranges`, `Content-Range` and `Content-Length` headers. An invalid or
+unsatisfiable range returns `416 Range Not Satisfiable`. This lets browsers load
+video metadata without downloading whole videos or blocking image thumbnails.
+
 ```bash
 curl -i \
   "http://127.0.0.1:7878/api/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/raw?size=512"
@@ -156,6 +162,19 @@ curl -i \
 ```http
 HTTP/1.1 200 OK
 content-type: image/jpeg
+```
+
+```bash
+curl -i \
+  -H "Range: bytes=0-1023" \
+  "http://127.0.0.1:7878/api/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/raw"
+```
+
+```http
+HTTP/1.1 206 Partial Content
+accept-ranges: bytes
+content-range: bytes 0-1023/2457600
+content-length: 1024
 ```
 
 ## Dates, search and locations

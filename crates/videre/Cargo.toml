@@ -46,6 +46,7 @@ videre-ml = { path = "../videre-ml", version = "0.25.36" }
 videre-api = { path = "../videre-api", version = "0.25.36" }
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["fs"] }
 anyhow = "1"
 toml = { version = "0.8", features = ["preserve_order"] }
 rmcp = { version = "2.2", features = ["transport-io"] }
@@ -54,6 +55,7 @@ askama = "0.16"
 
 [dev-dependencies]
 tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
 # Cross-process lock serialising tests that download shared model weights;
 # see tests/common/mod.rs. Same version videre-core uses.
 fs2 = "0.4"
