@@ -3,8 +3,11 @@
 //! `search --html` lives in `crate::render`; this file is the HTTP layer only.
 
 use crate::render::*;
+use axum::body::Body;
 use axum::extract::{Json as AxumJson, Query, State};
+use axum::http::Request;
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post, put};
 use axum::Router;
 use rusqlite::{Connection, OptionalExtension};
@@ -14,7 +17,6 @@ use std::sync::{Arc, Mutex};
 use videre_api::{ClusterDetail, FacesData, PersonDetail};
 
 fn json_response(body: String) -> axum::response::Response {
-    use axum::response::IntoResponse;
     (
         [(axum::http::header::CONTENT_TYPE, "application/json")],
         body,
@@ -1274,11 +1276,10 @@ struct FilesQuery {
 
 #[derive(Deserialize)]
 struct RawFileQuery {
-    /// Optional max width/height in pixels, only meaningful for HEIC
-    /// (which always needs QuickLook conversion) so the caller can request a
-    /// small thumbnail (240px in the grid) or a larger version (1200px in
-    /// the lightbox) without paying to decode/re-encode a huge image for a
-    /// tiny `<img>`. Ignored for formats served as raw bytes.
+    /// Optional max width/height in pixels for browser-raster images and HEIC.
+    /// The caller can request a small thumbnail (240px in the grid) or a larger
+    /// version (1200px in the lightbox) without paying to transfer a huge image
+    /// for a small `<img>`. Ignored for formats served as raw bytes.
     size: Option<u32>,
 }
 
@@ -1301,7 +1302,8 @@ async fn handle_raw_file(
     axum::extract::Path(hash): axum::extract::Path<String>,
     Query(q): Query<RawFileQuery>,
     State(state): State<Arc<AppState>>,
-) -> Result<impl axum::response::IntoResponse, StatusCode> {
+    request: Request<Body>,
+) -> Result<Response, StatusCode> {
     let path = {
         let conn = state
             .conn
@@ -1322,6 +1324,18 @@ async fn handle_raw_file(
         .unwrap_or("")
         .to_lowercase();
 
+    // Browsers fetch video metadata with byte ranges. Serving those requests
+    // through a streaming file service is essential: returning a full MP4 for
+    // every `<video preload="metadata">` ties up Firefox's per-origin HTTP/1.1
+    // connections and prevents the image thumbnails behind them from loading.
+    if q.size.is_none() && matches!(ext.as_str(), "mov" | "mp4") {
+        let response = tower_http::services::ServeFile::new(path)
+            .try_call(request)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        return Ok(response.map(Body::new));
+    }
+
     // A thumbnail may already be cached for this content hash at this size:
     // videre watch's `--heic` stage pre-converts HEIC, and the raster branch
     // below caches whatever it renders. Serve the cached JPEG directly and skip
@@ -1331,7 +1345,9 @@ async fn handle_raw_file(
             let cached_path =
                 videre_core::thumb_cache::thumb_path_in(&state.context.library.cache, &hash, size);
             if let Ok(bytes) = tokio::fs::read(&cached_path).await {
-                return Ok(([(axum::http::header::CONTENT_TYPE, "image/jpeg")], bytes));
+                return Ok(
+                    ([(axum::http::header::CONTENT_TYPE, "image/jpeg")], bytes).into_response()
+                );
             }
         }
     }
@@ -1416,7 +1432,7 @@ async fn handle_raw_file(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
-    Ok(([(axum::http::header::CONTENT_TYPE, content_type)], bytes))
+    Ok(([(axum::http::header::CONTENT_TYPE, content_type)], bytes).into_response())
 }
 
 /// Serve the full, uncropped original image for a face's source file.
@@ -1634,6 +1650,119 @@ fn serve_faces(db: &Path, opts: ServeOptions) -> Result<(), Box<dyn std::error::
 #[cfg(test)]
 mod thumbnail_tests {
     use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::{header, Request};
+    use tower::ServiceExt;
+
+    fn raw_file_test_state(
+        root: &std::path::Path,
+        cache: &std::path::Path,
+        file: &std::path::Path,
+    ) -> Arc<AppState> {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE file_hashes (path TEXT, hash TEXT);")
+            .unwrap();
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash) VALUES (?1, 'video-hash')",
+            [file.to_str().unwrap()],
+        )
+        .unwrap();
+        let library = Arc::new(
+            videre_core::library::LibraryContext::new(root, cache)
+                .expect("test library context should be valid"),
+        );
+        let context = Arc::new(crate::command_context::CommandContext {
+            library,
+            invocation_dir: root.to_path_buf(),
+            source: crate::command_context::LibrarySource::Cwd,
+        });
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel();
+        Arc::new(AppState {
+            conn: Mutex::new(conn),
+            shutdown_tx: Mutex::new(Some(shutdown_tx)),
+            model_id: String::new(),
+            report_heic: false,
+            report_heic_original: false,
+            serve_faces_ui: true,
+            gallery: true,
+            context,
+            embedder: Mutex::new(None),
+        })
+    }
+
+    #[tokio::test]
+    async fn raw_video_supports_full_and_single_range_responses() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("clip.mp4");
+        std::fs::write(&file, b"0123456789").unwrap();
+        let state = raw_file_test_state(dir.path(), &dir.path().join("cache"), &file);
+        let app = Router::new()
+            .route("/api/files/{hash}/raw", get(handle_raw_file))
+            .with_state(state);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/files/video-hash/raw")
+                    .header(header::RANGE, "bytes=2-5")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            response.headers().get(header::ACCEPT_RANGES).unwrap(),
+            "bytes"
+        );
+        assert_eq!(
+            response.headers().get(header::CONTENT_RANGE).unwrap(),
+            "bytes 2-5/10"
+        );
+        assert_eq!(response.headers().get(header::CONTENT_LENGTH).unwrap(), "4");
+        assert_eq!(
+            to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+            b"2345"[..]
+        );
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/files/video-hash/raw")
+                    .header(header::RANGE, "bytes=20-30")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+        assert_eq!(
+            response.headers().get(header::CONTENT_RANGE).unwrap(),
+            "bytes */10"
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/files/video-hash/raw")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::ACCEPT_RANGES).unwrap(),
+            "bytes"
+        );
+        assert_eq!(
+            to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+            b"0123456789"[..]
+        );
+    }
 
     #[test]
     fn render_raster_thumbnail_downscales_and_encodes_jpeg() {
