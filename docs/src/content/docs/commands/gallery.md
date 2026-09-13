@@ -4,8 +4,9 @@ description: Browse your whole library in a local web UI, with every file, the p
 ---
 
 Starts a small web server on your own machine and opens your library in a
-browser. Nothing is uploaded and nothing is written: it reads the database
-`videre scan` built.
+browser. Nothing is uploaded, and your media files and library database are not
+modified. Gallery previews may populate the derived thumbnail cache while it
+reads the database `videre scan` built.
 
 ```bash
 videre gallery                  # http://127.0.0.1:7878
@@ -14,6 +15,12 @@ videre gallery --port 8080      # if 7878 is taken
 ```
 
 Stop it with `Ctrl-C`.
+
+JPEG and other browser-raster previews are resized and cached on first use.
+Their embedded EXIF orientation is applied before resizing, so the grid and
+lightbox match Finder and other metadata-aware viewers. Later requests, including
+files fetched through **Show more**, read the cached preview without reopening or
+decoding the original.
 
 ## What is on each page
 
@@ -48,8 +55,9 @@ open from disk, because both need something running to answer.
 
 ## Gallery, or a file you can keep
 
-`gallery` is for looking around, and writes nothing. When you want to keep or
-send what a command just found, ask that command for it:
+`gallery` is for looking around: it does not modify your media or library
+database, though it may cache derived previews. When you want to keep or send
+what a command just found, ask that command for it:
 
 ```bash
 videre dedupe --html            # the duplicate groups, as a file

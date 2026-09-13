@@ -1,10 +1,22 @@
 use std::path::PathBuf;
 
 const FACE_CACHE_FORMAT_VERSION: u8 = 1;
+const RASTER_CACHE_FORMAT_VERSION: u8 = 1;
 
 /// Path to a content thumbnail in one selected library's cache namespace.
 pub fn thumb_path_in(cache: &crate::library::CachePaths, hash: &str, size: u32) -> PathBuf {
     cache.thumbnails.join(format!("{hash}_{size}.jpg"))
+}
+
+/// Path to an orientation-correct browser-raster thumbnail.
+///
+/// Its versioned namespace is separate from [`thumb_path_in`], which stores
+/// expensive QuickLook conversions. Changes to raster rendering can therefore
+/// invalidate their own output without forcing HEIC files to be decoded again.
+pub fn raster_thumb_path_in(cache: &crate::library::CachePaths, hash: &str, size: u32) -> PathBuf {
+    cache.thumbnails.join(format!(
+        "{hash}_raster-v{RASTER_CACHE_FORMAT_VERSION}_{size}.jpg"
+    ))
 }
 
 /// Path to a cached full-resolution conversion in one selected library.
@@ -56,6 +68,19 @@ pub fn thumb_tmp_path_in(cache: &crate::library::CachePaths, hash: &str, size: u
         .join(format!("{hash}_{size}.tmp{}", std::process::id()))
 }
 
+/// Scratch path for a browser-raster thumbnail, renamed into place at
+/// [`raster_thumb_path_in`].
+pub fn raster_thumb_tmp_path_in(
+    cache: &crate::library::CachePaths,
+    hash: &str,
+    size: u32,
+) -> PathBuf {
+    cache.thumbnails.join(format!(
+        "{hash}_raster-v{RASTER_CACHE_FORMAT_VERSION}_{size}.tmp{}",
+        std::process::id()
+    ))
+}
+
 pub fn original_exists_in(cache: &crate::library::CachePaths, hash: &str) -> bool {
     original_path_in(cache, hash).is_file()
 }
@@ -73,7 +98,8 @@ pub fn face_thumb_exists_in(
 /// Length of a BLAKE3 hex digest (32 bytes -> 64 hex chars), every
 /// content-hash-keyed cache filename starts with exactly this many hex
 /// chars, followed by `_` and a purpose-specific suffix
-/// (`_240.jpg`, `_face3_140.jpg`, `_original.jpg`, `_original.tmp1234`, ...).
+/// (`_240.jpg`, `_raster-v1_240.jpg`, `_face-<key>_140.jpg`,
+/// `_original.jpg`, `_original.tmp1234`, ...).
 const HASH_HEX_LEN: usize = 64;
 
 /// Extracts the leading content hash from a cache filename (the `.jpg`
