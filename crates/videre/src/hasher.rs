@@ -429,10 +429,7 @@ mod tests {
         let rotated_path = dir.path().join("rotated.png");
         let mut png = Vec::new();
         rotated
-            .write_to(
-                &mut std::io::Cursor::new(&mut png),
-                image::ImageFormat::Png,
-            )
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
         fs::write(&rotated_path, &png).unwrap();
 

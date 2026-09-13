@@ -70,10 +70,8 @@ pub fn make_face_thumb(
         videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
         move || {
             if oriented {
-                videre_core::image_decode::decode_oriented_file(std::path::Path::new(
-                    &timeout_path,
-                ))
-                .map(|img| (img, None))
+                videre_core::image_decode::decode_oriented_file(std::path::Path::new(&timeout_path))
+                    .map(|img| (img, None))
             } else {
                 videre_core::image_decode::decode_raw_with_orientation(std::path::Path::new(
                     &timeout_path,

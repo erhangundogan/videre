@@ -182,7 +182,14 @@ mod tests {
         let path = dir.path().join("o6.jpg");
         std::fs::write(&path, jpeg_with_orientation(6)).unwrap();
         let (img, orientation) = decode_raw_with_orientation(&path).unwrap();
-        assert_eq!((img.width(), img.height()), (4, 2), "raw canvas is untouched");
-        assert!(matches!(orientation, image::metadata::Orientation::Rotate90));
+        assert_eq!(
+            (img.width(), img.height()),
+            (4, 2),
+            "raw canvas is untouched"
+        );
+        assert!(matches!(
+            orientation,
+            image::metadata::Orientation::Rotate90
+        ));
     }
 }

@@ -187,15 +187,11 @@ mod tests {
         // as a 90-degree clockwise rotation, so the tensor of the tagged file
         // must equal the tensor of the original rotated 90 CW. Before the
         // orientation fix this failed: both decoded to the same raw canvas.
-        let raw =
-            image::open("tests/fixtures/ai-generated-couple.jpg").unwrap();
+        let raw = image::open("tests/fixtures/ai-generated-couple.jpg").unwrap();
         let rotated = image::imageops::rotate90(&raw);
         let mut png = Vec::new();
         rotated
-            .write_to(
-                &mut std::io::Cursor::new(&mut png),
-                image::ImageFormat::Png,
-            )
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
         let png_path = std::env::temp_dir().join("videre_o6_expected.png");
         std::fs::write(&png_path, &png).unwrap();

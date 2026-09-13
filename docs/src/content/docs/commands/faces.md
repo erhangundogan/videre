@@ -109,10 +109,10 @@ videre faces --eps 0.6                 # how alike faces must be to group (defau
 videre faces --min-cluster-size 3      # fewest faces that can form a group (default 3)
 videre faces --merge-sim 0.35          # how readily two groups merge (default 0.35)
 videre faces --min-face-size 80        # ignore faces smaller than this in pixels (default 80)
-videre faces --min-blur 100            # ignore faces too soft to read (default 100)
+videre faces --min-blur 80             # ignore faces too soft to read (default 80)
 videre faces --max-landmark-error 7    # ignore faces the detector mislocated (default 7)
 videre faces --max-generic-sim 0.4     # legacy fallback, see below (default 0.4)
-videre faces --attach-sim 1            # second pass, off by default (default 1)
+videre faces --attach-sim 0.4          # stray faces join their nearest group (default 0.4)
 videre faces --batch 8                 # images per batch (default 8)
 videre faces --workers 8               # parallel workers (default: 2x your CPU cores)
 videre faces --qlmanage-concurrency 6  # simultaneous HEIC conversions (default 6)
@@ -129,7 +129,7 @@ into one large mixed cluster. A face is held out if it fails any check:
 
 - **Size** (`--min-face-size`, default 80px). Tiny crops, such as distant faces
   in group shots, are mostly blur once scaled up.
-- **Sharpness** (`--min-blur`, default 100). The variance of the Laplacian of the
+- **Sharpness** (`--min-blur`, default 80). The variance of the Laplacian of the
   aligned crop, which is the image the model is actually given. Measured on a
   1,063-face library: faces that grouped had a median of 894, faces left ungrouped
   182.
@@ -154,11 +154,12 @@ record sharpness and leave it behind.
 
 ### Recovering more of one person
 
-`--attach-sim` (default 1, off) runs a second pass after grouping: an ungrouped
+`--attach-sim` (default 0.4) runs a second pass after grouping: an ungrouped
 face joins the group holding its **nearest** face, if that face is at least this
 similar. Grouping normally asks a face to resemble the *average* of a whole
 group, which someone photographed over many years can fail even when three
-members match them almost exactly. `--attach-sim 0.5` recovers some of those.
+members match them almost exactly. Lower it to recover more, raise it (or set
+it to 1) to turn the pass off.
 
 It runs after grouping and can never merge two groups, which is what keeps it
 safe.
@@ -284,6 +285,17 @@ The `--xmp` flag decides who wins when both carry a name:
 
 The default comes from the `xmp_precedence` config key (see
 [`videre config`](/commands/config/)), the same setting `scan` uses for ratings.
+
+## Rotated photos
+
+Photos stored rotated on disk (an EXIF orientation tag, common in exports and
+edits) are decoded the way you see them before detection and grouping, so
+sideways-stored files cluster exactly like upright ones. Files processed by
+older videre versions were detected on the stored pixel canvas, which could
+leave a person's own photos as unassigned singletons; re-run
+`videre faces --reprocess` to bring a library current, and see
+[troubleshooting](/reference/troubleshooting/) for the recovery recipes and
+their costs.
 
 ## More detail
 

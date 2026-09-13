@@ -43,7 +43,9 @@ fn face_rows(db: &Path, hash: &str) -> Vec<(String, i64)> {
         .prepare("SELECT bbox, COALESCE(oriented, 0) FROM faces WHERE hash = ?1")
         .unwrap();
     let rows = stmt
-        .query_map([hash], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+        .query_map([hash], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })
         .unwrap();
     rows.collect::<Result<Vec<_>, _>>().unwrap()
 }

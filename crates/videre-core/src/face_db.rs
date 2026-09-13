@@ -307,7 +307,9 @@ pub fn labeled_faces_by_hash(conn: &Connection) -> rusqlite::Result<LabeledFaces
     let mut map: LabeledFacesByHash = HashMap::new();
     for row in rows {
         let (hash, id, bbox, label, oriented) = row?;
-        map.entry(hash).or_default().push((id, label, bbox, oriented));
+        map.entry(hash)
+            .or_default()
+            .push((id, label, bbox, oriented));
     }
     Ok(map)
 }
@@ -356,14 +358,18 @@ mod tests {
         };
         replace_faces_for_hash(&conn, "habc", &[row.clone()]).unwrap();
         let oriented: i64 = conn
-            .query_row("SELECT oriented FROM faces WHERE hash = 'habc'", [], |r| r.get(0))
+            .query_row("SELECT oriented FROM faces WHERE hash = 'habc'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(oriented, 1, "new detections are display-canvas");
 
         row.oriented = false;
         replace_faces_for_hash(&conn, "habc", &[row]).unwrap();
         let oriented: Option<i64> = conn
-            .query_row("SELECT oriented FROM faces WHERE hash = 'habc'", [], |r| r.get(0))
+            .query_row("SELECT oriented FROM faces WHERE hash = 'habc'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(oriented, Some(0), "false must not read back as NULL");
     }
