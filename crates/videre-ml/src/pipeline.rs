@@ -1082,6 +1082,43 @@ mod tests {
     }
 
     #[test]
+    fn default_attach_sim_is_the_measured_threshold() {
+        // The attach pass was off by default (1.0) until the orientation fix
+        // release; 0.40 is the measured value that rescues stray same-person
+        // faces (29 of 44 on the labelled corpus) with margin above the
+        // different-person centroid ceiling (~0.29). Changing it is a
+        // decision, not a refactor.
+        assert!(
+            (videre_core::face_cluster::DEFAULT_ATTACH_SIM - 0.40).abs() < 1e-6,
+            "the attach threshold default is a measured value; changing it is a decision"
+        );
+    }
+
+    #[test]
+    fn the_attach_pass_rescues_a_stray_same_identity_face() {
+        // Four faces of one identity within eps of each other, plus a fifth
+        // face 55 degrees away: its average-linkage distance to the cluster
+        // exceeds eps, so agglomeration drops it, but its nearest member
+        // (0.857 cosine) clears the 0.40 attach threshold and it must join.
+        let deg = |d: f32| {
+            let r = d.to_radians();
+            vec![r.cos(), r.sin()]
+        };
+        let faces: Vec<(i64, Vec<f32>, f32, Option<String>, Option<f32>)> = [0.0f32, 8.0, 16.0, 24.0, 55.0]
+            .iter()
+            .enumerate()
+            .map(|(i, a)| (i as i64, deg(*a), 200.0, None, Some(500.0)))
+            .collect();
+        let out = cluster_with_quality_gate(
+            &faces, 0.6, 2, 0.35, 80.0, 0.40, 7.0, 100.0,
+            videre_core::face_cluster::DEFAULT_ATTACH_SIM, true,
+        );
+        let map: std::collections::HashMap<_, _> = out.into_iter().collect();
+        let cluster = map[&0].expect("the core group must cluster");
+        assert_eq!(map[&4], Some(cluster), "the stray face must attach to its own identity");
+    }
+
+    #[test]
     fn load_image_applies_exif_orientation() {
         // The o6 fixture is the untagged original plus EXIF Orientation = 6:
         // identical pixels, display canvas is a 90 CW rotation. The original
