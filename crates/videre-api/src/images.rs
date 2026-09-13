@@ -4,64 +4,8 @@
 
 use crate::error::{Error, Result};
 use rusqlite::Connection;
-use std::io::BufReader;
 
 const FACE_THUMB_SIZE: u32 = 140;
-
-fn read_exif_orientation(path: &str) -> u16 {
-    let Ok(f) = std::fs::File::open(path) else {
-        return 1;
-    };
-    let Ok(exif_data) = exif::Reader::new().read_from_container(&mut BufReader::new(f)) else {
-        return 1;
-    };
-    exif_data
-        .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
-        .and_then(|field| {
-            if let exif::Value::Short(ref v) = field.value {
-                v.first().copied()
-            } else {
-                None
-            }
-        })
-        .unwrap_or(1)
-}
-
-/// The eight EXIF orientation transforms, as pure image maths.
-///
-/// Split from `apply_exif_orientation` so it can be tested exhaustively: the
-/// alternative is hand-crafting a JPEG with an EXIF APP1 segment per case,
-/// which would test the `exif` crate's parser far more than this mapping. The
-/// mapping is where the bugs actually live, since 5 and 7 combine a rotation
-/// with a flip and are easy to transpose.
-///
-/// Anything outside 1..=8, including the 1 that `read_exif_orientation`
-/// returns when a file has no EXIF at all, is the identity.
-fn apply_orientation(img: image::DynamicImage, orientation: u16) -> image::DynamicImage {
-    match orientation {
-        2 => img.fliph(),
-        3 => img.rotate180(),
-        4 => img.flipv(),
-        5 => img.rotate90().fliph(),
-        6 => img.rotate90(),
-        7 => img.rotate270().fliph(),
-        8 => img.rotate270(),
-        _ => img,
-    }
-}
-
-/// Rotate/flip `img` to match its EXIF orientation (read from `path`).
-fn apply_exif_orientation(img: image::DynamicImage, path: &str) -> image::DynamicImage {
-    let ext = std::path::Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    if !matches!(ext.as_str(), "jpg" | "jpeg" | "tiff" | "dng") {
-        return img;
-    }
-    apply_orientation(img, read_exif_orientation(path))
-}
 
 /// Square crop centered on bbox [x1,y1,x2,y2] with 25% padding, then resize to 140x140.
 fn crop_face_square(img: &image::DynamicImage, bbox: [f32; 4]) -> image::DynamicImage {
@@ -84,6 +28,14 @@ fn crop_face_square(img: &image::DynamicImage, bbox: [f32; 4]) -> image::Dynamic
 
 /// Load, crop, and orientation-correct a face thumbnail.
 ///
+/// `oriented` mirrors `faces.oriented` and says which canvas the bbox is in:
+///
+/// - `true`: the row was detected on the display canvas (every row written
+///   since the decode became orientation-correct). Decode upright, then crop.
+/// - `false` (every row written before the fix): the bbox is in the raw
+///   sensor canvas, so crop the raw decode first, then rotate the small
+///   square crop. Equivalent to the pre-fix behavior.
+///
 /// bbox coordinates are stored in terms of the *full-size* decoded image
 /// (videre faces rescales detections back to original width/height before
 /// writing to the DB), so the thumbnail must be cropped from an image of
@@ -91,14 +43,17 @@ fn crop_face_square(img: &image::DynamicImage, bbox: [f32; 4]) -> image::Dynamic
 ///
 /// For HEIC: videre faces converts via QuickLook (see
 /// `videre_core::heic::heic_via_quicklook`), which already applies correct
-/// rotation, so no separate orientation step is needed. For JPEG/PNG/etc:
-/// detection ran on raw pixels; apply EXIF orientation after crop.
+/// rotation, so no separate orientation step is needed.
 ///
-/// `pub` (unlike the three helpers above it): the static-page
-/// base64 thumbnail path (`face_thumb_b64` in `report.rs`) also needs this
-/// exact crop+orientation logic, so it calls through here instead of keeping
-/// its own duplicate copy.
-pub fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image::DynamicImage> {
+/// `pub`: the static-page base64 thumbnail path (`face_thumb_b64` in
+/// `render`) also needs this exact crop+orientation logic, so it calls
+/// through here instead of keeping its own duplicate copy.
+pub fn make_face_thumb(
+    path: &str,
+    bbox: [f32; 4],
+    oriented: bool,
+    face_id: i64,
+) -> Option<image::DynamicImage> {
     let ext = std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
@@ -108,29 +63,49 @@ pub fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image
         // None: bbox is stored relative to a full-res decode. See the
         // safety note on heic_via_quicklook.
         let img = videre_core::heic::heic_via_quicklook(path, &format!("thumb{face_id}"), None)?;
-        Some(crop_face_square(&img, bbox))
-    } else {
-        // Detection ran on raw pixels; crop first, then correct orientation
-        let timeout_path = path.to_string();
-        let img = match videre_core::io_timeout::run_with_timeout(
-            videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
-            move || image::open(&timeout_path),
-        ) {
-            Ok(Ok(img)) => img,
-            Ok(Err(e)) => {
-                eprintln!("warning: face thumbnail unavailable for {path}: {e}; skipping");
-                return None;
+        return Some(crop_face_square(&img, bbox));
+    }
+    let timeout_path = path.to_string();
+    let decoded = match videre_core::io_timeout::run_with_timeout(
+        videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
+        move || {
+            if oriented {
+                videre_core::image_decode::decode_oriented_file(std::path::Path::new(
+                    &timeout_path,
+                ))
+                .map(|img| (img, None))
+            } else {
+                videre_core::image_decode::decode_raw_with_orientation(std::path::Path::new(
+                    &timeout_path,
+                ))
+                .map(|(img, o)| (img, Some(o)))
             }
-            Err(_) => {
-                eprintln!(
-                    "warning: timed out reading {path} for face thumbnail \
-                     (file may be unreachable - is its drive connected?); skipping"
-                );
-                return None;
-            }
-        };
-        let cropped = crop_face_square(&img, bbox);
-        Some(apply_exif_orientation(cropped, path))
+        },
+    ) {
+        Ok(Ok(img)) => img,
+        Ok(Err(e)) => {
+            eprintln!("warning: face thumbnail unavailable for {path}: {e}; skipping");
+            return None;
+        }
+        Err(_) => {
+            eprintln!(
+                "warning: timed out reading {path} for face thumbnail \
+                 (file may be unreachable - is its drive connected?); skipping"
+            );
+            return None;
+        }
+    };
+    let (img, raw_canvas_orientation) = decoded;
+    let cropped = crop_face_square(&img, bbox);
+    match raw_canvas_orientation {
+        // Legacy row: the crop is still on the raw canvas; rotate the small
+        // square, exactly as the pre-fix code did.
+        Some(orientation) => {
+            let mut cropped = image::DynamicImage::ImageRgba8(cropped.to_rgba8());
+            cropped.apply_orientation(orientation);
+            Some(cropped)
+        }
+        None => Some(cropped),
     }
 }
 
@@ -177,22 +152,27 @@ pub struct FaceLookup {
     pub bbox_json: String,
     pub file_path: String,
     pub hash: String,
+    /// Mirrors `faces.oriented`: which canvas `bbox_json` is in. `false`
+    /// (NULL in the DB) = legacy raw-canvas row written before the
+    /// orientation fix.
+    pub oriented: bool,
 }
 
 /// The cheap part of `face_image_bytes`: just the DB row. No image I/O.
 pub fn face_lookup(conn: &Connection, face_id: i64) -> Result<FaceLookup> {
-    let (bbox_json, file_path, hash): (String, String, String) = conn
+    let (bbox_json, file_path, hash, oriented): (String, String, String, i64) = conn
         .query_row(
-            "SELECT f.bbox, fh.path, f.hash FROM faces f \
+            "SELECT f.bbox, fh.path, f.hash, COALESCE(f.oriented, 0) FROM faces f \
              JOIN file_hashes fh ON f.hash = fh.hash WHERE f.id = ?1 LIMIT 1",
             [face_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .map_err(|_| Error::NotFound)?;
     Ok(FaceLookup {
         bbox_json,
         file_path,
         hash,
+        oriented: oriented != 0,
     })
 }
 
@@ -235,7 +215,8 @@ pub fn face_bytes_from_lookup(
         }
     }
 
-    let thumb = make_face_thumb(&lookup.file_path, bbox, face_id).ok_or(Error::NotFound)?;
+    let thumb = make_face_thumb(&lookup.file_path, bbox, lookup.oriented, face_id)
+        .ok_or(Error::NotFound)?;
     let mut buf = Vec::new();
     thumb
         .write_to(
@@ -366,209 +347,75 @@ pub fn original_image_bytes(
 mod tests {
     use super::*;
 
-    /// A 2x3 image whose every pixel is distinguishable, so a transposed
-    /// rotation or a flip on the wrong axis actually fails. A square or
-    /// symmetric fixture would pass for several wrong mappings.
-    ///
-    /// Pixel values encode position as `10 * x + y`:
-    ///
-    /// ```text
-    ///   (0,0)=0   (1,0)=10
-    ///   (0,1)=1   (1,1)=11
-    ///   (0,2)=2   (1,2)=12
-    /// ```
-    fn asymmetric() -> image::DynamicImage {
-        let mut img = image::GrayImage::new(2, 3);
-        for y in 0..3u32 {
-            for x in 0..2u32 {
-                img.put_pixel(x, y, image::Luma([(x * 10 + y) as u8]));
-            }
-        }
-        image::DynamicImage::ImageLuma8(img)
-    }
-
-    fn pixels(img: &image::DynamicImage) -> (u32, u32, Vec<u8>) {
-        let g = img.to_luma8();
-        (g.width(), g.height(), g.pixels().map(|p| p.0[0]).collect())
-    }
-
+    /// Both canvas branches must render the same upright face. The o6
+    /// fixture is the untagged original plus EXIF Orientation = 6, so:
+    /// - the oriented branch decodes it upright and crops with a bbox in
+    ///   display-canvas coordinates (center rotated: display center of a
+    ///   raw-centered bbox), while
+    /// - the legacy branch crops the raw canvas with the raw-canvas bbox and
+    ///   rotates the small square afterwards.
+    /// Picking square bboxes centered on even coordinates makes the two
+    /// regions pixel-identical after the integer rotation, so the crops must
+    /// match exactly.
     #[test]
-    fn orientation_1_and_unknown_values_are_the_identity() {
-        let expected = pixels(&asymmetric());
-        // 1 is "normal", and is also what read_exif_orientation returns for a
-        // file with no EXIF, so this is the common path, not an edge case.
-        for o in [0u16, 1, 9, 42, u16::MAX] {
-            assert_eq!(
-                pixels(&apply_orientation(asymmetric(), o)),
-                expected,
-                "orientation {o} must not transform the image"
-            );
-        }
+    fn oriented_and_legacy_branches_render_the_same_upright_crop() {
+        let base = concat!(env!("CARGO_MANIFEST_DIR"), "/../videre/tests/fixtures");
+        let tagged = format!("{base}/ai-generated-couple_o6.jpg");
+
+        // Raw canvas is 1200x1543 portrait; display canvas is 1543x1200.
+        // A 90 CW rotation maps raw (x, y) to display (H-1-y, x), which maps
+        // the half-open region [a, b) to [H-b, H-a): the bbox center moves
+        // from cy to H-cy, with no minus one, or the crop shifts by a pixel.
+        let raw_center = (600u32, 772u32);
+        let display_center = (1543 - raw_center.1, raw_center.0);
+        let raw_bbox = [
+            (raw_center.0 - 200) as f32,
+            (raw_center.1 - 200) as f32,
+            (raw_center.0 + 200) as f32,
+            (raw_center.1 + 200) as f32,
+        ];
+        let display_bbox = [
+            (display_center.0 - 200) as f32,
+            (display_center.1 - 200) as f32,
+            (display_center.0 + 200) as f32,
+            (display_center.1 + 200) as f32,
+        ];
+
+        let legacy = make_face_thumb(&tagged, raw_bbox, false, 1).unwrap();
+        let oriented = make_face_thumb(&tagged, display_bbox, true, 1).unwrap();
+        assert_eq!(
+            (legacy.width(), legacy.height()),
+            (140, 140),
+            "both branches produce 140x140 thumbnails"
+        );
+        let a: Vec<u8> = legacy.to_rgb8().pixels().map(|p| p.0[0]).collect();
+        let b: Vec<u8> = oriented.to_rgb8().pixels().map(|p| p.0[0]).collect();
+        let diff: u64 = a
+            .iter()
+            .zip(&b)
+            .map(|(x, y)| (*x as i32 - *y as i32).unsigned_abs() as u64)
+            .sum();
+        assert!(
+            diff < 1000,
+            "both branches must render the same upright face, sum |diff| = {diff}"
+        );
     }
 
+    /// A row flagged oriented must not silently fall back to raw-canvas
+    /// cropping: the two bboxes above only produce the same crop because the
+    /// branches differ. A wrong flag must be visible as a wrong crop.
     #[test]
-    fn orientation_2_mirrors_horizontally() {
-        let (w, h, px) = pixels(&apply_orientation(asymmetric(), 2));
-        assert_eq!((w, h), (2, 3));
-        // Rows reversed left-to-right: (0,y) and (1,y) swap.
-        assert_eq!(px, vec![10, 0, 11, 1, 12, 2]);
-    }
-
-    #[test]
-    fn orientation_3_rotates_180() {
-        let (w, h, px) = pixels(&apply_orientation(asymmetric(), 3));
-        assert_eq!((w, h), (2, 3));
-        assert_eq!(px, vec![12, 2, 11, 1, 10, 0]);
-    }
-
-    #[test]
-    fn orientation_4_mirrors_vertically() {
-        let (w, h, px) = pixels(&apply_orientation(asymmetric(), 4));
-        assert_eq!((w, h), (2, 3));
-        assert_eq!(px, vec![2, 12, 1, 11, 0, 10]);
-    }
-
-    /// 5 and 7 are the two that combine a rotation with a flip, and are the
-    /// pair most easily transposed. Their dimensions swap to 3x2.
-    #[test]
-    fn orientation_5_and_7_transpose_and_differ_from_each_other() {
-        let five = pixels(&apply_orientation(asymmetric(), 5));
-        let seven = pixels(&apply_orientation(asymmetric(), 7));
-        assert_eq!((five.0, five.1), (3, 2));
-        assert_eq!((seven.0, seven.1), (3, 2));
-        assert_ne!(five.2, seven.2, "5 and 7 must not be the same transform");
-        assert_eq!(five.2, vec![0, 1, 2, 10, 11, 12]);
-        assert_eq!(seven.2, vec![12, 11, 10, 2, 1, 0]);
-    }
-
-    #[test]
-    fn orientation_6_and_8_rotate_opposite_ways() {
-        let six = pixels(&apply_orientation(asymmetric(), 6));
-        let eight = pixels(&apply_orientation(asymmetric(), 8));
-        assert_eq!((six.0, six.1), (3, 2));
-        assert_eq!((eight.0, eight.1), (3, 2));
-        assert_ne!(six.2, eight.2, "90 and 270 must not be the same transform");
-        assert_eq!(six.2, vec![2, 1, 0, 12, 11, 10]);
-        assert_eq!(eight.2, vec![10, 11, 12, 0, 1, 2]);
-    }
-
-    /// A minimal JPEG carrying nothing but an EXIF APP1 segment declaring
-    /// `orientation`.
-    ///
-    /// Built by hand rather than shipping eight binary fixtures, and rather
-    /// than borrowing `crates/videre/tests/fixtures`, which would couple this
-    /// crate's unit tests to another crate's test data.
-    ///
-    /// Layout: SOI, then APP1 holding "Exif\0\0" and a little-endian TIFF
-    /// header whose IFD0 has exactly one entry, Orientation (tag 0x0112,
-    /// type SHORT), then EOI.
-    fn jpeg_with_orientation(orientation: u16) -> Vec<u8> {
-        jpeg_with_orientation_of_type(orientation, 3)
-    }
-
-    /// As above, but with the IFD entry's type field configurable, so a test
-    /// can declare Orientation as something other than SHORT.
-    fn jpeg_with_orientation_of_type(orientation: u16, tiff_type: u16) -> Vec<u8> {
-        let mut tiff = Vec::new();
-        tiff.extend_from_slice(b"II"); // little-endian
-        tiff.extend_from_slice(&42u16.to_le_bytes()); // TIFF magic
-        tiff.extend_from_slice(&8u32.to_le_bytes()); // offset of IFD0
-        tiff.extend_from_slice(&1u16.to_le_bytes()); // one entry
-        tiff.extend_from_slice(&0x0112u16.to_le_bytes()); // Orientation
-        tiff.extend_from_slice(&tiff_type.to_le_bytes()); // 3 = SHORT
-        tiff.extend_from_slice(&1u32.to_le_bytes()); // count
-        tiff.extend_from_slice(&orientation.to_le_bytes()); // value, inline
-        tiff.extend_from_slice(&[0, 0]); // pad to the 4-byte value field
-        tiff.extend_from_slice(&0u32.to_le_bytes()); // no next IFD
-
-        let mut app1 = Vec::from(*b"Exif\0\0");
-        app1.extend_from_slice(&tiff);
-
-        let mut jpeg = vec![0xFF, 0xD8]; // SOI
-        jpeg.extend_from_slice(&[0xFF, 0xE1]); // APP1
-        jpeg.extend_from_slice(&((app1.len() + 2) as u16).to_be_bytes());
-        jpeg.extend_from_slice(&app1);
-        jpeg.extend_from_slice(&[0xFF, 0xD9]); // EOI
-        jpeg
-    }
-
-    #[test]
-    fn every_exif_orientation_value_is_read_back() {
-        let dir = std::env::temp_dir().join(format!("videre-api-orient-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        for o in 1..=8u16 {
-            let p = dir.join(format!("o{o}.jpg"));
-            std::fs::write(&p, jpeg_with_orientation(o)).unwrap();
-            assert_eq!(
-                read_exif_orientation(p.to_str().unwrap()),
-                o,
-                "orientation {o} did not round-trip"
-            );
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The whole path together: a file whose EXIF says "rotate 90" must come
-    /// back rotated, with its dimensions swapped. Covers the join between
-    /// reading the tag and applying the transform, which the two halves tested
-    /// separately above cannot.
-    #[test]
-    fn a_jpeg_declaring_rotation_is_actually_rotated() {
-        let dir = std::env::temp_dir().join(format!("videre-api-rot-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("rot90.jpg");
-        std::fs::write(&p, jpeg_with_orientation(6)).unwrap();
-
-        let out = apply_exif_orientation(asymmetric(), p.to_str().unwrap());
-        let (w, h, px) = pixels(&out);
-        assert_eq!((w, h), (3, 2), "orientation 6 must swap the dimensions");
-        assert_eq!(px, vec![2, 1, 0, 12, 11, 10]);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// Orientation is a SHORT by spec. A file declaring it as some other type
-    /// is malformed, and must fall back to 1 rather than being coerced into a
-    /// rotation nobody asked for.
-    #[test]
-    fn an_orientation_of_the_wrong_exif_type_falls_back_to_1() {
-        let dir = std::env::temp_dir().join(format!("videre-api-badtype-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("badtype.jpg");
-        // Type 4 is LONG, not SHORT.
-        std::fs::write(&p, jpeg_with_orientation_of_type(6, 4)).unwrap();
-        assert_eq!(read_exif_orientation(p.to_str().unwrap()), 1);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn exif_orientation_defaults_to_1_for_a_missing_or_non_exif_file() {
-        assert_eq!(read_exif_orientation("/nonexistent/path/nope.jpg"), 1);
-
-        let dir = std::env::temp_dir().join(format!("videre-api-exif-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let not_an_image = dir.join("plain.jpg");
-        std::fs::write(&not_an_image, b"definitely not a jpeg").unwrap();
-        assert_eq!(read_exif_orientation(not_an_image.to_str().unwrap()), 1);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// Orientation is only consulted for formats that carry EXIF. A PNG named
-    /// with a non-EXIF extension must be returned untouched without the file
-    /// even being opened, which is why this passes a path that does not exist.
-    #[test]
-    fn non_exif_extensions_skip_orientation_entirely() {
-        let expected = pixels(&asymmetric());
-        for path in [
-            "/nonexistent/a.png",
-            "/nonexistent/b.heic",
-            "/nonexistent/c",
-        ] {
-            assert_eq!(
-                pixels(&apply_exif_orientation(asymmetric(), path)),
-                expected,
-                "{path} must be returned unchanged"
-            );
-        }
+    fn the_oriented_flag_actually_changes_the_crop() {
+        let base = concat!(env!("CARGO_MANIFEST_DIR"), "/../videre/tests/fixtures");
+        let tagged = format!("{base}/ai-generated-couple_o6.jpg");
+        // The raw-canvas bbox fed to the oriented branch crops a rotated view
+        // of the same region, which for this asymmetric fixture differs.
+        let raw_bbox = [400.0, 572.0, 800.0, 972.0];
+        let as_legacy = make_face_thumb(&tagged, raw_bbox, false, 1).unwrap();
+        let as_oriented = make_face_thumb(&tagged, raw_bbox, true, 1).unwrap();
+        let a: Vec<u8> = as_legacy.to_rgb8().pixels().map(|p| p.0[0]).collect();
+        let b: Vec<u8> = as_oriented.to_rgb8().pixels().map(|p| p.0[0]).collect();
+        assert_ne!(a, b, "the flag must select between two different canvases");
     }
 
     #[test]
