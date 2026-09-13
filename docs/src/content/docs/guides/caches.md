@@ -28,10 +28,17 @@ so two libraries never share cached decodes. Files are named by content hash:
 
 | File | What |
 |---|---|
-| `<hash>_240.jpg` | Grid thumbnail |
-| `<hash>_1200.jpg` | Lightbox size |
+| `<hash>_240.jpg` | QuickLook grid thumbnail for HEIC |
+| `<hash>_1200.jpg` | QuickLook lightbox image for HEIC |
+| `<hash>_raster-v1_240.jpg` | Orientation-correct grid thumbnail for JPEG and other browser-raster formats |
+| `<hash>_raster-v1_1200.jpg` | Orientation-correct raster lightbox image |
 | `<hash>_original.jpg` | **Full-resolution decode** |
 | `<hash>_face-<key>_<size>.jpg` | Cropped face, keyed by its crop geometry |
+
+Raster filenames carry a renderer version. A change to raster decoding can
+therefore bypass incompatible previews without throwing away expensive HEIC
+conversions. The first request after such a change rebuilds that raster preview;
+later requests remain direct cache reads.
 
 The full-resolution copies are what make it large. They exist because
 [`videre faces`](/commands/faces/) needs full resolution to place face boxes,

@@ -15,6 +15,16 @@ version number and are released together.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Gallery previews now honor embedded EXIF orientation.** Sized JPEG and
+  other browser-raster previews previously resized the stored pixel matrix and
+  discarded its orientation tag while encoding the cache entry, so portrait
+  photos appeared sideways even though Finder and the full original displayed
+  them correctly. Orientation is now applied before resize, and versioned
+  raster cache entries bypass previews produced by the old renderer without
+  invalidating HEIC conversions.
+
 ## [0.25.36] - 2026-09-10
 
 ### Changed

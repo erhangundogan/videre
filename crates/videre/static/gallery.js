@@ -17,9 +17,14 @@ function fmtB(b){
   while(v>=1024&&u<U.length-1){v/=1024;u++;}
   return v.toFixed(1)+' '+U[u];
 }
-function rawUrl(f, size){
+// Must move with RASTER_CACHE_FORMAT_VERSION in videre_core::thumb_cache.
+// It keeps a browser from reusing preview bytes produced by an older renderer.
+var RASTER_PREVIEW_VERSION='raster-v1';
+function rawUrl(f, size, version){
   if(!LIVE_SERVER) return 'file://'+f.path;
-  return '/api/files/'+encodeURIComponent(f.hash)+'/raw'+(size?('?size='+size):'');
+  var query=size?('?size='+size):'';
+  if(version)query+='&preview='+encodeURIComponent(version);
+  return '/api/files/'+encodeURIComponent(f.hash)+'/raw'+(query?query:'');
 }
 function buildPreview(f){
   var ext=f.ext,path=f.path;
@@ -29,8 +34,8 @@ function buildPreview(f){
     // original: serving originals as tiles saturates the browser's connection
     // pool on a large library and most tiles never load. The lightbox gets a
     // larger 1200px render; the link still points at the full original.
-    var thumbUrl=rawUrl(f,240);
-    var lbUrl=rawUrl(f,1200);
+    var thumbUrl=rawUrl(f,240,RASTER_PREVIEW_VERSION);
+    var lbUrl=rawUrl(f,1200,RASTER_PREVIEW_VERSION);
     var full=rawUrl(f);
     return '<a href="'+escA(full)+'" target="_blank" data-lb-url="'+escA(lbUrl)+'" data-lb-type="image" '+
       'data-lb-meta="'+metaAttr+'">'+

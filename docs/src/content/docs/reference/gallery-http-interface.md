@@ -146,7 +146,10 @@ content-length: 0
 ### `GET /api/files/{hash}/raw`
 
 Serves bytes for one library file. The optional `size` query asks the gallery
-to return a thumbnail-sized rendition when it can.
+to return a thumbnail-sized rendition when it can. JPEG and other browser-raster
+renditions apply embedded EXIF orientation before resizing and encoding. The
+gallery adds an opaque preview-version query when needed to keep browser and
+server caches in step; local API callers do not need to supply it.
 
 MP4 and MOV responses support one standard `Range: bytes=...` request and are
 streamed from disk. A satisfiable range returns `206 Partial Content` with

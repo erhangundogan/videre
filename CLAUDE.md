@@ -468,6 +468,20 @@ box rather than an EXIF Orientation tag) come out sideways with `sips`, which
 copies raw sensor-buffer pixels unrotated. This affects face detection,
 embedding preprocessing, and every thumbnail path.
 
+### Raster thumbnail orientation is applied before resize and cache
+
+JPEG camera pixels may be landscape-shaped while EXIF Orientation declares the
+portrait display transform. The gallery's sized raster path reads orientation
+from the decoder over the source bytes already in memory, applies it, then
+resizes and encodes. Re-encoding first discards the tag and permanently caches
+the sideways pixels.
+
+Raster previews use their own versioned cache names instead of the QuickLook
+thumbnail names. This lets a raster-rendering change bypass incompatible output
+without invalidating HEIC conversions, which can take seconds each. Grid,
+lightbox, date, similarity and paginated **Show more** cards all go through the
+same `buildPreview` and sized-file endpoint; do not add a second preview path.
+
 ## The commit guard
 
 `hooks/pre-commit`, installed with `git config core.hooksPath hooks`. It refuses

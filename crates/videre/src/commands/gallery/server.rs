@@ -1223,9 +1223,20 @@ fn is_thumbnailable_raster(ext: &str) -> bool {
 /// decode, so the caller can fall back to serving the original untouched
 /// rather than a broken tile. Generating this once and caching it per
 /// (hash, size) is what stops the grid from streaming full multi-megabyte
-/// originals off a slow drive for every tile.
+/// originals off a slow drive for every tile. Orientation is read through the
+/// decoder from these already-loaded bytes, so it adds no second source read.
 fn render_raster_thumbnail(bytes: &[u8], max_px: u32) -> Option<Vec<u8>> {
-    let img = image::load_from_memory(bytes).ok()?;
+    use image::ImageDecoder;
+
+    let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    let mut decoder = reader.into_decoder().ok()?;
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut img = image::DynamicImage::from_decoder(decoder).ok()?;
+    img.apply_orientation(orientation);
     let img = if img.width() > max_px || img.height() > max_px {
         img.resize(max_px, max_px, image::imageops::FilterType::Triangle)
     } else {
@@ -1340,10 +1351,23 @@ async fn handle_raw_file(
     // videre watch's `--heic` stage pre-converts HEIC, and the raster branch
     // below caches whatever it renders. Serve the cached JPEG directly and skip
     // both a QuickLook conversion and re-reading the full original off disk.
-    if ext == "heic" || is_thumbnailable_raster(&ext) {
-        if let Some(size) = q.size {
-            let cached_path =
-                videre_core::thumb_cache::thumb_path_in(&state.context.library.cache, &hash, size);
+    if let Some(size) = q.size {
+        let cached_path = if ext == "heic" {
+            Some(videre_core::thumb_cache::thumb_path_in(
+                &state.context.library.cache,
+                &hash,
+                size,
+            ))
+        } else if is_thumbnailable_raster(&ext) {
+            Some(videre_core::thumb_cache::raster_thumb_path_in(
+                &state.context.library.cache,
+                &hash,
+                size,
+            ))
+        } else {
+            None
+        };
+        if let Some(cached_path) = cached_path {
             if let Ok(bytes) = tokio::fs::read(&cached_path).await {
                 return Ok(
                     ([(axum::http::header::CONTENT_TYPE, "image/jpeg")], bytes).into_response()
@@ -1361,8 +1385,12 @@ async fn handle_raw_file(
         (true, Some(px)) => Some((
             px,
             state.context.library.cache.thumbnails.clone(),
-            videre_core::thumb_cache::thumb_tmp_path_in(&state.context.library.cache, &hash, px),
-            videre_core::thumb_cache::thumb_path_in(&state.context.library.cache, &hash, px),
+            videre_core::thumb_cache::raster_thumb_tmp_path_in(
+                &state.context.library.cache,
+                &hash,
+                px,
+            ),
+            videre_core::thumb_cache::raster_thumb_path_in(&state.context.library.cache, &hash, px),
         )),
         _ => None,
     };
@@ -1764,6 +1792,68 @@ mod thumbnail_tests {
         );
     }
 
+    #[tokio::test]
+    async fn sized_raster_request_ignores_legacy_unoriented_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("oriented.jpg");
+        std::fs::copy(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tiny.jpg"),
+            &file,
+        )
+        .unwrap();
+        let state = raw_file_test_state(dir.path(), &dir.path().join("cache"), &file);
+        let legacy_cache = videre_core::thumb_cache::thumb_path_in(
+            &state.context.library.cache,
+            "video-hash",
+            240,
+        );
+        let raster_cache = videre_core::thumb_cache::raster_thumb_path_in(
+            &state.context.library.cache,
+            "video-hash",
+            240,
+        );
+        std::fs::create_dir_all(legacy_cache.parent().unwrap()).unwrap();
+        std::fs::write(&legacy_cache, b"legacy sideways thumbnail").unwrap();
+        let app = Router::new()
+            .route("/api/files/{hash}/raw", get(handle_raw_file))
+            .with_state(state);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/files/video-hash/raw?size=240")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_ne!(bytes.as_ref(), b"legacy sideways thumbnail");
+        let decoded = image::load_from_memory(&bytes).expect("thumbnail must decode");
+        assert_eq!((decoded.width(), decoded.height()), (12, 16));
+
+        assert_eq!(std::fs::read(&raster_cache).unwrap(), bytes.as_ref());
+        std::fs::remove_file(&file).unwrap();
+
+        let cached_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/files/video-hash/raw?size=240")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cached_response.status(), StatusCode::OK);
+        let cached_bytes = to_bytes(cached_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(cached_bytes.as_ref(), bytes.as_ref());
+    }
+
     #[test]
     fn render_raster_thumbnail_downscales_and_encodes_jpeg() {
         // A grid tile must be served as a small JPEG, not the full original, or
@@ -1789,6 +1879,23 @@ mod thumbnail_tests {
             decoded.height()
         );
         assert_eq!(decoded.width(), 240, "the long edge should scale to 240");
+    }
+
+    #[test]
+    fn render_raster_thumbnail_applies_exif_orientation_before_resizing() {
+        let source = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/tiny.jpg"
+        ));
+
+        let out = render_raster_thumbnail(source, 240).expect("should render a thumbnail");
+        let decoded = image::load_from_memory(&out).expect("thumbnail must decode");
+
+        assert_eq!(
+            (decoded.width(), decoded.height()),
+            (12, 16),
+            "EXIF Orientation 6 should rotate the 16x12 source into portrait pixels"
+        );
     }
 
     #[test]
