@@ -94,7 +94,7 @@ pub struct FacesArgs {
     /// Sharpness gate: faces whose aligned crop has a Laplacian variance below
     /// this are held out of clustering. A crop too soft to read carries almost
     /// no identity, so such faces resemble each other rather than their owner.
-    /// 0 disables. Default 100
+    /// 0 disables. Default 80
     #[arg(long, default_value_t = videre_core::face_cluster::DEFAULT_MIN_BLUR)]
     min_blur: f32,
     /// Print per-stage timing (load/detect/align/embed/db_write, load split

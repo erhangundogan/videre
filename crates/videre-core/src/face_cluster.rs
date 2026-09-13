@@ -75,12 +75,14 @@ pub const DEFAULT_MAX_LANDMARK_ERR: f32 = 7.0;
 /// Sharpness floor for the aligned crop, below which a face is held out.
 ///
 /// Measured on a 1,063-face corpus: faces that clustered had a median Laplacian
-/// variance of 894, faces left as singletons 182. At 100 the mixed 33-face
-/// cluster that appears without any quality gate does not form, while more of
-/// the labelled person's photos are recovered than the old population-mean gate
-/// allowed - better recall *and* better precision than the previous defaults, on
-/// both a 92-face and a 1,063-face corpus with per-cluster ground truth.
-pub const DEFAULT_MIN_BLUR: f32 = 100.0;
+/// variance of 894, faces left as singletons 182. The mixed 33-face cluster
+/// that appears without any quality gate sits in the 60-75 band, so a floor of
+/// 80 admits the 90-95 band (where sharp-but-soft faces of real people live)
+/// while keeping that junk band excluded. Re-measured on a 56-face library at
+/// floors 100/90/80/70/60: cluster membership did not change at any floor and
+/// no junk cluster formed, so 80 is the recall improvement with the July
+/// corpus still setting the junk boundary.
+pub const DEFAULT_MIN_BLUR: f32 = 80.0;
 
 /// Average-linkage (UPGMA) agglomerative clustering on L2-normalized
 /// embeddings using cosine distance. Repeatedly merges the two closest
