@@ -393,6 +393,10 @@ fn run_face_pipeline_impl(
                                         is_primary: 0,
                                         det_score: det.score,
                                         blur: *blur,
+                                        // Detection decoded orientation-correct
+                                        // since the fix, so its coordinates are
+                                        // display-canvas.
+                                        oriented: true,
                                     }
                                 })
                                 .collect();
@@ -743,17 +747,19 @@ fn load_image(
             "HEIC decoding is only supported on macOS: {path} (hash {hash})"
         ));
     }
-    let timeout_path = path.to_string();
+    let timeout_path = std::path::PathBuf::from(path);
     videre_core::io_timeout::run_with_timeout(videre_core::io_timeout::DEFAULT_IO_TIMEOUT, move || {
-        image::open(&timeout_path)
+        // Orientation-aware: detection must see the photo as a person sees
+        // it, not the sensor canvas (see `videre_core::image_decode`).
+        videre_core::image_decode::decode_oriented_file(&timeout_path)
     })
     .map_err(|_| {
         format!(
             "timed out reading {path} after {}s (file may be unreachable - is its drive connected?)",
             videre_core::io_timeout::DEFAULT_IO_TIMEOUT.as_secs()
         )
-    })
-    .and_then(|r| r.map_err(|e| format!("could not read {path}: {e}")))
+    })?
+    .map_err(|e| format!("could not read {path}: {e}"))
 }
 
 #[cfg(test)]
@@ -1011,6 +1017,7 @@ mod tests {
             is_primary: 0,
             det_score: 0.9,
             blur: 1000.0,
+            oriented: false,
         }
     }
 
@@ -1072,5 +1079,74 @@ mod tests {
         apply_worker_msg_counts(&mut result, &WorkerMsg::EmbedBatchError { n: 5 });
         assert_eq!(result.images_processed, 5);
         assert_eq!(result.detect_errors, 5);
+    }
+
+    #[test]
+    fn default_attach_sim_is_the_measured_threshold() {
+        // The attach pass was off by default (1.0) until the orientation fix
+        // release; 0.40 is the measured value that rescues stray same-person
+        // faces (29 of 44 on the labelled corpus) with margin above the
+        // different-person centroid ceiling (~0.29). Changing it is a
+        // decision, not a refactor.
+        assert!(
+            (videre_core::face_cluster::DEFAULT_ATTACH_SIM - 0.40).abs() < 1e-6,
+            "the attach threshold default is a measured value; changing it is a decision"
+        );
+    }
+
+    #[test]
+    fn the_attach_pass_rescues_a_stray_same_identity_face() {
+        // Four faces of one identity within eps of each other, plus a fifth
+        // face 55 degrees away: its average-linkage distance to the cluster
+        // exceeds eps, so agglomeration drops it, but its nearest member
+        // (0.857 cosine) clears the 0.40 attach threshold and it must join.
+        let deg = |d: f32| {
+            let r = d.to_radians();
+            vec![r.cos(), r.sin()]
+        };
+        let faces: Vec<(i64, Vec<f32>, f32, Option<String>, Option<f32>)> =
+            [0.0f32, 8.0, 16.0, 24.0, 55.0]
+                .iter()
+                .enumerate()
+                .map(|(i, a)| (i as i64, deg(*a), 200.0, None, Some(500.0)))
+                .collect();
+        let out = cluster_with_quality_gate(
+            &faces,
+            0.6,
+            2,
+            0.35,
+            80.0,
+            0.40,
+            7.0,
+            100.0,
+            videre_core::face_cluster::DEFAULT_ATTACH_SIM,
+            true,
+        );
+        let map: std::collections::HashMap<_, _> = out.into_iter().collect();
+        let cluster = map[&0].expect("the core group must cluster");
+        assert_eq!(
+            map[&4],
+            Some(cluster),
+            "the stray face must attach to its own identity"
+        );
+    }
+
+    #[test]
+    fn load_image_applies_exif_orientation() {
+        // The o6 fixture is the untagged original plus EXIF Orientation = 6:
+        // identical pixels, display canvas is a 90 CW rotation. The original
+        // is portrait (1200x1543), so the tagged file must decode landscape.
+        let plain = load_image("tests/fixtures/ai-generated-couple.jpg", "h1", None).unwrap();
+        let tagged = load_image("tests/fixtures/ai-generated-couple_o6.jpg", "h2", None).unwrap();
+        assert_eq!(
+            (plain.width(), plain.height()),
+            (1200, 1543),
+            "untagged original decodes to its raw canvas"
+        );
+        assert_eq!(
+            (tagged.width(), tagged.height()),
+            (1543, 1200),
+            "tagged file must decode to the rotated display canvas"
+        );
     }
 }

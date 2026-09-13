@@ -1226,17 +1226,7 @@ fn is_thumbnailable_raster(ext: &str) -> bool {
 /// originals off a slow drive for every tile. Orientation is read through the
 /// decoder from these already-loaded bytes, so it adds no second source read.
 fn render_raster_thumbnail(bytes: &[u8], max_px: u32) -> Option<Vec<u8>> {
-    use image::ImageDecoder;
-
-    let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .ok()?;
-    let mut decoder = reader.into_decoder().ok()?;
-    let orientation = decoder
-        .orientation()
-        .unwrap_or(image::metadata::Orientation::NoTransforms);
-    let mut img = image::DynamicImage::from_decoder(decoder).ok()?;
-    img.apply_orientation(orientation);
+    let img = videre_core::image_decode::decode_oriented_bytes(bytes)?;
     let img = if img.width() > max_px || img.height() > max_px {
         img.resize(max_px, max_px, image::imageops::FilterType::Triangle)
     } else {
@@ -1681,6 +1671,54 @@ mod thumbnail_tests {
     use axum::body::{to_bytes, Body};
     use axum::http::{header, Request};
     use tower::ServiceExt;
+
+    /// The pre-refactor body of `render_raster_thumbnail`, kept as a
+    /// reference oracle: the shared-helper refactor must stay byte-identical
+    /// so the `raster-v1` cache entries remain valid.
+    fn render_raster_thumbnail_reference(bytes: &[u8], max_px: u32) -> Option<Vec<u8>> {
+        use image::ImageDecoder;
+
+        let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .ok()?;
+        let mut decoder = reader.into_decoder().ok()?;
+        let orientation = decoder
+            .orientation()
+            .unwrap_or(image::metadata::Orientation::NoTransforms);
+        let mut img = image::DynamicImage::from_decoder(decoder).ok()?;
+        img.apply_orientation(orientation);
+        let img = if img.width() > max_px || img.height() > max_px {
+            img.resize(max_px, max_px, image::imageops::FilterType::Triangle)
+        } else {
+            img
+        };
+        let mut buf = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut buf),
+            image::ImageFormat::Jpeg,
+        )
+        .ok()?;
+        Some(buf)
+    }
+
+    #[test]
+    fn refactored_renderer_matches_reference_byte_for_byte() {
+        let base = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/");
+        for name in [
+            "ai-generated-couple.jpg",
+            "ai-generated-couple_o6.jpg",
+            "tiny.jpg",
+        ] {
+            let bytes = std::fs::read(format!("{base}{name}")).unwrap();
+            let a = render_raster_thumbnail(&bytes, 240).unwrap();
+            let b = render_raster_thumbnail_reference(&bytes, 240).unwrap();
+            assert_eq!(
+                a, b,
+                "{name}: refactored renderer must stay byte-identical to the pre-refactor body, \
+                 otherwise raster-v1 cache entries are silently invalidated"
+            );
+        }
+    }
 
     fn raw_file_test_state(
         root: &std::path::Path,

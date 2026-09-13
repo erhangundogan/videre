@@ -134,6 +134,66 @@ faces, and scanning marks files it could not identify. Without that, every
 landscape photo would be re-examined on every run. See
 [long-running jobs](/guides/long-running-jobs/).
 
+## Rotated photos: wrong face clusters or bad search results
+
+Photos stored rotated on disk (an EXIF orientation tag other than 1, common in
+exports and files edited by other tools) are decoded the way you see them since
+videre 0.26.0. Files processed by an older version were detected and embedded
+on the stored pixel canvas, which can leave a person's own photos as
+unassigned singletons and make text search miss photos that are clearly there.
+Re-detecting those files fixes both; files scanned after upgrading need
+nothing.
+
+Two ways to recover, most precise first:
+
+**Rebuild everything.** Simple, and it re-runs hours of model work:
+
+```bash
+videre faces --reprocess
+videre embed --reprocess
+videre classify --reprocess
+```
+
+`faces --reprocess` deletes and re-creates every face row, so names you
+assigned in the gallery do not carry over and must be assigned again.
+
+**Repair only the rotated files.** Names on untouched files survive. List the
+rotated JPEGs, map them to library hashes, delete exactly their derived rows,
+then re-run the commands normally:
+
+```bash
+# 1. list rotated JPEGs under the library
+exiftool -ext jpeg -ext jpg -if '$Orientation# != 1' \
+  -p '$Directory/$Filename' -r ~/Photos | sort > /tmp/rotated.txt
+
+# 2. their hashes, from the library database
+sqlite3 ~/Photos/.videre/hashes.db \
+  "SELECT hash FROM file_hashes" | python3 -c '
+import sqlite3, sys, os
+root = os.path.expanduser("~/Photos")
+wanted = {os.path.realpath(p) for p in open("/tmp/rotated.txt").read().split()}
+con = sqlite3.connect(f"{root}/.videre/hashes.db")
+for (h, p) in con.execute("SELECT hash, path FROM file_hashes"):
+    if os.path.realpath(p) in wanted:
+        print(h)' > /tmp/rotated_hashes.txt
+
+# 3. delete their derived rows (faces, and under each model database the
+#    embeddings; classifications lives in the main database)
+sqlite3 ~/Photos/.videre/hashes.db \
+  "DELETE FROM faces WHERE hash IN ($(sed "s/.*/'&'/" /tmp/rotated_hashes.txt | paste -sd, -));
+   DELETE FROM faces_scanned WHERE hash IN ($(sed "s/.*/'&'/" /tmp/rotated_hashes.txt | paste -sd, -));
+   DELETE FROM classifications WHERE hash IN ($(sed "s/.*/'&'/" /tmp/rotated_hashes.txt | paste -sd, -));"
+sqlite3 ~/Photos/.videre/embeddings/google--siglip-base-patch16-224.db \
+  "DELETE FROM embeddings WHERE hash IN ($(sed "s/.*/'&'/" /tmp/rotated_hashes.txt | paste -sd, -));"
+
+# 4. re-run; only the repaired files are processed
+videre faces
+videre embed
+videre classify
+```
+
+Back up the database (or the whole `.videre` folder) before step 3.
+
 ## Intel Mac: it will not install
 
 videre cannot be built for Intel Macs at all. The ONNX Runtime dependency

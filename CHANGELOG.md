@@ -15,6 +15,35 @@ version number and are released together.
 
 ## [Unreleased]
 
+### Added
+
+- **`videre embed --reprocess`.** Re-embeds every eligible image, including
+  ones that already have a vector under the model, mirroring
+  `faces --reprocess` and `classify --reprocess`. This is the recovery path
+  for libraries whose embeddings were computed before the decode fix below.
+
+### Changed
+
+- **Faces and search now see the photo the way you see it.** Files stored
+  rotated on disk (an EXIF orientation tag other than 1, common in exports
+  and edits) were previously decoded on the stored pixel canvas. Face
+  detection ran degraded on the sideways image, face embeddings described a
+  rotated crop and carried no identity, and text search embedded a sideways
+  scene. Every decode of a source file now reads the orientation tag and
+  applies it, through one shared helper. New face rows record
+  `faces.oriented = 1`; rows written by older versions are not healed by
+  upgrading, so see [troubleshooting](https://docs.videre.sh/reference/troubleshooting/)
+  for recovery recipes, including one that repairs only the affected files
+  without touching your face labels.
+- **Face grouping recovers more of a person by default.** The attach pass
+  (`--attach-sim`), which lets an ungrouped face join the group holding its
+  nearest face, is on by default at 0.40 instead of off. Measured on a
+  labelled library, 29 of 44 stray photos of one person had a match of 0.40
+  or better inside their own group, while confirmed-different people never
+  reach that. The sharpness floor (`--min-blur`) drops from 100 to 80,
+  admitting soft-but-readable faces of real people; the mixed junk cluster
+  the gate exists to prevent sits below 75 and stays excluded.
+
 ### Fixed
 
 - **Gallery previews now honor embedded EXIF orientation.** Sized JPEG and

@@ -274,16 +274,14 @@ nothing enforces it, which is the argument for adding the job.
 
 `crates/videre/tests/common/mod.rs` is shared by every integration-test file.
 
-**Every test that touches a lock must point `VIDERE_HOME` at a temp directory.**
-Lock paths resolve through `VIDERE_HOME` rather than sitting beside the
-database, so without this a test writes into the developer's real
-`~/.videre/locks` and leaves permanent litter. `videre_bin()` calls
-`isolated_home()`, which sets the env var once per test binary inside a
-`OnceLock` (tests share a process and run in parallel, so a per-test `set_var`
-would race every concurrent `getenv`); spawned children inherit it. Calling it
-from `videre_bin` rather than from each test is what makes it impossible for a
-new file to forget, which is how `faces_pipeline.rs` and `person_search.rs` once
-came to be missing it.
+**Isolation is per-library, not per-home.** videre selects its library from
+`--library` or the invocation directory, and locks live in the library's own
+`.videre/locks`; nothing reads a global home variable, so setting one is a
+silent no-op. `TestLibrary` gives each spawned child its own library root,
+`HOME` and `HF_HOME`, and strips ambient environment so what a child sees is
+exactly what was configured. Writing a test against a copy of a real library
+by path requires re-scanning the copy: a database whose rows point outside
+the library root is refused by the library guard.
 
 **Every test spawning `videre embed` or `videre faces` must hold
 `shared_cache_guard()`.** Those children resolve weights through the same
@@ -370,13 +368,16 @@ no date never matches `--date`. Dates fall back to `modified_at` first
 (`EFFECTIVE_DATE_SQL` in `videre_core::query`); only a file with neither is
 excluded.
 
-### Locks are keyed by a hash of the canonical database path
+### Locks are library-scoped, three files under `<root>/.videre/locks`
 
-`<videre home>/locks/<db stem>-<hash of canonical path>.<command>.lock`. The
-hash is load-bearing: two libraries can both be named `photos.db` in different
-directories, and keying on the stem alone would make them share a lock, silently
-serializing unrelated libraries. Canonicalizing first also collapses a symlink
-and a relative path to one lock.
+`activity.lock` (shared while reading, exclusive while state changes shape),
+`init.lock` (state being created or reconfigured), and one `<command>.lock`
+per command. Every lock is a non-blocking `flock` that refuses rather than
+waits; acquisition order is activity, then init, then command. The locks are
+keyed by the library's own state directory, so two differently located
+libraries never share one, and a lock file is never unlinked (the lock lives
+on the inode). See `videre_core::library_locks`' module doc for the
+symlink-refusal rules and the one accepted gap.
 
 ### WAL everywhere
 
@@ -481,6 +482,33 @@ thumbnail names. This lets a raster-rendering change bypass incompatible output
 without invalidating HEIC conversions, which can take seconds each. Grid,
 lightbox, date, similarity and paginated **Show more** cards all go through the
 same `buildPreview` and sized-file endpoint; do not add a second preview path.
+
+### Every source-file decode is orientation-correct, through one helper
+
+`videre_core::image_decode` is the only place that turns a source image file
+into pixels: `decode_oriented_file`, `decode_oriented_bytes` (gallery),
+`decode_oriented_reader` (already-open handles), plus raw variants returning
+the tag for callers that must crop first. All of them read the EXIF
+Orientation tag through the image crate's decoder and apply it, so what every
+consumer sees is the display canvas a person sees. A bare `image::open` of a
+source file anywhere else reintroduces the rotated-canvas bug that left the
+owner's faces as unassigned singletons (detection scrambled, ArcFace
+embeddings orthogonal to their own identity) and made SigLIP embed sideways
+scenes.
+
+:warning: **Never route videre-produced files through the helper.** QuickLook
+conversions (HEIC, video) and the thumbnail/`original` caches are already
+upright pixels with no orientation tag; applying orientation again
+double-rotates.
+
+:warning: **`faces.oriented` marks which canvas a row's bbox/landmark are
+in**: NULL = raw sensor canvas (rows written before the fix), 1 = display
+canvas. Consumers that crop (face thumbnails) branch on it; old rows keep
+working through the legacy crop-then-orient branch, so partially repaired
+libraries render correctly without any migration. Rows written before the
+fix are not healed by upgrading: re-detect (`faces --reprocess`), re-embed
+(`embed --reprocess`), re-classify (`classify --reprocess`); see the
+troubleshooting docs for the recovery recipes.
 
 ## The commit guard
 
@@ -622,5 +650,7 @@ above.
 - Search predicates shared by CLI and MCP -> `videre_core::query`
 - Read timeout scales with size, stat timeout does not -> `videre_core::io_timeout::timeout_for_size`
 - Face clustering O(n^2) fixes (memory and time) -> `videre_core::face_cluster`
+- Source-file decodes are orientation-correct -> `videre_core::image_decode`
+- Detection canvas per row -> `faces.oriented`, `videre_core::face_db::FaceRow`
 - `watch --prune` cannot override the guards -> `commands::prune::PruneArgs::for_watch_stage`
 - `videre locations` is a global recompute -> `commands::locations`

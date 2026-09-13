@@ -87,14 +87,14 @@ pub struct FacesArgs {
     /// its nearest face when that face is at least this similar. Average linkage
     /// asks a new photo to resemble the mean of a whole cluster, which a person
     /// photographed over many years will fail even when three members match it
-    /// almost exactly. 1 disables the pass. Default 1 (off)
-    #[arg(long, default_value_t = 1.0)]
+    /// almost exactly. 1 disables the pass. Default 0.40.
+    #[arg(long, default_value_t = videre_core::face_cluster::DEFAULT_ATTACH_SIM)]
     attach_sim: f32,
 
     /// Sharpness gate: faces whose aligned crop has a Laplacian variance below
     /// this are held out of clustering. A crop too soft to read carries almost
     /// no identity, so such faces resemble each other rather than their owner.
-    /// 0 disables. Default 100
+    /// 0 disables. Default 80
     #[arg(long, default_value_t = videre_core::face_cluster::DEFAULT_MIN_BLUR)]
     min_blur: f32,
     /// Print per-stage timing (load/detect/align/embed/db_write, load split

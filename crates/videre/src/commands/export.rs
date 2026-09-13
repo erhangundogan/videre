@@ -176,7 +176,7 @@ fn write_sidecars_for(
             .get(hash)
             .map(|fs| {
                 fs.iter()
-                    .filter_map(|(_, name, bbox)| {
+                    .filter_map(|(_, name, bbox, _)| {
                         let (w, h) = g.dims?;
                         Some(Region {
                             name: name.clone(),

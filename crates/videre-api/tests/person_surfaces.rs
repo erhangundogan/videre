@@ -32,7 +32,7 @@ fn library() -> Connection {
          CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL,
          bbox TEXT NOT NULL, landmark TEXT, embedding BLOB NOT NULL,
          cluster_id INTEGER, person_label TEXT, confirmed INTEGER DEFAULT 0,
-         is_primary INTEGER DEFAULT 0);
+         is_primary INTEGER DEFAULT 0, oriented INTEGER);
          CREATE TABLE people (name TEXT PRIMARY KEY, full_name TEXT NOT NULL);
          INSERT INTO people VALUES ('ozgur_demirtas','Özgür');
          INSERT INTO file_hashes (path, hash) VALUES ('/a.jpg','h1');
@@ -89,7 +89,7 @@ fn every_display_surface_shows_the_display_name() {
     let names: Vec<_> = overlays
         .values()
         .flatten()
-        .map(|(_, name, _)| name.as_str())
+        .map(|(_, name, _, _)| name.as_str())
         .collect();
     assert_eq!(names, vec![DISPLAY], "face overlays showed the identity");
 

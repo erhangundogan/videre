@@ -15,6 +15,7 @@ videre embed --chunk 1000              # rows saved per transaction (default 500
 videre embed --silent                  # no per-image progress
 videre embed --type video              # only videos
 videre embed --after 2024-01-01        # only files from this year on
+videre embed --reprocess               # re-embed, including already-embedded files
 ```
 
 :::tip
@@ -44,6 +45,12 @@ embeddings
 Work is committed every `--chunk` rows (500 by default), so an interrupt loses
 at most that much. There is no separate resume flag: rerunning *is* resuming,
 because the command only ever looks for hashes that have no vector yet.
+
+`--reprocess` lifts that: it re-embeds every eligible image, including ones
+that already have a vector under the model. It exists for the rare case where
+the pixels a model sees have changed for reasons the files themselves did not,
+such as a decode fix in videre. See
+[troubleshooting](/reference/troubleshooting/).
 
 Adding photos later works the same way. Run [`videre scan`](/commands/scan/) to
 pick them up, then `videre embed` again to cover only the new ones.
