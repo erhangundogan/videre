@@ -743,17 +743,19 @@ fn load_image(
             "HEIC decoding is only supported on macOS: {path} (hash {hash})"
         ));
     }
-    let timeout_path = path.to_string();
+    let timeout_path = std::path::PathBuf::from(path);
     videre_core::io_timeout::run_with_timeout(videre_core::io_timeout::DEFAULT_IO_TIMEOUT, move || {
-        image::open(&timeout_path)
+        // Orientation-aware: detection must see the photo as a person sees
+        // it, not the sensor canvas (see `videre_core::image_decode`).
+        videre_core::image_decode::decode_oriented_file(&timeout_path)
     })
     .map_err(|_| {
         format!(
             "timed out reading {path} after {}s (file may be unreachable - is its drive connected?)",
             videre_core::io_timeout::DEFAULT_IO_TIMEOUT.as_secs()
         )
-    })
-    .and_then(|r| r.map_err(|e| format!("could not read {path}: {e}")))
+    })?
+    .map_err(|e| format!("could not read {path}: {e}"))
 }
 
 #[cfg(test)]
@@ -1072,5 +1074,25 @@ mod tests {
         apply_worker_msg_counts(&mut result, &WorkerMsg::EmbedBatchError { n: 5 });
         assert_eq!(result.images_processed, 5);
         assert_eq!(result.detect_errors, 5);
+    }
+
+    #[test]
+    fn load_image_applies_exif_orientation() {
+        // The o6 fixture is the untagged original plus EXIF Orientation = 6:
+        // identical pixels, display canvas is a 90 CW rotation. The original
+        // is portrait (1200x1543), so the tagged file must decode landscape.
+        let plain = load_image("tests/fixtures/ai-generated-couple.jpg", "h1", None).unwrap();
+        let tagged =
+            load_image("tests/fixtures/ai-generated-couple_o6.jpg", "h2", None).unwrap();
+        assert_eq!(
+            (plain.width(), plain.height()),
+            (1200, 1543),
+            "untagged original decodes to its raw canvas"
+        );
+        assert_eq!(
+            (tagged.width(), tagged.height()),
+            (1543, 1200),
+            "tagged file must decode to the rotated display canvas"
+        );
     }
 }
