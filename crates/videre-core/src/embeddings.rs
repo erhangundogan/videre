@@ -105,6 +105,22 @@ pub fn ensure_embeddings_index(conn: &Connection) -> Result<()> {
 /// Unique hashes that are embeddable but not yet embedded under `model_id`;
 /// one representative path per hash (MIN(path) keeps it deterministic).
 pub fn pending_images(conn: &Connection, model_id: &str) -> Result<Vec<PendingImage>> {
+    images_for_model(conn, model_id, false)
+}
+
+/// Unique hashes that are embeddable under `model_id`'s eligibility rules,
+/// INCLUDING hashes already embedded: `videre embed --reprocess` rebuilds
+/// every eligible embedding, which is how a library recovers from derived
+/// data written before a decode fix (EXIF orientation, for one).
+pub fn embeddable_images(conn: &Connection, model_id: &str) -> Result<Vec<PendingImage>> {
+    images_for_model(conn, model_id, true)
+}
+
+fn images_for_model(
+    conn: &Connection,
+    model_id: &str,
+    include_embedded: bool,
+) -> Result<Vec<PendingImage>> {
     let mimes = crate::mime_probe::EMBEDDABLE_MIMES
         .iter()
         .map(|m| format!("'{m}'"))
@@ -121,22 +137,35 @@ pub fn pending_images(conn: &Connection, model_id: &str) -> Result<Vec<PendingIm
     // and querying them as pending forever is the bug fixed 2026-08-01.
     // Both lists are compile-time constants, so inlining them is safe; the
     // model id stays a bound parameter.
+    let skip_embedded = if include_embedded {
+        String::new()
+    } else {
+        "AND NOT EXISTS (SELECT 1 FROM emb.embeddings e
+                           WHERE e.hash = file_hashes.hash AND e.model_id = ?1)"
+            .to_string()
+    };
     let sql = format!(
         "SELECT hash, MIN(path) FROM file_hashes
          WHERE lower(COALESCE(ext, '')) != 'dng'
            AND (mime IN ({mimes}) OR (mime IS NULL AND lower(ext) IN ({exts})))
-           AND NOT EXISTS (SELECT 1 FROM emb.embeddings e
-                           WHERE e.hash = file_hashes.hash AND e.model_id = ?1)
+           {skip_embedded}
          GROUP BY hash
          ORDER BY hash"
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params![model_id], |row| {
+    let map_row = |row: &rusqlite::Row| {
         Ok(PendingImage {
             hash: row.get(0)?,
             path: row.get(1)?,
         })
-    })?;
+    };
+    // The NOT EXISTS clause carries the only parameter; the reprocess query
+    // has none, and SQLite rejects a bound parameter with no placeholder.
+    let rows = if include_embedded {
+        stmt.query_map([], map_row)?
+    } else {
+        stmt.query_map(params![model_id], map_row)?
+    };
     rows.collect()
 }
 
@@ -338,6 +367,28 @@ mod tests {
         )
         .unwrap();
         assert!(pending_images(&conn, "m").unwrap().is_empty());
+    }
+
+    #[test]
+    fn embeddable_images_includes_already_embedded_rows() {
+        // `pending_images` exists to skip finished work; `embeddable_images`
+        // is what `videre embed --reprocess` walks instead, so it must list
+        // the same hash even though a vector for it already exists.
+        let conn = test_db_attached("emb_reprocess");
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, ext, mime)
+             VALUES ('/a/1.jpg', 'h1', 'jpg', 'image/jpeg')",
+            [],
+        )
+        .unwrap();
+        insert_embeddings(&conn, "m", &[("h1".to_string(), vec![0u8; 4])]).unwrap();
+        assert!(
+            pending_images(&conn, "m").unwrap().is_empty(),
+            "a fully embedded library has no pending work"
+        );
+        let all = embeddable_images(&conn, "m").unwrap();
+        assert_eq!(all.len(), 1, "reprocess must see the embedded hash again");
+        assert_eq!(all[0].hash, "h1");
     }
 
     #[test]

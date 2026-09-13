@@ -33,6 +33,12 @@ pub struct EmbedArgs {
     #[command(flatten)]
     tags: super::selection_args::TagFilterArgs,
 
+    /// Re-embed every eligible image, including ones already embedded under
+    /// this model. Use after a fix that changed what the model sees, such as
+    /// the orientation-correct decode, so pre-fix embeddings are rebuilt.
+    #[arg(long)]
+    reprocess: bool,
+
     /// Inference batch size (clamped to videre_ml::model::MAX_SAFE_BATCH)
     #[arg(long, default_value_t = 32)]
     batch: usize,
@@ -83,7 +89,11 @@ fn run_embed(
 ) -> Result<()> {
     embeddings::ensure_embeddings_index(conn)?;
 
-    let pending = embeddings::pending_images(conn, model_id)?;
+    let pending = if args.reprocess {
+        embeddings::embeddable_images(conn, model_id)?
+    } else {
+        embeddings::pending_images(conn, model_id)?
+    };
 
     // Scope intersects with the pending set; it never replaces the eligibility
     // and backfill rules above, which know things this layer does not (the DNG
