@@ -342,7 +342,7 @@ pub fn compute_dhash(path: &Path, mime: Option<&str>) -> Option<u64> {
         // larger ones other commands depend on.
         videre_core::heic::heic_via_quicklook(path.to_str()?, "scan-similar-heic", Some(64))?
     } else {
-        image::open(path).ok()?
+        videre_core::image_decode::decode_oriented_file(path).ok()?
     };
     // dHash: resize to 9x8, compare adjacent pixels in each row → 64 bits
     let small = resize(&img.to_luma8(), 9, 8, FilterType::Lanczos3);
@@ -386,11 +386,7 @@ pub fn compute_dhash_in(
             )?
         }
     } else {
-        image::ImageReader::new(BufReader::new(file))
-            .with_guessed_format()
-            .ok()?
-            .decode()
-            .ok()?
+        videre_core::image_decode::decode_oriented_reader(BufReader::new(file)).ok()?
     };
     let small = resize(&image.to_luma8(), 9, 8, FilterType::Lanczos3);
     let mut hash = 0u64;
@@ -418,6 +414,39 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn dhash_is_orientation_invariant() {
+        // The o6 fixture is the untagged original plus EXIF Orientation = 6.
+        // Orientation 6 displays as a 90 CW rotation, so the tagged file must
+        // hash the same as a lossless PNG of the original rotated 90 CW.
+        // Before the orientation fix this failed: the tagged file hashed its
+        // raw sensor canvas instead of its display canvas.
+        let base = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+        let raw = image::open(&format!("{base}/ai-generated-couple.jpg")).unwrap();
+        let rotated = image::imageops::rotate90(&raw);
+        let dir = tempdir().unwrap();
+        let rotated_path = dir.path().join("rotated.png");
+        let mut png = Vec::new();
+        rotated
+            .write_to(
+                &mut std::io::Cursor::new(&mut png),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        fs::write(&rotated_path, &png).unwrap();
+
+        let tagged = compute_dhash(
+            std::path::Path::new(&format!("{base}/ai-generated-couple_o6.jpg")),
+            Some("image/jpeg"),
+        )
+        .unwrap();
+        let rotated_hash = compute_dhash(&rotated_path, Some("image/png")).unwrap();
+        assert_eq!(
+            tagged, rotated_hash,
+            "the tagged file must hash its display canvas, not its raw canvas"
+        );
+    }
 
     #[test]
     fn hash_file_returns_correct_record() {

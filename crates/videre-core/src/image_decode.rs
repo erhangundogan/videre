@@ -19,26 +19,45 @@ pub fn decode_oriented_file(path: &Path) -> image::ImageResult<image::DynamicIma
     Ok(apply(img, orientation))
 }
 
+/// Reader variant of [`decode_oriented_file`]: the same contract for an
+/// already-opened, already-validated handle, so callers that must not reopen
+/// the path (library I/O rules) keep that property.
+pub fn decode_oriented_reader<R: std::io::BufRead + std::io::Seek>(
+    reader: R,
+) -> image::ImageResult<image::DynamicImage> {
+    let (img, orientation) = decode_raw_with_orientation_reader(reader)?;
+    Ok(apply(img, orientation))
+}
+
 pub fn decode_oriented_bytes(bytes: &[u8]) -> Option<image::DynamicImage> {
-    let mut decoder = image::ImageReader::new(std::io::Cursor::new(bytes))
+    let decoder = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .ok()?
         .into_decoder()
         .ok()?;
-    let orientation = decoder
-        .orientation()
-        .unwrap_or(image::metadata::Orientation::NoTransforms);
-    let img = image::DynamicImage::from_decoder(decoder).ok()?;
+    let (img, orientation) = decode_decoder(decoder).ok()?;
     Some(apply(img, orientation))
 }
 
 pub fn decode_raw_with_orientation(
     path: &Path,
 ) -> image::ImageResult<(image::DynamicImage, image::metadata::Orientation)> {
-    let mut decoder =
-        image::ImageReader::new(std::io::BufReader::new(std::fs::File::open(path)?))
-            .with_guessed_format()?
-            .into_decoder()?;
+    let reader = std::io::BufReader::new(std::fs::File::open(path)?);
+    decode_raw_with_orientation_reader(reader)
+}
+
+pub fn decode_raw_with_orientation_reader<R: std::io::BufRead + std::io::Seek>(
+    reader: R,
+) -> image::ImageResult<(image::DynamicImage, image::metadata::Orientation)> {
+    let decoder = image::ImageReader::new(reader)
+        .with_guessed_format()?
+        .into_decoder()?;
+    decode_decoder(decoder)
+}
+
+fn decode_decoder<D: ImageDecoder>(
+    mut decoder: D,
+) -> image::ImageResult<(image::DynamicImage, image::metadata::Orientation)> {
     let orientation = decoder
         .orientation()
         .unwrap_or(image::metadata::Orientation::NoTransforms);
