@@ -16,37 +16,13 @@ pub mod feature_fixture;
 
 use std::path::{Path, PathBuf};
 
-/// Points `VIDERE_HOME` at a throwaway directory for this whole test binary.
+/// Path to the `videre` binary under test.
 ///
-/// Locks live under the videre home rather than beside the database, so without
-/// this every run leaves permanent litter in the developer's real
-/// `~/.videre/locks` (test database names are random, so the files accumulate
-/// rather than being reused). Spawned children inherit the environment, so
-/// setting it here covers them too.
-///
-/// The `set_var` runs inside `get_or_init` so it happens exactly once: tests
-/// share a process and run in parallel, and a per-test `set_var` would race
-/// every concurrent `getenv`. Keyed by process id, and each test binary is its
-/// own process, so binaries running in parallel still get separate homes.
-///
-/// Tests that set their own `VIDERE_HOME` per-command still win, since `.env()`
-/// overrides what is inherited.
-pub fn isolated_home() -> &'static Path {
-    static HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    HOME.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("videre-test-home-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("create isolated test home");
-        std::env::set_var("VIDERE_HOME", &dir);
-        dir
-    })
-}
-
-/// Path to the `videre` binary under test, with `VIDERE_HOME` already isolated.
-///
-/// Isolating the home here rather than at each call site is what makes it
-/// impossible for a new test file to forget it.
+/// Isolation is per-library, not per-home: videre resolves the library from
+/// `--library` or the invocation directory and keeps locks beside it, so
+/// [`TestLibrary`] gives each child its own root, HOME and HF_HOME rather
+/// than sharing anything ambient.
 pub fn videre_bin() -> PathBuf {
-    isolated_home();
     let mut path = std::env::current_exe().unwrap();
     path.pop(); // deps/
     path.pop(); // debug/
@@ -68,9 +44,9 @@ pub fn videre_bin() -> PathBuf {
 /// tests and could never have serialised it against `faces_pipeline.rs`.
 ///
 /// The lock file sits at a fixed path in the system temp directory, shared by
-/// every test binary. Deliberately **not** under `VIDERE_HOME`, which
-/// `isolated_home` makes per-binary, and which would therefore hand each
-/// binary its own uncontended lock.
+/// every test binary. Library-local state would not do: each binary tests its
+/// own throwaway libraries, and per-binary state would hand each binary its
+/// own uncontended lock.
 ///
 /// Only contended on a cold cache; once the weights are present every holder
 /// releases almost immediately, so the cost on a warm machine is negligible.
@@ -199,13 +175,12 @@ pub fn permissions_are_enforced(unreadable_path: &Path) -> bool {
 /// child spawned from this instance; dropping the `TestLibrary` drops the
 /// directory.
 ///
-/// Deliberately does **not** go through [`videre_bin`], which sets a
-/// process-global `VIDERE_HOME` for this test process. That helper remains
-/// the right one for the legacy tests, but the whole point here is explicit
-/// per-child context: each command gets its own cwd, HOME, and HF_HOME, and
-/// `VIDERE_HOME` is removed rather than inherited, so what a child sees is
-/// exactly what was configured and nothing ambient. Nothing in this helper
-/// mutates the test process's own cwd or environment.
+/// Deliberately does **not** go through [`videre_bin`] and then share one
+/// process-global working directory. The whole point here is explicit
+/// per-child context: each command gets its own `--library`, cwd, HOME, and
+/// HF_HOME, and `VIDERE_HOME` is removed rather than inherited, so what a
+/// child sees is exactly what was configured and nothing ambient. Nothing in
+/// this helper mutates the test process's own cwd or environment.
 pub struct TestLibrary {
     _temp: tempfile::TempDir,
     /// The library directory the child treats as its working library.

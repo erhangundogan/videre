@@ -254,7 +254,8 @@ fn hidden_aliases_still_work() {
         }
         let db = dir.path().join(format!("{cmd}.db"));
         let out = Command::new(videre_bin())
-            .env("VIDERE_HOME", dir.path())
+            .env("HOME", dir.path())
+            .env("HF_HOME", dir.path().join(".cache/huggingface"))
             .args([cmd, pics.to_str().unwrap(), alias])
             .arg(&db)
             .arg("--silent")
