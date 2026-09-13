@@ -2,6 +2,7 @@ use half::f16;
 use rusqlite::Connection;
 use std::collections::HashMap;
 
+#[derive(Clone)]
 pub struct FaceRow {
     pub hash: String,
     pub bbox: String,
@@ -21,6 +22,13 @@ pub struct FaceRow {
     /// at detection time rather than guessed at cluster time.
     pub det_score: f32,
     pub blur: f32,
+    /// Which canvas the bbox/landmark coordinates are in: `false` = the raw
+    /// sensor canvas (every row written before the orientation fix, and
+    /// stored as NULL), `true` = the display canvas a person sees. Face
+    /// thumbnails branch on this when cropping. The pipeline writes `true`
+    /// since it decodes orientation-correctly; NULL must never read as
+    /// "display canvas".
+    pub oriented: bool,
 }
 
 /// Creates the `people` table if it is missing.
@@ -81,6 +89,11 @@ pub fn create_faces_table(conn: &Connection) -> rusqlite::Result<()> {
     // "not recorded" rather than "bad", so nothing is retro-excluded.
     let _ = conn.execute_batch("ALTER TABLE faces ADD COLUMN det_score REAL");
     let _ = conn.execute_batch("ALTER TABLE faces ADD COLUMN blur REAL");
+    // Canvas marker: NULL = detected on the raw sensor canvas (before the
+    // orientation fix), 1 = detected on the display canvas. Readers branch on
+    // this when cropping (face thumbnails); NULL must never read as
+    // "display canvas".
+    let _ = conn.execute_batch("ALTER TABLE faces ADD COLUMN oriented INTEGER");
 
     // Records every hash whose faces have been scanned, INCLUDING images where
     // zero faces were detected (which leave no `faces` row). This is what makes
@@ -147,12 +160,12 @@ pub fn replace_faces_for_hash(
         conn.execute("DELETE FROM faces WHERE hash = ?1", rusqlite::params![hash])?;
         for face in faces {
             conn.execute(
-                "INSERT INTO faces (hash, bbox, landmark, embedding, cluster_id, person_label, confirmed, is_primary, det_score, blur)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                "INSERT INTO faces (hash, bbox, landmark, embedding, cluster_id, person_label, confirmed, is_primary, det_score, blur, oriented)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 rusqlite::params![
                     face.hash, face.bbox, face.landmark, face.embedding,
                     face.cluster_id, face.person_label, face.confirmed, face.is_primary,
-                    face.det_score, face.blur
+                    face.det_score, face.blur, if face.oriented { 1 } else { 0 }
                 ],
             )?;
         }
@@ -316,6 +329,39 @@ mod tests {
     }
 
     #[test]
+    fn replace_writes_the_oriented_flag() {
+        // NULL = legacy row detected on the raw sensor canvas; 1 = detected
+        // on the display canvas. The pipeline writes 1 since the orientation
+        // fix; nothing ever writes 0.
+        let conn = open();
+        let mut row = FaceRow {
+            hash: "habc".into(),
+            bbox: "0,0,50,50".into(),
+            landmark: None,
+            embedding: make_embedding(&vec![0.5f32; 512]),
+            cluster_id: None,
+            person_label: None,
+            confirmed: 0,
+            is_primary: 0,
+            det_score: 0.9,
+            blur: 1000.0,
+            oriented: true,
+        };
+        replace_faces_for_hash(&conn, "habc", &[row.clone()]).unwrap();
+        let oriented: i64 = conn
+            .query_row("SELECT oriented FROM faces WHERE hash = 'habc'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(oriented, 1, "new detections are display-canvas");
+
+        row.oriented = false;
+        replace_faces_for_hash(&conn, "habc", &[row]).unwrap();
+        let oriented: Option<i64> = conn
+            .query_row("SELECT oriented FROM faces WHERE hash = 'habc'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(oriented, Some(0), "false must not read back as NULL");
+    }
+
+    #[test]
     fn insert_and_load_embedding() {
         let conn = open();
         let emb = make_embedding(&vec![0.5f32; 512]);
@@ -333,6 +379,7 @@ mod tests {
                 is_primary: 0,
                 det_score: 0.9,
                 blur: 1000.0,
+                oriented: false,
             }],
         )
         .unwrap();
@@ -363,6 +410,7 @@ mod tests {
                     is_primary: 0,
                     det_score: 0.9,
                     blur: 1000.0,
+                    oriented: false,
                 },
                 FaceRow {
                     hash: "h1".into(),
@@ -375,6 +423,7 @@ mod tests {
                     is_primary: 0,
                     det_score: 0.9,
                     blur: 1000.0,
+                    oriented: false,
                 },
             ],
         )
@@ -393,6 +442,7 @@ mod tests {
                 is_primary: 0,
                 det_score: 0.9,
                 blur: 1000.0,
+                oriented: false,
             }],
         )
         .unwrap();
@@ -418,6 +468,7 @@ mod tests {
                 is_primary: 0,
                 det_score: 0.9,
                 blur: 1000.0,
+                oriented: false,
             }],
         )
         .unwrap();
@@ -452,6 +503,7 @@ mod tests {
                     is_primary: 0,
                     det_score: 0.9,
                     blur: 1000.0,
+                    oriented: false,
                 },
                 FaceRow {
                     hash: "h1".into(),
@@ -464,6 +516,7 @@ mod tests {
                     is_primary: 0,
                     det_score: 0.9,
                     blur: 1000.0,
+                    oriented: false,
                 },
             ],
         )
@@ -538,6 +591,7 @@ mod tests {
                 is_primary: 0,
                 det_score: 0.9,
                 blur: 1000.0,
+                oriented: false,
             }],
         )
         .unwrap();

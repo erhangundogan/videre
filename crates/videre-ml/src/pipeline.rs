@@ -393,6 +393,10 @@ fn run_face_pipeline_impl(
                                         is_primary: 0,
                                         det_score: det.score,
                                         blur: *blur,
+                                        // Detection decoded orientation-correct
+                                        // since the fix, so its coordinates are
+                                        // display-canvas.
+                                        oriented: true,
                                     }
                                 })
                                 .collect();
@@ -1013,6 +1017,7 @@ mod tests {
             is_primary: 0,
             det_score: 0.9,
             blur: 1000.0,
+            oriented: false,
         }
     }
 
