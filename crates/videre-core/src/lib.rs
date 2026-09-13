@@ -10,6 +10,7 @@ pub mod face_match;
 pub mod geocode;
 pub mod heic;
 pub mod hf_cache;
+pub mod image_decode;
 pub mod import_location;
 pub mod import_providers;
 pub mod io_timeout;
