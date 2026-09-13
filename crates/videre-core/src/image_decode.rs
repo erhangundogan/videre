@@ -28,7 +28,7 @@ pub fn decode_oriented_bytes(bytes: &[u8]) -> Option<image::DynamicImage> {
     let orientation = decoder
         .orientation()
         .unwrap_or(image::metadata::Orientation::NoTransforms);
-    let mut img = image::DynamicImage::from_decoder(decoder).ok()?;
+    let img = image::DynamicImage::from_decoder(decoder).ok()?;
     Some(apply(img, orientation))
 }
 

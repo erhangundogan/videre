@@ -21,15 +21,10 @@ pub fn image_to_tensor(path: &Path, size: usize, device: &Device) -> Result<Tens
     } else {
         let timeout_path = path.to_path_buf();
         videre_core::io_timeout::run_with_timeout(videre_core::io_timeout::DEFAULT_IO_TIMEOUT, move || {
-            // Not `image::open`: it picks a decoder from the file
-            // extension, so a JPEG named .png reaches the PNG decoder and
-            // fails with "Invalid PNG signature". `with_guessed_format`
-            // reads the magic bytes instead, which is the whole point of
-            // detecting the type in the first place.
-            image::ImageReader::open(&timeout_path)
-                .and_then(|r| r.with_guessed_format())
-                .map_err(image::ImageError::IoError)
-                .and_then(|r| r.decode())
+            // Orientation-aware decode: the tensor must describe the photo as
+            // a person sees it, not the sensor canvas (see
+            // `videre_core::image_decode` for why HEIC never reaches here).
+            videre_core::image_decode::decode_oriented_file(&timeout_path)
         })
         .map_err(|_| {
             anyhow::anyhow!(
@@ -38,7 +33,7 @@ pub fn image_to_tensor(path: &Path, size: usize, device: &Device) -> Result<Tens
                 videre_core::io_timeout::DEFAULT_IO_TIMEOUT.as_secs()
             )
         })?
-        .with_context(|| format!("decode {}", path.display()))?
+        .map_err(|e| anyhow::anyhow!("decode {}: {e}", path.display()))?
     };
 
     let img = img
@@ -183,6 +178,43 @@ mod tests {
     fn preprocess_missing_file_is_err_not_panic() {
         let r = image_to_tensor(std::path::Path::new("/nonexistent.jpg"), 384, &Device::Cpu);
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn tagged_file_embeds_as_the_rotated_display_canvas() {
+        // The o6 fixture is the untagged original with EXIF Orientation = 6
+        // added by exiftool; the pixels are identical. Orientation 6 displays
+        // as a 90-degree clockwise rotation, so the tensor of the tagged file
+        // must equal the tensor of the original rotated 90 CW. Before the
+        // orientation fix this failed: both decoded to the same raw canvas.
+        let raw =
+            image::open("tests/fixtures/ai-generated-couple.jpg").unwrap();
+        let rotated = image::imageops::rotate90(&raw);
+        let mut png = Vec::new();
+        rotated
+            .write_to(
+                &mut std::io::Cursor::new(&mut png),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        let png_path = std::env::temp_dir().join("videre_o6_expected.png");
+        std::fs::write(&png_path, &png).unwrap();
+
+        let expected = image_to_tensor(&png_path, 64, &Device::Cpu).unwrap();
+        let actual = image_to_tensor(
+            std::path::Path::new("tests/fixtures/ai-generated-couple_o6.jpg"),
+            64,
+            &Device::Cpu,
+        )
+        .unwrap();
+        let a: Vec<f32> = expected.flatten_all().unwrap().to_vec1().unwrap();
+        let b: Vec<f32> = actual.flatten_all().unwrap().to_vec1().unwrap();
+        let diff: f32 = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).sum();
+        assert!(
+            diff < 1e-2,
+            "tagged file must decode to its rotated display canvas, sum |diff| = {diff}"
+        );
+        std::fs::remove_file(&png_path).ok();
     }
 
     #[test]
