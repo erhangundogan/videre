@@ -31,6 +31,14 @@ version number and are released together.
   `--check` moved to the new `videre status`, so the two surfaces cannot tell
   different stories about the same runs. Scripts using `stats --check` switch
   to `status --check`.
+- **`videre dedupe --remove` deletes duplicates for you, safely.** videre
+  moves the duplicate copies to the system trash itself (recoverable, never
+  `rm`), so paths containing spaces are handled correctly. The old
+  `videre dedupe | xargs trash` idiom splits every path on its spaces and
+  mishandles Google Takeout exports. `--remove` asks before deleting (`--yes`
+  to skip), previews with `--dry-run`, refuses an implausibly large deletion
+  without `--force`, and removes only exact duplicates. For scripting,
+  `--print0` prints the paths NUL-delimited for a space-safe `| xargs -0`.
 
 ## [0.26.0] - 2026-09-13
 
