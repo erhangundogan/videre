@@ -66,7 +66,11 @@ fn run_text(args: &StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
                 done,
                 c.total,
                 c.outstanding,
-                if c.heavy { " (optional, can take hours)" } else { "" },
+                if c.heavy {
+                    " (optional, can take hours)"
+                } else {
+                    ""
+                },
             );
         }
     }
@@ -80,8 +84,15 @@ fn run_text(args: &StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
             .duration_ms
             .map(|d| videre_core::progress::human_duration_ms(d as u64))
             .unwrap_or_else(|| "-".to_string());
-        let flag = if p.currently_running { " (running now)" } else { "" };
-        println!("  {:10} {:19} {:11} {:>10}{}", p.command, last_run, status, duration, flag);
+        let flag = if p.currently_running {
+            " (running now)"
+        } else {
+            ""
+        };
+        println!(
+            "  {:10} {:19} {:11} {:>10}{}",
+            p.command, last_run, status, duration, flag
+        );
     }
 
     println!();
@@ -96,7 +107,9 @@ fn run_text(args: &StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
             .iter()
             .find(|c| c.stage == *stage)
             .expect("cost stage must come from coverage");
-        let Some(command) = coverage.next_command else { continue };
+        let Some(command) = coverage.next_command else {
+            continue;
+        };
         let secs = cost.secs.unwrap_or(0);
         any = true;
         if secs >= 3600 {
@@ -107,9 +120,17 @@ fn run_text(args: &StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
                 secs as f64 / 3600.0
             );
         } else if secs >= 60 {
-            println!("  run '{}': {} item(s), ~{}m", command, coverage.outstanding, secs / 60);
+            println!(
+                "  run '{}': {} item(s), ~{}m",
+                command,
+                coverage.outstanding,
+                secs / 60
+            );
         } else {
-            println!("  run '{}': {} item(s), ~{}s", command, coverage.outstanding, secs);
+            println!(
+                "  run '{}': {} item(s), ~{}s",
+                command, coverage.outstanding, secs
+            );
         }
     }
     if !any {

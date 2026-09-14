@@ -27,11 +27,7 @@ fn status_fresh_library_is_healthy_for_check() {
     let lib = TestLibrary::new();
     lib.copy_fixture("tiny.jpg", "photos/IMG.jpg");
     lib.scan();
-    let out = lib
-        .cmd()
-        .args(["status", "--check"])
-        .status()
-        .unwrap();
+    let out = lib.cmd().args(["status", "--check"]).status().unwrap();
     assert!(out.success(), "--check must exit zero without failed runs");
 }
 

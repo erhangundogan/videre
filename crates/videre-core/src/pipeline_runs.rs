@@ -310,7 +310,10 @@ mod tests {
     fn heartbeat_records_last_cycle_and_reads_back() {
         let (_t, ctx, conn) = in_library();
         // A fresh library has never run watch: no row, no liveness time.
-        assert!(read_all_in(&conn, &ctx).unwrap().iter().all(|r| r.command != "watch"));
+        assert!(read_all_in(&conn, &ctx)
+            .unwrap()
+            .iter()
+            .all(|r| r.command != "watch"));
         record_heartbeat_in(&conn, &ctx, "watch").unwrap();
         let w = read_all_in(&conn, &ctx)
             .unwrap()
@@ -324,7 +327,14 @@ mod tests {
         // A second heartbeat is an update of the same row, not an error or a
         // second entry: recurring commands have exactly one now.
         record_heartbeat_in(&conn, &ctx, "watch").unwrap();
-        assert_eq!(read_all_in(&conn, &ctx).unwrap().iter().filter(|r| r.command == "watch").count(), 1);
+        assert_eq!(
+            read_all_in(&conn, &ctx)
+                .unwrap()
+                .iter()
+                .filter(|r| r.command == "watch")
+                .count(),
+            1
+        );
     }
 
     #[test]

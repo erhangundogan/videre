@@ -107,8 +107,9 @@ flight.
 Check on it from another terminal:
 
 ```bash
-videre stats                 # last run and status per command
-videre stats --check         # exit non-zero if anything failed, for cron
+videre stats                 # inventory: counts, sizes, disk use
+videre status                # pipeline health, what to run next, watch liveness
+videre status --check        # exit non-zero if anything failed, for cron
 ```
 
 ## Interval

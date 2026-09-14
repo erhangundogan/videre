@@ -10,14 +10,13 @@
 //! rather than re-deriving them.
 
 use anyhow::Result;
-use rusqlite::OptionalExtension;
 use rusqlite::Connection;
+use rusqlite::OptionalExtension;
 
 /// One stage's outstanding-vs-done shape. Stages without a true
 /// outstanding-vs-done count (scan, dedupe) deliberately get no line here:
 /// `status` stays glanceable rather than becoming an everything-dashboard.
-#[derive(Debug, Clone, PartialEq)]
-#[derive(serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct StageCoverage {
     pub stage: &'static str,
     pub outstanding: i64,
@@ -82,8 +81,9 @@ fn faces_coverage(conn: &Connection) -> Result<StageCoverage> {
     let eligible = faces_eligible_hashes(conn)?;
     let scanned: std::collections::HashSet<String> =
         crate::face_db::scanned_hashes(conn)?.into_iter().collect();
-    let with_faces: std::collections::HashSet<String> =
-        crate::face_db::hashes_with_faces(conn)?.into_iter().collect();
+    let with_faces: std::collections::HashSet<String> = crate::face_db::hashes_with_faces(conn)?
+        .into_iter()
+        .collect();
     let outstanding = eligible
         .iter()
         .filter(|h| !scanned.contains(*h) && !with_faces.contains(*h))
@@ -125,8 +125,8 @@ fn locations_coverage(conn: &Connection) -> Result<StageCoverage> {
 /// not match what fix-dates would write. Judged in Rust because the target
 /// depends on the local timezone, which SQL cannot compute.
 fn fix_dates_coverage(conn: &Connection) -> Result<StageCoverage> {
-    let mut stmt = conn
-        .prepare("SELECT exif_date, modified_at FROM file_hashes WHERE exif_date IS NOT NULL")?;
+    let mut stmt =
+        conn.prepare("SELECT exif_date, modified_at FROM file_hashes WHERE exif_date IS NOT NULL")?;
     let rows = stmt.query_map([], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
     })?;
@@ -153,7 +153,11 @@ fn fix_dates_coverage(conn: &Connection) -> Result<StageCoverage> {
 /// Coverage for every stage that has a true outstanding-vs-done count.
 /// One aggregate query per stage; no per-file work outside the fix-dates
 /// transform, which is in-memory arithmetic over already-stored strings.
-pub fn coverage_in(conn: &Connection, embed_model: &str, classify_model: &str) -> Result<Vec<StageCoverage>> {
+pub fn coverage_in(
+    conn: &Connection,
+    embed_model: &str,
+    classify_model: &str,
+) -> Result<Vec<StageCoverage>> {
     Ok(vec![
         embed_coverage(conn, embed_model)?,
         classify_coverage(conn, classify_model)?,
@@ -168,8 +172,7 @@ pub fn coverage_in(conn: &Connection, embed_model: &str, classify_model: &str) -
 /// row `videre watch` writes at the end of each successful cycle. A watcher
 /// that died mid-cycle leaves the previous heartbeat, so it reads as a stale
 /// last-cycle time rather than pretending nothing is wrong.
-#[derive(Debug, Clone, PartialEq)]
-#[derive(serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct WatchLiveness {
     pub running: bool,
     pub last_cycle_at: Option<String>,
@@ -198,8 +201,7 @@ pub fn watch_liveness_in(
 /// An approximate duration for one stage's outstanding work, clearly a
 /// guess and rendered as one ("~1.6h"). `secs` is `None` when there is
 /// nothing outstanding: no work, no estimate.
-#[derive(Debug, Clone, PartialEq)]
-#[derive(serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct CostEstimate {
     pub secs: Option<u64>,
     pub approximate: bool,
@@ -226,14 +228,16 @@ pub fn estimate_cost(
         };
         Some((outstanding as f64 * per_item).ceil() as u64)
     };
-    CostEstimate { secs, approximate: true }
+    CostEstimate {
+        secs,
+        approximate: true,
+    }
 }
 
 /// The whole operational picture for one library, from one call. Rendered
 /// by `videre status` (text and --json); `stats` and the MCP tools read the
 /// same model rather than re-deriving it.
-#[derive(Debug, Clone, PartialEq)]
-#[derive(serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct StatusReport {
     pub coverage: Vec<StageCoverage>,
     pub pipelines: Vec<crate::pipeline_runs::PipelineRunStatus>,
@@ -398,8 +402,9 @@ mod tests {
         insert_file(&conn, "/a/2.jpg", "h2", "jpg");
         insert_file(&conn, "/a/3.png", "h3", "png");
         insert_file(&conn, "/a/v.mp4", "h4", "mp4"); // not faces-eligible
-        // h1 was scanned and found faceless: still done. h2 has faces: done.
-        conn.execute("INSERT INTO faces_scanned (hash) VALUES ('h1')", []).unwrap();
+                                                     // h1 was scanned and found faceless: still done. h2 has faces: done.
+        conn.execute("INSERT INTO faces_scanned (hash) VALUES ('h1')", [])
+            .unwrap();
         conn.execute(
             "INSERT INTO faces (hash, bbox, embedding) VALUES ('h2', '0,0,10,10', X'00')",
             [],
@@ -445,7 +450,10 @@ mod tests {
 
         let fix = cov.iter().find(|c| c.stage == "fix-dates").unwrap();
         assert_eq!(fix.total, 3);
-        assert_eq!(fix.outstanding, 1, "only h2's mtime disagrees with its exif_date");
+        assert_eq!(
+            fix.outstanding, 1,
+            "only h2's mtime disagrees with its exif_date"
+        );
     }
 
     #[test]
@@ -483,7 +491,10 @@ mod tests {
         assert!(report.pipelines.iter().all(|p| p.status.is_none()));
         assert!(!report.watch.running);
         assert_eq!(report.watch.last_cycle_at, None);
-        assert!(!report.has_problem(), "a fresh library is healthy, not failing");
+        assert!(
+            !report.has_problem(),
+            "a fresh library is healthy, not failing"
+        );
 
         // A failed run is what flips --check, and staleness never does.
         crate::pipeline_runs::start_run(&conn, "faces").unwrap();
