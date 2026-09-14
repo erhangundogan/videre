@@ -134,7 +134,7 @@ point it at the library and it works out the rest. See
 ```bash
 videre --library ~/Photos scan
 videre dedupe --html                  # review groups with KEEP/REMOVE badges
-videre dedupe | tr '\n' '\0' | xargs -0 trash   # delete, once you agree
+videre dedupe --remove                # move the copies to the trash, once you agree
 videre prune                          # reclaim database rows and derived data
 ```
 

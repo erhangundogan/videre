@@ -1,25 +1,33 @@
 ---
 title: videre dedupe
-description: List duplicate copies you could delete, one path per line.
+description: Find duplicate copies and move them to the trash, safely.
 ---
 
-Finds duplicates already recorded in the database. Prints one path per line to
-stdout, and nothing else, so it pipes cleanly.
+Finds duplicates already recorded in the database. It can list them (one path
+per line) or, with `--remove`, move the copies to the system trash itself.
 
 ```bash
 videre dedupe                          # list removable copies (one path per line)
-videre dedupe | tr '\n' '\0' | xargs -0 trash   # ...and delete them (space-safe)
+videre dedupe --remove --dry-run       # show what --remove would trash
+videre dedupe --remove                 # move the copies to the trash (asks first)
+videre dedupe --remove --yes           # ...without the confirmation prompt
 videre dedupe --similar                # also report look-alike groups (review only)
 videre --library ~/Photos dedupe       # select a different library
-videre dedupe --silent                 # suppress the summary; paths still print
 videre dedupe --json                   # print one JSON object instead
 ```
 
+**Prefer `--remove` over piping.** videre holds the real path strings, so
+`--remove` handles paths containing spaces correctly; a shell pipe like
+`videre dedupe | xargs trash` splits every path on its spaces and mishandles
+any that contain one (common in Google Takeout exports). `--remove` moves copies
+to the system trash (recoverable), never `rm`, asks before deleting unless
+`--yes`, previews with `--dry-run`, and refuses an implausibly large deletion
+unless `--force`. It removes only **exact** duplicates; `--similar` groups are
+review-only.
+
 :::danger
-This prints the REMOVE side of each duplicate group, so piping it to a deleter
-removes those files immediately. Look before you pipe. Use a NUL-delimited pipe
-(`tr '\n' '\0' | xargs -0 trash`): a bare `xargs trash` splits paths on spaces
-and mishandles any path containing one (common in Google Takeout exports).
+`--remove` (without `--dry-run`) deletes immediately once you confirm. Review
+first with [`videre dedupe --html`](/commands/dedupe/) or `--remove --dry-run`.
 :::
 
 ## The safe way to do it
@@ -30,7 +38,7 @@ for, and it takes one extra command:
 ```bash
 videre --library ~/Photos scan           # 1. record what you have
 videre dedupe --html                  # 2. review the groups visually
-videre dedupe | tr '\n' '\0' | xargs -0 trash   # 3. delete, once you agree
+videre dedupe --remove                # 3. move the copies to the trash, once you agree
 videre prune                          # 4. tidy the database afterwards
 ```
 
@@ -39,16 +47,18 @@ REMOVE badges, sizes, dates and paths, sorted by how much space each group
 wastes. It is the same grouping and the same KEEP choice `dedupe` will print, so
 what you see is what will happen.
 
-If you would rather read the list than look at it:
+If you would rather read the list, or drive your own tool, `dedupe` still prints
+the removable paths. Use `--print0` so a path with a space survives the pipe:
 
 ```bash
-videre dedupe > /tmp/remove.txt        # inspect it
+videre dedupe > /tmp/remove.txt              # inspect it
 wc -l /tmp/remove.txt
-tr '\n' '\0' < /tmp/remove.txt | xargs -0 trash   # then act (space-safe)
+videre dedupe --print0 | xargs -0 trash      # or pipe it, space-safe
 ```
 
-`trash` moves to the system trash, which is recoverable. `rm` is not. On a
-library you care about, prefer `trash` (macOS: `brew install trash`).
+`--print0` writes the paths NUL-delimited; a plain `videre dedupe | xargs trash`
+splits on spaces and is unsafe. For anything but scripting, `--remove` is
+simpler and safer.
 
 Step 4 matters more than it looks: until you prune, the database still lists the
 deleted files, and their embeddings and cached thumbnails are still on disk. See
