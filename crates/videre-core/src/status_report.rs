@@ -1,0 +1,306 @@
+//! The shared status model: one producer for everything that reports
+//! pipeline state, so the CLI, `stats`, and the MCP tools cannot drift
+//! into telling different stories about the same library (the duplication
+//! this closes was flagged as DEBT:8).
+//!
+//! `status` owns operational health: per-stage coverage, pipeline run
+//! health, watch liveness, and the next action + cost per gap. Inventory
+//! (what is IN the library) stays with `videre stats` and
+//! `library_stats::compute_full_in`; this module composes those outputs
+//! rather than re-deriving them.
+
+use anyhow::Result;
+use rusqlite::Connection;
+
+/// One stage's outstanding-vs-done shape. Stages without a true
+/// outstanding-vs-done count (scan, dedupe) deliberately get no line here:
+/// `status` stays glanceable rather than becoming an everything-dashboard.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StageCoverage {
+    pub stage: &'static str,
+    pub outstanding: i64,
+    pub total: i64,
+    /// The command that closes this gap, when there is one.
+    pub next_command: Option<&'static str>,
+    /// Embed and classify are optional, hours-long stages; a newcomer should
+    /// not read "behind" on a stage they may never want (spec decision D4).
+    pub heavy: bool,
+}
+
+/// Faces-eligible hashes: the same population `videre faces` walks (image
+/// extensions), deduplicated by hash with a deterministic representative.
+fn faces_eligible_hashes(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT hash FROM file_hashes
+         WHERE lower(COALESCE(ext, '')) IN
+               ('jpg','jpeg','png','gif','webp','bmp','tiff','heic')
+         GROUP BY hash",
+    )?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    rows.collect::<std::result::Result<Vec<String>, _>>()
+        .map_err(Into::into)
+}
+
+/// Embed stage: outstanding under the active model of everything eligible.
+fn embed_coverage(conn: &Connection, embed_model: &str) -> Result<StageCoverage> {
+    let total = crate::embeddings::embeddable_images(conn, embed_model)?.len() as i64;
+    let outstanding = match crate::embeddings::pending_images(conn, embed_model)? {
+        v => v.len() as i64,
+    };
+    Ok(StageCoverage {
+        stage: "embed",
+        outstanding,
+        total,
+        next_command: Some("videre embed"),
+        heavy: true,
+    })
+}
+
+/// Classify stage: embedded hashes under the model missing a classification.
+fn classify_coverage(conn: &Connection, classify_model: &str) -> Result<StageCoverage> {
+    let total: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM emb.embeddings WHERE model_id = ?1",
+        [classify_model],
+        |r| r.get(0),
+    )?;
+    let outstanding = crate::classify::pending_hashes(conn, classify_model)?.len() as i64;
+    Ok(StageCoverage {
+        stage: "classify",
+        outstanding,
+        total,
+        next_command: Some("videre classify"),
+        heavy: true,
+    })
+}
+
+/// Faces stage: eligible hashes with no detection record at all. The skip
+/// set is "already tried" (including images where zero faces were found),
+/// which is why unscanned - not faceless - is the outstanding shape.
+fn faces_coverage(conn: &Connection) -> Result<StageCoverage> {
+    let eligible = faces_eligible_hashes(conn)?;
+    let scanned: std::collections::HashSet<String> =
+        crate::face_db::scanned_hashes(conn)?.into_iter().collect();
+    let with_faces: std::collections::HashSet<String> =
+        crate::face_db::hashes_with_faces(conn)?.into_iter().collect();
+    let outstanding = eligible
+        .iter()
+        .filter(|h| !scanned.contains(*h) && !with_faces.contains(*h))
+        .count() as i64;
+    Ok(StageCoverage {
+        stage: "faces",
+        outstanding,
+        total: eligible.len() as i64,
+        next_command: Some("videre faces"),
+        heavy: false,
+    })
+}
+
+/// Locations stage: geotagged photos with no place name yet. Grouping is a
+/// global recompute, so the count is informational; the command line names
+/// what closes it.
+fn locations_coverage(conn: &Connection) -> Result<StageCoverage> {
+    let total: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM file_hashes WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    let outstanding: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM file_hashes
+         WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL AND location_name IS NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(StageCoverage {
+        stage: "locations",
+        outstanding,
+        total,
+        next_command: Some("videre locations"),
+        heavy: false,
+    })
+}
+
+/// Fix-dates stage: rows with a camera date whose stored modified time does
+/// not match what fix-dates would write. Judged in Rust because the target
+/// depends on the local timezone, which SQL cannot compute.
+fn fix_dates_coverage(conn: &Connection) -> Result<StageCoverage> {
+    let mut stmt = conn
+        .prepare("SELECT exif_date, modified_at FROM file_hashes WHERE exif_date IS NOT NULL")?;
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+    })?;
+    let mut total = 0i64;
+    let mut outstanding = 0i64;
+    for row in rows {
+        let (exif_date, modified_at) = row?;
+        total += 1;
+        if let Some(target) = crate::fix_dates_target::target_modified_at(&exif_date) {
+            if modified_at.as_deref() != Some(target.as_str()) {
+                outstanding += 1;
+            }
+        }
+    }
+    Ok(StageCoverage {
+        stage: "fix-dates",
+        outstanding,
+        total,
+        next_command: Some("videre fix-dates"),
+        heavy: false,
+    })
+}
+
+/// Coverage for every stage that has a true outstanding-vs-done count.
+/// One aggregate query per stage; no per-file work outside the fix-dates
+/// transform, which is in-memory arithmetic over already-stored strings.
+pub fn coverage_in(conn: &Connection, embed_model: &str, classify_model: &str) -> Result<Vec<StageCoverage>> {
+    Ok(vec![
+        embed_coverage(conn, embed_model)?,
+        classify_coverage(conn, classify_model)?,
+        faces_coverage(conn)?,
+        locations_coverage(conn)?,
+        fix_dates_coverage(conn)?,
+    ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_MODEL: &str = "test/model";
+
+    /// A main database with `file_hashes`, plus a real attached model
+    /// database (mirroring production's split), and the faces tables.
+    fn seed_db(tag: &str) -> Connection {
+        let ctx = crate::embeddings_db::test_context(tag);
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (
+                path        TEXT PRIMARY KEY,
+                hash        TEXT NOT NULL,
+                mime        TEXT,
+                size_bytes  INTEGER,
+                created_at  TEXT,
+                modified_at TEXT,
+                ext         TEXT,
+                phash       INTEGER,
+                exif_date   TEXT,
+                gps_lat     REAL,
+                gps_lon     REAL,
+                width       INTEGER,
+                height      INTEGER,
+                location_name TEXT
+            );",
+        )
+        .unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS classifications (
+                model_id      TEXT NOT NULL,
+                hash          TEXT NOT NULL,
+                category      TEXT NOT NULL,
+                confidence    REAL NOT NULL,
+                classified_at TEXT NOT NULL,
+                PRIMARY KEY (model_id, hash)
+            );",
+        )
+        .unwrap();
+        crate::embeddings_db::attach_in(&conn, &ctx, TEST_MODEL, true).unwrap();
+        crate::face_db::create_faces_table(&conn).unwrap();
+        conn
+    }
+
+    fn insert_file(conn: &Connection, path: &str, hash: &str, ext: &str) {
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, ext) VALUES (?1, ?2, ?3)",
+            [path, hash, ext],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn coverage_counts_outstanding_per_stage() {
+        let conn = seed_db("status_cov_main");
+        // 3 embeddable images: 1 embedded+classified, 1 embedded, 1 neither.
+        insert_file(&conn, "/a/1.jpg", "h1", "jpg");
+        insert_file(&conn, "/a/2.jpg", "h2", "jpg");
+        insert_file(&conn, "/a/3.jpg", "h3", "jpg");
+        crate::embeddings::insert_embeddings(
+            &conn,
+            TEST_MODEL,
+            &[("h1".into(), vec![0u8; 4]), ("h2".into(), vec![0u8; 4])],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO classifications (model_id, hash, category, confidence, classified_at)
+             VALUES ('test/model', 'h1', 'cat', 0.9, 'now')",
+            [],
+        )
+        .unwrap();
+
+        let cov = coverage_in(&conn, TEST_MODEL, TEST_MODEL).unwrap();
+        let embed = cov.iter().find(|c| c.stage == "embed").unwrap();
+        assert_eq!(embed.outstanding, 1, "h3 is the only un-embedded image");
+        assert_eq!(embed.total, 3);
+        assert!(embed.heavy);
+        assert_eq!(embed.next_command, Some("videre embed"));
+
+        let classify = cov.iter().find(|c| c.stage == "classify").unwrap();
+        assert_eq!(classify.outstanding, 1, "h2 is embedded but unclassified");
+        assert_eq!(classify.total, 2);
+    }
+
+    #[test]
+    fn faces_coverage_counts_unscanned_not_faceless() {
+        let conn = seed_db("status_cov_faces");
+        insert_file(&conn, "/a/1.jpg", "h1", "jpg");
+        insert_file(&conn, "/a/2.jpg", "h2", "jpg");
+        insert_file(&conn, "/a/3.png", "h3", "png");
+        insert_file(&conn, "/a/v.mp4", "h4", "mp4"); // not faces-eligible
+        // h1 was scanned and found faceless: still done. h2 has faces: done.
+        conn.execute("INSERT INTO faces_scanned (hash) VALUES ('h1')", []).unwrap();
+        conn.execute(
+            "INSERT INTO faces (hash, bbox, embedding) VALUES ('h2', '0,0,10,10', X'00')",
+            [],
+        )
+        .unwrap();
+
+        let cov = coverage_in(&conn, TEST_MODEL, TEST_MODEL).unwrap();
+        let faces = cov.iter().find(|c| c.stage == "faces").unwrap();
+        assert_eq!(faces.total, 3, "videos are not faces-eligible");
+        assert_eq!(faces.outstanding, 1, "only h3 was never tried");
+        assert!(!faces.heavy);
+    }
+
+    #[test]
+    fn locations_and_fix_dates_count_only_true_gaps() {
+        let conn = seed_db("status_cov_locfix");
+        // geotagged, named: done. geotagged, unnamed: outstanding.
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, ext, gps_lat, gps_lon, location_name,
+                                      exif_date, modified_at)
+             VALUES ('/a/1.jpg', 'h1', 'jpg', 52.5, 13.4, 'Berlin, Germany',
+                     '2021-07-04T15:30:00', '2021-07-04T15:30:00+02:00')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, ext, gps_lat, gps_lon, exif_date, modified_at)
+             VALUES ('/a/2.jpg', 'h2', 'jpg', 48.8, 2.3, '2020-01-02T03:04:05', '1970-01-01T00:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, ext, exif_date, modified_at)
+             VALUES ('/a/3.jpg', 'h3', 'jpg', '2021-07-04T15:30:00', '2021-07-04T15:30:00+02:00')",
+            [],
+        )
+        .unwrap();
+
+        let cov = coverage_in(&conn, TEST_MODEL, TEST_MODEL).unwrap();
+        let locations = cov.iter().find(|c| c.stage == "locations").unwrap();
+        assert_eq!(locations.total, 2);
+        assert_eq!(locations.outstanding, 1, "h2 has GPS and no place name");
+
+        let fix = cov.iter().find(|c| c.stage == "fix-dates").unwrap();
+        assert_eq!(fix.total, 3);
+        assert_eq!(fix.outstanding, 1, "only h2's mtime disagrees with its exif_date");
+    }
+}
