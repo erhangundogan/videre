@@ -226,6 +226,81 @@ pub fn estimate_cost(
     CostEstimate { secs, approximate: true }
 }
 
+/// The whole operational picture for one library, from one call. Rendered
+/// by `videre status` (text and --json); `stats` and the MCP tools read the
+/// same model rather than re-deriving it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatusReport {
+    pub coverage: Vec<StageCoverage>,
+    pub pipelines: Vec<crate::pipeline_runs::PipelineRunStatus>,
+    pub watch: WatchLiveness,
+    /// Per-stage cost estimate for the outstanding work, in the same stage
+    /// order as `coverage` entries that have outstanding work.
+    pub costs: Vec<(&'static str, CostEstimate)>,
+    /// The embedding model the coverage numbers were measured against.
+    pub embed_model: String,
+}
+
+impl StatusReport {
+    /// True only when a pipeline run actually failed or crashed. Staleness
+    /// is informational and never a failure: a library mid-setup is healthy
+    /// (spec decision D5).
+    pub fn has_problem(&self) -> bool {
+        self.pipelines
+            .iter()
+            .any(|p| matches!(p.status.as_deref(), Some("failed") | Some("crashed")))
+    }
+}
+
+/// Fallback per-item seconds for stages with no measured history. Coarse by
+/// design and always rendered as approximate; embed/classify dominate real
+/// runs, so their constants err on the slow side of honest.
+fn fallback_secs_per_item(stage: &str) -> f64 {
+    match stage {
+        "embed" => 2.0,
+        "classify" => 0.05,
+        "faces" => 1.0,
+        "locations" => 0.001,
+        "fix-dates" => 0.001,
+        _ => 1.0,
+    }
+}
+
+/// Assemble the report: coverage, pipeline health, watch liveness, and the
+/// cost of closing each gap. One call, one connection, read-only.
+pub fn compute_status_in(
+    conn: &Connection,
+    ctx: &crate::library::LibraryContext,
+) -> Result<StatusReport> {
+    let embed_model = ctx.settings.default_model.clone();
+    let coverage = coverage_in(conn, &embed_model, &embed_model)?;
+    let pipelines = crate::pipeline_runs::read_all_in(conn, ctx)?;
+    let watch = watch_liveness_in(conn, ctx)?;
+    let costs = coverage
+        .iter()
+        .filter(|c| c.outstanding > 0)
+        .map(|c| {
+            let prior = pipelines.iter().find(|p| p.command == c.stage);
+            (
+                c.stage,
+                estimate_cost(
+                    c.outstanding,
+                    prior.and_then(|p| p.duration_ms),
+                    None,
+                    fallback_secs_per_item(c.stage),
+                ),
+            )
+        })
+        .collect();
+    Ok(StatusReport {
+        coverage,
+        pipelines,
+        watch,
+        costs,
+        embed_model,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,5 +457,34 @@ mod tests {
         assert_eq!(estimate_cost(0, None, None, 2.0).secs, None);
         // a nonsense prior run (zero items) must not divide by zero.
         assert_eq!(estimate_cost(10, Some(50_000), Some(0), 2.0).secs, Some(20));
+    }
+
+    #[test]
+    fn compute_status_assembles_the_whole_report() {
+        let ctx = crate::embeddings_db::test_context("status_compute");
+        std::fs::create_dir_all(&ctx.paths.locks).unwrap();
+        let conn = seed_db("status_compute");
+        insert_file(&conn, "/a/1.jpg", "h1", "jpg");
+        insert_file(&conn, "/a/2.jpg", "h2", "jpg");
+
+        let report = compute_status_in(&conn, &ctx).unwrap();
+        assert_eq!(report.embed_model, ctx.settings.default_model);
+        assert!(!report.coverage.is_empty());
+        let embed = report.coverage.iter().find(|c| c.stage == "embed").unwrap();
+        assert_eq!(embed.outstanding, 2);
+        assert!(report
+            .costs
+            .iter()
+            .any(|(stage, cost)| *stage == "embed" && cost.secs.is_some()));
+        assert!(report.pipelines.iter().all(|p| p.status.is_none()));
+        assert!(!report.watch.running);
+        assert_eq!(report.watch.last_cycle_at, None);
+        assert!(!report.has_problem(), "a fresh library is healthy, not failing");
+
+        // A failed run is what flips --check, and staleness never does.
+        crate::pipeline_runs::start_run(&conn, "faces").unwrap();
+        crate::pipeline_runs::finish_run(&conn, "faces", "failed", 5, Some("boom")).unwrap();
+        let report = compute_status_in(&conn, &ctx).unwrap();
+        assert!(report.has_problem());
     }
 }
