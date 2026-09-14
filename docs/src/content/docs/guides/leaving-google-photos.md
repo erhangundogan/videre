@@ -98,7 +98,7 @@ modified.
 
 ```bash
 videre dedupe --html                  # look at what would go
-videre dedupe | xargs trash    # delete it
+videre dedupe | tr '\n' '\0' | xargs -0 trash   # delete it
 videre prune                   # tidy the database afterwards
 ```
 
@@ -109,8 +109,10 @@ This is where the album duplication disappears. Those copies are byte-identical,
 so removing them loses nothing at all.
 
 :::caution
-`videre dedupe | xargs trash` deletes immediately. Run `videre dedupe --html` first, or
-send the list to a file and read it. See [cautions](/reference/cautions/).
+Piping `videre dedupe` to a deleter removes files immediately. Run `videre
+dedupe --html` first, or send the list to a file and read it. Use a
+NUL-delimited pipe (`tr '\n' '\0' | xargs -0 trash`): a bare `xargs trash`
+splits Takeout paths on their spaces. See [cautions](/reference/cautions/).
 :::
 
 ## 7. Make it searchable

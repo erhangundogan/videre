@@ -57,7 +57,7 @@ gallery), composing with everything else:
 
 ```bash
 videre search --rating 4 --pick keep --person "Alice" --location Berlin
-videre search --pick reject | xargs trash      # cull, then delete
+videre search --pick reject | tr '\n' '\0' | xargs -0 trash   # cull, then delete
 videre search --like --date 2024
 ```
 

@@ -8,7 +8,7 @@ stdout, and nothing else, so it pipes cleanly.
 
 ```bash
 videre dedupe                          # list removable copies (one path per line)
-videre dedupe | xargs trash            # ...and delete them
+videre dedupe | tr '\n' '\0' | xargs -0 trash   # ...and delete them (space-safe)
 videre dedupe --similar                # also report look-alike groups (review only)
 videre --library ~/Photos dedupe       # select a different library
 videre dedupe --silent                 # suppress the summary; paths still print
@@ -16,9 +16,10 @@ videre dedupe --json                   # print one JSON object instead
 ```
 
 :::danger
-This prints the REMOVE side of each duplicate group, so
-`videre dedupe | xargs trash` deletes those files immediately. Look before you
-pipe.
+This prints the REMOVE side of each duplicate group, so piping it to a deleter
+removes those files immediately. Look before you pipe. Use a NUL-delimited pipe
+(`tr '\n' '\0' | xargs -0 trash`): a bare `xargs trash` splits paths on spaces
+and mishandles any path containing one (common in Google Takeout exports).
 :::
 
 ## The safe way to do it
@@ -29,8 +30,8 @@ for, and it takes one extra command:
 ```bash
 videre --library ~/Photos scan           # 1. record what you have
 videre dedupe --html                  # 2. review the groups visually
-videre dedupe | xargs trash    # 3. delete, once you agree
-videre prune                   # 4. tidy the database afterwards
+videre dedupe | tr '\n' '\0' | xargs -0 trash   # 3. delete, once you agree
+videre prune                          # 4. tidy the database afterwards
 ```
 
 Step 2 opens a page showing every duplicate group with thumbnails, KEEP and
@@ -43,7 +44,7 @@ If you would rather read the list than look at it:
 ```bash
 videre dedupe > /tmp/remove.txt        # inspect it
 wc -l /tmp/remove.txt
-xargs trash < /tmp/remove.txt          # then act
+tr '\n' '\0' < /tmp/remove.txt | xargs -0 trash   # then act (space-safe)
 ```
 
 `trash` moves to the system trash, which is recoverable. `rm` is not. On a

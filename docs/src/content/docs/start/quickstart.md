@@ -39,7 +39,7 @@ you are still in `~/Photos`. From anywhere else, name it explicitly with
 ```bash
 videre dedupe                # list which copies could go
 videre dedupe --html         # ...or review them in a browser first
-videre dedupe | xargs trash  # delete them
+videre dedupe | tr '\n' '\0' | xargs -0 trash  # delete them (space-safe)
 videre prune                 # tidy the database afterwards
 ```
 
@@ -48,8 +48,9 @@ check. Add `--similar` to also flag photos and videos that merely *look* alike;
 those are reported for review only, never included in the delete list.
 
 :::caution
-`videre dedupe | xargs trash` deletes immediately. Look before you pipe. See
-[cautions](/reference/cautions/).
+Piping `videre dedupe` to a deleter removes files immediately. Look before you
+pipe, and use a NUL-delimited pipe (`tr '\n' '\0' | xargs -0 trash`): a bare
+`xargs trash` splits paths on spaces. See [cautions](/reference/cautions/).
 :::
 
 ## Search your photos
@@ -107,7 +108,7 @@ videre watch                           # keep everything fresh in the background
 `videre dedupe` prints one file path per line, so it pipes into anything:
 
 ```bash
-videre dedupe | xargs trash
+videre dedupe | tr '\n' '\0' | xargs -0 trash
 videre dedupe > to-delete.txt
 ```
 

@@ -200,7 +200,7 @@ Photos you have marked with [`videre mark`](/commands/mark/) filter here too:
 
 ```bash
 videre search --rating 4 --person "Alice"      # 4+ stars, of Alice
-videre search --pick reject | xargs trash       # cull what you flagged
+videre search --pick reject | tr '\n' '\0' | xargs -0 trash   # cull what you flagged
 videre search --like --date 2024                # favourites from 2024
 ```
 

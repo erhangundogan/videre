@@ -8,8 +8,9 @@ situations that surprise people.
 
 ## `videre dedupe` prints files to delete
 
-Its output is the REMOVE side of each duplicate group, so
-`videre dedupe | xargs trash` deletes those files immediately.
+Its output is the REMOVE side of each duplicate group, so piping it to a deleter
+removes those files immediately. Use a NUL-delimited pipe (`tr '\n' '\0' | xargs
+-0 trash`): a bare `xargs trash` splits paths on spaces.
 
 Look before you pipe: run [`videre dedupe --html`](/commands/dedupe/) first and review
 the KEEP/REMOVE badges, or send the list to a file and read it.
