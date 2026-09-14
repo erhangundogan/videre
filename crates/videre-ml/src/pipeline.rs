@@ -676,9 +676,8 @@ pub fn run_clustering(
     // them into different groups. Exclude them so only unconfirmed,
     // unlabeled faces get new cluster assignments.
     let labeled_ids: std::collections::HashSet<i64> = {
-        let mut stmt = conn.prepare(
-            "SELECT id FROM faces WHERE confirmed = 1 AND person_label IS NOT NULL",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT id FROM faces WHERE confirmed = 1 AND person_label IS NOT NULL")?;
         let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
         rows.collect::<rusqlite::Result<std::collections::HashSet<_>>>()?
     };
