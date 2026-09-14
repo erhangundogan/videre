@@ -161,6 +161,13 @@ fn run_cycle(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
             }
         }
     }
+
+    // The cycle completed: record the heartbeat that makes `videre status`
+    // able to say "watch: running (last cycle 2m ago)". Best-effort: a
+    // bookkeeping failure must not kill an otherwise healthy watcher.
+    if let Err(e) = videre_core::pipeline_runs::record_heartbeat_in(&conn, &ctx.library, "watch") {
+        eprintln!("videre watch: could not record the cycle heartbeat: {e}");
+    }
     Ok(())
 }
 

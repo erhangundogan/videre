@@ -10,6 +10,7 @@
 //! rather than re-deriving them.
 
 use anyhow::Result;
+use rusqlite::OptionalExtension;
 use rusqlite::Connection;
 
 /// One stage's outstanding-vs-done shape. Stages without a true
@@ -159,6 +160,37 @@ pub fn coverage_in(conn: &Connection, embed_model: &str, classify_model: &str) -
         locations_coverage(conn)?,
         fix_dates_coverage(conn)?,
     ])
+}
+
+/// Whether a watcher is alive, and when its last cycle completed. Running-
+/// ness comes from the watch lock; the last-cycle time from the heartbeat
+/// row `videre watch` writes at the end of each successful cycle. A watcher
+/// that died mid-cycle leaves the previous heartbeat, so it reads as a stale
+/// last-cycle time rather than pretending nothing is wrong.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WatchLiveness {
+    pub running: bool,
+    pub last_cycle_at: Option<String>,
+}
+
+/// Watch liveness for one library. Never errors on a library that never
+/// watched: that is the "never run" case, not a failure.
+pub fn watch_liveness_in(
+    conn: &Connection,
+    ctx: &crate::library::LibraryContext,
+) -> Result<WatchLiveness> {
+    crate::pipeline_runs::ensure_pipeline_runs_table(conn)?;
+    let last_cycle_at: Option<String> = conn
+        .query_row(
+            "SELECT started_at FROM pipeline_runs WHERE command = 'watch'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(WatchLiveness {
+        running: crate::library_locks::command_locked(ctx, "watch")?,
+        last_cycle_at,
+    })
 }
 
 #[cfg(test)]

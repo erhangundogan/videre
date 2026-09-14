@@ -141,6 +141,34 @@ where
     }
 }
 
+/// Records that a recurring command (`watch`) completed one cycle. Unlike a
+/// start/stop run, the heartbeat is the whole record: `started_at` is the
+/// moment of the last successful cycle, and there is no duration to keep. A
+/// watcher that dies mid-cycle leaves the previous cycle's heartbeat, so a
+/// dead watcher reads as a stale last-cycle time, never as a fake crash.
+pub fn record_heartbeat_in(
+    conn: &Connection,
+    ctx: &crate::library::LibraryContext,
+    command: &str,
+) -> Result<()> {
+    // Same identity check as `track_in`: a root swapped between the cycle's
+    // start and now must not have its cycle recorded against another library.
+    ctx.ensure_root_identity()?;
+    ensure_pipeline_runs_table(conn)?;
+    conn.execute(
+        "INSERT INTO pipeline_runs (command, started_at, status, summary)
+         VALUES (?1, datetime('now'), 'success', 'last successful cycle')
+         ON CONFLICT(command) DO UPDATE SET
+             started_at = excluded.started_at,
+             status = 'success',
+             finished_at = NULL,
+             duration_ms = NULL,
+             summary = excluded.summary",
+        params![command],
+    )?;
+    Ok(())
+}
+
 /// Every tracked command's last run and current liveness. Liveness is probed
 /// through the library's own lock files (`library_locks::command_locked`), so a
 /// library-scoped command shows up as running exactly when a library-scoped
@@ -153,34 +181,60 @@ pub fn read_all_in(
     ensure_pipeline_runs_table(conn)?;
     let mut out = Vec::with_capacity(TRACKED_COMMANDS.len());
     for command in TRACKED_COMMANDS {
-        let row: Option<(String, Option<i64>, String)> = conn
-            .query_row(
-                "SELECT started_at, duration_ms, status FROM pipeline_runs WHERE command = ?1",
-                params![command],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()?;
-        let currently_running = crate::library_locks::command_locked(ctx, command)?;
-        let (last_run_at, status, duration_ms) = match row {
-            None => (None, None, None),
-            Some((started_at, duration_ms, stored_status)) => {
-                let status = if stored_status == "running" && !currently_running {
-                    "crashed".to_string()
-                } else {
-                    stored_status
-                };
-                (Some(started_at), Some(status), duration_ms)
-            }
-        };
-        out.push(PipelineRunStatus {
-            command: command.to_string(),
-            last_run_at,
-            status,
-            duration_ms,
-            currently_running,
-        });
+        out.push(read_one_in(conn, ctx, command)?);
+    }
+    // `watch` is deliberately absent from TRACKED_COMMANDS: it is a recurring
+    // loop, not a start/stop run, so it never takes the per-command run-row
+    // machinery. Its heartbeat (see `record_heartbeat_in`) makes it reportable
+    // all the same; it appears here only once a heartbeat exists, so a library
+    // never watched is not lectured about a stage it never started.
+    if conn
+        .query_row(
+            "SELECT 1 FROM pipeline_runs WHERE command = 'watch'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+        .is_some()
+    {
+        out.push(read_one_in(conn, ctx, "watch")?);
     }
     Ok(out)
+}
+
+/// One command's row plus lock-derived liveness. Shared by the tracked loop
+/// and the watch heartbeat read, which need identical semantics.
+fn read_one_in(
+    conn: &Connection,
+    ctx: &crate::library::LibraryContext,
+    command: &str,
+) -> Result<PipelineRunStatus> {
+    let row: Option<(String, Option<i64>, String)> = conn
+        .query_row(
+            "SELECT started_at, duration_ms, status FROM pipeline_runs WHERE command = ?1",
+            params![command],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let currently_running = crate::library_locks::command_locked(ctx, command)?;
+    let (last_run_at, status, duration_ms) = match row {
+        None => (None, None, None),
+        Some((started_at, duration_ms, stored_status)) => {
+            let status = if stored_status == "running" && !currently_running {
+                "crashed".to_string()
+            } else {
+                stored_status
+            };
+            (Some(started_at), Some(status), duration_ms)
+        }
+    };
+    Ok(PipelineRunStatus {
+        command: command.to_string(),
+        last_run_at,
+        status,
+        duration_ms,
+        currently_running,
+    })
 }
 
 /// Install a SIGINT handler that marks `command`'s row `interrupted` and exits
@@ -250,6 +304,27 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         ensure_pipeline_runs_table(&conn).unwrap();
         conn
+    }
+
+    #[test]
+    fn heartbeat_records_last_cycle_and_reads_back() {
+        let (_t, ctx, conn) = in_library();
+        // A fresh library has never run watch: no row, no liveness time.
+        assert!(read_all_in(&conn, &ctx).unwrap().iter().all(|r| r.command != "watch"));
+        record_heartbeat_in(&conn, &ctx, "watch").unwrap();
+        let w = read_all_in(&conn, &ctx)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.command == "watch")
+            .expect("the heartbeat row must surface in the run read");
+        assert!(w.last_run_at.is_some(), "started_at is the last-cycle time");
+        assert_eq!(w.status.as_deref(), Some("success"));
+        assert!(!w.currently_running, "no watch process holds the lock");
+
+        // A second heartbeat is an update of the same row, not an error or a
+        // second entry: recurring commands have exactly one now.
+        record_heartbeat_in(&conn, &ctx, "watch").unwrap();
+        assert_eq!(read_all_in(&conn, &ctx).unwrap().iter().filter(|r| r.command == "watch").count(), 1);
     }
 
     #[test]
