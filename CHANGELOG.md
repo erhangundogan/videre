@@ -15,6 +15,31 @@ version number and are released together.
 
 ## [Unreleased]
 
+## [0.27.2] - 2026-09-14
+
+### Fixed
+
+- **Reclustering keeps the faces you have already labeled.** A recluster pass
+  now excludes confirmed, labeled faces from the clustering set, so re-running
+  face grouping (including `watch`'s periodic recluster) leaves the people you
+  have named where they are instead of reshuffling them; only unconfirmed,
+  unlabeled faces get new cluster assignments.
+
+## [0.27.1] - 2026-09-14
+
+### Changed
+
+- **`videre dedupe --remove` deletes duplicates for you, safely.** videre
+  moves the duplicate copies to the system trash itself (recoverable, never
+  `rm`), so paths containing spaces are handled correctly. The old
+  `videre dedupe | xargs trash` idiom splits every path on its spaces and
+  mishandles Google Takeout exports. `--remove` asks before deleting (`--yes`
+  to skip), previews with `--dry-run`, refuses an implausibly large deletion
+  without `--force`, and removes only exact duplicates. For scripting,
+  `--print0` prints the paths NUL-delimited for a space-safe `| xargs -0`.
+
+## [0.27.0] - 2026-09-14
+
 ### Added
 
 - **`videre status`: a `git status` for your library.** One read-only command
@@ -31,14 +56,6 @@ version number and are released together.
   `--check` moved to the new `videre status`, so the two surfaces cannot tell
   different stories about the same runs. Scripts using `stats --check` switch
   to `status --check`.
-- **`videre dedupe --remove` deletes duplicates for you, safely.** videre
-  moves the duplicate copies to the system trash itself (recoverable, never
-  `rm`), so paths containing spaces are handled correctly. The old
-  `videre dedupe | xargs trash` idiom splits every path on its spaces and
-  mishandles Google Takeout exports. `--remove` asks before deleting (`--yes`
-  to skip), previews with `--dry-run`, refuses an implausibly large deletion
-  without `--force`, and removes only exact duplicates. For scripting,
-  `--print0` prints the paths NUL-delimited for a space-safe `| xargs -0`.
 
 ## [0.26.0] - 2026-09-13
 
@@ -1694,7 +1711,11 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.25.36...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.27.2...HEAD
+[0.27.2]: https://github.com/erhangundogan/videre/compare/v0.27.1...v0.27.2
+[0.27.1]: https://github.com/erhangundogan/videre/compare/v0.27.0...v0.27.1
+[0.27.0]: https://github.com/erhangundogan/videre/compare/v0.26.0...v0.27.0
+[0.26.0]: https://github.com/erhangundogan/videre/compare/v0.25.36...v0.26.0
 [0.25.36]: https://github.com/erhangundogan/videre/compare/v0.25.35...v0.25.36
 [0.25.35]: https://github.com/erhangundogan/videre/compare/v0.25.34...v0.25.35
 [0.25.34]: https://github.com/erhangundogan/videre/compare/v0.25.33...v0.25.34
