@@ -65,11 +65,16 @@ fn remove_yes_trashes_one_copy_and_keeps_the_other() {
 }
 
 #[test]
-fn remove_rejects_similar_and_json() {
+fn remove_rejects_similar_json_and_html() {
     let (lib, _a, _b) = lib_with_spaced_duplicate();
-    for extra in [["--remove", "--similar"], ["--remove", "--json"]] {
+    let combos: [&[&str]; 3] = [
+        &["--remove", "--similar"],
+        &["--remove", "--json"],
+        &["--remove", "--html"],
+    ];
+    for extra in combos {
         let mut args = vec!["dedupe"];
-        args.extend_from_slice(&extra);
+        args.extend_from_slice(extra);
         let out = lib.cmd().args(&args).output().unwrap();
         assert!(
             !out.status.success(),

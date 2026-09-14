@@ -58,6 +58,12 @@ pub fn run(args: DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
              (use 'videre dedupe --similar --html' to review them)"
         );
     }
+    if args.remove && args.html.is_some() {
+        anyhow::bail!(
+            "--remove cannot be combined with --html; --html writes a review page. \
+             Review first, then run 'videre dedupe --remove'"
+        );
+    }
     if args.json {
         match run_json(&args, ctx) {
             Ok(doc) => {
