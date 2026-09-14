@@ -38,7 +38,7 @@ pub fn run(args: StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     }
 }
 
-fn run_text(_args: &StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
+fn run_text(args: &StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
     let _activity = videre_core::library_locks::try_activity(
         &ctx.library,
@@ -116,6 +116,9 @@ fn run_text(_args: &StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
         println!("  nothing outstanding; the library is up to date");
     }
 
+    if args.check && report.has_problem() {
+        process::exit(1);
+    }
     Ok(())
 }
 

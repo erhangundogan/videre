@@ -57,3 +57,46 @@ fn status_json_carries_every_block() {
     assert!(report["watch"].is_object());
     assert!(report["embed_model"].is_string());
 }
+
+#[test]
+fn status_check_exits_nonzero_when_a_command_failed() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "photos/IMG.jpg");
+    lib.scan();
+
+    // Simulate a prior failed run by writing directly into pipeline_runs.
+    // Exercising the CLI's own failure path for every tracked command would
+    // be its own large test; this isolates --check's exit-code contract.
+    lib.conn()
+        .execute(
+            "INSERT OR REPLACE INTO pipeline_runs (command, started_at, finished_at, status, duration_ms, summary)
+             VALUES ('faces', '2026-01-01 00:00:00', '2026-01-01 00:00:01', 'failed', 1000, 'boom')",
+            [],
+        )
+        .unwrap();
+
+    let out = lib
+        .cmd()
+        .args(["status", "--check"])
+        .output()
+        .expect("failed to run videre status --check");
+    assert!(
+        !out.status.success(),
+        "a failed command must make --check exit non-zero"
+    );
+    // Output is unchanged by --check, normal status text is still printed.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Coverage"), "{stdout}");
+
+    let json_out = lib
+        .cmd()
+        .args(["status", "--json", "--check"])
+        .output()
+        .expect("failed to run videre status --json --check");
+    assert!(!json_out.status.success());
+    let doc: serde_json::Value = serde_json::from_slice(&json_out.stdout).unwrap();
+    assert_eq!(
+        doc["schema_version"], 1,
+        "--json output must still be valid, unaffected by --check"
+    );
+}

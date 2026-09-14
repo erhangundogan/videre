@@ -1,40 +1,19 @@
 use crate::command_context::CommandContext;
 use std::process;
 use videre::types::{ErrorJson, StatsJson, SCHEMA_VERSION};
-use videre_core::pipeline_runs::PipelineRunStatus;
 
 #[derive(clap::Args)]
 pub struct StatsArgs {
     /// Emit a single JSON object on stdout instead of human-readable text
     #[arg(long)]
     json: bool,
-
-    /// Exit non-zero if any tracked command's last run is "failed" or
-    /// "crashed" (a running row whose lock is no longer held by a live
-    /// process). Output is unchanged either way, this only adds an exit
-    /// code, so `videre stats --check` composes with cron/launchd's own
-    /// failure handling without needing to parse text or JSON output.
-    #[arg(long)]
-    check: bool,
-}
-
-/// True if any tracked command's last recorded run needs attention.
-/// "interrupted" (a clean Ctrl-C) is deliberately not included, that's an
-/// intentional stop, not a failure.
-fn has_problem(pipelines: &[PipelineRunStatus]) -> bool {
-    pipelines
-        .iter()
-        .any(|p| matches!(p.status.as_deref(), Some("failed") | Some("crashed")))
 }
 
 pub fn run(args: StatsArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     if args.json {
-        match run_json(&args, ctx) {
+        match run_json(ctx) {
             Ok(doc) => {
                 println!("{}", serde_json::to_string(&doc)?);
-                if args.check && has_problem(&doc.pipelines) {
-                    process::exit(1);
-                }
                 Ok(())
             }
             Err(e) => {
@@ -43,18 +22,17 @@ pub fn run(args: StatsArgs, ctx: &CommandContext) -> anyhow::Result<()> {
             }
         }
     } else {
-        run_text(&args, ctx)
+        run_text(ctx)
     }
 }
 
-fn run_text(args: &StatsArgs, ctx: &CommandContext) -> anyhow::Result<()> {
+fn run_text(ctx: &CommandContext) -> anyhow::Result<()> {
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
     let _activity = videre_core::library_locks::try_activity(
         &ctx.library,
         videre_core::library_locks::ActivityMode::Shared,
     )?;
     let library = videre_core::library_stats::compute_full_in(&conn, &ctx.library)?;
-    let pipelines = videre_core::pipeline_runs::read_all_in(&conn, &ctx.library)?;
 
     println!(
         "Library: {} file(s) ({}), {} photo(s), {} video(s)",
@@ -141,42 +119,48 @@ fn run_text(args: &StatsArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     }
 
     println!();
-    println!("Pipeline status:");
-    for p in &pipelines {
-        let last_run = p.last_run_at.as_deref().unwrap_or("never run");
-        let status = p.status.as_deref().unwrap_or("-");
-        let duration = p
-            .duration_ms
-            .map(|d| videre_core::progress::human_duration_ms(d as u64))
-            .unwrap_or_else(|| "-".to_string());
-        let running_note = if p.currently_running {
-            "  (running now)"
-        } else {
-            ""
-        };
+    println!("Disk use:");
+    // Every location is derived from the selected library context, so a run
+    // reports only that library's own database, embeddings and locks plus the
+    // caches it uses, never another library's vectors or thumbnails.
+    let usage = videre_core::disk::usage_in(&ctx.library);
+    if usage.is_empty() {
+        println!("  nothing stored yet");
+    } else {
+        let total: u64 = usage.iter().map(|u| u.bytes).sum();
+        let rebuildable: u64 = usage
+            .iter()
+            .filter(|u| u.rebuildable)
+            .map(|u| u.bytes)
+            .sum();
+        for u in &usage {
+            println!(
+                "  {:18} {:>10}  {}",
+                u.label,
+                videre_core::disk::human_bytes(u.bytes),
+                if u.rebuildable { "(rebuildable)" } else { "" },
+            );
+        }
         println!(
-            "  {:10} {:12} last_run={:<20} duration={:<8}{}",
-            p.command, status, last_run, duration, running_note
+            "  {:18} {:>10}  ({} of it rebuildable)",
+            "total",
+            videre_core::disk::human_bytes(total),
+            videre_core::disk::human_bytes(rebuildable),
         );
     }
-    if args.check && has_problem(&pipelines) {
-        process::exit(1);
-    }
+
     Ok(())
 }
 
-fn run_json(args: &StatsArgs, ctx: &CommandContext) -> anyhow::Result<StatsJson> {
-    let _ = args;
+fn run_json(ctx: &CommandContext) -> anyhow::Result<StatsJson> {
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
     let _activity = videre_core::library_locks::try_activity(
         &ctx.library,
         videre_core::library_locks::ActivityMode::Shared,
     )?;
     let library = videre_core::library_stats::compute_full_in(&conn, &ctx.library)?;
-    let pipelines = videre_core::pipeline_runs::read_all_in(&conn, &ctx.library)?;
     Ok(StatsJson {
         schema_version: SCHEMA_VERSION,
         library,
-        pipelines,
     })
 }

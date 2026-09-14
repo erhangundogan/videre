@@ -120,7 +120,6 @@ pub struct ScanJson {
 pub struct StatsJson {
     pub schema_version: u32,
     pub library: videre_core::library_stats::LibraryStats,
-    pub pipelines: Vec<videre_core::pipeline_runs::PipelineRunStatus>,
 }
 
 /// `videre status --json`: the shared status model, serialized as-is so the
