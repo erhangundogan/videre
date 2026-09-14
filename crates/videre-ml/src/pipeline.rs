@@ -880,6 +880,121 @@ mod tests {
         assert_eq!((result.width(), result.height()), (2, 2));
     }
 
+    /// Seeds an in-memory DB with faces at controlled positions on a circle.
+    /// Labeled faces have confirmed=1 and a person_label; unlabeled faces
+    /// have confirmed=0 and no person_label. Embeddings use 2D unit vectors
+    /// at the given angles so similarity is geometrically predictable.
+    fn seed_faces(conn: &Connection, faces: &[(i64, f32, bool, Option<&str>)]) {
+        face_db::create_faces_table(conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS file_hashes (
+                hash TEXT PRIMARY KEY, path TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS pipeline_runs (
+                command TEXT PRIMARY KEY, started_at TEXT NOT NULL,
+                finished_at TEXT, status TEXT NOT NULL,
+                duration_ms INTEGER, summary TEXT
+            );"
+        ).unwrap();
+        for (id, angle, labeled, label) in faces {
+            let emb = deg(*angle);
+            let blob: Vec<u8> = emb.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let _ = blob; // suppress unused if emb is consumed below
+            conn.execute(
+                "INSERT INTO faces (id, hash, bbox, embedding, confirmed, person_label, det_score, blur) \
+                 VALUES (?1, ?2, '0,0,10,10', ?3, ?4, ?5, 0.9, 500.0)",
+                rusqlite::params![
+                    id,
+                    format!("h{id}"),
+                    {
+                        let mut blob = Vec::new();
+                        for v in &emb {
+                            // f16 little-endian, matching production format
+                            let half = half::f16::from_f32(*v);
+                            blob.extend_from_slice(&half.to_le_bytes());
+                        }
+                        blob
+                    },
+                    if *labeled { 1 } else { 0 },
+                    label.map(|s| s.to_string()),
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO file_hashes (hash, path) VALUES (?1, ?2)",
+                rusqlite::params![format!("h{id}"), format!("/a/{id}.jpg")],
+            )
+            .unwrap();
+        }
+    }
+
+    fn deg(d: f32) -> Vec<f32> {
+        let r = d.to_radians();
+        let (c, s) = (r.cos(), r.sin());
+        vec![c, s]
+    }
+
+    #[test]
+    fn recluster_preserves_labeled_faces_cluster_ids() {
+        // 3 labeled faces (erhan) at 0/8/16° + 3 unlabeled faces at 90/98/106°.
+        // After recluster, labeled faces keep cluster_id=Some(0); unlabeled
+        // faces get their own cluster. Labeled faces must not shuffle.
+        let conn = Connection::open_in_memory().unwrap();
+        face_db::create_faces_table(&conn).unwrap();
+        let faces: Vec<(i64, f32, bool, Option<&str>)> = vec![
+            (0, 0.0, true, Some("erhan")),
+            (1, 8.0, true, Some("erhan")),
+            (2, 16.0, true, Some("erhan")),
+            (3, 90.0, false, None),
+            (4, 98.0, false, None),
+            (5, 106.0, false, None),
+        ];
+        // Set cluster_id=0 for the labeled faces (their existing assignment)
+        seed_faces(&conn, &faces);
+        for id in [0i64, 1, 2] {
+            conn.execute("UPDATE faces SET cluster_id = 0 WHERE id = ?1", [id]).unwrap();
+        }
+
+        let result = run_clustering(
+            &conn, 0.6, 2, 1.0, 5.0, 0.4, f32::MAX, 0.0, 1.0, true,
+        )
+        .unwrap();
+
+        // labeled faces: cluster_id must still be 0
+        for id in [0i64, 1, 2] {
+            let cid: Option<i64> = conn
+                .query_row("SELECT cluster_id FROM faces WHERE id = ?1", [id], |r| r.get(0))
+                .unwrap();
+            assert_eq!(cid, Some(0), "labeled face {id} must keep its cluster assignment");
+        }
+        // unlabeled faces: must be clustered (not None)
+        for id in [3i64, 4, 5] {
+            let cid: Option<i64> = conn
+                .query_row("SELECT cluster_id FROM faces WHERE id = ?1", [id], |r| r.get(0))
+                .unwrap();
+            assert!(cid.is_some(), "unlabeled face {id} should have a cluster assignment");
+        }
+    }
+
+    #[test]
+    fn recluster_without_labeled_faces_clusters_normally() {
+        // All unlabeled: recluster works the same as without the filter.
+        let conn = Connection::open_in_memory().unwrap();
+        let faces: Vec<(i64, f32, bool, Option<&str>)> = vec![
+            (0, 0.0, false, None),
+            (1, 8.0, false, None),
+            (2, 90.0, false, None),
+        ];
+        seed_faces(&conn, &faces);
+
+        let result = run_clustering(
+            &conn, 0.6, 2, 1.0, 5.0, 0.4, f32::MAX, 0.0, 1.0, true,
+        )
+        .unwrap();
+
+        assert!(result.is_some(), "some faces should cluster");
+    }
+
     #[test]
     fn run_clustering_on_empty_db_does_not_error() {
         let conn = Connection::open_in_memory().unwrap();
