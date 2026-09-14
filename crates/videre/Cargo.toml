@@ -40,6 +40,7 @@ image = { version = "0.25", default-features = false, features = [
 kamadak-exif = "0.5"
 roxmltree = "0.20"
 filetime = "0.2"
+trash = "5"
 rusqlite = { version = "0.40", features = ["bundled"] }
 videre-core = { path = "../videre-core", version = "0.27.0" }
 videre-ml = { path = "../videre-ml", version = "0.27.0" }
