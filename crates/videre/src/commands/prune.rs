@@ -59,14 +59,6 @@ const MAX_REPORTED_DIRS: usize = 5;
 /// resets the count.
 const MAX_CONSECUTIVE_ERRORS: usize = 10;
 
-/// Share of the library whose removal is implausible enough to stop for.
-///
-/// Both conditions must hold. A percentage alone would block a five-row
-/// fixture where three files were legitimately deleted; a raw count alone
-/// would never trip on a small library.
-const BULK_DELETE_FRACTION: f64 = 0.20;
-const BULK_DELETE_MIN_ROWS: usize = 100;
-
 /// Reports a run that stopped because failures kept coming.
 ///
 /// Prints the first error verbatim: after ten near-identical messages it is
@@ -237,10 +229,7 @@ pub(crate) fn run_prune(
         .iter()
         .filter(|(_, f)| matches!(f, Fate::Remove))
         .count();
-    if !args.force
-        && to_remove >= BULK_DELETE_MIN_ROWS
-        && (to_remove as f64) > (total as f64) * BULK_DELETE_FRACTION
-    {
+    if !args.force && super::is_bulk_delete(to_remove, total) {
         eprintln!(
             "refusing to remove {to_remove} of {total} row(s) ({:.0}% of the library): \
              that is more likely a mounting accident than deleted photos.",
@@ -560,10 +549,7 @@ mod tests {
     /// where most files were legitimately deleted.
     #[test]
     fn the_bulk_guard_needs_both_a_fraction_and_a_floor() {
-        let trips = |to_remove: usize, total: usize| {
-            to_remove >= BULK_DELETE_MIN_ROWS
-                && (to_remove as f64) > (total as f64) * BULK_DELETE_FRACTION
-        };
+        let trips = super::super::is_bulk_delete;
         // 3 of 5 is 60%, way over the fraction, but far under the floor.
         assert!(!trips(3, 5), "small library must not be blocked");
         // 100 of 300 is 33%, over both.
