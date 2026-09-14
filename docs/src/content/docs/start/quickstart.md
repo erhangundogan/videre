@@ -43,9 +43,10 @@ videre dedupe --remove       # move the copies to the trash (asks first)
 videre prune                 # tidy the database afterwards
 ```
 
-`videre dedupe` never deletes anything itself. It prints a list for you to
-check. Add `--similar` to also flag photos and videos that merely *look* alike;
-those are reported for review only, never included in the delete list.
+By default `videre dedupe` only prints a list for you to check; `--remove` is
+what actually deletes, moving the copies to the system trash after asking. Add
+`--similar` to also flag photos and videos that merely *look* alike; those are
+reported for review only, never removed.
 
 :::caution
 `videre dedupe --remove` deletes immediately once you confirm (or with `--yes`).

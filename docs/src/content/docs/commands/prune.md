@@ -21,7 +21,7 @@ videre prune --force                   # allow an unusually large cleanup
 The usual moment is right after deleting duplicates:
 
 ```bash
-videre dedupe | tr '\n' '\0' | xargs -0 trash   # files are gone from disk...
+videre dedupe --remove         # files are gone from disk (moved to the trash)...
 videre prune                   # ...now the database agrees
 ```
 

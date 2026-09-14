@@ -83,7 +83,7 @@ the order matters:
 ```bash
 videre import ~/Takeout      # fix the dates Takeout mangled
 videre --library ~/Takeout scan        # now record them
-videre dedupe                # collapse the copies albums created
+videre dedupe --remove       # collapse the copies albums created
 videre prune                 # tidy up
 ```
 

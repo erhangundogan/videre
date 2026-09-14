@@ -23,7 +23,7 @@ videre scan                         <- everything starts here
   ├── videre gallery                browse files, duplicates and dates
   ├── videre dedupe                 find duplicates
   │     │
-  │     └── tr | xargs -0 trash     NUL-pipe the result to trash (space-safe)
+  │     └── videre dedupe --remove  move the duplicate copies to the trash
   │           │
   │           └── videre prune      synchronize the database after cleanup
   │
@@ -88,7 +88,7 @@ empty until you have opened `videre gallery` and assigned some.
 
 | After you | Run |
 |---|---|
-| Delete files (`dedupe \| tr '\n' '\0' \| xargs -0 trash`) | [`prune`](/commands/prune/) |
+| Delete files (`dedupe --remove`) | [`prune`](/commands/prune/) |
 | [`fix-dates`](/commands/fix-dates/) | [`prune`](/commands/prune/), to re-sync stored timestamps |
 | Move or reorganise folders | [`scan`](/commands/scan/), then [`prune`](/commands/prune/) |
 | Add new photos | [`scan`](/commands/scan/), then `embed` / `faces` / `classify` again |
@@ -120,7 +120,7 @@ capability. `embed` and `faces` are both resumable, so Ctrl-C is safe.
 videre import ~/Takeout --dry-run   # see what it found
 videre import ~/Takeout             # fix the dates the exporter mangled
 videre --library ~/Takeout scan               # now record them
-videre dedupe                       # collapse the copies albums created
+videre dedupe --remove              # collapse the copies albums created
 videre prune
 ```
 
