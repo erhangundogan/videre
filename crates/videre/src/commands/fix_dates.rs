@@ -83,25 +83,22 @@ fn run_fix_dates(
     let mut errors = 0usize;
 
     for (path, exif_date) in &rows {
-        // Parse exif_date: "YYYY-MM-DDTHH:MM:SS" camera-local, no timezone.
-        // Treat as local time when converting to a UNIX timestamp.
-        let ndt = match chrono::NaiveDateTime::parse_from_str(exif_date, "%Y-%m-%dT%H:%M:%S") {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("Error: {path}: bad exif_date {exif_date:?}: {e}");
-                errors += 1;
-                continue;
-            }
-        };
-
-        use chrono::TimeZone;
-        let local_dt = match chrono::Local.from_local_datetime(&ndt).single() {
-            Some(d) => d,
-            None => {
+        // The target mtime comes from the one shared definition of the
+        // exif_date -> timestamp transform, so status's "N rows would change"
+        // count and this command can never disagree about what changes.
+        let Some(local_dt) = (|| {
+            let s = videre_core::fix_dates_target::target_modified_at(exif_date)?;
+            chrono::DateTime::parse_from_rfc3339(&s).ok()
+        })() else {
+            let ndt_ok =
+                chrono::NaiveDateTime::parse_from_str(exif_date, "%Y-%m-%dT%H:%M:%S").is_ok();
+            if ndt_ok {
                 eprintln!("Error: {path}: ambiguous local time for {exif_date}");
-                errors += 1;
-                continue;
+            } else {
+                eprintln!("Error: {path}: bad exif_date {exif_date:?}");
             }
+            errors += 1;
+            continue;
         };
 
         let ft = FileTime::from_unix_time(local_dt.timestamp(), 0);

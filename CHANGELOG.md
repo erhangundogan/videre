@@ -17,6 +17,25 @@ version number and are released together.
 
 ### Added
 
+- **`videre status`: a `git status` for your library.** One read-only command
+  answering: is the library up to date (per-stage coverage with what remains
+  and the command that closes each gap), did every tracked command finish
+  well, is `videre watch` alive and when was its last cycle, and what should
+  you run next with an approximate duration. `--json` for scripts and agents;
+  `--check` exits nonzero only when a run failed or crashed. `videre watch`
+  now records a heartbeat each cycle so liveness is visible.
+
+### Changed
+
+- **`videre stats` is pure inventory.** Its pipeline-status block and
+  `--check` moved to the new `videre status`, so the two surfaces cannot tell
+  different stories about the same runs. Scripts using `stats --check` switch
+  to `status --check`.
+
+## [0.26.0] - 2026-09-13
+
+### Added
+
 - **`videre embed --reprocess`.** Re-embeds every eligible image, including
   ones that already have a vector under the model, mirroring
   `faces --reprocess` and `classify --reprocess`. This is the recovery path

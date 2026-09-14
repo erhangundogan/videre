@@ -129,6 +129,11 @@ struct DateRange {
     max: String,
 }
 
+// Inventory summary for agents, deliberately agent-shaped and NOT the
+// operational-health model: pipeline coverage, watch liveness and next-action
+// live in `videre_core::status_report` (and `videre status`). If an agent ever
+// needs pipeline state as a tool, expose the shared StatusReport instead of
+// growing this struct, so the two surfaces cannot drift.
 fn build_stats(ctx: &crate::command_context::CommandContext) -> anyhow::Result<StatsJson> {
     let conn = videre_core::db::open_wal(&ctx.library.paths.db)?;
 

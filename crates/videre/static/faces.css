@@ -16,7 +16,7 @@
     .card.person-card { cursor: default; border-color: var(--blue-border); background: var(--blue-bg); transition: border-color 0.15s; }
     .card.person-card:hover { border-color: var(--blue-hover); }
     .card.drag-over { border-color: var(--blue-hover); background: #d0e4ff; }
-    .card.cluster-card { border-color: var(--green-border); background: var(--green-bg); }
+    .card.cluster-card { border-color: var(--green-border); background: var(--green-bg); display: flex; flex-flow: column; justify-content: space-between; }
     .card.singleton-card { border-color: var(--orange-border); background: var(--orange-bg); }
     .badge { display: inline-flex; align-items: center; vertical-align: middle; border-radius: 12px; padding: 3px 9px; font-size: 12px; line-height: 1; margin-left: 4px; font-weight: 600; border: 1px solid transparent; }
     .badge-blue { background: var(--blue-bg); border-color: var(--blue-border); color: var(--blue-text); }

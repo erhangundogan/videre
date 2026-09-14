@@ -1,14 +1,17 @@
 ---
 title: videre stats
-description: Library totals and what has run recently, in one shot.
+description: "Library inventory: counts, sizes, disk use. Purely informational."
 ---
 
 ```bash
-videre stats                           # library totals and what has run recently
+videre stats                           # library totals and inventory
 videre stats --json                    # print one JSON object instead
-videre stats --check                   # exit non-zero if anything failed or crashed (for cron)
 videre --library ~/Photos stats        # select a different library
 ```
+
+Pipeline health, staleness, watch liveness and what to run next live in
+[`videre status`](/commands/status/), not here: `stats` is what is *in* the
+library, `status` is what state the *pipeline* is in.
 
 ## Reading the output
 
@@ -43,15 +46,6 @@ Disk use:
   database journal      32.0 KB  (rebuildable)
   total                703.7 MB  (95.6 MB of it rebuildable)
 
-Pipeline status:
-  scan       success      last_run=2026-08-09 16:17:43  duration=0ms
-  faces      interrupted  last_run=2026-08-03 10:11:45  duration=9m 6s
-  embed      success      last_run=2026-08-17 13:29:01  duration=21s
-  classify   success      last_run=2026-08-17 13:29:30  duration=1.5s
-  dedupe     success      last_run=2026-08-05 11:35:38  duration=132ms
-  fix-dates  success      last_run=2026-07-31 10:33:15  duration=50ms
-  prune      success      last_run=2026-07-31 21:02:36  duration=479ms
-  locations  success      last_run=2026-08-18 09:32:47  duration=1m 17s
 ```
 
 Real output from a 70,000-file library, so the awkward rows are the interesting
@@ -123,118 +117,10 @@ problems, a few unreadable files or one corrupt image, do not fail a run. Only
 an unhandled error does. `fix-dates` and `faces` both return a count of problems
 rather than failing outright.
 
-## Checking on things
+## Pipeline health moved to status
 
-Every tracked command reports one of:
-
-| status | meaning |
-|---|---|
-| `success` | finished, whatever it did or did not find |
-| `failed` | returned an error |
-| `interrupted` | stopped part-way, usually Ctrl-C or a machine going to sleep |
-| `crashed` | claimed to be running, but no live process holds its lock |
-| `-` | has never executed against this database, and `last_run` reads `never run` |
-
-`(running now)` is appended to the line, not a status: it means the command's
-lock is held by a live process at this moment.
-
-The `faces interrupted` line in the sample above is the ordinary case: a long
-run was stopped part-way. **Nothing is lost when that happens.** Every long job
-records what it already processed, so running it again resumes rather than
-restarting. The status is there to tell you the work is unfinished, not that it
-is broken.
-
-:::note[Per-item errors do not make a run `failed`]
-`fix-dates` and `faces` can skip individual files and still record `success`,
-because one unreadable photo is not a failed run. `failed` means the command
-itself returned an error.
-:::
-
-Because `(running now)` reflects a live lock, this is the way to see whether a
-background [`watch`](/commands/watch/) is actually working:
-
-```bash
-videre stats | grep -E 'scan|faces'
-```
-
-Tracked commands are `scan`, `faces`, `embed`, `classify`, `dedupe`,
-`fix-dates`, `prune` and `locations`, always in that order, always eight lines.
-`gallery`, `search`, `mcp` and `config` are deliberately not tracked: they are
-interactive or read-only, so "when did it last run" says nothing useful.
-
-## `--check` for unattended runs
-
-Exits nonzero if any tracked command's last run failed or crashed, so cron or
-launchd can act without parsing any output:
-
-```bash
-videre stats --check || echo "videre needs attention" | mail -s "videre" me@example.com
-```
-
-```bash
-# crontab: nightly refresh, alert only on failure
-0 3 * * * videre --library ~/Photos scan --retry-incomplete --silent && videre stats --check
-```
-
-A cleanly interrupted run (Ctrl-C) counts as `interrupted`, not a problem, so
-stopping a long job by hand does not trigger alerts forever.
-
-`crashed` is different from `failed`: it means the last run recorded itself as
-still running, but no live process holds its lock. That is what a kill -9, a
-power loss, or an OOM kill looks like after the fact.
-
-`--check` changes only the exit code, and composes with both output formats.
-
-## JSON output
-
-```bash
-videre stats --json
-```
-
-```json
-{
-  "schema_version": 1,
-  "library": {
-    "total_files": 204,
-    "total_size_bytes": 2038765432,
-    "total_photos": 151,
-    "total_videos": 52,
-    "duplicate_group_count": 3,
-    "duplicate_file_count": 7,
-    "wasted_bytes": 10921472,
-    "faces_detected": 98,
-    "people_named": 0,
-    "embeddings": [
-      { "model_id": "google/siglip-base-patch16-224", "count": 196, "dims": 768, "size_bytes": 409600 }
-    ]
-  },
-  "pipelines": [
-    { "command": "scan", "last_run_at": "2026-08-09 22:21:31", "status": "success",
-      "duration_ms": 1, "currently_running": false }
-  ]
-}
-```
-
-`pipelines` always has exactly eight entries in a fixed order, with
-`last_run_at`, `status` and `duration_ms` all `null` for a command that has
-never run. `embeddings` has one entry per model and may be empty.
-
-```bash
-videre stats --json | jq -r '.library.wasted_bytes / 1048576 | floor'
-videre stats --json | jq -r '.pipelines[] | select(.status != "success") | .command'
-```
-
-## Caveats
-
-**Numbers describe the database, not your disk.** They reflect the last
-[`videre scan`](/commands/scan/). Files deleted since then are still counted
-until [`videre prune`](/commands/prune/) runs, which is the usual reason a
-freshly cleaned library still reports duplicates.
-
-**It requires an existing database.** Unlike `embed` or `classify`, running in a
-library that has not been scanned yet fails cleanly instead of creating an empty
-one.
-
-**Sizes are what the files claim**, taken from the database rather than measured
-now. `du` on the folder can differ, particularly with sparse files or a
-filesystem doing compression.
+Per-command last-run lines, the status table (`success`, `failed`,
+`interrupted`, `crashed`), watch liveness, and the `--check` exit code for
+cron all live in [`videre status`](/commands/status/) now. Keeping them in
+both places would let the two surfaces disagree; one home, and it is
+`status`.
