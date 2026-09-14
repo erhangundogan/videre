@@ -21,6 +21,33 @@ fn remaining(paths: &[&PathBuf]) -> usize {
 }
 
 #[test]
+fn print0_lists_losers_nul_delimited_not_newline() {
+    let (lib, _a, _b) = lib_with_spaced_duplicate();
+    let out = lib.cmd().args(["dedupe", "--print0"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The loser path is NUL-terminated, never newline-terminated: that is the
+    // whole point of --print0 (a `| xargs -0` consumer is then safe for the
+    // space in "Google Photos/").
+    assert!(
+        out.stdout.contains(&0u8),
+        "stdout must contain a NUL delimiter"
+    );
+    assert!(
+        !out.stdout.contains(&b'\n'),
+        "--print0 output must not contain a newline"
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("Google Photos/"),
+        "the space-containing loser path must be present intact: {text:?}"
+    );
+}
+
+#[test]
 fn remove_dry_run_lists_and_deletes_nothing() {
     let (lib, a, b) = lib_with_spaced_duplicate();
     let out = lib

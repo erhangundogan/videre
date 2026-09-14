@@ -144,6 +144,19 @@ fn dry_run_changes_nothing_on_disk() {
 }
 
 #[test]
+fn into_is_rejected_as_not_yet_implemented() {
+    // --into is defined but not built yet; it must fail with a clear message
+    // rather than panic or silently do nothing, and it bails before touching
+    // any source, so no fixture is needed.
+    let lib = TestLibrary::new();
+    let out = run(&lib, &["--into", "copies"]);
+    assert!(
+        out.contains("not implemented"),
+        "--into must fail with a clear not-implemented message: {out}"
+    );
+}
+
+#[test]
 fn a_library_of_tiny_files_warns_that_it_looks_optimised() {
     let lib = TestLibrary::new();
     apple_library(&lib.root, "Optimised.photoslibrary", 1024, 20);
