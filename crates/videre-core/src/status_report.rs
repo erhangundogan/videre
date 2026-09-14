@@ -421,13 +421,19 @@ mod tests {
     #[test]
     fn locations_and_fix_dates_count_only_true_gaps() {
         let conn = seed_db("status_cov_locfix");
+        // "In sync" is judged against THIS machine's target: the transform
+        // resolves the camera-local time through the local timezone, so a
+        // hardcoded offset passes on one continent and fails on another (it
+        // did, on CI). Rows in sync here carry exactly what
+        // `target_modified_at` would write.
+        let exif = "2021-07-04T15:30:00";
+        let in_sync = crate::fix_dates_target::target_modified_at(exif).unwrap();
         // geotagged, named: done. geotagged, unnamed: outstanding.
         conn.execute(
             "INSERT INTO file_hashes (path, hash, ext, gps_lat, gps_lon, location_name,
                                       exif_date, modified_at)
-             VALUES ('/a/1.jpg', 'h1', 'jpg', 52.5, 13.4, 'Berlin, Germany',
-                     '2021-07-04T15:30:00', '2021-07-04T15:30:00+02:00')",
-            [],
+             VALUES ('/a/1.jpg', 'h1', 'jpg', 52.5, 13.4, 'Berlin, Germany', ?1, ?2)",
+            [exif.to_string(), in_sync.clone()],
         )
         .unwrap();
         conn.execute(
@@ -438,8 +444,8 @@ mod tests {
         .unwrap();
         conn.execute(
             "INSERT INTO file_hashes (path, hash, ext, exif_date, modified_at)
-             VALUES ('/a/3.jpg', 'h3', 'jpg', '2021-07-04T15:30:00', '2021-07-04T15:30:00+02:00')",
-            [],
+             VALUES ('/a/3.jpg', 'h3', 'jpg', ?1, ?2)",
+            [exif.to_string(), in_sync],
         )
         .unwrap();
 
