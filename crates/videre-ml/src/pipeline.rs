@@ -894,8 +894,9 @@ mod tests {
                 command TEXT PRIMARY KEY, started_at TEXT NOT NULL,
                 finished_at TEXT, status TEXT NOT NULL,
                 duration_ms INTEGER, summary TEXT
-            );"
-        ).unwrap();
+            );",
+        )
+        .unwrap();
         for (id, angle, labeled, label) in faces {
             let emb = deg(*angle);
             let blob: Vec<u8> = emb.iter().flat_map(|v| v.to_le_bytes()).collect();
@@ -952,27 +953,37 @@ mod tests {
         // Set cluster_id=0 for the labeled faces (their existing assignment)
         seed_faces(&conn, &faces);
         for id in [0i64, 1, 2] {
-            conn.execute("UPDATE faces SET cluster_id = 0 WHERE id = ?1", [id]).unwrap();
+            conn.execute("UPDATE faces SET cluster_id = 0 WHERE id = ?1", [id])
+                .unwrap();
         }
 
-        let result = run_clustering(
-            &conn, 0.6, 2, 1.0, 5.0, 0.4, f32::MAX, 0.0, 1.0, true,
-        )
-        .unwrap();
+        let result =
+            run_clustering(&conn, 0.6, 2, 1.0, 5.0, 0.4, f32::MAX, 0.0, 1.0, true).unwrap();
 
         // labeled faces: cluster_id must still be 0
         for id in [0i64, 1, 2] {
             let cid: Option<i64> = conn
-                .query_row("SELECT cluster_id FROM faces WHERE id = ?1", [id], |r| r.get(0))
+                .query_row("SELECT cluster_id FROM faces WHERE id = ?1", [id], |r| {
+                    r.get(0)
+                })
                 .unwrap();
-            assert_eq!(cid, Some(0), "labeled face {id} must keep its cluster assignment");
+            assert_eq!(
+                cid,
+                Some(0),
+                "labeled face {id} must keep its cluster assignment"
+            );
         }
         // unlabeled faces: must be clustered (not None)
         for id in [3i64, 4, 5] {
             let cid: Option<i64> = conn
-                .query_row("SELECT cluster_id FROM faces WHERE id = ?1", [id], |r| r.get(0))
+                .query_row("SELECT cluster_id FROM faces WHERE id = ?1", [id], |r| {
+                    r.get(0)
+                })
                 .unwrap();
-            assert!(cid.is_some(), "unlabeled face {id} should have a cluster assignment");
+            assert!(
+                cid.is_some(),
+                "unlabeled face {id} should have a cluster assignment"
+            );
         }
     }
 
@@ -987,10 +998,8 @@ mod tests {
         ];
         seed_faces(&conn, &faces);
 
-        let result = run_clustering(
-            &conn, 0.6, 2, 1.0, 5.0, 0.4, f32::MAX, 0.0, 1.0, true,
-        )
-        .unwrap();
+        let result =
+            run_clustering(&conn, 0.6, 2, 1.0, 5.0, 0.4, f32::MAX, 0.0, 1.0, true).unwrap();
 
         assert!(result.is_some(), "some faces should cluster");
     }
