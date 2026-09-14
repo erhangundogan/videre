@@ -47,11 +47,20 @@ pub fn find_duplicate_groups(records: &[FileRecord]) -> Vec<DuplicateGroup> {
 
 /// Prints REMOVE candidates to stdout, one path per line: ready for piping.
 /// The first file in each group (oldest date = likely original) is kept; the rest are printed.
+/// The removable copies: every group's non-kept files (`files[1..]`; `files[0]`
+/// is the KEEP the sort already chose). Shared by `print_losers` and by `dedupe
+/// --remove`, so what is printed and what is deleted are one set and the kept
+/// copy is never a candidate for removal.
+pub fn loser_paths(groups: &[DuplicateGroup]) -> Vec<&str> {
+    groups
+        .iter()
+        .flat_map(|group| group.files.iter().skip(1).map(|f| f.path.as_str()))
+        .collect()
+}
+
 pub fn print_losers(groups: &[DuplicateGroup]) {
-    for group in groups {
-        for file in group.files.iter().skip(1) {
-            println!("{}", file.path);
-        }
+    for path in loser_paths(groups) {
+        println!("{path}");
     }
 }
 
@@ -109,6 +118,24 @@ mod tests {
     use crate::types::FileRecord;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn loser_paths_returns_every_non_kept_file_including_spaced_paths() {
+        let g = DuplicateGroup {
+            hash: "h".into(),
+            files: vec![
+                make_record("/lib/Google Photos/keep.jpg", "h"),
+                make_record("/lib/Google Photos/copy 1.jpg", "h"),
+                make_record("/lib/copy 2.jpg", "h"),
+            ],
+        };
+        let losers = loser_paths(std::slice::from_ref(&g));
+        assert_eq!(
+            losers,
+            vec!["/lib/Google Photos/copy 1.jpg", "/lib/copy 2.jpg"]
+        );
+        assert!(!losers.iter().any(|p| *p == "/lib/Google Photos/keep.jpg"));
+    }
 
     fn make_record(path: &str, hash: &str) -> FileRecord {
         FileRecord {
