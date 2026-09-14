@@ -193,6 +193,39 @@ pub fn watch_liveness_in(
     })
 }
 
+/// An approximate duration for one stage's outstanding work, clearly a
+/// guess and rendered as one ("~1.6h"). `secs` is `None` when there is
+/// nothing outstanding: no work, no estimate.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CostEstimate {
+    pub secs: Option<u64>,
+    pub approximate: bool,
+}
+
+/// Estimate cost from the last successful run's measured throughput when the
+/// run recorded an item count, else from a coarse per-item constant. The
+/// estimator is deliberately isolated: pipeline_runs does not yet store item
+/// counts, so today the measured path is exercised by tests and the fallback
+/// is what users see; when runs start recording items, this function
+/// improves without touching any caller.
+pub fn estimate_cost(
+    outstanding: i64,
+    last_run_ms: Option<i64>,
+    last_run_items: Option<i64>,
+    fallback_secs_per_item: f64,
+) -> CostEstimate {
+    let secs = if outstanding <= 0 {
+        None
+    } else {
+        let per_item = match (last_run_ms, last_run_items) {
+            (Some(ms), Some(items)) if ms > 0 && items > 0 => ms as f64 / items as f64 / 1000.0,
+            _ => fallback_secs_per_item,
+        };
+        Some((outstanding as f64 * per_item).ceil() as u64)
+    };
+    CostEstimate { secs, approximate: true }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,5 +367,20 @@ mod tests {
         let fix = cov.iter().find(|c| c.stage == "fix-dates").unwrap();
         assert_eq!(fix.total, 3);
         assert_eq!(fix.outstanding, 1, "only h2's mtime disagrees with its exif_date");
+    }
+
+    #[test]
+    fn cost_uses_measured_rate_then_falls_back() {
+        // 100 items took 50_000ms -> 500ms/item; 10 outstanding -> ~5s.
+        let c = estimate_cost(10, Some(50_000), Some(100), 2.0);
+        assert_eq!(c.secs, Some(5));
+        // no prior run -> fallback 2s/item * 10 = 20s.
+        let f = estimate_cost(10, None, None, 2.0);
+        assert_eq!(f.secs, Some(20));
+        assert!(f.approximate);
+        // nothing outstanding: no estimate, not zero seconds of work.
+        assert_eq!(estimate_cost(0, None, None, 2.0).secs, None);
+        // a nonsense prior run (zero items) must not divide by zero.
+        assert_eq!(estimate_cost(10, Some(50_000), Some(0), 2.0).secs, Some(20));
     }
 }
