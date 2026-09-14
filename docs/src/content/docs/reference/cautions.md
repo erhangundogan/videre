@@ -6,13 +6,17 @@ description: The parts of videre that change something, and the situations that 
 Most of videre is read-only. These are the parts that are not, plus the
 situations that surprise people.
 
-## `videre dedupe` prints files to delete
+## `videre dedupe --remove` deletes files
 
-Its output is the REMOVE side of each duplicate group, so
-`videre dedupe | xargs trash` deletes those files immediately.
+`videre dedupe --remove` moves the duplicate copies to the system trash
+(recoverable), and its plain output is the REMOVE side of each group. `--remove`
+asks before deleting (unless `--yes`), previews with `--dry-run`, and handles
+paths with spaces correctly. Prefer it over a `videre dedupe | xargs trash`
+pipe, which splits every path on its spaces (use `--print0 | xargs -0` if you
+must pipe).
 
-Look before you pipe: run [`videre dedupe --html`](/commands/dedupe/) first and review
-the KEEP/REMOVE badges, or send the list to a file and read it.
+Look before you delete: run [`videre dedupe --html`](/commands/dedupe/) first and review
+the KEEP/REMOVE badges, or use `--remove --dry-run`.
 
 Near-duplicate groups from `--similar` are deliberately kept out of this output,
 because they are for review by eye, not for automatic deletion.

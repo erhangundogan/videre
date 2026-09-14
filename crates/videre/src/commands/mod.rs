@@ -40,6 +40,18 @@ pub(crate) fn confirm(prompt: &str) -> anyhow::Result<bool> {
     Ok(matches!(input.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 
+/// Share of a set whose removal is implausible enough to stop for. Both
+/// conditions must hold: a percentage alone would block a tiny fixture where a
+/// few files were legitimately removed, and a raw count alone would never trip
+/// on a small library. Shared by prune (row cleanup) and dedupe --remove (file
+/// deletion) so one guard governs every bulk removal.
+pub(crate) const BULK_DELETE_FRACTION: f64 = 0.20;
+pub(crate) const BULK_DELETE_MIN_ROWS: usize = 100;
+
+pub(crate) fn is_bulk_delete(to_remove: usize, total: usize) -> bool {
+    to_remove >= BULK_DELETE_MIN_ROWS && (to_remove as f64) > (total as f64) * BULK_DELETE_FRACTION
+}
+
 /// Shared by `dedupe --json` and the MCP `find_duplicates` tool so the two
 /// surfaces cannot silently diverge in shape.
 pub(crate) fn build_find_duplicates(
@@ -87,4 +99,16 @@ pub(crate) fn parse_model_id(s: &str) -> Result<String, String> {
     videre_core::embeddings::validate_model_id(s)
         .map(|_| s.to_string())
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_bulk_delete;
+
+    #[test]
+    fn is_bulk_delete_needs_both_fraction_and_floor() {
+        assert!(!is_bulk_delete(3, 5)); // 60% but under the 100 floor
+        assert!(!is_bulk_delete(100, 1000)); // at floor but exactly 10% (not > 20%)
+        assert!(is_bulk_delete(300, 1000)); // over floor and over 20%
+    }
 }

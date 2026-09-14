@@ -23,7 +23,7 @@ videre scan                         <- everything starts here
   ├── videre gallery                browse files, duplicates and dates
   ├── videre dedupe                 find duplicates
   │     │
-  │     └── xargs trash             pipe result to xargs trash to remove duplicates
+  │     └── videre dedupe --remove  move the duplicate copies to the trash
   │           │
   │           └── videre prune      synchronize the database after cleanup
   │
@@ -88,7 +88,7 @@ empty until you have opened `videre gallery` and assigned some.
 
 | After you | Run |
 |---|---|
-| Delete files (`dedupe \| xargs trash`) | [`prune`](/commands/prune/) |
+| Delete files (`dedupe --remove`) | [`prune`](/commands/prune/) |
 | [`fix-dates`](/commands/fix-dates/) | [`prune`](/commands/prune/), to re-sync stored timestamps |
 | Move or reorganise folders | [`scan`](/commands/scan/), then [`prune`](/commands/prune/) |
 | Add new photos | [`scan`](/commands/scan/), then `embed` / `faces` / `classify` again |
@@ -120,7 +120,7 @@ capability. `embed` and `faces` are both resumable, so Ctrl-C is safe.
 videre import ~/Takeout --dry-run   # see what it found
 videre import ~/Takeout             # fix the dates the exporter mangled
 videre --library ~/Takeout scan               # now record them
-videre dedupe                       # collapse the copies albums created
+videre dedupe --remove              # collapse the copies albums created
 videre prune
 ```
 
@@ -134,8 +134,8 @@ point it at the library and it works out the rest. See
 ```bash
 videre --library ~/Photos scan
 videre dedupe --html                  # review groups with KEEP/REMOVE badges
-videre dedupe | xargs trash    # delete, once you agree
-videre prune                   # reclaim database rows and derived data
+videre dedupe --remove                # move the copies to the trash, once you agree
+videre prune                          # reclaim database rows and derived data
 ```
 
 Add `--similar` to `scan` and `dedupe` if you also want near-duplicates, which
