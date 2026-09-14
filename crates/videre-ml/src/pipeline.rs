@@ -672,6 +672,20 @@ pub fn run_clustering(
     silent: bool,
 ) -> Result<Option<ClusteringResult>> {
     let all_faces = videre_core::face_db::load_faces_for_clustering(conn)?;
+    // Labeled faces are manually verified: re-clustering must not shuffle
+    // them into different groups. Exclude them so only unconfirmed,
+    // unlabeled faces get new cluster assignments.
+    let labeled_ids: std::collections::HashSet<i64> = {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM faces WHERE confirmed = 1 AND person_label IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+        rows.collect::<rusqlite::Result<std::collections::HashSet<_>>>()?
+    };
+    let all_faces: Vec<_> = all_faces
+        .into_iter()
+        .filter(|(id, ..)| !labeled_ids.contains(id))
+        .collect();
     if all_faces.is_empty() {
         return Ok(None);
     }
