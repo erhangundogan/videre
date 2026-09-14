@@ -120,6 +120,25 @@ fn export_xmp_writes_sidecars_and_dry_run_writes_nothing() {
 }
 
 #[test]
+fn no_like_clears_a_liked_mark() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "photos/L.jpg");
+    lib.scan();
+    // Like it, then confirm stats sees it liked.
+    run(&lib, &["mark", "--path", "photos", "--like", "--silent"]);
+    assert!(
+        run(&lib, &["stats"]).contains("1 liked"),
+        "expected it liked"
+    );
+    // --no-like clears the like; stats drops back to zero.
+    run(&lib, &["mark", "--path", "photos", "--no-like", "--silent"]);
+    assert!(
+        run(&lib, &["stats"]).contains("0 liked"),
+        "--no-like must clear the liked mark"
+    );
+}
+
+#[test]
 fn stats_reports_marks() {
     let lib = TestLibrary::new();
     lib.copy_fixture("tiny.jpg", "photos/S.jpg");
