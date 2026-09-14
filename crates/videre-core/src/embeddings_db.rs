@@ -236,6 +236,35 @@ pub fn attach_for_read_in(
     attach_in(conn, ctx, model_id, false)
 }
 
+/// Attach the model database for reading, or, when none exists yet, an empty
+/// in-memory placeholder under the same alias. Read-only callers that report
+/// coverage over `emb.*` (videre status) need the query to *succeed* on a
+/// never-embedded library, where the honest answer is "zero embeddings":
+/// forking their eligibility SQL to avoid the attach is exactly the drift
+/// this shared query layer exists to prevent. Nothing touches disk: the
+/// placeholder lives and dies with the connection.
+pub fn attach_for_read_or_placeholder_in(
+    conn: &Connection,
+    ctx: &crate::library::LibraryContext,
+    model_id: &str,
+) -> Result<()> {
+    if attach_for_read_in(conn, ctx, model_id).is_ok() {
+        return Ok(());
+    }
+    conn.execute("ATTACH DATABASE ':memory:' AS emb", [])
+        .context("attach placeholder embeddings database")?;
+    conn.execute_batch(
+        "CREATE TABLE emb.embeddings (
+            hash        TEXT PRIMARY KEY NOT NULL,
+            model_id    TEXT NOT NULL,
+            embedding   BLOB NOT NULL,
+            embedded_at TEXT NOT NULL
+        );",
+    )
+    .context("create placeholder embeddings table")?;
+    Ok(())
+}
+
 /// DETACH the model database. Needed before attaching a different model on
 /// the same connection, since the alias may bind only one file at a time.
 pub fn detach(conn: &Connection) -> Result<()> {

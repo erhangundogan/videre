@@ -20,6 +20,7 @@ pub mod scan;
 pub mod search;
 pub mod selection_args;
 pub mod stats;
+pub mod status;
 pub mod tag;
 pub mod watch;
 

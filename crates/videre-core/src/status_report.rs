@@ -17,6 +17,7 @@ use rusqlite::Connection;
 /// outstanding-vs-done count (scan, dedupe) deliberately get no line here:
 /// `status` stays glanceable rather than becoming an everything-dashboard.
 #[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize)]
 pub struct StageCoverage {
     pub stage: &'static str,
     pub outstanding: i64,
@@ -168,6 +169,7 @@ pub fn coverage_in(conn: &Connection, embed_model: &str, classify_model: &str) -
 /// that died mid-cycle leaves the previous heartbeat, so it reads as a stale
 /// last-cycle time rather than pretending nothing is wrong.
 #[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize)]
 pub struct WatchLiveness {
     pub running: bool,
     pub last_cycle_at: Option<String>,
@@ -197,6 +199,7 @@ pub fn watch_liveness_in(
 /// guess and rendered as one ("~1.6h"). `secs` is `None` when there is
 /// nothing outstanding: no work, no estimate.
 #[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize)]
 pub struct CostEstimate {
     pub secs: Option<u64>,
     pub approximate: bool,
@@ -230,6 +233,7 @@ pub fn estimate_cost(
 /// by `videre status` (text and --json); `stats` and the MCP tools read the
 /// same model rather than re-deriving it.
 #[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize)]
 pub struct StatusReport {
     pub coverage: Vec<StageCoverage>,
     pub pipelines: Vec<crate::pipeline_runs::PipelineRunStatus>,

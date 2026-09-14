@@ -57,6 +57,8 @@ enum Command {
     Config(commands::config::ConfigArgs),
     /// Serve read-only MCP tools (search, find_duplicates, stats) over stdio for LLM agents
     Mcp(commands::mcp::McpArgs),
+    /// Pipeline health: staleness, watch liveness, what to run next
+    Status(commands::status::StatusArgs),
     /// Show library totals and per-command pipeline run status
     Stats(commands::stats::StatsArgs),
     /// Set ratings, picks, colour labels and likes on photos
@@ -169,6 +171,8 @@ fn main() {
             .and_then(|ctx| commands::mcp::run(args, &ctx)),
         Command::Stats(args) => command_context::CommandContext::capture(library)
             .and_then(|ctx| commands::stats::run(args, &ctx)),
+        Command::Status(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::status::run(args, &ctx)),
         Command::Mark(args) => command_context::CommandContext::capture(library)
             .and_then(|ctx| commands::mark::run(args, &ctx)),
         Command::Export(args) => command_context::CommandContext::capture(library)

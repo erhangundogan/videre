@@ -123,6 +123,14 @@ pub struct StatsJson {
     pub pipelines: Vec<videre_core::pipeline_runs::PipelineRunStatus>,
 }
 
+/// `videre status --json`: the shared status model, serialized as-is so the
+/// CLI surface cannot drift from the core model it renders.
+#[derive(Debug, Serialize)]
+pub struct StatusJson {
+    pub schema_version: u32,
+    pub report: videre_core::status_report::StatusReport,
+}
+
 /// Error document: in --json mode stdout always carries exactly one valid JSON
 /// object, so runtime failures are emitted as this instead of leaving stdout empty.
 #[derive(Debug, Serialize)]
