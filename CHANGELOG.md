@@ -15,6 +15,16 @@ version number and are released together.
 
 ## [Unreleased]
 
+## [0.28.1] - 2026-09-15
+
+### Fixed
+
+- **Gallery: the Similar button no longer appears when the library has no
+  embeddings.** The in-page Similar search ranks against embedding vectors, so
+  on a scanned-but-never-embedded library it could only fail with a generic
+  "Search failed". The button is now hidden until the library has embeddings, so
+  a control that cannot work is not offered; run `videre embed` to enable it.
+
 ## [0.28.0] - 2026-09-15
 
 ### Added
@@ -1725,7 +1735,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.28.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.28.1...HEAD
+[0.28.1]: https://github.com/erhangundogan/videre/compare/v0.28.0...v0.28.1
 [0.28.0]: https://github.com/erhangundogan/videre/compare/v0.27.2...v0.28.0
 [0.27.2]: https://github.com/erhangundogan/videre/compare/v0.27.1...v0.27.2
 [0.27.1]: https://github.com/erhangundogan/videre/compare/v0.27.0...v0.27.1
