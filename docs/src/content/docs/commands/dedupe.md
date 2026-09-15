@@ -128,7 +128,9 @@ excluded from grouping entirely. A flat or near-flat frame (a fade-in, a
 letterboxed opener, a solid title card) produces exactly such a fingerprint,
 and any two of them collide no matter what the rest of the clip shows. Exact
 copies of those files are still caught by exact-duplicate detection, which
-compares content, not the fingerprint.
+compares content, not the fingerprint. The exclusion also reaches genuinely
+related files whose shared frame is very low-detail, such as two re-encodes
+of a mostly blank page; grouping is review-only and errs toward precision.
 
 HEIC files never get a fingerprint. For videos it is computed from a single
 poster frame, so it finds re-encodes that keep the opening frame but not a trim

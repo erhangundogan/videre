@@ -73,6 +73,11 @@ pub fn print_losers(groups: &[DuplicateGroup]) {
 /// size-proximity gate alongside this: a genuine re-encode routinely halves
 /// the file size (the testsrc fixture pair measures 2.07x), so a size window
 /// would cut the true positives the feature exists to find.
+///
+/// The cutoff is empirical and independent of the grouping threshold:
+/// fingerprints in the 7-to-9-bit band can still collide within a distance
+/// of 10, so the gate narrows the near-flat collision class without closing
+/// it. Raise it only with measurements; it must not track the threshold.
 const DEGENERATE_BITS: u32 = 6;
 
 fn degenerate_phash(hash: u64) -> bool {
