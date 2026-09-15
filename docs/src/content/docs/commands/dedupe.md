@@ -123,9 +123,20 @@ In practice that catches resizes, re-compressions, crops that keep the overall
 composition, and light edits. It will not catch a photo of the same scene taken
 a moment later, since those differ far more than 10 bits.
 
+Fingerprints with almost no set bits (or almost nothing but set bits) are
+excluded from grouping entirely. A flat or near-flat frame (a fade-in, a
+letterboxed opener, a solid title card) produces exactly such a fingerprint,
+and any two of them collide no matter what the rest of the clip shows. Exact
+copies of those files are still caught by exact-duplicate detection, which
+compares content, not the fingerprint. The exclusion also reaches genuinely
+related files whose shared frame is very low-detail, such as two re-encodes
+of a mostly blank page; grouping is review-only and errs toward precision.
+
 HEIC files never get a fingerprint. For videos it is computed from a single
 poster frame, so it finds re-encodes that keep the opening frame but not a trim
-that cuts it.
+that cuts it. File size plays no part in the comparison: a genuine re-encode
+routinely halves the file, so a size window would drop the very matches the
+feature exists to find.
 
 There is no automatic way to act on these, by design. Review them in the report
 and delete by hand.
