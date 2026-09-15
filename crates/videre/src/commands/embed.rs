@@ -52,6 +52,25 @@ pub struct EmbedArgs {
     silent: bool,
 }
 
+impl EmbedArgs {
+    /// Pipeline-stage defaults: no selection, clap defaults for every knob,
+    /// silence controlled by the pipeline. Built by letting clap parse an
+    /// empty argv so defaults never drift from the flag definitions.
+    pub(crate) fn for_pipeline(silent: bool) -> Self {
+        #[derive(clap::Parser)]
+        struct P {
+            #[command(flatten)]
+            a: EmbedArgs,
+        }
+        let argv: &[&str] = if silent {
+            &["embed", "--silent"]
+        } else {
+            &["embed"]
+        };
+        <P as clap::Parser>::parse_from(argv).a
+    }
+}
+
 pub fn run(args: EmbedArgs, ctx: &CommandContext) -> Result<()> {
     // Guard every --path against the selected root before any state changes, so
     // an out-of-root filter is rejected before the model store below is created.
@@ -207,6 +226,16 @@ fn format_summary(done: usize, failed: usize, elapsed: std::time::Duration) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn for_pipeline_applies_clap_defaults() {
+        let a = EmbedArgs::for_pipeline(false);
+        assert_eq!(a.batch, 32, "clap default_value_t for batch");
+        assert_eq!(a.chunk, 500, "clap default_value_t for chunk");
+        assert!(!a.silent);
+        let s = EmbedArgs::for_pipeline(true);
+        assert!(s.silent);
+    }
 
     #[test]
     fn embed_accepts_mark_and_tag_filters_but_refuses_derived_selectors() {

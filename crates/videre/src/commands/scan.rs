@@ -35,6 +35,25 @@ pub struct ScanArgs {
     json: bool,
 }
 
+impl ScanArgs {
+    /// Pipeline-stage defaults: clap defaults for every knob, silence
+    /// controlled by the pipeline. Parsing an empty argv keeps defaults from
+    /// drifting from the flag definitions.
+    pub(crate) fn for_pipeline(silent: bool) -> Self {
+        #[derive(clap::Parser)]
+        struct P {
+            #[command(flatten)]
+            a: ScanArgs,
+        }
+        let argv: &[&str] = if silent {
+            &["scan", "--silent"]
+        } else {
+            &["scan"]
+        };
+        <P as clap::Parser>::parse_from(argv).a
+    }
+}
+
 pub fn run(args: ScanArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     if args.json {
         match run_inner(&args, ctx) {

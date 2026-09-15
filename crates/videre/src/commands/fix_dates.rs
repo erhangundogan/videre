@@ -18,6 +18,25 @@ pub struct FixDatesArgs {
 
 use super::confirm;
 
+impl FixDatesArgs {
+    /// Pipeline-stage defaults: non-interactive (`--yes`, since the pipeline
+    /// cannot answer a per-file prompt), clap defaults otherwise, silence
+    /// controlled by the pipeline.
+    pub(crate) fn for_pipeline(silent: bool) -> Self {
+        #[derive(clap::Parser)]
+        struct P {
+            #[command(flatten)]
+            a: FixDatesArgs,
+        }
+        let argv: &[&str] = if silent {
+            &["fix-dates", "--yes", "--silent"]
+        } else {
+            &["fix-dates", "--yes"]
+        };
+        <P as clap::Parser>::parse_from(argv).a
+    }
+}
+
 pub fn run(args: FixDatesArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
     // Ordinary writer: coexists with readers and other ordinary work, excluded

@@ -42,6 +42,25 @@ struct ClusterJson {
     photo_count: i64,
 }
 
+impl LocationsArgs {
+    /// Pipeline-stage defaults: clap defaults for every knob, silence
+    /// controlled by the pipeline. Parsing an empty argv keeps defaults from
+    /// drifting from the flag definitions.
+    pub(crate) fn for_pipeline(silent: bool) -> Self {
+        #[derive(clap::Parser)]
+        struct P {
+            #[command(flatten)]
+            a: LocationsArgs,
+        }
+        let argv: &[&str] = if silent {
+            &["locations", "--silent"]
+        } else {
+            &["locations"]
+        };
+        <P as clap::Parser>::parse_from(argv).a
+    }
+}
+
 pub fn run(args: LocationsArgs, ctx: &CommandContext) -> Result<()> {
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
     // A recompute of the location partition, self-contained within the

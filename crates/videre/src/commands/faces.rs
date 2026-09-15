@@ -127,6 +127,25 @@ pub struct FacesArgs {
     qlmanage_concurrency: Option<usize>,
 }
 
+impl FacesArgs {
+    /// Pipeline-stage defaults: no selection, clap defaults for every knob,
+    /// silence controlled by the pipeline. Parsing an empty argv keeps
+    /// defaults from drifting from the flag definitions.
+    pub(crate) fn for_pipeline(silent: bool) -> Self {
+        #[derive(clap::Parser)]
+        struct P {
+            #[command(flatten)]
+            a: FacesArgs,
+        }
+        let argv: &[&str] = if silent {
+            &["faces", "--silent"]
+        } else {
+            &["faces"]
+        };
+        <P as clap::Parser>::parse_from(argv).a
+    }
+}
+
 pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
     // Must happen before any HEIC file could be converted (the semaphore is a
     // OnceLock: first use wins for the life of this process). Clamped to at
@@ -439,6 +458,14 @@ pub(crate) fn format_clustering_only_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn for_pipeline_faces_defaults() {
+        let a = FacesArgs::for_pipeline(true);
+        assert!(a.silent);
+        assert_eq!(a.batch, 8);
+        assert_eq!(a.min_cluster_size, 3);
+    }
 
     #[test]
     fn faces_accepts_mark_and_tag_filters_but_refuses_derived_selectors() {

@@ -44,6 +44,25 @@ pub struct ExportArgs {
     silent: bool,
 }
 
+impl ExportArgs {
+    /// Pipeline-stage defaults: write XMP sidecars (`--xmp`, the pipeline's
+    /// export mode), no selection, clap defaults otherwise, silence controlled
+    /// by the pipeline.
+    pub(crate) fn for_pipeline(silent: bool) -> Self {
+        #[derive(clap::Parser)]
+        struct P {
+            #[command(flatten)]
+            a: ExportArgs,
+        }
+        let argv: &[&str] = if silent {
+            &["export", "--xmp", "--silent"]
+        } else {
+            &["export", "--xmp"]
+        };
+        <P as clap::Parser>::parse_from(argv).a
+    }
+}
+
 pub fn run(args: ExportArgs, ctx: &CommandContext) -> Result<()> {
     if !args.xmp && !args.jsonl {
         bail!("nothing to export: pass --xmp or --jsonl");
