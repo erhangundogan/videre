@@ -89,6 +89,7 @@ export default defineConfig({
 						{ label: 'import', slug: 'commands/import' },
 						{ label: 'scan', slug: 'commands/scan' },
 						{ label: 'dedupe', slug: 'commands/dedupe' },
+						{ label: 'status', slug: 'commands/status' },
 						{ label: 'gallery', slug: 'commands/gallery' },
 						{ label: 'search', slug: 'commands/search' },
 						{ label: 'embed', slug: 'commands/embed' },
