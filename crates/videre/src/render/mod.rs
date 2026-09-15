@@ -965,8 +965,13 @@ fn build_data_block(
     // rather than reading an inlined array. It is the route's own identity, so
     // the client never has to infer it from the URL.
     let view = if keep_files.is_some() { "date" } else { "all" };
+    // Video grid tiles are served as oriented poster frames only on a live macOS
+    // server: poster extraction is QuickLook (macOS-only), and a static export
+    // has no server to fetch them from. Elsewhere the client keeps the plain
+    // `<video>` tile. See buildPreview in gallery.js.
+    let video_posters = live && cfg!(target_os = "macos");
     out.push_str(&format!(
-        "<script>\nvar LIVE_SERVER={live};\nvar HAS_EMBEDDINGS={has_embeddings};\nvar GVIEW={};\nvar PEOPLE_ROOT={};\nvar GDATE={};\n</script>\n",
+        "<script>\nvar LIVE_SERVER={live};\nvar HAS_EMBEDDINGS={has_embeddings};\nvar VIDEO_POSTERS={video_posters};\nvar GVIEW={};\nvar PEOPLE_ROOT={};\nvar GDATE={};\n</script>\n",
         json_str(view),
         // `nav` is Some only under `videre gallery`, which is the one
         // configuration with a `/people`. See `people_root`.

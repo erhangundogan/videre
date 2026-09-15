@@ -137,6 +137,41 @@ impl Server {
         let body = text.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
         (status, body.to_string())
     }
+
+    /// Like `get`, but returns the raw body bytes and the Content-Type, for
+    /// binary responses (a poster JPEG) that `get`'s lossy-UTF-8 body mangles.
+    fn get_bytes(&self, path: &str) -> (u16, Option<String>, Vec<u8>) {
+        let mut stream = TcpStream::connect(("127.0.0.1", self.port))
+            .unwrap_or_else(|e| panic!("connect for {path}: {e}"));
+        stream
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).unwrap();
+        // Split headers from body on the first CRLFCRLF, byte-wise.
+        let sep = raw.windows(4).position(|w| w == b"\r\n\r\n");
+        let (head, body) = match sep {
+            Some(i) => (&raw[..i], raw[i + 4..].to_vec()),
+            None => (&raw[..], Vec::new()),
+        };
+        let head_text = String::from_utf8_lossy(head);
+        let status = head_text
+            .split_whitespace()
+            .nth(1)
+            .and_then(|c| c.parse().ok())
+            .unwrap_or(0);
+        let content_type = head_text.lines().find_map(|l| {
+            l.split_once(':').and_then(|(k, v)| {
+                (k.trim().eq_ignore_ascii_case("content-type")).then(|| v.trim().to_string())
+            })
+        });
+        (status, content_type, body)
+    }
 }
 
 #[test]
@@ -235,6 +270,81 @@ fn gallery_start_clears_thumbnail_decode_failures() {
     assert_eq!(
         count, 0,
         "a new gallery run retries previously-skipped thumbnails"
+    );
+}
+
+#[test]
+fn a_video_at_the_thumbnail_failure_threshold_is_refused() {
+    // A video whose poster conversion keeps failing is refused before QuickLook,
+    // the same two-strike gate as HEIC. Cross-platform: the gate returns before
+    // any conversion, so nothing runs and no strike is added.
+    let lib = TestLibrary::new();
+    let mov_path = lib.context().paths.root.join("clip.mov");
+    lib.init_db()
+        .execute(
+            "INSERT INTO file_hashes (path, hash, ext, size_bytes) VALUES (?1, 'vid1', 'mov', 32)",
+            [mov_path.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+
+    let server = Server::start(&lib);
+    // Seed after start (startup clears STAGE_THUMBNAIL); the server sees these
+    // committed rows through WAL.
+    {
+        let conn = lib.conn();
+        for _ in 0..videre_core::decode_failures::FAILURE_THRESHOLD {
+            videre_core::decode_failures::record(
+                &conn,
+                "vid1",
+                videre_core::decode_failures::STAGE_THUMBNAIL,
+                "seeded",
+            )
+            .unwrap();
+        }
+    }
+
+    let (status, _) = server.get("/api/files/vid1/raw?size=240");
+    assert_eq!(status, 404, "a threshold-failed video poster is refused");
+    let count = videre_core::decode_failures::fail_count(
+        &lib.conn(),
+        "vid1",
+        videre_core::decode_failures::STAGE_THUMBNAIL,
+    )
+    .unwrap();
+    assert_eq!(
+        count,
+        videre_core::decode_failures::FAILURE_THRESHOLD,
+        "the gate returned before conversion, so no new strike was recorded"
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn a_sized_video_request_returns_an_oriented_poster_jpeg() {
+    // The sized endpoint returns a QuickLook poster image, not the raw video.
+    // (The old behavior read the whole file into memory and returned it with the
+    // video mime type - the latent bug this fix also closes.) macOS-gated:
+    // poster extraction is QuickLook.
+    let lib = TestLibrary::new();
+    let dst = lib.copy_fixture("red_1s.mp4", "clip.mp4");
+    lib.init_db()
+        .execute(
+            "INSERT INTO file_hashes (path, hash, ext, size_bytes) VALUES (?1, 'vid1', 'mp4', 1000)",
+            [dst.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+
+    let server = Server::start(&lib);
+    let (status, content_type, body) = server.get_bytes("/api/files/vid1/raw?size=240");
+    assert_eq!(status, 200, "the poster is served");
+    assert_eq!(
+        content_type.as_deref(),
+        Some("image/jpeg"),
+        "served as a jpeg poster, not the raw video"
+    );
+    assert!(
+        body.starts_with(&[0xFF, 0xD8]),
+        "the body is a JPEG (starts with the SOI marker)"
     );
 }
 

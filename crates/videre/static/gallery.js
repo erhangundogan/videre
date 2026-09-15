@@ -63,10 +63,26 @@ function buildPreview(f){
   if(ext==='dng') return '<span class="no-prev">DNG</span>';
   if(ext==='mov'||ext==='mp4'){
     var url=rawUrl(f);
-    return '<video src="'+escA(url)+'" class="thumb" preload="metadata" muted playsinline '+
-      'data-lb-url="'+escA(url)+'" data-lb-type="video" '+
-      'data-lb-meta="'+metaAttr+'" '+
-      'onerror="this.outerHTML=\'<span class=no-prev>no preview</span>\'"></video>';
+    // A play badge marks the tile as a video: on a live macOS server the tile is
+    // an oriented poster frame (rotation baked in by QuickLook, so it can't
+    // render sideways) that otherwise looks like a photo. Clicking plays the
+    // video in the lightbox via data-lb-type=video. On error the whole badged
+    // wrapper collapses to "no preview". Elsewhere (Linux, or a static export)
+    // the plain inline <video> is kept, badged the same way.
+    var badge='<span class="vbadge" aria-hidden="true"></span>';
+    if(typeof VIDEO_POSTERS!=='undefined'&&VIDEO_POSTERS){
+      var poster=rawUrl(f,240);
+      return '<span class="vthumb">'+
+        '<img src="'+escA(poster)+'" class="thumb" loading="lazy" '+
+        'data-lb-url="'+escA(url)+'" data-lb-type="video" data-lb-meta="'+metaAttr+'" '+
+        'onerror="this.parentElement.outerHTML=\'<span class=no-prev>no preview</span>\'">'+
+        badge+'</span>';
+    }
+    return '<span class="vthumb">'+
+      '<video src="'+escA(url)+'" class="thumb" preload="metadata" muted playsinline '+
+      'data-lb-url="'+escA(url)+'" data-lb-type="video" data-lb-meta="'+metaAttr+'" '+
+      'onerror="this.parentElement.outerHTML=\'<span class=no-prev>no preview</span>\'"></video>'+
+      badge+'</span>';
   }
   return '<span class="no-prev">&mdash;</span>';
 }

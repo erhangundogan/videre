@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 const FACE_CACHE_FORMAT_VERSION: u8 = 1;
 const RASTER_CACHE_FORMAT_VERSION: u8 = 1;
+const VIDEO_POSTER_CACHE_FORMAT_VERSION: u8 = 1;
 
 /// Path to a content thumbnail in one selected library's cache namespace.
 pub fn thumb_path_in(cache: &crate::library::CachePaths, hash: &str, size: u32) -> PathBuf {
@@ -16,6 +17,32 @@ pub fn thumb_path_in(cache: &crate::library::CachePaths, hash: &str, size: u32) 
 pub fn raster_thumb_path_in(cache: &crate::library::CachePaths, hash: &str, size: u32) -> PathBuf {
     cache.thumbnails.join(format!(
         "{hash}_raster-v{RASTER_CACHE_FORMAT_VERSION}_{size}.jpg"
+    ))
+}
+
+/// Path to an oriented video poster frame in one selected library's cache.
+///
+/// QuickLook renders the frame display-oriented (rotation applied), so the grid
+/// serves it as an `<img>` tile and rotation is videre's guarantee rather than a
+/// bet on browser matrix handling. Its own versioned namespace, separate from
+/// the HEIC ([`thumb_path_in`]) and raster ([`raster_thumb_path_in`]) caches, so
+/// a change to poster rendering invalidates only its own output.
+pub fn video_poster_path_in(cache: &crate::library::CachePaths, hash: &str, size: u32) -> PathBuf {
+    cache.thumbnails.join(format!(
+        "{hash}_vposter-v{VIDEO_POSTER_CACHE_FORMAT_VERSION}_{size}.jpg"
+    ))
+}
+
+/// Scratch path for a video poster, renamed into place at
+/// [`video_poster_path_in`].
+pub fn video_poster_tmp_path_in(
+    cache: &crate::library::CachePaths,
+    hash: &str,
+    size: u32,
+) -> PathBuf {
+    cache.thumbnails.join(format!(
+        "{hash}_vposter-v{VIDEO_POSTER_CACHE_FORMAT_VERSION}_{size}.tmp{}",
+        std::process::id()
     ))
 }
 
@@ -211,6 +238,37 @@ mod tests {
 
     fn test_hash(seed: &str) -> String {
         seed.repeat((HASH_HEX_LEN / seed.len()) + 1)[..HASH_HEX_LEN].to_string()
+    }
+
+    #[test]
+    fn video_poster_paths_are_versioned_and_isolated() {
+        let (_temp, a, b) = contexts();
+        let p = video_poster_path_in(&a.cache, "hash", 240);
+        // Its own namespace, distinct from the HEIC/raster thumbnail caches.
+        assert_ne!(p, thumb_path_in(&a.cache, "hash", 240));
+        assert_ne!(p, raster_thumb_path_in(&a.cache, "hash", 240));
+        // Keyed by size and library, and versioned like the raster cache.
+        assert_ne!(p, video_poster_path_in(&a.cache, "hash", 1200));
+        assert_ne!(p, video_poster_path_in(&b.cache, "hash", 240));
+        assert!(p
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .contains("vposter-v"));
+        // The scratch path differs from the final one but shares the namespace.
+        let tmp = video_poster_tmp_path_in(&a.cache, "hash", 240);
+        assert_ne!(tmp, p);
+        assert!(tmp.to_string_lossy().contains("vposter-v"));
+    }
+
+    #[test]
+    fn hash_from_cache_filename_parses_video_poster_path() {
+        // prune must still recover the hash from a poster filename.
+        let h1 = test_hash("0123456789abcdef");
+        assert_eq!(
+            hash_from_cache_filename(&format!("{h1}_vposter-v1_240.jpg")),
+            Some(h1.as_str())
+        );
     }
 
     #[test]
