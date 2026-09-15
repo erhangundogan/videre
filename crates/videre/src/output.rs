@@ -64,18 +64,38 @@ pub fn print_losers(groups: &[DuplicateGroup]) {
     }
 }
 
+/// A fingerprint with almost no set bits (or almost nothing but set bits)
+/// carries no image structure: a flat or near-flat opening frame (fade-in,
+/// letterbox, title card) hashes near an extreme, and any two such frames
+/// collide regardless of what the rest of the clip shows. Such
+/// records are excluded from `--similar` grouping entirely; identical copies
+/// are still caught by exact content-hash dedupe. Deliberately no
+/// size-proximity gate alongside this: a genuine re-encode routinely halves
+/// the file size (the testsrc fixture pair measures 2.07x), so a size window
+/// would cut the true positives the feature exists to find.
+const DEGENERATE_BITS: u32 = 6;
+
+fn degenerate_phash(hash: u64) -> bool {
+    crate::hasher::hamming(hash, 0) <= DEGENERATE_BITS
+        || crate::hasher::hamming(hash, u64::MAX) <= DEGENERATE_BITS
+}
+
 pub fn find_similar_groups(records: &[FileRecord], threshold: u32) -> Vec<DuplicateGroup> {
     let with_phash: Vec<&FileRecord> = records.iter().filter(|r| r.phash.is_some()).collect();
+    let degenerate: Vec<bool> = with_phash
+        .iter()
+        .map(|r| degenerate_phash(r.phash.unwrap()))
+        .collect();
     let mut visited = vec![false; with_phash.len()];
     let mut groups: Vec<DuplicateGroup> = Vec::new();
 
     for i in 0..with_phash.len() {
-        if visited[i] {
+        if visited[i] || degenerate[i] {
             continue;
         }
         let mut group = vec![with_phash[i].clone()];
         for j in (i + 1)..with_phash.len() {
-            if visited[j] {
+            if visited[j] || degenerate[j] {
                 continue;
             }
             let dist =
@@ -235,9 +255,9 @@ mod tests {
         let mut a = make_record("/a.jpg", "unique_a");
         let mut b = make_record("/b.jpg", "unique_b");
         let mut c = make_record("/c.jpg", "unique_c");
-        a.phash = Some(0b0000_0000u64);
-        b.phash = Some(0b0000_0001u64);
-        c.phash = Some(0xFFFF_FFFF_FFFF_FFFFu64);
+        a.phash = Some(0x00FF_00FF_00FF_00FFu64);
+        b.phash = Some(0x00FF_00FF_00FF_00FEu64);
+        c.phash = Some(0xFF00_FF00_FF00_FF00u64);
 
         let groups = find_similar_groups(&[a, b, c], 10);
         assert_eq!(groups.len(), 1);
@@ -252,8 +272,51 @@ mod tests {
     fn find_similar_groups_empty_when_all_unique() {
         let mut a = make_record("/a.jpg", "h1");
         let mut b = make_record("/b.jpg", "h2");
-        a.phash = Some(0u64);
-        b.phash = Some(u64::MAX);
+        a.phash = Some(0x0F0F_0F0F_0F0F_0F0Fu64);
+        b.phash = Some(0xF0F0_F0F0_F0F0_F0F0u64);
         assert!(find_similar_groups(&[a, b], 10).is_empty());
+    }
+
+    #[test]
+    fn find_similar_groups_skips_degenerate_hashes() {
+        // A flat or near-flat frame (fade-in, letterbox, solid title card)
+        // dHashes to almost no set bits (or almost nothing but set bits); two
+        // unrelated clips like that collide at distance 3 despite having
+        // nothing in common. None of them may join a group.
+        let mut flat = make_record("/flat.mov", "v1");
+        flat.phash = Some(0u64);
+        let mut near_flat = make_record("/near.mov", "v2");
+        near_flat.phash = Some(0b111u64);
+        let mut all_ones = make_record("/white.mp4", "v3");
+        all_ones.phash = Some(u64::MAX);
+        let mut real_a = make_record("/a.jpg", "i1");
+        real_a.phash = Some(0x00FF_00FF_00FF_00FFu64);
+        let mut real_b = make_record("/b.jpg", "i2");
+        real_b.phash = Some(0x00FF_00FF_00FF_00FEu64);
+
+        let groups = find_similar_groups(&[flat, near_flat, all_ones, real_a, real_b], 10);
+        assert_eq!(groups.len(), 1);
+        let paths: Vec<&str> = groups[0].files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, vec!["/a.jpg", "/b.jpg"]);
+    }
+
+    #[test]
+    fn find_similar_groups_ignores_file_sizes() {
+        // No size-proximity gate: a genuine re-encode routinely halves the
+        // file (see the testsrc fixture pair, 2.07x apart), so sizes must
+        // not influence grouping; only the fingerprint does.
+        let mut big = make_record("/big.mov", "v1");
+        big.ext = "mov".to_string();
+        big.mime = Some("video/quicktime".to_string());
+        big.phash = Some(0x00FF_00FF_00FF_00FFu64);
+        big.size_bytes = 4_000_000;
+        let mut small = make_record("/small.mov", "v2");
+        small.ext = "mov".to_string();
+        small.mime = Some("video/quicktime".to_string());
+        small.phash = Some(0x00FF_00FF_00FF_00FEu64);
+        small.size_bytes = 1_000_000;
+
+        let groups = find_similar_groups(&[big, small], 10);
+        assert_eq!(groups.len(), 1);
     }
 }
