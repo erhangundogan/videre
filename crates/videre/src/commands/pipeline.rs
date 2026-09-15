@@ -185,6 +185,27 @@ fn indicator(o: &Outcome) -> char {
     }
 }
 
+/// Prompt once before the expensive stages. Lists each heavy stage that has
+/// outstanding work with its count and approximate cost.
+fn confirm_heavy(report: &StatusReport) -> anyhow::Result<bool> {
+    let parts: Vec<String> = report
+        .coverage
+        .iter()
+        .filter(|c| c.heavy && c.outstanding > 0)
+        .map(|c| {
+            let cost = report
+                .costs
+                .iter()
+                .find(|(s, _)| *s == c.stage)
+                .and_then(|(_, e)| e.secs)
+                .map(fmt_cost)
+                .unwrap_or_default();
+            format!("{} {} files ({})", c.stage, c.outstanding, cost)
+        })
+        .collect();
+    super::confirm(&format!("About to {}. Proceed?", parts.join(" and ")))
+}
+
 fn render_resolved(outcomes: &[Outcome]) {
     for o in outcomes {
         let note = match (o.skipped, o.duration_ms) {
@@ -216,6 +237,8 @@ pub fn run(args: PipelineArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     // Coverage is read once, after scan, so the plan reflects freshly scanned
     // files. Computed lazily on the first non-scan stage.
     let mut report: Option<StatusReport> = None;
+    let mut asked_heavy = false;
+    let mut heavy_declined = false;
 
     for stage in &stages {
         if *stage != Stage::Scan && report.is_none() {
@@ -237,17 +260,30 @@ pub fn run(args: PipelineArgs, ctx: &CommandContext) -> anyhow::Result<()> {
                 });
                 continue;
             }
-            // The heavy-stage confirm gate is added in a later task. Until then,
-            // skip the heavy stages so this path stays model-free.
+            // One confirmation before the first heavy stage (embed/classify)
+            // with outstanding work. `--yes` bypasses it; declining skips every
+            // heavy stage and the run continues with the rest. The prompt fires
+            // before any model load, so declining downloads nothing.
             if cov.heavy {
-                outcomes.push(Outcome {
-                    stage: *stage,
-                    ran: false,
-                    ok: true,
-                    skipped: Some("heavy (gate pending)"),
-                    duration_ms: None,
-                });
-                continue;
+                if !args.yes && !asked_heavy {
+                    asked_heavy = true;
+                    heavy_declined = report
+                        .as_ref()
+                        .map(confirm_heavy)
+                        .transpose()?
+                        .map(|proceed| !proceed)
+                        .unwrap_or(false);
+                }
+                if heavy_declined {
+                    outcomes.push(Outcome {
+                        stage: *stage,
+                        ran: false,
+                        ok: true,
+                        skipped: Some("declined"),
+                        duration_ms: None,
+                    });
+                    continue;
+                }
             }
         }
 

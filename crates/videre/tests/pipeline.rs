@@ -96,6 +96,54 @@ fn runs_scan_and_locations_skipping_heavy_stages() {
 }
 
 #[test]
+fn declining_the_gate_skips_embed_and_classify_without_loading_models() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "a.jpg");
+    lib.scan();
+
+    // Skip faces so embed is the only heavy stage the gate covers; answer "n".
+    let out = run_pipeline(&lib, &["--skip", "faces"], Some("n\n"));
+    assert!(
+        out.status.success(),
+        "declining continues and exits 0:\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.to_lowercase().contains("proceed"),
+        "the gate prompt should appear on stderr:\n{stderr}"
+    );
+    assert!(
+        hf_home_is_empty(&lib),
+        "declining must not download any weights"
+    );
+}
+
+#[test]
+fn yes_runs_embed_when_models_are_available() {
+    let _guard = common::shared_cache_guard();
+    if common::skip_without_models("embed", common::siglip_cached()) {
+        return;
+    }
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "a.jpg");
+    lib.scan();
+    let out = run_pipeline(&lib, &["--skip", "faces,classify,locations", "--yes"], None);
+    assert!(
+        out.status.success(),
+        "yes-run should succeed:\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // One embedding now exists.
+    let stats = lib.cmd().args(["stats"]).output().unwrap();
+    let stats_text = String::from_utf8_lossy(&stats.stdout);
+    assert!(
+        stats_text.to_lowercase().contains("embed"),
+        "embeddings should be reported:\n{stats_text}"
+    );
+}
+
+#[test]
 fn dry_run_json_lists_the_planned_stages() {
     let lib = TestLibrary::new();
     lib.copy_fixture("tiny.jpg", "a.jpg");
