@@ -1367,6 +1367,31 @@ async fn handle_raw_file(
     }
 
     let size = q.size;
+    let is_heic = ext == "heic";
+
+    // A HEIC that has repeatedly failed to convert (a corrupt file, or QuickLook
+    // unavailable) is not re-attempted: the conversion is the expensive,
+    // possibly-hanging step, and only successes are cached, so an undecodable
+    // HEIC otherwise re-pays the timeout on every tile request. A file at the
+    // two-strike threshold is refused outright. The lock is taken and dropped
+    // here, never held across the conversion below.
+    if is_heic {
+        let conn = state
+            .conn
+            .lock()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let _ = videre_core::decode_failures::ensure_table(&conn);
+        let failed = videre_core::decode_failures::failed_hashes(
+            &conn,
+            videre_core::decode_failures::STAGE_THUMBNAIL,
+            videre_core::decode_failures::FAILURE_THRESHOLD,
+        )
+        .unwrap_or_default();
+        if failed.contains(&hash) {
+            return Err(StatusCode::NOT_FOUND);
+        }
+    }
+
     // Where a freshly rendered raster thumbnail should be cached (atomic tmp ->
     // rename), computed here so only owned paths cross into the blocking task.
     // `None` unless this is a sized request for a thumbnailable raster format
@@ -1384,72 +1409,97 @@ async fn handle_raw_file(
         )),
         _ => None,
     };
-    let (content_type, bytes) =
-        tokio::task::spawn_blocking(move || -> Option<(&'static str, Vec<u8>)> {
-            if ext == "heic" {
-                // `size` doubles as the qlmanage render cap: when Some, this
-                // caller downscales to it below anyway; when None, the caller
-                // wants the true original (no downscale applied), which is
-                // exactly heic_via_quicklook(..., None)'s full-resolution
-                // behavior too. See its safety note.
-                let img = videre_core::heic::heic_via_quicklook(
-                    &path,
-                    &format!("raw{}", size.unwrap_or(0)),
-                    size,
-                )?;
-                let img = match size {
-                    Some(max_px) if img.width() > max_px || img.height() > max_px => {
-                        img.resize(max_px, max_px, image::imageops::FilterType::Triangle)
-                    }
-                    _ => img,
-                };
-                let mut buf = Vec::new();
-                img.write_to(
-                    &mut std::io::Cursor::new(&mut buf),
-                    image::ImageFormat::Jpeg,
-                )
-                .ok()?;
-                Some(("image/jpeg", buf))
-            } else {
-                let timeout_path = path.clone();
-                let bytes = match videre_core::io_timeout::run_with_timeout(
-                    videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
-                    move || std::fs::read(&timeout_path),
-                ) {
-                    Ok(Ok(bytes)) => bytes,
-                    Ok(Err(e)) => {
-                        eprintln!("warning: raw file unavailable for {path}: {e}; skipping");
-                        return None;
-                    }
-                    Err(_) => {
-                        eprintln!(
-                            "warning: timed out reading {path} \
-                         (file may be unreachable - is its drive connected?); skipping"
-                        );
-                        return None;
-                    }
-                };
-                // A raster grid tile is served as a small cached JPEG, not the
-                // full original: rendering a downscaled thumbnail once (and
-                // caching it) is what keeps a large library on a slow drive from
-                // saturating the browser's connection pool with multi-megabyte
-                // transfers for every tile. If the bytes do not decode, fall
-                // back to the original untouched so nothing regresses.
-                if let Some((px, dir, tmp, final_)) = &raster_cache {
-                    if let Some(buf) = render_raster_thumbnail(&bytes, *px) {
-                        let _ = std::fs::create_dir_all(dir);
-                        if std::fs::write(tmp, &buf).is_ok() {
-                            let _ = std::fs::rename(tmp, final_);
-                        }
-                        return Some(("image/jpeg", buf));
-                    }
+    let converted = tokio::task::spawn_blocking(move || -> Option<(&'static str, Vec<u8>)> {
+        if ext == "heic" {
+            // `size` doubles as the qlmanage render cap: when Some, this
+            // caller downscales to it below anyway; when None, the caller
+            // wants the true original (no downscale applied), which is
+            // exactly heic_via_quicklook(..., None)'s full-resolution
+            // behavior too. See its safety note.
+            let img = videre_core::heic::heic_via_quicklook(
+                &path,
+                &format!("raw{}", size.unwrap_or(0)),
+                size,
+            )?;
+            let img = match size {
+                Some(max_px) if img.width() > max_px || img.height() > max_px => {
+                    img.resize(max_px, max_px, image::imageops::FilterType::Triangle)
                 }
-                Some((mime_for_ext(&ext), bytes))
+                _ => img,
+            };
+            let mut buf = Vec::new();
+            img.write_to(
+                &mut std::io::Cursor::new(&mut buf),
+                image::ImageFormat::Jpeg,
+            )
+            .ok()?;
+            Some(("image/jpeg", buf))
+        } else {
+            let timeout_path = path.clone();
+            let bytes = match videre_core::io_timeout::run_with_timeout(
+                videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
+                move || std::fs::read(&timeout_path),
+            ) {
+                Ok(Ok(bytes)) => bytes,
+                Ok(Err(e)) => {
+                    eprintln!("warning: raw file unavailable for {path}: {e}; skipping");
+                    return None;
+                }
+                Err(_) => {
+                    eprintln!(
+                        "warning: timed out reading {path} \
+                         (file may be unreachable - is its drive connected?); skipping"
+                    );
+                    return None;
+                }
+            };
+            // A raster grid tile is served as a small cached JPEG, not the
+            // full original: rendering a downscaled thumbnail once (and
+            // caching it) is what keeps a large library on a slow drive from
+            // saturating the browser's connection pool with multi-megabyte
+            // transfers for every tile. If the bytes do not decode, fall
+            // back to the original untouched so nothing regresses.
+            if let Some((px, dir, tmp, final_)) = &raster_cache {
+                if let Some(buf) = render_raster_thumbnail(&bytes, *px) {
+                    let _ = std::fs::create_dir_all(dir);
+                    if std::fs::write(tmp, &buf).is_ok() {
+                        let _ = std::fs::rename(tmp, final_);
+                    }
+                    return Some(("image/jpeg", buf));
+                }
             }
-        })
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?;
+            Some((mime_for_ext(&ext), bytes))
+        }
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Record a failed HEIC conversion so it reaches the two-strike threshold and
+    // stops being re-attempted; clear on success so a file that converts (or
+    // recovers) is served normally again. A brief lock, never across the work.
+    if is_heic {
+        if let Ok(conn) = state.conn.lock() {
+            match &converted {
+                Some(_) => {
+                    let _ = videre_core::decode_failures::clear(
+                        &conn,
+                        &hash,
+                        videre_core::decode_failures::STAGE_THUMBNAIL,
+                    );
+                }
+                None => {
+                    let _ = videre_core::decode_failures::record(
+                        &conn,
+                        &hash,
+                        videre_core::decode_failures::STAGE_THUMBNAIL,
+                        "gallery HEIC conversion failed",
+                    );
+                }
+            }
+        }
+    }
+
+    let (content_type, bytes) = converted.ok_or(StatusCode::NOT_FOUND)?;
     Ok(([(axum::http::header::CONTENT_TYPE, content_type)], bytes).into_response())
 }
 
@@ -1506,6 +1556,15 @@ async fn serve_faces_async(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let conn = videre_core::db::open_wal(db)?;
     videre_core::location::ensure_location_column(&conn);
+    // Thumbnail decode-failure records are the one skip with no --reprocess
+    // hatch, so clear them once per server run: a HEIC that hit two transient
+    // QuickLook failures (a wedged agent, Spotlight contention) is retried on
+    // the next start rather than staying a permanently broken tile. Within a
+    // run the gate still spares repeated timeouts once a file has failed twice.
+    let _ = videre_core::decode_failures::clear_stage(
+        &conn,
+        videre_core::decode_failures::STAGE_THUMBNAIL,
+    );
     // The labeling server writes person labels, so it is a writer and migrates
     // like the other writers do. Without this, a user who only ever labels
     // through the UI would keep the old mixed-case labels and never get the

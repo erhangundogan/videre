@@ -26,6 +26,12 @@ pub struct StageCoverage {
     /// Embed and classify are optional, hours-long stages; a newcomer should
     /// not read "behind" on a stage they may never want (spec decision D4).
     pub heavy: bool,
+    /// Files this stage has given up decoding (at the two-strike threshold) and
+    /// deliberately no longer attempts. They are excluded from `outstanding` so
+    /// the count reflects what the command can actually act on, and reported
+    /// here so `done + outstanding + skipped == total` still holds. Zero for
+    /// stages with no decode step (`decode_failures` never records them).
+    pub skipped: i64,
 }
 
 /// Faces-eligible hashes: the same population `videre faces` walks (image
@@ -45,15 +51,22 @@ fn faces_eligible_hashes(conn: &Connection) -> Result<Vec<String>> {
 /// Embed stage: outstanding under the active model of everything eligible.
 fn embed_coverage(conn: &Connection, embed_model: &str) -> Result<StageCoverage> {
     let total = crate::embeddings::embeddable_images(conn, embed_model)?.len() as i64;
-    let outstanding = match crate::embeddings::pending_images(conn, embed_model)? {
-        v => v.len() as i64,
-    };
+    let pending = crate::embeddings::pending_images(conn, embed_model)?;
+    // Files embed has given up decoding are still pending (never embedded), so
+    // separate them out: they are not work embed will do.
+    let failed = crate::decode_failures::failed_hashes(
+        conn,
+        crate::decode_failures::STAGE_EMBED,
+        crate::decode_failures::FAILURE_THRESHOLD,
+    )?;
+    let skipped = pending.iter().filter(|p| failed.contains(&p.hash)).count() as i64;
     Ok(StageCoverage {
         stage: "embed",
-        outstanding,
+        outstanding: pending.len() as i64 - skipped,
         total,
         next_command: Some("videre embed"),
         heavy: true,
+        skipped,
     })
 }
 
@@ -71,6 +84,7 @@ fn classify_coverage(conn: &Connection, classify_model: &str) -> Result<StageCov
         total,
         next_command: Some("videre classify"),
         heavy: true,
+        skipped: 0,
     })
 }
 
@@ -84,16 +98,25 @@ fn faces_coverage(conn: &Connection) -> Result<StageCoverage> {
     let with_faces: std::collections::HashSet<String> = crate::face_db::hashes_with_faces(conn)?
         .into_iter()
         .collect();
-    let outstanding = eligible
+    // Files the face decode has given up on are never marked scanned, so they
+    // would otherwise count as outstanding forever.
+    let failed = crate::decode_failures::failed_hashes(
+        conn,
+        crate::decode_failures::STAGE_FACES,
+        crate::decode_failures::FAILURE_THRESHOLD,
+    )?;
+    let untried: Vec<&String> = eligible
         .iter()
         .filter(|h| !scanned.contains(*h) && !with_faces.contains(*h))
-        .count() as i64;
+        .collect();
+    let skipped = untried.iter().filter(|h| failed.contains(**h)).count() as i64;
     Ok(StageCoverage {
         stage: "faces",
-        outstanding,
+        outstanding: untried.len() as i64 - skipped,
         total: eligible.len() as i64,
         next_command: Some("videre faces"),
         heavy: false,
+        skipped,
     })
 }
 
@@ -118,6 +141,7 @@ fn locations_coverage(conn: &Connection) -> Result<StageCoverage> {
         total,
         next_command: Some("videre locations"),
         heavy: false,
+        skipped: 0,
     })
 }
 
@@ -147,6 +171,7 @@ fn fix_dates_coverage(conn: &Connection) -> Result<StageCoverage> {
         total,
         next_command: Some("videre fix-dates"),
         heavy: false,
+        skipped: 0,
     })
 }
 
@@ -402,6 +427,57 @@ mod tests {
         assert_eq!(faces.total, 3, "videos are not faces-eligible");
         assert_eq!(faces.outstanding, 1, "only h3 was never tried");
         assert!(!faces.heavy);
+    }
+
+    #[test]
+    fn decode_failed_files_are_skipped_not_outstanding() {
+        // A file the embed/faces decode has given up on (at the two-strike
+        // threshold) is not work either command will do, so it must not inflate
+        // the outstanding count or keep suggesting the command. It is reported
+        // separately as `skipped` so the arithmetic stays legible.
+        let conn = seed_db("status_cov_skipped");
+        crate::decode_failures::ensure_table(&conn).unwrap();
+        insert_file(&conn, "/a/1.jpg", "h1", "jpg");
+        insert_file(&conn, "/a/2.jpg", "h2", "jpg");
+        insert_file(&conn, "/a/3.jpg", "h3", "jpg");
+        // h3 is permanently undecodable for embed; h2 for faces.
+        for _ in 0..crate::decode_failures::FAILURE_THRESHOLD {
+            crate::decode_failures::record(&conn, "h3", crate::decode_failures::STAGE_EMBED, "x")
+                .unwrap();
+            crate::decode_failures::record(&conn, "h2", crate::decode_failures::STAGE_FACES, "x")
+                .unwrap();
+        }
+
+        let cov = coverage_in(&conn, TEST_MODEL, TEST_MODEL).unwrap();
+
+        let embed = cov.iter().find(|c| c.stage == "embed").unwrap();
+        assert_eq!(embed.total, 3);
+        assert_eq!(embed.outstanding, 2, "h3 is skipped, not outstanding");
+        assert_eq!(embed.skipped, 1, "h3 is reported as undecodable");
+
+        let faces = cov.iter().find(|c| c.stage == "faces").unwrap();
+        assert_eq!(faces.outstanding, 2, "h2 is skipped, not outstanding");
+        assert_eq!(faces.skipped, 1, "h2 is reported as undecodable");
+
+        // A stage with no decode-failure notion reports zero, never a wrong sum.
+        let classify = cov.iter().find(|c| c.stage == "classify").unwrap();
+        assert_eq!(classify.skipped, 0);
+    }
+
+    #[test]
+    fn a_single_decode_failure_still_counts_as_outstanding() {
+        // Below the threshold the file may still succeed (a transient timeout),
+        // so it stays outstanding and unskipped.
+        let conn = seed_db("status_cov_one_strike");
+        crate::decode_failures::ensure_table(&conn).unwrap();
+        insert_file(&conn, "/a/1.jpg", "h1", "jpg");
+        crate::decode_failures::record(&conn, "h1", crate::decode_failures::STAGE_EMBED, "x")
+            .unwrap();
+
+        let cov = coverage_in(&conn, TEST_MODEL, TEST_MODEL).unwrap();
+        let embed = cov.iter().find(|c| c.stage == "embed").unwrap();
+        assert_eq!(embed.outstanding, 1, "one strike does not skip");
+        assert_eq!(embed.skipped, 0);
     }
 
     #[test]

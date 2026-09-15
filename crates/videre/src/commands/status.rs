@@ -56,12 +56,24 @@ fn run_text(args: &StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
 
     println!("Coverage (model {}):", report.embed_model);
     for c in &report.coverage {
-        let done = c.total - c.outstanding;
+        // total = done + outstanding + skipped, so done must subtract both;
+        // skipped files are undecodable, not done.
+        let done = c.total - c.outstanding - c.skipped;
+        // Files the stage has given up decoding are not work it will do, so they
+        // are named separately rather than folded into outstanding.
+        let skipped_note = if c.skipped > 0 {
+            format!(", {} skipped as undecodable", c.skipped)
+        } else {
+            String::new()
+        };
         if c.outstanding == 0 {
-            println!("  {:10} up to date ({} of {} done)", c.stage, done, c.total);
+            println!(
+                "  {:10} up to date ({} of {} done{})",
+                c.stage, done, c.total, skipped_note
+            );
         } else {
             println!(
-                "  {:10} {} of {} done, {} outstanding{}",
+                "  {:10} {} of {} done, {} outstanding{}{}",
                 c.stage,
                 done,
                 c.total,
@@ -71,6 +83,7 @@ fn run_text(args: &StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
                 } else {
                     ""
                 },
+                skipped_note,
             );
         }
     }
