@@ -117,6 +117,14 @@ pub enum WorkerMsg {
         hash: String,
         rows: Vec<videre_core::face_db::FaceRow>,
     },
+    /// The image could not be decoded (an unreadable file, or a QuickLook
+    /// timeout). Distinct from `ImageError` because it carries the hash: the
+    /// coordinator records it so a guaranteed-failing file is not re-decoded on
+    /// every run. A detection failure on a decodable image is `ImageError`.
+    DecodeError {
+        hash: String,
+        error: String,
+    },
     ImageError,
     EmbedBatchError {
         n: usize,
@@ -136,7 +144,7 @@ pub fn apply_worker_msg_counts(result: &mut FacesRunResult, msg: &WorkerMsg) {
             result.images_processed += 1;
             result.total_faces += rows.len();
         }
-        WorkerMsg::ImageError => {
+        WorkerMsg::DecodeError { .. } | WorkerMsg::ImageError => {
             result.images_processed += 1;
             result.detect_errors += 1;
         }
@@ -272,7 +280,10 @@ fn run_face_pipeline_impl(
                                 Ok(i) => i,
                                 Err(msg) => {
                                     progress.println(&format!("skipping {path}: {msg}"));
-                                    let _ = tx.send(WorkerMsg::ImageError);
+                                    let _ = tx.send(WorkerMsg::DecodeError {
+                                        hash: hash.clone(),
+                                        error: msg.to_string(),
+                                    });
                                     progress.tick();
                                     continue;
                                 }
@@ -426,6 +437,13 @@ fn run_face_pipeline_impl(
                         match write_result {
                             Ok(()) => {
                                 let _ = videre_core::face_db::mark_scanned(conn, &hash);
+                                // Decoded successfully: drop any earlier strike so
+                                // a transient timeout never lingers.
+                                let _ = videre_core::decode_failures::clear(
+                                    conn,
+                                    &hash,
+                                    videre_core::decode_failures::STAGE_FACES,
+                                );
                             }
                             Err(e) => {
                                 progress.println(&format!("write failed {hash}: {e}"));
@@ -437,6 +455,23 @@ fn run_face_pipeline_impl(
                 WorkerMsg::NoFace { hash } => {
                     if !dry_run {
                         let _ = videre_core::face_db::mark_scanned(conn, &hash);
+                        let _ = videre_core::decode_failures::clear(
+                            conn,
+                            &hash,
+                            videre_core::decode_failures::STAGE_FACES,
+                        );
+                    }
+                }
+                WorkerMsg::DecodeError { hash, error } => {
+                    if !dry_run {
+                        // Record the decode failure so a later run can skip it
+                        // once it has failed FAILURE_THRESHOLD times.
+                        let _ = videre_core::decode_failures::record(
+                            conn,
+                            &hash,
+                            videre_core::decode_failures::STAGE_FACES,
+                            &error,
+                        );
                     }
                 }
                 WorkerMsg::ImageError | WorkerMsg::EmbedBatchError { .. } => {}

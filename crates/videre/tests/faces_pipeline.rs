@@ -1,5 +1,47 @@
 mod common;
 use common::{shared_cache_guard, TestLibrary};
+use videre_core::decode_failures;
+
+/// A hash the face decode has already failed on FAILURE_THRESHOLD times is
+/// dropped from the work list, so `videre faces` never re-attempts it. It is the
+/// only file, so `to_process` is empty and no model loads: like the guard above,
+/// this stays ungated and proves the skip, not the detection.
+#[test]
+fn faces_skips_a_hash_recorded_as_decode_failed() {
+    let _serial = shared_cache_guard();
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "photo.jpg");
+    lib.scan();
+
+    let hash: String = {
+        let conn = lib.conn();
+        let hash: String = conn
+            .query_row("SELECT hash FROM file_hashes LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        decode_failures::ensure_table(&conn).unwrap();
+        decode_failures::record(&conn, &hash, decode_failures::STAGE_FACES, "timed out").unwrap();
+        decode_failures::record(&conn, &hash, decode_failures::STAGE_FACES, "timed out").unwrap();
+        hash
+    };
+
+    let status = lib
+        .cmd()
+        .args(["faces", "--silent"])
+        .status()
+        .expect("failed to run videre faces");
+    assert!(status.success());
+
+    // Skipped, so it was never detected: no faces_scanned marker for it.
+    let conn = lib.conn();
+    let scanned: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM faces_scanned WHERE hash = ?1",
+            [&hash],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(scanned, 0, "a failed-and-skipped hash must not be scanned");
+}
 
 /// An initialized but empty library (no scanned files): faces has nothing to
 /// detect, so it must return before loading any model.
