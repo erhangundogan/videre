@@ -34,6 +34,11 @@ td.preview{width:130px;text-align:center;vertical-align:middle;padding:6px 10px}
 th.preview-th{width:130px}
 .thumb{max-width:120px;max-height:120px;object-fit:contain;border-radius:6px;display:block;margin:0 auto;cursor:zoom-in;transition:transform .15s}
 .thumb:hover{transform:scale(1.05)}
+/* A play badge marks a video tile, which is otherwise a still poster frame
+   indistinguishable from a photo. Centered in the container the tile centers in. */
+.vthumb{position:relative;display:inline-block;line-height:0}
+.vbadge{position:absolute;right:8px;bottom:8px;width:22px;height:22px;border-radius:50%;background:rgba(0,0,0,.55);pointer-events:none}
+.vbadge::before{content:"";position:absolute;top:50%;left:50%;transform:translate(-38%,-50%);border-style:solid;border-width:5px 0 5px 8px;border-color:transparent transparent transparent #fff}
 .no-prev{color:#a1a1aa;font-size:11px;display:block;text-align:center}
 .lightbox{display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:1000;align-items:center;justify-content:center;cursor:zoom-out}
 .lightbox.on{display:flex}
