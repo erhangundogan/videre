@@ -1556,6 +1556,15 @@ async fn serve_faces_async(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let conn = videre_core::db::open_wal(db)?;
     videre_core::location::ensure_location_column(&conn);
+    // Thumbnail decode-failure records are the one skip with no --reprocess
+    // hatch, so clear them once per server run: a HEIC that hit two transient
+    // QuickLook failures (a wedged agent, Spotlight contention) is retried on
+    // the next start rather than staying a permanently broken tile. Within a
+    // run the gate still spares repeated timeouts once a file has failed twice.
+    let _ = videre_core::decode_failures::clear_stage(
+        &conn,
+        videre_core::decode_failures::STAGE_THUMBNAIL,
+    );
     // The labeling server writes person labels, so it is a writer and migrates
     // like the other writers do. Without this, a user who only ever labels
     // through the UI would keep the old mixed-case labels and never get the

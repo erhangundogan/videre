@@ -411,7 +411,10 @@ Two tables exist purely for this, and both record work that produced no rows:
   thumbnail endpoint uses the same table under `STAGE_THUMBNAIL`: a HEIC whose
   QuickLook conversion keeps failing is refused before the conversion once at
   the threshold, so it stops re-paying the timeout on every tile request; a
-  success clears it. Its outstanding count is also kept honest: `videre status`
+  success clears it. It has no `--reprocess`, so the gallery server
+  `clear_stage`s `STAGE_THUMBNAIL` on start: the skip lasts a server run, and a
+  transient failure heals on the next launch. Its outstanding count is also kept
+  honest: `videre status`
   reports threshold-failed files as `skipped`, not outstanding, so it does not
   suggest a command that would do nothing.
 

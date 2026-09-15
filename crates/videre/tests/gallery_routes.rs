@@ -155,26 +155,32 @@ fn a_heic_at_the_failure_threshold_is_refused_without_reconverting() {
     // tests cover.
     let lib = TestLibrary::new();
     let heic_path = lib.context().paths.root.join("shot.heic");
-    let conn = lib.init_db();
-    conn.execute(
-        "INSERT INTO file_hashes (path, hash, ext, size_bytes)
-           VALUES (?1, 'heic1', 'heic', 32)",
-        [heic_path.to_string_lossy().as_ref()],
-    )
-    .unwrap();
-    videre_core::decode_failures::ensure_table(&conn).unwrap();
-    for _ in 0..videre_core::decode_failures::FAILURE_THRESHOLD {
-        videre_core::decode_failures::record(
-            &conn,
-            "heic1",
-            videre_core::decode_failures::STAGE_THUMBNAIL,
-            "seeded",
+    lib.init_db()
+        .execute(
+            "INSERT INTO file_hashes (path, hash, ext, size_bytes)
+               VALUES (?1, 'heic1', 'heic', 32)",
+            [heic_path.to_string_lossy().as_ref()],
         )
         .unwrap();
-    }
-    drop(conn);
 
     let server = Server::start(&lib);
+    // Seed the strikes AFTER start: startup clears STAGE_THUMBNAIL (the per-run
+    // reset, see gallery_start_clears_thumbnail_decode_failures), so seeding
+    // before start would be wiped. The server's own connection sees these
+    // committed rows through WAL.
+    {
+        let conn = lib.conn();
+        for _ in 0..videre_core::decode_failures::FAILURE_THRESHOLD {
+            videre_core::decode_failures::record(
+                &conn,
+                "heic1",
+                videre_core::decode_failures::STAGE_THUMBNAIL,
+                "seeded",
+            )
+            .unwrap();
+        }
+    }
+
     let (status, _) = server.get("/api/files/heic1/raw?size=240");
     assert_eq!(status, 404, "a threshold-failed heic thumbnail is refused");
 
@@ -188,6 +194,47 @@ fn a_heic_at_the_failure_threshold_is_refused_without_reconverting() {
         count,
         videre_core::decode_failures::FAILURE_THRESHOLD,
         "the gate returned before the conversion, so no new strike was recorded"
+    );
+}
+
+#[test]
+fn gallery_start_clears_thumbnail_decode_failures() {
+    // STAGE_THUMBNAIL is the one skip with no --reprocess hatch, so a new gallery
+    // run clears it: a HEIC skipped after two transient failures last run gets
+    // another chance rather than being a permanently broken tile.
+    let lib = TestLibrary::new();
+    let heic_path = lib.context().paths.root.join("shot.heic");
+    let conn = lib.init_db();
+    conn.execute(
+        "INSERT INTO file_hashes (path, hash, ext, size_bytes)
+           VALUES (?1, 'heic1', 'heic', 32)",
+        [heic_path.to_string_lossy().as_ref()],
+    )
+    .unwrap();
+    videre_core::decode_failures::ensure_table(&conn).unwrap();
+    for _ in 0..videre_core::decode_failures::FAILURE_THRESHOLD {
+        videre_core::decode_failures::record(
+            &conn,
+            "heic1",
+            videre_core::decode_failures::STAGE_THUMBNAIL,
+            "previous run",
+        )
+        .unwrap();
+    }
+    drop(conn);
+
+    // Startup runs the clear before the port accepts, so by the time start
+    // returns the records are gone.
+    let _server = Server::start(&lib);
+    let count = videre_core::decode_failures::fail_count(
+        &lib.conn(),
+        "heic1",
+        videre_core::decode_failures::STAGE_THUMBNAIL,
+    )
+    .unwrap();
+    assert_eq!(
+        count, 0,
+        "a new gallery run retries previously-skipped thumbnails"
     );
 }
 
