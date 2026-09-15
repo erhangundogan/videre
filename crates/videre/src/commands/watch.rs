@@ -446,31 +446,52 @@ fn run_location_stage(
     ctx: &CommandContext,
     conn: &rusqlite::Connection,
 ) -> Result<()> {
-    let unresolved: Vec<(f64, f64)> = {
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT gps_lat, gps_lon FROM file_hashes \
-             WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL AND location_name IS NULL",
-        )?;
-        let rows = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows
-    };
-    let mut resolved = 0usize;
-    for (lat, lon) in unresolved {
-        if let Some(name) = videre_core::location::location_name_in(&ctx.library.cache, lat, lon)? {
-            conn.execute(
-                "UPDATE file_hashes SET location_name = ?1 \
-                 WHERE ROUND(gps_lat, 6) = ROUND(?2, 6) AND ROUND(gps_lon, 6) = ROUND(?3, 6)",
-                rusqlite::params![name, lat, lon],
-            )?;
-            resolved += 1;
-        }
-    }
-    if !args.silent && resolved > 0 {
-        eprintln!("videre watch: location stage resolved {resolved} coordinate(s)");
-    }
-    Ok(())
+    // Deliberately its own tracked label, not `locations`: that row means the
+    // standalone clustering recompute (`videre locations` rebuilds
+    // `location_clusters` from scratch), while this stage incrementally fills
+    // `location_name`. And deliberately `location-names`, not `geocode`:
+    // `videre_core::geocode` is forward geocoding (place name -> coordinates),
+    // this is the reverse direction. A dedicated command lock (rather than
+    // sharing `locations`) is safe even though both jobs can write
+    // `location_name`: each writes the same cache-resolved value for a given
+    // coordinate, so interleaved writes are idempotent, and watch keeps
+    // resolving names during a long standalone recompute instead of skipping.
+    tracked_stage(
+        ctx,
+        conn,
+        "location-names",
+        videre_core::library_locks::ActivityMode::Shared,
+        args.silent,
+        || {
+            let unresolved: Vec<(f64, f64)> = {
+                let mut stmt = conn.prepare(
+                    "SELECT DISTINCT gps_lat, gps_lon FROM file_hashes \
+                     WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL AND location_name IS NULL",
+                )?;
+                let rows = stmt
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            let mut resolved = 0usize;
+            for (lat, lon) in unresolved {
+                if let Some(name) =
+                    videre_core::location::location_name_in(&ctx.library.cache, lat, lon)?
+                {
+                    conn.execute(
+                        "UPDATE file_hashes SET location_name = ?1 \
+                         WHERE ROUND(gps_lat, 6) = ROUND(?2, 6) AND ROUND(gps_lon, 6) = ROUND(?3, 6)",
+                        rusqlite::params![name, lat, lon],
+                    )?;
+                    resolved += 1;
+                }
+            }
+            if !args.silent && resolved > 0 {
+                eprintln!("videre watch: location stage resolved {resolved} coordinate(s)");
+            }
+            Ok(())
+        },
+    )
 }
 
 fn run_scan_stage(

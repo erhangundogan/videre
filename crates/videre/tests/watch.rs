@@ -114,6 +114,35 @@ fn location_stage_populates_location_name_for_gps_rows() {
 }
 
 #[test]
+fn location_stage_writes_a_terminal_location_names_pipeline_row() {
+    // The stage resolves names (work that used to happen invisibly); now it
+    // must also record itself in pipeline_runs so stats/status stop claiming
+    // it never ran. The label is `location-names`, deliberately distinct from
+    // `locations`, whose row means the standalone clustering recompute.
+    let lib = TestLibrary::new();
+    seed(
+        &lib,
+        "hash, ext, gps_lat, gps_lon",
+        "'hparis', 'jpg', 48.8566, 2.3522",
+    );
+
+    run_one_cycle(&lib, &["--location"], 3000);
+
+    let status: String = lib
+        .conn()
+        .query_row(
+            "SELECT status FROM pipeline_runs WHERE command = 'location-names'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("the location stage must write a location-names run row");
+    assert_ne!(
+        status, "running",
+        "the row must be terminal once the cycle's stage has finished"
+    );
+}
+
+#[test]
 fn prune_stage_removes_stale_rows() {
     let lib = TestLibrary::new();
     seed(&lib, "hash, ext", "'hgone', 'jpg'"); // a.jpg is never created on disk

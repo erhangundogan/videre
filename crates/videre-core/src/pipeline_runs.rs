@@ -199,6 +199,23 @@ pub fn read_all_in(
     {
         out.push(read_one_in(conn, ctx, "watch")?);
     }
+    // `location-names` is watch's incremental reverse-geocoding stage, on the
+    // same only-once-a-row-exists rule as the heartbeat: a library that never
+    // watched with --location is not lectured about it. It is deliberately
+    // distinct from `locations`, whose row means the standalone clustering
+    // recompute, and deliberately not called `geocode`, which in this codebase
+    // means forward geocoding (see `videre_core::geocode`).
+    if conn
+        .query_row(
+            "SELECT 1 FROM pipeline_runs WHERE command = 'location-names'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+        .is_some()
+    {
+        out.push(read_one_in(conn, ctx, "location-names")?);
+    }
     Ok(out)
 }
 
@@ -525,6 +542,29 @@ mod tests {
         let faces = statuses.iter().find(|s| s.command == "faces").unwrap();
         assert_eq!(faces.status, None);
         assert!(faces.currently_running);
+    }
+
+    #[test]
+    fn location_names_stage_surfaces_only_once_a_row_exists() {
+        let (_t, ctx, conn) = in_library();
+        // A library never watched with --location has no location-names row:
+        // the read must not lecture about a stage it never ran (same rule as
+        // the watch heartbeat above).
+        assert!(read_all_in(&conn, &ctx)
+            .unwrap()
+            .iter()
+            .all(|r| r.command != "location-names"));
+        // One watch cycle writes the row; from then on the stage reports
+        // like any tracked command.
+        start_run(&conn, "location-names").unwrap();
+        finish_run(&conn, "location-names", "success", 5, None).unwrap();
+        let names = read_all_in(&conn, &ctx)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.command == "location-names")
+            .expect("a written location-names row must surface in the run read");
+        assert_eq!(names.status.as_deref(), Some("success"));
+        assert!(!names.currently_running);
     }
 
     #[test]
