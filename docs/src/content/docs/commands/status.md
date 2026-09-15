@@ -34,6 +34,11 @@ Coverage (model google/siglip-base-patch16-224):
   them. A landscape that was scanned and found faceless is done.
 - **locations** and **fix-dates** count photos with GPS but no place name, and
   photos whose file date disagrees with the camera date, respectively.
+- **skipped as undecodable** appears on a stage when a file has failed to decode
+  enough times that `embed` or `faces` has stopped attempting it (an unreadable
+  file, or one that repeatedly times out). Such files are not counted as
+  outstanding, since the command will not act on them; `embed`/`faces
+  --reprocess` retries them.
 - Duplicates are deliberately absent: finding them is
   [`videre dedupe`](/commands/dedupe/)'s job, and deleting anything is always
   yours.
