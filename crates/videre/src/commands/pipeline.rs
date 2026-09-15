@@ -217,6 +217,37 @@ fn render_resolved(outcomes: &[Outcome]) {
     }
 }
 
+#[derive(serde::Serialize)]
+struct StageOutcomeJson {
+    stage: &'static str,
+    ran: bool,
+    ok: bool,
+    skipped: Option<&'static str>,
+    duration_ms: Option<u64>,
+}
+
+#[derive(serde::Serialize)]
+struct PipelineJson {
+    stages: Vec<StageOutcomeJson>,
+    failed: usize,
+}
+
+fn report_json(outcomes: &[Outcome], failed: usize) -> PipelineJson {
+    PipelineJson {
+        stages: outcomes
+            .iter()
+            .map(|o| StageOutcomeJson {
+                stage: o.stage.key(),
+                ran: o.ran,
+                ok: o.ok,
+                skipped: o.skipped,
+                duration_ms: o.duration_ms,
+            })
+            .collect(),
+        failed,
+    }
+}
+
 pub fn run(args: PipelineArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     let stages = planned_stages(&args);
 
@@ -243,7 +274,7 @@ pub fn run(args: PipelineArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     for stage in &stages {
         if *stage != Stage::Scan && report.is_none() {
             report = read_coverage(ctx).ok();
-            if !args.silent {
+            if !args.silent && !args.json {
                 render_plan(&stages, report.as_ref());
             }
         }
@@ -309,10 +340,15 @@ pub fn run(args: PipelineArgs, ctx: &CommandContext) -> anyhow::Result<()> {
         }
     }
 
-    if !args.silent {
+    let failed = outcomes.iter().filter(|o| o.ran && !o.ok).count();
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string(&report_json(&outcomes, failed))?
+        );
+    } else if !args.silent {
         render_resolved(&outcomes);
     }
-    let failed = outcomes.iter().filter(|o| o.ran && !o.ok).count();
     if failed > 0 {
         anyhow::bail!("pipeline: {failed} stage(s) failed");
     }

@@ -144,6 +144,24 @@ fn yes_runs_embed_when_models_are_available() {
 }
 
 #[test]
+fn json_run_reports_stage_outcomes() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "a.jpg");
+    let out = run_pipeline(&lib, &["--skip", "embed,classify,faces", "--json"], None);
+    let text = stdout_of(&out);
+    // stdout is exactly one JSON object.
+    let v: serde_json::Value =
+        serde_json::from_str(text.trim()).expect("one json object on stdout");
+    let stages = v["stages"].as_array().expect("stages array");
+    let scan = stages
+        .iter()
+        .find(|s| s["stage"] == "scan")
+        .expect("scan present");
+    assert_eq!(scan["ran"], serde_json::json!(true));
+    assert_eq!(v["failed"], serde_json::json!(0));
+}
+
+#[test]
 fn dry_run_json_lists_the_planned_stages() {
     let lib = TestLibrary::new();
     lib.copy_fixture("tiny.jpg", "a.jpg");
