@@ -233,7 +233,35 @@ pub fn read_all_in(
     {
         out.push(read_one_in(conn, ctx, "location-names")?);
     }
+    // The `locations` lock is shared with the location-names stage (see
+    // commands/watch.rs), so a held lock alone does not mean a recompute is
+    // running: while a location-names row is active, the holder is that
+    // stage, and the locations entry must not claim liveness from it. (The
+    // reverse hold — a recompute active while a location-names row is left
+    // running — cannot arise, because the stage's cycle cannot start until
+    // the recompute releases the lock.)
+    let names_active = out
+        .iter()
+        .any(|r| r.command == "location-names" && r.status.as_deref() == Some("running"));
+    if names_active {
+        if let Some(locations) = out.iter_mut().find(|r| r.command == "locations") {
+            locations.currently_running = false;
+        }
+    }
     Ok(out)
+}
+
+/// The lock whose holder proves `command` is running. Usually the command's
+/// own name; watch's location-names stage is the exception, sharing the
+/// `locations` command lock with the standalone recompute (see
+/// commands/watch.rs), so probing the row's own name would report a healthy
+/// running stage as crashed and fail `status --check` during normal use.
+fn liveness_lock_for(command: &str) -> &str {
+    if command == "location-names" {
+        "locations"
+    } else {
+        command
+    }
 }
 
 /// One command's row plus lock-derived liveness. Shared by the tracked loop
@@ -250,7 +278,7 @@ fn read_one_in(
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
-    let currently_running = crate::library_locks::command_locked(ctx, command)?;
+    let currently_running = crate::library_locks::command_locked(ctx, liveness_lock_for(command))?;
     let (last_run_at, status, duration_ms) = match row {
         None => (None, None, None),
         Some((started_at, duration_ms, stored_status)) => {
@@ -582,6 +610,48 @@ mod tests {
             .expect("a written location-names row must surface in the run read");
         assert_eq!(names.status.as_deref(), Some("success"));
         assert!(!names.currently_running);
+    }
+
+    #[test]
+    fn a_running_location_names_stage_reads_running_not_crashed() {
+        // The stage holds the `locations` lock, not a `location-names` one:
+        // liveness must be probed through the lock the stage actually holds,
+        // or every healthy cycle would read back as crashed and
+        // `status --check` would fail during normal operation.
+        let (_t, ctx, conn) = in_library();
+        let guard = crate::library_locks::try_command(&ctx, "locations").unwrap();
+        start_run(&conn, "location-names").unwrap();
+
+        let names = read_all_in(&conn, &ctx)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.command == "location-names")
+            .expect("a started location-names row must surface");
+        assert_eq!(
+            names.status.as_deref(),
+            Some("running"),
+            "an actively running stage is running, not crashed"
+        );
+        assert!(names.currently_running);
+        // The lock's holder is the location-names stage, so the locations
+        // entry must not claim a recompute is running on the strength of the
+        // shared lock alone.
+        let locations = read_all_in(&conn, &ctx)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.command == "locations")
+            .unwrap();
+        assert!(!locations.currently_running);
+
+        // Once the stage is gone without finishing, the stale running row
+        // reads back as exactly what it is.
+        drop(guard);
+        let names = read_all_in(&conn, &ctx)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.command == "location-names")
+            .unwrap();
+        assert_eq!(names.status.as_deref(), Some("crashed"));
     }
 
     #[test]
