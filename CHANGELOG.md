@@ -15,6 +15,26 @@ version number and are released together.
 
 ## [Unreleased]
 
+## [0.28.5] - 2026-09-15
+
+### Changed
+
+- **`videre status` no longer counts undecodable files as outstanding.** A file
+  that `embed` or `faces` has given up decoding (after two failures) was still
+  reported as outstanding, so `status` kept suggesting a command that now
+  deliberately skips it. Such files are shown separately as "skipped as
+  undecodable" instead, and the `--json` output carries a `skipped` count per
+  stage. `embed`/`faces --reprocess` retries them.
+
+### Fixed
+
+- **The gallery stops re-running QuickLook on a HEIC that keeps failing to
+  convert.** Only successful conversions were cached, so a corrupt or
+  unconvertible HEIC re-ran the expensive, sometimes-hanging conversion on every
+  thumbnail request. It is now refused after two failures within a gallery run;
+  starting the gallery again clears those records, so a file that failed only
+  transiently is retried.
+
 ## [0.28.4] - 2026-09-15
 
 ### Fixed
@@ -1794,7 +1814,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.28.4...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.28.5...HEAD
+[0.28.5]: https://github.com/erhangundogan/videre/compare/v0.28.4...v0.28.5
 [0.28.4]: https://github.com/erhangundogan/videre/compare/v0.28.3...v0.28.4
 [0.28.3]: https://github.com/erhangundogan/videre/compare/v0.28.2...v0.28.3
 [0.28.2]: https://github.com/erhangundogan/videre/compare/v0.28.1...v0.28.2
