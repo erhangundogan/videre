@@ -261,16 +261,21 @@ impl StatusReport {
 }
 
 /// Fallback per-item seconds for stages with no measured history. Coarse by
-/// design and always rendered as approximate; embed/classify dominate real
-/// runs, so their constants err on the slow side of honest.
+/// design and always rendered as approximate. Calibrated to a modern
+/// GPU-accelerated machine running batched inference (measured embed ~0.05s and
+/// faces ~0.12s per image on Apple Silicon); the old constants (embed 2s, faces
+/// 1s) predicted tens of minutes for runs that finish in one, which read as a
+/// warning rather than an estimate. The real fix is measured throughput, which
+/// needs per-run item counts in `pipeline_runs`; until then these are a
+/// deliberate under-promise for fast hardware over an over-promise for slow.
 fn fallback_secs_per_item(stage: &str) -> f64 {
     match stage {
-        "embed" => 2.0,
-        "classify" => 0.05,
-        "faces" => 1.0,
+        "embed" => 0.3,
+        "classify" => 0.03,
+        "faces" => 0.3,
         "locations" => 0.001,
         "fix-dates" => 0.001,
-        _ => 1.0,
+        _ => 0.3,
     }
 }
 
