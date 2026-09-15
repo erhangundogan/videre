@@ -203,25 +203,30 @@ jobs:
           fi
           echo "no embedding weights present, as expected"
 
-  # A plain build on aarch64 Linux, deliberately separate from the test matrix.
+  # A probe of the aarch64 install path that deliberately does NOT use the
+  # repo's own build configuration, because the two answer different questions.
   #
-  # cargo check cannot catch a codegen defect: it parses and type-checks but
-  # never asks a backend to emit machine code, so a dependency can pass every
-  # check and every x86_64 test and still break `cargo install` on this
-  # target. That is not hypothetical: gemm-f16 (pulled in by candle-core)
-  # emitted aarch64 FP16 instructions outside the CPU's baseline feature set,
-  # and every `cargo install videre` on such a CPU died with
-  # "error: instruction requires: fullfp16" until a dependency upgrade
-  # removed it. Only a real build surfaces that class, which is why this job
-  # runs a build and not a check.
+  # .cargo/config.toml gives in-repo aarch64 builds `-C target-feature=+fp16`
+  # because gemm-f16 (pulled in by candle-core) emits FP16 instructions
+  # outside the baseline target set; without the flag codegen dies with
+  # "error: instruction requires: fullfp16". `cargo install videre` from
+  # crates.io reads the installing user's cargo config instead of ours, so
+  # it gets no such flag. Setting RUSTFLAGS makes cargo ignore rustflags
+  # from every config file, so this build sees exactly what an installing
+  # user sees. (An empty CARGO_TARGET_<triple>_RUSTFLAGS does NOT do that:
+  # the config flags still apply. Measured, not assumed.)
   #
-  # ubuntu-24.04-arm is a native arm64 runner: the same architecture the
-  # failure bit. The rust-cache key covers Cargo.lock, so a dependency
-  # upgrade (the only way this defect class can return) recompiles the
-  # dependency from scratch here, while an unchanged tree reuses artifacts
-  # and keeps the job cheap.
+  # Expected state, measured 2026-09-15 (gemm-f16 0.19.0, pulp 0.22.3,
+  # rustc 1.96.0): this build FAILS. That is the known, documented state and
+  # keeps the job green. The job goes red on purpose the day the build
+  # passes, because that is the actionable day: the fp16 workaround in
+  # .cargo/config.toml and the README install note have become unnecessary
+  # and should be removed.
+  #
+  # cargo check can never substitute for this: check emits no machine code,
+  # so it passes even where every rustc backend call would fail.
   build-arm64:
-    name: build (aarch64-linux)
+    name: build (aarch64-linux, no fp16 override)
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
@@ -233,5 +238,21 @@ jobs:
           rustup toolchain install --profile minimal \
             "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
 
-      - name: Build
+      - name: Build without the repo's fp16 override
+        id: build
+        continue-on-error: true
+        env:
+          RUSTFLAGS: "-C debuginfo=0"
         run: cargo build --workspace
+
+      # Invert the probe into the job's verdict: failure is the expected,
+      # documented state and stays green; success is the rare, actionable
+      # day and turns the job red so the workaround cleanup cannot be missed.
+      - name: Report the install-path state
+        if: always()
+        run: |
+          if [ "${{ steps.build.outcome }}" = "success" ]; then
+            echo "::error::aarch64 builds clean without +fp16 now. The workaround in .cargo/config.toml and the README install note are removable; drop them and close the aarch64 install ticket."
+            exit 1
+          fi
+          echo "::notice::aarch64 install path still requires the fp16 RUSTFLAGS workaround (expected; documented in the README)."
