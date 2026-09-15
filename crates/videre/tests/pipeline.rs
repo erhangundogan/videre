@@ -120,6 +120,7 @@ fn declining_the_gate_skips_embed_and_classify_without_loading_models() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn yes_runs_embed_when_models_are_available() {
     let _guard = common::shared_cache_guard();
     if common::skip_without_models("embed", common::siglip_cached()) {
