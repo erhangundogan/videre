@@ -26,7 +26,7 @@ decoding the original.
 
 | Path | What you get |
 |------|--------------|
-| `/` | Every file, with a **Similar** button on each card |
+| `/` | Every file, with a **Similar** button on each card once the library has embeddings |
 | `/duplicates` | Duplicate groups, the same review `dedupe --html` writes |
 | `/people` | Face groups, and naming them |
 | `/date` | A Year / Month / Day drill-down |

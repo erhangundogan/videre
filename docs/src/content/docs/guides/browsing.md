@@ -179,7 +179,9 @@ the database, which an exported file does not have. Without embeddings,
 
 The **Similar** button on a card ranks the whole library against that photo. The
 server does the ranking, so it works at any library size, and the page never
-downloads a vector.
+downloads a vector. It appears only once the library has embeddings; with none
+there is nothing to rank against, so the button is omitted rather than shown and
+failing when clicked.
 
 **Nothing leaves your machine.** The server binds to `127.0.0.1`, and the pages
 make no external requests.
