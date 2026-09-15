@@ -230,6 +230,7 @@ fn prepare_schema(conn: &Connection) -> Result<()> {
     crate::classify::ensure_classifications_table(conn)?;
     crate::location_cluster::ensure_location_clusters_table(conn)?;
     crate::pipeline_runs::ensure_pipeline_runs_table(conn)?;
+    crate::decode_failures::ensure_table(conn)?;
     add_missing_columns(conn, "faces", FACES_COLUMNS)?;
     verify_schema(conn)?;
     Ok(())

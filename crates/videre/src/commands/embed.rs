@@ -1,7 +1,7 @@
 use crate::command_context::CommandContext;
 use anyhow::Result;
 use rayon::prelude::*;
-use videre_core::{embeddings, vectors};
+use videre_core::{decode_failures, embeddings, vectors};
 use videre_ml::{device, model, preprocess};
 
 #[derive(clap::Args)]
@@ -107,11 +107,26 @@ fn run_embed(
     model_id: &str,
 ) -> Result<()> {
     embeddings::ensure_embeddings_index(conn)?;
+    decode_failures::ensure_table(conn)?;
 
     let pending = if args.reprocess {
+        // --reprocess is the retry hatch: clear this stage's recorded failures so
+        // a file that was skipped as undecodable gets tried again (a videre fix
+        // may have made it decodable).
+        decode_failures::clear_stage(conn, decode_failures::STAGE_EMBED)?;
         embeddings::embeddable_images(conn, model_id)?
     } else {
-        embeddings::pending_images(conn, model_id)?
+        // Drop hashes this stage has already failed to decode enough times: they
+        // would only re-pay the same multi-second timeout for the same
+        // guaranteed failure on every run.
+        let mut pending = embeddings::pending_images(conn, model_id)?;
+        let failed = decode_failures::failed_hashes(
+            conn,
+            decode_failures::STAGE_EMBED,
+            decode_failures::FAILURE_THRESHOLD,
+        )?;
+        pending.retain(|p| !failed.contains(&p.hash));
+        pending
     };
 
     // Scope intersects with the pending set; it never replaces the eligibility
@@ -157,8 +172,11 @@ fn run_embed(
         let mut done = 0usize;
         let mut failed = 0usize;
         for chunk in pending.chunks(chunk_size) {
-            // Decode in parallel; None = unreadable, logged and skipped.
-            let decoded: Vec<Option<(String, candle_core::Tensor)>> = chunk
+            // Decode in parallel; a failure carries (hash, error) back so it can
+            // be recorded serially below (the connection is not Sync, so no DB
+            // write can happen inside the rayon closure).
+            type Decoded = std::result::Result<(String, candle_core::Tensor), (String, String)>;
+            let outcomes: Vec<Decoded> = chunk
                 .par_iter()
                 .map(|p| {
                     match preprocess::image_to_tensor(
@@ -166,16 +184,31 @@ fn run_embed(
                         model::image_size_for(model_id),
                         &candle_core::Device::Cpu, // decode on CPU, move to device in batch
                     ) {
-                        Ok(t) => Some((p.hash.clone(), t)),
+                        Ok(t) => Ok((p.hash.clone(), t)),
                         Err(e) => {
                             progress.println(&format!("skip {}: {e:#}", p.path));
-                            None
+                            Err((p.hash.clone(), format!("{e:#}")))
                         }
                     }
                 })
                 .collect();
-            let decoded: Vec<(String, candle_core::Tensor)> =
-                decoded.into_iter().flatten().collect();
+            let mut decoded: Vec<(String, candle_core::Tensor)> =
+                Vec::with_capacity(outcomes.len());
+            for outcome in outcomes {
+                match outcome {
+                    Ok(pair) => decoded.push(pair),
+                    // Record the failure so a later run can skip it once it has
+                    // failed FAILURE_THRESHOLD times.
+                    Err((hash, err)) => {
+                        let _ = decode_failures::record(
+                            conn,
+                            &hash,
+                            decode_failures::STAGE_EMBED,
+                            &err,
+                        );
+                    }
+                }
+            }
             failed += chunk.len() - decoded.len();
 
             let mut rows: Vec<(String, Vec<u8>)> = Vec::with_capacity(decoded.len());
@@ -191,6 +224,11 @@ fn run_embed(
             }
 
             embeddings::insert_embeddings(conn, model_id, &rows)?;
+            // A file that decoded and embedded is not failing: drop any earlier
+            // strike so a transient timeout never lingers toward the threshold.
+            for (hash, _) in &rows {
+                let _ = decode_failures::clear(conn, hash, decode_failures::STAGE_EMBED);
+            }
             done += rows.len();
             progress.tick_by(chunk.len() as u64);
         }

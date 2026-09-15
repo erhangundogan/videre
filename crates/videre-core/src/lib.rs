@@ -1,6 +1,7 @@
 pub mod atomic_file;
 pub mod classify;
 pub mod db;
+pub mod decode_failures;
 pub mod disk;
 pub mod embeddings;
 pub mod embeddings_db;

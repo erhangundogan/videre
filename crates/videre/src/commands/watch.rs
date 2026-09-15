@@ -4,7 +4,7 @@ use anyhow::Result;
 use rayon::prelude::*;
 use std::time::Duration;
 use videre::{hasher, scanner, sqlite_output, types};
-use videre_core::face_db;
+use videre_core::{decode_failures, face_db};
 use videre_ml::pipeline::{run_clustering, run_face_pipeline_in};
 
 #[derive(clap::Args)]
@@ -266,6 +266,17 @@ fn run_faces_stage(
             let mut skip_hashes: std::collections::HashSet<String> =
                 face_db::scanned_hashes(conn)?.into_iter().collect();
             skip_hashes.extend(face_db::hashes_with_faces(conn)?);
+            // Also skip hashes the face decode has already failed on enough
+            // times. This matters most in watch: it re-runs on every cycle, so
+            // without this an undecodable file pays its timeout every loop
+            // forever. Recording happens in the pipeline; `videre faces
+            // --reprocess` is the retry hatch.
+            decode_failures::ensure_table(conn)?;
+            skip_hashes.extend(decode_failures::failed_hashes(
+                conn,
+                decode_failures::STAGE_FACES,
+                decode_failures::FAILURE_THRESHOLD,
+            )?);
             let to_process: Vec<(String, String)> = all_paths
                 .into_iter()
                 .filter(|(_, hash)| !skip_hashes.contains(hash))
