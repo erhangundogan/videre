@@ -129,15 +129,18 @@ fn render_plan(stages: &[Stage], report: Option<&StatusReport>) {
         let cov = report.and_then(|r| coverage_for(r, *stage));
         match cov {
             Some(c) if c.outstanding > 0 => {
-                let cost = report
+                // A duration is shown only when it was measured from a prior
+                // run; otherwise the count and an "intensive" marker stand in,
+                // rather than a guessed time that is usually wrong.
+                let measured = report
                     .and_then(|r| r.costs.iter().find(|(s, _)| *s == c.stage))
                     .and_then(|(_, e)| e.secs)
-                    .map(fmt_cost)
+                    .map(|s| format!("   {}", fmt_cost(s)))
                     .unwrap_or_default();
-                let flag = if c.heavy { "  needs confirm" } else { "" };
+                let tag = if c.heavy { "   intensive" } else { "" };
                 println!(
-                    "  o {:10} {} outstanding   {}{}",
-                    c.stage, c.outstanding, cost, flag
+                    "  o {:10} {} outstanding{}{}",
+                    c.stage, c.outstanding, measured, tag
                 );
             }
             Some(c) => println!("  o {:10} up to date", c.stage),
@@ -193,17 +196,22 @@ fn confirm_heavy(report: &StatusReport) -> anyhow::Result<bool> {
         .iter()
         .filter(|c| c.heavy && c.outstanding > 0)
         .map(|c| {
-            let cost = report
+            // Only a measured duration is worth showing; otherwise the count
+            // carries the weight and "intensive" (below) sets the expectation.
+            let measured = report
                 .costs
                 .iter()
                 .find(|(s, _)| *s == c.stage)
                 .and_then(|(_, e)| e.secs)
-                .map(fmt_cost)
+                .map(|s| format!(" ({})", fmt_cost(s)))
                 .unwrap_or_default();
-            format!("{} {} files ({})", c.stage, c.outstanding, cost)
+            format!("{} {} files{}", c.stage, c.outstanding, measured)
         })
         .collect();
-    super::confirm(&format!("About to {}. Proceed?", parts.join(" and ")))
+    super::confirm(&format!(
+        "About to {} - the intensive stage(s). Proceed?",
+        parts.join(" and ")
+    ))
 }
 
 fn render_resolved(outcomes: &[Outcome]) {
@@ -265,19 +273,26 @@ pub fn run(args: PipelineArgs, ctx: &CommandContext) -> anyhow::Result<()> {
 
     let stage_silent = args.silent || args.json;
     let mut outcomes: Vec<Outcome> = Vec::new();
-    // Coverage is read once, after scan, so the plan reflects freshly scanned
-    // files. Computed lazily on the first non-scan stage.
-    let mut report: Option<StatusReport> = None;
+    let mut plan_printed = false;
     let mut asked_heavy = false;
     let mut heavy_declined = false;
 
     for stage in &stages {
-        if *stage != Stage::Scan && report.is_none() {
-            report = read_coverage(ctx).ok();
-            if !args.silent && !args.json {
-                render_plan(&stages, report.as_ref());
+        // Coverage is re-read before each non-scan stage rather than cached, so
+        // a stage that consumes an earlier stage's output sees it. classify
+        // reads the vectors embed just produced; a single reading taken before
+        // embed ran reported "nothing to classify" and skipped it, leaving a
+        // freshly embedded library unclassified until the next run.
+        let report = if *stage == Stage::Scan {
+            None
+        } else {
+            let r = read_coverage(ctx).ok();
+            if !plan_printed && !args.silent && !args.json {
+                render_plan(&stages, r.as_ref());
+                plan_printed = true;
             }
-        }
+            r
+        };
 
         // Skip a measured stage with nothing outstanding.
         if let Some(cov) = report.as_ref().and_then(|r| coverage_for(r, *stage)) {

@@ -248,13 +248,36 @@ fn read_one_in(
 /// best-effort contract as the global version: errors inside the handler
 /// are swallowed, there is no useful way to report them once the process is
 /// already exiting on a signal.
+/// A `videre pipeline` runs several tracked stages in one process, but the
+/// `ctrlc` crate permits exactly one handler per process. So the handler is
+/// installed once and then retargeted: each stage records the command it is
+/// running, and the single handler marks whichever command is current when the
+/// signal arrives. Re-installing is a silent no-op rather than the "already
+/// registered" error every stage after the first used to raise.
+static SIGINT_INSTALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SIGINT_COMMAND: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
+
 pub fn install_sigint_handler_in(
     ctx: std::sync::Arc<crate::library::LibraryContext>,
     command: &'static str,
 ) -> Result<()> {
     ctx.ensure_root_identity()
         .context("validating the library before installing the SIGINT handler")?;
+    // Point the single, process-wide handler at the stage now running.
+    if let Ok(mut current) = SIGINT_COMMAND.lock() {
+        *current = Some(command);
+    }
+    // Later stages in the same process only retarget the handler above; one
+    // handler per process is all `ctrlc` allows.
+    if SIGINT_INSTALLED.load(std::sync::atomic::Ordering::SeqCst) {
+        return Ok(());
+    }
     ctrlc::set_handler(move || {
+        let command = SIGINT_COMMAND
+            .lock()
+            .ok()
+            .and_then(|c| *c)
+            .unwrap_or(command);
         if ctx.ensure_root_identity().is_ok() {
             if let Ok(conn) = crate::library_db::open_without_create(&ctx.paths.db) {
                 let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
@@ -282,7 +305,9 @@ pub fn install_sigint_handler_in(
         }
         std::process::exit(130);
     })
-    .context("installing SIGINT handler")
+    .context("installing SIGINT handler")?;
+    SIGINT_INSTALLED.store(true, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -518,5 +543,22 @@ mod tests {
         std::fs::create_dir(&root).unwrap();
         let err = install_sigint_handler_in(ctx, "scan").unwrap_err();
         assert!(format!("{err:#}").contains("no longer names"), "{err:#}");
+    }
+
+    #[test]
+    fn install_sigint_handler_in_is_idempotent_within_a_process() {
+        // A pipeline installs the handler once and retargets it for each later
+        // stage, so a second install must succeed silently rather than raise
+        // "already registered" - the warning pipeline used to print between
+        // scan and faces.
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("photos");
+        std::fs::create_dir(&root).unwrap();
+        let ctx = std::sync::Arc::new(
+            crate::library::LibraryContext::new(&root, &temp.path().join("cache")).unwrap(),
+        );
+        install_sigint_handler_in(ctx.clone(), "scan").expect("first install");
+        install_sigint_handler_in(ctx, "faces")
+            .expect("a second install in the same process must be a no-op, not an error");
     }
 }

@@ -198,35 +198,37 @@ pub fn watch_liveness_in(
     })
 }
 
-/// An approximate duration for one stage's outstanding work, clearly a
-/// guess and rendered as one ("~1.6h"). `secs` is `None` when there is
-/// nothing outstanding: no work, no estimate.
+/// A measured duration for one stage's outstanding work, or `None` when there
+/// is no measurement to base one on. `secs` is `Some` only when a real prior
+/// run supplied a throughput; otherwise callers show the item count and an
+/// "intensive" marker rather than a number.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct CostEstimate {
     pub secs: Option<u64>,
     pub approximate: bool,
 }
 
-/// Estimate cost from the last successful run's measured throughput when the
-/// run recorded an item count, else from a coarse per-item constant. The
-/// estimator is deliberately isolated: pipeline_runs does not yet store item
-/// counts, so today the measured path is exercised by tests and the fallback
-/// is what users see; when runs start recording items, this function
-/// improves without touching any caller.
+/// A duration for the outstanding work, but only when it can be measured. We
+/// deliberately do NOT fabricate one from a per-item constant: throughput
+/// swings by orders of magnitude across hardware (GPU vs CPU), batch size and
+/// media type, so a guessed duration is confidently wrong more often than it is
+/// useful, and a wrong number erodes trust in everything else the tool reports.
+/// `secs` is `Some` only when the last successful run recorded both how long it
+/// took and how many items it processed; until `pipeline_runs` stores item
+/// counts (see the item-count work) that is never, so today this returns `None`
+/// and callers render the count plus an "intensive" marker. `None` also when
+/// nothing is outstanding.
 pub fn estimate_cost(
     outstanding: i64,
     last_run_ms: Option<i64>,
     last_run_items: Option<i64>,
-    fallback_secs_per_item: f64,
 ) -> CostEstimate {
-    let secs = if outstanding <= 0 {
-        None
-    } else {
-        let per_item = match (last_run_ms, last_run_items) {
-            (Some(ms), Some(items)) if ms > 0 && items > 0 => ms as f64 / items as f64 / 1000.0,
-            _ => fallback_secs_per_item,
-        };
-        Some((outstanding as f64 * per_item).ceil() as u64)
+    let secs = match (last_run_ms, last_run_items) {
+        (Some(ms), Some(items)) if outstanding > 0 && ms > 0 && items > 0 => {
+            let per_item = ms as f64 / items as f64 / 1000.0;
+            Some((outstanding as f64 * per_item).ceil() as u64)
+        }
+        _ => None,
     };
     CostEstimate {
         secs,
@@ -260,20 +262,6 @@ impl StatusReport {
     }
 }
 
-/// Fallback per-item seconds for stages with no measured history. Coarse by
-/// design and always rendered as approximate; embed/classify dominate real
-/// runs, so their constants err on the slow side of honest.
-fn fallback_secs_per_item(stage: &str) -> f64 {
-    match stage {
-        "embed" => 2.0,
-        "classify" => 0.05,
-        "faces" => 1.0,
-        "locations" => 0.001,
-        "fix-dates" => 0.001,
-        _ => 1.0,
-    }
-}
-
 /// Assemble the report: coverage, pipeline health, watch liveness, and the
 /// cost of closing each gap. One call, one connection, read-only.
 pub fn compute_status_in(
@@ -291,12 +279,10 @@ pub fn compute_status_in(
             let prior = pipelines.iter().find(|p| p.command == c.stage);
             (
                 c.stage,
-                estimate_cost(
-                    c.outstanding,
-                    prior.and_then(|p| p.duration_ms),
-                    None,
-                    fallback_secs_per_item(c.stage),
-                ),
+                // pipeline_runs records a duration but not an item count yet, so
+                // the second input is None and the estimate stays None until
+                // that lands. No fabricated fallback.
+                estimate_cost(c.outstanding, prior.and_then(|p| p.duration_ms), None),
             )
         })
         .collect();
@@ -463,18 +449,19 @@ mod tests {
     }
 
     #[test]
-    fn cost_uses_measured_rate_then_falls_back() {
+    fn cost_is_shown_only_when_it_can_be_measured() {
         // 100 items took 50_000ms -> 500ms/item; 10 outstanding -> ~5s.
-        let c = estimate_cost(10, Some(50_000), Some(100), 2.0);
+        let c = estimate_cost(10, Some(50_000), Some(100));
         assert_eq!(c.secs, Some(5));
-        // no prior run -> fallback 2s/item * 10 = 20s.
-        let f = estimate_cost(10, None, None, 2.0);
-        assert_eq!(f.secs, Some(20));
-        assert!(f.approximate);
-        // nothing outstanding: no estimate, not zero seconds of work.
-        assert_eq!(estimate_cost(0, None, None, 2.0).secs, None);
-        // a nonsense prior run (zero items) must not divide by zero.
-        assert_eq!(estimate_cost(10, Some(50_000), Some(0), 2.0).secs, Some(20));
+        assert!(c.approximate);
+        // No prior run with an item count: no fabricated estimate.
+        assert_eq!(estimate_cost(10, None, None).secs, None);
+        // A duration but no item count (today's pipeline_runs): still None.
+        assert_eq!(estimate_cost(10, Some(50_000), None).secs, None);
+        // Nothing outstanding: no estimate.
+        assert_eq!(estimate_cost(0, Some(50_000), Some(100)).secs, None);
+        // A nonsense prior run (zero items) must not divide by zero -> None.
+        assert_eq!(estimate_cost(10, Some(50_000), Some(0)).secs, None);
     }
 
     #[test]
@@ -490,10 +477,14 @@ mod tests {
         assert!(!report.coverage.is_empty());
         let embed = report.coverage.iter().find(|c| c.stage == "embed").unwrap();
         assert_eq!(embed.outstanding, 2);
-        assert!(report
+        // embed has an entry, but with no measured prior run there is no
+        // fabricated duration.
+        let embed_cost = report
             .costs
             .iter()
-            .any(|(stage, cost)| *stage == "embed" && cost.secs.is_some()));
+            .find(|(stage, _)| *stage == "embed")
+            .expect("embed cost entry");
+        assert_eq!(embed_cost.1.secs, None);
         assert!(report.pipelines.iter().all(|p| p.status.is_none()));
         assert!(!report.watch.running);
         assert_eq!(report.watch.last_cycle_at, None);
