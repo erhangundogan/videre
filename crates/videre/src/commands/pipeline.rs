@@ -265,19 +265,26 @@ pub fn run(args: PipelineArgs, ctx: &CommandContext) -> anyhow::Result<()> {
 
     let stage_silent = args.silent || args.json;
     let mut outcomes: Vec<Outcome> = Vec::new();
-    // Coverage is read once, after scan, so the plan reflects freshly scanned
-    // files. Computed lazily on the first non-scan stage.
-    let mut report: Option<StatusReport> = None;
+    let mut plan_printed = false;
     let mut asked_heavy = false;
     let mut heavy_declined = false;
 
     for stage in &stages {
-        if *stage != Stage::Scan && report.is_none() {
-            report = read_coverage(ctx).ok();
-            if !args.silent && !args.json {
-                render_plan(&stages, report.as_ref());
+        // Coverage is re-read before each non-scan stage rather than cached, so
+        // a stage that consumes an earlier stage's output sees it. classify
+        // reads the vectors embed just produced; a single reading taken before
+        // embed ran reported "nothing to classify" and skipped it, leaving a
+        // freshly embedded library unclassified until the next run.
+        let report = if *stage == Stage::Scan {
+            None
+        } else {
+            let r = read_coverage(ctx).ok();
+            if !plan_printed && !args.silent && !args.json {
+                render_plan(&stages, r.as_ref());
+                plan_printed = true;
             }
-        }
+            r
+        };
 
         // Skip a measured stage with nothing outstanding.
         if let Some(cov) = report.as_ref().and_then(|r| coverage_for(r, *stage)) {

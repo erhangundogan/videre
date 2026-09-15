@@ -121,6 +121,41 @@ fn declining_the_gate_skips_embed_and_classify_without_loading_models() {
 
 #[test]
 #[cfg(target_os = "macos")]
+fn one_run_classifies_the_embeddings_it_just_produced() {
+    // Coverage must be re-read per stage, not once up front: on a cold library
+    // classify's input is the vectors embed produces during this same run, so a
+    // single reading taken before embed would mark classify "up to date" and
+    // skip it. Needs SigLIP for embed + classify; faces and locations are
+    // skipped to keep the model set to one.
+    let _guard = common::shared_cache_guard();
+    if common::skip_without_models("embed", common::siglip_cached()) {
+        return;
+    }
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "a.jpg");
+    let out = run_pipeline(
+        &lib,
+        &["--yes", "--skip", "faces,locations", "--json"],
+        None,
+    );
+    let text = stdout_of(&out);
+    let v: serde_json::Value = serde_json::from_str(text.trim()).expect("json");
+    let classify = v["stages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["stage"] == "classify")
+        .expect("classify stage present");
+    assert_eq!(
+        classify["ran"],
+        serde_json::json!(true),
+        "classify must run on the embeddings embed just produced, not be skipped:\n{text}"
+    );
+    assert_eq!(classify["skipped"], serde_json::Value::Null);
+}
+
+#[test]
+#[cfg(target_os = "macos")]
 fn yes_runs_embed_when_models_are_available() {
     let _guard = common::shared_cache_guard();
     if common::skip_without_models("embed", common::siglip_cached()) {
