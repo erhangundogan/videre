@@ -45,3 +45,4 @@ Private/local context may exist outside this repository, but it must not be quot
 - Verify with real command output before claiming work is complete.
 - Tests come first: write the failing unit/integration test, then implement the feature or fix (TDD).
 - Work each ticket in its own git worktree under .claude/worktrees/.
+- .claude/worktrees/ is shared: never modify or delete a worktree you did not create.
