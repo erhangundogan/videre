@@ -212,17 +212,42 @@ pub fn assign(conn: &Connection, face_ids: &[i64], person_label: &str) -> Result
     // without a separate "create person" step.
     let display = crate::label::sanitize_person_label(person_label).ok_or(Error::Invalid)?;
     let label = videre_core::person::normalize(&display).ok_or(Error::Invalid)?;
-    conn.execute(
-        "INSERT INTO people (name, full_name) VALUES (?1, ?2) ON CONFLICT(name) DO NOTHING",
-        rusqlite::params![&label, &display],
-    )?;
-    for id in face_ids {
-        conn.execute(
-            "UPDATE faces SET person_label = ?1, confirmed = 1 WHERE id = ?2",
-            rusqlite::params![label, id],
-        )?;
+    // Nothing to assign is a malformed request, not a silent success that would
+    // create a person with no faces.
+    if face_ids.is_empty() {
+        return Err(Error::Invalid);
     }
-    Ok(())
+    // All-or-nothing: a face id that matches no row makes the whole assign a
+    // NotFound, and the person insert is rolled back with it so a failed assign
+    // leaves nothing behind. An `UPDATE` matching no row is `Ok(0)`, not an
+    // error, so a partial write would otherwise be reported as success.
+    conn.execute_batch("BEGIN")?;
+    let result = (|| -> Result<()> {
+        conn.execute(
+            "INSERT INTO people (name, full_name) VALUES (?1, ?2) ON CONFLICT(name) DO NOTHING",
+            rusqlite::params![&label, &display],
+        )?;
+        for id in face_ids {
+            let n = conn.execute(
+                "UPDATE faces SET person_label = ?1, confirmed = 1 WHERE id = ?2",
+                rusqlite::params![label, id],
+            )?;
+            if n == 0 {
+                return Err(Error::NotFound);
+            }
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
 }
 
 /// Create a person from faces. Same effect as `assign`; kept as a distinct
@@ -234,19 +259,31 @@ pub fn new_person(conn: &Connection, face_ids: &[i64], label: &str) -> Result<()
 
 /// Reset one face to fully unassigned (cluster, label, confirmed, primary).
 pub fn remove_face(conn: &Connection, face_id: i64) -> Result<()> {
-    conn.execute(
+    // A face id from the client that matches no row is `Ok(0)`, not an error;
+    // reported as success it would tell the UI a face was reset that never
+    // existed.
+    let n = conn.execute(
         "UPDATE faces SET cluster_id = NULL, person_label = NULL, confirmed = 0, is_primary = 0 WHERE id = ?1",
         [face_id],
     )?;
+    if n == 0 {
+        return Err(Error::NotFound);
+    }
     Ok(())
 }
 
 /// Ungroup a bad cluster: its faces become unassigned singletons (not deleted).
 pub fn dissolve_cluster(conn: &Connection, cluster_id: i64) -> Result<()> {
-    conn.execute(
+    // A cluster id from the client that matches no row is `Ok(0)`, not an error;
+    // reported as success it would tell the UI a cluster was ungrouped that
+    // never existed.
+    let n = conn.execute(
         "UPDATE faces SET cluster_id = NULL WHERE cluster_id = ?1",
         [cluster_id],
     )?;
+    if n == 0 {
+        return Err(Error::NotFound);
+    }
     Ok(())
 }
 
@@ -290,15 +327,22 @@ pub fn set_primary(conn: &Connection, face_id: i64, person_label: &str) -> Resul
     let person_label =
         videre_core::person::normalize(person_label).unwrap_or_else(|| person_label.to_string());
     conn.execute_batch("BEGIN")?;
-    let result = (|| -> rusqlite::Result<()> {
+    let result = (|| -> Result<()> {
         conn.execute(
             "UPDATE faces SET is_primary = 0 WHERE person_label = ?1",
             rusqlite::params![person_label],
         )?;
-        conn.execute(
+        // The guard on person_label means a face id that does not exist, or
+        // belongs to someone else, matches no row: `Ok(0)`, not an error. That
+        // is a NotFound, and the rollback restores the primary cleared above so
+        // a failed call leaves the person's primary untouched.
+        let n = conn.execute(
             "UPDATE faces SET is_primary = 1, confirmed = 1, person_label = ?1 WHERE id = ?2 AND person_label = ?1",
             rusqlite::params![person_label, face_id],
         )?;
+        if n == 0 {
+            return Err(Error::NotFound);
+        }
         Ok(())
     })();
     match result {
@@ -308,7 +352,7 @@ pub fn set_primary(conn: &Connection, face_id: i64, person_label: &str) -> Resul
         }
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
-            Err(Error::Db(e))
+            Err(e)
         }
     }
 }
@@ -535,6 +579,111 @@ mod tests {
         assert_eq!(name, "alice", "identity is unchanged");
         assert_eq!(full, "Alice Smith", "only the display name moved");
         assert_eq!(person_detail(&conn, "alice").unwrap().faces.len(), 2);
+    }
+
+    // A write against a client-supplied id that matches no row is `Ok(0)` from
+    // rusqlite, not an error. Reported as success it tells the labeling UI an
+    // action worked when nothing changed. Each handler that takes an id from the
+    // client must turn "matched nothing" into NotFound, the way set_full_name
+    // already does.
+
+    #[test]
+    fn assign_a_missing_face_is_not_found() {
+        let conn = seed();
+        assert!(matches!(assign(&conn, &[999], "Bob"), Err(Error::NotFound)));
+    }
+
+    #[test]
+    fn assign_is_atomic_when_one_face_is_missing() {
+        // face 3 exists, 999 does not. All-or-nothing: face 3 must be untouched
+        // and no `Bob` person may be created, so a partial write can never be
+        // reported as success.
+        let conn = seed();
+        assert!(matches!(
+            assign(&conn, &[3, 999], "Bob"),
+            Err(Error::NotFound)
+        ));
+        let (label, confirmed): (Option<String>, i64) = conn
+            .query_row(
+                "SELECT person_label, confirmed FROM faces WHERE id = 3",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(label, None, "face 3 must not have been labelled");
+        assert_eq!(confirmed, 0, "face 3 must not have been confirmed");
+        let bob: i64 = conn
+            .query_row("SELECT COUNT(*) FROM people WHERE name = 'bob'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            bob, 0,
+            "no person may be created when the assign rolls back"
+        );
+    }
+
+    #[test]
+    fn assign_rejects_empty_face_ids() {
+        // Nothing to assign is a malformed request, not a silent success that
+        // creates a person with no faces.
+        let conn = seed();
+        assert!(matches!(assign(&conn, &[], "Bob"), Err(Error::Invalid)));
+    }
+
+    #[test]
+    fn remove_face_missing_is_not_found() {
+        let conn = seed();
+        assert!(matches!(remove_face(&conn, 999), Err(Error::NotFound)));
+    }
+
+    #[test]
+    fn dissolve_cluster_missing_is_not_found() {
+        let conn = seed();
+        assert!(matches!(dissolve_cluster(&conn, 999), Err(Error::NotFound)));
+    }
+
+    #[test]
+    fn set_primary_missing_face_is_not_found() {
+        let conn = seed();
+        assert!(matches!(
+            set_primary(&conn, 999, "Alice"),
+            Err(Error::NotFound)
+        ));
+    }
+
+    #[test]
+    fn set_primary_face_of_another_person_is_not_found_and_rolls_back() {
+        // face 5 is an unassigned singleton, so the guarded update matches no
+        // row for Alice. The failure must roll back the primary-clearing step:
+        // Alice's existing primary (face 1) has to survive.
+        let conn = seed();
+        assert!(matches!(
+            set_primary(&conn, 5, "Alice"),
+            Err(Error::NotFound)
+        ));
+        let primary: i64 = conn
+            .query_row(
+                "SELECT id FROM faces WHERE person_label = 'alice' AND is_primary = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            primary, 1,
+            "the original primary must be restored on rollback"
+        );
+    }
+
+    #[test]
+    fn delete_person_missing_is_idempotent_success() {
+        // Delete is idempotent: asking to unassign a person who is already gone
+        // has already achieved its goal. A person can also legitimately have a
+        // `people` row and no confirmed faces, which would make a row-count
+        // check wrongly 404 a real person, so delete stays out of the NotFound
+        // rule by design.
+        let conn = seed();
+        assert!(delete_person(&conn, "Nobody").is_ok());
     }
 }
 
