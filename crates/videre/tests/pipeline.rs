@@ -67,6 +67,35 @@ fn dry_run_prints_the_plan_and_does_no_work() {
 }
 
 #[test]
+fn runs_scan_and_locations_skipping_heavy_stages() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "a.jpg");
+
+    // --skip embed,classify,faces keeps the run model-free: only scan and
+    // locations execute, neither loads weights.
+    let out = run_pipeline(&lib, &["--skip", "embed,classify,faces"], None);
+    let text = stdout_of(&out);
+
+    assert!(
+        text.contains("scan"),
+        "scan should appear in the resolved checklist:\n{text}"
+    );
+    assert!(
+        text.contains("locations"),
+        "locations should appear:\n{text}"
+    );
+    assert!(hf_home_is_empty(&lib), "no weights should be downloaded");
+
+    // A pipeline_runs row for scan proves the stage actually ran.
+    let status = lib.cmd().args(["status"]).output().unwrap();
+    let status_text = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        status_text.contains("scan"),
+        "status should show a scan run:\n{status_text}"
+    );
+}
+
+#[test]
 fn dry_run_json_lists_the_planned_stages() {
     let lib = TestLibrary::new();
     lib.copy_fixture("tiny.jpg", "a.jpg");

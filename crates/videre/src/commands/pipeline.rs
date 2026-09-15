@@ -147,6 +147,55 @@ fn render_plan(stages: &[Stage], report: Option<&StatusReport>) {
     println!();
 }
 
+struct Outcome {
+    stage: Stage,
+    ran: bool,
+    ok: bool,
+    skipped: Option<&'static str>,
+    duration_ms: Option<u64>,
+}
+
+/// Run one stage by calling that command's own `run`, so it keeps its own
+/// connection, command lock, `pipeline_runs` row, progress and summary.
+fn run_stage(stage: Stage, ctx: &CommandContext, silent: bool) -> anyhow::Result<()> {
+    match stage {
+        Stage::Scan => super::scan::run(super::scan::ScanArgs::for_pipeline(silent), ctx),
+        Stage::Faces => super::faces::run(super::faces::FacesArgs::for_pipeline(silent), ctx),
+        Stage::Embed => super::embed::run(super::embed::EmbedArgs::for_pipeline(silent), ctx),
+        Stage::Classify => {
+            super::classify::run(super::classify::ClassifyArgs::for_pipeline(silent), ctx)
+        }
+        Stage::Locations => {
+            super::locations::run(super::locations::LocationsArgs::for_pipeline(silent), ctx)
+        }
+        Stage::FixDates => {
+            super::fix_dates::run(super::fix_dates::FixDatesArgs::for_pipeline(silent), ctx)
+        }
+        Stage::Export => super::export::run(super::export::ExportArgs::for_pipeline(silent), ctx),
+    }
+}
+
+fn indicator(o: &Outcome) -> char {
+    if o.skipped.is_some() {
+        '-'
+    } else if !o.ok {
+        '!'
+    } else {
+        '+'
+    }
+}
+
+fn render_resolved(outcomes: &[Outcome]) {
+    for o in outcomes {
+        let note = match (o.skipped, o.duration_ms) {
+            (Some(reason), _) => format!("skipped ({reason})"),
+            (None, Some(ms)) => videre_core::progress::human_duration_ms(ms),
+            (None, None) => String::new(),
+        };
+        println!("  {} {:10} {}", indicator(o), o.stage.key(), note);
+    }
+}
+
 pub fn run(args: PipelineArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     let stages = planned_stages(&args);
 
@@ -162,10 +211,74 @@ pub fn run(args: PipelineArgs, ctx: &CommandContext) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Execution is added in later tasks. For now a non-dry-run prints the plan
-    // and stops, so the command is wired end to end without doing work yet.
-    let report = read_coverage(ctx).ok();
-    render_plan(&stages, report.as_ref());
-    let _ = Instant::now();
+    let stage_silent = args.silent || args.json;
+    let mut outcomes: Vec<Outcome> = Vec::new();
+    // Coverage is read once, after scan, so the plan reflects freshly scanned
+    // files. Computed lazily on the first non-scan stage.
+    let mut report: Option<StatusReport> = None;
+
+    for stage in &stages {
+        if *stage != Stage::Scan && report.is_none() {
+            report = read_coverage(ctx).ok();
+            if !args.silent {
+                render_plan(&stages, report.as_ref());
+            }
+        }
+
+        // Skip a measured stage with nothing outstanding.
+        if let Some(cov) = report.as_ref().and_then(|r| coverage_for(r, *stage)) {
+            if cov.outstanding == 0 {
+                outcomes.push(Outcome {
+                    stage: *stage,
+                    ran: false,
+                    ok: true,
+                    skipped: Some("up to date"),
+                    duration_ms: None,
+                });
+                continue;
+            }
+            // The heavy-stage confirm gate is added in a later task. Until then,
+            // skip the heavy stages so this path stays model-free.
+            if cov.heavy {
+                outcomes.push(Outcome {
+                    stage: *stage,
+                    ran: false,
+                    ok: true,
+                    skipped: Some("heavy (gate pending)"),
+                    duration_ms: None,
+                });
+                continue;
+            }
+        }
+
+        let started = Instant::now();
+        match run_stage(*stage, ctx, stage_silent) {
+            Ok(()) => outcomes.push(Outcome {
+                stage: *stage,
+                ran: true,
+                ok: true,
+                skipped: None,
+                duration_ms: Some(started.elapsed().as_millis() as u64),
+            }),
+            Err(e) => {
+                eprintln!("videre pipeline: {} stage error: {e:#}", stage.key());
+                outcomes.push(Outcome {
+                    stage: *stage,
+                    ran: true,
+                    ok: false,
+                    skipped: None,
+                    duration_ms: Some(started.elapsed().as_millis() as u64),
+                });
+            }
+        }
+    }
+
+    if !args.silent {
+        render_resolved(&outcomes);
+    }
+    let failed = outcomes.iter().filter(|o| o.ran && !o.ok).count();
+    if failed > 0 {
+        anyhow::bail!("pipeline: {failed} stage(s) failed");
+    }
     Ok(())
 }
