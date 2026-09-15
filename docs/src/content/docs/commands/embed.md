@@ -46,8 +46,14 @@ Work is committed every `--chunk` rows (500 by default), so an interrupt loses
 at most that much. There is no separate resume flag: rerunning *is* resuming,
 because the command only ever looks for hashes that have no vector yet.
 
-`--reprocess` lifts that: it re-embeds every eligible image, including ones
-that already have a vector under the model. It exists for the rare case where
+A file that cannot be decoded (an unreadable file, or one that repeatedly times
+out) is skipped after it has failed twice, so a broken file stops costing a
+timeout on every run instead of staying pending forever. It is logged when it is
+skipped.
+
+`--reprocess` lifts both: it re-embeds every eligible image, including ones
+that already have a vector under the model, and clears the record of skipped
+undecodable files so they are attempted again. It exists for the rare case where
 the pixels a model sees have changed for reasons the files themselves did not,
 such as a decode fix in videre. See
 [troubleshooting](/reference/troubleshooting/).

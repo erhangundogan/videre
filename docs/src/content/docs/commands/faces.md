@@ -211,6 +211,12 @@ can lose up to `workers x batch` images of progress, which is 160 with the
 defaults on a 10-core machine. Everything already committed is safe and the
 rerun continues correctly; it just redoes a little.
 
+**A file that cannot be decoded is skipped after it fails twice**, so a broken
+or unreadable file stops costing a timeout on every run (and every `watch`
+cycle) instead of being re-attempted forever. A single failure never skips a
+file, so a one-off timeout from contention still retries; two do.
+`--reprocess` clears those records so skipped files are attempted again.
+
 **Detection is not perfect.** Faces in profile, heavily shadowed, or very small
 are often missed entirely, and no amount of retuning brings them back, since
 tuning only affects grouping of faces that were already found. `--reprocess`

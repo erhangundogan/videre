@@ -1,6 +1,6 @@
 use crate::command_context::CommandContext;
 use anyhow::Result;
-use videre_core::face_db;
+use videre_core::{decode_failures, face_db};
 use videre_ml::pipeline::{
     format_profile_report, run_clustering, run_face_pipeline_in, ClusteringResult, FacesRunResult,
     ProfileStats,
@@ -239,12 +239,24 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
     // resumable instead of re-detecting the whole no-face population every time.
     // Union in hashes that already have faces so a first run after upgrading (when
     // the marker table is empty but faces exist) doesn't redo that work.
+    decode_failures::ensure_table(&conn)?;
     let skip_hashes: std::collections::HashSet<String> = if args.reprocess {
+        // --reprocess is the retry hatch: forget this stage's recorded decode
+        // failures so an undecodable file is tried again (a videre fix may have
+        // made it decodable).
+        decode_failures::clear_stage(&conn, decode_failures::STAGE_FACES)?;
         std::collections::HashSet::new()
     } else {
         let mut s: std::collections::HashSet<String> =
             face_db::scanned_hashes(&conn)?.into_iter().collect();
         s.extend(face_db::hashes_with_faces(&conn)?);
+        // Drop hashes the face decode has already failed on enough times: they
+        // would only re-pay the same timeout for the same guaranteed failure.
+        s.extend(decode_failures::failed_hashes(
+            &conn,
+            decode_failures::STAGE_FACES,
+            decode_failures::FAILURE_THRESHOLD,
+        )?);
         s
     };
 

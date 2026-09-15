@@ -396,8 +396,20 @@ Two tables exist purely for this, and both record work that produced no rows:
   NULL, so `mime IS NULL` means only "never scanned". `scan --retry-incomplete`
   uses that. `effective_mime` treats the sentinel exactly as NULL and falls back
   to the extension, so a merely-unidentified file is still processed.
+- `decode_failures` (`videre_core::decode_failures`) records a file a decode
+  stage tried and could not turn into pixels, per `(hash, stage)`. `embed` and
+  `faces` decode before their work, and a file that hangs QuickLook or is
+  otherwise undecodable produced nothing, was recorded nowhere, and stayed
+  pending forever, re-paying its multi-second timeout on every run (including
+  every `watch` cycle). The skip is deliberately **two-strike**, not one: a
+  QuickLook timeout can be transient (cross-process `qlmanage` contention, see
+  that section), so a consumer skips only at `fail_count >= FAILURE_THRESHOLD`
+  (2), and any success `clear`s the row. `embed`/`faces --reprocess` is the
+  retry hatch: it `clear_stage`s the recorded failures so a fixed file is tried
+  again. A faces *detection* failure is not a decode failure and is not
+  recorded (`WorkerMsg::DecodeError` vs `ImageError`).
 
-Both encode the same lesson: the skip set has to be "already tried", or work
+All encode the same lesson: the skip set has to be "already tried", or work
 that legitimately produces nothing repeats forever.
 
 ### DNG must be vetoed explicitly
@@ -654,3 +666,4 @@ above.
 - Detection canvas per row -> `faces.oriented`, `videre_core::face_db::FaceRow`
 - `watch --prune` cannot override the guards -> `commands::prune::PruneArgs::for_watch_stage`
 - `videre locations` is a global recompute -> `commands::locations`
+- Undecodable files are skipped after two strikes -> `videre_core::decode_failures`

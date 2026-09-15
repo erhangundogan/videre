@@ -1,5 +1,158 @@
 mod common;
 use common::{shared_cache_guard, siglip_cached, skip_without_models, TestLibrary};
+use videre_core::decode_failures;
+
+/// A hash the embed decode has already failed on FAILURE_THRESHOLD times is
+/// dropped from the pending set, so `videre embed` never re-attempts it. Because
+/// that is the only file, the pending set is empty and embed loads no model,
+/// which is why this test needs no weights and is not macOS-gated: it proves the
+/// wiring (the skip), not the embedding.
+#[test]
+fn embed_skips_a_hash_recorded_as_failed_and_loads_no_model() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "photo.jpg");
+    lib.scan();
+
+    // The scanned file's content hash, then record two decode failures for it
+    // (FAILURE_THRESHOLD), the state a genuinely-undecodable file reaches.
+    let hash: String = {
+        let conn = lib.conn();
+        let hash: String = conn
+            .query_row("SELECT hash FROM file_hashes LIMIT 1", [], |r| r.get(0))
+            .expect("the scanned photo has a hash");
+        decode_failures::ensure_table(&conn).unwrap();
+        decode_failures::record(&conn, &hash, decode_failures::STAGE_EMBED, "timed out").unwrap();
+        decode_failures::record(&conn, &hash, decode_failures::STAGE_EMBED, "timed out").unwrap();
+        hash
+    };
+
+    let embed = lib
+        .cmd()
+        .args(["embed", "--silent"])
+        .status()
+        .expect("failed to run videre embed");
+    assert!(
+        embed.success(),
+        "embed should exit cleanly with nothing to do"
+    );
+
+    // The file was skipped, so no embedding was written for it.
+    let store = model_store(&lib);
+    let embedded: i64 = store
+        .query_row(
+            "SELECT COUNT(*) FROM embeddings WHERE hash = ?1",
+            [&hash],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        embedded, 0,
+        "a failed-and-skipped hash must not be embedded"
+    );
+}
+
+/// `videre embed --reprocess` is the retry hatch: it clears this stage's
+/// recorded decode failures so a previously-skipped file is eligible again.
+///
+/// macOS-gated with the model guard because `--reprocess` re-embeds every
+/// eligible file, so it loads SigLIP; running it unguarded would download
+/// weights on a cold Linux CI cache, which the suite forbids.
+#[test]
+#[cfg(target_os = "macos")]
+fn embed_reprocess_clears_recorded_decode_failures() {
+    if skip_without_models("embed", siglip_cached()) {
+        return;
+    }
+    let _serial = shared_cache_guard();
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "photo.jpg");
+    lib.scan();
+
+    let hash: String = {
+        let conn = lib.conn();
+        let hash: String = conn
+            .query_row("SELECT hash FROM file_hashes LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        decode_failures::ensure_table(&conn).unwrap();
+        decode_failures::record(&conn, &hash, decode_failures::STAGE_EMBED, "x").unwrap();
+        decode_failures::record(&conn, &hash, decode_failures::STAGE_EMBED, "x").unwrap();
+        hash
+    };
+
+    let embed = lib
+        .cmd()
+        .args(["embed", "--reprocess", "--silent"])
+        .status()
+        .expect("failed to run videre embed --reprocess");
+    assert!(embed.success());
+
+    let conn = lib.conn();
+    assert_eq!(
+        decode_failures::fail_count(&conn, &hash, decode_failures::STAGE_EMBED).unwrap(),
+        0,
+        "--reprocess must clear the recorded decode failure for this stage"
+    );
+}
+
+/// The record side, end to end: a file that decodes-fails on a real run gets a
+/// strike each time, and once it reaches the two-strike threshold it stops being
+/// attempted. Uses a corrupt JPEG (valid magic bytes so it is pending, no scan
+/// data so the image crate cannot decode it), which fails on the CPU decode path
+/// with no QuickLook involved.
+///
+/// macOS-gated with the model guard: the file is pending, so the run loads
+/// SigLIP before the decode is attempted.
+#[test]
+#[cfg(target_os = "macos")]
+fn embed_records_and_then_skips_a_repeatedly_undecodable_file() {
+    if skip_without_models("embed", siglip_cached()) {
+        return;
+    }
+    let _serial = shared_cache_guard();
+    let lib = TestLibrary::new();
+    lib.copy_fixture("corrupt.jpg", "broken.jpg");
+    lib.scan();
+
+    let hash: String = lib
+        .conn()
+        .query_row("SELECT hash FROM file_hashes LIMIT 1", [], |r| r.get(0))
+        .expect("the corrupt file was scanned");
+
+    let run = || {
+        lib.cmd()
+            .args(["embed", "--silent"])
+            .status()
+            .expect("failed to run videre embed")
+    };
+
+    // First run: decode fails, one strike, still below the threshold so the file
+    // is not yet skipped.
+    assert!(run().success());
+    assert_eq!(
+        decode_failures::fail_count(&lib.conn(), &hash, decode_failures::STAGE_EMBED).unwrap(),
+        1,
+        "the first decode failure records one strike"
+    );
+
+    // Second run: fails again, reaching the two-strike threshold.
+    assert!(run().success());
+    assert_eq!(
+        decode_failures::fail_count(&lib.conn(), &hash, decode_failures::STAGE_EMBED).unwrap(),
+        2,
+        "the second decode failure reaches the threshold"
+    );
+
+    // It was never embedded, and now that it is at the threshold it will be
+    // skipped on every later run.
+    let embedded: i64 = model_store(&lib)
+        .query_row(
+            "SELECT COUNT(*) FROM embeddings WHERE hash = ?1",
+            [&hash],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(embedded, 0, "an undecodable file is never embedded");
+}
 
 /// Open the per-model embedding store for this library directly.
 fn model_store(lib: &TestLibrary) -> rusqlite::Connection {
