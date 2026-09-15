@@ -15,6 +15,22 @@ version number and are released together.
 
 ## [Unreleased]
 
+## [0.28.3] - 2026-09-15
+
+### Fixed
+
+- **Face-labeling actions that target something that no longer exists now
+  report failure instead of a false success.** Assigning a face, resetting a
+  face, ungrouping a cluster, or setting a primary face in `videre gallery`
+  went through write handlers that ignored how many rows they changed. A write
+  that matched nothing returned success, so the labeling page reported the
+  action worked when it had done nothing (for example labeling a face that was
+  already deleted in another tab). These now return a 404 the page can act on.
+  Assigning a batch of faces is all-or-nothing: if any face id is missing, the
+  whole assignment rolls back rather than applying part of it and claiming
+  success. Deleting a person stays idempotent, since a person can legitimately
+  have no confirmed faces.
+
 ## [0.28.2] - 2026-09-15
 
 ### Fixed
@@ -1758,7 +1774,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.28.2...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.28.3...HEAD
+[0.28.3]: https://github.com/erhangundogan/videre/compare/v0.28.2...v0.28.3
 [0.28.2]: https://github.com/erhangundogan/videre/compare/v0.28.1...v0.28.2
 [0.28.1]: https://github.com/erhangundogan/videre/compare/v0.28.0...v0.28.1
 [0.28.0]: https://github.com/erhangundogan/videre/compare/v0.27.2...v0.28.0
