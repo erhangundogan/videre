@@ -74,8 +74,8 @@ A `--path` filter is a subtree of the library. It is accepted in its given and
 canonical forms, and a path that resolves outside the library root, or through a
 symlink that escapes it, is rejected rather than silently widening the request.
 Only the database-backed commands (`search`, `embed`, `faces`, `classify`,
-`mark`, `export`, `tag`) take `--path`; `scan` and `watch` walk the whole
-library. Existing `.videre` state is never treated as media.
+`mark`, `export`, `tag`) take `--path`; `scan`, `watch` and `pipeline` walk the
+whole library. Existing `.videre` state is never treated as media.
 
 ## One library is one directory tree
 
