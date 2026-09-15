@@ -238,12 +238,24 @@ jobs:
           rustup toolchain install --profile minimal \
             "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
 
+      # The build is expected to fail while the workaround is needed, so this
+      # step swallows its own exit code and reports the result as an output:
+      # a failed step would paint a permanent red X and an "exit code 101"
+      # annotation on every run, which is the noise this job exists to avoid.
       - name: Build without the repo's fp16 override
         id: build
-        continue-on-error: true
         env:
           RUSTFLAGS: "-C debuginfo=0"
-        run: cargo build --workspace
+        run: |
+          set +e
+          cargo build --workspace
+          code=$?
+          if [ "$code" -eq 0 ]; then
+            echo "build_result=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_result=failure" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
 
       # Invert the probe into the job's verdict: failure is the expected,
       # documented state and stays green; success is the rare, actionable
@@ -251,7 +263,7 @@ jobs:
       - name: Report the install-path state
         if: always()
         run: |
-          if [ "${{ steps.build.outcome }}" = "success" ]; then
+          if [ "${{ steps.build.outputs.build_result }}" = "success" ]; then
             echo "::error::aarch64 builds clean without +fp16 now. The workaround in .cargo/config.toml and the README install note are removable; drop them and close the aarch64 install ticket."
             exit 1
           fi
