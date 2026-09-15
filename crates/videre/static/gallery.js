@@ -448,6 +448,9 @@ function bestDateJs(f){
 // no server to ask, so it has no button.
 function similarBtn(hash){
   if(typeof LIVE_SERVER==='undefined'||!LIVE_SERVER)return '';
+  // The Similar search ranks against embeddings; with none, it can only fail,
+  // so offer no button rather than one that returns "Search failed".
+  if(typeof HAS_EMBEDDINGS!=='undefined'&&!HAS_EMBEDDINGS)return '';
   return '<button class="similar-btn" data-similar="'+escA(hash)+'">Similar</button>';
 }
 function buildCard(f){

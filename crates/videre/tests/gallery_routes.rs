@@ -155,6 +155,27 @@ fn every_live_route_answers() {
 }
 
 #[test]
+fn no_embeddings_tells_the_client_to_hide_the_similar_button() {
+    // fixture() seeds a file and a face but never embeds, so the active model
+    // has no vectors and the in-page Similar search cannot work. The page must
+    // say so, so the client can omit the Similar button instead of offering one
+    // that fails with a generic "Search failed".
+    let lib = fixture();
+    let server = Server::start(&lib);
+    let (status, body) = server.get("/");
+    assert_eq!(status, 200);
+    assert!(
+        body.contains("var HAS_EMBEDDINGS=false"),
+        "the all-files page must emit HAS_EMBEDDINGS=false when the library has no embeddings:\n{}",
+        &body[..body.len().min(400)]
+    );
+    assert!(
+        !body.contains("var HAS_EMBEDDINGS=true"),
+        "no embeddings exist, so the flag must not be true"
+    );
+}
+
+#[test]
 fn date_prefix_routes_render_with_initial_state() {
     let lib = fixture();
     let server = Server::start(&lib);

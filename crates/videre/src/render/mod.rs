@@ -907,6 +907,10 @@ pub(crate) fn render(set: &RenderSet) -> String {
     let heic = heic && !live;
     let heic_original = heic_original && !live;
 
+    // The in-page Similar search ranks against embedding vectors, so it only
+    // works when the active model has embeddings for this library. Tell the
+    // client, so it can hide a Similar button that would otherwise fail.
+    let has_embeddings = embedded.is_some_and(|n| n > 0);
     let data = build_data_block(
         nav,
         groups,
@@ -916,6 +920,7 @@ pub(crate) fn render(set: &RenderSet) -> String {
         heic_original,
         faces_by_hash,
         live,
+        has_embeddings,
         &set.options.date_filter_json,
     );
 
@@ -952,6 +957,7 @@ fn build_data_block(
     heic_original: bool,
     faces_by_hash: &videre_core::face_db::LabeledFacesByHash,
     live: bool,
+    has_embeddings: bool,
     date_filter_json: &str,
 ) -> String {
     let mut out = String::with_capacity(256 * 1024);
@@ -960,7 +966,7 @@ fn build_data_block(
     // the client never has to infer it from the URL.
     let view = if keep_files.is_some() { "date" } else { "all" };
     out.push_str(&format!(
-        "<script>\nvar LIVE_SERVER={live};\nvar GVIEW={};\nvar PEOPLE_ROOT={};\nvar GDATE={};\n</script>\n",
+        "<script>\nvar LIVE_SERVER={live};\nvar HAS_EMBEDDINGS={has_embeddings};\nvar GVIEW={};\nvar PEOPLE_ROOT={};\nvar GDATE={};\n</script>\n",
         json_str(view),
         // `nav` is Some only under `videre gallery`, which is the one
         // configuration with a `/people`. See `people_root`.
