@@ -469,6 +469,20 @@ fn run_location_stage(
     // recompute would die on SQLITE_BUSY and record a failed (or seemingly
     // crashed) run for work that is merely postponed; sharing the lock turns
     // that into the clean skip-and-retry below.
+    // The stage's own lock is its identity in the read path: it is held only
+    // by this stage, while `locations` below is shared with the standalone
+    // recompute, so the reader can always tell the two holders apart. Taken
+    // first so a crash mid-acquisition releases both in order.
+    let _names_lock = match videre_core::library_locks::try_command(&ctx.library, "location-names")
+    {
+        Ok(guard) => guard,
+        Err(_) => {
+            if !args.silent {
+                eprintln!("videre watch: location stage busy; will retry next cycle");
+            }
+            return Ok(());
+        }
+    };
     tracked_stage(
         ctx,
         conn,
