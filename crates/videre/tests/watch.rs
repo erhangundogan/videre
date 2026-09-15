@@ -136,9 +136,9 @@ fn location_stage_writes_a_terminal_location_names_pipeline_row() {
             |r| r.get(0),
         )
         .expect("the location stage must write a location-names run row");
-    assert_ne!(
-        status, "running",
-        "the row must be terminal once the cycle's stage has finished"
+    assert_eq!(
+        status, "success",
+        "the cycle's stage must finish cleanly, not just record any terminal row"
     );
 }
 

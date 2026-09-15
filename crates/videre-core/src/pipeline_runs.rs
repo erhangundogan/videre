@@ -106,32 +106,49 @@ pub fn track_in<T, F>(
 where
     F: FnOnce() -> Result<T>,
 {
-    guard.ensure_matches(ctx, command)?;
+    track_in_as(conn, ctx, guard, command, command, f)
+}
+
+/// Like [`track_in`], but the recorded label may differ from the command the
+/// guard was taken for. Watch's location stage shares the `locations` command
+/// lock with the standalone clustering recompute (so the two cannot overlap
+/// on SQLite's single writer) while writing its own `location-names` row.
+/// The guard is still verified to belong to this library and to the command
+/// it was actually taken for, so a mismatched guard is refused exactly as
+/// `track_in` refuses one; only the row's name comes from `label`.
+pub fn track_in_as<T, F>(
+    conn: &Connection,
+    ctx: &crate::library::LibraryContext,
+    guard: &crate::library_locks::CommandGuard,
+    lock_command: &str,
+    label: &str,
+    f: F,
+) -> Result<T>
+where
+    F: FnOnce() -> Result<T>,
+{
+    guard.ensure_matches(ctx, lock_command)?;
     // The guard's match is a wiring check on path strings; this rechecks that
     // the root still names the same library before any run row is written, so
     // a root swapped out between guard acquisition and now is refused rather
     // than recorded against whatever now sits at the path.
     ctx.ensure_root_identity()?;
     ensure_pipeline_runs_table(conn)?;
-    start_run(conn, command)?;
+    start_run(conn, label)?;
     let started = std::time::Instant::now();
     let result = f();
     let duration_ms = started.elapsed().as_millis().min(i64::MAX as u128) as i64;
     match result {
         Ok(value) => {
-            finish_run(conn, command, "success", duration_ms, None)?;
+            finish_run(conn, label, "success", duration_ms, None)?;
             Ok(value)
         }
         Err(error) => {
             // Record the failure, but never let a bookkeeping error mask the
             // real one: the original error is what the caller acted on.
-            if let Err(record_error) = finish_run(
-                conn,
-                command,
-                "failed",
-                duration_ms,
-                Some(&error.to_string()),
-            ) {
+            if let Err(record_error) =
+                finish_run(conn, label, "failed", duration_ms, Some(&error.to_string()))
+            {
                 return Err(error.context(format!(
                     "also could not record the failed run: {record_error}"
                 )));
@@ -565,6 +582,48 @@ mod tests {
             .expect("a written location-names row must surface in the run read");
         assert_eq!(names.status.as_deref(), Some("success"));
         assert!(!names.currently_running);
+    }
+
+    #[test]
+    fn track_in_as_records_a_label_under_another_commands_guard() {
+        // Watch's location stage shares the `locations` command lock with the
+        // standalone recompute while writing its own `location-names` row:
+        // the guard is verified against the command it was taken for, and the
+        // label is what lands in the table.
+        let (_t, ctx, conn) = in_library();
+        let guard = crate::library_locks::try_command(&ctx, "locations").unwrap();
+        track_in_as(
+            &conn,
+            &ctx,
+            &guard,
+            "locations",
+            "location-names",
+            || Ok(()),
+        )
+        .unwrap();
+        let (command, status): (String, String) = conn
+            .query_row("SELECT command, status FROM pipeline_runs", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(command, "location-names");
+        assert_eq!(status, "success");
+
+        // A guard taken for a different command than the claimed lock is
+        // still refused, exactly as track_in refuses one.
+        let guard = crate::library_locks::try_command(&ctx, "scan").unwrap();
+        let result: Result<()> = track_in_as(
+            &conn,
+            &ctx,
+            &guard,
+            "locations",
+            "location-names",
+            || Ok(()),
+        );
+        assert!(
+            result.is_err(),
+            "a scan guard must not bookkeep under the locations lock"
+        );
     }
 
     #[test]

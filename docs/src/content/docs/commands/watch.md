@@ -39,6 +39,8 @@ default on.
 | `--faces` | Detects faces in new images, then regroups everything |
 | `--heic` | Pre-converts and caches HEIC thumbnails |
 | `--location` | Looks up place names for GPS coordinates that have none |
+| `--prune` | Same cleanup as [`videre prune`](/commands/prune/) |
+| `--export-xmp` | Writes labels to `.xmp` sidecars, same as [`videre export`](/commands/export/) |
 
 Every tracked stage records a run in the pipeline table, so
 [`videre status`](/commands/status/) shows its last run and whether it
@@ -47,8 +49,6 @@ distinct from **`locations`**, which is the row for
 [`videre locations`](/commands/locations/), the clustering recompute. Once
 watch has resolved names at least once, `location-names` appears there too;
 a library never watched with `--location` does not list it.
-| `--prune` | Same cleanup as [`videre prune`](/commands/prune/) |
-| `--export-xmp` | Writes labels to `.xmp` sidecars, same as [`videre export`](/commands/export/) |
 
 The export stage keeps sidecars current while you work in another tool. It is
 opt-in per run with `--export-xmp`, or always-on by setting

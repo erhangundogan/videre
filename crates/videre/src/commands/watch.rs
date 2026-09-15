@@ -92,15 +92,18 @@ pub fn run(mut args: WatchArgs, ctx: &CommandContext) -> Result<()> {
     }
 }
 
-/// Run a tracked stage under the library's activity lease and its own command
-/// lock, in that order. A busy activity lease (an exclusive maintenance pass,
-/// or another shared operation when this stage needs exclusive) or a busy
-/// command lock (a standalone run of that stage) is reported and skipped; the
-/// next cycle retries. Never reacquires the watch lifetime lock.
+/// Run a tracked stage under the library's activity lease and a command lock,
+/// in that order. A busy activity lease (an exclusive maintenance pass, or
+/// another shared operation when this stage needs exclusive) or a busy command
+/// lock is reported and skipped; the next cycle retries. Never reacquires the
+/// watch lifetime lock. The tracked label and the lock are separate on
+/// purpose: the label names the row in pipeline_runs, the lock names the
+/// standalone command this stage must not overlap with.
 fn tracked_stage(
     ctx: &CommandContext,
     conn: &rusqlite::Connection,
     command: &str,
+    lock: &str,
     mode: videre_core::library_locks::ActivityMode,
     silent: bool,
     f: impl FnOnce() -> Result<()>,
@@ -114,11 +117,13 @@ fn tracked_stage(
             return Ok(());
         }
     };
-    match videre_core::library_locks::try_command(&ctx.library, command) {
-        Ok(guard) => videre_core::pipeline_runs::track_in(conn, &ctx.library, &guard, command, f),
+    match videre_core::library_locks::try_command(&ctx.library, lock) {
+        Ok(guard) => {
+            videre_core::pipeline_runs::track_in_as(conn, &ctx.library, &guard, lock, command, f)
+        }
         Err(_) => {
             if !silent {
-                eprintln!("videre watch: {command} stage busy (a {command} run is active); will retry next cycle");
+                eprintln!("videre watch: {command} stage busy (a {lock} run is active); will retry next cycle");
             }
             Ok(())
         }
@@ -201,6 +206,7 @@ fn run_prune_stage(
         ctx,
         conn,
         "prune",
+        "prune",
         videre_core::library_locks::ActivityMode::Exclusive,
         args.silent,
         || {
@@ -255,6 +261,7 @@ fn run_faces_stage(
     tracked_stage(
         ctx,
         conn,
+        "faces",
         "faces",
         videre_core::library_locks::ActivityMode::Shared,
         args.silent,
@@ -449,17 +456,24 @@ fn run_location_stage(
     // Deliberately its own tracked label, not `locations`: that row means the
     // standalone clustering recompute (`videre locations` rebuilds
     // `location_clusters` from scratch), while this stage incrementally fills
-    // `location_name`. And deliberately `location-names`, not `geocode`:
+    // `location_name` — a column the recompute never touches; it names the
+    // clusters instead. And deliberately `location-names`, not `geocode`:
     // `videre_core::geocode` is forward geocoding (place name -> coordinates),
-    // this is the reverse direction. A dedicated command lock (rather than
-    // sharing `locations`) is safe even though both jobs can write
-    // `location_name`: each writes the same cache-resolved value for a given
-    // coordinate, so interleaved writes are idempotent, and watch keeps
-    // resolving names during a long standalone recompute instead of skipping.
+    // this is the reverse direction.
+    //
+    // The lock, though, is `locations`, shared with the standalone recompute,
+    // and that coordination is required rather than optional: SQLite has a
+    // single writer, the recompute holds it inside one transaction for
+    // minutes (measured ~8 on a 70k-file library), and library connections
+    // use a 5s busy timeout. With a lock of its own, a cycle overlapping a
+    // recompute would die on SQLITE_BUSY and record a failed (or seemingly
+    // crashed) run for work that is merely postponed; sharing the lock turns
+    // that into the clean skip-and-retry below.
     tracked_stage(
         ctx,
         conn,
         "location-names",
+        "locations",
         videre_core::library_locks::ActivityMode::Shared,
         args.silent,
         || {
@@ -504,6 +518,7 @@ fn run_scan_stage(
     tracked_stage(
         ctx,
         conn,
+        "scan",
         "scan",
         videre_core::library_locks::ActivityMode::Shared,
         args.silent,
