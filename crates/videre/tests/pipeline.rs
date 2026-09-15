@@ -161,6 +161,74 @@ fn json_run_reports_stage_outcomes() {
     assert_eq!(v["failed"], serde_json::json!(0));
 }
 
+fn mtime_year(path: &std::path::Path) -> i32 {
+    use chrono::{Datelike, Local, TimeZone};
+    let modified = std::fs::metadata(path).unwrap().modified().unwrap();
+    let secs = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    Local.timestamp_opt(secs, 0).unwrap().year()
+}
+
+#[test]
+fn fix_dates_opt_in_runs_and_reports() {
+    let lib = TestLibrary::new();
+    let file = lib.context().paths.root.join("a.jpg");
+    std::fs::write(&file, b"img_a").unwrap();
+    lib.init_db()
+        .execute(
+            "INSERT INTO file_hashes (path, hash, exif_date)
+             VALUES (?1, 'haaa', '2019-06-15T10:00:00')",
+            [file.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+
+    // Skip scan so the hand-seeded exif_date row is not re-hashed away.
+    let out = run_pipeline(
+        &lib,
+        &[
+            "--skip",
+            "scan,faces,embed,classify,locations",
+            "--fix-dates",
+        ],
+        None,
+    );
+    let text = stdout_of(&out);
+    assert!(
+        text.contains("fix-dates"),
+        "fix-dates should appear in the checklist:\n{text}"
+    );
+    assert_eq!(
+        mtime_year(&file),
+        2019,
+        "fix-dates should have set the file mtime from exif_date"
+    );
+}
+
+#[test]
+fn export_opt_in_writes_a_sidecar() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "photos/IMG.jpg");
+    lib.scan();
+    let sidecar = lib.root.join("photos/IMG.jpg.xmp");
+
+    // Give the file a rating so export has something to write.
+    let mark = lib
+        .cmd()
+        .args(["mark", "--path", "photos", "--rating", "4", "--silent"])
+        .output()
+        .unwrap();
+    assert!(mark.status.success());
+
+    run_pipeline(
+        &lib,
+        &["--skip", "faces,embed,classify,locations", "--export"],
+        None,
+    );
+    assert!(sidecar.exists(), "expected sidecar {}", sidecar.display());
+}
+
 #[test]
 fn dry_run_json_lists_the_planned_stages() {
     let lib = TestLibrary::new();
