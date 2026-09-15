@@ -15,6 +15,7 @@ pub mod locations;
 pub mod mark;
 pub mod mark_export;
 pub mod mcp;
+pub mod pipeline;
 pub mod prune;
 pub mod scan;
 pub mod search;
