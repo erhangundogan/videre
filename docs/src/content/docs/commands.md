@@ -19,6 +19,8 @@ description: Every videre subcommand, what it does, and where to read more.
 | [`videre fix-dates`](/commands/fix-dates/) | Set each file's date from its EXIF shoot date |
 | [`videre prune`](/commands/prune/) | Remove database entries for files that no longer exist |
 | [`videre watch`](/commands/watch/) | Background loop keeping everything current |
+| [`videre pipeline`](/commands/pipeline/) | Bring the whole library current in one command (scan through locations) |
+| [`videre status`](/commands/status/) | Is the library up to date, what to run next, and is the watcher alive |
 | [`videre stats`](/commands/stats/) | Library totals and what has run recently |
 | [`videre config`](/commands/config/) | Show or change defaults |
 | [`videre mcp`](/commands/mcp/) | Expose search to AI agents |
