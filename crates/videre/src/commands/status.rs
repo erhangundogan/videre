@@ -110,28 +110,21 @@ fn run_text(args: &StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
         let Some(command) = coverage.next_command else {
             continue;
         };
-        let secs = cost.secs.unwrap_or(0);
         any = true;
-        if secs >= 3600 {
-            println!(
-                "  run '{}': {} item(s), ~{:.1}h",
-                command,
-                coverage.outstanding,
-                secs as f64 / 3600.0
-            );
-        } else if secs >= 60 {
-            println!(
-                "  run '{}': {} item(s), ~{}m",
-                command,
-                coverage.outstanding,
-                secs / 60
-            );
-        } else {
-            println!(
-                "  run '{}': {} item(s), ~{}s",
-                command, coverage.outstanding, secs
-            );
-        }
+        // A duration is shown only when it was measured from a prior run;
+        // otherwise the item count stands alone, since a guessed time is
+        // usually wrong across different hardware.
+        let when = match cost.secs {
+            Some(s) if s >= 3600 => format!(", ~{:.1}h", s as f64 / 3600.0),
+            Some(s) if s >= 60 => format!(", ~{}m", s / 60),
+            Some(s) => format!(", ~{s}s"),
+            None => String::new(),
+        };
+        let tag = if coverage.heavy { " (intensive)" } else { "" };
+        println!(
+            "  run '{}': {} item(s){}{}",
+            command, coverage.outstanding, when, tag
+        );
     }
     if !any {
         println!("  nothing outstanding; the library is up to date");

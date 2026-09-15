@@ -129,15 +129,18 @@ fn render_plan(stages: &[Stage], report: Option<&StatusReport>) {
         let cov = report.and_then(|r| coverage_for(r, *stage));
         match cov {
             Some(c) if c.outstanding > 0 => {
-                let cost = report
+                // A duration is shown only when it was measured from a prior
+                // run; otherwise the count and an "intensive" marker stand in,
+                // rather than a guessed time that is usually wrong.
+                let measured = report
                     .and_then(|r| r.costs.iter().find(|(s, _)| *s == c.stage))
                     .and_then(|(_, e)| e.secs)
-                    .map(fmt_cost)
+                    .map(|s| format!("   {}", fmt_cost(s)))
                     .unwrap_or_default();
-                let flag = if c.heavy { "  needs confirm" } else { "" };
+                let tag = if c.heavy { "   intensive" } else { "" };
                 println!(
-                    "  o {:10} {} outstanding   {}{}",
-                    c.stage, c.outstanding, cost, flag
+                    "  o {:10} {} outstanding{}{}",
+                    c.stage, c.outstanding, measured, tag
                 );
             }
             Some(c) => println!("  o {:10} up to date", c.stage),
@@ -193,17 +196,22 @@ fn confirm_heavy(report: &StatusReport) -> anyhow::Result<bool> {
         .iter()
         .filter(|c| c.heavy && c.outstanding > 0)
         .map(|c| {
-            let cost = report
+            // Only a measured duration is worth showing; otherwise the count
+            // carries the weight and "intensive" (below) sets the expectation.
+            let measured = report
                 .costs
                 .iter()
                 .find(|(s, _)| *s == c.stage)
                 .and_then(|(_, e)| e.secs)
-                .map(fmt_cost)
+                .map(|s| format!(" ({})", fmt_cost(s)))
                 .unwrap_or_default();
-            format!("{} {} files ({})", c.stage, c.outstanding, cost)
+            format!("{} {} files{}", c.stage, c.outstanding, measured)
         })
         .collect();
-    super::confirm(&format!("About to {}. Proceed?", parts.join(" and ")))
+    super::confirm(&format!(
+        "About to {} - the intensive stage(s). Proceed?",
+        parts.join(" and ")
+    ))
 }
 
 fn render_resolved(outcomes: &[Outcome]) {

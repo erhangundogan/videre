@@ -30,10 +30,13 @@ version number and are released together.
 
 ### Changed
 
-- **`videre pipeline` / `videre status` cost estimates are less alarming.** The
-  fallback per-item time constants were lowered to a modern GPU-accelerated
-  ballpark, so a run that finishes in a minute is no longer previewed as tens of
-  minutes. Estimates remain approximate pending measured throughput.
+- **`videre pipeline` and `videre status` no longer show a guessed duration.**
+  Advance time estimates were fabricated from per-item constants and were wrong
+  by up to 40x depending on hardware, which read as a warning rather than an
+  estimate. They now show the exact item count and mark the heavy stages
+  (embed, classify) as "intensive" instead. A duration is shown only when it can
+  be measured from a real prior run; until per-run item counts are recorded,
+  that means the count and the "intensive" marker carry the signal.
 
 ## [0.28.1] - 2026-09-15
 
