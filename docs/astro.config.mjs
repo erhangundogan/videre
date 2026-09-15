@@ -101,6 +101,7 @@ export default defineConfig({
 						{ label: 'fix-dates', slug: 'commands/fix-dates' },
 						{ label: 'prune', slug: 'commands/prune' },
 						{ label: 'watch', slug: 'commands/watch' },
+						{ label: 'pipeline', slug: 'commands/pipeline' },
 						{ label: 'stats', slug: 'commands/stats' },
 						{ label: 'config', slug: 'commands/config' },
 						{ label: 'mcp', slug: 'commands/mcp' },

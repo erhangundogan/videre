@@ -54,6 +54,8 @@ enum Command {
     Classify(commands::classify::ClassifyArgs),
     /// Background loop keeping scan/faces/HEIC-cache/location data fresh
     Watch(commands::watch::WatchArgs),
+    /// Bring the library fully current: scan, then faces, embed, classify, locations
+    Pipeline(commands::pipeline::PipelineArgs),
     /// Show or edit the selected library's configuration
     Config(commands::config::ConfigArgs),
     /// Serve read-only MCP tools (search, find_duplicates, stats) over stdio for LLM agents
@@ -168,6 +170,8 @@ fn main() {
             .and_then(|ctx| commands::classify::run(args, &ctx)),
         Command::Watch(args) => command_context::CommandContext::capture(library)
             .and_then(|ctx| commands::watch::run(args, &ctx)),
+        Command::Pipeline(args) => command_context::CommandContext::capture(library)
+            .and_then(|ctx| commands::pipeline::run(args, &ctx)),
         Command::Mcp(args) => command_context::CommandContext::capture(library)
             .and_then(|ctx| commands::mcp::run(args, &ctx)),
         Command::Stats(args) => command_context::CommandContext::capture(library)

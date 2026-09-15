@@ -15,6 +15,20 @@ version number and are released together.
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-09-15
+
+### Added
+
+- **`videre pipeline`: one command to bring a library fully current.** It runs
+  the stages in dependency order (scan, then faces, embed, classify, locations),
+  each one incremental, and exits. It prints a plan with per-stage outstanding
+  counts and an approximate cost, then confirms before the expensive `embed` and
+  `classify` stages (`--yes` skips the prompt, `--skip <stage>[,<stage>]` opts a
+  stage out). `--fix-dates` and `--export` add their opt-in stages; `--dry-run`
+  shows the plan without doing work; `--json` emits a structured run report. It
+  is the action counterpart to `videre status`, sharing one staleness model so
+  the two never disagree about what "current" means.
+
 ## [0.27.2] - 2026-09-14
 
 ### Fixed
@@ -1711,7 +1725,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.27.2...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.28.0...HEAD
+[0.28.0]: https://github.com/erhangundogan/videre/compare/v0.27.2...v0.28.0
 [0.27.2]: https://github.com/erhangundogan/videre/compare/v0.27.1...v0.27.2
 [0.27.1]: https://github.com/erhangundogan/videre/compare/v0.27.0...v0.27.1
 [0.27.0]: https://github.com/erhangundogan/videre/compare/v0.26.0...v0.27.0

@@ -44,6 +44,25 @@ pub struct ClassifyArgs {
     silent: bool,
 }
 
+impl ClassifyArgs {
+    /// Pipeline-stage defaults: no selection, clap defaults for every knob,
+    /// silence controlled by the pipeline. Parsing an empty argv keeps
+    /// defaults from drifting from the flag definitions.
+    pub(crate) fn for_pipeline(silent: bool) -> Self {
+        #[derive(clap::Parser)]
+        struct P {
+            #[command(flatten)]
+            a: ClassifyArgs,
+        }
+        let argv: &[&str] = if silent {
+            &["classify", "--silent"]
+        } else {
+            &["classify"]
+        };
+        <P as clap::Parser>::parse_from(argv).a
+    }
+}
+
 pub fn run(args: ClassifyArgs, ctx: &CommandContext) -> Result<()> {
     // Guard every --path against the selected root before any work; classify is
     // a reader of embeddings, so it never creates a model store.
