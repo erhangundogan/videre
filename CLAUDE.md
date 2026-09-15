@@ -407,7 +407,13 @@ Two tables exist purely for this, and both record work that produced no rows:
   (2), and any success `clear`s the row. `embed`/`faces --reprocess` is the
   retry hatch: it `clear_stage`s the recorded failures so a fixed file is tried
   again. A faces *detection* failure is not a decode failure and is not
-  recorded (`WorkerMsg::DecodeError` vs `ImageError`).
+  recorded (`WorkerMsg::DecodeError` vs `ImageError`). The gallery's on-demand
+  thumbnail endpoint uses the same table under `STAGE_THUMBNAIL`: a HEIC whose
+  QuickLook conversion keeps failing is refused before the conversion once at
+  the threshold, so it stops re-paying the timeout on every tile request; a
+  success clears it. Its outstanding count is also kept honest: `videre status`
+  reports threshold-failed files as `skipped`, not outstanding, so it does not
+  suggest a command that would do nothing.
 
 All encode the same lesson: the skip set has to be "already tried", or work
 that legitimately produces nothing repeats forever.

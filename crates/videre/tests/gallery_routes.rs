@@ -140,6 +140,58 @@ impl Server {
 }
 
 #[test]
+fn a_heic_at_the_failure_threshold_is_refused_without_reconverting() {
+    // A HEIC already known undecodable (at the two-strike threshold) must be
+    // refused before the expensive, possibly-hanging QuickLook conversion, so it
+    // stops re-paying the timeout on every tile request. Proven two ways at once:
+    // the request returns 404 promptly (a failed conversion instead waits the
+    // full ~20s qlmanage timeout, which would trip the socket read timeout in
+    // `get`), and no new strike is recorded (an un-gated path would run the
+    // conversion, fail, and record a third).
+    //
+    // The record/clear side is not exercised here on purpose: making the
+    // conversion fail means hanging QuickLook, the very cost this gate exists to
+    // avoid. Recording uses the same `decode_failures` calls the embed/faces
+    // tests cover.
+    let lib = TestLibrary::new();
+    let heic_path = lib.context().paths.root.join("shot.heic");
+    let conn = lib.init_db();
+    conn.execute(
+        "INSERT INTO file_hashes (path, hash, ext, size_bytes)
+           VALUES (?1, 'heic1', 'heic', 32)",
+        [heic_path.to_string_lossy().as_ref()],
+    )
+    .unwrap();
+    videre_core::decode_failures::ensure_table(&conn).unwrap();
+    for _ in 0..videre_core::decode_failures::FAILURE_THRESHOLD {
+        videre_core::decode_failures::record(
+            &conn,
+            "heic1",
+            videre_core::decode_failures::STAGE_THUMBNAIL,
+            "seeded",
+        )
+        .unwrap();
+    }
+    drop(conn);
+
+    let server = Server::start(&lib);
+    let (status, _) = server.get("/api/files/heic1/raw?size=240");
+    assert_eq!(status, 404, "a threshold-failed heic thumbnail is refused");
+
+    let count = videre_core::decode_failures::fail_count(
+        &lib.conn(),
+        "heic1",
+        videre_core::decode_failures::STAGE_THUMBNAIL,
+    )
+    .unwrap();
+    assert_eq!(
+        count,
+        videre_core::decode_failures::FAILURE_THRESHOLD,
+        "the gate returned before the conversion, so no new strike was recorded"
+    );
+}
+
+#[test]
 fn every_live_route_answers() {
     let lib = fixture();
     let server = Server::start(&lib);
