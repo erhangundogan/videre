@@ -94,6 +94,66 @@ fn embed_reprocess_clears_recorded_decode_failures() {
     );
 }
 
+/// The record side, end to end: a file that decodes-fails on a real run gets a
+/// strike each time, and once it reaches the two-strike threshold it stops being
+/// attempted. Uses a corrupt JPEG (valid magic bytes so it is pending, no scan
+/// data so the image crate cannot decode it), which fails on the CPU decode path
+/// with no QuickLook involved.
+///
+/// macOS-gated with the model guard: the file is pending, so the run loads
+/// SigLIP before the decode is attempted.
+#[test]
+#[cfg(target_os = "macos")]
+fn embed_records_and_then_skips_a_repeatedly_undecodable_file() {
+    if skip_without_models("embed", siglip_cached()) {
+        return;
+    }
+    let _serial = shared_cache_guard();
+    let lib = TestLibrary::new();
+    lib.copy_fixture("corrupt.jpg", "broken.jpg");
+    lib.scan();
+
+    let hash: String = lib
+        .conn()
+        .query_row("SELECT hash FROM file_hashes LIMIT 1", [], |r| r.get(0))
+        .expect("the corrupt file was scanned");
+
+    let run = || {
+        lib.cmd()
+            .args(["embed", "--silent"])
+            .status()
+            .expect("failed to run videre embed")
+    };
+
+    // First run: decode fails, one strike, still below the threshold so the file
+    // is not yet skipped.
+    assert!(run().success());
+    assert_eq!(
+        decode_failures::fail_count(&lib.conn(), &hash, decode_failures::STAGE_EMBED).unwrap(),
+        1,
+        "the first decode failure records one strike"
+    );
+
+    // Second run: fails again, reaching the two-strike threshold.
+    assert!(run().success());
+    assert_eq!(
+        decode_failures::fail_count(&lib.conn(), &hash, decode_failures::STAGE_EMBED).unwrap(),
+        2,
+        "the second decode failure reaches the threshold"
+    );
+
+    // It was never embedded, and now that it is at the threshold it will be
+    // skipped on every later run.
+    let embedded: i64 = model_store(&lib)
+        .query_row(
+            "SELECT COUNT(*) FROM embeddings WHERE hash = ?1",
+            [&hash],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(embedded, 0, "an undecodable file is never embedded");
+}
+
 /// Open the per-model embedding store for this library directly.
 fn model_store(lib: &TestLibrary) -> rusqlite::Connection {
     let path = videre_core::embeddings_db::db_path_in(
