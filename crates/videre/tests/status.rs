@@ -20,6 +20,59 @@ fn status_reports_the_embed_gap_and_names_the_command() {
 }
 
 #[test]
+fn status_reports_a_decode_failed_file_as_skipped_not_outstanding() {
+    // A file embed has given up decoding (at the two-strike threshold) must not
+    // read as outstanding or keep status suggesting embed; it is reported as
+    // skipped instead.
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "photos/IMG.jpg");
+    lib.scan();
+    {
+        let conn = lib.conn();
+        let hash: String = conn
+            .query_row("SELECT hash FROM file_hashes LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        videre_core::decode_failures::ensure_table(&conn).unwrap();
+        for _ in 0..videre_core::decode_failures::FAILURE_THRESHOLD {
+            videre_core::decode_failures::record(
+                &conn,
+                &hash,
+                videre_core::decode_failures::STAGE_EMBED,
+                "x",
+            )
+            .unwrap();
+        }
+    }
+
+    let json = String::from_utf8(
+        lib.cmd()
+            .args(["status", "--json"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let embed = doc["report"]["coverage"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["stage"] == "embed")
+        .expect("embed coverage present");
+    assert_eq!(
+        embed["outstanding"], 0,
+        "the only file is skipped, not outstanding"
+    );
+    assert_eq!(embed["skipped"], 1, "and is reported as skipped");
+
+    let text = String::from_utf8(lib.cmd().arg("status").output().unwrap().stdout).unwrap();
+    assert!(
+        text.contains("skipped as undecodable"),
+        "status text must name skipped files, got: {text}"
+    );
+}
+
+#[test]
 fn status_fresh_library_is_healthy_for_check() {
     // A brand-new library is fully stale (nothing scanned, nothing embedded)
     // and that must not read as a failure: staleness is informational, only
