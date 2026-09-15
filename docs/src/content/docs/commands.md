@@ -8,6 +8,7 @@ description: Every videre subcommand, what it does, and where to read more.
 | [`videre import`](/commands/import/) | Bring photos in from Google Takeout, Apple Photos, or Lightroom |
 | [`videre scan`](/commands/scan/) | Read a folder and record what's in it. Run this first. |
 | [`videre dedupe`](/commands/dedupe/) | List duplicate copies you could delete |
+| [`videre status`](/commands/status/) | Is the library up to date, what to run next, and is the watcher alive |
 | [`videre gallery`](/commands/gallery/) | Browse the library in a local web UI: files, people, dates |
 | [`videre search`](/commands/search/) | Find photos by description, example image, person, category, or place |
 | [`videre embed`](/commands/embed/) | Prepare photos for search (one-time, resumable) |
@@ -20,7 +21,6 @@ description: Every videre subcommand, what it does, and where to read more.
 | [`videre prune`](/commands/prune/) | Remove database entries for files that no longer exist |
 | [`videre watch`](/commands/watch/) | Background loop keeping everything current |
 | [`videre pipeline`](/commands/pipeline/) | Bring the whole library current in one command (scan through locations) |
-| [`videre status`](/commands/status/) | Is the library up to date, what to run next, and is the watcher alive |
 | [`videre stats`](/commands/stats/) | Library totals and what has run recently |
 | [`videre config`](/commands/config/) | Show or change defaults |
 | [`videre mcp`](/commands/mcp/) | Expose search to AI agents |
