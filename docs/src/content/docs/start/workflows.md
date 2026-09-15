@@ -21,7 +21,7 @@ the index.
 videre scan                         <- everything starts here
   │
   ├── videre gallery                browse files, duplicates and dates
-  ├── videre dedupe                 find duplicates
+  ├── videre dedupe --html          find duplicates and review via static HTML file
   │     │
   │     └── videre dedupe --remove  move the duplicate copies to the trash
   │           │
@@ -31,8 +31,9 @@ videre scan                         <- everything starts here
   │     │
   │     └── videre prune            synchronize the database after fixing dates
   │
-  ├── videre locations              group by place
+  ├── videre status                 see videre pipeline status and next actions
   ├── videre stats                  what's in the library
+  ├── videre locations              group by place  
   ├── videre mark                   rate, like, label, pick your media files
   ├── videre tag                    add word or phrase to your media files
   ├── videre embed                  prepare search  (slow, one-time)
@@ -46,13 +47,15 @@ videre scan                         <- everything starts here
   │           ├── videre tag --category
   │           └── videre search --category
   │
-  └── videre faces                  detect and group faces  (slow, one-time)
-        │
-        └── videre gallery          show face clusters and name people (manual step)
-              │
-              ├── videre mark --person
-              ├── videre tag --person
-              └── videre search --person
+  ├── videre faces                  detect and group faces  (slow, one-time)
+  │     │
+  │     └── videre gallery          show face clusters and name people (manual step)
+  │           │
+  │           ├── videre mark --person
+  │           ├── videre tag --person
+  │           └── videre search --person
+  │
+  └── videre pipeline               Run: scan -> faces -> embed -> classify -> locations
 ```
 
 - When migrating from another photo tool, `videre import` comes before `videre scan`.
