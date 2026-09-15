@@ -15,6 +15,26 @@ version number and are released together.
 
 ## [Unreleased]
 
+## [0.28.4] - 2026-09-15
+
+### Fixed
+
+- **Files that repeatedly fail to decode are no longer retried on every run.**
+  A file that hangs QuickLook or is otherwise undecodable produced nothing and
+  was recorded nowhere, so `videre embed` and `videre faces` (and every `videre
+  watch` cycle) re-paid its multi-second timeout forever. Such a file is now
+  recorded and skipped after it has failed twice; a single transient failure
+  still retries, and any success clears the record. `embed`/`faces --reprocess`
+  retries skipped files.
+- **`videre dedupe --similar` no longer groups unrelated files by a flat frame.**
+  A fade-in, letterboxed opener, or solid title card produces a fingerprint with
+  almost no set bits (or almost nothing but set bits), and any two such frames
+  collided regardless of content, chaining unrelated media into one bogus group.
+  Fingerprints at those extremes are now excluded from similarity grouping;
+  exact copies are still caught by content-hash duplicate detection. File size
+  plays no part in the comparison, since a genuine re-encode routinely halves
+  the file.
+
 ## [0.28.3] - 2026-09-15
 
 ### Fixed
@@ -1774,7 +1794,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.28.3...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.28.4...HEAD
+[0.28.4]: https://github.com/erhangundogan/videre/compare/v0.28.3...v0.28.4
 [0.28.3]: https://github.com/erhangundogan/videre/compare/v0.28.2...v0.28.3
 [0.28.2]: https://github.com/erhangundogan/videre/compare/v0.28.1...v0.28.2
 [0.28.1]: https://github.com/erhangundogan/videre/compare/v0.28.0...v0.28.1
