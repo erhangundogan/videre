@@ -15,6 +15,26 @@ version number and are released together.
 
 ## [Unreleased]
 
+## [0.28.2] - 2026-09-15
+
+### Fixed
+
+- **`videre pipeline` now classifies in the same run it embeds.** Coverage was
+  read once, before embed ran, so classify saw zero embeddings and skipped
+  itself, leaving a freshly embedded library unclassified until the next run.
+  Coverage is now re-read before each stage, so classify sees the vectors embed
+  just produced.
+- **No more "interrupt handler already registered" warning from `videre
+  pipeline`.** The Ctrl-C handler is installed once per process and retargeted at
+  the stage currently running, instead of each stage trying to register its own.
+
+### Changed
+
+- **`videre pipeline` / `videre status` cost estimates are less alarming.** The
+  fallback per-item time constants were lowered to a modern GPU-accelerated
+  ballpark, so a run that finishes in a minute is no longer previewed as tens of
+  minutes. Estimates remain approximate pending measured throughput.
+
 ## [0.28.1] - 2026-09-15
 
 ### Fixed
@@ -1735,7 +1755,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.28.1...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.28.2...HEAD
+[0.28.2]: https://github.com/erhangundogan/videre/compare/v0.28.1...v0.28.2
 [0.28.1]: https://github.com/erhangundogan/videre/compare/v0.28.0...v0.28.1
 [0.28.0]: https://github.com/erhangundogan/videre/compare/v0.27.2...v0.28.0
 [0.27.2]: https://github.com/erhangundogan/videre/compare/v0.27.1...v0.27.2
