@@ -94,7 +94,7 @@ pub fn usage_in(ctx: &crate::library::LibraryContext) -> Vec<Usage> {
     out.extend(row("thumbnails", ctx.cache.thumbnails.clone(), true));
     out.extend(row("place names (shared)", ctx.cache.geo.clone(), true));
     out.extend(row("locks", ctx.paths.locks.clone(), true));
-    out.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+    out.sort_by_key(|r| std::cmp::Reverse(r.bytes));
     out
 }
 

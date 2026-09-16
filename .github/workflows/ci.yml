@@ -44,6 +44,32 @@ jobs:
       - name: Check formatting
         run: make fmt-check
 
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Unlike rustfmt, clippy type-checks the whole workspace, so it needs the
+      # dependencies compiled (candle, ONNX Runtime) and therefore this cache.
+      - uses: Swatinem/rust-cache@v2
+
+      # The version comes from rust-toolchain.toml, the one place it is written.
+      # Installed explicitly (with the clippy component) rather than relied on,
+      # for the same reason the fmt job installs rustfmt explicitly.
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install --profile minimal --component clippy \
+            "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
+
+      # -D warnings makes any lint fail the build, so the count cannot drift
+      # upward again: every lint is either fixed or given a justified #[allow]
+      # with a reason in the source. This lints the Linux configuration; the
+      # cfg(target_os = "macos") branches (HEIC and video via QuickLook) are
+      # compiled out here and are linted by the dev machine's `make lint`.
+      - name: Lint
+        run: make lint-check
+
   test:
     name: test (${{ matrix.os }})
     strategy:

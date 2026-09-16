@@ -258,7 +258,7 @@ fn run_locations(
     }
     progress.finish();
 
-    clusters.sort_by(|a, b| b.photo_count.cmp(&a.photo_count));
+    clusters.sort_by_key(|c| std::cmp::Reverse(c.photo_count));
     tx.commit()?;
     Ok(clusters)
 }

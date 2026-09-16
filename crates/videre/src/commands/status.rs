@@ -20,7 +20,7 @@ pub struct StatusArgs {
 
 pub fn run(args: StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     if args.json {
-        match run_json(&ctx) {
+        match run_json(ctx) {
             Ok(doc) => {
                 println!("{}", serde_json::to_string(&doc)?);
                 if args.check && doc.report.has_problem() {

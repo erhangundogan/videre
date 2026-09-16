@@ -156,8 +156,7 @@ pub(crate) fn optimised_warning(shape: &LibraryShape) -> String {
 /// are indistinguishable, and the one that loses data (iCloud eviction) is the
 /// one worth naming first.
 pub(crate) fn empty_originals_warning() -> String {
-    format!(
-        "warning: the originals folder is empty, so there is nothing to import.\n  \
+    "warning: the originals folder is empty, so there is nothing to import.\n  \
            Two things cause this, and they look identical on disk:\n\
          \n  \
            1. The originals are not on this Mac, only in iCloud.\n     \
@@ -175,8 +174,8 @@ pub(crate) fn empty_originals_warning() -> String {
               elsewhere. Photos > Settings > General: if \"Copy items to the\n     \
               Photos library\" is off, then those files are ordinary photos\n     \
               already, with nothing to import. Use them directly:\n     \
-              videre scan <path/to/photos>\n",
-    )
+              videre scan <path/to/photos>\n"
+        .to_string()
 }
 
 pub(crate) fn referenced_warning(shape: &LibraryShape) -> String {

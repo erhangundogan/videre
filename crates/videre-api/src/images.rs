@@ -296,9 +296,8 @@ pub fn original_bytes_from_lookup(
         }
         // None: this serves the true original image, so it must stay at
         // full resolution.
-        let img =
-            videre_core::heic::heic_via_quicklook(&file_path, &format!("orig{face_id}"), None)
-                .ok_or(Error::NotFound)?;
+        let img = videre_core::heic::heic_via_quicklook(file_path, &format!("orig{face_id}"), None)
+            .ok_or(Error::NotFound)?;
         let mut buf = Vec::new();
         img.write_to(
             &mut std::io::Cursor::new(&mut buf),
@@ -352,6 +351,7 @@ mod tests {
     ///   raw-centered bbox), while
     /// - the legacy branch crops the raw canvas with the raw-canvas bbox and
     ///   rotates the small square afterwards.
+    ///
     /// Picking square bboxes centered on even coordinates makes the two
     /// regions pixel-identical after the integer rotation, so the crops must
     /// match exactly.

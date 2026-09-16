@@ -284,7 +284,7 @@ fn best_date(r: &FileRow) -> &str {
 
 fn base64_encode(data: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
@@ -372,17 +372,16 @@ pub(crate) fn esc(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// Page chrome, shared by the gallery templates and the labeling page so the
+/// two cannot drift into looking like different products.
+pub(crate) const CHROME_CSS: &str = include_str!("../../static/chrome.css");
+
 /// A hand-built JSON body as a response.
 ///
 /// These endpoints assemble JSON as a string rather than serialising a struct,
 /// because the row shape is shared with the inlined static export and is built
 /// by one function either way. This is the third endpoint to need the same two
 /// lines, so it is a function.
-
-/// Page chrome, shared by the gallery templates and the labeling page so the
-/// two cannot drift into looking like different products.
-pub(crate) const CHROME_CSS: &str = include_str!("../../static/chrome.css");
-
 pub(crate) fn json_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
@@ -402,13 +401,8 @@ pub(crate) fn json_str(s: &str) -> String {
     out
 }
 
-#[cfg(test)]
-fn file_to_json(f: &FileRow, heic: bool, heic_original: bool) -> String {
-    file_to_json_with_faces(f, heic, heic_original, &[], false)
-}
-
-/// Like file_to_json(), but also embeds labeled-face thumbnails into
-/// meta.faces. `faces` is the (face_id, person_label, bbox) list for this
+/// Renders one file's row to a JSON object, embedding labeled-face thumbnails
+/// into meta.faces. `faces` is the (face_id, person_label, bbox) list for this
 /// file's hash, as returned by videre_core::face_db::labeled_faces_by_hash()
 /// (note the tuple order: label is `.1`, bbox is `.2`).
 pub(crate) fn file_to_json_with_faces(

@@ -403,7 +403,7 @@ mod tests {
                 setup: |temp, root| {
                     let outside = temp.join("elsewhere");
                     std::fs::create_dir_all(outside.join("inner")).unwrap();
-                    std::os::unix::fs::symlink(&outside.join("inner"), root.join("jump")).unwrap()
+                    std::os::unix::fs::symlink(outside.join("inner"), root.join("jump")).unwrap()
                 },
                 // Lexically `jump/..` cancels to the root; physically the link
                 // resolves outside first, so `..` lands in the outside
@@ -460,8 +460,8 @@ mod tests {
             std::fs::create_dir(&root).unwrap();
             let ctx = LibraryContext::new(&root, &temp.path().join("cache")).unwrap();
             let canonical = ctx.paths.root.clone();
-            (case.setup)(&temp.path(), &canonical);
-            let filter = (case.filter)(&temp.path(), &canonical);
+            (case.setup)(temp.path(), &canonical);
+            let filter = (case.filter)(temp.path(), &canonical);
             let got = validate_paths(&ctx, std::slice::from_ref(&filter));
             assert_eq!(
                 got.is_ok(),

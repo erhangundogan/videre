@@ -255,7 +255,6 @@ fn run_face_pipeline_impl(
                 let det_path = det_path.clone();
                 let rec_path = rec_path.clone();
                 let progress = &progress;
-                let cache = cache;
                 scope.spawn(move || -> Result<ProfileStats> {
                     let mut local_profile = ProfileStats::default();
                     let mut detector = face_detect::FaceDetector::new(&det_path, intra_threads)?;
@@ -290,7 +289,7 @@ fn run_face_pipeline_impl(
                             };
                             if want_profile {
                                 let d = load_start.elapsed();
-                                let is_heic = path.as_bytes().len() >= 5
+                                let is_heic = path.len() >= 5
                                     && path.as_bytes()[path.len() - 5..]
                                         .eq_ignore_ascii_case(b".heic");
                                 if is_heic {
@@ -752,7 +751,11 @@ pub fn run_clustering(
 fn load_image(
     path: &str,
     hash: &str,
-    cache: Option<&videre_core::library::CachePaths>,
+    // Only the macOS HEIC branch reads the cache (to reuse a QuickLook decode);
+    // off macOS there is no such branch, so the parameter is unused there.
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))] cache: Option<
+        &videre_core::library::CachePaths,
+    >,
 ) -> Result<image::DynamicImage, String> {
     if path.to_lowercase().ends_with(".heic") {
         #[cfg(target_os = "macos")]
@@ -1005,7 +1008,7 @@ mod tests {
                 .unwrap();
         }
 
-        let result =
+        let _result =
             run_clustering(&conn, 0.6, 2, 1.0, 5.0, 0.4, f32::MAX, 0.0, 1.0, true).unwrap();
 
         // labeled faces: cluster_id must still be 0

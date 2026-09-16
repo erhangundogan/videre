@@ -630,7 +630,7 @@ mod tests {
 
     #[test]
     fn sort_tolerates_spaces_and_case() {
-        assert_eq!(parse_sort(" Distance : ASC ").unwrap()[0].desc, false);
+        assert!(!parse_sort(" Distance : ASC ").unwrap()[0].desc);
     }
 
     #[test]

@@ -231,11 +231,7 @@ mod tests {
         // Guards the data file itself rather than a lookup: regenerating it
         // from the wrong GeoNames column would leave every test above passing
         // only if the specific cities happened to survive.
-        let non_ascii = CITIES_CSV
-            .lines()
-            .skip(1)
-            .filter(|l| l.chars().any(|c| !c.is_ascii()))
-            .count();
+        let non_ascii = CITIES_CSV.lines().skip(1).filter(|l| !l.is_ascii()).count();
         assert!(
             non_ascii > 30_000,
             "only {non_ascii} rows carry non-ASCII names; the data was probably \

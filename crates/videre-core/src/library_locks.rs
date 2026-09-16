@@ -262,6 +262,9 @@ fn acquire_lock_file(path: &Path, exclusive: bool, busy: String, what: &str) -> 
             .read(true)
             .write(true)
             .create(true)
+            // A lock file's bytes are never read or written; it exists only to
+            // hold the flock. Opening it must not clobber an existing one.
+            .truncate(false)
             .open(&owned)
     })
     .with_context(|| format!("open lock file {}", path.display()))?;
@@ -595,6 +598,7 @@ mod tests {
                     .read(true)
                     .write(true)
                     .create(true)
+                    .truncate(false)
                     .open(&owned)
                     .map(|_| ())
             },

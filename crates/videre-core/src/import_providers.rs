@@ -341,7 +341,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn detects_a_kept_originals_backup_with_no_catalog_beside_it() {
         // A real 399GB backup: someone copied only `originals/` off a Photos
         // library, so there is no database to detect by. The hex fan-out is

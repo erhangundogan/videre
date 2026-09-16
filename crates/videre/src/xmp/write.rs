@@ -127,7 +127,7 @@ fn is_owned(ns: &str, name: &str) -> bool {
 /// Apply non-overlapping `(start, end, replacement)` edits to `s`, highest start
 /// first so earlier offsets stay valid.
 fn apply_edits(mut s: String, mut edits: Vec<(usize, usize, String)>) -> String {
-    edits.sort_by(|a, b| b.0.cmp(&a.0));
+    edits.sort_by_key(|e| std::cmp::Reverse(e.0));
     for (start, end, repl) in edits {
         s.replace_range(start..end, &repl);
     }

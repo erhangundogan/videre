@@ -181,7 +181,7 @@ fn subcommands(lib: &TestLibrary) -> Vec<String> {
                 break;
             }
             // "  name   description" -> "name".
-            if let Some(name) = line.trim_start().split_whitespace().next() {
+            if let Some(name) = line.split_whitespace().next() {
                 if name != "help" {
                     names.push(name.to_string());
                 }

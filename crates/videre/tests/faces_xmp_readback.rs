@@ -9,7 +9,6 @@
 mod common;
 use common::{face_models_cached, shared_cache_guard, skip_without_models, TestLibrary};
 
-use rusqlite::Connection;
 use std::path::Path;
 
 fn run(lib: &TestLibrary, args: &[&str]) {

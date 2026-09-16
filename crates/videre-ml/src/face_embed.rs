@@ -57,7 +57,7 @@ impl FaceEmbedder {
 }
 
 /// Normalize a 512-dim vector to unit length in-place.
-pub fn l2_normalize(v: &mut Vec<f32>) {
+pub fn l2_normalize(v: &mut [f32]) {
     let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm > 1e-8 {
         v.iter_mut().for_each(|x| *x /= norm);

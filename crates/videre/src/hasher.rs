@@ -423,7 +423,7 @@ mod tests {
         // Before the orientation fix this failed: the tagged file hashed its
         // raw sensor canvas instead of its display canvas.
         let base = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
-        let raw = image::open(&format!("{base}/ai-generated-couple.jpg")).unwrap();
+        let raw = image::open(format!("{base}/ai-generated-couple.jpg")).unwrap();
         let rotated = image::imageops::rotate90(&raw);
         let dir = tempdir().unwrap();
         let rotated_path = dir.path().join("rotated.png");

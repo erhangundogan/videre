@@ -2,6 +2,21 @@
 resolver = "2"
 members = ["crates/videre", "crates/videre-api", "crates/videre-core", "crates/videre-ml"]
 
+# Clippy is gated in CI (`cargo clippy --all-targets -- -D warnings`), so every
+# lint either passes or is allowed here with a reason. Two are allowed workspace
+# wide because they are subjective structural lints, not correctness ones, and
+# clearing them would mean churny refactors that do not make the code clearer:
+#   - type_complexity: a few SQL row tuples and pipeline channels are genuinely
+#     that shape; naming each as a `type` alias trades one obscurity for another.
+#   - too_many_arguments: a handful of internal renderers/pipeline entry points
+#     take their inputs positionally; bundling them into one-off structs is more
+#     indirection than it removes.
+# Everything else is fixed rather than allowed. Each crate opts in via
+# `[lints] workspace = true`.
+[workspace.lints.clippy]
+type_complexity = "allow"
+too_many_arguments = "allow"
+
 # No `[profile.dev.package."*"] opt-level` here, deliberately.
 #
 # 0.15.4 added one so that cpu_batch_matches_single_image_baseline, which runs
