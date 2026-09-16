@@ -1354,6 +1354,14 @@ async fn handle_raw_file(
                 &hash,
                 size,
             ))
+        } else if matches!(ext.as_str(), "mov" | "mp4") {
+            // A sized video request wants the oriented poster frame, cached like
+            // the HEIC and raster thumbnails below.
+            Some(videre_core::thumb_cache::video_poster_path_in(
+                &state.context.library.cache,
+                &hash,
+                size,
+            ))
         } else {
             None
         };
@@ -1368,14 +1376,17 @@ async fn handle_raw_file(
 
     let size = q.size;
     let is_heic = ext == "heic";
+    // A sized video request produces its poster through the same QuickLook path.
+    let is_video_poster = matches!(ext.as_str(), "mov" | "mp4") && size.is_some();
+    let uses_quicklook = is_heic || is_video_poster;
 
-    // A HEIC that has repeatedly failed to convert (a corrupt file, or QuickLook
-    // unavailable) is not re-attempted: the conversion is the expensive,
-    // possibly-hanging step, and only successes are cached, so an undecodable
-    // HEIC otherwise re-pays the timeout on every tile request. A file at the
+    // A file whose QuickLook conversion has repeatedly failed (corrupt, hanging,
+    // or QuickLook unavailable) is not re-attempted: the conversion is the
+    // expensive, possibly-hanging step, and only successes are cached, so it
+    // otherwise re-pays the timeout on every tile request. A file at the
     // two-strike threshold is refused outright. The lock is taken and dropped
     // here, never held across the conversion below.
-    if is_heic {
+    if uses_quicklook {
         let conn = state
             .conn
             .lock()
@@ -1409,6 +1420,20 @@ async fn handle_raw_file(
         )),
         _ => None,
     };
+    // Where a freshly rendered video poster should be cached, so repeated tile
+    // requests do not each re-run QuickLook. Owned paths only, for the task.
+    let video_poster_cache = match (is_video_poster, size) {
+        (true, Some(px)) => Some((
+            state.context.library.cache.thumbnails.clone(),
+            videre_core::thumb_cache::video_poster_tmp_path_in(
+                &state.context.library.cache,
+                &hash,
+                px,
+            ),
+            videre_core::thumb_cache::video_poster_path_in(&state.context.library.cache, &hash, px),
+        )),
+        _ => None,
+    };
     let converted = tokio::task::spawn_blocking(move || -> Option<(&'static str, Vec<u8>)> {
         if ext == "heic" {
             // `size` doubles as the qlmanage render cap: when Some, this
@@ -1433,6 +1458,32 @@ async fn handle_raw_file(
                 image::ImageFormat::Jpeg,
             )
             .ok()?;
+            Some(("image/jpeg", buf))
+        } else if matches!(ext.as_str(), "mov" | "mp4") && size.is_some() {
+            // Video poster: QuickLook renders the frame display-oriented, so the
+            // rotation these files carry (which browsers apply unreliably) is
+            // baked into the image videre serves. Cached so later tile requests
+            // for the same content reuse it instead of re-running QuickLook.
+            let px = size.unwrap();
+            let img =
+                videre_core::heic::heic_via_quicklook(&path, &format!("vposter{px}"), Some(px))?;
+            let img = if img.width() > px || img.height() > px {
+                img.resize(px, px, image::imageops::FilterType::Triangle)
+            } else {
+                img
+            };
+            let mut buf = Vec::new();
+            img.write_to(
+                &mut std::io::Cursor::new(&mut buf),
+                image::ImageFormat::Jpeg,
+            )
+            .ok()?;
+            if let Some((dir, tmp, final_)) = &video_poster_cache {
+                let _ = std::fs::create_dir_all(dir);
+                if std::fs::write(tmp, &buf).is_ok() {
+                    let _ = std::fs::rename(tmp, final_);
+                }
+            }
             Some(("image/jpeg", buf))
         } else {
             let timeout_path = path.clone();
@@ -1474,10 +1525,11 @@ async fn handle_raw_file(
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    // Record a failed HEIC conversion so it reaches the two-strike threshold and
-    // stops being re-attempted; clear on success so a file that converts (or
-    // recovers) is served normally again. A brief lock, never across the work.
-    if is_heic {
+    // Record a failed QuickLook conversion so it reaches the two-strike
+    // threshold and stops being re-attempted; clear on success so a file that
+    // converts (or recovers) is served normally again. A brief lock, never
+    // across the work.
+    if uses_quicklook {
         if let Ok(conn) = state.conn.lock() {
             match &converted {
                 Some(_) => {

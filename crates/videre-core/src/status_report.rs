@@ -120,9 +120,9 @@ fn faces_coverage(conn: &Connection) -> Result<StageCoverage> {
     })
 }
 
-/// Locations stage: geotagged photos with no place name yet. Grouping is a
-/// global recompute, so the count is informational; the command line names
-/// what closes it.
+/// Locations stage: geotagged photos with no cluster assignment yet. Grouping
+/// is a global recompute, so the count is informational; the command line
+/// names what closes it.
 fn locations_coverage(conn: &Connection) -> Result<StageCoverage> {
     let total: i64 = conn.query_row(
         "SELECT COUNT(*) FROM file_hashes WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL",
@@ -131,7 +131,8 @@ fn locations_coverage(conn: &Connection) -> Result<StageCoverage> {
     )?;
     let outstanding: i64 = conn.query_row(
         "SELECT COUNT(*) FROM file_hashes
-         WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL AND location_name IS NULL",
+         WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL
+           AND location_cluster_id IS NULL",
         [],
         |r| r.get(0),
     )?;
@@ -160,7 +161,11 @@ fn fix_dates_coverage(conn: &Connection) -> Result<StageCoverage> {
         let (exif_date, modified_at) = row?;
         total += 1;
         if let Some(target) = crate::fix_dates_target::target_modified_at(&exif_date) {
-            if modified_at.as_deref() != Some(target.as_str()) {
+            let target = chrono::DateTime::parse_from_rfc3339(&target)?;
+            let current = modified_at
+                .as_deref()
+                .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok());
+            if current.as_ref() != Some(&target) {
                 outstanding += 1;
             }
         }
@@ -346,7 +351,8 @@ mod tests {
                 gps_lon     REAL,
                 width       INTEGER,
                 height      INTEGER,
-                location_name TEXT
+                location_name TEXT,
+                location_cluster_id INTEGER
             );",
         )
         .unwrap();
@@ -481,46 +487,74 @@ mod tests {
     }
 
     #[test]
-    fn locations_and_fix_dates_count_only_true_gaps() {
-        let conn = seed_db("status_cov_locfix");
-        // "In sync" is judged against THIS machine's target: the transform
-        // resolves the camera-local time through the local timezone, so a
-        // hardcoded offset passes on one continent and fails on another (it
-        // did, on CI). Rows in sync here carry exactly what
-        // `target_modified_at` would write.
-        let exif = "2021-07-04T15:30:00";
-        let in_sync = crate::fix_dates_target::target_modified_at(exif).unwrap();
-        // geotagged, named: done. geotagged, unnamed: outstanding.
+    fn locations_coverage_tracks_cluster_assignment_not_place_name() {
+        let conn = seed_db("status_cov_locations");
+        // The locations command owns location_cluster_id. A cluster can be
+        // assigned even when reverse geocoding produced no display name.
         conn.execute(
-            "INSERT INTO file_hashes (path, hash, ext, gps_lat, gps_lon, location_name,
-                                      exif_date, modified_at)
-             VALUES ('/a/1.jpg', 'h1', 'jpg', 52.5, 13.4, 'Berlin, Germany', ?1, ?2)",
-            [exif.to_string(), in_sync.clone()],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO file_hashes (path, hash, ext, gps_lat, gps_lon, exif_date, modified_at)
-             VALUES ('/a/2.jpg', 'h2', 'jpg', 48.8, 2.3, '2020-01-02T03:04:05', '1970-01-01T00:00:00+00:00')",
+            "INSERT INTO file_hashes
+             (path, hash, ext, gps_lat, gps_lon, location_cluster_id)
+             VALUES ('/a/1.jpg', 'h1', 'jpg', 52.5, 13.4, 7)",
             [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO file_hashes (path, hash, ext, exif_date, modified_at)
-             VALUES ('/a/3.jpg', 'h3', 'jpg', ?1, ?2)",
-            [exif.to_string(), in_sync],
         )
         .unwrap();
 
         let cov = coverage_in(&conn, TEST_MODEL, TEST_MODEL).unwrap();
         let locations = cov.iter().find(|c| c.stage == "locations").unwrap();
-        assert_eq!(locations.total, 2);
-        assert_eq!(locations.outstanding, 1, "h2 has GPS and no place name");
-
-        let fix = cov.iter().find(|c| c.stage == "fix-dates").unwrap();
-        assert_eq!(fix.total, 3);
+        assert_eq!(locations.total, 1);
         assert_eq!(
-            fix.outstanding, 1,
-            "only h2's mtime disagrees with its exif_date"
+            locations.outstanding, 0,
+            "an assigned cluster completes locations even without a place name"
+        );
+
+        // A display name belongs to reverse geocoding and must not make an
+        // unclustered row look complete.
+        conn.execute(
+            "UPDATE file_hashes
+             SET location_cluster_id = NULL, location_name = 'Berlin, Germany'
+             WHERE path = '/a/1.jpg'",
+            [],
+        )
+        .unwrap();
+
+        let cov = coverage_in(&conn, TEST_MODEL, TEST_MODEL).unwrap();
+        let locations = cov.iter().find(|c| c.stage == "locations").unwrap();
+        assert_eq!(
+            locations.outstanding, 1,
+            "a place name does not replace the missing cluster assignment"
+        );
+    }
+
+    #[test]
+    fn fix_dates_coverage_compares_rfc3339_values_as_instants() {
+        let conn = seed_db("status_cov_fix_dates");
+        let exif = "2021-07-04T15:30:00";
+        let target = crate::fix_dates_target::target_modified_at(exif).unwrap();
+        let target_dt = chrono::DateTime::parse_from_rfc3339(&target).unwrap();
+        let other_offset = if target_dt.offset().local_minus_utc() == 14 * 60 * 60 {
+            chrono::FixedOffset::west_opt(12 * 60 * 60).unwrap()
+        } else {
+            chrono::FixedOffset::east_opt(14 * 60 * 60).unwrap()
+        };
+        let same_instant = target_dt.with_timezone(&other_offset).to_rfc3339();
+        assert_ne!(
+            target, same_instant,
+            "fixture must use different RFC3339 text"
+        );
+
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, ext, exif_date, modified_at)
+             VALUES ('/a/1.jpg', 'h1', 'jpg', ?1, ?2)",
+            [exif, &same_instant],
+        )
+        .unwrap();
+
+        let cov = coverage_in(&conn, TEST_MODEL, TEST_MODEL).unwrap();
+        let fix = cov.iter().find(|c| c.stage == "fix-dates").unwrap();
+        assert_eq!(fix.total, 1);
+        assert_eq!(
+            fix.outstanding, 0,
+            "equivalent RFC3339 representations describe the same file time"
         );
     }
 
