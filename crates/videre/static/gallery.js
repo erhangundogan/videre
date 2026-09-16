@@ -184,44 +184,45 @@ function copyPath(p){
     document.body.removeChild(t);
   });
 }
+// Small leading icons for the info rows (stroke uses currentColor, sized in CSS).
+const ICON_FILE='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>';
+const ICON_DATE='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M8 2v4M16 2v4M3 10h18"/></svg>';
+const ICON_SIZE='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>';
+const ICON_PIN='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/></svg>';
 function renderMetaPanel(meta){
-  var el = document.getElementById('lbMeta');
-  // Always shown as the reserved info bar under the media (filename and size
-  // land here next), so it stays empty rather than hidden when a file has no
-  // people or location yet.
+  const el = document.getElementById('lbMeta');
+  // Shown under the media. The left column carries the file facts; a right
+  // column of people is added only when the file has labeled faces, so a file
+  // with none stays a single full-width column.
   el.classList.add('on');
   if(!meta){ el.innerHTML=''; return; }
-  var parts = [];
-  if(meta.faces.length){
-    // A live page carries `id` and fetches the crop from the endpoint only when
-    // this lightbox opens. A static export has no server to ask, so it carries
-    // `thumb` as a data URI. Supporting both keeps one renderer for both.
-    parts.push('<div class="lb-people">'+meta.faces.map(function(fc){
-      var src = fc.thumb ? escA(fc.thumb) : '/api/faces/'+encodeURIComponent(fc.id)+'/image';
-      // The whole card links to the person, so the photo is clickable, not just
-      // the name.
+  const rows = [];
+  if(meta.name) rows.push('<div class="lb-row lb-fname">'+ICON_FILE+'<span>'+escH(meta.name)+'</span></div>');
+  if(meta.date) rows.push('<div class="lb-row">'+ICON_DATE+'<span>'+escH(humanDate(meta.date))+'</span></div>');
+  if(meta.size!=null) rows.push('<div class="lb-row">'+ICON_SIZE+'<span>'+fmtB(meta.size)+'</span></div>');
+  if(meta.location){
+    const locId = 'lbLoc'+Math.random().toString(36).slice(2);
+    // Plain text for now; becomes a link once the locations route exists.
+    rows.push('<div class="lb-row lb-location">'+ICON_PIN+'<span id="'+locId+'">Loading location...</span></div>');
+    fetch('/api/locations?lat='+meta.location.lat+'&lon='+meta.location.lon)
+      .then(r => r.json())
+      .then(d => { const n = document.getElementById(locId); if(n) n.textContent = d.name || 'Unknown location'; })
+      .catch(() => { const n = document.getElementById(locId); if(n) n.textContent = 'Location unavailable'; });
+  }
+  const hasPeople = !!(meta.faces && meta.faces.length);
+  let html = '<div class="lb-info">'+rows.join('')+'</div>';
+  if(hasPeople){
+    // A live page carries `id` and fetches the crop from the endpoint on open;
+    // a static export carries `thumb` as a data URI. One renderer serves both.
+    const people = meta.faces.map(fc => {
+      const src = fc.thumb ? escA(fc.thumb) : '/api/faces/'+encodeURIComponent(fc.id)+'/image';
+      // The whole card links to the person, so the photo is clickable too.
       return '<a class="lb-face" href="'+peopleRootG()+'person/'+encodeURIComponent(fc.name)+'?from=lightbox">'+
         '<img src="'+src+'" loading="lazy"><span>'+escH(fc.name)+'</span></a>';
-    }).join('')+'</div>');
+    }).join('');
+    html += '<div class="lb-people">'+people+'</div>';
   }
-  if(meta.location){
-    var locId = 'lbLoc'+Math.random().toString(36).slice(2);
-    parts.push('<div class="lb-location" id="'+locId+'">Loading location...</div>');
-    fetch('/api/locations?lat='+meta.location.lat+'&lon='+meta.location.lon)
-      .then(function(r){ return r.json(); })
-      .then(function(d){
-        var n = document.getElementById(locId);
-        if(n) n.textContent = d.name || 'Unknown location';
-      })
-      .catch(function(){
-        var n = document.getElementById(locId);
-        if(n) n.textContent = 'Location unavailable';
-      });
-  }
-  if(meta.name) parts.push('<div class="lb-file lb-fname">'+escH(meta.name)+'</div>');
-  if(meta.size!=null) parts.push('<div class="lb-file">'+fmtB(meta.size)+'</div>');
-  if(meta.date) parts.push('<div class="lb-file">'+escH(humanDate(meta.date))+'</div>');
-  el.innerHTML = parts.join('');
+  el.innerHTML = html;
 }
 var lbIndex=-1;      // index of the open item among the currently visible tiles
 var lbLoading=false; // guards the auto-paginate load so it fires once
