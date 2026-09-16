@@ -49,11 +49,20 @@ non-ASCII; `Alice`/`Bob` cannot expose an ASCII-only SQLite `LOWER()`, and did
 not.
 
 **Getting a change in.** Read `git status --short` before staging and stage by
-name, never blanket-stage. Bump the version in all four crates and stage
-`Cargo.lock` in the same commit (below 1.0 the minor number is the compatibility
-boundary). `main` is branch-protected: PR with green checks, merge commits not
-squash so the reasoning survives. PR descriptions stay short; the reasoning lives
-in commit messages and this file.
+name, never blanket-stage. `main` is branch-protected: PR with green checks,
+merge commits not squash so the reasoning survives. PR descriptions stay short;
+the reasoning lives in commit messages and this file.
+
+A feature or fix PR does **not** bump the version and does **not** touch the
+changelog. Releases are batched and **written at release**: a separate release
+PR bumps the version in all four crates and stages `Cargo.lock` in one commit
+(below 1.0 the minor number is the compatibility boundary), and writes that
+version's `CHANGELOG.md` section, composed from the PRs merged since the last
+tag (`git log <last-tag>..main`, `--first-parent` for just the merges). So a
+`[Unreleased]` section normally sits empty between releases; every version
+heading still needs its compare link at the foot of the file or
+`tests/changelog.rs` fails. See "Release and publishing" below for the
+publish mechanics.
 
 ## Build & run
 
@@ -274,10 +283,26 @@ fails the build, so the count that used to drift upward (18 when first counted,
 fixed or given a justified `#[allow]` with a reason at its site. Two lints are
 allowed workspace-wide in the root `Cargo.toml` because they are subjective
 structural lints, not correctness ones (`type_complexity`,
-`too_many_arguments`); that manifest's comment says why. The job lints the Linux
-configuration, so the `cfg(target_os = "macos")` branches (HEIC and video via
-QuickLook) are compiled out and covered instead by the dev machine's
-`make lint`.
+`too_many_arguments`); that manifest's comment says why.
+
+The job lints the **Linux** configuration, and that asymmetry is load-bearing.
+videre has real platform-gated code: the `cfg(target_os = "macos")` branches
+(HEIC and video via QuickLook, the Metal test probes) are compiled out on Linux,
+and the Linux/CPU branches are compiled out on macOS. So a green `make
+lint-check` on a macOS dev machine does not prove the CI gate passes: a helper,
+import, or variable used only by macOS-gated code is live on macOS but dead on
+Linux, and only the Linux build flags it. That is exactly what the gate caught
+when it first landed (dead helpers in `videre-ml`'s model/pipeline tests, plus
+two gallery/embed test helpers), none of which a macOS run reports.
+
+`make lint-linux` runs the identical gate against the Linux target inside a
+`rust:<pinned>` Docker container (mirrored from CI), so those lints surface in
+seconds instead of one CI round-trip at a time: `-D warnings` stops at the first
+error per target, so a push-and-wait loop reveals them one by one, while a plain
+`cargo clippy` (no `-D`) run in the same container lists them all at once. Reach
+for `make lint-linux` whenever a change touches `cfg(target_os = ...)` code or
+the helpers and tests around it. The reverse gap, a macOS-only lint, is covered
+by running `make lint` on the dev machine.
 
 ## Testing conventions
 

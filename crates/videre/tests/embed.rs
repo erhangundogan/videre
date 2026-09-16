@@ -1,5 +1,8 @@
 mod common;
-use common::{shared_cache_guard, siglip_cached, skip_without_models, TestLibrary};
+use common::TestLibrary;
+// The model-backed helpers are only used by the macOS-gated embed tests below.
+#[cfg(target_os = "macos")]
+use common::{shared_cache_guard, siglip_cached, skip_without_models};
 use videre_core::decode_failures;
 
 /// A hash the embed decode has already failed on FAILURE_THRESHOLD times is

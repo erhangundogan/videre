@@ -751,6 +751,9 @@ pub fn run_clustering(
 fn load_image(
     path: &str,
     hash: &str,
+    // Only the macOS HEIC branch reads the cache (to reuse a QuickLook decode);
+    // off macOS there is no such branch, so the parameter is unused there.
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
     cache: Option<&videre_core::library::CachePaths>,
 ) -> Result<image::DynamicImage, String> {
     if path.to_lowercase().ends_with(".heic") {

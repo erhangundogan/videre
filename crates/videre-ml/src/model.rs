@@ -497,6 +497,10 @@ mod batch_correctness_tests {
     #[derive(Clone, Copy, Debug)]
     pub(crate) enum Content {
         /// Every pixel of image `i` is the same value, distinct per image.
+        // Only the macOS-gated Metal sweeps construct `Uniform`; the CPU tests
+        // that also run on Linux use `Varied`, so on Linux this variant is
+        // read (in the match below) but never built.
+        #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
         Uniform,
         /// Deterministic pseudo-random per pixel, seeded per image.
         Varied,
@@ -542,6 +546,10 @@ mod batch_correctness_tests {
     /// vector, just plausible garbage. Uses `videre_core::vectors::cosine`
     /// rather than an inline loop so this check and the product cannot
     /// disagree about what similarity means.
+    ///
+    // macOS-only: its callers are the `#[ignore]`d Metal sweeps above. The
+    // Linux/CPU tests use `worst_cosine_sampled` directly.
+    #[cfg(target_os = "macos")]
     pub(crate) fn worst_cosine_vs_singles(embedder: &Embedder, images: &[Tensor]) -> (f32, usize) {
         worst_cosine_sampled(embedder, images, 1)
     }
@@ -670,6 +678,8 @@ mod batch_correctness_tests {
     /// boundary can be read off directly. Stops early once a size is corrupt:
     /// the phenomenon is monotonic (everything at or above the threshold is
     /// affected), and the sizes above it are the expensive ones to run.
+    // macOS-only: called only by the `#[ignore]`d Metal boundary sweep above.
+    #[cfg(target_os = "macos")]
     fn report_boundary(model_id: &str, ladder: &[usize], stride: usize) {
         let embedder = Embedder::load(crate::device::best_device(), model_id).unwrap();
         let size = image_size_for(model_id);
@@ -1020,7 +1030,10 @@ mod batch_correctness_tests {
     }
 }
 
-#[cfg(test)]
+// macOS-only: the whole probe targets the Metal backend (`Device::new_metal`),
+// so on Linux its imports and body are dead. Gated as a module rather than
+// per-item to keep the Metal-specific reproduction in one place.
+#[cfg(all(test, target_os = "macos"))]
 mod metal_matmul_probe {
     use candle_core::{DType, Device, Tensor};
 

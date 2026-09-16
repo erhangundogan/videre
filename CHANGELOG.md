@@ -15,16 +15,6 @@ version number and are released together.
 
 ## [Unreleased]
 
-### Internal
-
-- **Clippy now gates CI.** A dedicated job runs
-  `cargo clippy --workspace --all-targets -- -D warnings`, so a new lint fails
-  the build instead of accumulating unnoticed (the count had drifted from 18 to
-  about 37). The existing warnings were cleared; the two subjective structural
-  lints (`type_complexity`, `too_many_arguments`) are allowed workspace-wide
-  with a documented reason, and the few remaining awkward cases carry a
-  justified `#[allow]` at their site. No user-facing change.
-
 ## [0.28.5] - 2026-09-15
 
 ### Changed

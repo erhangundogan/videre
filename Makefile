@@ -87,6 +87,25 @@ lint: ## Run clippy across the workspace (lists warnings, does not fail on them)
 lint-check: ## Run clippy as CI does: any warning fails the build
 	$(CARGO) clippy --workspace --all-targets -- -D warnings
 
+# The CI clippy job runs on Linux, where the cfg(target_os = "macos") branches
+# (HEIC/video via QuickLook, the Metal test probes) are compiled out. A macOS
+# `make lint-check` therefore cannot see a lint that only exists in the Linux
+# configuration, so this runs the exact gate against the Linux target in Docker.
+# Reuses two named volumes so only the first run pays the full compile. See
+# AGENTS.md for when to reach for it.
+.PHONY: lint-linux
+lint-linux: ## Run the clippy gate for the Linux config in Docker (needs Docker)
+	docker run --rm \
+	  -v "$(CURDIR)":/work:ro \
+	  -v videre_cargo_registry:/usr/local/cargo/registry \
+	  -v videre_linux_target:/target \
+	  -e CARGO_TARGET_DIR=/target \
+	  -w /work \
+	  rust:$(TOOLCHAIN) \
+	  bash -c 'set -e; export PATH=/usr/local/cargo/bin:$$PATH; \
+	    rustup component add clippy >/dev/null 2>&1 || true; \
+	    cargo clippy --workspace --all-targets -- -D warnings'
+
 .PHONY: coverage
 coverage: ## Print per-file unit-test coverage (cargo-llvm-cov)
 	cargo +$(COVERAGE_TOOLCHAIN) llvm-cov --workspace --summary-only

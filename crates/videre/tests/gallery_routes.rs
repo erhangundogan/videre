@@ -140,6 +140,8 @@ impl Server {
 
     /// Like `get`, but returns the raw body bytes and the Content-Type, for
     /// binary responses (a poster JPEG) that `get`'s lossy-UTF-8 body mangles.
+    // Only the macOS-gated poster test needs raw bytes; unused off macOS.
+    #[cfg(target_os = "macos")]
     fn get_bytes(&self, path: &str) -> (u16, Option<String>, Vec<u8>) {
         let mut stream = TcpStream::connect(("127.0.0.1", self.port))
             .unwrap_or_else(|e| panic!("connect for {path}: {e}"));
