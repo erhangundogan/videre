@@ -16,6 +16,22 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.29.1] - 2026-09-16
+
+### Changed
+
+- **The gallery lightbox info panel is reorganised into two columns.** The file
+  facts (filename, date, size, then place name) sit on the left, each on its own
+  row with a small icon, and the people in the photo sit on the right; a file
+  with no labeled faces uses a single full-width column. The media and panel now
+  use the normal cursor and the panel text is selectable, so the filename can be
+  copied.
+
+### Fixed
+
+- **The "new person" controls on the face-labeling page align to the bottom of
+  both cluster and singleton cards** instead of sitting inconsistently.
+
 ## [0.29.0] - 2026-09-16
 
 ### Added
@@ -1871,7 +1887,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.28.6...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.29.1...HEAD
+[0.29.1]: https://github.com/erhangundogan/videre/compare/v0.29.0...v0.29.1
 [0.29.0]: https://github.com/erhangundogan/videre/compare/v0.28.6...v0.29.0
 [0.28.6]: https://github.com/erhangundogan/videre/compare/v0.28.5...v0.28.6
 [0.28.5]: https://github.com/erhangundogan/videre/compare/v0.28.4...v0.28.5
