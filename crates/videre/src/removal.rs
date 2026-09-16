@@ -28,12 +28,11 @@ mod tests {
         let f = dir.path().join("victim.jpg");
         std::fs::write(&f, b"x").unwrap();
         let res = trash_paths(std::slice::from_ref(&f));
-        match &res[0].1 {
-            // The file was moved to the trash: it is gone from its old path.
-            Ok(()) => assert!(!f.exists(), "trashed file must be gone from its path"),
-            // The platform could not trash here (no XDG/Finder trash in this
-            // environment): nothing to assert, the wrapper reported the error.
-            Err(_) => {}
+        // Moved to the trash: it is gone from its old path. If the platform
+        // could not trash here (no XDG/Finder trash in this environment),
+        // there is nothing to assert; the wrapper reported the error.
+        if let Ok(()) = &res[0].1 {
+            assert!(!f.exists(), "trashed file must be gone from its path");
         }
     }
 }

@@ -399,9 +399,9 @@ pub(crate) fn run_prune(
             if live_hashes.contains(hash) {
                 continue;
             }
-            if args.dry_run {
-                cache_orphans += 1;
-            } else if std::fs::remove_file(entry.path()).is_ok() {
+            // Short-circuit keeps a dry run from ever calling remove_file: the
+            // count rises either way, but the delete happens only for real.
+            if args.dry_run || std::fs::remove_file(entry.path()).is_ok() {
                 cache_orphans += 1;
             } else {
                 errors += 1;

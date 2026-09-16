@@ -223,7 +223,7 @@ fn read_confined(ctx: &videre_core::library::LibraryContext, path: &Path) -> Opt
 /// `<x:xmpmeta ...> ... </x:xmpmeta>` span. Works across JPEG/HEIC/PNG because
 /// the packet is stored as UTF-8 text regardless of container.
 fn embedded_packet_bytes(bytes: &[u8]) -> Option<String> {
-    let text = String::from_utf8_lossy(&bytes);
+    let text = String::from_utf8_lossy(bytes);
     let start = text.find("<x:xmpmeta")?;
     let end = text[start..].find("</x:xmpmeta>")? + start + "</x:xmpmeta>".len();
     Some(text[start..end].to_string())

@@ -122,7 +122,7 @@ pub fn faces_list(conn: &Connection) -> Result<FacesData> {
     // the big clusters are worth the most and are the easiest to recognise.
     // cluster_id breaks ties so the order is total, not merely sorted.
     let mut people: Vec<PersonData> = people.into_values().collect();
-    people.sort_by(|a, b| a.full_name.to_lowercase().cmp(&b.full_name.to_lowercase()));
+    people.sort_by_key(|a| a.full_name.to_lowercase());
     let mut clusters: Vec<ClusterData> = cluster_map.into_values().collect();
     clusters.sort_by(|a, b| {
         b.face_ids

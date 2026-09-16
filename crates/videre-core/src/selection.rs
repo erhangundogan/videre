@@ -1252,6 +1252,9 @@ mod resolve_tests {
 }
 
 #[cfg(test)]
+// Fixtures build a selection field by field for readability; the struct-literal
+// form clippy suggests is not clearer for a test that sets one or two axes.
+#[allow(clippy::field_reassign_with_default)]
 mod resolve_in_tests {
     use super::*;
     use crate::library::LibraryContext;

@@ -28,7 +28,6 @@ pub fn needs_processing(sigs: &HashMap<String, RowSig>, path: &Path, want_simila
 mod tests {
     use super::*;
     use std::fs;
-    use std::time::SystemTime;
 
     fn sig_for(path: &Path, has_mime: bool, has_phash: bool) -> RowSig {
         let meta = fs::metadata(path).unwrap();

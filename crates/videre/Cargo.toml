@@ -72,3 +72,6 @@ candle-core = { version = "0.11", features = ["metal"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 candle-core = "0.11"
+
+[lints]
+workspace = true

@@ -265,10 +265,19 @@ The remaining hole is that this test skips silently rather than calling
 `skip_without_models`, so `VIDERE_TEST_REQUIRE_MODELS=1` - which exists to turn
 exactly this into a failure - never fires for it.
 
-Clippy is not in CI yet: it reports ~37 warnings as of 2026-08-25 (31 on
-2026-08-16, 18 when first counted), so a lint job would need `--allow`-ing them
-or a cleanup pass first. `make lint` runs it. The count drifts upward precisely because
-nothing enforces it, which is the argument for adding the job.
+Clippy is gated in CI, on its own `clippy` job that runs
+`cargo clippy --workspace --all-targets -- -D warnings` (`make lint-check`;
+`make lint` is the same without `-D warnings`, for listing while you work). The
+job installs the pinned toolchain the same way the others do. A warning now
+fails the build, so the count that used to drift upward (18 when first counted,
+31 on 2026-08-16, ~37 by 2026-08-25) cannot climb again: every lint is either
+fixed or given a justified `#[allow]` with a reason at its site. Two lints are
+allowed workspace-wide in the root `Cargo.toml` because they are subjective
+structural lints, not correctness ones (`type_complexity`,
+`too_many_arguments`); that manifest's comment says why. The job lints the Linux
+configuration, so the `cfg(target_os = "macos")` branches (HEIC and video via
+QuickLook) are compiled out and covered instead by the dev machine's
+`make lint`.
 
 ## Testing conventions
 

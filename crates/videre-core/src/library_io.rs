@@ -230,7 +230,7 @@ fn open_media_file(parent: &File, name: &OsStr, display: &Path) -> Result<File> 
             return Err(refuse_if_link(
                 e,
                 parent,
-                &for_classifying.as_os_str(),
+                for_classifying.as_os_str(),
                 display,
             ))
         }
@@ -548,7 +548,7 @@ mod tests {
         let link = root.join("link");
         std::os::unix::fs::symlink(root.join("inside"), &link).unwrap();
         let ctx = crate::library::LibraryContext::new(&root, &temp.path().join("cache")).unwrap();
-        crate::library_guard::validate_paths(&ctx, &[link.clone()]).unwrap();
+        crate::library_guard::validate_paths(&ctx, std::slice::from_ref(&link)).unwrap();
         std::fs::remove_file(&link).unwrap();
         std::os::unix::fs::symlink(&outside, &link).unwrap();
         assert!(replace_sidecar(&ctx, &link.join("image.xmp"), b"private").is_err());
@@ -632,7 +632,7 @@ mod tests {
         std::fs::write(ctx.paths.root.join("Trips/f.jpg"), b"jpeg").unwrap();
         let alias = temp.path().join("alias");
         std::os::unix::fs::symlink(&ctx.paths.root, &alias).unwrap();
-        crate::library_guard::validate_paths(&ctx, &[alias.clone()]).unwrap();
+        crate::library_guard::validate_paths(&ctx, std::slice::from_ref(&alias)).unwrap();
         assert_eq!(
             read_all(open_media(&ctx, &alias.join("Trips/f.jpg")).unwrap()),
             b"jpeg"

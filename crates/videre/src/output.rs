@@ -159,7 +159,7 @@ mod tests {
             losers,
             vec!["/lib/Google Photos/copy 1.jpg", "/lib/copy 2.jpg"]
         );
-        assert!(!losers.iter().any(|p| *p == "/lib/Google Photos/keep.jpg"));
+        assert!(!losers.contains(&"/lib/Google Photos/keep.jpg"));
     }
 
     fn make_record(path: &str, hash: &str) -> FileRecord {

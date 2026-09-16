@@ -152,7 +152,7 @@ pub fn summary(conn: &Connection) -> rusqlite::Result<MarksSummary> {
     if !crate::db::table_exists(conn, "marks")? {
         return Ok(MarksSummary::default());
     }
-    Ok(conn.query_row(
+    conn.query_row(
         "SELECT COUNT(rating), COUNT(pick), COUNT(label), COALESCE(SUM(liked), 0) FROM marks",
         [],
         |r| {
@@ -163,7 +163,7 @@ pub fn summary(conn: &Connection) -> rusqlite::Result<MarksSummary> {
                 liked: r.get(3)?,
             })
         },
-    )?)
+    )
 }
 
 /// Read marks for many hashes at once, for the gallery's file list. Only marked

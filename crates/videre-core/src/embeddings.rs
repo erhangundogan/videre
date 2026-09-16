@@ -216,6 +216,8 @@ pub fn paths_for_hash(conn: &Connection, hash: &str) -> Result<Vec<String>> {
 }
 
 #[cfg(test)]
+// Fixtures build config/selection values field by field for readability.
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use rusqlite::Connection;

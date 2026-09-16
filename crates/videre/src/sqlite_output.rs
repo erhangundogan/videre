@@ -228,7 +228,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("hashes.db");
         let first = rec("/a.jpg", "h1");
-        write_records(&[first.clone()], &db).unwrap();
+        write_records(std::slice::from_ref(&first), &db).unwrap();
         let conn = rusqlite::Connection::open(&db).unwrap();
         conn.execute(
             "UPDATE file_hashes SET location_name = 'Üsküdar', location_cluster_id = 17 WHERE path = '/a.jpg'",

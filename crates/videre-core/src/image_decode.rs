@@ -113,7 +113,7 @@ mod tests {
         tiff.extend_from_slice(&0x0112u16.to_be_bytes()); // Orientation
         tiff.extend_from_slice(&3u16.to_be_bytes()); // SHORT
         tiff.extend_from_slice(&1u32.to_be_bytes()); // count
-        tiff.extend_from_slice(&(orientation as u16).to_be_bytes());
+        tiff.extend_from_slice(&orientation.to_be_bytes());
         tiff.extend_from_slice(&0u16.to_be_bytes()); // value padding
         tiff.extend_from_slice(&0u32.to_be_bytes()); // no next IFD
 

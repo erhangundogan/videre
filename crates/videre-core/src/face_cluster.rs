@@ -337,7 +337,7 @@ mod gemm_seeding_tests {
             (1, vec![1.0, 0.0, 0.0]),
             (
                 2,
-                vec![0.99, 0.01, 0.0]
+                [0.99, 0.01, 0.0]
                     .iter()
                     .map(|x| x / (0.99f32 * 0.99 + 0.01 * 0.01).sqrt())
                     .collect(),
@@ -345,7 +345,7 @@ mod gemm_seeding_tests {
             (3, vec![0.0, 1.0, 0.0]),
             (
                 4,
-                vec![0.0, 0.99, 0.01]
+                [0.0, 0.99, 0.01]
                     .iter()
                     .map(|x| x / (0.99f32 * 0.99 + 0.01 * 0.01).sqrt())
                     .collect(),
@@ -370,8 +370,8 @@ mod gemm_seeding_tests {
 
         let mut gemm_pairs: Vec<(usize, usize, f32)> =
             gemm_heap.into_iter().map(|e| (e.i, e.j, e.dist)).collect();
-        gemm_pairs.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
-        naive_pairs.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+        gemm_pairs.sort_by_key(|a| (a.0, a.1));
+        naive_pairs.sort_by_key(|a| (a.0, a.1));
 
         assert_eq!(gemm_pairs.len(), naive_pairs.len(), "pair count must match");
         for (gemm, naive) in gemm_pairs.iter().zip(&naive_pairs) {
@@ -532,9 +532,8 @@ fn merge_by_centroid(
 
     loop {
         let mut best: Option<(f32, usize, usize)> = None;
-        for i in 0..clusters.len() {
-            for j in (i + 1)..clusters.len() {
-                let s = sim[i][j];
+        for (i, row) in sim.iter().enumerate() {
+            for (j, &s) in row.iter().enumerate().skip(i + 1) {
                 if best.is_none_or(|(bs, _, _)| s > bs) {
                     best = Some((s, i, j));
                 }

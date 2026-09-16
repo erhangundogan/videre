@@ -1,6 +1,5 @@
 mod common;
 use common::TestLibrary;
-use std::process::Command;
 
 /// Scan this library, having written its files under the root. `extra` passes
 /// through additional scan flags (e.g. `--similar`).

@@ -202,6 +202,8 @@ pub fn with_work<T, R>(
 }
 
 #[cfg(test)]
+// Fixtures build a selection field by field for readability.
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use std::cell::Cell;
@@ -229,16 +231,12 @@ mod tests {
         c
     }
 
-    fn hash(s: &String) -> &str {
-        s.as_str()
-    }
-
     #[test]
     fn an_empty_pending_set_is_nothing_to_do() {
         let c = conn();
         let w = narrow(
             Vec::<String>::new(),
-            hash,
+            String::as_str,
             &RowSelection::default(),
             &c,
             &SelectionCtx::default(),
@@ -259,7 +257,7 @@ mod tests {
         let c = conn();
         let w = narrow(
             vec!["a".to_string(), "b".to_string()],
-            hash,
+            String::as_str,
             &RowSelection::default(),
             &c,
             &SelectionCtx::default(),
@@ -284,7 +282,7 @@ mod tests {
         let c = conn();
         let w = narrow(
             Vec::<String>::new(),
-            hash,
+            String::as_str,
             &RowSelection::default(),
             &c,
             &SelectionCtx::default(),
@@ -308,7 +306,7 @@ mod tests {
         s.exts = vec!["png".to_string()]; // present in neither row
         let w = narrow(
             vec!["h_jpg".to_string(), "h_mov".to_string()],
-            hash,
+            String::as_str,
             &s,
             &c,
             &SelectionCtx::default(),
@@ -334,7 +332,7 @@ mod tests {
         s.exts = vec!["jpg".to_string()];
         let w = narrow(
             vec!["h_jpg".to_string(), "h_mov".to_string()],
-            hash,
+            String::as_str,
             &s,
             &c,
             &SelectionCtx::default(),

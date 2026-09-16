@@ -128,6 +128,11 @@ fn postprocess(
             .cloned()
             .collect();
 
+        // anchor_idx is an anchor coordinate, not a cursor over one slice: it
+        // decodes into three parallel flattened tensors at different strides
+        // (scores x1, bboxes x4, kps x10) plus the grid math below, and `n`
+        // (grid*grid*anchors) is the authoritative bound for all of them.
+        #[allow(clippy::needless_range_loop)]
         for anchor_idx in 0..n {
             // scores is flattened from [1, n, 1] -> n elements
             let score = scores[anchor_idx];

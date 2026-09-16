@@ -65,7 +65,7 @@ fn docs_dir() -> Option<PathBuf> {
     // excluded from the published package, so a consumer running `cargo test`
     // on the crates.io tarball has no docs to check against.
     let d = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/src/content/docs/commands");
-    d.is_dir().then(|| d)
+    d.is_dir().then_some(d)
 }
 
 /// Every long flag mentioned in `text`, minus the universal ones.

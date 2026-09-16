@@ -80,8 +80,12 @@ fmt-check: ## Check formatting without modifying files
 	$(RUST_SOURCES) | xargs $(RUSTFMT) --check
 
 .PHONY: lint
-lint: ## Run clippy across the workspace
+lint: ## Run clippy across the workspace (lists warnings, does not fail on them)
 	$(CARGO) clippy --workspace --all-targets
+
+.PHONY: lint-check
+lint-check: ## Run clippy as CI does: any warning fails the build
+	$(CARGO) clippy --workspace --all-targets -- -D warnings
 
 .PHONY: coverage
 coverage: ## Print per-file unit-test coverage (cargo-llvm-cov)
