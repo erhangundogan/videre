@@ -5,23 +5,24 @@ description: Every videre subcommand, what it does, and where to read more.
 
 | Command | What it does |
 |---------|--------------|
-| [`videre import`](/commands/import/) | Bring photos in from Google Takeout, Apple Photos, or Lightroom |
 | [`videre scan`](/commands/scan/) | Read a folder and record what's in it. Run this first. |
 | [`videre dedupe`](/commands/dedupe/) | List duplicate copies you could delete |
+| [`videre fix-dates`](/commands/fix-dates/) | Set each file's date from its EXIF shoot date |
+| [`videre stats`](/commands/stats/) | Library totals and what has run recently |
 | [`videre status`](/commands/status/) | Is the library up to date, what to run next, and is the watcher alive |
-| [`videre gallery`](/commands/gallery/) | Browse the library in a local web UI: files, people, dates |
-| [`videre search`](/commands/search/) | Find photos by description, example image, person, category, or place |
 | [`videre embed`](/commands/embed/) | Prepare photos for search (one-time, resumable) |
 | [`videre faces`](/commands/faces/) | Detect and group faces |
 | [`videre classify`](/commands/classify/) | Tag photos as photo/screenshot/document/meme |
-| [`videre export`](/commands/export/) | Write labels (faces, location, ratings) to portable .xmp sidecars |
-| [`videre tag`](/commands/tag/) | Add or remove free-form tags; filter with `search --tag` |
 | [`videre locations`](/commands/locations/) | Group photos by where they were taken |
-| [`videre fix-dates`](/commands/fix-dates/) | Set each file's date from its EXIF shoot date |
+| [`videre gallery`](/commands/gallery/) | Browse the library in a local web UI: files, people, dates |
+| [`videre search`](/commands/search/) | Find photos by description, example image, person, category, or place |
+| [`videre pipeline`](/commands/pipeline/) | Bring the whole library current in one command (scan through locations) |
+| [`videre mark`](/commands/mark/) | Star rating, like, keep/reject, label your media files |
+| [`videre tag`](/commands/tag/) | Add or remove free-form tags; filter with `search --tag` |
+| [`videre import`](/commands/import/) | Bring photos in from Google Takeout, Apple Photos, or Lightroom |
+| [`videre export`](/commands/export/) | Write labels (faces, location, ratings) to portable .xmp sidecars |
 | [`videre prune`](/commands/prune/) | Remove database entries for files that no longer exist |
 | [`videre watch`](/commands/watch/) | Background loop keeping everything current |
-| [`videre pipeline`](/commands/pipeline/) | Bring the whole library current in one command (scan through locations) |
-| [`videre stats`](/commands/stats/) | Library totals and what has run recently |
 | [`videre config`](/commands/config/) | Show or change defaults |
 | [`videre mcp`](/commands/mcp/) | Expose search to AI agents |
 

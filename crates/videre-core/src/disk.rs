@@ -92,7 +92,7 @@ pub fn usage_in(ctx: &crate::library::LibraryContext) -> Vec<Usage> {
     }
     out.extend(row("embeddings", ctx.paths.embeddings.clone(), false));
     out.extend(row("thumbnails", ctx.cache.thumbnails.clone(), true));
-    out.extend(row("place names (shared)", ctx.cache.geo.clone(), true));
+    out.extend(row("places (shared)", ctx.cache.geo.clone(), true));
     out.extend(row("locks", ctx.paths.locks.clone(), true));
     out.sort_by_key(|r| std::cmp::Reverse(r.bytes));
     out
@@ -168,7 +168,7 @@ mod tests {
         assert!(labels.contains(&"database"));
         assert!(labels.contains(&"embeddings"));
         assert!(labels.contains(&"thumbnails"));
-        assert!(labels.contains(&"place names (shared)"));
+        assert!(labels.contains(&"places (shared)"));
         assert!(!labels.contains(&"embeddings (other libraries)"));
     }
 

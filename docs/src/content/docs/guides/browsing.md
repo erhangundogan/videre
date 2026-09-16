@@ -3,32 +3,22 @@ title: Browsing and labeling in a browser
 description: The three different interfaces videre dedupe --html produces, and which one you get.
 ---
 
-`videre dedupe --html` produces three quite different things depending on its flags:
-a static file you can keep, a labeling application, and a live gallery. They
-share a command but are not really the same tool.
+`videre` can produce visual content based on the command.
+
+- A static file saved into `<library>/.videre` folder or a local web server. You
+can open static file directly via `open <filename>` command from terminal or
+via finder on MacOS or via Linux equivalent.
+- A local server that you need to navigate to provided URL (http://127.0.0.1:7878)
+to open. There you can view your media files, duplicates, files grouped by date,
+face clusters and you can label people you know.
 
 | You want to | Command | What you get |
 |---|---|---|
-| Check duplicates before deleting | `videre dedupe --html` | A file |
-| Browse everything you own | `videre gallery` | A file |
-| Find photos from a trip | `videre gallery` | A file |
-| Name people | `videre gallery` | A local server |
-| Browse with names and places shown | `videre gallery` | A local server |
+| Check duplicates before delete | `videre dedupe --html` | A file |
+| Check duplicates before delete | `videre gallery` and browse `/duplicates` | A local server |
+| Find photos | `videre search --location "Berlin" --html` | A file |
+| Many more features | `videre gallery` | A local server |
 
-## Static file or local server
-
-The command decides it, not a flag:
-
-:::note[`gallery` is a server. `--html` writes a file.]
-[`videre gallery`](/commands/gallery/) serves on `localhost:7878` and writes
-nothing. [`dedupe --html`](/commands/dedupe/) and
-[`search --html`](/commands/search/) write a self-contained page and start
-nothing.
-:::
-
-Until 0.18.0 this was decided by which combination of flags you passed to one
-command, and combining them needed a table to explain which won. Splitting them
-into separate commands is what removed that question.
 
 ### Why the difference exists
 
@@ -69,14 +59,13 @@ eyeballing, and deliberately never in `dedupe`'s pipeable output.
 ## Naming people
 
 ```bash
-videre faces                   # detect and group first
-videre gallery          # then name them
+videre faces            # detect and group first
+videre gallery          # browse /people and name people
 ```
 
-Opens `http://localhost:7878`. Naming lives on the **People** tab (`/people`),
-which has three sections:
+[People](http://127.0.0.1:7878/people) tab has three sections:
 
-- **People**, ones you have named
+- **People**, ones you have named (default on the right-hand side, you can move it on top)
 - **Unassigned clusters**, groups it is confident about but has no name for
 - **Singletons**, faces it could not group
 
@@ -110,10 +99,10 @@ demand.
 
 | Route | Shows |
 |---|---|
-| `/` | Every file |
-| `/duplicates` | Duplicate groups |
-| `/people` | Face groups, and where you name them |
-| `/date` | Year, month, day drill-down |
+| [/](http://127.0.0.1:7878/) | Every file |
+| [/duplicates](http://127.0.0.1:7878/duplicates) | Duplicate groups |
+| [/date](http://127.0.0.1:7878/date) | Year, month, day drill-down |
+| [/people](http://127.0.0.1:7878/people) | Face groups, and where you name them |
 
 A strip along the top of every page switches between them, so none of them needs
 to be typed.
