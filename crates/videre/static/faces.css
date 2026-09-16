@@ -16,8 +16,8 @@
     .card.person-card { cursor: default; border-color: var(--blue-border); background: var(--blue-bg); transition: border-color 0.15s; }
     .card.person-card:hover { border-color: var(--blue-hover); }
     .card.drag-over { border-color: var(--blue-hover); background: #d0e4ff; }
-    .card.cluster-card { border-color: var(--green-border); background: var(--green-bg); display: flex; flex-flow: column; justify-content: space-between; }
-    .card.singleton-card { border-color: var(--orange-border); background: var(--orange-bg); }
+    .card.cluster-card { border-color: var(--green-border); background: var(--green-bg); display: flex; flex-flow: column; }
+    .card.singleton-card { border-color: var(--orange-border); background: var(--orange-bg); display: flex; flex-flow: column; }
     .badge { display: inline-flex; align-items: center; vertical-align: middle; border-radius: 12px; padding: 3px 9px; font-size: 12px; line-height: 1; margin-left: 4px; font-weight: 600; border: 1px solid transparent; }
     .badge-blue { background: var(--blue-bg); border-color: var(--blue-border); color: var(--blue-text); }
     .badge-green { background: var(--green-bg); border-color: var(--green-border); color: var(--green-text); }
@@ -26,8 +26,8 @@
     h2.title-people #layout-toggle { margin-left: auto; font-weight: 400; }
     h2.title-clusters { color: var(--green-text); }
     h2.title-singletons { color: var(--orange-text); }
-    .new-person-area { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
-    .new-person-area button { flex: 1; }
+    .new-person-area { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; flex: 1; justify-content: end; }
+    .new-person-area button { flex: 0; }
     .new-person-area input[type=text] { width: 100%; box-sizing: border-box; }
     .np-btn-row { display: flex; gap: 4px; }
     .np-btn-row button { flex: 1; }
