@@ -28,7 +28,13 @@ function rawUrl(f, size, version){
 }
 function buildPreview(f){
   var ext=f.ext,path=f.path;
-  var metaAttr=escA(JSON.stringify(f.meta));
+  // The lightbox info bar also shows the filename and size, which live on the
+  // file row rather than in its `meta`, so fold them in here.
+  var metaAttr=escA(JSON.stringify(Object.assign({}, f.meta, {
+    name: (f.path.split('/').pop()||f.path),
+    size: f.size,
+    date: bestDateJs(f)
+  })));
   if(ext==='jpg'||ext==='jpeg'||ext==='png'||ext==='gif'||ext==='webp'||ext==='bmp'){
     // Grid tile is a small server-downscaled thumbnail (240px), not the full
     // original: serving originals as tiles saturates the browser's connection
@@ -180,19 +186,23 @@ function copyPath(p){
 }
 function renderMetaPanel(meta){
   var el = document.getElementById('lbMeta');
-  if(!meta || (!meta.faces.length && !meta.location)){
-    el.classList.remove('on'); el.innerHTML=''; return;
-  }
+  // Always shown as the reserved info bar under the media (filename and size
+  // land here next), so it stays empty rather than hidden when a file has no
+  // people or location yet.
+  el.classList.add('on');
+  if(!meta){ el.innerHTML=''; return; }
   var parts = [];
   if(meta.faces.length){
     // A live page carries `id` and fetches the crop from the endpoint only when
     // this lightbox opens. A static export has no server to ask, so it carries
     // `thumb` as a data URI. Supporting both keeps one renderer for both.
-    parts.push(meta.faces.map(function(fc){
+    parts.push('<div class="lb-people">'+meta.faces.map(function(fc){
       var src = fc.thumb ? escA(fc.thumb) : '/api/faces/'+encodeURIComponent(fc.id)+'/image';
-      return '<div class="lb-face"><img src="'+src+'" loading="lazy">'+
-        '<a href="'+peopleRootG()+'person/'+encodeURIComponent(fc.name)+'?from=lightbox">'+escH(fc.name)+'</a></div>';
-    }).join(''));
+      // The whole card links to the person, so the photo is clickable, not just
+      // the name.
+      return '<a class="lb-face" href="'+peopleRootG()+'person/'+encodeURIComponent(fc.name)+'?from=lightbox">'+
+        '<img src="'+src+'" loading="lazy"><span>'+escH(fc.name)+'</span></a>';
+    }).join('')+'</div>');
   }
   if(meta.location){
     var locId = 'lbLoc'+Math.random().toString(36).slice(2);
@@ -208,9 +218,13 @@ function renderMetaPanel(meta){
         if(n) n.textContent = 'Location unavailable';
       });
   }
+  if(meta.name) parts.push('<div class="lb-file lb-fname">'+escH(meta.name)+'</div>');
+  if(meta.size!=null) parts.push('<div class="lb-file">'+fmtB(meta.size)+'</div>');
+  if(meta.date) parts.push('<div class="lb-file">'+escH(humanDate(meta.date))+'</div>');
   el.innerHTML = parts.join('');
-  el.classList.add('on');
 }
+var lbIndex=-1;      // index of the open item among the currently visible tiles
+var lbLoading=false; // guards the auto-paginate load so it fires once
 function openLb(url,type,metaJson){
   var meta = null;
   try { meta = metaJson ? JSON.parse(metaJson) : null; } catch(e) {}
@@ -221,6 +235,9 @@ function openLb(url,type,metaJson){
     img.style.display='none';vid.style.display='block';
     vid.src=url;vid.play();
   } else {
+    // Stop any video that was playing, so stepping from a clip to a photo does
+    // not leave audio running behind the hidden <video>.
+    vid.pause();vid.src='';
     vid.style.display='none';img.style.display='block';img.src=url;
   }
   document.getElementById('lb').classList.add('on');
@@ -230,6 +247,62 @@ function closeLb(){
   vid.pause();vid.src='';
   document.getElementById('lb-img').src='';
   document.getElementById('lb').classList.remove('on');
+  lbIndex=-1;
+}
+// Prev/next across the visible tiles in DOM order. Every view and the static
+// export renders its tiles with data-lb-url, so one walk covers them all; a
+// tile hidden inside a collapsed group (offsetParent === null) is skipped.
+function lbVisibleTiles(){
+  var all=document.querySelectorAll('[data-lb-url]'),out=[];
+  for(var i=0;i<all.length;i++){if(all[i].offsetParent!==null)out.push(all[i]);}
+  return out;
+}
+// The view's "Show more" control, if present and visible: #more-btn for the
+// grid/duplicates views, #gallery-more for the paged gallery.
+function lbMoreButton(){
+  var ids=['more-btn','gallery-more'];
+  for(var i=0;i<ids.length;i++){
+    var b=document.getElementById(ids[i]);
+    if(b&&b.offsetParent!==null)return b;
+  }
+  return null;
+}
+function openTile(el){
+  var tiles=lbVisibleTiles();
+  lbIndex=tiles.indexOf(el);
+  openLb(el.dataset.lbUrl,el.dataset.lbType||'image',el.dataset.lbMeta);
+  updateLbNav();
+}
+function updateLbNav(){
+  var tiles=lbVisibleTiles();
+  var prev=document.getElementById('lb-prev'),next=document.getElementById('lb-next');
+  if(prev)prev.hidden=!(lbIndex>0);
+  // Next exists when a later tile is loaded, or a page remains to load.
+  if(next)next.hidden=!(lbIndex>=0&&(lbIndex<tiles.length-1||lbMoreButton()));
+}
+function lbStep(delta){
+  if(lbIndex<0)return;
+  var tiles=lbVisibleTiles();
+  var target=lbIndex+delta;
+  if(delta>0&&target>=tiles.length){
+    // Past the last loaded tile: pull the next page in, then continue. Only a
+    // truly last item (no "Show more" left) stops here.
+    var btn=lbMoreButton();
+    if(!btn||lbLoading)return;
+    var before=tiles.length;
+    lbLoading=true;
+    btn.click();
+    var tries=0;
+    (function poll(){
+      var t=lbVisibleTiles();
+      if(t.length>before){lbLoading=false;openTile(t[before]);return;}
+      if(tries++>100){lbLoading=false;return;} // ~5s cap for a slow fetch
+      setTimeout(poll,50);
+    })();
+    return;
+  }
+  if(target<0||target>=tiles.length)return; // stop at the first item
+  openTile(tiles[target]);
 }
 function sortGroups(by){
   var overlay=document.getElementById('sort-overlay');
@@ -432,13 +505,18 @@ function buildDateInitialView(){
 // Event delegation: toggle, lightbox, copy. One listener for all dynamic content
 document.addEventListener('click',function(e){
   var lb=e.target.closest('[data-lb-url]');
-  if(lb){e.preventDefault();e.stopPropagation();openLb(lb.dataset.lbUrl,lb.dataset.lbType||'image',lb.dataset.lbMeta);return;}
+  if(lb){e.preventDefault();e.stopPropagation();openTile(lb);return;}
   var cp=e.target.closest('[data-path]');
   if(cp){copyPath(cp.dataset.path);return;}
   var hdr=e.target.closest('.group-header');
   if(hdr){toggle(hdr.closest('.group').id);return;}
 });
-document.addEventListener('keydown',function(e){if(e.key==='Escape')closeLb();});
+document.addEventListener('keydown',function(e){
+  if(e.key==='Escape'){closeLb();return;}
+  if(!document.getElementById('lb').classList.contains('on'))return;
+  if(e.key==='ArrowLeft'){e.preventDefault();lbStep(-1);}
+  else if(e.key==='ArrowRight'){e.preventDefault();lbStep(1);}
+});
 document.getElementById('lb').addEventListener('click',function(e){
   if(e.target===this)closeLb();
 });
@@ -457,6 +535,18 @@ function bestDateJs(f){
   if(f.ex&&f.ex.indexOf('0000')!==0)return f.ex;
   if(f.cr&&f.mo)return f.cr<f.mo?f.cr:f.mo;
   return f.cr||f.mo||'';
+}
+// A stored date is wall-clock text ("YYYY-MM-DDTHH:MM:SS", no timezone); format
+// it from the parts directly so no timezone conversion shifts it, falling back
+// to the raw string if it is not the expected shape.
+function humanDate(s){
+  if(!s)return '';
+  var m=/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/.exec(s);
+  if(!m)return s;
+  var mon=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  var out=(+m[3])+' '+mon[+m[2]-1]+' '+m[1];
+  if(m[4])out+=', '+m[4]+':'+m[5];
+  return out;
 }
 // Similarity is a server feature now, so it works at every library size. It
 // used to appear only when the page had downloaded every vector, which switched

@@ -29,6 +29,18 @@ the lightbox when you click it. The poster is cached like the other previews. On
 other platforms, where videre has no video frame extraction, tiles remain the
 plain inline video, also badged.
 
+Once the lightbox is open, move through the items without closing it: the
+on-screen arrows at the left and right edges, or the **Left** and **Right**
+arrow keys, step to the previous and next item. Stepping past the last loaded
+item pulls in the next page automatically and keeps going, so **Show more** is
+not needed to browse to the end. **Escape** or a click outside the item closes
+the lightbox.
+
+An info panel sits directly under the media: the labeled people in the photo
+(each links to that person's page), the place name when the file has GPS, and
+the filename, size, and date. It stays visible even when a file has none of the
+people or location data yet.
+
 ## What is on each page
 
 | Path | What you get |
