@@ -15,6 +15,43 @@ version number and are released together.
 
 ## [Unreleased]
 
+## [0.28.6] - 2026-09-16
+
+### Changed
+
+- **Gallery video tiles are now static poster frames with a play badge, and the
+  clip plays when you click it.** On macOS the poster is extracted through
+  QuickLook, which renders it display-oriented, so rotation-carrying iPhone
+  clips that browsers drew sideways now appear upright; the video plays in the
+  lightbox on click. Off macOS, tiles stay inline video players, also badged.
+- **`videre watch`'s location stage is now recorded in the pipeline table as
+  `location-names`.** `videre status` and `stats` reported the stage as never
+  run even after watch had resolved thousands of coordinates; it now shows its
+  last run like any other stage. It is deliberately distinct from `locations`,
+  the standalone clustering recompute.
+
+### Fixed
+
+- **A sized gallery request for a video no longer reads the whole file into
+  memory.** `/api/files/<hash>/raw?size=` returned the entire video with a
+  video mime type; it now returns the poster image.
+- **`videre status` reports locations and fix-dates coverage correctly.**
+  Locations are counted by cluster assignment rather than place name (place
+  names are separate metadata that does not gate clustering), and fix-dates
+  compares timestamps as instants, so equivalent timezone-offset
+  representations count as up to date instead of as outstanding work.
+
+### Internal
+
+- **Clippy now gates CI** (`cargo clippy --workspace --all-targets -- -D
+  warnings`): a new lint fails the build rather than accumulating unnoticed.
+  The existing warnings were cleared, and `make lint-linux` runs the same gate
+  for the Linux configuration in Docker.
+- **CI probes the aarch64 install path** without the repo's fp16 override, so
+  the job turns red the day that workaround becomes unnecessary and stays green
+  until then.
+- Documentation and workflow updates.
+
 ## [0.28.5] - 2026-09-15
 
 ### Changed
@@ -1814,7 +1851,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.28.5...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.28.6...HEAD
+[0.28.6]: https://github.com/erhangundogan/videre/compare/v0.28.5...v0.28.6
 [0.28.5]: https://github.com/erhangundogan/videre/compare/v0.28.4...v0.28.5
 [0.28.4]: https://github.com/erhangundogan/videre/compare/v0.28.3...v0.28.4
 [0.28.3]: https://github.com/erhangundogan/videre/compare/v0.28.2...v0.28.3
