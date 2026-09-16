@@ -92,15 +92,18 @@ pub fn run(mut args: WatchArgs, ctx: &CommandContext) -> Result<()> {
     }
 }
 
-/// Run a tracked stage under the library's activity lease and its own command
-/// lock, in that order. A busy activity lease (an exclusive maintenance pass,
-/// or another shared operation when this stage needs exclusive) or a busy
-/// command lock (a standalone run of that stage) is reported and skipped; the
-/// next cycle retries. Never reacquires the watch lifetime lock.
+/// Run a tracked stage under the library's activity lease and a command lock,
+/// in that order. A busy activity lease (an exclusive maintenance pass, or
+/// another shared operation when this stage needs exclusive) or a busy command
+/// lock is reported and skipped; the next cycle retries. Never reacquires the
+/// watch lifetime lock. The tracked label and the lock are separate on
+/// purpose: the label names the row in pipeline_runs, the lock names the
+/// standalone command this stage must not overlap with.
 fn tracked_stage(
     ctx: &CommandContext,
     conn: &rusqlite::Connection,
     command: &str,
+    lock: &str,
     mode: videre_core::library_locks::ActivityMode,
     silent: bool,
     f: impl FnOnce() -> Result<()>,
@@ -114,11 +117,13 @@ fn tracked_stage(
             return Ok(());
         }
     };
-    match videre_core::library_locks::try_command(&ctx.library, command) {
-        Ok(guard) => videre_core::pipeline_runs::track_in(conn, &ctx.library, &guard, command, f),
+    match videre_core::library_locks::try_command(&ctx.library, lock) {
+        Ok(guard) => {
+            videre_core::pipeline_runs::track_in_as(conn, &ctx.library, &guard, lock, command, f)
+        }
         Err(_) => {
             if !silent {
-                eprintln!("videre watch: {command} stage busy (a {command} run is active); will retry next cycle");
+                eprintln!("videre watch: {command} stage busy (a {lock} run is active); will retry next cycle");
             }
             Ok(())
         }
@@ -201,6 +206,7 @@ fn run_prune_stage(
         ctx,
         conn,
         "prune",
+        "prune",
         videre_core::library_locks::ActivityMode::Exclusive,
         args.silent,
         || {
@@ -255,6 +261,7 @@ fn run_faces_stage(
     tracked_stage(
         ctx,
         conn,
+        "faces",
         "faces",
         videre_core::library_locks::ActivityMode::Shared,
         args.silent,
@@ -446,31 +453,73 @@ fn run_location_stage(
     ctx: &CommandContext,
     conn: &rusqlite::Connection,
 ) -> Result<()> {
-    let unresolved: Vec<(f64, f64)> = {
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT gps_lat, gps_lon FROM file_hashes \
-             WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL AND location_name IS NULL",
-        )?;
-        let rows = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows
-    };
-    let mut resolved = 0usize;
-    for (lat, lon) in unresolved {
-        if let Some(name) = videre_core::location::location_name_in(&ctx.library.cache, lat, lon)? {
-            conn.execute(
-                "UPDATE file_hashes SET location_name = ?1 \
-                 WHERE ROUND(gps_lat, 6) = ROUND(?2, 6) AND ROUND(gps_lon, 6) = ROUND(?3, 6)",
-                rusqlite::params![name, lat, lon],
-            )?;
-            resolved += 1;
+    // Deliberately its own tracked label, not `locations`: that row means the
+    // standalone clustering recompute (`videre locations` rebuilds
+    // `location_clusters` from scratch), while this stage incrementally fills
+    // `location_name` — a column the recompute never touches; it names the
+    // clusters instead. And deliberately `location-names`, not `geocode`:
+    // `videre_core::geocode` is forward geocoding (place name -> coordinates),
+    // this is the reverse direction.
+    //
+    // The lock, though, is `locations`, shared with the standalone recompute,
+    // and that coordination is required rather than optional: SQLite has a
+    // single writer, the recompute holds it inside one transaction for
+    // minutes (measured ~8 on a 70k-file library), and library connections
+    // use a 5s busy timeout. With a lock of its own, a cycle overlapping a
+    // recompute would die on SQLITE_BUSY and record a failed (or seemingly
+    // crashed) run for work that is merely postponed; sharing the lock turns
+    // that into the clean skip-and-retry below.
+    // The stage's own lock is its identity in the read path: it is held only
+    // by this stage, while `locations` below is shared with the standalone
+    // recompute, so the reader can always tell the two holders apart. Taken
+    // first so a crash mid-acquisition releases both in order.
+    let _names_lock = match videre_core::library_locks::try_command(&ctx.library, "location-names")
+    {
+        Ok(guard) => guard,
+        Err(_) => {
+            if !args.silent {
+                eprintln!("videre watch: location stage busy; will retry next cycle");
+            }
+            return Ok(());
         }
-    }
-    if !args.silent && resolved > 0 {
-        eprintln!("videre watch: location stage resolved {resolved} coordinate(s)");
-    }
-    Ok(())
+    };
+    tracked_stage(
+        ctx,
+        conn,
+        "location-names",
+        "locations",
+        videre_core::library_locks::ActivityMode::Shared,
+        args.silent,
+        || {
+            let unresolved: Vec<(f64, f64)> = {
+                let mut stmt = conn.prepare(
+                    "SELECT DISTINCT gps_lat, gps_lon FROM file_hashes \
+                     WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL AND location_name IS NULL",
+                )?;
+                let rows = stmt
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            let mut resolved = 0usize;
+            for (lat, lon) in unresolved {
+                if let Some(name) =
+                    videre_core::location::location_name_in(&ctx.library.cache, lat, lon)?
+                {
+                    conn.execute(
+                        "UPDATE file_hashes SET location_name = ?1 \
+                         WHERE ROUND(gps_lat, 6) = ROUND(?2, 6) AND ROUND(gps_lon, 6) = ROUND(?3, 6)",
+                        rusqlite::params![name, lat, lon],
+                    )?;
+                    resolved += 1;
+                }
+            }
+            if !args.silent && resolved > 0 {
+                eprintln!("videre watch: location stage resolved {resolved} coordinate(s)");
+            }
+            Ok(())
+        },
+    )
 }
 
 fn run_scan_stage(
@@ -483,6 +532,7 @@ fn run_scan_stage(
     tracked_stage(
         ctx,
         conn,
+        "scan",
         "scan",
         videre_core::library_locks::ActivityMode::Shared,
         args.silent,
