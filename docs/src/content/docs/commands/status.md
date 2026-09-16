@@ -4,9 +4,8 @@ description: Is the library up to date, what should I run next, and is my watche
 ---
 
 A `git status` for your library: one read-only command that answers "is
-everything up to date, what changed, what should I run next and roughly how
-long will it take, and is my watcher alive?" It does no work and changes
-nothing.
+everything up to date, what changed, what should I run next, and is my watcher
+alive?" It does no work and changes nothing.
 
 ```bash
 videre status                          # the whole picture, human-readable
@@ -32,8 +31,12 @@ Coverage (model google/siglip-base-patch16-224):
   and a library that never runs them is a valid choice, not a problem.
 - **faces** counts files never tried for faces, not photos with no faces in
   them. A landscape that was scanned and found faceless is done.
-- **locations** and **fix-dates** count photos with GPS but no place name, and
-  photos whose file date disagrees with the camera date, respectively.
+- **locations** counts photos with GPS but no location-cluster assignment.
+  Place names are separate metadata and do not determine whether clustering is
+  complete.
+- **fix-dates** counts photos whose file date represents a different instant
+  from the camera date. Equivalent timezone-offset representations count as
+  the same date.
 - **skipped as undecodable** appears on a stage when a file has failed to decode
   enough times that `embed` or `faces` has stopped attempting it (an unreadable
   file, or one that repeatedly times out). Such files are not counted as
@@ -73,19 +76,19 @@ the library silently stops staying current.
 
 ## Next actions
 
-For every stage with outstanding work: the command to run, how many items it
-would process, and an approximate duration.
+For every stage with outstanding work: the command to run and how many items
+it would process.
 
 ```
 Next actions:
-  run 'videre embed': 12,431 item(s), ~1.6h
-  run 'videre faces': 342 item(s), ~6m
+  run 'videre embed': 12,431 item(s) (intensive)
+  run 'videre faces': 342 item(s)
 ```
 
-Durations come from your own last measured run of that stage where one exists,
-and from a coarse per-stage constant otherwise. They are marked approximate in
-the JSON and rounded in the text; treat them as planning numbers, not
-promises.
+A duration appears only when videre has enough measured data from a prior run
+to calculate one. It never substitutes a coarse per-stage estimate. Until a
+duration can be measured, long-running optional stages are marked
+`(intensive)` instead.
 
 ## `--check` for unattended runs
 
