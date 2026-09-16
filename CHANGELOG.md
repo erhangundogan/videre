@@ -15,6 +15,26 @@ version number and are released together.
 
 ## [Unreleased]
 
+
+## [0.29.0] - 2026-09-16
+
+### Added
+
+- **The gallery lightbox has prev/next navigation.** Arrow buttons at the
+  lightbox edges and the Left/Right arrow keys step through the items without
+  closing it. The walk covers every view (files, duplicates, date, similar)
+  and the static `--html` export, skips tiles hidden inside collapsed groups,
+  stops at the first item, and stepping past the last loaded item pulls in
+  the next page automatically, so reaching the end no longer needs "Show
+  more". A playing clip stops when you step to a photo, so its audio does not
+  linger behind the lightbox.
+- **The lightbox has an info panel under the media.** It shows the labeled
+  people (the whole card links to the person's page), the place name when the
+  file has GPS, and the filename, size, and date in human-readable form,
+  formatted from the stored wall-clock string with no timezone shift. The
+  panel is always shown, including when a file has no people or location data
+  yet.
+
 ## [0.28.6] - 2026-09-16
 
 ### Changed
@@ -1852,6 +1872,7 @@ takes the model id explicitly instead of reading it from the environment.
 - First release published to crates.io.
 
 [Unreleased]: https://github.com/erhangundogan/videre/compare/v0.28.6...HEAD
+[0.29.0]: https://github.com/erhangundogan/videre/compare/v0.28.6...v0.29.0
 [0.28.6]: https://github.com/erhangundogan/videre/compare/v0.28.5...v0.28.6
 [0.28.5]: https://github.com/erhangundogan/videre/compare/v0.28.4...v0.28.5
 [0.28.4]: https://github.com/erhangundogan/videre/compare/v0.28.3...v0.28.4
