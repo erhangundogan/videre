@@ -41,9 +41,9 @@ pub fn is_video_ext(ext: &str) -> bool {
 /// comes from and the first place to look if fine-detail queries disappoint.
 ///
 /// Changing this invalidates nothing: each model owns a separate database
-/// under `~/.videre/embeddings/` (see `crate::embeddings_db`), so switching
-/// leaves previous vectors intact and queryable via `--model`. The new model
-/// simply starts from zero and needs its own `videre embed` run.
+/// under `<library>/.videre/embeddings/` (see `crate::embeddings_db`), so
+/// switching leaves previous vectors intact and queryable via `--model`. The
+/// new model simply starts from zero and needs its own `videre embed` run.
 pub const DEFAULT_MODEL_ID: &str = "google/siglip-base-patch16-224";
 
 /// Resolve the model from one selected library's validated settings.

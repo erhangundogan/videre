@@ -170,10 +170,9 @@ pub fn permissions_are_enforced(unreadable_path: &Path) -> bool {
 ///
 /// One `TestLibrary` is one throwaway world: a `root` directory standing in
 /// for the user's library folder, and a private `home` so the child's caches
-/// and locks can never reach the developer's real `~/.videre` or Hugging Face
-/// cache. The `TempDir` is held in `_temp` precisely so it outlives every
-/// child spawned from this instance; dropping the `TestLibrary` drops the
-/// directory.
+/// and locks can never reach the developer's Hugging Face cache. The `TempDir`
+/// is held in `_temp` precisely so it outlives every child spawned from this
+/// instance; dropping the `TestLibrary` drops the directory.
 ///
 /// Deliberately does **not** go through [`videre_bin`] and then share one
 /// process-global working directory. The whole point here is explicit
