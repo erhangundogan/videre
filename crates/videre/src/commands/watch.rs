@@ -38,16 +38,20 @@ pub struct WatchArgs {
     #[arg(long)]
     export_xmp: bool,
 
-    /// Seconds between cycles
-    #[arg(long, default_value = "300")]
-    interval: u64,
-
     #[command(flatten)]
     xmp: crate::xmp::XmpArg,
 
     #[arg(long)]
     silent: bool,
 }
+
+/// Degraded-mode rescan cadence, in seconds. Internal, not a flag: this
+/// runs only where live events cannot be delivered at all (see run()).
+const FALLBACK_RESCAN_SECS: u64 = 300;
+
+/// How long a busy event batch waits before its retry attempt.
+/// Internal; used by the event loop.
+const PENDING_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 
 pub fn run(mut args: WatchArgs, ctx: &CommandContext) -> Result<()> {
     // If NO stage flag at all was passed (including --prune), run the
@@ -75,30 +79,65 @@ pub fn run(mut args: WatchArgs, ctx: &CommandContext) -> Result<()> {
     // No pipeline_runs row: watch has no "finished" moment, only running or not.
     let _watch_lock = videre_core::library_locks::try_command(&ctx.library, "watch")?;
 
-    loop {
-        if !args.silent {
-            eprintln!(
-                "videre watch: cycle starting ({})",
-                chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
-            );
-        }
-        if let Err(e) = run_cycle(&args, ctx) {
-            eprintln!("videre watch: cycle error: {e}");
-        }
-        if !args.silent {
-            eprintln!("videre watch: sleeping {}s", args.interval);
-        }
-        std::thread::sleep(Duration::from_secs(args.interval));
+    // Startup incremental scan: catch everything that changed while watch
+    // was down. Cheap because it is incremental.
+    if !args.silent {
+        eprintln!("videre watch: startup scan");
     }
+    if let Err(e) = reconcile(&args, ctx) {
+        eprintln!("videre watch: startup scan error: {e}");
+    }
+    // Test-only bounded exit: one startup pass then stop. Same category as
+    // VIDERE_TEST_REQUIRE_MODELS; never documented as a knob.
+    if std::env::var_os("VIDERE_WATCH_ONCE").is_some() {
+        return Ok(());
+    }
+    match event_loop(&args, ctx) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            eprintln!(
+                "videre watch: live events unavailable ({e:#}); rescanning every \
+                 {FALLBACK_RESCAN_SECS}s. On Linux, raising fs.inotify.max_user_watches \
+                 may restore live watching."
+            );
+            degraded_rescan_loop(&args, ctx)
+        }
+    }
+}
+
+/// Fallback only: no live events, so keep the library current with a slow
+/// incremental rescan. Reached only when event registration fails (run()'s
+/// error arm); the event loop sits in front of it when watching works.
+fn degraded_rescan_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
+    loop {
+        std::thread::sleep(Duration::from_secs(FALLBACK_RESCAN_SECS));
+        if let Err(e) = reconcile(args, ctx) {
+            eprintln!("videre watch: rescan error: {e}");
+        }
+    }
+}
+
+/// The live debounced watcher; the stub is replaced by the real event loop.
+fn event_loop(_args: &WatchArgs, _ctx: &CommandContext) -> Result<()> {
+    anyhow::bail!("event watching not wired yet")
+}
+
+/// Whether a tracked stage actually ran, or found a lock busy and skipped.
+/// The event loop uses `Busy` to defer a batch and retry it on a short
+/// backoff, never blocking and never dropping work.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum StageOutcome {
+    Ran,
+    Busy,
 }
 
 /// Run a tracked stage under the library's activity lease and a command lock,
 /// in that order. A busy activity lease (an exclusive maintenance pass, or
 /// another shared operation when this stage needs exclusive) or a busy command
-/// lock is reported and skipped; the next cycle retries. Never reacquires the
-/// watch lifetime lock. The tracked label and the lock are separate on
-/// purpose: the label names the row in pipeline_runs, the lock names the
-/// standalone command this stage must not overlap with.
+/// lock is reported and skipped; the caller decides how to retry. Never
+/// reacquires the watch lifetime lock. The tracked label and the lock are
+/// separate on purpose: the label names the row in pipeline_runs, the lock
+/// names the standalone command this stage must not overlap with.
 fn tracked_stage(
     ctx: &CommandContext,
     conn: &rusqlite::Connection,
@@ -107,30 +146,33 @@ fn tracked_stage(
     mode: videre_core::library_locks::ActivityMode,
     silent: bool,
     f: impl FnOnce() -> Result<()>,
-) -> Result<()> {
+) -> Result<StageOutcome> {
     let _activity = match videre_core::library_locks::try_activity(&ctx.library, mode) {
         Ok(guard) => guard,
         Err(_) => {
             if !silent {
-                eprintln!("videre watch: {command} stage busy (the library is in use); will retry next cycle");
+                eprintln!("videre watch: {command} stage busy (the library is in use); will retry");
             }
-            return Ok(());
+            return Ok(StageOutcome::Busy);
         }
     };
     match videre_core::library_locks::try_command(&ctx.library, lock) {
         Ok(guard) => {
-            videre_core::pipeline_runs::track_in_as(conn, &ctx.library, &guard, lock, command, f)
+            videre_core::pipeline_runs::track_in_as(conn, &ctx.library, &guard, lock, command, f)?;
+            Ok(StageOutcome::Ran)
         }
         Err(_) => {
             if !silent {
-                eprintln!("videre watch: {command} stage busy (a {lock} run is active); will retry next cycle");
+                eprintln!(
+                    "videre watch: {command} stage busy (a {lock} run is active); will retry"
+                );
             }
-            Ok(())
+            Ok(StageOutcome::Busy)
         }
     }
 }
 
-fn run_cycle(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
+fn reconcile(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
     // Recheck before every cycle: a root renamed or replaced under a
     // long-running watch must fail the cycle rather than process whatever now
     // sits at the path. open_existing rechecks again at the write boundary.
@@ -216,7 +258,8 @@ fn run_prune_stage(
             }
             Ok(())
         },
-    )
+    )?;
+    Ok(())
 }
 
 /// Queries (path, hash) pairs from file_hashes matching a SQL WHERE clause,
@@ -257,7 +300,7 @@ fn run_faces_stage(
     args: &WatchArgs,
     ctx: &CommandContext,
     conn: &rusqlite::Connection,
-) -> Result<()> {
+) -> Result<StageOutcome> {
     tracked_stage(
         ctx,
         conn,
@@ -452,7 +495,7 @@ fn run_location_stage(
     args: &WatchArgs,
     ctx: &CommandContext,
     conn: &rusqlite::Connection,
-) -> Result<()> {
+) -> Result<StageOutcome> {
     // Deliberately its own tracked label, not `locations`: that row means the
     // standalone clustering recompute (`videre locations` rebuilds
     // `location_clusters` from scratch), while this stage incrementally fills
@@ -478,9 +521,9 @@ fn run_location_stage(
         Ok(guard) => guard,
         Err(_) => {
             if !args.silent {
-                eprintln!("videre watch: location stage busy; will retry next cycle");
+                eprintln!("videre watch: location stage busy; will retry");
             }
-            return Ok(());
+            return Ok(StageOutcome::Busy);
         }
     };
     tracked_stage(
@@ -526,7 +569,7 @@ fn run_scan_stage(
     args: &WatchArgs,
     ctx: &CommandContext,
     conn: &rusqlite::Connection,
-) -> Result<()> {
+) -> Result<StageOutcome> {
     let selection = super::selection_args::path_selection(Some(&args.media), None)?;
     let root = ctx.library.paths.root.clone();
     tracked_stage(
@@ -758,5 +801,13 @@ mod scoping_tests {
         let sel = super::super::selection_args::path_selection(Some(&a.media), None).unwrap();
         assert!(sel.accepts(std::path::Path::new("/x/clip.mov")));
         assert!(!sel.accepts(std::path::Path::new("/x/photo.jpg")));
+    }
+
+    #[test]
+    fn the_removed_interval_flag_is_gone() {
+        assert!(
+            Wrap::try_parse_from(["watch", "--interval", "60"]).is_err(),
+            "--interval was removed; it must fail to parse rather than be accepted silently"
+        );
     }
 }
