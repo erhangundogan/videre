@@ -16,6 +16,16 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.31.0] - 2026-09-17
+
+### Added
+
+- **The gallery offers a Tile view on the Files and Date tabs.** Photos and
+  videos appear in rows sized to their aspect ratios. Switch between List and
+  Tile using the View selector; your browser remembers the choice. List remains
+  the default. Tile layout adapts when resizing the window or loading more
+  files, and supports the existing lightbox navigation.
+
 ## [0.30.0] - 2026-09-17
 
 ### Deprecated
@@ -1904,7 +1914,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.30.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.31.0...HEAD
+[0.31.0]: https://github.com/erhangundogan/videre/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/erhangundogan/videre/compare/v0.29.1...v0.30.0
 [0.29.1]: https://github.com/erhangundogan/videre/compare/v0.29.0...v0.29.1
 [0.29.0]: https://github.com/erhangundogan/videre/compare/v0.28.6...v0.29.0
