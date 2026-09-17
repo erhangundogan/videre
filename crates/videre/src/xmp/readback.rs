@@ -106,7 +106,7 @@ mod tests {
             "CREATE TABLE file_hashes (path TEXT, hash TEXT, width INTEGER, height INTEGER);
              CREATE TABLE people (name TEXT PRIMARY KEY, full_name TEXT NOT NULL);
              CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL, bbox TEXT NOT NULL,
-                person_label TEXT, confirmed INTEGER DEFAULT 0);",
+                cluster_id INTEGER, person_label TEXT, confirmed INTEGER DEFAULT 0);",
         )
         .unwrap();
     }
