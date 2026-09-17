@@ -72,6 +72,10 @@ videre gallery          # browse /people and name people
 Drag a cluster's handle onto a person card to assign it, or click **New Person**
 to create one from it. One drag can name forty photos, which is the whole point.
 
+Assigning a face to a person freezes it: reclustering and retuning never move
+a named face. You remove a label here, or wipe everything with
+[`videre faces --reset`](/commands/faces/#reset).
+
 Each cluster links to a detail page at `/people/cluster/<id>`, showing every face
 full size, with per-face remove and assign for the odd wrong member. A person's
 page is `/people/person/<name>`, and both link back to **People**. **Dissolve cluster** breaks a

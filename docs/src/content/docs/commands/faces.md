@@ -9,8 +9,8 @@ each photo.
 ```bash
 videre faces                           # detect, group, and store (resumable)
 videre faces --limit 500               # only process 500 new images, then stop
-videre faces --recluster               # regroup existing faces without re-detecting
-videre faces --reprocess               # start over: re-detect everything
+videre faces --recluster               # regroup unassigned faces without re-detecting
+videre faces --reset                   # wipe all face state and start over (asks first)
 videre faces --dry-run                 # detect but write nothing
 videre faces --profile                 # print per-stage timing when finished
 videre faces --silent                  # no per-image progress
@@ -76,6 +76,18 @@ videre faces --recluster --eps 0.55            # stricter: fewer, tighter groups
 videre faces --recluster --merge-sim 0.30      # more willing to merge groups
 videre faces --recluster --min-cluster-size 2  # allow smaller groups
 ```
+
+**Labeled people are never moved.** Reclustering regroups only the faces you
+have not named. A face you assigned to a person keeps its name and its person
+page exactly as it is, whatever tuning flags you pass, so experimenting is
+safe.
+
+## Your labels are frozen
+
+Assigning a face to a person freezes it. Clustering, `--recluster`, watch, and
+every other automatic process leave labeled faces exactly as they are. You
+remove a label in the gallery's People tab, or wipe everything at once with
+`videre faces --reset`.
 
 | Symptom | Try |
 |---|---|
@@ -149,8 +161,31 @@ average of every face in the library, which sounds reasonable and is not: on a
 personal library that average largely *is* the most photographed person, so the
 check discards the very faces most worth grouping. Measured on a labelled
 library, it blocked 15 photos of the owner, several of which matched a face
-already in their group almost exactly. Re-run `videre faces --reprocess` to
-record sharpness and leave it behind.
+already in their group almost exactly. Run `videre faces --reset` to record
+sharpness and leave it behind.
+
+## Reset
+
+`videre faces --reset` is the start-over button. It deletes every face row,
+every person you have named, the detection markers, and the decode-failure
+records, then immediately re-runs the full detection and grouping pipeline, so
+the library ends up exactly as it would after a first-ever `videre faces`.
+
+Because it deletes your labels, it asks first, and the prompt says how much it
+would delete:
+
+```bash
+videre faces --reset            # asks: "deletes 312 labeled face(s) across 9
+                                # people ... Continue? [y/N]"
+videre faces --reset --yes      # skip the prompt (for scripts)
+```
+
+In a non-interactive session (a script without a terminal, a cron job), reset
+refuses rather than wipe unseen: rerun with `--yes` after reading the counts.
+`--dry-run` shows the counts and deletes nothing.
+
+If faces has never run on the library there is nothing to reset, and reset
+says so and exits.
 
 ### Recovering more of one person
 
@@ -215,11 +250,11 @@ rerun continues correctly; it just redoes a little.
 or unreadable file stops costing a timeout on every run (and every `watch`
 cycle) instead of being re-attempted forever. A single failure never skips a
 file, so a one-off timeout from contention still retries; two do.
-`--reprocess` clears those records so skipped files are attempted again.
+`videre faces --reset` clears those records along with everything else.
 
 **Detection is not perfect.** Faces in profile, heavily shadowed, or very small
 are often missed entirely, and no amount of retuning brings them back, since
-tuning only affects grouping of faces that were already found. `--reprocess`
+tuning only affects grouping of faces that were already found. `--reset`
 re-detects from scratch, which only helps after a videre upgrade changes
 detection itself.
 
@@ -279,7 +314,7 @@ tool imports into videre.
 
 Names are imported while faces are being detected, so the region has a detected
 face to attach to. To import into a library whose faces were detected earlier,
-re-run with `--reprocess`.
+re-run with `--reset`.
 
 The `--xmp` flag decides who wins when both carry a name:
 
@@ -299,7 +334,7 @@ edits) are decoded the way you see them before detection and grouping, so
 sideways-stored files cluster exactly like upright ones. Files processed by
 older videre versions were detected on the stored pixel canvas, which could
 leave a person's own photos as unassigned singletons; re-run
-`videre faces --reprocess` to bring a library current, and see
+`videre faces --reset` to bring a library current, and see
 [troubleshooting](/reference/troubleshooting/) for the recovery recipes and
 their costs.
 

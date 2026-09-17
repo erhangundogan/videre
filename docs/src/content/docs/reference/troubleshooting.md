@@ -149,13 +149,14 @@ Two ways to recover, most precise first:
 **Rebuild everything.** Simple, and it re-runs hours of model work:
 
 ```bash
-videre faces --reprocess
+videre faces --reset
 videre embed --reprocess
 videre classify --reprocess
 ```
 
-`faces --reprocess` deletes and re-creates every face row, so names you
-assigned in the gallery do not carry over and must be assigned again.
+`faces --reset` deletes and re-creates every face row, so names you
+assigned in the gallery do not carry over and must be assigned again. It
+asks for confirmation first; add `--yes` for scripts.
 
 **Repair only the rotated files.** Names on untouched files survive. List the
 rotated JPEGs, map them to library hashes, delete exactly their derived rows,
