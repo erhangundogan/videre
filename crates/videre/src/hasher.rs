@@ -661,7 +661,7 @@ mod tests {
 
     #[test]
     fn an_unrecognised_file_gets_the_sentinel_not_null() {
-        // NULL must mean "never scanned" so --retry-incomplete terminates.
+        // NULL must mean "never scanned" so an incremental scan terminates.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mystery.png");
         std::fs::write(&path, b"nothing resembling a known signature here").unwrap();

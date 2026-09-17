@@ -206,18 +206,35 @@ fn scan_records_a_successful_pipeline_run() {
 }
 
 #[test]
-fn retry_incomplete_skips_rows_with_a_known_type() {
+fn incremental_scan_reprocesses_nothing_when_all_known() {
     let library = TestLibrary::new();
     library.copy_fixture("tiny.jpg", "image.jpg");
     assert!(scan(&library, &["--silent"]).status.success());
-    let output = scan(&library, &["--retry-incomplete"]);
+    // Scan is incremental by default: a second pass over an unchanged, fully
+    // typed library writes nothing.
+    let output = scan(&library, &[]);
     assert!(output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("0 incomplete; 0 processed"), "{stderr}");
+    assert!(stderr.contains("Wrote 0 record(s)"), "{stderr}");
 }
 
 #[test]
-fn retry_incomplete_processes_only_unknown_rows_and_new_files() {
+fn retry_incomplete_is_accepted_as_a_deprecated_alias() {
+    let library = TestLibrary::new();
+    library.copy_fixture("tiny.jpg", "image.jpg");
+    // Still accepted so old scripts do not error, but it changes nothing and
+    // says so.
+    let output = scan(&library, &["--retry-incomplete"]);
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--retry-incomplete is deprecated"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn incremental_scan_processes_only_unknown_rows_and_new_files() {
     let library = TestLibrary::new();
     library.copy_fixture("tiny.jpg", "first.jpg");
     assert!(scan(&library, &["--silent"]).status.success());
@@ -227,7 +244,7 @@ fn retry_incomplete_processes_only_unknown_rows_and_new_files() {
     drop(conn);
     library.copy_fixture("tiny.jpg", "second.jpg");
 
-    let output = scan(&library, &["--retry-incomplete", "--silent"]);
+    let output = scan(&library, &["--silent"]);
     assert!(output.status.success());
     let conn = library.conn();
     let count: i64 = conn
@@ -258,9 +275,10 @@ fn unidentifiable_files_receive_a_sentinel_and_are_not_retried() {
         .flatten();
     assert_eq!(mime.as_deref(), Some(videre_core::mime_probe::UNKNOWN_MIME));
     drop(conn);
-    let output = scan(&library, &["--retry-incomplete"]);
+    // The sentinel row is not reprocessed by a later scan.
+    let output = scan(&library, &[]);
     assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("0 incomplete; 0 processed"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Wrote 0 record(s)"));
 }
 
 #[test]

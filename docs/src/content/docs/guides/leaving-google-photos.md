@@ -149,7 +149,7 @@ satisfied, they are just a duplicate copy of what you already have.
 If you add photos later, the same three commands bring them in:
 
 ```bash
-videre --library ~/Takeout scan --retry-incomplete
+videre --library ~/Takeout scan
 videre embed
 videre faces
 ```

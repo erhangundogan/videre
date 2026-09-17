@@ -8,7 +8,7 @@ use videre_ml::{device, model, preprocess};
 pub struct EmbedArgs {
     /// Embedding model to use (default: 'videre config set model', else the
     /// built-in default). Each model gets its own database under
-    /// ~/.videre/embeddings/, so models never overwrite each other.
+    /// <library>/.videre/embeddings/, so models never overwrite each other.
     #[arg(long, value_parser = super::parse_model_id)]
     model: Option<String>,
 

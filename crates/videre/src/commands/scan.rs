@@ -13,8 +13,9 @@ pub struct ScanArgs {
     #[arg(long)]
     similar: bool,
 
-    /// Deprecated alias: scan is incremental by default now, so this no longer
-    /// changes what is processed. Kept so existing scripts do not error.
+    /// Deprecated and ignored: scan is incremental by default, so this changes
+    /// nothing. Accepted (with a deprecation notice) only so existing scripts do
+    /// not error.
     #[arg(long)]
     retry_incomplete: bool,
 
@@ -97,9 +98,9 @@ fn run_inner(args: &ScanArgs, ctx: &CommandContext) -> anyhow::Result<ScanJson> 
         eprintln!("Warning: could not install interrupt handler: {error:#}");
     }
 
-    let (records, skipped, walked) =
+    let (records, skipped) =
         videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "scan", || {
-            let (records, skipped, walked) = gather_records(args, ctx, &conn);
+            let (records, skipped, _walked) = gather_records(args, ctx, &conn);
             sqlite_output::write_records_in(&conn, &ctx.library, &records)?;
             let precedence = args.xmp.resolve_from(&ctx.library.settings)?;
             // Reconcile XMP incrementally: files this run hashed get a full
@@ -109,11 +110,13 @@ fn run_inner(args: &ScanArgs, ctx: &CommandContext) -> anyhow::Result<ScanJson> 
             let changed: std::collections::HashSet<String> =
                 records.iter().map(|r| r.path.clone()).collect();
             crate::xmp::reconcile_xmp_in(&conn, &ctx.library, precedence, &changed, args.silent)?;
-            Ok((records, skipped, walked))
+            Ok((records, skipped))
         })?;
 
     if args.retry_incomplete && !args.silent {
-        eprintln!("{}", format_retry_summary(walked, &records, skipped));
+        eprintln!(
+            "note: --retry-incomplete is deprecated and has no effect; scan is incremental by default."
+        );
     }
     if !args.silent {
         eprintln!(
@@ -206,57 +209,10 @@ fn apply_phashes(
     out
 }
 
-fn format_retry_summary(
-    walked: usize,
-    records: &[videre::types::FileRecord],
-    skipped: usize,
-) -> String {
-    let unresolved = records
-        .iter()
-        .filter(|record| record.mime.as_deref() == Some(videre_core::mime_probe::UNKNOWN_MIME))
-        .count();
-    format!(
-        "{walked} file(s) walked, {} incomplete; {} processed, {} identified, {unresolved} still unrecognised",
-        records.len() + skipped,
-        records.len(),
-        records.len() - unresolved,
-    )
-}
-
 fn format_write_summary(written: usize, skipped: usize, destination: &str) -> String {
     if skipped > 0 {
         format!("Wrote {written} record(s) to {destination} ({skipped} skipped)")
     } else {
         format!("Wrote {written} record(s) to {destination}")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn retry_summary_reports_identified_and_unrecognised_records() {
-        let records = vec![videre::types::FileRecord {
-            path: "/a.jpg".into(),
-            hash: "hash".into(),
-            size_bytes: 1,
-            created_at: None,
-            modified_at: None,
-            ext: "jpg".into(),
-            mime: Some(videre_core::mime_probe::UNKNOWN_MIME.into()),
-            phash: None,
-            exif_date: None,
-            gps_lat: None,
-            gps_lon: None,
-            width: None,
-            height: None,
-            duration_secs: None,
-            codec: None,
-        }];
-        assert_eq!(
-            format_retry_summary(2, &records, 1),
-            "2 file(s) walked, 2 incomplete; 1 processed, 0 identified, 1 still unrecognised"
-        );
     }
 }

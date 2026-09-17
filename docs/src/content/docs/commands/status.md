@@ -99,7 +99,7 @@ act on the exit code:
 
 ```bash
 # crontab: nightly refresh, alert only on real failures
-0 3 * * * videre --library ~/Photos scan --retry-incomplete --silent && videre status --check
+0 3 * * * videre --library ~/Photos scan --silent && videre status --check
 ```
 
 A cleanly interrupted run (Ctrl-C) never triggers alerts.

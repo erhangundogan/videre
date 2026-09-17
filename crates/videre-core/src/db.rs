@@ -96,7 +96,7 @@ pub fn open_wal(path: &Path) -> rusqlite::Result<Connection> {
 pub fn ensure_file_hashes_columns(conn: &Connection) {
     let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN mime TEXT;");
     // Video metadata, 0.14.0. NULL for images, and NULL for every row scanned
-    // before that release: `--retry-incomplete` keys on `mime IS NULL` and does
+    // before that release: an incremental scan keys on `mime IS NULL` and does
     // not catch "scanned before these existed", so only a re-scan fills them.
     let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN duration_secs REAL;");
     let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN codec TEXT;");
@@ -114,8 +114,8 @@ pub fn table_exists(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
     Ok(count > 0)
 }
 
-/// Paths already recorded with a known type, for `videre scan
-/// --retry-incomplete`.
+/// Paths already recorded with a known type, so an incremental `videre scan`
+/// skips them.
 ///
 /// One query rather than a lookup per path: a library has tens of thousands of
 /// rows, and 70,000 point queries would cost more than the file reads this

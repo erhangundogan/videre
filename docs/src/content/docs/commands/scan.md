@@ -73,8 +73,9 @@ videre scan --force  # re-read and re-hash every file
 `--force` ignores the skip and re-reads every file. Reach for it
 after restoring from a backup, or to re-examine files whose contents changed
 without their modification time changing (rare, but some tools preserve mtime).
-`--retry-incomplete` is still accepted as a deprecated alias of the default and
-no longer changes what is processed.
+`--retry-incomplete` is deprecated and does nothing: scan is incremental by
+default. It is still accepted so existing scripts do not error, printing a
+deprecation notice.
 
 A file whose bytes were read but whose type could not be identified gets an
 explicit sentinel, so it counts as complete and is not re-read on every scan.

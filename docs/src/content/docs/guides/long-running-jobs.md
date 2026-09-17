@@ -80,7 +80,7 @@ the end.
 
 | Command | What a Ctrl-C costs |
 |---|---|
-| [`scan`](/commands/scan/) | Files not yet recorded. `--retry-incomplete` picks them up |
+| [`scan`](/commands/scan/) | Files not yet recorded. Re-running `scan` picks them up (it is incremental) |
 | [`embed`](/commands/embed/) | Up to `--chunk` rows, 500 by default |
 | [`faces`](/commands/faces/) | Up to `workers x batch` images, ~160 with defaults |
 | [`classify`](/commands/classify/) | Very little; it is fast to redo |
@@ -104,7 +104,7 @@ result**, not just work that produced one:
 - `faces` records every image it examined, including images with no faces in
   them. Otherwise every landscape photo would be re-examined forever.
 - `scan` records a type of `application/octet-stream` for files it could not
-  identify, so they are not reopened on every `--retry-incomplete`.
+  identify, so they are not reopened on every scan.
 
 ### The exception: `fix-dates`
 

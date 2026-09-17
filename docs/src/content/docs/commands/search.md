@@ -292,7 +292,7 @@ them.
 
 :::caution[Older libraries need a re-scan]
 Video dates and coordinates only appear after the library has been scanned with
-v0.14.0 or later. `--retry-incomplete` will not pick them up, since it looks for
+v0.14.0 or later. An incremental scan will not pick them up, since it looks for
 files with no recorded type and these have one:
 
 ```bash

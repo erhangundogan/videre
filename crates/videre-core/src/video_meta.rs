@@ -21,7 +21,7 @@ use std::path::Path;
 /// Everything worth taking from a container.
 ///
 /// `duration_secs` and `codec` are here rather than in a later release because
-/// existing rows cannot pick this up incrementally: `--retry-incomplete` keys
+/// existing rows cannot pick this up incrementally: an incremental scan keys
 /// on `mime IS NULL`, which does not catch "scanned before video metadata
 /// existed", so shipping this forces one full re-scan of every library
 /// regardless. Adding them separately would have forced a second one.
