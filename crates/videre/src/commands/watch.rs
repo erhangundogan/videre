@@ -197,6 +197,9 @@ fn reconcile(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
         if args.location {
             run_location_stage(args, ctx, &conn)?;
         }
+        if args.faces {
+            let _ = run_recluster_stage(args, ctx, &conn)?;
+        }
         if args.prune {
             if let Err(e) = run_prune_stage(args, ctx, &conn) {
                 eprintln!("videre watch: prune stage error: {e}");
@@ -332,8 +335,9 @@ fn run_faces_stage(
                 .filter(|(_, hash)| !skip_hashes.contains(hash))
                 .collect();
 
-            let mut new_faces = 0usize;
-            if !to_process.is_empty() {
+            let new_faces = if to_process.is_empty() {
+                0
+            } else {
                 let workers = std::thread::available_parallelism()
                     .map(|n| n.get())
                     .unwrap_or(4);
@@ -347,7 +351,6 @@ fn run_faces_stage(
                     None,
                     workers,
                 )?;
-                new_faces = result.total_faces;
                 if !args.silent {
                     eprintln!(
                         "videre watch: faces stage processed {} new hash(es), {} face(s)",
@@ -355,32 +358,69 @@ fn run_faces_stage(
                         result.total_faces
                     );
                 }
-            }
-            // Re-cluster only when this cycle actually added faces. run_clustering
-            // is a global O(n^2) pass over every face in the library; running it
-            // on a cycle that detected nothing new just recomputes the same
-            // assignment, which on the default 300s loop is pure waste. A cycle
-            // that adds a face still does one full recluster (making that
-            // incremental is separate, larger work); an idle cycle now does none.
-            if new_faces > 0 {
-                let clustering = run_clustering(
-                    conn,
-                    0.6,
-                    3,
-                    videre_core::face_cluster::DEFAULT_MERGE_SIM,
-                    videre_core::face_cluster::DEFAULT_MIN_FACE_PX,
-                    videre_core::face_cluster::DEFAULT_MAX_GENERIC_SIM,
-                    videre_core::face_cluster::DEFAULT_MAX_LANDMARK_ERR,
-                    videre_core::face_cluster::DEFAULT_MIN_BLUR,
-                    1.0,
-                    args.silent,
-                )?;
+                result.total_faces
+            };
+            // Detection only on this path: the global recluster is a
+            // minutes-long pass at scale and runs as its own reconcile-gated
+            // stage (run_recluster_stage), never here, so an event burst
+            // costs scoped scans, not clustering passes.
+            let _ = new_faces;
+            Ok(())
+        },
+    )
+}
+
+/// The periodic global face recluster, gated by the persisted watermark:
+/// any face id above it means new faces exist, so one pass runs and then
+/// advances the mark; otherwise this is a zero-cost skip. Runs on
+/// reconciles only, never on the event path: a full pass is minutes-long
+/// at scale. The lock is `faces`, shared with detection and the
+/// standalone command so they cannot overlap; the tracked label is its
+/// own so `videre status` can show repair passes distinctly. The
+/// watermark advances even when the quality gate filters every face
+/// out: those faces are permanently unclusterable, and re-running the
+/// pass for them every reconcile would be the waste the gate exists to
+/// prevent.
+fn run_recluster_stage(
+    args: &WatchArgs,
+    ctx: &CommandContext,
+    conn: &rusqlite::Connection,
+) -> Result<StageOutcome> {
+    tracked_stage(
+        ctx,
+        conn,
+        "face-recluster",
+        "faces",
+        videre_core::library_locks::ActivityMode::Shared,
+        args.silent,
+        || {
+            let max_id: i64 =
+                conn.query_row("SELECT COALESCE(MAX(id), 0) FROM faces", [], |r| r.get(0))?;
+            let watermark = videre_core::face_db::recluster_watermark(conn)?;
+            if max_id <= watermark {
                 if !args.silent {
-                    eprintln!(
-                        "videre watch: {}",
-                        format_clustering_only_summary(clustering, 0.6)
-                    );
+                    eprintln!("videre watch: face recluster up to date");
                 }
+                return Ok(());
+            }
+            let clustering = run_clustering(
+                conn,
+                0.6,
+                3,
+                videre_core::face_cluster::DEFAULT_MERGE_SIM,
+                videre_core::face_cluster::DEFAULT_MIN_FACE_PX,
+                videre_core::face_cluster::DEFAULT_MAX_GENERIC_SIM,
+                videre_core::face_cluster::DEFAULT_MAX_LANDMARK_ERR,
+                videre_core::face_cluster::DEFAULT_MIN_BLUR,
+                1.0,
+                args.silent,
+            )?;
+            videre_core::face_db::advance_recluster_watermark(conn)?;
+            if !args.silent {
+                eprintln!(
+                    "videre watch: {}",
+                    format_clustering_only_summary(clustering, 0.6)
+                );
             }
             Ok(())
         },
