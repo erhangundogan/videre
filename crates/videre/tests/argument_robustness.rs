@@ -195,6 +195,18 @@ fn subcommands(lib: &TestLibrary) -> Vec<String> {
     names
 }
 
+/// `--help` lists subcommands alphabetically. Declaration order is wiring
+/// order and means nothing to a reader of the help text; this pins the sort
+/// so a newly added subcommand cannot quietly land out of place.
+#[test]
+fn help_lists_subcommands_alphabetically() {
+    let lib = TestLibrary::new();
+    let names = subcommands(&lib);
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(names, sorted, "--help must list subcommands alphabetically");
+}
+
 /// Which commands accept the mark/tag flags at parse time.
 ///
 /// `search`/`export`/`classify`/`embed`/`faces`/`tag` accept all five as

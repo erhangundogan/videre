@@ -29,6 +29,11 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+// Help lists subcommands alphabetically: clap's default display order renders
+// declaration order, which here is historical wiring order, not anything a
+// reader of --help can perceive. None collapses every display order, so
+// clap's name sort takes over.
+#[command(next_display_order = None)]
 enum Command {
     /// Report duplicate files from the database and print paths to remove
     Dedupe(commands::dedupe::DedupeArgs),
