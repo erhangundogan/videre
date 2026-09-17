@@ -197,8 +197,8 @@ fn a_failed_registration_degrades_to_the_rescan_loop_with_a_notice() {
 }
 
 /// The internal maintenance deadline reruns the opt-in stages with no
-/// events at all: prune's row (an upsert) must be touched again after a
-/// tick.
+/// events at all: prune's row is removed after the startup pass and must
+/// reappear, which only a maintenance tick can do.
 #[test]
 fn the_maintenance_deadline_reruns_opt_in_stages_without_events() {
     let lib = TestLibrary::new();
@@ -219,42 +219,50 @@ fn the_maintenance_deadline_reruns_opt_in_stages_without_events() {
         .unwrap();
     // Startup reconcile runs --prune once; wait for that row.
     let conn = lib.conn();
-    let mut first = String::new();
     let deadline = Instant::now() + Duration::from_secs(10);
+    let mut ran_startup = false;
     while Instant::now() < deadline {
-        if let Ok(s) = conn.query_row(
-            "SELECT started_at FROM pipeline_runs WHERE command = 'prune'",
-            [],
-            |r| r.get::<_, String>(0),
-        ) {
-            first = s;
+        let exists: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM pipeline_runs WHERE command = 'prune'",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        if exists.is_some() {
+            ran_startup = true;
             break;
         }
         std::thread::sleep(Duration::from_millis(200));
     }
+    assert!(ran_startup, "startup reconcile must run --prune");
+    // started_at has one-second resolution, which a fast tick can repeat, so
+    // a changed timestamp is not proof. Removing the row is: only the
+    // maintenance pass can bring it back.
+    conn.execute("DELETE FROM pipeline_runs WHERE command = 'prune'", [])
+        .unwrap();
     drop(conn);
-    assert!(!first.is_empty(), "startup reconcile must run --prune");
-    // The maintenance pass must touch prune's row again (poll: started_at
-    // has one-second resolution, so wait for an actual change).
-    let mut second = String::new();
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut reran = false;
+    let deadline = Instant::now() + Duration::from_secs(20);
     while Instant::now() < deadline {
-        if let Ok(s) = lib.conn().query_row(
-            "SELECT started_at FROM pipeline_runs WHERE command = 'prune'",
-            [],
-            |r| r.get::<_, String>(0),
-        ) {
-            second = s;
-            if second != first {
-                break;
-            }
+        if lib
+            .conn()
+            .query_row(
+                "SELECT 1 FROM pipeline_runs WHERE command = 'prune'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .is_ok()
+        {
+            reran = true;
+            break;
         }
         std::thread::sleep(Duration::from_millis(300));
     }
     let _ = child.kill();
     let _ = child.wait();
-    assert_ne!(
-        first, second,
+    assert!(
+        reran,
         "the maintenance pass must rerun the prune stage without events"
     );
 }
