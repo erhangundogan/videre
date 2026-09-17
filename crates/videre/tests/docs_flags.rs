@@ -26,7 +26,7 @@ const UNIVERSAL: [&str; 2] = ["--help", "--version"];
 ///
 /// `hidden_aliases_still_work` runs each one, so an entry cannot quietly become a lie:
 /// remove the alias from the code and this list starts failing.
-const HIDDEN_ALIASES: [(&str, &str); 0] = [];
+const HIDDEN_ALIASES: [(&str, &str); 1] = [("faces", "--reprocess")];
 
 /// Flags of the **install script**, not of `videre` itself. The install and
 /// troubleshooting pages document them correctly; they are simply another

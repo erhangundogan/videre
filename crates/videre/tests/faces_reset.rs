@@ -139,3 +139,131 @@ fn the_legacy_alias_reaches_the_same_refusal() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("--yes"), "{stderr}");
 }
+
+/// The reported scenario: label faces, recluster at a different eps, and
+/// assert no unassigned cluster page can contain a labeled face while the
+/// person page is unchanged. Model-free: embeddings are seeded, clustering
+/// runs on them, detection never runs.
+#[test]
+fn labeling_then_reclustering_never_contaminates_cluster_pages() {
+    let lib = TestLibrary::new();
+    let conn = lib.init_db();
+    videre_core::face_db::create_faces_table(&conn).unwrap();
+
+    // Two near-identical embeddings (the future Elena pair) and three that
+    // resemble each other but not the pair. 512-dim f16 vectors, L2
+    // normalized: real model embeddings are unit vectors, and the clustering
+    // gates (and attach) are dot products that assume it.
+    let mut base: Vec<f32> = (0..512).map(|i| ((i % 7) as f32 - 3.0) / 10.0).collect();
+    let mut other: Vec<f32> = (0..512).map(|i| ((i % 5) as f32 - 2.0) / 10.0).collect();
+    for v in [&mut base, &mut other] {
+        let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        for x in v.iter_mut() {
+            *x /= norm;
+        }
+    }
+    let to_f16 = |v: &[f32]| -> Vec<u8> {
+        v.iter()
+            .flat_map(|f| half::f16::from_f32(*f).to_le_bytes())
+            .collect()
+    };
+    let pair = to_f16(&base);
+    let rest = to_f16(&other);
+    for (hash, emb) in [
+        ("a.jpg", &pair),
+        ("b.jpg", &pair),
+        ("c.jpg", &rest),
+        ("d.jpg", &rest),
+        ("e.jpg", &rest),
+    ] {
+        let path = lib.context().paths.root.join(hash);
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, ext) VALUES (?1, ?2, 'jpg')",
+            rusqlite::params![path.to_string_lossy(), hash],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO faces (hash, bbox, embedding) VALUES (?1, '0,0,50,50', ?2)",
+            rusqlite::params![hash, emb],
+        )
+        .unwrap();
+    }
+    drop(conn);
+
+    // Cluster once, label the pair onto a person through the real assign
+    // path, then recluster with a different eps.
+    let common_flags = [
+        "--min-cluster-size",
+        "2",
+        "--min-face-size",
+        "50",
+        "--max-generic-sim",
+        "1",
+        "--attach-sim",
+        "1",
+        "--silent",
+    ];
+    let out = lib
+        .cmd()
+        .args(["faces", "--recluster", "--eps", "0.5"])
+        .args(common_flags)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let conn = lib.conn();
+    let mut ids: Vec<i64> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id FROM faces WHERE hash IN ('a.jpg', 'b.jpg') AND cluster_id IS NOT NULL",
+            )
+            .unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    ids.sort();
+    assert_eq!(ids.len(), 2, "the pair must cluster together");
+    videre_api::assign(&conn, &ids, "Elena").unwrap();
+    drop(conn);
+
+    let out = lib
+        .cmd()
+        .args(["faces", "--recluster", "--eps", "0.95"])
+        .args(common_flags)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let conn = lib.conn();
+    let (labeled, detached): (i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(*), COALESCE(SUM(cluster_id IS NULL), 0) FROM faces
+             WHERE confirmed = 1 AND person_label IS NOT NULL",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(labeled, 2, "both labels survive");
+    assert_eq!(detached, labeled, "no labeled face carries a cluster id");
+    let contaminated: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM faces WHERE confirmed = 1 AND cluster_id IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        contaminated, 0,
+        "cluster pages cannot contain labeled faces"
+    );
+}
