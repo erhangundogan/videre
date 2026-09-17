@@ -97,3 +97,14 @@ th.preview-th{width:130px}
 .date-card .date-card-count{padding:2px 0 0;font-size:11px;color:#71717a}
 img.heic-loading{display:block;width:100%;aspect-ratio:1;object-fit:cover;background:linear-gradient(90deg,#e4e4e7 25%,#f4f4f5 37%,#e4e4e7 63%);background-size:400% 100%;animation:heicShimmer 1.4s ease infinite}
 @keyframes heicShimmer{0%{background-position:100% 0}100%{background-position:0 0}}
+
+/* Tile (justified-rows) view: the container becomes a positioned canvas and each
+   tile is absolutely placed from the computed geometry. The tile body is the
+   same buildPreview markup, made to fill its box. */
+.gallery.tile-mode,.date-grid.tile-mode{position:relative;display:block;padding:0}
+.tile{position:absolute;overflow:hidden;border-radius:4px;background:#1a1a1f}
+.tile>a,.tile>img,.tile>video,.tile>.vthumb,.tile>span{display:block;width:100%;height:100%}
+.tile img,.tile video{width:100%;height:100%;max-width:none;max-height:none;margin:0;object-fit:cover;display:block}
+.view-toggle{font:500 13px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#9a9aa8;display:inline-flex;align-items:center;gap:6px}
+.view-toggle select{font:inherit;color:inherit;background:#25252d;border:1px solid #2a2a33;border-radius:6px;padding:4px 8px}
+.date-head{display:flex;align-items:center;gap:14px}

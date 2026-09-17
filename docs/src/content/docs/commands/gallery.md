@@ -63,6 +63,17 @@ the gallery is clickable through to that person's page, and a photo's location
 is resolved to a place name while you look at it. Neither works in a file you
 open from disk, because both need something running to answer.
 
+## List and Tile views
+
+The **View** selector on the Files and Date tabs switches between **List**, the
+default view with file details, and **Tile**, an image-first view without
+captions. Tile arranges photos and videos into rows using their stored aspect
+ratios; files with no recorded dimensions use a square tile.
+
+Your browser remembers the choice across both tabs and page reloads. Tile rows
+adapt when you resize the window or load more files on the Files tab. Click a
+tile to open the same lightbox, with the same previous/next navigation.
+
 ## Options
 
 | Flag | What it does |

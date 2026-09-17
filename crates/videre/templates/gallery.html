@@ -25,7 +25,7 @@
 <div class="groups" id="groups-container"></div>
 <div class="more-wrap"><button id="more-btn" onclick="showMore()"></button></div>
 {% endif %}{% if let Some(n) = all_files_count %}<div class="results-panel" id="results" style="display:none"></div>
-<div class="gallery-head"><h2>All files</h2><span class="info" id="gallery-info">{{ n }} files</span></div>
+<div class="gallery-head"><h2>All files</h2><label class="view-toggle">View <select class="view-mode-select" onchange="setViewMode(this.value)"><option value="list">List</option><option value="tile">Tile</option></select></label><span class="info" id="gallery-info">{{ n }} files</span></div>
 <div class="gallery" id="gallery"></div>
 <div class="more-wrap"><button id="gallery-more" onclick="showMoreGallery()"></button></div>
 {% endif %}{% if no_duplicates %}<div class="empty-state">
@@ -34,11 +34,11 @@
 <p class="hint">Visually similar photos are a different question: <code>videre scan --similar</code> finds those, and they appear here once it has run.</p>
 </div>
 {% endif %}{% if has_keep_files %}<div class="date-view" id="dateView">
-<h2>Browse by date</h2>
+<div class="date-head"><h2>Browse by date</h2><label class="view-toggle">View <select class="view-mode-select" onchange="setViewMode(this.value)"><option value="list">List</option><option value="tile">Tile</option></select></label></div>
 <div class="date-breadcrumb" id="dateBreadcrumb"></div>
 <div class="date-grid date-narrowing" id="dateNarrowing"></div>
 <div class="date-grid" id="dateGrid"></div>
 </div>
-{% endif %}{{ data|safe }}{{ js|safe }}</script>
+{% endif %}<script>{{ justified_js|safe }}</script>{{ data|safe }}{{ js|safe }}</script>
 </body>
 </html>

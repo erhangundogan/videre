@@ -751,6 +751,10 @@ struct GalleryPage<'a> {
     chrome: &'static str,
     css: &'static str,
     js: &'static str,
+    /// The vendored Flickr justified-layout library, loaded as its own script
+    /// before `js` so the Tile view can call the `justifiedLayout` global. See
+    /// `static/justified-layout.js` and `static/THIRD_PARTY_LICENSES.md`.
+    justified_js: &'static str,
     /// The `var GROUPS=[...]` script block. Built in Rust because it is
     /// serialisation, not markup; the template only decides where it goes.
     data: &'a str,
@@ -922,6 +926,7 @@ pub(crate) fn render(set: &RenderSet) -> String {
         chrome: CHROME_CSS,
         css: include_str!("../../static/gallery.css"),
         js: include_str!("../../static/gallery.js"),
+        justified_js: include_str!("../../static/justified-layout.js"),
         data: &data,
         db: esc(db_path),
         generated_at: &now,
