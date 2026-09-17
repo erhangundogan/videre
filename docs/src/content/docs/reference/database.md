@@ -304,7 +304,7 @@ Files scanned but never given a type, meaning a scan did not finish them:
 SELECT COUNT(*) FROM file_hashes WHERE mime IS NULL;
 ```
 
-Those are what [`scan --retry-incomplete`](/commands/scan/) picks up.
+Those are what an incremental [`scan`](/commands/scan/) picks up.
 
 :::note[`NULL` and `application/octet-stream` mean different things]
 `mime IS NULL` means the file was **never processed**: no scan has read its
@@ -313,7 +313,7 @@ bytes, or one started and did not finish.
 `mime = 'application/octet-stream'` means it **was** read and its type could not
 be identified. That is a finished result, not a failure.
 
-The distinction is what keeps `--retry-incomplete` from retrying the same
+The distinction is what keeps an incremental scan from retrying the same
 unidentifiable file on every run forever. When deciding how to handle a file,
 videre treats the sentinel exactly like `NULL` and falls back to the extension,
 so an unrecognised file is still processed normally.

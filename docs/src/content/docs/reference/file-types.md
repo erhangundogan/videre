@@ -36,8 +36,7 @@ by type.
 When the bytes match nothing recognised, the file is recorded as
 `application/octet-stream` rather than left empty. That is a real answer, not a
 failure: it records that the question was asked and settled, which is what stops
-[`scan --retry-incomplete`](/commands/scan/) reopening the same file on every
-run. Such a file is still processed, falling back to its extension.
+an incremental [`scan`](/commands/scan/) reopening the same file on every run. Such a file is still processed, falling back to its extension.
 
 Files scanned before type detection existed have no recorded type until you
 re-scan; those also fall back to the extension.

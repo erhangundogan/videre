@@ -427,9 +427,10 @@ Two tables exist purely for this, and both record work that produced no rows:
   images where zero faces were found**. Without it, every landscape photo is
   re-detected on every run.
 - An unrecognised file records `mime = 'application/octet-stream'` rather than
-  NULL, so `mime IS NULL` means only "never scanned". `scan --retry-incomplete`
-  uses that. `effective_mime` treats the sentinel exactly as NULL and falls back
-  to the extension, so a merely-unidentified file is still processed.
+  NULL, so `mime IS NULL` means only "never scanned". An incremental `scan`
+  (the default) uses that. `effective_mime` treats the sentinel exactly as NULL
+  and falls back to the extension, so a merely-unidentified file is still
+  processed.
 - `decode_failures` (`videre_core::decode_failures`) records a file a decode
   stage tried and could not turn into pixels, per `(hash, stage)`. `embed` and
   `faces` decode before their work, and a file that hangs QuickLook or is
@@ -481,9 +482,9 @@ Seeing two date sources and picking the standard-looking one is the obvious
 on a 260-file corpus: 10 carry only the UTC field, all re-encoded renders rather
 than camera originals.
 
-:warning: **Video metadata needs a full re-scan to appear.**
-`--retry-incomplete` keys on `mime IS NULL`, which does not mean "scanned before
-video metadata existed", so an older library shows empty dates until re-scanned.
+:warning: **Video metadata needs a full re-scan to appear.** An incremental
+`scan` keys on `mime IS NULL`, which does not mean "scanned before video
+metadata existed", so an older library shows empty dates until re-scanned.
 
 ### Probe videos before invoking QuickLook
 

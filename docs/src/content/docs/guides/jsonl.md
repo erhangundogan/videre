@@ -84,7 +84,7 @@ JSONL is an export snapshot only. Nothing else reads it:
 |---|---|
 | `dedupe`, `gallery`, `prune`, `stats`, `locations` | No, they need the database |
 | `embed`, `faces`, `classify`, `search` | No |
-| `scan --retry-incomplete` | No, it needs a database to consult |
+| `scan` (incremental) | No, it needs a database to consult |
 
 There is also no perceptual fingerprint, no faces, no embeddings, and no
 resumability. A JSONL scan is a one-shot description of a folder.

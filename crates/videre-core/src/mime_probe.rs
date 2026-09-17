@@ -117,9 +117,9 @@ pub const VIDEO_MIMES: &[&str] = &["video/quicktime", "video/mp4"];
 /// signature.
 ///
 /// Distinguishes "checked, unidentifiable" from NULL, which after this exists
-/// means only "never scanned". That distinction is what makes
-/// `videre scan --retry-incomplete` terminate instead of re-reading the same
-/// unidentifiable files on every run, the same reason `faces_scanned` records
+/// means only "never scanned". That distinction is what makes an incremental
+/// `videre scan` terminate instead of re-reading the same unidentifiable files
+/// on every run, the same reason `faces_scanned` records
 /// images where zero faces were found.
 ///
 /// The IANA type for unclassified binary data, so a database inspected by hand

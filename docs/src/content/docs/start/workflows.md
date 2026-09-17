@@ -149,7 +149,7 @@ are reported for review only and never included in the delete list.
 If you scanned a while ago and now want semantic search:
 
 ```bash
-videre --library ~/Photos scan --retry-incomplete   # pick up anything new, fast
+videre --library ~/Photos scan   # incremental: picks up anything new, fast
 videre embed
 videre search "sunset over water"
 ```
@@ -249,8 +249,8 @@ file library.
 
 | Step | Order of magnitude |
 |---|---|
-| `scan` (full) | ~10 minutes, reads every byte |
-| `scan --retry-incomplete` | ~1 second when nothing changed |
+| `scan --force` | ~10 minutes, reads every byte |
+| `scan` (incremental, default) | ~1 second when nothing changed |
 | `embed` | Hours, plus a ~780 MB download |
 | `faces` | Hours, plus a ~180 MB download |
 | `classify` | Minutes; reuses `embed` |
