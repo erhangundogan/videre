@@ -387,6 +387,46 @@ fn no_embeddings_tells_the_client_to_hide_the_similar_button() {
 }
 
 #[test]
+fn the_gallery_page_includes_the_vendored_justified_layout() {
+    let lib = fixture();
+    let server = Server::start(&lib);
+    let (status, body) = server.get("/");
+    assert_eq!(status, 200);
+    assert!(
+        body.contains("justified-layout v4.1.0"),
+        "the vendored justified-layout sentinel is missing from the page"
+    );
+    assert!(
+        body.contains("justifiedLayout"),
+        "the justifiedLayout global is not present in the page"
+    );
+}
+
+#[test]
+fn the_files_page_has_the_list_tile_toggle() {
+    let lib = fixture();
+    let server = Server::start(&lib);
+    let (status, body) = server.get("/");
+    assert_eq!(status, 200);
+    assert!(
+        body.contains("class=\"view-mode-select\""),
+        "the Files page is missing the List/Tile toggle"
+    );
+}
+
+#[test]
+fn the_date_page_has_the_list_tile_toggle() {
+    let lib = fixture();
+    let server = Server::start(&lib);
+    let (status, body) = server.get("/date");
+    assert_eq!(status, 200);
+    assert!(
+        body.contains("class=\"view-mode-select\""),
+        "the Date page is missing the List/Tile toggle"
+    );
+}
+
+#[test]
 fn date_prefix_routes_render_with_initial_state() {
     let lib = fixture();
     let server = Server::start(&lib);
