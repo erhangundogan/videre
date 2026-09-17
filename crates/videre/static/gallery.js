@@ -526,7 +526,7 @@ document.getElementById('lb').addEventListener('click',function(e){
 // RESULT_ROWS holds only the rows a search returned, a couple of dozen at most.
 // HASH_FILES stays for the inlined static export, whose rows carry no `copies`
 // field and so must be counted client-side.
-var GPAGE=200,gShown=0,HASH_FILES={},RESULT_ROWS={};
+var GPAGE=200,gShown=0,HASH_FILES={},RESULT_ROWS={},galleryFiles=[];
 // See faces.js: the labeling sub-pages are not always under /people.
 function peopleRootG(){
   var r=(typeof PEOPLE_ROOT==='string')?PEOPLE_ROOT:'/people';
@@ -560,6 +560,60 @@ function similarBtn(hash){
   if(typeof HAS_EMBEDDINGS!=='undefined'&&!HAS_EMBEDDINGS)return '';
   return '<button class="similar-btn" data-similar="'+escA(hash)+'">Similar</button>';
 }
+// ---- Tile view (justified rows) --------------------------------------------
+// A second, image-first layout for the Files and Date galleries. List stays the
+// default. Tile reuses buildPreview for the tile body, so HEIC and video
+// handling and the decode-failure gate are unchanged, and positions each tile
+// with the vendored justified-layout over the items' aspect ratios. No caption.
+var VIEW_KEY='videre.viewMode';
+function viewMode(){
+  try{ return localStorage.getItem(VIEW_KEY)==='tile' ? 'tile' : 'list'; }
+  catch(e){ return 'list'; }
+}
+function storeViewMode(m){ try{ localStorage.setItem(VIEW_KEY,m); }catch(e){} }
+// Older scans carry no w/h, so fall back to square rather than dropping the item.
+function tileRatio(f){ return (f.w&&f.h) ? (f.w/f.h) : 1; }
+// One tile: the existing preview markup, positioned absolutely from the box the
+// layout computed. buildPreview already carries data-lb-url/-type/-meta, so the
+// lightbox and its nav keep working and DOM order stays file (row) order.
+function tileHtml(f,box){
+  return '<div class="tile" style="left:'+box.left+'px;top:'+box.top+'px;'+
+    'width:'+box.width+'px;height:'+box.height+'px">'+buildPreview(f)+'</div>';
+}
+// Lay files out as justified rows inside container. Pure geometry over ratios,
+// so re-running it on append or resize is cheap.
+function layoutTiles(container,files){
+  var width=container.clientWidth||container.offsetWidth||0;
+  if(!width){ requestAnimationFrame(function(){layoutTiles(container,files);}); return; }
+  var geo=justifiedLayout(files.map(tileRatio),{
+    containerWidth:width, containerPadding:0, boxSpacing:6, targetRowHeight:220
+  });
+  var html='';
+  for(var i=0;i<files.length;i++) html+=tileHtml(files[i],geo.boxes[i]);
+  container.classList.add('tile-mode');
+  container.style.height=geo.containerHeight+'px';
+  container.innerHTML=html;
+}
+// Leave tile mode: drop the absolute-positioning class and inline height so the
+// list renderer's normal flow returns.
+function clearTileMode(container){
+  container.classList.remove('tile-mode');
+  container.style.height='';
+}
+// Re-render whichever gallery is on this page in the current mode, from data
+// already loaded (no refetch). The Date grid branch is added with the Date tab.
+function renderCurrentMode(){
+  var g=document.getElementById('gallery');
+  if(g){
+    if(viewMode()==='tile'){ layoutTiles(g,galleryFiles); }
+    else { clearTileMode(g); g.innerHTML=galleryFiles.map(buildCard).join(''); }
+  }
+}
+function setViewMode(m){
+  storeViewMode(m);
+  document.querySelectorAll('.view-mode-select').forEach(function(s){ s.value=m; });
+  renderCurrentMode();
+}
 function buildCard(f){
   var fname=f.path.split('/').pop()||f.path;
   // `copies` arrives on the row from /api/files. An inlined page has no such
@@ -578,14 +632,22 @@ function buildCard(f){
 // Appends one page of cards and updates the button. Shared by both paths, so an
 // inlined page and a fetched one render identically.
 function appendCards(files,total){
-  var g=document.getElementById('gallery');
-  var html='';
-  for(var i=0;i<files.length;i++)html+=buildCard(files[i]);
-  var tmp=document.createElement('div');
-  tmp.innerHTML=html;
-  while(tmp.firstChild)g.appendChild(tmp.firstChild);
+  for(var i=0;i<files.length;i++)galleryFiles.push(files[i]);
   gShown+=files.length;
+  var g=document.getElementById('gallery');
+  if(viewMode()==='tile'){
+    // Re-run the layout over all loaded items: pure geometry over ratios, cheap.
+    layoutTiles(g,galleryFiles);
+  } else {
+    clearTileMode(g);
+    var html='';
+    for(var j=0;j<files.length;j++)html+=buildCard(files[j]);
+    var tmp=document.createElement('div');
+    tmp.innerHTML=html;
+    while(tmp.firstChild)g.appendChild(tmp.firstChild);
+  }
   var btn=document.getElementById('gallery-more');
+  if(!btn)return;
   var rem=total-gShown;
   if(rem>0){btn.style.display='inline-block';btn.textContent='Show more ('+rem+' remaining)';}
   else btn.style.display='none';
@@ -684,5 +746,19 @@ document.addEventListener('click',function(e){
   var sb=e.target.closest('[data-similar]');
   if(sb){e.preventDefault();e.stopPropagation();findSimilar(sb.dataset.similar);}
 });
+// Reflect the stored mode in the toggle(s) on load. The initial render already
+// honours viewMode() through appendCards / the date path.
+document.querySelectorAll('.view-mode-select').forEach(function(s){ s.value=viewMode(); });
+// Row geometry depends on width, so recompute tile layouts on resize (debounced).
+var _viewResizeT=null;
+window.addEventListener('resize',function(){
+  if(viewMode()!=='tile')return;
+  clearTimeout(_viewResizeT);
+  _viewResizeT=setTimeout(renderCurrentMode,150);
+});
+// A late width change (fonts, a scrollbar, or an embedding pane sizing itself
+// after load) can land the first tile layout at the wrong width, so re-run once
+// the page has fully loaded.
+window.addEventListener('load',function(){ if(viewMode()==='tile') renderCurrentMode(); });
 render(true);
 if(document.getElementById('dateGrid')) buildDateInitialView();
