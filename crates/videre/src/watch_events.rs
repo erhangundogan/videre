@@ -84,7 +84,7 @@ mod tests {
 
     #[test]
     fn create_and_modify_contribute_paths_remove_does_not() {
-        let events = vec![
+        let events = [
             ev(EventKind::Create(CreateKind::File), &["/lib/a.jpg"]),
             ev(EventKind::Modify(ModifyKind::Any), &["/lib/b.jpg"]),
             ev(EventKind::Remove(RemoveKind::File), &["/lib/gone.jpg"]),
@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn a_batch_is_deduped_and_filtered() {
-        let events = vec![
+        let events = [
             ev(EventKind::Create(CreateKind::File), &["/lib/b.jpg"]),
             ev(EventKind::Modify(ModifyKind::Any), &["/lib/a.jpg"]),
             ev(EventKind::Modify(ModifyKind::Any), &["/lib/a.jpg"]),
