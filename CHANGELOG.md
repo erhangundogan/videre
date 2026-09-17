@@ -16,6 +16,23 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.30.0] - 2026-09-17
+
+### Deprecated
+
+- **`scan --retry-incomplete` is now a no-op that prints a deprecation notice.**
+  `scan` has been incremental by default for a while, so the flag no longer
+  changes what is processed. It is still accepted so existing scripts do not
+  error, but it does nothing.
+
+### Fixed
+
+- **`dedupe --remove` now prunes the removed copies from the library.** Moving
+  duplicate files to the trash left their rows in the database, so the gallery,
+  `stats`, and search kept showing a ghost of every removed copy until you ran
+  `videre prune` by hand. The removal now runs that prune itself once it
+  succeeds, so the database matches the disk in the same command.
+
 ## [0.29.1] - 2026-09-16
 
 ### Changed
@@ -1887,7 +1904,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.29.1...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.30.0...HEAD
+[0.30.0]: https://github.com/erhangundogan/videre/compare/v0.29.1...v0.30.0
 [0.29.1]: https://github.com/erhangundogan/videre/compare/v0.29.0...v0.29.1
 [0.29.0]: https://github.com/erhangundogan/videre/compare/v0.28.6...v0.29.0
 [0.28.6]: https://github.com/erhangundogan/videre/compare/v0.28.5...v0.28.6

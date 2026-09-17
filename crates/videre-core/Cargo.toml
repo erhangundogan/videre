@@ -1,6 +1,6 @@
 [package]
 name = "videre-core"
-version = "0.29.1"
+version = "0.30.0"
 edition = "2021"
 description = "Shared SQLite, caching, and search helpers for the videre media library CLI"
 license = "Apache-2.0"
