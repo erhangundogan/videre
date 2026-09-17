@@ -68,6 +68,17 @@ pub fn create_faces_table(conn: &Connection) -> rusqlite::Result<()> {
     // report into a failure. This runs from the commands that already write
     // faces, and is a single COUNT once the migration has happened.
     let _ = migrate_person_labels(conn);
+    // Frozen faces: a labeled face's identity is its person label, never a
+    // machine cluster id. Libraries written before the detach-on-assignment
+    // rule carry stale cluster ids on confirmed faces; recluster renumbers
+    // unlabeled clusters from 0 and collides with them, mixing named people
+    // into unassigned cluster pages. Clear the tombstones on every writer
+    // pass; steady state touches zero rows.
+    let _ = conn.execute(
+        "UPDATE faces SET cluster_id = NULL
+         WHERE confirmed = 1 AND person_label IS NOT NULL AND cluster_id IS NOT NULL",
+        [],
+    );
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS faces (
             id            INTEGER PRIMARY KEY,
@@ -353,6 +364,63 @@ mod tests {
     fn create_table_idempotent() {
         let conn = open();
         create_faces_table(&conn).unwrap();
+    }
+
+    #[test]
+    fn the_detach_migration_clears_tombstones_and_keeps_labels() {
+        let conn = open();
+        conn.execute(
+            "INSERT INTO faces (hash, bbox, embedding, cluster_id, confirmed, person_label)
+             VALUES ('h1', '0,0,50,50', X'0000', 0, 1, 'elena')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO faces (hash, bbox, embedding, cluster_id)
+             VALUES ('h2', '0,0,50,50', X'0000', 0)",
+            [],
+        )
+        .unwrap();
+
+        create_faces_table(&conn).unwrap();
+
+        let (cid, label): (Option<i64>, Option<String>) = conn
+            .query_row(
+                "SELECT cluster_id, person_label FROM faces WHERE hash = 'h1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            cid, None,
+            "a labeled face must not carry a machine cluster id"
+        );
+        assert_eq!(label.as_deref(), Some("elena"), "the label is untouched");
+        let cid: Option<i64> = conn
+            .query_row("SELECT cluster_id FROM faces WHERE hash = 'h2'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(Some(0), cid, "unlabeled faces keep their machine grouping");
+    }
+
+    #[test]
+    fn the_detach_migration_is_idempotent() {
+        let conn = open();
+        conn.execute(
+            "INSERT INTO faces (hash, bbox, embedding, cluster_id, confirmed, person_label)
+             VALUES ('h1', '0,0,50,50', X'0000', 7, 1, 'elena')",
+            [],
+        )
+        .unwrap();
+        create_faces_table(&conn).unwrap();
+        create_faces_table(&conn).unwrap();
+        let cid: Option<i64> = conn
+            .query_row("SELECT cluster_id FROM faces WHERE hash = 'h1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(cid, None);
     }
 
     #[test]
