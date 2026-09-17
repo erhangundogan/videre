@@ -596,7 +596,7 @@ fn publish_fresh(ctx: &LibraryContext) -> Result<Connection> {
 /// exclusive and then its init lock (the acquisition order every writer
 /// follows), and either publishes a freshly built database by rename or
 /// brings an existing one up to the current schema in place. The config is
-/// written last, read-before-write: exactly the five declarations of a
+/// written last, read-before-write: exactly the six declarations of a
 /// fresh library, and only when no config exists, so a repeated initialize
 /// never rewrites what a user or a previous run wrote.
 pub fn initialize(ctx: &LibraryContext) -> Result<Connection> {
@@ -919,7 +919,7 @@ mod tests {
     }
 
     #[test]
-    fn a_database_without_a_config_reads_and_initialize_writes_five_declarations_once() {
+    fn a_database_without_a_config_reads_and_initialize_writes_six_declarations_once() {
         let (_t, ctx) = library();
         drop(initialize(&ctx).unwrap());
         std::fs::remove_file(&ctx.paths.config).unwrap();
@@ -930,8 +930,8 @@ mod tests {
         drop(initialize(&ctx).unwrap());
         let text = std::fs::read_to_string(&ctx.paths.config).unwrap();
         let table: toml::Table = toml::from_str(&text).unwrap();
-        // Exactly the five fixed config declarations.
-        assert_eq!(table.len(), 5, "{text}");
+        // Exactly the six fixed config declarations.
+        assert_eq!(table.len(), 6, "{text}");
         assert_eq!(table["db"].as_str(), Some("hashes.db"));
         assert_eq!(table["jsonl"].as_str(), Some("hashes.jsonl"));
         assert_eq!(
@@ -986,10 +986,10 @@ mod tests {
                 }
             }
         }
-        // The config is never truncated: exactly the five declarations.
+        // The config is never truncated: exactly the six declarations.
         let table: toml::Table =
             toml::from_str(&std::fs::read_to_string(&ctx.paths.config).unwrap()).unwrap();
-        assert_eq!(table.len(), 5);
+        assert_eq!(table.len(), 6);
         drop(open_existing(&ctx).unwrap());
     }
 

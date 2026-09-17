@@ -20,6 +20,10 @@ use anyhow::{bail, Context, Result};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Built-in debounce window for watch's event coalescing, in milliseconds,
+/// when `watch_debounce_ms` is absent.
+pub const WATCH_DEBOUNCE_MS_DEFAULT: u64 = 1500;
+
 /// Settings governing how one library is processed.
 ///
 /// Absent settings mean the built-in default, mirroring the global config's
@@ -40,6 +44,9 @@ pub struct LibraryConfig {
     /// size; `None` means the built-in default applies
     /// (`io_timeout::MIN_READ_RATE_MB_S_DEFAULT`).
     pub min_read_rate_mb_s: Option<u64>,
+    /// Debounce window for watch's event coalescing, in ms; `None` means the
+    /// built-in default (`WATCH_DEBOUNCE_MS_DEFAULT`).
+    pub watch_debounce_ms: Option<u64>,
 }
 
 impl Default for LibraryConfig {
@@ -52,6 +59,7 @@ impl Default for LibraryConfig {
             xmp_precedence: XmpPrecedence::default(),
             export_xmp_on_watch: false,
             min_read_rate_mb_s: None,
+            watch_debounce_ms: None,
         }
     }
 }
@@ -71,6 +79,8 @@ pub enum ConfigKey {
     Xmp,
     /// `export_xmp_on_watch`, a boolean.
     ExportXmpOnWatch,
+    /// `watch_debounce_ms`, a positive integer or absent.
+    WatchDebounceMs,
 }
 
 impl ConfigKey {
@@ -81,6 +91,7 @@ impl ConfigKey {
             ConfigKey::ReadRate => "min_read_rate_mb_s",
             ConfigKey::Xmp => "xmp_precedence",
             ConfigKey::ExportXmpOnWatch => "export_xmp_on_watch",
+            ConfigKey::WatchDebounceMs => "watch_debounce_ms",
         }
     }
 }
@@ -117,6 +128,10 @@ fn initial_table() -> toml::Table {
     table.insert(
         "export_xmp_on_watch".into(),
         toml::Value::Boolean(defaults.export_xmp_on_watch),
+    );
+    table.insert(
+        "watch_debounce_ms".into(),
+        toml::Value::Integer(WATCH_DEBOUNCE_MS_DEFAULT as i64),
     );
     table
 }
@@ -157,6 +172,26 @@ fn bool_setting(table: &toml::Table, file: &Path, key: &str, default: bool) -> R
 /// global config's `positive_int_key` states).
 fn read_rate_setting(table: &toml::Table, file: &Path) -> Result<Option<u64>> {
     const KEY: &str = "min_read_rate_mb_s";
+    match table.get(KEY) {
+        None => Ok(None),
+        Some(toml::Value::Integer(n)) if *n > 0 => Ok(Some(*n as u64)),
+        Some(toml::Value::Integer(n)) => bail!(
+            "malformed config {}: {KEY} must be greater than 0, got {n}",
+            file.display()
+        ),
+        Some(other) => bail!(
+            "malformed config {}: {KEY} must be an integer, got {}",
+            file.display(),
+            other.type_str()
+        ),
+    }
+}
+
+/// Read `watch_debounce_ms`: absent, or a positive integer. Zero is rejected
+/// rather than clamped: a zero debounce window would fire a stage run per
+/// raw event, which is the storm coalescing exists to prevent.
+fn debounce_setting(table: &toml::Table, file: &Path) -> Result<Option<u64>> {
+    const KEY: &str = "watch_debounce_ms";
     match table.get(KEY) {
         None => Ok(None),
         Some(toml::Value::Integer(n)) if *n > 0 => Ok(Some(*n as u64)),
@@ -225,6 +260,7 @@ fn config_from_table(table: &toml::Table, file: &Path) -> Result<LibraryConfig> 
         xmp_precedence,
         export_xmp_on_watch: bool_setting(table, file, "export_xmp_on_watch", false)?,
         min_read_rate_mb_s: read_rate_setting(table, file)?,
+        watch_debounce_ms: debounce_setting(table, file)?,
     })
 }
 
@@ -271,8 +307,12 @@ fn validate_value(key: ConfigKey, value: &toml::Value) -> Result<()> {
         (ConfigKey::ReadRate, toml::Value::Integer(n)) if *n > 0 => Ok(()),
         (ConfigKey::Xmp, toml::Value::String(s)) => XmpPrecedence::parse(s).map(|_| ()),
         (ConfigKey::ExportXmpOnWatch, toml::Value::Boolean(_)) => Ok(()),
+        (ConfigKey::WatchDebounceMs, toml::Value::Integer(n)) if *n > 0 => Ok(()),
         (ConfigKey::ReadRate, toml::Value::Integer(n)) => {
             bail!("min_read_rate_mb_s must be greater than 0, got {n}")
+        }
+        (ConfigKey::WatchDebounceMs, toml::Value::Integer(n)) => {
+            bail!("watch_debounce_ms must be greater than 0, got {n}")
         }
         (ConfigKey::Model, other) => {
             bail!("default_model must be a string, got {}", other.type_str())
@@ -281,6 +321,12 @@ fn validate_value(key: ConfigKey, value: &toml::Value) -> Result<()> {
             "min_read_rate_mb_s must be an integer, got {}",
             other.type_str()
         ),
+        (ConfigKey::WatchDebounceMs, other) => {
+            bail!(
+                "watch_debounce_ms must be an integer, got {}",
+                other.type_str()
+            )
+        }
         (ConfigKey::Xmp, other) => {
             bail!("xmp_precedence must be a string, got {}", other.type_str())
         }
@@ -594,6 +640,36 @@ mod tests {
     }
 
     #[test]
+    fn watch_debounce_ms_reads_rejects_zero_and_noninteger() {
+        let (_t, ctx) = library_with_config("watch_debounce_ms = 250\n");
+        assert_eq!(load(&ctx.paths).unwrap().watch_debounce_ms, Some(250));
+        for body in ["watch_debounce_ms = 0\n", "watch_debounce_ms = \"x\"\n"] {
+            let (_t, ctx) = library_with_config(body);
+            assert!(load(&ctx.paths).is_err(), "{body}");
+        }
+        let (_t, ctx) = library_with_config("custom = \"x\"\n");
+        assert_eq!(load(&ctx.paths).unwrap().watch_debounce_ms, None);
+    }
+
+    #[test]
+    fn edit_sets_watch_debounce_ms() {
+        let (_t, ctx) = library_with_config("custom = \"keep\"\n");
+        edit(
+            &ctx,
+            ConfigKey::WatchDebounceMs,
+            Some(toml::Value::Integer(300)),
+        )
+        .unwrap();
+        assert_eq!(load(&ctx.paths).unwrap().watch_debounce_ms, Some(300));
+        assert!(edit(
+            &ctx,
+            ConfigKey::WatchDebounceMs,
+            Some(toml::Value::Integer(0))
+        )
+        .is_err());
+    }
+
+    #[test]
     fn a_corrupt_file_is_an_error_never_defaults() {
         let (_t, ctx) = library_with_config("not = = toml\n");
         let err = load(&ctx.paths).unwrap_err();
@@ -862,7 +938,7 @@ mod tests {
     }
 
     #[test]
-    fn a_first_edit_writes_the_five_declarations_and_no_database() {
+    fn a_first_edit_writes_the_six_declarations_and_no_database() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("photos");
         std::fs::create_dir(&root).unwrap();
@@ -870,7 +946,7 @@ mod tests {
         edit(&ctx, ConfigKey::ReadRate, Some(toml::Value::Integer(42))).unwrap();
         let table: toml::Table =
             toml::from_str(&std::fs::read_to_string(&ctx.paths.config).unwrap()).unwrap();
-        // The five exact declarations, so a fresh library's config documents
+        // The six exact declarations, so a fresh library's config documents
         // the fixed storage names instead of leaving them implicit.
         assert_eq!(table["db"].as_str(), Some("hashes.db"));
         assert_eq!(table["jsonl"].as_str(), Some("hashes.jsonl"));
@@ -880,6 +956,10 @@ mod tests {
         );
         assert_eq!(table["xmp_precedence"].as_str(), Some("db"));
         assert_eq!(table["export_xmp_on_watch"].as_bool(), Some(false));
+        assert_eq!(
+            table["watch_debounce_ms"].as_integer(),
+            Some(WATCH_DEBOUNCE_MS_DEFAULT as i64)
+        );
         assert_eq!(table["min_read_rate_mb_s"].as_integer(), Some(42));
         assert_eq!(load(&ctx.paths).unwrap().min_read_rate_mb_s, Some(42));
         // Configuring a library before its first scan is legitimate; that
