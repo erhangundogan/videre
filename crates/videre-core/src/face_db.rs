@@ -108,6 +108,24 @@ pub fn create_faces_table(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// The highest `faces.id` covered by the last completed global recluster,
+/// or 0 when none has run yet. The gate is "any face id above this", so an
+/// absent watermark means the next reconcile reclusters everything.
+pub fn recluster_watermark(conn: &Connection) -> anyhow::Result<i64> {
+    Ok(
+        crate::library_state::get(conn, crate::library_state::FACE_RECLUSTER_WATERMARK)?
+            .unwrap_or(0),
+    )
+}
+
+/// Record that a global recluster just completed over every face now in the
+/// table. Called after each completed clustering pass, by `videre faces`
+/// and by watch's recluster stage alike.
+pub fn advance_recluster_watermark(conn: &Connection) -> anyhow::Result<()> {
+    let max_id: i64 = conn.query_row("SELECT COALESCE(MAX(id), 0) FROM faces", [], |r| r.get(0))?;
+    crate::library_state::set(conn, crate::library_state::FACE_RECLUSTER_WATERMARK, max_id)
+}
+
 /// Marks a hash as face-scanned (idempotent). Call after detection runs for a
 /// hash regardless of whether any faces were found.
 pub fn mark_scanned(conn: &Connection, hash: &str) -> rusqlite::Result<()> {
@@ -335,6 +353,34 @@ mod tests {
     fn create_table_idempotent() {
         let conn = open();
         create_faces_table(&conn).unwrap();
+    }
+
+    #[test]
+    fn the_watermark_starts_absent_and_advance_records_the_highest_face_id() {
+        let conn = open();
+        assert_eq!(recluster_watermark(&conn).unwrap(), 0);
+        conn.execute(
+            "INSERT INTO faces (hash, bbox, embedding) VALUES ('h1', '0,0,10,10', X'0000')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO faces (hash, bbox, embedding) VALUES ('h2', '0,0,10,10', X'0000')",
+            [],
+        )
+        .unwrap();
+        advance_recluster_watermark(&conn).unwrap();
+        let max_id: i64 = conn
+            .query_row("SELECT MAX(id) FROM faces", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(recluster_watermark(&conn).unwrap(), max_id);
+    }
+
+    #[test]
+    fn advancing_over_an_empty_faces_table_records_zero() {
+        let conn = open();
+        advance_recluster_watermark(&conn).unwrap();
+        assert_eq!(recluster_watermark(&conn).unwrap(), 0);
     }
 
     #[test]

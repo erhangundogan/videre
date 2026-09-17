@@ -22,6 +22,7 @@ pub mod library_db;
 pub mod library_guard;
 pub mod library_io;
 pub mod library_locks;
+pub mod library_state;
 pub mod library_stats;
 #[cfg(test)]
 pub(crate) mod library_test_support;
