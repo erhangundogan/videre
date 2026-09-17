@@ -72,7 +72,7 @@ make fmt                       # not bare `cargo fmt`; see below
 cargo test --workspace
 ```
 
-One binary, `videre`, with eighteen subcommands. `main.rs` dispatches to one
+One binary, `videre`, with twenty subcommands. `main.rs` dispatches to one
 module per subcommand under `src/commands/`.
 
 ### The Rust version is pinned, in one place
@@ -220,7 +220,7 @@ failure never hides the other's, and `cargo test --no-fail-fast` so one failing
 test *binary* never hides the later ones. Both were learned the same way: a
 Linux-only failure in `videre-core`'s lib tests stopped the run before the
 `videre` integration tests, whose Linux result was then unknown rather than
-green. Only four tests are macOS-gated.
+green. Nine tests are macOS-gated.
 
 :warning: **`cargo fmt` has no per-file mode.** Arguments after `--` are rustfmt
 options, not a file filter, so `cargo fmt -p videre -- path/to/one.rs` silently
@@ -230,9 +230,10 @@ directly. The workspace was reformatted to zero drift on 2026-08-09 and the
 `src/` files into a test-only commit and nothing caught it, because formatting
 changes are invisible to the test suite.
 
-**Tests never download model weights.** That is the application's job. Three
-tests need weights (`faces_resumability`, plus `embed.rs`'s two on macOS); each
-calls `common::skip_without_models` and returns early on a cold cache.
+**Tests never download model weights.** That is the application's job. Nine
+tests need weights (`faces_resumability`, `faces_orientation` and
+`faces_xmp_readback`, plus `embed.rs`'s four and `pipeline.rs`'s two on macOS);
+each calls `common::skip_without_models` and returns early on a cold cache.
 `faces_pipeline` is deliberately *not* gated, because `commands/faces.rs`
 returns at the `to_process.is_empty()` branch before loading anything; a
 regression guard runs the binary against a fresh `HF_HOME` and asserts nothing
