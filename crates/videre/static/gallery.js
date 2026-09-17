@@ -325,6 +325,9 @@ function bestDateBucket(f){
   return {year: d.slice(0,4), month: d.slice(0,7), day: d.slice(0,10)};
 }
 var dateState = {level:'year', year:null, month:null};
+// The files last rendered into #dateGrid, so a mode switch re-renders without a
+// refetch. Date galleries are one-shot (no paging).
+var dateFiles=null;
 function dateKeepFiles(){ return (typeof KEEPFILES!=='undefined') ? KEEPFILES : []; }
 
 // :warning: The tree comes from /api/dates, not from the rows.
@@ -429,15 +432,13 @@ function buildDayGallery(day){
     var files=dateKeepFiles().filter(function(f){
       var d=bestDateJs(f); return d && d.slice(0,10)===day;
     });
-    grid.innerHTML=files.map(function(f){return buildCard(f);}).join('');
+    renderDateFiles(files,'No files for '+day+'.');
     return;
   }
   grid.innerHTML='<p class="muted">Loading\u2026</p>';
   fetch('/api/files?view=date&date='+encodeURIComponent(day)+'&limit=500')
     .then(function(r){return r.json();})
-    .then(function(d){
-      grid.innerHTML=(d.files||[]).map(function(f){return buildCard(f);}).join('');
-    })
+    .then(function(d){ renderDateFiles(d.files||[],'No files for '+day+'.'); })
     .catch(function(){ grid.innerHTML='<p class="muted">Could not load that day.</p>'; });
 }
 function fetchDateFiles(params,emptyText){
@@ -445,11 +446,7 @@ function fetchDateFiles(params,emptyText){
   grid.innerHTML='<p class="muted">Loading...</p>';
   fetch('/api/files?view=date&'+params+'&limit=500')
     .then(function(r){return r.json();})
-    .then(function(d){
-      var files=d.files||[];
-      grid.innerHTML=files.length ? files.map(function(f){return buildCard(f);}).join('')
-        : '<p class="muted">'+escH(emptyText||'No files for this date.')+'</p>';
-    })
+    .then(function(d){ renderDateFiles(d.files||[],emptyText); })
     .catch(function(){ grid.innerHTML='<p class="muted">Could not load that date.</p>'; });
 }
 function renderDateBreadcrumb(prefix){
@@ -607,6 +604,23 @@ function renderCurrentMode(){
   if(g){
     if(viewMode()==='tile'){ layoutTiles(g,galleryFiles); }
     else { clearTileMode(g); g.innerHTML=galleryFiles.map(buildCard).join(''); }
+  }
+  var grid=document.getElementById('dateGrid');
+  if(grid && dateFiles){ renderDateFiles(dateFiles); }
+}
+// The one place the Date galleries render their files, so List and Tile modes
+// and a later mode switch share a path. Date galleries are one-shot, so this
+// replaces the grid contents wholesale.
+function renderDateFiles(files,emptyText){
+  dateFiles=files;
+  var grid=document.getElementById('dateGrid');
+  if(viewMode()==='tile'){
+    layoutTiles(grid,files);
+  } else {
+    clearTileMode(grid);
+    grid.innerHTML=files.length
+      ? files.map(function(f){return buildCard(f);}).join('')
+      : '<p class="muted">'+escH(emptyText||'No files for this date.')+'</p>';
   }
 }
 function setViewMode(m){

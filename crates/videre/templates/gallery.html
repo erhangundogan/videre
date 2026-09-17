@@ -34,7 +34,7 @@
 <p class="hint">Visually similar photos are a different question: <code>videre scan --similar</code> finds those, and they appear here once it has run.</p>
 </div>
 {% endif %}{% if has_keep_files %}<div class="date-view" id="dateView">
-<h2>Browse by date</h2>
+<div class="date-head"><h2>Browse by date</h2><label class="view-toggle">View <select class="view-mode-select" onchange="setViewMode(this.value)"><option value="list">List</option><option value="tile">Tile</option></select></label></div>
 <div class="date-breadcrumb" id="dateBreadcrumb"></div>
 <div class="date-grid date-narrowing" id="dateNarrowing"></div>
 <div class="date-grid" id="dateGrid"></div>

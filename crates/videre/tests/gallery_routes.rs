@@ -415,6 +415,18 @@ fn the_files_page_has_the_list_tile_toggle() {
 }
 
 #[test]
+fn the_date_page_has_the_list_tile_toggle() {
+    let lib = fixture();
+    let server = Server::start(&lib);
+    let (status, body) = server.get("/date");
+    assert_eq!(status, 200);
+    assert!(
+        body.contains("class=\"view-mode-select\""),
+        "the Date page is missing the List/Tile toggle"
+    );
+}
+
+#[test]
 fn date_prefix_routes_render_with_initial_state() {
     let lib = fixture();
     let server = Server::start(&lib);
