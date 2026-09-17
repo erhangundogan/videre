@@ -26,9 +26,37 @@ unless `--force`. It removes only **exact** duplicates; `--similar` groups are
 review-only.
 
 :::danger
-`--remove` (without `--dry-run`) deletes immediately once you confirm. Review
-first with [`videre dedupe --html`](/commands/dedupe/) or `--remove --dry-run`.
+`--remove` (without `--dry-run`) moves copies to the trash immediately once you
+confirm. Review first with [`videre dedupe --html`](/commands/dedupe/) or
+`--remove --dry-run`.
 :::
+
+## Where removed copies go
+
+`--remove` never hard-deletes. Copies go to the operating system's trash,
+exactly as if you had dragged them there yourself:
+
+- **macOS:** the Finder Trash. The first time a terminal application moves
+  files on your behalf, macOS may show a permission prompt; approving it is a
+  one-time system decision, not a videre account or upload.
+- **Linux:** the freedesktop.org trash. The file moves to a trash folder on
+  the same volume when one can be created, otherwise to your home trash, so
+  Restore still works. If no trash is available (a read-only volume, say),
+  videre refuses and removes nothing rather than falling back to a hard
+  delete.
+
+Recovering a copy is the same as recovering anything else from the trash: put
+it back where it was and run `videre scan` (or let `watch` pick it up).
+
+### The database is cleaned up too
+
+After a successful removal, videre runs the same pass
+[`videre prune`](/commands/prune/) would: the removed copies' rows, and any
+embeddings or cached thumbnails only they were using, are dropped at once, so
+the gallery never shows a ghost of a deleted copy. The pass appears as its own
+`prune` entry in [`videre status`](/commands/status/); if it cannot start
+(a `watch` cycle holding the library, say), videre says so and you can run
+`videre prune` by hand.
 
 ## The safe way to do it
 
@@ -152,10 +180,12 @@ database, a group can contain copies from different drives, and the KEEP copy
 may be on the one you consider the backup. See
 [scanning more than one folder](/guides/multiple-libraries/).
 
-**Deleting duplicates does not free everything.** Embeddings and cached
-thumbnails for those photos remain until [`videre prune`](/commands/prune/)
-removes them. Conversely, deleting one copy of a photo you still have elsewhere
-frees nothing derived, because that work is keyed by content and still in use.
+**Deleting duplicates by hand does not free everything.** If you delete copies
+yourself in Finder or a file manager, their embeddings and cached thumbnails
+remain until [`videre prune`](/commands/prune/) removes them. `videre dedupe
+--remove` runs the prune pass for you, so its removals are clean in one step.
+Either way, deleting one copy of a photo you still have elsewhere frees nothing
+derived, because that work is keyed by content and still in use.
 
 **Output order is by content hash**, which is effectively arbitrary. Use
 `videre dedupe --html` if you want groups ordered by wasted space.
