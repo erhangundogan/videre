@@ -117,7 +117,7 @@ fn run_text(args: DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
             process::exit(1);
         }
     };
-    let _activity = match videre_core::library_locks::try_activity(
+    let activity = match videre_core::library_locks::try_activity(
         &ctx.library,
         videre_core::library_locks::ActivityMode::Shared,
     ) {
@@ -135,17 +135,43 @@ fn run_text(args: DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
         }
     };
 
-    let result =
-        videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "dedupe", || {
+    let moved =
+        match videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "dedupe", || {
             if args.remove {
                 run_remove(&args, ctx, &conn)
             } else {
-                run_dedupe_text(&args, &conn)
+                run_dedupe_text(&args, &conn).map(|_| 0usize)
             }
-        });
-    if let Err(e) = result {
-        eprintln!("Error: {e:#}");
-        process::exit(1);
+        }) {
+            Ok(moved) => moved,
+            Err(e) => {
+                eprintln!("Error: {e:#}");
+                process::exit(1);
+            }
+        };
+
+    // `--remove` trashed duplicate copies, and their database rows now
+    // describe files that no longer exist: run the same cleanup `videre
+    // prune` would, so the library never shows a ghost. The prune pass needs
+    // the exclusive activity lease, which conflicts with the shared one this
+    // command holds, so the shared lease is released first. Best effort: the
+    // removal itself already succeeded, and a user can always run
+    // `videre prune` by hand.
+    if args.remove && !args.dry_run && moved > 0 {
+        drop(activity);
+        let prune_args = super::prune::PruneArgs::for_watch_stage(args.silent);
+        match crate::command_context::with_tracked_command(
+            ctx,
+            "prune",
+            videre_core::library_locks::ActivityMode::Exclusive,
+            |conn| super::prune::run_prune(&prune_args, &ctx.library, conn),
+        ) {
+            Ok(0) => {}
+            Ok(errors) => eprintln!("Warning: prune finished with {errors} error(s)."),
+            Err(e) => {
+                eprintln!("Warning: automatic prune failed: {e:#}; run 'videre prune' to clean up.")
+            }
+        }
     }
 
     if let Some(arg) = args.html.as_ref() {
@@ -180,7 +206,7 @@ fn run_remove(
     args: &DedupeArgs,
     ctx: &CommandContext,
     conn: &rusqlite::Connection,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<usize> {
     let records = videre::sqlite_output::load_records_from(conn)
         .map_err(|e| anyhow::anyhow!("reading the library database: {e}"))?;
     let total = records.len();
@@ -194,7 +220,7 @@ fn run_remove(
         if !args.silent {
             eprintln!("No exact duplicates to remove.");
         }
-        return Ok(());
+        return Ok(0);
     }
 
     // Missing-volume refusal: never read "the files are gone" as "everything is
@@ -217,7 +243,7 @@ fn run_remove(
             (losers.len() as f64 / total.max(1) as f64) * 100.0
         );
         eprintln!("  nothing was removed; re-run with --force if this is intended");
-        return Ok(());
+        return Ok(0);
     }
 
     if args.dry_run {
@@ -225,7 +251,7 @@ fn run_remove(
         if !args.silent {
             eprintln!("{} file(s) would be moved to the trash.", losers.len());
         }
-        return Ok(());
+        return Ok(0);
     }
 
     if !args.yes
@@ -235,7 +261,7 @@ fn run_remove(
         ))?
     {
         eprintln!("Aborted; nothing was removed.");
-        return Ok(());
+        return Ok(0);
     }
 
     let results = crate::removal::trash_paths(&losers);
@@ -258,7 +284,7 @@ fn run_remove(
             eprintln!("Moved {moved} file(s) to the trash.");
         }
     }
-    Ok(())
+    Ok(moved)
 }
 
 /// The actual dedupe-reporting work, wrapped by `track_in()` above.

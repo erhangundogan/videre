@@ -92,6 +92,34 @@ fn remove_yes_trashes_one_copy_and_keeps_the_other() {
 }
 
 #[test]
+fn remove_yes_also_prunes_the_loser_row() {
+    // Trashing a duplicate leaves its database row behind: the row describes
+    // a file that no longer exists. `dedupe --remove` must run the same
+    // cleanup `videre prune` would, so the library never shows a ghost.
+    let (lib, a, b) = lib_with_spaced_duplicate();
+    let out = lib
+        .cmd()
+        .args(["dedupe", "--remove", "--yes", "--silent"])
+        .output()
+        .unwrap();
+    if !out.status.success() {
+        // No-trash environment (see the test above): nothing was removed, so
+        // both rows legitimately remain.
+        assert_eq!(remaining(&[&a, &b]), 2);
+        return;
+    }
+    assert_eq!(remaining(&[&a, &b]), 1);
+    let rows: i64 = lib
+        .conn()
+        .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        rows, 1,
+        "the removed copy's row must be pruned automatically after --remove"
+    );
+}
+
+#[test]
 fn remove_rejects_similar_json_and_html() {
     let (lib, _a, _b) = lib_with_spaced_duplicate();
     let combos: [&[&str]; 3] = [
