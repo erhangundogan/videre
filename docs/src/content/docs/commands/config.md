@@ -13,6 +13,7 @@ videre config set model google/siglip-base-patch16-224
 videre config set read-rate 10
 videre config set xmp file
 videre config set export-xmp-on-watch true
+videre config set watch-debounce-ms 500
 videre config unset model
 ```
 
@@ -36,6 +37,7 @@ model:         google/siglip-base-patch16-224
 read-rate:     20 MB/s (default)
 xmp:           db
 export-xmp-on-watch: off
+watch-debounce-ms: 1500 ms (default)
 ```
 
 | Line | Meaning |
@@ -50,6 +52,7 @@ export-xmp-on-watch: off
 | `read-rate` | Assumed minimum read speed used for large-file timeouts |
 | `xmp` | Effective XMP precedence for ingest |
 | `export-xmp-on-watch` | Whether watch exports XMP each cycle |
+| `watch-debounce-ms` | How long watch lets file changes settle before processing |
 
 Showing config creates nothing. Setting a value may create
 `.videre/config.toml`, but it does not create the database. `scan` and `watch`
@@ -63,6 +66,7 @@ are responsible for initializing a library database.
 | `read-rate` | `min_read_rate_mb_s` | A positive whole number in MB/s |
 | `xmp` | `xmp_precedence` | `db`, `file`, or `newest` |
 | `export-xmp-on-watch` | `export_xmp_on_watch` | `true` or `false` |
+| `watch-debounce-ms` | `watch_debounce_ms` | A positive whole number of milliseconds |
 
 Storage cannot be redirected. `db` and `jsonl` are fixed declarations and
 must remain `hashes.db` and `hashes.jsonl`. The removed global `path` and `db`
@@ -77,9 +81,15 @@ jsonl = "hashes.jsonl"
 default_model = "google/siglip-base-patch16-224"
 xmp_precedence = "db"
 export_xmp_on_watch = false
+watch_debounce_ms = 1500
 ```
 
 Setting or unsetting one key preserves the others and any unknown tables.
+
+`watch-debounce-ms` is how long [`videre watch`](/commands/watch/) lets file
+changes settle before processing them as one batch. Lower it for the fastest
+reaction to a single file; raise it on a chatty importer or a slow mount so
+more of a burst lands in one batch.
 
 ## Selection and precedence
 
