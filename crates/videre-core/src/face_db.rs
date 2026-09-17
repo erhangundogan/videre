@@ -137,6 +137,47 @@ pub fn advance_recluster_watermark(conn: &Connection) -> anyhow::Result<()> {
     crate::library_state::set(conn, crate::library_state::FACE_RECLUSTER_WATERMARK, max_id)
 }
 
+/// Destroy all face state: face rows, people records, scanned markers,
+/// faces decode-failure entries, and the recluster watermark. The
+/// `videre faces --reset` escape hatch: after this, the next faces run
+/// starts from absolute beginning. The caller owns consent.
+pub fn reset_all(conn: &Connection) -> anyhow::Result<()> {
+    // Ensures every table the deletes name exists, even on a library that
+    // never ran faces before.
+    create_faces_table(conn)?;
+    crate::decode_failures::ensure_table(conn)?;
+    conn.execute_batch("BEGIN")?;
+    let result = (|| -> anyhow::Result<()> {
+        conn.execute("DELETE FROM faces", [])?;
+        conn.execute("DELETE FROM people", [])?;
+        conn.execute("DELETE FROM faces_scanned", [])?;
+        crate::decode_failures::clear_stage(conn, crate::decode_failures::STAGE_FACES)?;
+        crate::library_state::set(conn, crate::library_state::FACE_RECLUSTER_WATERMARK, 0)?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+/// (labeled faces, people) for the reset confirmation prompt.
+pub fn labeled_state_counts(conn: &Connection) -> anyhow::Result<(i64, i64)> {
+    let labeled: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM faces WHERE confirmed = 1 AND person_label IS NOT NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    let people: i64 = conn.query_row("SELECT COUNT(*) FROM people", [], |r| r.get(0))?;
+    Ok((labeled, people))
+}
+
 /// Marks a hash as face-scanned (idempotent). Call after detection runs for a
 /// hash regardless of whether any faces were found.
 pub fn mark_scanned(conn: &Connection, hash: &str) -> rusqlite::Result<()> {
@@ -449,6 +490,70 @@ mod tests {
         let conn = open();
         advance_recluster_watermark(&conn).unwrap();
         assert_eq!(recluster_watermark(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn reset_all_returns_face_state_to_absolute_beginning() {
+        let conn = open();
+        conn.execute(
+            "INSERT INTO faces (hash, bbox, embedding, cluster_id, confirmed, person_label)
+             VALUES ('h1', '0,0,50,50', X'0000', 0, 1, 'elena')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO faces (hash, bbox, embedding, cluster_id)
+             VALUES ('h2', '0,0,50,50', X'0000', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO people (name, full_name) VALUES ('elena', 'Elena')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO faces_scanned (hash) VALUES ('h1')", [])
+            .unwrap();
+        crate::library_state::set(&conn, crate::library_state::FACE_RECLUSTER_WATERMARK, 5000)
+            .unwrap();
+
+        reset_all(&conn).unwrap();
+
+        for table in ["faces", "people", "faces_scanned"] {
+            let n: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0, "{table} must be empty after reset");
+        }
+        let wm = recluster_watermark(&conn).unwrap();
+        assert_eq!(
+            wm, 0,
+            "the recluster watermark must clear, or the gated recluster would never fire again"
+        );
+    }
+
+    #[test]
+    fn labeled_state_counts_reports_what_the_reset_prompt_names() {
+        let conn = open();
+        assert_eq!(labeled_state_counts(&conn).unwrap(), (0, 0));
+        conn.execute(
+            "INSERT INTO faces (hash, bbox, embedding, confirmed, person_label)
+             VALUES ('h1', '0,0,50,50', X'0000', 1, 'elena')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO faces (hash, bbox, embedding, confirmed, person_label)
+             VALUES ('h2', '0,0,50,50', X'0000', 1, 'erhan')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO people (name, full_name) VALUES ('elena', 'Elena')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(labeled_state_counts(&conn).unwrap(), (2, 1));
     }
 
     #[test]
