@@ -26,3 +26,8 @@ CLAUDE.local.md
 
 # An unexpanded ~ in an env var can make a tool write its home into the repo. Keep.
 /~/
+
+e2e/node_modules/
+e2e/.yarn/
+e2e/playwright-report/
+e2e/test-results/

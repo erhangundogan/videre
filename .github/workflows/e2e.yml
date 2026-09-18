@@ -1,0 +1,42 @@
+name: Gallery E2E
+
+# This is manual-only while the Chromium suite establishes its stability
+# baseline. Do not add push or pull_request triggers until TODO:41 records the
+# measured result and the project decides it belongs in the required gate.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  chromium:
+    name: Chromium
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Enable Corepack and install Yarn dependencies
+        run: |
+          corepack enable
+          yarn --cwd e2e install --immutable
+
+      - name: Install Chromium
+        run: yarn --cwd e2e exec playwright install --with-deps chromium
+
+      - name: Build the debug binary
+        run: make build-dev
+
+      - name: Run the gallery browser suite
+        run: yarn --cwd e2e test
+
+      - name: Upload Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: playwright-artifacts
+          path: |
+            e2e/playwright-report/
+            e2e/test-results/
+          if-no-files-found: ignore
