@@ -6,6 +6,30 @@ test("loads a scanned local library in Chromium", async ({ page, gallery }) => {
   await expect(page.locator("#gallery")).not.toHaveClass(/tile-mode/);
 });
 
+test("renders and expands the duplicate-review route", async ({ page, gallery }) => {
+  await page.goto(`${gallery.baseURL}/duplicates`);
+  await expect(page.locator(".secnav a[href='/duplicates']")).toHaveClass(/on/);
+  const group = page.locator("#groups-container .group").first();
+  await expect(group).toBeVisible();
+
+  await group.locator(".group-header").click();
+  await expect(group.locator(".group-body tr").first()).toBeVisible();
+});
+
+test("loads the date drill-down route", async ({ page, gallery }) => {
+  await page.goto(`${gallery.baseURL}/date`);
+  await expect(page.locator(".secnav a[href='/date']")).toHaveClass(/on/);
+  await expect(page.getByRole("heading", { name: "Browse by date" })).toBeVisible();
+  await expect(page.locator("#dateGrid .date-card").first()).toBeVisible();
+});
+
+test("loads the People route without face data", async ({ page, gallery }) => {
+  await page.goto(`${gallery.baseURL}/people`);
+  await expect(page.locator(".secnav a[href='/people']")).toHaveClass(/on/);
+  await expect(page.getByRole("heading", { name: "No faces detected yet" })).toBeVisible();
+  await expect(page.getByText("Run videre faces to detect and group them")).toBeVisible();
+});
+
 test("persists the tile layout after a reload", async ({ page, gallery }) => {
   await page.goto(gallery.baseURL);
   const viewMode = page.locator(".view-mode-select").first();
