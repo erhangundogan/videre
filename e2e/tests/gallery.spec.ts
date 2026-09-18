@@ -23,6 +23,13 @@ test("loads the date drill-down route", async ({ page, gallery }) => {
   await expect(page.locator("#dateGrid .date-card").first()).toBeVisible();
 });
 
+test("loads a direct date drill-down URL", async ({ page, gallery }) => {
+  await page.goto(`${gallery.baseURL}/date/2021/08/10`);
+  await expect(page.locator(".secnav a[href='/date']")).toHaveClass(/on/);
+  await expect(page.locator("#dateBreadcrumb")).toContainText("2021-08-10");
+  await expect(page.locator("#dateGrid [data-lb-url]").first()).toBeVisible();
+});
+
 test("loads the People route without face data", async ({ page, gallery }) => {
   await page.goto(`${gallery.baseURL}/people`);
   await expect(page.locator(".secnav a[href='/people']")).toHaveClass(/on/);
