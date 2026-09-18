@@ -46,8 +46,8 @@ make e2e
 
 `make e2e` builds the debug binary first. Its failure artifacts are written to
 `e2e/playwright-report/` and `e2e/test-results/`, both ignored by Git. The
-manual GitHub Actions workflow uses the same Chromium suite; it is deliberately
-not part of the required CI gate yet.
+GitHub Actions runs the same Chromium suite for pull requests and pushes to
+`main`.
 
 Worth knowing before changing anything:
 

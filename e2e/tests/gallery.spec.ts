@@ -17,6 +17,10 @@ test("persists the tile layout after a reload", async ({ page, gallery }) => {
   await page.reload();
   await expect(page.locator("#gallery")).toHaveClass(/tile-mode/);
   await expect(page.locator(".view-mode-select").first()).toHaveValue("tile");
+
+  await page.locator(".view-mode-select").first().selectOption("list");
+  await expect(page.locator("#gallery")).not.toHaveClass(/tile-mode/);
+  await expect(page.locator("#gallery .card").first()).toBeVisible();
 });
 
 test("opens an image in the lightbox and navigates to the next item", async ({ page, gallery }) => {
@@ -39,6 +43,17 @@ test("opens an image in the lightbox and navigates to the next item", async ({ p
   await page.keyboard.press("ArrowRight");
   await expect(page.locator("#lb")).toHaveClass(/on/);
   await expect(page.locator("#lb-prev")).toBeVisible();
+});
+
+test("closes the lightbox with Escape", async ({ page, gallery }) => {
+  await page.goto(gallery.baseURL);
+  await page.locator("#gallery [data-lb-type='image']").first().click();
+  await expect(page.locator("#lb")).toHaveClass(/on/);
+
+  await page.keyboard.press("Escape");
+
+  await expect(page.locator("#lb")).not.toHaveClass(/on/);
+  await expect(page.locator("#lb-img")).toHaveAttribute("src", "");
 });
 
 test("opens a scanned MP4 in the lightbox", async ({ page, gallery }) => {
