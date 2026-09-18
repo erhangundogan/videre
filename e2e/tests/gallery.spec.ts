@@ -6,6 +6,37 @@ test("loads a scanned local library in Chromium", async ({ page, gallery }) => {
   await expect(page.locator("#gallery")).not.toHaveClass(/tile-mode/);
 });
 
+test("renders and expands the duplicate-review route", async ({ page, gallery }) => {
+  await page.goto(`${gallery.baseURL}/duplicates`);
+  await expect(page.locator(".secnav a[href='/duplicates']")).toHaveClass(/on/);
+  const group = page.locator("#groups-container .group").first();
+  await expect(group).toBeVisible();
+
+  await group.locator(".group-header").click();
+  await expect(group.locator(".group-body tr").first()).toBeVisible();
+});
+
+test("loads the date drill-down route", async ({ page, gallery }) => {
+  await page.goto(`${gallery.baseURL}/date`);
+  await expect(page.locator(".secnav a[href='/date']")).toHaveClass(/on/);
+  await expect(page.getByRole("heading", { name: "Browse by date" })).toBeVisible();
+  await expect(page.locator("#dateGrid .date-card").first()).toBeVisible();
+});
+
+test("loads a direct date drill-down URL", async ({ page, gallery }) => {
+  await page.goto(`${gallery.baseURL}/date/2021/08/10`);
+  await expect(page.locator(".secnav a[href='/date']")).toHaveClass(/on/);
+  await expect(page.locator("#dateBreadcrumb")).toContainText("2021-08-10");
+  await expect(page.locator("#dateGrid [data-lb-url]").first()).toBeVisible();
+});
+
+test("loads the People route without face data", async ({ page, gallery }) => {
+  await page.goto(`${gallery.baseURL}/people`);
+  await expect(page.locator(".secnav a[href='/people']")).toHaveClass(/on/);
+  await expect(page.getByRole("heading", { name: "No faces detected yet" })).toBeVisible();
+  await expect(page.getByText("Run videre faces to detect and group them")).toBeVisible();
+});
+
 test("persists the tile layout after a reload", async ({ page, gallery }) => {
   await page.goto(gallery.baseURL);
   const viewMode = page.locator(".view-mode-select").first();
@@ -17,6 +48,10 @@ test("persists the tile layout after a reload", async ({ page, gallery }) => {
   await page.reload();
   await expect(page.locator("#gallery")).toHaveClass(/tile-mode/);
   await expect(page.locator(".view-mode-select").first()).toHaveValue("tile");
+
+  await page.locator(".view-mode-select").first().selectOption("list");
+  await expect(page.locator("#gallery")).not.toHaveClass(/tile-mode/);
+  await expect(page.locator("#gallery .card").first()).toBeVisible();
 });
 
 test("opens an image in the lightbox and navigates to the next item", async ({ page, gallery }) => {
@@ -39,6 +74,17 @@ test("opens an image in the lightbox and navigates to the next item", async ({ p
   await page.keyboard.press("ArrowRight");
   await expect(page.locator("#lb")).toHaveClass(/on/);
   await expect(page.locator("#lb-prev")).toBeVisible();
+});
+
+test("closes the lightbox with Escape", async ({ page, gallery }) => {
+  await page.goto(gallery.baseURL);
+  await page.locator("#gallery [data-lb-type='image']").first().click();
+  await expect(page.locator("#lb")).toHaveClass(/on/);
+
+  await page.keyboard.press("Escape");
+
+  await expect(page.locator("#lb")).not.toHaveClass(/on/);
+  await expect(page.locator("#lb-img")).toHaveAttribute("src", "");
 });
 
 test("opens a scanned MP4 in the lightbox", async ({ page, gallery }) => {

@@ -1,10 +1,14 @@
 name: Gallery E2E
 
-# This is manual-only while the Chromium suite establishes its stability
-# baseline. Do not add push or pull_request triggers until TODO:41 records the
-# measured result and the project decides it belongs in the required gate.
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
