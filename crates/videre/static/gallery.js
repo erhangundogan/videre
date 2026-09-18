@@ -485,7 +485,10 @@ function fetchDateFiles(params,emptyText){
   grid.innerHTML='<p class="muted">Loading...</p>';
   fetch('/api/files?view=date&'+params+'&limit=500')
     .then(function(r){return r.json();})
-    .then(function(d){ renderDateFiles(d.files||[],emptyText); })
+    .then(function(d){
+      showPeriodCount(d.total!=null?d.total:(d.files||[]).length);
+      renderDateFiles(d.files||[],emptyText);
+    })
     .catch(function(){ grid.innerHTML='<p class="muted">Could not load that date.</p>'; });
 }
 function renderDateBreadcrumb(prefix){
