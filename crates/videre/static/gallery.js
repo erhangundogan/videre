@@ -36,11 +36,12 @@ function buildPreview(f){
     date: bestDateJs(f)
   })));
   if(ext==='jpg'||ext==='jpeg'||ext==='png'||ext==='gif'||ext==='webp'||ext==='bmp'){
-    // Grid tile is a small server-downscaled thumbnail (240px), not the full
-    // original: serving originals as tiles saturates the browser's connection
-    // pool on a large library and most tiles never load. The lightbox gets a
-    // larger 1200px render; the link still points at the full original.
-    var thumbUrl=rawUrl(f,240,RASTER_PREVIEW_VERSION);
+    // Grid/tile thumbnails are server-downscaled, not the full original:
+    // serving originals as tiles saturates the browser's connection pool on
+    // a large library and most tiles never load. 480px keeps justified-row
+    // tiles (220 CSS px) sharp on a 2x display; the lightbox gets a larger
+    // 1200px render; the link still points at the full original.
+    var thumbUrl=rawUrl(f,480,RASTER_PREVIEW_VERSION);
     var lbUrl=rawUrl(f,1200,RASTER_PREVIEW_VERSION);
     var full=rawUrl(f);
     return '<a href="'+escA(full)+'" target="_blank" data-lb-url="'+escA(lbUrl)+'" data-lb-type="image" '+
@@ -50,7 +51,7 @@ function buildPreview(f){
   }
   if(ext==='heic'){
     if(LIVE_SERVER){
-      var thumbUrl=rawUrl(f, 240);
+      var thumbUrl=rawUrl(f, 480);
       var lbUrl=rawUrl(f, 1200);
       return '<img src="'+escA(thumbUrl)+'" class="thumb heic-loading" loading="lazy" data-lb-url="'+escA(lbUrl)+'" '+
         'data-lb-type="image" data-lb-meta="'+metaAttr+'" '+
@@ -77,7 +78,7 @@ function buildPreview(f){
     // the plain inline <video> is kept, badged the same way.
     var badge='<span class="vbadge" aria-hidden="true"></span>';
     if(typeof VIDEO_POSTERS!=='undefined'&&VIDEO_POSTERS){
-      var poster=rawUrl(f,240);
+      var poster=rawUrl(f,480);
       return '<span class="vthumb">'+
         '<img src="'+escA(poster)+'" class="thumb" loading="lazy" '+
         'data-lb-url="'+escA(url)+'" data-lb-type="video" data-lb-meta="'+metaAttr+'" '+
