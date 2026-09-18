@@ -350,6 +350,14 @@ function bestDateBucket(f){
   return {year: d.slice(0,4), month: d.slice(0,7), day: d.slice(0,10)};
 }
 var dateState = {level:'year', year:null, month:null};
+// The drilled-down pages state their period's size next to the breadcrumb,
+// so "is this month worth opening" is answerable before clicking into it.
+// Buckets already carry per-child counts; the day gallery reads the files
+// response's own total.
+function showPeriodCount(n){
+  document.getElementById('dateBreadcrumb').insertAdjacentHTML('beforeend',
+    ' <span class="date-period-count">'+n+' item'+(n===1?'':'s')+'</span>');
+}
 // The files last rendered into #dateGrid, so a mode switch re-renders without a
 // refetch. Date galleries are one-shot (no paging).
 var dateFiles=null;
@@ -428,6 +436,7 @@ function buildMonthView(year){
   var narrowing=document.getElementById('dateNarrowing');
   if(narrowing)narrowing.innerHTML='';
   var draw=function(b){
+    showPeriodCount(b.reduce(function(s,x){return s+x.count;},0));
     document.getElementById('dateGrid').innerHTML=
       dateCards(b,function(k){return "buildDayView('"+k+"')";});
   };
@@ -441,6 +450,7 @@ function buildDayView(month){
   var narrowing=document.getElementById('dateNarrowing');
   if(narrowing)narrowing.innerHTML='';
   var draw=function(b){
+    showPeriodCount(b.reduce(function(s,x){return s+x.count;},0));
     document.getElementById('dateGrid').innerHTML=
       dateCards(b,function(k){return "buildDayGallery('"+k+"')";});
   };
@@ -457,13 +467,17 @@ function buildDayGallery(day){
     var files=dateKeepFiles().filter(function(f){
       var d=bestDateJs(f); return d && d.slice(0,10)===day;
     });
+    showPeriodCount(files.length);
     renderDateFiles(files,'No files for '+day+'.');
     return;
   }
   grid.innerHTML='<p class="muted">Loading\u2026</p>';
   fetch('/api/files?view=date&date='+encodeURIComponent(day)+'&limit=500')
     .then(function(r){return r.json();})
-    .then(function(d){ renderDateFiles(d.files||[],'No files for '+day+'.'); })
+    .then(function(d){
+      showPeriodCount(d.total!=null?d.total:(d.files||[]).length);
+      renderDateFiles(d.files||[],'No files for '+day+'.');
+    })
     .catch(function(){ grid.innerHTML='<p class="muted">Could not load that day.</p>'; });
 }
 function fetchDateFiles(params,emptyText){

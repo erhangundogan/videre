@@ -93,6 +93,7 @@ th.preview-th{width:130px}
 .date-view{padding:24px 32px}
 .date-breadcrumb{margin-bottom:16px;font-size:13px;color:#71717a}
 .date-breadcrumb a{color:#3f3f46;cursor:pointer;text-decoration:underline}
+.date-period-count{margin-left:10px;color:#71717a;white-space:nowrap}
 .date-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}
 .date-narrowing{margin-bottom:16px}
 .date-card{background:#fff;border-radius:8px;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.08);padding:8px;position:relative}
