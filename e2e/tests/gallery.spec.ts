@@ -24,9 +24,10 @@ test("opens an image in the lightbox and navigates to the next item", async ({ p
   const image = page.locator("#gallery [data-lb-type='image']").first();
   await expect(image).toBeVisible();
 
-  const rawResponse = page.waitForResponse((response) =>
-    /\/api\/files\/[^/]+\/raw$/.test(new URL(response.url()).pathname),
-  );
+  const rawResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return /\/api\/files\/[^/]+\/raw$/.test(url.pathname) && url.searchParams.get("size") === "1200";
+  });
   await image.click();
   const response = await rawResponse;
 
@@ -38,4 +39,22 @@ test("opens an image in the lightbox and navigates to the next item", async ({ p
   await page.keyboard.press("ArrowRight");
   await expect(page.locator("#lb")).toHaveClass(/on/);
   await expect(page.locator("#lb-prev")).toBeVisible();
+});
+
+test("opens a scanned MP4 in the lightbox", async ({ page, gallery }) => {
+  await page.goto(gallery.baseURL);
+  const video = page.locator("#gallery [data-lb-type='video']");
+  await expect(video).toBeVisible();
+
+  await video.click();
+
+  await expect(page.locator("#lb")).toHaveClass(/on/);
+  await expect(page.locator("#lb-vid")).toBeVisible();
+  await expect(page.locator("#lb-vid")).toHaveAttribute("src", /\/api\/files\/[^/]+\/raw$/);
+  const mediaUrl = await page.locator("#lb-vid").getAttribute("src");
+  expect(mediaUrl).not.toBeNull();
+  const response = await page.request.get(new URL(mediaUrl!, gallery.baseURL).toString());
+  expect(response.status()).toBeGreaterThanOrEqual(200);
+  expect(response.status()).toBeLessThan(300);
+  expect(response.headers()["content-type"]).toMatch(/^video\/mp4/);
 });
