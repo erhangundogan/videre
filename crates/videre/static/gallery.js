@@ -232,6 +232,9 @@ function openLb(url,type,metaJson){
   renderMetaPanel(meta);
   var img=document.getElementById('lb-img');
   var vid=document.getElementById('lb-vid');
+  // Fullscreen is for photos: a playing video already has it in its own
+  // controls, and two fullscreen buttons on one player is noise.
+  document.getElementById('lb-fs').hidden = (type==='video');
   if(type==='video'){
     img.style.display='none';vid.style.display='block';
     vid.src=url;vid.play();
@@ -247,9 +250,30 @@ function closeLb(){
   var vid=document.getElementById('lb-vid');
   vid.pause();vid.src='';
   document.getElementById('lb-img').src='';
+  // Leave fullscreen on close, so the next open starts grounded (and Escape
+  // does not have to be pressed twice to get back to the page).
+  if(document.fullscreenElement)document.exitFullscreen();
   document.getElementById('lb').classList.remove('on');
   lbIndex=-1;
 }
+// Fullscreen the whole lightbox, so the arrows and the info panel stay
+// usable at screen size. The glyph stays put; the aria/title text carries
+// the state.
+function toggleLbFullscreen(){
+  var lb=document.getElementById('lb');
+  if(document.fullscreenElement){
+    document.exitFullscreen();
+  } else if(lb.requestFullscreen){
+    lb.requestFullscreen();
+  }
+}
+document.addEventListener('fullscreenchange',function(){
+  var b=document.getElementById('lb-fs');
+  if(!b)return;
+  var on=!!document.fullscreenElement;
+  b.title=on?'Exit fullscreen':'Fullscreen';
+  b.setAttribute('aria-label',b.title);
+});
 // Prev/next across the visible tiles in DOM order. Every view and the static
 // export renders its tiles with data-lb-url, so one walk covers them all; a
 // tile hidden inside a collapsed group (offsetParent === null) is skipped.
