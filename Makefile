@@ -133,6 +133,18 @@ docs-build: ## Build the docs site into docs/dist
 docs-og: ## Regenerate the social card at docs/public/og.png
 	yarn --cwd docs og
 
+# Browser E2E tests intentionally stay outside `test` and `verify` until their
+# stability baseline is established. They start a gallery over a temporary copy
+# of repository fixtures and need Chromium installed once per machine.
+.PHONY: e2e-install
+e2e-install: ## Install Playwright E2E dependencies and Chromium (Yarn 4)
+	yarn --cwd e2e install --immutable
+	yarn --cwd e2e exec playwright install chromium
+
+.PHONY: e2e
+e2e: build-dev ## Run the opt-in Chromium Playwright E2E suite
+	yarn --cwd e2e test
+
 # :warning: This installs into ~/.cargo/bin, which usually comes first on PATH
 # and will then shadow a Homebrew-installed videre, silently. `videre --version`
 # keeps reporting the cargo copy however many times you `brew upgrade`. Check
