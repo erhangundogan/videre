@@ -1278,9 +1278,10 @@ struct FilesQuery {
 #[derive(Deserialize)]
 struct RawFileQuery {
     /// Optional max width/height in pixels for browser-raster images and HEIC.
-    /// The caller can request a small thumbnail (240px in the grid) or a larger
-    /// version (1200px in the lightbox) without paying to transfer a huge image
-    /// for a small `<img>`. Ignored for formats served as raw bytes.
+    /// The caller can request a thumbnail (480px in the grid/tiles, sharp on a
+    /// 2x display) or a larger version (1200px in the lightbox) without paying
+    /// to transfer a huge image for a small `<img>`. Ignored for formats served
+    /// as raw bytes.
     size: Option<u32>,
 }
 

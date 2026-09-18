@@ -36,11 +36,12 @@ function buildPreview(f){
     date: bestDateJs(f)
   })));
   if(ext==='jpg'||ext==='jpeg'||ext==='png'||ext==='gif'||ext==='webp'||ext==='bmp'){
-    // Grid tile is a small server-downscaled thumbnail (240px), not the full
-    // original: serving originals as tiles saturates the browser's connection
-    // pool on a large library and most tiles never load. The lightbox gets a
-    // larger 1200px render; the link still points at the full original.
-    var thumbUrl=rawUrl(f,240,RASTER_PREVIEW_VERSION);
+    // Grid/tile thumbnails are server-downscaled, not the full original:
+    // serving originals as tiles saturates the browser's connection pool on
+    // a large library and most tiles never load. 480px keeps justified-row
+    // tiles (220 CSS px) sharp on a 2x display; the lightbox gets a larger
+    // 1200px render; the link still points at the full original.
+    var thumbUrl=rawUrl(f,480,RASTER_PREVIEW_VERSION);
     var lbUrl=rawUrl(f,1200,RASTER_PREVIEW_VERSION);
     var full=rawUrl(f);
     return '<a href="'+escA(full)+'" target="_blank" data-lb-url="'+escA(lbUrl)+'" data-lb-type="image" '+
@@ -50,7 +51,7 @@ function buildPreview(f){
   }
   if(ext==='heic'){
     if(LIVE_SERVER){
-      var thumbUrl=rawUrl(f, 240);
+      var thumbUrl=rawUrl(f, 480);
       var lbUrl=rawUrl(f, 1200);
       return '<img src="'+escA(thumbUrl)+'" class="thumb heic-loading" loading="lazy" data-lb-url="'+escA(lbUrl)+'" '+
         'data-lb-type="image" data-lb-meta="'+metaAttr+'" '+
@@ -77,7 +78,7 @@ function buildPreview(f){
     // the plain inline <video> is kept, badged the same way.
     var badge='<span class="vbadge" aria-hidden="true"></span>';
     if(typeof VIDEO_POSTERS!=='undefined'&&VIDEO_POSTERS){
-      var poster=rawUrl(f,240);
+      var poster=rawUrl(f,480);
       return '<span class="vthumb">'+
         '<img src="'+escA(poster)+'" class="thumb" loading="lazy" '+
         'data-lb-url="'+escA(url)+'" data-lb-type="video" data-lb-meta="'+metaAttr+'" '+
@@ -232,6 +233,9 @@ function openLb(url,type,metaJson){
   renderMetaPanel(meta);
   var img=document.getElementById('lb-img');
   var vid=document.getElementById('lb-vid');
+  // Fullscreen is for photos: a playing video already has it in its own
+  // controls, and two fullscreen buttons on one player is noise.
+  document.getElementById('lb-fs').hidden = (type==='video');
   if(type==='video'){
     img.style.display='none';vid.style.display='block';
     vid.src=url;vid.play();
@@ -247,9 +251,30 @@ function closeLb(){
   var vid=document.getElementById('lb-vid');
   vid.pause();vid.src='';
   document.getElementById('lb-img').src='';
+  // Leave fullscreen on close, so the next open starts grounded (and Escape
+  // does not have to be pressed twice to get back to the page).
+  if(document.fullscreenElement)document.exitFullscreen();
   document.getElementById('lb').classList.remove('on');
   lbIndex=-1;
 }
+// Fullscreen the whole lightbox, so the arrows and the info panel stay
+// usable at screen size. The glyph stays put; the aria/title text carries
+// the state.
+function toggleLbFullscreen(){
+  var lb=document.getElementById('lb');
+  if(document.fullscreenElement){
+    document.exitFullscreen();
+  } else if(lb.requestFullscreen){
+    lb.requestFullscreen();
+  }
+}
+document.addEventListener('fullscreenchange',function(){
+  var b=document.getElementById('lb-fs');
+  if(!b)return;
+  var on=!!document.fullscreenElement;
+  b.title=on?'Exit fullscreen':'Fullscreen';
+  b.setAttribute('aria-label',b.title);
+});
 // Prev/next across the visible tiles in DOM order. Every view and the static
 // export renders its tiles with data-lb-url, so one walk covers them all; a
 // tile hidden inside a collapsed group (offsetParent === null) is skipped.
@@ -325,6 +350,14 @@ function bestDateBucket(f){
   return {year: d.slice(0,4), month: d.slice(0,7), day: d.slice(0,10)};
 }
 var dateState = {level:'year', year:null, month:null};
+// The drilled-down pages state their period's size next to the breadcrumb,
+// so "is this month worth opening" is answerable before clicking into it.
+// Buckets already carry per-child counts; the day gallery reads the files
+// response's own total.
+function showPeriodCount(n){
+  document.getElementById('dateBreadcrumb').insertAdjacentHTML('beforeend',
+    ' <span class="date-period-count">'+n+' item'+(n===1?'':'s')+'</span>');
+}
 // The files last rendered into #dateGrid, so a mode switch re-renders without a
 // refetch. Date galleries are one-shot (no paging).
 var dateFiles=null;
@@ -403,6 +436,7 @@ function buildMonthView(year){
   var narrowing=document.getElementById('dateNarrowing');
   if(narrowing)narrowing.innerHTML='';
   var draw=function(b){
+    showPeriodCount(b.reduce(function(s,x){return s+x.count;},0));
     document.getElementById('dateGrid').innerHTML=
       dateCards(b,function(k){return "buildDayView('"+k+"')";});
   };
@@ -416,6 +450,7 @@ function buildDayView(month){
   var narrowing=document.getElementById('dateNarrowing');
   if(narrowing)narrowing.innerHTML='';
   var draw=function(b){
+    showPeriodCount(b.reduce(function(s,x){return s+x.count;},0));
     document.getElementById('dateGrid').innerHTML=
       dateCards(b,function(k){return "buildDayGallery('"+k+"')";});
   };
@@ -432,13 +467,17 @@ function buildDayGallery(day){
     var files=dateKeepFiles().filter(function(f){
       var d=bestDateJs(f); return d && d.slice(0,10)===day;
     });
+    showPeriodCount(files.length);
     renderDateFiles(files,'No files for '+day+'.');
     return;
   }
   grid.innerHTML='<p class="muted">Loading\u2026</p>';
   fetch('/api/files?view=date&date='+encodeURIComponent(day)+'&limit=500')
     .then(function(r){return r.json();})
-    .then(function(d){ renderDateFiles(d.files||[],'No files for '+day+'.'); })
+    .then(function(d){
+      showPeriodCount(d.total!=null?d.total:(d.files||[]).length);
+      renderDateFiles(d.files||[],'No files for '+day+'.');
+    })
     .catch(function(){ grid.innerHTML='<p class="muted">Could not load that day.</p>'; });
 }
 function fetchDateFiles(params,emptyText){
@@ -446,7 +485,10 @@ function fetchDateFiles(params,emptyText){
   grid.innerHTML='<p class="muted">Loading...</p>';
   fetch('/api/files?view=date&'+params+'&limit=500')
     .then(function(r){return r.json();})
-    .then(function(d){ renderDateFiles(d.files||[],emptyText); })
+    .then(function(d){
+      showPeriodCount(d.total!=null?d.total:(d.files||[]).length);
+      renderDateFiles(d.files||[],emptyText);
+    })
     .catch(function(){ grid.innerHTML='<p class="muted">Could not load that date.</p>'; });
 }
 function renderDateBreadcrumb(prefix){
