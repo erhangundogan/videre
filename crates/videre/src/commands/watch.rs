@@ -79,19 +79,12 @@ pub fn run(mut args: WatchArgs, ctx: &CommandContext) -> Result<()> {
     // No pipeline_runs row: watch has no "finished" moment, only running or not.
     let _watch_lock = videre_core::library_locks::try_command(&ctx.library, "watch")?;
 
-    // Startup incremental scan: catch everything that changed while watch
-    // was down. Cheap because it is incremental.
-    if !args.silent {
-        eprintln!("videre watch: startup scan");
-    }
-    if let Err(e) = reconcile(&args, ctx) {
-        eprintln!("videre watch: startup scan error: {e}");
-    }
-    // Test-only bounded exit: one startup pass then stop. Same category as
-    // VIDERE_TEST_REQUIRE_MODELS; never documented as a knob.
-    if std::env::var_os("VIDERE_WATCH_ONCE").is_some() {
-        return Ok(());
-    }
+    // The watcher registers BEFORE the startup reconcile: anything that lands
+    // while the startup scan walks queues in the event channel and drains
+    // right after, so the gap between "walked this directory" and "watching
+    // this directory" cannot swallow a file. Registration failure (no event
+    // backend on this mount) reaches the degraded arm, which runs the same
+    // startup scan before falling back to the internal rescan.
     match event_loop(&args, ctx) {
         Ok(()) => Ok(()),
         Err(e) => {
@@ -100,6 +93,14 @@ pub fn run(mut args: WatchArgs, ctx: &CommandContext) -> Result<()> {
                  {FALLBACK_RESCAN_SECS}s. On Linux, raising fs.inotify.max_user_watches \
                  may restore live watching."
             );
+            if let Err(e) = reconcile(&args, ctx) {
+                eprintln!("videre watch: startup scan error: {e}");
+            }
+            // Test-only bounded exit still honors the degraded arm's startup
+            // pass, so the once-hook never hangs on the fallback loop.
+            if std::env::var_os("VIDERE_WATCH_ONCE").is_some() {
+                return Ok(());
+            }
             degraded_rescan_loop(&args, ctx)
         }
     }
@@ -238,6 +239,26 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
     let mut pending: BTreeSet<std::path::PathBuf> = BTreeSet::new();
     let mut last_maintenance = Instant::now();
 
+    // Startup incremental scan, run with the watcher already registered:
+    // everything that changed while watch was down is caught here, and
+    // anything that lands while the scan walks queues in the channel and
+    // drains right after, so the walk-to-watch gap cannot lose a file. The
+    // hashed paths seed the pending set: a downstream stage that was busy
+    // while the scan ran retries them on the backoff, not on the hourly
+    // maintenance pass.
+    if !args.silent {
+        eprintln!("videre watch: startup scan");
+    }
+    match reconcile(&args, ctx) {
+        Ok(startup_files) => pending.extend(startup_files),
+        Err(e) => eprintln!("videre watch: startup scan error: {e}"),
+    }
+    // Test-only bounded exit: registration plus one startup pass then stop.
+    // Same category as VIDERE_TEST_REQUIRE_MODELS; never documented as a knob.
+    if std::env::var_os("VIDERE_WATCH_ONCE").is_some() {
+        return Ok(());
+    }
+
     loop {
         let timeout = block_timeout(
             pending.is_empty(),
@@ -283,10 +304,15 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
                 }
                 drain_pending(args, ctx, &mut pending);
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                // The backend died (its thread dropped or panicked): stop
+                // pretending to watch. Returning the error sends run() into
+                // the degraded arm, which reconciles and keeps the library
+                // current instead of exiting a watcher in silence.
+                return Err(anyhow::anyhow!("event channel disconnected"));
+            }
         }
     }
-    Ok(())
 }
 
 /// Try to process everything pending as one batch. If the scan stage was
@@ -316,17 +342,21 @@ fn drain_pending(
         }
     };
     let batch: Vec<std::path::PathBuf> = pending.iter().cloned().collect();
+    // The batch survives until every enabled event-driven stage has actually
+    // run: the scan is incremental, so the retry re-hashes nothing and the
+    // busy stage finds its work through its own skip sets. Clearing earlier
+    // would strand a scanned file on the hourly maintenance pass, which is
+    // the silent drop the pending set exists to prevent.
+    let mut complete = true;
     if args.scan {
-        match run_scan_stage(args, ctx, &conn, Some(&batch)) {
-            Ok(StageOutcome::Ran) => pending.clear(),
+        match run_scan_stage(args, ctx, &conn, Some(&batch), &mut Vec::new()) {
+            Ok(StageOutcome::Ran) => {}
             Ok(StageOutcome::Busy) => return, // keep pending; retry on the next backoff
             Err(e) => {
                 eprintln!("videre watch: scan stage error: {e}");
-                pending.clear();
+                complete = false;
             }
         }
-    } else {
-        pending.clear();
     }
     if args.faces || args.heic || args.location {
         if let Err(e) = face_db::create_faces_table(&conn) {
@@ -335,8 +365,13 @@ fn drain_pending(
         }
         videre_core::location::ensure_location_column(&conn);
         if args.faces {
-            if let Err(e) = run_faces_stage(args, ctx, &conn) {
-                eprintln!("videre watch: faces stage error: {e}");
+            match run_faces_stage(args, ctx, &conn) {
+                Ok(StageOutcome::Ran) => {}
+                Ok(StageOutcome::Busy) => complete = false,
+                Err(e) => {
+                    eprintln!("videre watch: faces stage error: {e}");
+                    complete = false;
+                }
             }
         }
         if args.heic {
@@ -345,10 +380,18 @@ fn drain_pending(
             }
         }
         if args.location {
-            if let Err(e) = run_location_stage(args, ctx, &conn) {
-                eprintln!("videre watch: location stage error: {e}");
+            match run_location_stage(args, ctx, &conn) {
+                Ok(StageOutcome::Ran) => {}
+                Ok(StageOutcome::Busy) => complete = false,
+                Err(e) => {
+                    eprintln!("videre watch: location stage error: {e}");
+                    complete = false;
+                }
             }
         }
+    }
+    if complete {
+        pending.clear();
     }
     // A drained batch is watch activity the same way a cycle completion is.
     if let Err(e) = videre_core::pipeline_runs::record_heartbeat_in(&conn, &ctx.library, "watch") {
@@ -406,16 +449,20 @@ fn tracked_stage(
     }
 }
 
-fn reconcile(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
+fn reconcile(args: &WatchArgs, ctx: &CommandContext) -> Result<Vec<std::path::PathBuf>> {
     // Recheck before every cycle: a root renamed or replaced under a
     // long-running watch must fail the cycle rather than process whatever now
     // sits at the path. open_existing rechecks again at the write boundary.
     ctx.library.ensure_root_identity()?;
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    // The paths this cycle's scan hashed. The caller that needs them is the
+    // startup one: its downstream stages can be busy while the scan runs, and
+    // the hashed files are exactly the work those stages must retry.
+    let mut hashed: Vec<std::path::PathBuf> = Vec::new();
     if args.scan {
         // A scan failure this cycle does not invalidate earlier rows; log and
         // carry on to the stages below.
-        if let Err(e) = run_scan_stage(args, ctx, &conn, None) {
+        if let Err(e) = run_scan_stage(args, ctx, &conn, None, &mut hashed) {
             eprintln!("videre watch: scan stage error: {e}");
         }
     }
@@ -452,7 +499,7 @@ fn reconcile(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
     if let Err(e) = videre_core::pipeline_runs::record_heartbeat_in(&conn, &ctx.library, "watch") {
         eprintln!("videre watch: could not record the cycle heartbeat: {e}");
     }
-    Ok(())
+    Ok(hashed)
 }
 
 /// Writes XMP sidecars for the current labels (marks, named face regions,
@@ -844,6 +891,7 @@ fn run_scan_stage(
     ctx: &CommandContext,
     conn: &rusqlite::Connection,
     candidates: Option<&[std::path::PathBuf]>,
+    hashed: &mut Vec<std::path::PathBuf>,
 ) -> Result<StageOutcome> {
     let selection = super::selection_args::path_selection(Some(&args.media), None)?;
     let root = ctx.library.paths.root.clone();
@@ -861,7 +909,31 @@ fn run_scan_stage(
                     .into_iter()
                     .filter(|p| !p.components().any(|c| c.as_os_str() == ".videre"))
                     .collect(),
-                Some(paths) => paths.clone(),
+                Some(paths) => {
+                    // A populated folder moved into the library arrives as one
+                    // event whose path is a directory; hashing that path
+                    // fails, so directory candidates expand to the files
+                    // inside them (same .videre exclusion as the walk). File
+                    // candidates pass through untouched.
+                    let mut expanded: Vec<std::path::PathBuf> = Vec::new();
+                    for p in paths {
+                        if p.is_dir() {
+                            expanded.extend(
+                                walkdir::WalkDir::new(p)
+                                    .into_iter()
+                                    .filter_map(|e| e.ok())
+                                    .filter(|e| e.file_type().is_file())
+                                    .map(|e| e.path().to_path_buf())
+                                    .filter(|p| {
+                                        !p.components().any(|c| c.as_os_str() == ".videre")
+                                    }),
+                            );
+                        } else {
+                            expanded.push(p.clone());
+                        }
+                    }
+                    expanded
+                }
             };
             let walked = base.len();
             let paths: Vec<_> = if selection.is_empty() {
@@ -889,6 +961,10 @@ fn run_scan_stage(
                 .par_iter()
                 .filter_map(|path| hasher::hash_file(path).ok())
                 .collect();
+            // Reported to the caller: the startup pass feeds these into the
+            // pending set, so a downstream stage that was busy while the scan
+            // ran retries them on the backoff instead of waiting an hour.
+            hashed.extend(records.iter().map(|r| std::path::PathBuf::from(&r.path)));
             sqlite_output::write_records_in(conn, &ctx.library, &records)?;
             let prec = args.xmp.resolve_from(&ctx.library.settings)?;
             // XMP reconcile covers the files hashed in this run. A scoped

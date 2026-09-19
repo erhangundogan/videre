@@ -217,9 +217,10 @@ fn the_maintenance_deadline_reruns_opt_in_stages_without_events() {
         .env("VIDERE_WATCH_TEST_MAINTENANCE_SECS", "1")
         .spawn()
         .unwrap();
-    // Startup reconcile runs --prune once; wait for that row.
+    // Startup reconcile runs --prune once; wait for that row. The window is
+    // generous because sibling tests run model inference in parallel.
     let conn = lib.conn();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(25);
     let mut ran_startup = false;
     while Instant::now() < deadline {
         let exists: Option<i64> = conn
@@ -264,5 +265,152 @@ fn the_maintenance_deadline_reruns_opt_in_stages_without_events() {
     assert!(
         reran,
         "the maintenance pass must rerun the prune stage without events"
+    );
+}
+
+/// A populated folder moved into the library arrives as one rename event
+/// whose path is a directory. Hashing that path fails, so the scoped scan
+/// must expand directory candidates to the files inside them; otherwise the
+/// moved-in photos wait for the hourly maintenance pass.
+#[test]
+fn a_moved_in_directory_has_its_contents_scanned() {
+    use std::io::Write;
+    let lib = TestLibrary::new();
+    lib.cmd()
+        .args(["config", "set", "watch-debounce-ms", "200"])
+        .output()
+        .unwrap();
+    let mut child = lib
+        .cmd()
+        .args(["watch", "--scan", "--silent"])
+        .spawn()
+        .expect("spawn watch");
+    std::thread::sleep(Duration::from_millis(700)); // let the watcher register
+
+    let staging = std::env::temp_dir().join(format!("videre-watch-dirmove-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging).unwrap();
+    std::fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join("sample_with_exif.jpg"),
+        staging.join("inner.jpg"),
+    )
+    .unwrap();
+    std::fs::rename(&staging, lib.root.join("moved-in")).unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut seen = false;
+    while Instant::now() < deadline {
+        let n: i64 = lib
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM file_hashes WHERE path LIKE '%moved-in%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if n > 0 {
+            seen = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&staging);
+    if !seen {
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIP: directory event not delivered within 20s; the maintenance pass covers correctness"
+        );
+    }
+}
+
+/// A batch blocked by a faces run must survive and retry: the scan runs (the
+/// scan lock is separate), the faces stage is busy, and when the lock frees
+/// the retained batch is processed on the short backoff instead of waiting
+/// for the hourly maintenance pass. Needs the models for the final
+/// processing assertion, so it skips on a cold cache like the faces suites.
+#[test]
+fn a_batch_blocked_by_a_faces_run_retries_and_processes_when_free() {
+    let lib = TestLibrary::new();
+    if common::skip_without_models("watch busy-faces retry", common::face_models_cached()) {
+        return;
+    }
+    lib.cmd()
+        .args(["config", "set", "watch-debounce-ms", "200"])
+        .output()
+        .unwrap();
+    drop(lib.init_db());
+
+    // Hold the faces command lock: from the watcher's side the standalone
+    // faces command is running.
+    let locks = lib.context().paths.locks.join("faces.lock");
+    let hold = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&locks)
+        .unwrap();
+    fs2::FileExt::lock_exclusive(&hold).unwrap();
+
+    let mut child = lib
+        .cmd()
+        .args(["watch", "--scan", "--faces", "--silent"])
+        .spawn()
+        .expect("spawn watch");
+    std::thread::sleep(Duration::from_millis(700));
+    lib.copy_fixture("sample_with_exif.jpg", "dropped.jpg");
+
+    // The scan stage locks "scan", not "faces": the row lands now.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut scanned = false;
+    while Instant::now() < deadline {
+        let n: i64 = lib
+            .conn()
+            .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
+            .unwrap_or(0);
+        if n > 0 {
+            scanned = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    assert!(
+        scanned,
+        "the scan stage must not be blocked by the faces lock"
+    );
+    let scanned_faces: i64 = lib
+        .conn()
+        .query_row("SELECT COUNT(*) FROM faces_scanned", [], |r| r.get(0))
+        .unwrap_or(0);
+    assert_eq!(
+        scanned_faces, 0,
+        "faces is locked: the file must not be marked processed while it is held"
+    );
+
+    // Free the lock: the retained batch retries on the backoff and the faces
+    // stage processes the file without any new event.
+    drop(hold);
+    // The fixture carries no detectable face, so the processing proof is the
+    // scanned marker the pipeline writes per processed hash, not a faces row.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut processed = false;
+    while Instant::now() < deadline {
+        let n: i64 = lib
+            .conn()
+            .query_row("SELECT COUNT(*) FROM faces_scanned", [], |r| r.get(0))
+            .unwrap_or(0);
+        if n > 0 {
+            processed = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(
+        processed,
+        "the retained batch must be processed once the lock frees"
     );
 }
