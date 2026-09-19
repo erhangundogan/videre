@@ -170,13 +170,14 @@ mod scheduler_tests {
         let mut pending: std::collections::BTreeSet<std::path::PathBuf> =
             std::collections::BTreeSet::new();
         pending.insert(std::path::PathBuf::from("/lib/a.jpg"));
-        apply_rescan_outcome(
+        let complete = apply_rescan_outcome(
             &mut pending,
             Some(ReconcileOutcome {
                 hashed: vec![std::path::PathBuf::from("/lib/b.jpg")],
                 complete: false,
             }),
         );
+        assert!(!complete, "an incomplete reconcile is owed");
         assert!(
             pending.contains(std::path::Path::new("/lib/a.jpg"))
                 && pending.contains(std::path::Path::new("/lib/b.jpg")),
@@ -189,7 +190,8 @@ mod scheduler_tests {
         let mut pending: std::collections::BTreeSet<std::path::PathBuf> =
             std::collections::BTreeSet::new();
         pending.insert(std::path::PathBuf::from("/lib/a.jpg"));
-        apply_rescan_outcome(&mut pending, None);
+        let complete = apply_rescan_outcome(&mut pending, None);
+        assert!(!complete, "a failed reconcile is owed");
         assert!(
             pending.contains(std::path::Path::new("/lib/a.jpg")),
             "a failed reconcile must not discard work"
@@ -335,10 +337,19 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
     if !args.silent {
         eprintln!("videre watch: startup scan");
     }
-    match reconcile(args, ctx) {
-        Ok(outcome) => pending.extend(outcome.hashed),
-        Err(e) => eprintln!("videre watch: startup scan error: {e}"),
-    }
+    // An incomplete startup reconcile (a stage was busy, the scan lock was
+    // taken) is a debt: the loop retries it on the backoff exactly like a
+    // dropped-events recovery that did not finish.
+    let mut rescan_owed = !apply_rescan_outcome(
+        &mut pending,
+        match reconcile(args, ctx) {
+            Ok(outcome) => Some(outcome),
+            Err(e) => {
+                eprintln!("videre watch: startup scan error: {e}");
+                None
+            }
+        },
+    );
     // Test-only bounded exit: registration plus one startup pass then stop.
     // Same category as VIDERE_TEST_REQUIRE_MODELS; never documented as a knob.
     if std::env::var_os("VIDERE_WATCH_ONCE").is_some() {
@@ -346,8 +357,10 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
     }
 
     loop {
+        // A pending batch, an owed rescan, or the maintenance deadline: each
+        // buys its own short wake instead of an idle block.
         let timeout = block_timeout(
-            pending.is_empty(),
+            pending.is_empty() && !rescan_owed,
             last_maintenance.elapsed(),
             maintenance,
             PENDING_RETRY_BACKOFF,
@@ -364,7 +377,7 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
                         eprintln!("videre watch: rescan error: {e}");
                         e
                     });
-                    apply_rescan_outcome(&mut pending, outcome.ok());
+                    rescan_owed = !apply_rescan_outcome(&mut pending, outcome.ok());
                     last_maintenance = Instant::now();
                     continue;
                 }
@@ -382,11 +395,22 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
                     eprintln!("videre watch: rescan error: {e}");
                     e
                 });
-                apply_rescan_outcome(&mut pending, outcome.ok());
+                rescan_owed = !apply_rescan_outcome(&mut pending, outcome.ok());
                 last_maintenance = Instant::now();
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                if last_maintenance.elapsed() >= maintenance {
+                if rescan_owed {
+                    // An earlier reconcile did not finish (a stage was busy,
+                    // the scan lock was taken): attempt it again on the
+                    // backoff. A complete attempt clears the debt, and the
+                    // attempt itself counts as watch activity.
+                    let outcome = reconcile(args, ctx).map_err(|e| {
+                        eprintln!("videre watch: rescan error: {e}");
+                        e
+                    });
+                    rescan_owed = !apply_rescan_outcome(&mut pending, outcome.ok());
+                    last_maintenance = Instant::now();
+                } else if last_maintenance.elapsed() >= maintenance {
                     if let Err(e) = reconcile(args, ctx) {
                         eprintln!("videre watch: maintenance error: {e}");
                     }
@@ -553,16 +577,23 @@ struct ReconcileOutcome {
 /// supersedes the batch (its full walk re-found everything); an incomplete
 /// one seeds the paths its scan did hash and keeps whatever was waiting, so
 /// the backoff retries the busy stages instead of the hourly pass. `None`
-/// (the reconcile itself errored) touches nothing.
+/// (the reconcile itself errored) touches nothing. Returns `true` only when
+/// the reconcile finished completely: `false` is a debt the caller owes and
+/// must attempt again on the backoff, even when nothing was hashed.
 fn apply_rescan_outcome(
     pending: &mut std::collections::BTreeSet<std::path::PathBuf>,
     outcome: Option<ReconcileOutcome>,
-) {
-    if let Some(outcome) = outcome {
-        pending.extend(outcome.hashed);
-        if outcome.complete {
-            pending.clear();
+) -> bool {
+    match outcome {
+        Some(outcome) => {
+            pending.extend(outcome.hashed);
+            if outcome.complete {
+                pending.clear();
+                return true;
+            }
+            false
         }
+        None => false,
     }
 }
 
@@ -580,10 +611,15 @@ fn reconcile(args: &WatchArgs, ctx: &CommandContext) -> Result<ReconcileOutcome>
     if args.scan {
         // A scan failure this cycle does not invalidate earlier rows; log and
         // carry on to the stages below, but report the cycle as incomplete so
-        // the caller keeps any waiting batch alive.
-        if let Err(e) = run_scan_stage(args, ctx, &conn, None, &mut hashed) {
-            eprintln!("videre watch: scan stage error: {e}");
-            complete = false;
+        // the caller keeps any waiting batch alive. A busy scan lock is the
+        // same debt: the walk never ran, so nothing was re-found.
+        match run_scan_stage(args, ctx, &conn, None, &mut hashed) {
+            Ok(StageOutcome::Ran) => {}
+            Ok(StageOutcome::Busy) => complete = false,
+            Err(e) => {
+                eprintln!("videre watch: scan stage error: {e}");
+                complete = false;
+            }
         }
     }
     if args.faces || args.heic || args.location || args.prune || args.export_xmp {
