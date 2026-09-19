@@ -56,7 +56,7 @@ fn the_face_recluster_stage_runs_once_per_new_face_and_then_skips() {
     .unwrap();
     drop(conn);
 
-    let first = watch_once(&lib, &["--faces"]);
+    watch_once(&lib, &["--faces"]);
     let conn = lib.conn();
     let status: String = conn
         .query_row(
