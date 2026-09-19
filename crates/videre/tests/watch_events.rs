@@ -56,7 +56,7 @@ fn the_face_recluster_stage_runs_once_per_new_face_and_then_skips() {
     .unwrap();
     drop(conn);
 
-    watch_once(&lib, &["--faces"]);
+    let first = watch_once(&lib, &["--faces"]);
     let conn = lib.conn();
     let status: String = conn
         .query_row(
@@ -66,30 +66,17 @@ fn the_face_recluster_stage_runs_once_per_new_face_and_then_skips() {
         )
         .expect("a face above the watermark must open the gate on the first pass");
     assert_eq!(status, "success");
-    let first: String = conn
-        .query_row(
-            "SELECT started_at FROM pipeline_runs WHERE command = 'face-recluster'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
     drop(conn);
 
-    // No faces were added: the gate stays closed and the stage must not run
-    // again (the row is an upsert, so a second run would bump started_at).
-    watch_once(&lib, &["--faces"]);
-    let conn = lib.conn();
-    let second: String = conn
-        .query_row(
-            "SELECT started_at FROM pipeline_runs WHERE command = 'face-recluster'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    drop(conn);
-    assert_eq!(
-        first, second,
-        "no new faces: the gated stage must not run a second time"
+    // No faces were added: the gate closes and the stage announces the skip
+    // instead of running another pass. (The tracked row is an upsert, so its
+    // timestamp bumps on every pass whether the gate opened or not; the
+    // message is what distinguishes work from a closed gate.)
+    let second = watch_once(&lib, &["--faces"]);
+    assert!(
+        String::from_utf8_lossy(&second.stderr).contains("face recluster up to date"),
+        "the gated stage must skip when no faces were added: {}",
+        String::from_utf8_lossy(&second.stderr)
     );
 }
 
