@@ -78,6 +78,66 @@ fn reset_on_a_library_where_faces_never_ran_bails_out() {
     assert!(stderr.contains("nothing to reset"), "{stderr}");
 }
 
+/// The startup migrations (notably the cluster-id detach) run inside
+/// `create_faces_table`, which the faces command called before any reset
+/// check: a dry-run or a refusal reported "nothing was deleted" while
+/// silently clearing the machine grouping of labeled faces. Consent-gated
+/// means consent-gated for every write, migrations included.
+#[test]
+fn reset_dry_run_and_refusal_leave_machine_state_untouched() {
+    let lib = seeded();
+    let conn = lib.conn();
+    conn.execute("UPDATE faces SET cluster_id = 42 WHERE hash = 'abc123'", [])
+        .unwrap();
+    drop(conn);
+
+    let out = lib
+        .cmd()
+        .args(["faces", "--reset", "--dry-run", "--yes"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let cid: Option<i64> = lib
+        .conn()
+        .query_row(
+            "SELECT cluster_id FROM faces WHERE hash = 'abc123'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        cid,
+        Some(42),
+        "a dry-run must not run migrations that clear machine grouping"
+    );
+
+    let out = lib
+        .cmd()
+        .args(["faces", "--reset"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "non-interactive reset must refuse");
+    let cid: Option<i64> = lib
+        .conn()
+        .query_row(
+            "SELECT cluster_id FROM faces WHERE hash = 'abc123'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        cid,
+        Some(42),
+        "a refused reset must not run migrations either"
+    );
+}
+
 #[test]
 fn reset_with_dry_run_deletes_nothing() {
     let lib = seeded();

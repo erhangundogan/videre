@@ -177,7 +177,11 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
         videre_core::library_locks::ActivityMode::Shared
     };
     let _activity = videre_core::library_locks::try_activity(&ctx.library, activity_mode)?;
-    face_db::create_faces_table(&conn)?;
+    // The faces tables (and the migrations create_faces_table runs, notably
+    // the labeled-face cluster detach) are deliberately NOT created here:
+    // a --reset dry-run or refusal must leave the library's face state
+    // completely untouched, migrations included. The table creation happens
+    // after the reset block below, and reset_all runs it itself post-consent.
     // Held for the whole run, both the detection and the recluster-only paths,
     // so a second faces run against this library is refused rather than racing.
     let guard = videre_core::library_locks::try_command(&ctx.library, "faces")?;
@@ -266,6 +270,11 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
              grouping; rebuilding from absolute beginning"
         );
     }
+
+    // Everything past this point either consented to mutation (the wipe
+    // already ran) or never writes face state: now the tables and their
+    // migrations may come into being.
+    face_db::create_faces_table(&conn)?;
 
     // Shares `narrow` with embed and classify: same filtering, same "N of M"
     // line, one implementation.

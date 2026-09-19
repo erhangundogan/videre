@@ -87,7 +87,9 @@ safe.
 Assigning a face to a person freezes it. Clustering, `--recluster`, watch, and
 every other automatic process leave labeled faces exactly as they are. You
 remove a label in the gallery's People tab, or wipe everything at once with
-`videre faces --reset`.
+`videre faces --reset`. Removing a person returns their faces to the
+unassigned pool and reopens the grouping pass, so the next `--recluster` (or
+watch's maintenance pass) regroups them fresh.
 
 | Symptom | Try |
 |---|---|
