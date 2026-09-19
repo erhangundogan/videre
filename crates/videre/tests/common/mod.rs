@@ -276,6 +276,15 @@ impl TestLibrary {
         videre_core::library_db::open_existing(&self.context()).unwrap()
     }
 
+    /// Open the existing local database, or `None` when another videre
+    /// process holds the activity lease at this instant. For tests that poll
+    /// a live watcher: the watcher's own stages hold the lease for their
+    /// duration, so an open can legitimately lose the race and must be
+    /// retried by the caller rather than panic.
+    pub fn try_conn(&self) -> Option<rusqlite::Connection> {
+        videre_core::library_db::open_existing(&self.context()).ok()
+    }
+
     /// Initialize this library's `.videre/hashes.db` with the full schema, as a
     /// scan would, and return a connection for direct seeding.
     ///
