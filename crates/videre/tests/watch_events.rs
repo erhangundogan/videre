@@ -303,12 +303,15 @@ fn a_moved_in_directory_has_its_contents_scanned() {
     let mut seen = false;
     while Instant::now() < deadline {
         let n: i64 = lib
-            .conn()
-            .query_row(
-                "SELECT COUNT(*) FROM file_hashes WHERE path LIKE '%moved-in%'",
-                [],
-                |r| r.get(0),
-            )
+            .try_conn()
+            .and_then(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM file_hashes WHERE path LIKE '%moved-in%'",
+                    [],
+                    |r| r.get(0),
+                )
+                .ok()
+            })
             .unwrap_or(0);
         if n > 0 {
             seen = true;
@@ -368,8 +371,11 @@ fn a_batch_blocked_by_a_faces_run_retries_and_processes_when_free() {
     let mut scanned = false;
     while Instant::now() < deadline {
         let n: i64 = lib
-            .conn()
-            .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
+            .try_conn()
+            .and_then(|c| {
+                c.query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
+                    .ok()
+            })
             .unwrap_or(0);
         if n > 0 {
             scanned = true;
@@ -382,8 +388,11 @@ fn a_batch_blocked_by_a_faces_run_retries_and_processes_when_free() {
         "the scan stage must not be blocked by the faces lock"
     );
     let scanned_faces: i64 = lib
-        .conn()
-        .query_row("SELECT COUNT(*) FROM faces_scanned", [], |r| r.get(0))
+        .try_conn()
+        .and_then(|c| {
+            c.query_row("SELECT COUNT(*) FROM faces_scanned", [], |r| r.get(0))
+                .ok()
+        })
         .unwrap_or(0);
     assert_eq!(
         scanned_faces, 0,
@@ -399,8 +408,11 @@ fn a_batch_blocked_by_a_faces_run_retries_and_processes_when_free() {
     let mut processed = false;
     while Instant::now() < deadline {
         let n: i64 = lib
-            .conn()
-            .query_row("SELECT COUNT(*) FROM faces_scanned", [], |r| r.get(0))
+            .try_conn()
+            .and_then(|c| {
+                c.query_row("SELECT COUNT(*) FROM faces_scanned", [], |r| r.get(0))
+                    .ok()
+            })
             .unwrap_or(0);
         if n > 0 {
             processed = true;
