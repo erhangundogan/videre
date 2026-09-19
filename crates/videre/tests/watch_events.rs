@@ -350,6 +350,7 @@ fn a_batch_blocked_by_a_faces_run_retries_and_processes_when_free() {
     let hold = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
+        .truncate(false)
         .open(&locks)
         .unwrap();
     fs2::FileExt::lock_exclusive(&hold).unwrap();
