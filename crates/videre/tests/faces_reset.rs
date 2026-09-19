@@ -178,6 +178,61 @@ fn plain_faces_dry_run_writes_nothing() {
     );
 }
 
+/// A real dry-run over eligible files must not touch pipeline state either:
+/// track_in upserts the faces run row the moment detection is entered, and
+/// the round-3 guard on table creation did not cover it. Needs the models
+/// (detection actually runs), so it skips on a cold cache like the other
+/// faces suites.
+#[test]
+fn plain_faces_dry_run_writes_no_pipeline_row() {
+    let lib = seeded();
+    if common::skip_without_models("faces dry-run tracking", common::face_models_cached()) {
+        return;
+    }
+    // A second image whose hash is NOT in the faces skip set, so detection
+    // actually starts and reaches the run tracking under test. (The seeded
+    // face row marks 'abc123' as already done.)
+    {
+        let path = lib.context().paths.root.join("b.jpg");
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures")
+                .join("sample_with_exif.jpg"),
+            &path,
+        )
+        .unwrap();
+        let conn = lib.conn();
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, ext) VALUES (?1, 'def456', 'jpg')",
+            [path.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+    }
+    let out = lib
+        .cmd()
+        .args(["faces", "--dry-run", "--silent", "--min-cluster-size", "1"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let runs: i64 = lib
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM pipeline_runs WHERE command = 'faces'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        runs, 0,
+        "a dry-run must not record a faces run in the pipeline table"
+    );
+}
+
 #[test]
 fn reset_with_dry_run_deletes_nothing() {
     let lib = seeded();

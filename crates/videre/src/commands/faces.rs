@@ -375,10 +375,17 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
     {
         eprintln!("Warning: could not install interrupt handler: {e:#}");
     }
-    let outcome =
+    // A dry run writes nothing, and "nothing" includes the pipeline bookkeeping:
+    // track_in upserts the faces run row the moment it is entered and records
+    // the result on the way out. The run executes untracked, identically
+    // otherwise.
+    let outcome = if args.dry_run {
+        run_detection_and_clustering(&args, ctx, &conn, &to_process)?
+    } else {
         videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "faces", || {
             run_detection_and_clustering(&args, ctx, &conn, &to_process)
-        })?;
+        })?
+    };
 
     // Import any face names from XMP sidecars onto the faces just detected,
     // symmetric with the marks read-back on scan. Governed by the shared --xmp
