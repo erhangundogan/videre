@@ -249,7 +249,7 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
     if !args.silent {
         eprintln!("videre watch: startup scan");
     }
-    match reconcile(&args, ctx) {
+    match reconcile(args, ctx) {
         Ok(startup_files) => pending.extend(startup_files),
         Err(e) => eprintln!("videre watch: startup scan error: {e}"),
     }
