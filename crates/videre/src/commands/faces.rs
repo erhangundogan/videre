@@ -273,8 +273,14 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
 
     // Everything past this point either consented to mutation (the wipe
     // already ran) or never writes face state: now the tables and their
-    // migrations may come into being.
-    face_db::create_faces_table(&conn)?;
+    // migrations may come into being. --dry-run is the exception from the
+    // other side: it promises to write nothing, and create_faces_table runs
+    // migrations (the labeled-face cluster detach) that write. The tables
+    // exist either way (the library schema creates them at init), so the
+    // reads below lose nothing.
+    if !args.dry_run {
+        face_db::create_faces_table(&conn)?;
+    }
 
     // Shares `narrow` with embed and classify: same filtering, same "N of M"
     // line, one implementation.

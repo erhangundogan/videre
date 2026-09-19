@@ -138,6 +138,46 @@ fn reset_dry_run_and_refusal_leave_machine_state_untouched() {
     );
 }
 
+/// Plain `faces --dry-run` promises "detect but write nothing": the
+/// startup table creation runs migrations (the labeled-face cluster detach)
+/// that write, so a dry-run must skip it entirely.
+#[test]
+fn plain_faces_dry_run_writes_nothing() {
+    let lib = seeded();
+    let conn = lib.conn();
+    conn.execute("UPDATE faces SET cluster_id = 42 WHERE hash = 'abc123'", [])
+        .unwrap();
+    drop(conn);
+
+    // No eligible files (--ext heic, the library holds only a jpg) keeps the
+    // run model-free: detection never starts, which isolates the dry-run
+    // contract from the detection itself.
+    let out = lib
+        .cmd()
+        .args(["faces", "--dry-run", "--silent", "--ext", "heic"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let cid: Option<i64> = lib
+        .conn()
+        .query_row(
+            "SELECT cluster_id FROM faces WHERE hash = 'abc123'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        cid,
+        Some(42),
+        "a dry-run must not migrate face state, on any path"
+    );
+}
+
 #[test]
 fn reset_with_dry_run_deletes_nothing() {
     let lib = seeded();

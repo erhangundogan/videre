@@ -319,20 +319,39 @@ pub fn set_full_name(conn: &Connection, name: &str, full_name: &str) -> Result<(
 
 pub fn delete_person(conn: &Connection, label: &str) -> Result<()> {
     let label = videre_core::person::normalize(label).unwrap_or_else(|| label.to_string());
-    conn.execute(
-        "UPDATE faces SET person_label = NULL, confirmed = 0, is_primary = 0, cluster_id = NULL WHERE person_label = ?1",
-        rusqlite::params![label],
-    )?;
-    // The returned faces sit in the unassigned pool with ids the recluster
-    // watermark already covers: without resetting it, the gate stays closed
-    // and they wait for new faces before any regroup runs again. One delete
-    // reopens the machine's regroup for the whole library.
-    videre_core::library_state::set(
-        conn,
-        videre_core::library_state::FACE_RECLUSTER_WATERMARK,
-        0,
-    )?;
-    Ok(())
+    // One transaction: the faces either come back unassigned AND the
+    // regroup gate reopens, or nothing changes at all.
+    conn.execute_batch("BEGIN")?;
+    let result = (|| -> Result<()> {
+        let n = conn.execute(
+            "UPDATE faces SET person_label = NULL, confirmed = 0, is_primary = 0, cluster_id = NULL WHERE person_label = ?1",
+            rusqlite::params![label],
+        )?;
+        if n > 0 {
+            // The returned faces sit in the unassigned pool with ids the
+            // recluster watermark already covers: without resetting it, the
+            // gate stays closed and they wait for new faces before any
+            // regroup runs again. One real delete reopens the machine's
+            // regroup for the whole library. A delete that matched nothing
+            // must not schedule that pass for nothing.
+            videre_core::library_state::set(
+                conn,
+                videre_core::library_state::FACE_RECLUSTER_WATERMARK,
+                0,
+            )?;
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
 }
 
 /// Mark one face as the person's primary (their labeling-page thumbnail),
@@ -583,6 +602,22 @@ mod tests {
             faces_list(&conn).unwrap().singletons.len(),
             3,
             "3,4 join 5 as singletons"
+        );
+    }
+
+    #[test]
+    fn deleting_a_missing_person_leaves_the_regrouping_gate_alone() {
+        // A delete that matched zero faces is a no-op by design; it must not
+        // schedule a whole-library regroup (watermark reset) for nothing.
+        let conn = seed();
+        videre_core::face_db::advance_recluster_watermark(&conn).unwrap();
+        let before = videre_core::face_db::recluster_watermark(&conn).unwrap();
+        assert!(before > 0);
+        delete_person(&conn, "ghost").unwrap();
+        assert_eq!(
+            videre_core::face_db::recluster_watermark(&conn).unwrap(),
+            before,
+            "a no-op delete must not reopen the gated regroup"
         );
     }
 
