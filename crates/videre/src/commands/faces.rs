@@ -370,10 +370,15 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
         return Ok(());
     }
 
-    if let Err(e) =
-        videre_core::pipeline_runs::install_sigint_handler_in(ctx.library.clone(), "faces")
-    {
-        eprintln!("Warning: could not install interrupt handler: {e:#}");
+    // The interrupt handler marks the current faces row `interrupted` when
+    // Ctrl-C lands. A dry run has no row of ours to mark and must not
+    // overwrite a historical one, so it runs without the handler.
+    if !args.dry_run {
+        if let Err(e) =
+            videre_core::pipeline_runs::install_sigint_handler_in(ctx.library.clone(), "faces")
+        {
+            eprintln!("Warning: could not install interrupt handler: {e:#}");
+        }
     }
     // A dry run writes nothing, and "nothing" includes the pipeline bookkeeping:
     // track_in upserts the faces run row the moment it is entered and records
@@ -390,7 +395,11 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
     // Import any face names from XMP sidecars onto the faces just detected,
     // symmetric with the marks read-back on scan. Governed by the shared --xmp
     // precedence; db (the default) fills only unconfirmed faces.
-    let imported = import_face_regions(&args, ctx, &conn, &to_process)?;
+    let imported = if args.dry_run {
+        0
+    } else {
+        import_face_regions(&args, ctx, &conn, &to_process)?
+    };
     if imported > 0 && !args.silent {
         eprintln!("Imported {imported} face name(s) from XMP");
     }
