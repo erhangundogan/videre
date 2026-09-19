@@ -37,7 +37,7 @@ pub struct FacesArgs {
     /// Wipe all face state: people labels, grouping, and detection markers,
     /// then re-detect and regroup from scratch. Asks for confirmation; use
     /// --yes to skip
-    #[arg(long, alias = "reprocess")]
+    #[arg(long, alias = "reprocess", conflicts_with_all = ["recluster", "limit"])]
     reset: bool,
     /// Skip the --reset confirmation prompt
     #[arg(long)]
@@ -182,16 +182,61 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
     // so a second faces run against this library is refused rather than racing.
     let guard = videre_core::library_locks::try_command(&ctx.library, "faces")?;
 
+    // 1. Determine which hashes to process
+    let all_paths: Vec<(String, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT path, hash FROM file_hashes WHERE ext IN ('jpg','jpeg','png','gif','webp','bmp','tiff','heic')"
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+
+    // Scope narrows what the eligibility query above returned; it does not
+    // replace it. `faces` has no model id, so no `--category`.
+    let selection = super::selection_args::row_selection(
+        Some(&args.media),
+        Some(&args.dates),
+        Some(&args.place),
+        None,
+        Some(&args.presence),
+        Some(&args.paths),
+        Some(&args.marks),
+        Some(&args.tags),
+    )?;
+
     if args.reset {
-        // The scanned-marker table is written even when detection finds
-        // nothing, so an empty table means faces never ran: nothing to reset
-        // and nothing to consent to.
-        let ran_faces: i64 =
+        // A reset rebuilds the whole library: scoping the rebuild would wipe
+        // everything and redetect only a slice, and --recluster would wipe
+        // everything and then skip detection entirely. Both are refused
+        // before anything is deleted. (--recluster and --limit are also
+        // refused at parse time via conflicts_with; the selection flags are
+        // runtime values, so they are checked here.)
+        if !selection.is_empty() {
+            anyhow::bail!(
+                "--reset rebuilds the entire library; selection flags would \
+                 wipe everything and rebuild only part of it"
+            );
+        }
+        // Upgraded libraries can carry face rows from before the marker
+        // table existed, so faces alone counts as state to reset; both
+        // empty is the only "faces never ran".
+        let scanned: i64 =
             conn.query_row("SELECT COUNT(*) FROM faces_scanned", [], |r| r.get(0))?;
-        if ran_faces == 0 {
+        let face_rows: i64 = conn.query_row("SELECT COUNT(*) FROM faces", [], |r| r.get(0))?;
+        if scanned == 0 && face_rows == 0 {
             anyhow::bail!("faces has not run on this library; nothing to reset");
         }
         let (labeled, people) = videre_core::face_db::labeled_state_counts(&conn)?;
+        if args.dry_run {
+            eprintln!(
+                "videre faces --reset would delete {labeled} labeled face(s) across \
+                 {people} people, all grouping, and detection markers, then \
+                 re-detect and regroup the library; nothing was deleted"
+            );
+            return Ok(());
+        }
         if !args.yes {
             use std::io::IsTerminal;
             if !std::io::stdin().is_terminal() {
@@ -222,29 +267,6 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
         );
     }
 
-    // 1. Determine which hashes to process
-    let all_paths: Vec<(String, String)> = {
-        let mut stmt = conn.prepare(
-            "SELECT path, hash FROM file_hashes WHERE ext IN ('jpg','jpeg','png','gif','webp','bmp','tiff','heic')"
-        )?;
-        let rows = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows
-    };
-
-    // Scope narrows what the eligibility query above returned; it does not
-    // replace it. `faces` has no model id, so no `--category`.
-    let selection = super::selection_args::row_selection(
-        Some(&args.media),
-        Some(&args.dates),
-        Some(&args.place),
-        None,
-        Some(&args.presence),
-        Some(&args.paths),
-        Some(&args.marks),
-        Some(&args.tags),
-    )?;
     // Shares `narrow` with embed and classify: same filtering, same "N of M"
     // line, one implementation.
     //

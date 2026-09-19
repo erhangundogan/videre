@@ -184,8 +184,13 @@ In a non-interactive session (a script without a terminal, a cron job), reset
 refuses rather than wipe unseen: rerun with `--yes` after reading the counts.
 `--dry-run` shows the counts and deletes nothing.
 
+A reset is always whole-library. It cannot be combined with `--recluster` or
+`--limit`, and selection flags are refused: wiping everything and rebuilding
+only part of it is never what those combinations would deliver.
+
 If faces has never run on the library there is nothing to reset, and reset
-says so and exits.
+says so and exits. Libraries whose face rows predate the detection markers
+reset normally.
 
 ### Recovering more of one person
 

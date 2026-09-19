@@ -79,6 +79,118 @@ fn reset_on_a_library_where_faces_never_ran_bails_out() {
 }
 
 #[test]
+fn reset_with_dry_run_deletes_nothing() {
+    let lib = seeded();
+    let out = lib
+        .cmd()
+        .args(["faces", "--reset", "--dry-run", "--yes"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("nothing was deleted"),
+        "dry-run must say so: {stderr}"
+    );
+    let n: i64 = lib
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM faces WHERE person_label IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 1, "dry-run must leave every row in place");
+}
+
+#[test]
+fn reset_conflicts_with_recluster_and_limit() {
+    let lib = seeded();
+    for extra in [&["--recluster"][..], &["--limit", "1"][..]] {
+        let mut args = vec!["faces", "--reset", "--yes"];
+        args.extend_from_slice(extra);
+        let out = lib
+            .cmd()
+            .args(&args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert!(
+            !out.status.success(),
+            "--reset with {extra:?} must fail to parse: a wipe followed by a \
+             partial or detection-free rebuild is never what it promises"
+        );
+        let n: i64 = lib
+            .conn()
+            .query_row("SELECT COUNT(*) FROM faces", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "a rejected combination must wipe nothing");
+    }
+}
+
+#[test]
+fn reset_rejects_a_scoped_rebuild() {
+    let lib = seeded();
+    let out = lib
+        .cmd()
+        .args(["faces", "--reset", "--yes", "--ext", "heic"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "a scoped reset would wipe everything and rebuild only part"
+    );
+    let n: i64 = lib
+        .conn()
+        .query_row("SELECT COUNT(*) FROM faces", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 1, "a rejected reset must wipe nothing");
+}
+
+#[test]
+fn reset_reaches_libraries_with_rows_but_no_markers() {
+    // An upgraded library: face rows exist from before the marker table
+    // existed, so faces_scanned is empty while faces is not. There is
+    // state to reset, and the command must not claim otherwise.
+    let lib = TestLibrary::new();
+    let path = lib.context().paths.root.join("a.jpg");
+    lib.copy_fixture("sample_with_exif.jpg", "a.jpg");
+    let conn = lib.init_db();
+    conn.execute(
+        "INSERT INTO file_hashes (path, hash, ext) VALUES (?1, 'abc123', 'jpg')",
+        [path.to_string_lossy().as_ref()],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO faces (hash, bbox, embedding, confirmed, person_label)
+         VALUES ('abc123', '0,0,50,50', X'0000', 1, 'elena')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let probe = lib
+        .cmd()
+        .args(["faces", "--reset", "--yes", "--dry-run"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        probe.status.success(),
+        "an upgraded library has state to reset: {}",
+        String::from_utf8_lossy(&probe.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&probe.stderr);
+    assert!(stderr.contains("1 labeled"), "{stderr}");
+}
+
+#[test]
 fn reset_with_yes_wipes_and_starts_over() {
     let lib = seeded();
     if common::skip_without_models("faces reset rebuild", common::face_models_cached()) {
