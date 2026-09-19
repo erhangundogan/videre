@@ -411,9 +411,15 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
                     rescan_owed = !apply_rescan_outcome(&mut pending, outcome.ok());
                     last_maintenance = Instant::now();
                 } else if last_maintenance.elapsed() >= maintenance {
-                    if let Err(e) = reconcile(args, ctx) {
+                    // The safety net must be a net: an incomplete maintenance
+                    // reconcile (a stage was busy, the scan lock was taken)
+                    // becomes a debt retried on the backoff, not an hour of
+                    // silence. A complete one supersedes any waiting batch.
+                    let outcome = reconcile(args, ctx).map_err(|e| {
                         eprintln!("videre watch: maintenance error: {e}");
-                    }
+                        e
+                    });
+                    rescan_owed = !apply_rescan_outcome(&mut pending, outcome.ok());
                     last_maintenance = Instant::now();
                 }
                 drain_pending(args, ctx, &mut pending);
@@ -844,6 +850,21 @@ fn run_recluster_stage(
     ctx: &CommandContext,
     conn: &rusqlite::Connection,
 ) -> Result<StageOutcome> {
+    // The stage's own lock is its identity while it runs (the
+    // location-names precedent): a recluster can hold the shared faces lock
+    // for minutes, and `videre status` reads the row's liveness from a lock
+    // named after the row. Without this, a healthy pass reads as crashed.
+    // Taken before the shared faces lock so a crash mid-acquisition
+    // releases both in order.
+    let _identity = match videre_core::library_locks::try_command(&ctx.library, "face-recluster") {
+        Ok(guard) => guard,
+        Err(_) => {
+            if !args.silent {
+                eprintln!("videre watch: face recluster stage busy; will retry");
+            }
+            return Ok(StageOutcome::Busy);
+        }
+    };
     tracked_stage(
         ctx,
         conn,

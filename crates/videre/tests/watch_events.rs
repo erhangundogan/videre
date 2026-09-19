@@ -212,15 +212,41 @@ fn the_maintenance_deadline_reruns_opt_in_stages_without_events() {
         .output()
         .unwrap();
     assert!(out.status.success());
-    // Initialize before spawning: the polling below opens the database while
-    // the child is starting up.
     drop(lib.init_db());
+    // Not silent: the startup-scan line on stderr is the watcher-ready
+    // signal. The child's initialize takes the EXCLUSIVE activity lock while
+    // it runs, and acquisition is nonblocking on both sides, so opening the
+    // database before that line can starve the child at startup and make it
+    // exit. Wait for the line, then poll the database.
+    let err_path = lib.root.join("watch-stderr.log");
+    let err_file = std::fs::File::create(&err_path).unwrap();
     let mut child = lib
         .cmd()
-        .args(["watch", "--prune", "--silent"])
+        .args(["watch", "--prune"])
         .env("VIDERE_WATCH_TEST_MAINTENANCE_SECS", "1")
+        .stderr(std::process::Stdio::from(err_file))
         .spawn()
         .unwrap();
+    let ready_deadline = Instant::now() + Duration::from_secs(20);
+    let mut ready = false;
+    while Instant::now() < ready_deadline {
+        if std::fs::read_to_string(&err_path)
+            .unwrap_or_default()
+            .contains("videre watch: startup scan")
+        {
+            ready = true;
+            break;
+        }
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        ready,
+        "the watcher must reach its startup scan: {}",
+        std::fs::read_to_string(&err_path).unwrap_or_default()
+    );
     // Startup reconcile runs --prune once; wait for that row. The window is
     // generous because sibling tests run model inference in parallel, and the
     // watcher's own stages hold the activity lease while they run, so both
