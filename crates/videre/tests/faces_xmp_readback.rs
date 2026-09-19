@@ -77,7 +77,8 @@ fn imports_a_face_name_from_an_xmp_region() {
         &lib,
         &[
             "faces",
-            "--reprocess",
+            "--reset",
+            "--yes",
             "--min-cluster-size",
             "1",
             "--xmp",

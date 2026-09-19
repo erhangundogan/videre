@@ -140,10 +140,14 @@ pub fn faces_list(conn: &Connection) -> Result<FacesData> {
 
 /// Every face in one unassigned cluster (for the cluster detail page).
 pub fn cluster_detail(conn: &Connection, cluster_id: i64) -> Result<ClusterDetail> {
+    // Same unlabeled filter the cluster card uses: the page a card opens
+    // must show the population the card counted. A labeled face can hold no
+    // cluster id any more; the filter stays so the two queries cannot drift.
     let mut stmt = conn.prepare(
         "SELECT f.id, f.hash, fh.path FROM faces f \
          JOIN file_hashes fh ON f.hash = fh.hash \
-         WHERE f.cluster_id = ?1 ORDER BY f.id",
+         WHERE f.cluster_id = ?1 AND (f.confirmed = 0 OR f.person_label IS NULL) \
+         ORDER BY f.id",
     )?;
     let faces = stmt
         .query_map([cluster_id], |r| {
@@ -228,8 +232,11 @@ pub fn assign(conn: &Connection, face_ids: &[i64], person_label: &str) -> Result
             rusqlite::params![&label, &display],
         )?;
         for id in face_ids {
+            // Frozen faces: assignment detaches the face from machine
+            // grouping. A labeled face must never carry a cluster id for a
+            // later recluster to collide with.
             let n = conn.execute(
-                "UPDATE faces SET person_label = ?1, confirmed = 1 WHERE id = ?2",
+                "UPDATE faces SET person_label = ?1, confirmed = 1, cluster_id = NULL WHERE id = ?2",
                 rusqlite::params![label, id],
             )?;
             if n == 0 {
@@ -360,6 +367,49 @@ pub fn set_primary(conn: &Connection, face_id: i64, person_label: &str) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assign_detaches_the_face_from_its_cluster() {
+        let conn = seed();
+        // Face 3 sits in cluster 7 (unassigned). Assigning it to a person
+        // must detach the machine grouping in the same write.
+        assign(&conn, &[3], "Bob").unwrap();
+        let (label, confirmed, cid): (Option<String>, i64, Option<i64>) = conn
+            .query_row(
+                "SELECT person_label, confirmed, cluster_id FROM faces WHERE id = 3",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(label.as_deref(), Some("bob"));
+        assert_eq!(confirmed, 1);
+        assert_eq!(cid, None, "assignment must detach the machine grouping");
+    }
+
+    #[test]
+    fn cluster_detail_never_shows_labeled_faces() {
+        let conn = seed();
+        // A tombstone the detach migration should have cleared: a labeled
+        // face still carrying a cluster id. The filter keeps the detail
+        // page from ever showing it, whatever wrote that row.
+        conn.execute(
+            "INSERT INTO faces (id,hash,bbox,embedding,cluster_id,person_label,confirmed) VALUES
+                (11,'h6','0,0,9,9',X'0000',7,'alice',1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO file_hashes (hash, path) VALUES ('h6','/p/6.jpg')",
+            [],
+        )
+        .unwrap();
+        let detail = cluster_detail(&conn, 7).unwrap();
+        assert_eq!(
+            detail.faces.len(),
+            2,
+            "only the unlabeled faces of cluster 7 belong on the page"
+        );
+    }
 
     /// In-memory db with the faces + file_hashes tables and a few rows:
     /// - face 1: person "Alice", confirmed, is_primary

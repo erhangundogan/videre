@@ -987,10 +987,11 @@ mod tests {
     }
 
     #[test]
-    fn recluster_preserves_labeled_faces_cluster_ids() {
-        // 3 labeled faces (erhan) at 0/8/16° + 3 unlabeled faces at 90/98/106°.
-        // After recluster, labeled faces keep cluster_id=Some(0); unlabeled
-        // faces get their own cluster. Labeled faces must not shuffle.
+    fn recluster_leaves_labeled_faces_untouched_and_detached() {
+        // 3 labeled faces (erhan) at 0/8/16 degrees + 3 unlabeled faces at
+        // 90/98/106. Labeled faces hold no cluster id: clustering regroups
+        // only the unlabeled ones, and the labeled rows come out exactly as
+        // they went in.
         let conn = Connection::open_in_memory().unwrap();
         face_db::create_faces_table(&conn).unwrap();
         let faces: Vec<(i64, f32, bool, Option<&str>)> = vec![
@@ -1001,41 +1002,36 @@ mod tests {
             (4, 98.0, false, None),
             (5, 106.0, false, None),
         ];
-        // Set cluster_id=0 for the labeled faces (their existing assignment)
         seed_faces(&conn, &faces);
-        for id in [0i64, 1, 2] {
-            conn.execute("UPDATE faces SET cluster_id = 0 WHERE id = ?1", [id])
-                .unwrap();
-        }
 
         let _result =
             run_clustering(&conn, 0.6, 2, 1.0, 5.0, 0.4, f32::MAX, 0.0, 1.0, true).unwrap();
 
-        // labeled faces: cluster_id must still be 0
         for id in [0i64, 1, 2] {
-            let cid: Option<i64> = conn
-                .query_row("SELECT cluster_id FROM faces WHERE id = ?1", [id], |r| {
-                    r.get(0)
-                })
+            let (label, confirmed, cid): (Option<String>, i64, Option<i64>) = conn
+                .query_row(
+                    "SELECT person_label, confirmed, cluster_id FROM faces WHERE id = ?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
                 .unwrap();
+            assert_eq!(label.as_deref(), Some("erhan"));
+            assert_eq!(confirmed, 1);
             assert_eq!(
-                cid,
-                Some(0),
-                "labeled face {id} must keep its cluster assignment"
+                cid, None,
+                "recluster must not attach a cluster to a labeled face"
             );
         }
-        // unlabeled faces: must be clustered (not None)
-        for id in [3i64, 4, 5] {
-            let cid: Option<i64> = conn
-                .query_row("SELECT cluster_id FROM faces WHERE id = ?1", [id], |r| {
-                    r.get(0)
-                })
-                .unwrap();
-            assert!(
-                cid.is_some(),
-                "unlabeled face {id} should have a cluster assignment"
-            );
-        }
+        // The unlabeled trio still groups (their similarity is unchanged); a
+        // cluster id exists for them and none of it lands on a labeled face.
+        let clustered: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM faces WHERE confirmed = 0 AND cluster_id IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(clustered, 3);
     }
 
     #[test]
