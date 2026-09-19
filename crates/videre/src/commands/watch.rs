@@ -148,6 +148,92 @@ mod scheduler_tests {
     use super::*;
 
     #[test]
+    fn a_complete_rescan_supersedes_the_pending_batch() {
+        let mut pending: std::collections::BTreeSet<std::path::PathBuf> =
+            std::collections::BTreeSet::new();
+        pending.insert(std::path::PathBuf::from("/lib/a.jpg"));
+        apply_rescan_outcome(
+            &mut pending,
+            Some(ReconcileOutcome {
+                hashed: vec![],
+                complete: true,
+            }),
+        );
+        assert!(
+            pending.is_empty(),
+            "a complete reconcile supersedes pending"
+        );
+    }
+
+    #[test]
+    fn an_incomplete_rescan_seeds_its_work_and_keeps_the_batch() {
+        let mut pending: std::collections::BTreeSet<std::path::PathBuf> =
+            std::collections::BTreeSet::new();
+        pending.insert(std::path::PathBuf::from("/lib/a.jpg"));
+        apply_rescan_outcome(
+            &mut pending,
+            Some(ReconcileOutcome {
+                hashed: vec![std::path::PathBuf::from("/lib/b.jpg")],
+                complete: false,
+            }),
+        );
+        assert!(
+            pending.contains(std::path::Path::new("/lib/a.jpg"))
+                && pending.contains(std::path::Path::new("/lib/b.jpg")),
+            "an incomplete reconcile must retain the batch and seed its own scan output"
+        );
+    }
+
+    #[test]
+    fn a_failed_rescan_leaves_the_batch_alone() {
+        let mut pending: std::collections::BTreeSet<std::path::PathBuf> =
+            std::collections::BTreeSet::new();
+        pending.insert(std::path::PathBuf::from("/lib/a.jpg"));
+        apply_rescan_outcome(&mut pending, None);
+        assert!(
+            pending.contains(std::path::Path::new("/lib/a.jpg")),
+            "a failed reconcile must not discard work"
+        );
+    }
+
+    #[test]
+    fn directory_candidates_expand_to_their_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let moved = dir.path().join("moved-in");
+        std::fs::create_dir_all(moved.join("nested")).unwrap();
+        std::fs::write(moved.join("inner.jpg"), b"one").unwrap();
+        std::fs::write(moved.join("nested/deep.jpg"), b"two").unwrap();
+        std::fs::write(dir.path().join("loose.jpg"), b"three").unwrap();
+        std::fs::create_dir_all(moved.join(".videre")).unwrap();
+        std::fs::write(moved.join(".videre/state.db"), b"state").unwrap();
+
+        let got = expand_candidates(&[
+            moved.clone(),
+            dir.path().join("loose.jpg"),
+            // A file candidate that no longer exists passes through: the
+            // scoped scan's needs_processing drop is the next stage's job,
+            // not the expansion's.
+            dir.path().join("does-not-exist.jpg"),
+        ]);
+        let names: Vec<String> = got
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            names.len(),
+            4,
+            "2 in the tree + 1 loose + 1 pass-through: {names:?}"
+        );
+        assert!(names.iter().any(|n| n.ends_with("inner.jpg")));
+        assert!(names.iter().any(|n| n.ends_with("deep.jpg")));
+        assert!(names.iter().any(|n| n.ends_with("loose.jpg")));
+        assert!(
+            names.iter().all(|n| !n.contains(".videre")),
+            "state files stay excluded: {names:?}"
+        );
+    }
+
+    #[test]
     fn quiet_and_not_due_blocks_until_the_maintenance_deadline() {
         let t = block_timeout(
             true,
@@ -250,7 +336,7 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
         eprintln!("videre watch: startup scan");
     }
     match reconcile(args, ctx) {
-        Ok(startup_files) => pending.extend(startup_files),
+        Ok(outcome) => pending.extend(outcome.hashed),
         Err(e) => eprintln!("videre watch: startup scan error: {e}"),
     }
     // Test-only bounded exit: registration plus one startup pass then stop.
@@ -270,13 +356,15 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
             Ok(Ok(batch)) => {
                 if videre::watch_events::needs_full_rescan(batch.iter().map(|e| &e.event)) {
                     // The backend dropped events: one incremental full
-                    // reconcile, then resume. The full walk supersedes
-                    // anything pending.
-                    if let Err(e) = reconcile(args, ctx) {
+                    // reconcile, then resume. A complete reconcile supersedes
+                    // anything pending; an incomplete one (a stage was busy,
+                    // the scan errored) seeds what it hashed and keeps the
+                    // batch for the backoff.
+                    let outcome = reconcile(args, ctx).map_err(|e| {
                         eprintln!("videre watch: rescan error: {e}");
-                    } else {
-                        pending.clear();
-                    }
+                        e
+                    });
+                    apply_rescan_outcome(&mut pending, outcome.ok());
                     last_maintenance = Instant::now();
                     continue;
                 }
@@ -290,10 +378,12 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
                     eprintln!("videre watch: event error: {e}");
                 }
                 // An event error may mean missed changes: reconcile to be safe.
-                if reconcile(args, ctx).is_ok() {
-                    pending.clear();
-                    last_maintenance = Instant::now();
-                }
+                let outcome = reconcile(args, ctx).map_err(|e| {
+                    eprintln!("videre watch: rescan error: {e}");
+                    e
+                });
+                apply_rescan_outcome(&mut pending, outcome.ok());
+                last_maintenance = Instant::now();
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 if last_maintenance.elapsed() >= maintenance {
@@ -449,7 +539,34 @@ fn tracked_stage(
     }
 }
 
-fn reconcile(args: &WatchArgs, ctx: &CommandContext) -> Result<Vec<std::path::PathBuf>> {
+/// What one reconcile actually accomplished. `hashed` carries the paths the
+/// scan hashed (empty when `--scan` was off or nothing changed); `complete`
+/// is false when the scan errored or any batch-relevant stage (faces,
+/// location, recluster) found its lock busy, which means the work is not
+/// done and must not supersede a waiting batch.
+struct ReconcileOutcome {
+    hashed: Vec<std::path::PathBuf>,
+    complete: bool,
+}
+
+/// Fold a reconcile's result into the pending set. A complete reconcile
+/// supersedes the batch (its full walk re-found everything); an incomplete
+/// one seeds the paths its scan did hash and keeps whatever was waiting, so
+/// the backoff retries the busy stages instead of the hourly pass. `None`
+/// (the reconcile itself errored) touches nothing.
+fn apply_rescan_outcome(
+    pending: &mut std::collections::BTreeSet<std::path::PathBuf>,
+    outcome: Option<ReconcileOutcome>,
+) {
+    if let Some(outcome) = outcome {
+        pending.extend(outcome.hashed);
+        if outcome.complete {
+            pending.clear();
+        }
+    }
+}
+
+fn reconcile(args: &WatchArgs, ctx: &CommandContext) -> Result<ReconcileOutcome> {
     // Recheck before every cycle: a root renamed or replaced under a
     // long-running watch must fail the cycle rather than process whatever now
     // sits at the path. open_existing rechecks again at the write boundary.
@@ -459,27 +576,51 @@ fn reconcile(args: &WatchArgs, ctx: &CommandContext) -> Result<Vec<std::path::Pa
     // startup one: its downstream stages can be busy while the scan runs, and
     // the hashed files are exactly the work those stages must retry.
     let mut hashed: Vec<std::path::PathBuf> = Vec::new();
+    let mut complete = true;
     if args.scan {
         // A scan failure this cycle does not invalidate earlier rows; log and
-        // carry on to the stages below.
+        // carry on to the stages below, but report the cycle as incomplete so
+        // the caller keeps any waiting batch alive.
         if let Err(e) = run_scan_stage(args, ctx, &conn, None, &mut hashed) {
             eprintln!("videre watch: scan stage error: {e}");
+            complete = false;
         }
     }
     if args.faces || args.heic || args.location || args.prune || args.export_xmp {
         face_db::create_faces_table(&conn)?;
         videre_core::location::ensure_location_column(&conn);
         if args.faces {
-            run_faces_stage(args, ctx, &conn)?;
+            match run_faces_stage(args, ctx, &conn) {
+                Ok(StageOutcome::Ran) => {}
+                Ok(StageOutcome::Busy) => complete = false,
+                Err(e) => {
+                    eprintln!("videre watch: faces stage error: {e}");
+                    complete = false;
+                }
+            }
         }
         if args.heic {
             run_heic_stage(args, ctx, &conn)?;
         }
         if args.location {
-            run_location_stage(args, ctx, &conn)?;
+            match run_location_stage(args, ctx, &conn) {
+                Ok(StageOutcome::Ran) => {}
+                Ok(StageOutcome::Busy) => complete = false,
+                Err(e) => {
+                    eprintln!("videre watch: location stage error: {e}");
+                    complete = false;
+                }
+            }
         }
         if args.faces {
-            let _ = run_recluster_stage(args, ctx, &conn)?;
+            match run_recluster_stage(args, ctx, &conn) {
+                Ok(StageOutcome::Ran) => {}
+                Ok(StageOutcome::Busy) => complete = false,
+                Err(e) => {
+                    eprintln!("videre watch: face recluster stage error: {e}");
+                    complete = false;
+                }
+            }
         }
         if args.prune {
             if let Err(e) = run_prune_stage(args, ctx, &conn) {
@@ -499,7 +640,7 @@ fn reconcile(args: &WatchArgs, ctx: &CommandContext) -> Result<Vec<std::path::Pa
     if let Err(e) = videre_core::pipeline_runs::record_heartbeat_in(&conn, &ctx.library, "watch") {
         eprintln!("videre watch: could not record the cycle heartbeat: {e}");
     }
-    Ok(hashed)
+    Ok(ReconcileOutcome { hashed, complete })
 }
 
 /// Writes XMP sidecars for the current labels (marks, named face regions,
@@ -886,6 +1027,31 @@ fn run_location_stage(
     )
 }
 
+/// A populated folder moved into the library arrives as one event whose
+/// path is a directory; hashing that path fails, so directory candidates
+/// expand to the files inside them (same .videre exclusion as the walk).
+/// File candidates pass through untouched. Extracted from the scoped scan
+/// so the expansion rule has a deterministic test that cannot be skipped
+/// by OS event delivery.
+fn expand_candidates(paths: &[std::path::PathBuf]) -> Vec<std::path::PathBuf> {
+    let mut expanded: Vec<std::path::PathBuf> = Vec::new();
+    for p in paths {
+        if p.is_dir() {
+            expanded.extend(
+                walkdir::WalkDir::new(p)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.file_type().is_file())
+                    .map(|e| e.path().to_path_buf())
+                    .filter(|p| !p.components().any(|c| c.as_os_str() == ".videre")),
+            );
+        } else {
+            expanded.push(p.clone());
+        }
+    }
+    expanded
+}
+
 fn run_scan_stage(
     args: &WatchArgs,
     ctx: &CommandContext,
@@ -909,31 +1075,7 @@ fn run_scan_stage(
                     .into_iter()
                     .filter(|p| !p.components().any(|c| c.as_os_str() == ".videre"))
                     .collect(),
-                Some(paths) => {
-                    // A populated folder moved into the library arrives as one
-                    // event whose path is a directory; hashing that path
-                    // fails, so directory candidates expand to the files
-                    // inside them (same .videre exclusion as the walk). File
-                    // candidates pass through untouched.
-                    let mut expanded: Vec<std::path::PathBuf> = Vec::new();
-                    for p in paths {
-                        if p.is_dir() {
-                            expanded.extend(
-                                walkdir::WalkDir::new(p)
-                                    .into_iter()
-                                    .filter_map(|e| e.ok())
-                                    .filter(|e| e.file_type().is_file())
-                                    .map(|e| e.path().to_path_buf())
-                                    .filter(|p| {
-                                        !p.components().any(|c| c.as_os_str() == ".videre")
-                                    }),
-                            );
-                        } else {
-                            expanded.push(p.clone());
-                        }
-                    }
-                    expanded
-                }
+                Some(paths) => expand_candidates(paths),
             };
             let walked = base.len();
             let paths: Vec<_> = if selection.is_empty() {
