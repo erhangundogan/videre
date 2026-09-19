@@ -281,6 +281,10 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
                 args.attach_sim,
                 args.silent,
             )?;
+            // This pass covered every face now in the table: record it, so
+            // watch's watermark gate does not re-run the same repair the
+            // standalone command just did.
+            videre_core::face_db::advance_recluster_watermark(&conn)?;
             if !args.silent {
                 eprintln!("{}", format_clustering_only_summary(clustering, args.eps));
             }
@@ -394,6 +398,12 @@ fn run_detection_and_clustering(
     } else {
         None
     };
+    if !args.dry_run && args.limit.is_none() {
+        // This pass covered every face now in the table: record it, so
+        // watch's watermark gate does not re-run the same repair the
+        // standalone command just did.
+        videre_core::face_db::advance_recluster_watermark(conn)?;
+    }
 
     if !args.silent {
         eprintln!(

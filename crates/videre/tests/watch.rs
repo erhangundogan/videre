@@ -1,6 +1,5 @@
 mod common;
 use common::TestLibrary;
-use std::time::Duration;
 
 /// Seed one file_hashes row (and optional extra SQL) with an in-root path.
 fn seed(lib: &TestLibrary, columns: &str, values_tail: &str) {
@@ -13,21 +12,24 @@ fn seed(lib: &TestLibrary, columns: &str, values_tail: &str) {
         .unwrap();
 }
 
-/// Spawn `videre watch` in this library with the given stage flags and a long
-/// interval (so only one cycle is observed), run it briefly, then kill it.
-fn run_one_cycle(lib: &TestLibrary, flags: &[&str], millis: u64) -> bool {
-    let mut child = lib
+/// One bounded pass: VIDERE_WATCH_ONCE makes `watch` run the startup
+/// reconcile and exit 0, so every per-stage behaviour is testable by
+/// running the process to completion instead of spawn-sleep-kill.
+fn watch_once(lib: &TestLibrary, flags: &[&str]) -> std::process::Output {
+    let out = lib
         .cmd()
         .arg("watch")
+        .arg("--silent")
         .args(flags)
-        .args(["--interval", "3600", "--silent"])
-        .spawn()
-        .expect("failed to spawn videre watch");
-    std::thread::sleep(Duration::from_millis(millis));
-    let still_running = child.try_wait().unwrap().is_none();
-    child.kill().ok();
-    child.wait().ok();
-    still_running
+        .env("VIDERE_WATCH_ONCE", "1")
+        .output()
+        .expect("run videre watch");
+    assert!(
+        out.status.success(),
+        "watch (once) failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out
 }
 
 #[test]
@@ -36,7 +38,7 @@ fn scan_stage_populates_file_hashes() {
     std::fs::create_dir(lib.root.join("pics")).unwrap();
     std::fs::write(lib.root.join("pics/a.jpg"), b"dummy-bytes").unwrap();
 
-    run_one_cycle(&lib, &["--scan"], 1500);
+    watch_once(&lib, &["--scan"]);
 
     let count: i64 = lib
         .conn()
@@ -56,11 +58,9 @@ fn faces_stage_skips_hashes_already_processed() {
         )
         .unwrap();
 
-    let still_running = run_one_cycle(&lib, &["--faces"], 800);
-    assert!(
-        still_running,
-        "watch --faces must not crash on an already-processed hash"
-    );
+    // Success is the assertion: a crash on the already-processed hash fails
+    // the once-run.
+    watch_once(&lib, &["--faces"]);
 }
 
 #[test]
@@ -68,7 +68,7 @@ fn heic_stage_writes_no_cache_file_for_non_heic_hashes() {
     let lib = TestLibrary::new();
     seed(&lib, "hash, ext", "'hjpg', 'jpg'");
 
-    run_one_cycle(&lib, &["--heic"], 800);
+    watch_once(&lib, &["--heic"]);
 
     assert!(
         !videre_core::thumb_cache::thumb_exists_in(&lib.context().cache, "hjpg", 240),
@@ -79,13 +79,9 @@ fn heic_stage_writes_no_cache_file_for_non_heic_hashes() {
 #[test]
 fn faces_stage_against_fresh_database_does_not_crash_or_hang() {
     // The library is initialized (watch initializes on startup) but has no
-    // scanned rows: the faces stage must find nothing and keep serving.
+    // scanned rows: the faces stage must find nothing and exit cleanly.
     let lib = TestLibrary::new();
-    let still_running = run_one_cycle(&lib, &["--faces"], 800);
-    assert!(
-        still_running,
-        "watch --faces against a fresh database must not crash"
-    );
+    watch_once(&lib, &["--faces"]);
 }
 
 #[test]
@@ -97,7 +93,7 @@ fn location_stage_populates_location_name_for_gps_rows() {
         "'hparis', 'jpg', 48.8566, 2.3522",
     );
 
-    run_one_cycle(&lib, &["--location"], 3000);
+    watch_once(&lib, &["--location"]);
 
     let name: Option<String> = lib
         .conn()
@@ -126,7 +122,7 @@ fn location_stage_writes_a_terminal_location_names_pipeline_row() {
         "'hparis', 'jpg', 48.8566, 2.3522",
     );
 
-    run_one_cycle(&lib, &["--location"], 3000);
+    watch_once(&lib, &["--location"]);
 
     let status: String = lib
         .conn()
@@ -138,7 +134,7 @@ fn location_stage_writes_a_terminal_location_names_pipeline_row() {
         .expect("the location stage must write a location-names run row");
     assert_eq!(
         status, "success",
-        "the cycle's stage must finish cleanly, not just record any terminal row"
+        "the stage must finish cleanly, not just record any terminal row"
     );
 }
 
@@ -147,7 +143,7 @@ fn prune_stage_removes_stale_rows() {
     let lib = TestLibrary::new();
     seed(&lib, "hash, ext", "'hgone', 'jpg'"); // a.jpg is never created on disk
 
-    run_one_cycle(&lib, &["--prune"], 1500);
+    watch_once(&lib, &["--prune"]);
 
     let count: i64 = lib
         .conn()
@@ -165,8 +161,8 @@ fn default_stages_do_not_include_prune() {
     seed(&lib, "hash, ext", "'hgone', 'jpg'"); // a.jpg does not exist on disk
 
     // No stage flags: scan/faces/heic/location default on, but prune stays
-    // opt-in, so the missing file's row must survive a default cycle.
-    run_one_cycle(&lib, &[], 1500);
+    // opt-in, so the missing file's row must survive a default pass.
+    watch_once(&lib, &[]);
 
     let count: i64 = lib
         .conn()
@@ -188,7 +184,7 @@ fn bare_watch_scan_creates_and_populates_the_library_database() {
     std::fs::create_dir(lib.root.join("pics")).unwrap();
     std::fs::write(lib.root.join("pics/a.jpg"), b"dummy-bytes").unwrap();
 
-    run_one_cycle(&lib, &["--scan"], 1500);
+    watch_once(&lib, &["--scan"]);
 
     assert!(
         lib.db().exists(),

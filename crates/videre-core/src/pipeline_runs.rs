@@ -233,6 +233,21 @@ pub fn read_all_in(
     {
         out.push(read_one_in(conn, ctx, "location-names")?);
     }
+    // `face-recluster` is watch's periodic global face recluster, on the same
+    // only-once-a-row-exists rule: a library that never watched with --faces
+    // is not lectured about repair passes it never ran. Distinct from
+    // `faces`, whose row means a detection run.
+    if conn
+        .query_row(
+            "SELECT 1 FROM pipeline_runs WHERE command = 'face-recluster'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+        .is_some()
+    {
+        out.push(read_one_in(conn, ctx, "face-recluster")?);
+    }
     Ok(out)
 }
 
