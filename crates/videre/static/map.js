@@ -16,7 +16,12 @@
   var wrapper = document.getElementById('map-plot-wrap');
   var canvas = document.getElementById('map-plot');
   var empty = document.getElementById('map-empty');
-  if (!wrapper || !canvas || !empty) return;
+  var selectionRow = document.getElementById('map-selection-row');
+  var breadcrumb = document.getElementById('map-breadcrumb');
+  var radiusInput = document.getElementById('map-radius');
+  var selectionStatus = document.getElementById('map-selection-status');
+  if (!wrapper || !canvas || !empty || !selectionRow || !breadcrumb ||
+      !radiusInput || !selectionStatus) return;
 
   var markerLayer = document.createElement('div');
   markerLayer.className = 'map-marker-layer';
@@ -89,7 +94,8 @@
     var button = document.createElement('button');
     button.type = 'button';
     button.className = 'map-marker' +
-      (clusterId !== null && clusterId === activeCluster ? ' active' : '');
+      (clusterId !== null && activeCluster && clusterId === activeCluster.cluster_id ?
+        ' active' : '');
     button.dataset.tier = markerTier;
     button.dataset.name = label;
     if (clusterId !== null) button.dataset.cluster = String(clusterId);
@@ -150,10 +156,7 @@
         'cluster',
         cluster.cluster_id,
         function () {
-          activeCluster = cluster.cluster_id;
-          clearBtn.disabled = false;
-          window.setGalleryCluster(cluster.cluster_id);
-          render();
+          selectCluster(cluster, cluster.radius_km, 'push');
         }
       );
     });
@@ -186,14 +189,106 @@
     render();
   }
 
-  function clearSelection() {
+  function locationPath(cluster, radius) {
+    return '/map/location/' + encodeURIComponent(cluster.route_name) +
+      '?radius=' + encodeURIComponent(radius);
+  }
+
+  function focusSelection(cluster, radius) {
+    var width = wrapper.clientWidth;
+    var height = wrapper.clientHeight;
+    var base = Math.min(width / 1.5, height);
+    var latitudeSpan = Math.max(radius / 111.32, 0.01) * 2;
+    var cosine = Math.max(Math.cos(cluster.centroid_lat * Math.PI / 180), 0.01);
+    var longitudeSpan = Math.min(360, radius / (111.32 * cosine) * 2);
+    var projectedWidth = longitudeSpan / 360 * base * 1.5;
+    var projectedHeight = latitudeSpan / 140 * base * 0.55;
+    var fit = Math.min(
+      width * 0.6 / Math.max(projectedWidth, 1),
+      height * 0.6 / Math.max(projectedHeight, 1)
+    );
+    scale = Math.max(CLUSTER_ZOOM, Math.min(MAX_SCALE, fit));
+    var center = project(cluster.centroid_lat, cluster.centroid_lon);
+    ox = -(center.x - 0.5) * base * 1.5 * scale;
+    oy = -(center.y - 0.5) * base * 0.55 * scale;
+  }
+
+  function showSelection(cluster, radius) {
+    selectionStatus.hidden = true;
+    selectionStatus.textContent = '';
+    selectionRow.hidden = false;
+    breadcrumb.innerHTML = '<a href="/map">Map</a> &gt; ' + escH(cluster.name);
+    radiusInput.value = String(radius);
+  }
+
+  function selectCluster(cluster, radius, historyMode) {
+    activeCluster = cluster;
+    clearBtn.disabled = false;
+    showSelection(cluster, radius);
+    focusSelection(cluster, radius);
+    window.setGalleryLocation(cluster.centroid_lat, cluster.centroid_lon, radius);
+    if (historyMode === 'push') {
+      window.history.pushState(null, '', locationPath(cluster, radius));
+    }
+    render();
+  }
+
+  function clearSelection(historyMode) {
     activeCluster = null;
     clearBtn.disabled = true;
+    selectionRow.hidden = true;
+    selectionStatus.hidden = true;
+    selectionStatus.textContent = '';
     scale = 1;
     ox = 0;
     oy = 0;
-    window.setGalleryCluster(null);
+    window.setGalleryLocation(null, null, null);
+    if (historyMode === 'push') window.history.pushState(null, '', '/map');
     render();
+  }
+
+  function showUnknownLocation() {
+    activeCluster = null;
+    clearBtn.disabled = true;
+    selectionRow.hidden = true;
+    selectionStatus.textContent = 'Unknown location';
+    selectionStatus.hidden = false;
+    scale = 1;
+    ox = 0;
+    oy = 0;
+    window.setGalleryLocation(null, null, null);
+    render();
+  }
+
+  function locationStateFromUrl() {
+    var match = /^\/map\/location\/([^/]+)$/.exec(window.location.pathname);
+    if (!match) return null;
+    var name;
+    try { name = decodeURIComponent(match[1]); }
+    catch (error) { return { kind: 'unknown' }; }
+    var radius = Number(new URLSearchParams(window.location.search).get('radius'));
+    return { kind: 'location', name: name, radius: radius };
+  }
+
+  function applyLocationState(state) {
+    if (!state) {
+      clearSelection('none');
+      return;
+    }
+    if (state.kind !== 'location') {
+      showUnknownLocation();
+      return;
+    }
+    var cluster = clusters.find(function (candidate) {
+      return candidate.route_name === state.name;
+    });
+    if (!cluster) {
+      showUnknownLocation();
+      return;
+    }
+    var radius = Number(state.radius);
+    if (!Number.isFinite(radius) || radius <= 0) radius = cluster.radius_km;
+    selectCluster(cluster, radius, 'none');
   }
 
   document.getElementById('map-zoom-in').addEventListener('click', function () {
@@ -202,7 +297,12 @@
   document.getElementById('map-zoom-out').addEventListener('click', function () {
     zoomAt(scale / 1.5, wrapper.clientWidth / 2, wrapper.clientHeight / 2);
   });
-  document.getElementById('map-clear').addEventListener('click', clearSelection);
+  document.getElementById('map-clear').addEventListener('click', function () {
+    clearSelection('push');
+  });
+  window.addEventListener('popstate', function () {
+    applyLocationState(locationStateFromUrl());
+  });
 
   // Wheel and dblclick bind to the wrapper, not the canvas: the markers are DOM
   // buttons in a sibling layer above the canvas, so an event landing on a marker
@@ -258,7 +358,7 @@
       }
       empty.hidden = true;
       groupContinents();
-      render();
+      applyLocationState(typeof GLOC === 'object' ? GLOC : locationStateFromUrl());
     })
     .catch(function () {
       empty.hidden = false;

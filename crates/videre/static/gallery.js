@@ -566,7 +566,13 @@ document.getElementById('lb').addEventListener('click',function(e){
 // HASH_FILES stays for the inlined static export, whose rows carry no `copies`
 // field and so must be counted client-side.
 var GPAGE=200,gShown=0,HASH_FILES={},RESULT_ROWS={},galleryFiles=[];
-var GCLUSTER=null,gRequest=0;
+var GLOCATION=null,gRequest=0;
+function galleryLocationQuery(){
+  if(!GLOCATION)return '';
+  return '&lat='+encodeURIComponent(GLOCATION.lat)+
+    '&lon='+encodeURIComponent(GLOCATION.lon)+
+    '&radius='+encodeURIComponent(GLOCATION.radius);
+}
 // See faces.js: the labeling sub-pages are not always under /people.
 function peopleRootG(){
   var r=(typeof PEOPLE_ROOT==='string')?PEOPLE_ROOT:'/people';
@@ -723,7 +729,7 @@ function renderGallery(){
   var btn=document.getElementById('gallery-more');
   if(btn)btn.textContent='Loading\u2026';
   fetch('/api/files?view='+encodeURIComponent(GVIEW)+'&offset='+gShown+'&limit='+GPAGE+
-        (GCLUSTER!==null?('&cluster='+encodeURIComponent(GCLUSTER)):''))
+        galleryLocationQuery())
     .then(function(r){ return r.json(); })
     .then(function(d){
       if(request!==gRequest)return;
@@ -740,9 +746,9 @@ function renderGallery(){
 function showMoreGallery(){renderGallery();}
 // The map page owns the location selection, while the shared gallery owns
 // paging and rendering. Reset all paging state before loading the first page
-// for the selected cluster; null returns to the complete library.
-window.setGalleryCluster=function(id){
-  GCLUSTER=id;
+// for the selected location; null returns to the complete library.
+window.setGalleryLocation=function(lat,lon,radius){
+  GLOCATION=(lat===null||lon===null||radius===null)?null:{lat:lat,lon:lon,radius:radius};
   gRequest++;
   gLoading=false;
   gShown=0;

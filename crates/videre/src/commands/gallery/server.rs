@@ -1354,14 +1354,12 @@ async fn handle_files(
                 None
             };
             let location = files_location_filter(&q, view)?;
-            let cluster = (view != "date").then_some(q.cluster).flatten();
             query_files_page(
                 &conn,
                 view,
                 date_filter.as_ref(),
                 offset,
                 limit,
-                cluster,
                 location.as_ref(),
             )
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
@@ -1839,9 +1837,6 @@ struct FilesQuery {
     lon: Option<f64>,
     /// Map drill-down radius in positive kilometers.
     radius: Option<f64>,
-    /// Transitional map membership filter. Removed when the map client moves
-    /// to the proximity parameters above.
-    cluster: Option<i64>,
 }
 
 fn files_location_filter(

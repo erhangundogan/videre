@@ -148,7 +148,6 @@ pub(crate) fn query_files_page(
     date_filter: Option<&FileDateFilter>,
     offset: i64,
     limit: i64,
-    cluster: Option<i64>,
     location: Option<&LocationFilter>,
 ) -> rusqlite::Result<(Vec<(FileRow, i64)>, i64)> {
     // `view=date` shows one row per hash, the same KEEP set `/date` renders.
@@ -187,10 +186,6 @@ pub(crate) fn query_files_page(
         _ => {}
     }
     if view != "date" {
-        if let Some(cluster) = cluster {
-            clauses.push("location_cluster_id = ?".to_string());
-            params.push(cluster.into());
-        }
         if let Some(location) = location {
             let bounds = location_bounds(*location);
             clauses.push("gps_lat BETWEEN ? AND ?".to_string());
@@ -1191,9 +1186,9 @@ mod tests {
         };
 
         let (first, first_total) =
-            query_files_page(&conn, "all", None, 0, 1, None, Some(&filter)).unwrap();
+            query_files_page(&conn, "all", None, 0, 1, Some(&filter)).unwrap();
         let (second, second_total) =
-            query_files_page(&conn, "all", None, 1, 1, None, Some(&filter)).unwrap();
+            query_files_page(&conn, "all", None, 1, 1, Some(&filter)).unwrap();
 
         assert_eq!(first_total, 2);
         assert_eq!(second_total, 2);
@@ -1219,7 +1214,6 @@ mod tests {
             None,
             0,
             10,
-            None,
             Some(&antimeridian_filter),
         )
         .unwrap();
@@ -1237,7 +1231,7 @@ mod tests {
             radius_km: 30.0,
         };
         let (rows, total) =
-            query_files_page(&pole, "all", None, 0, 10, None, Some(&pole_filter)).unwrap();
+            query_files_page(&pole, "all", None, 0, 10, Some(&pole_filter)).unwrap();
         assert_eq!(total, 2);
         assert_eq!(hashes(&rows), vec!["prime", "opposite"]);
     }
