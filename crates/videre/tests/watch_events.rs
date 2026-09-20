@@ -462,3 +462,98 @@ fn a_batch_blocked_by_a_faces_run_retries_and_processes_when_free() {
         "the retained batch must be processed once the lock frees"
     );
 }
+
+#[test]
+fn a_scan_that_changes_gps_data_triggers_the_recluster_on_the_next_pass() {
+    let lib = TestLibrary::new();
+    drop(lib.init_db());
+    let conn = lib.conn();
+    conn.execute(
+        "INSERT INTO file_hashes (path, hash, ext, gps_lat, gps_lon)
+         VALUES (?1, 'ha', 'jpg', 52.52, 13.405)",
+        [lib.context().paths.root.join("a.jpg").to_str().unwrap()],
+    )
+    .unwrap();
+    drop(conn);
+    watch_once(&lib, &["--location"]);
+    let conn = lib.conn();
+    let clusters: i64 = conn
+        .query_row("SELECT COUNT(*) FROM location_clusters", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(clusters, 1, "the first pass reclusters the GPS row");
+    drop(conn);
+
+    // A second GPS photo arrives: the fingerprint changes, so the next pass
+    // reclusters and the new coordinate lands in a cluster.
+    let conn = lib.conn();
+    conn.execute(
+        "INSERT INTO file_hashes (path, hash, ext, gps_lat, gps_lon)
+         VALUES (?1, 'hb', 'jpg', 48.85, 2.35)",
+        [lib.context().paths.root.join("b.jpg").to_str().unwrap()],
+    )
+    .unwrap();
+    drop(conn);
+    watch_once(&lib, &["--location"]);
+    let conn = lib.conn();
+    let clusters: i64 = conn
+        .query_row("SELECT COUNT(*) FROM location_clusters", [], |r| r.get(0))
+        .unwrap();
+    assert!(
+        clusters >= 2,
+        "the changed fingerprint must recluster: {clusters}"
+    );
+}
+
+#[test]
+fn an_unchanged_library_skips_the_recluster_with_a_message() {
+    let lib = TestLibrary::new();
+    drop(lib.init_db());
+    let conn = lib.conn();
+    conn.execute(
+        "INSERT INTO file_hashes (path, hash, ext, gps_lat, gps_lon)
+         VALUES (?1, 'ha', 'jpg', 52.52, 13.405)",
+        [lib.context().paths.root.join("a.jpg").to_str().unwrap()],
+    )
+    .unwrap();
+    drop(conn);
+    let first = watch_once(&lib, &["--location"]);
+    assert!(
+        String::from_utf8_lossy(&first.stderr).contains("location clusters rebuilt"),
+        "the first pass rebuilds: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let second = watch_once(&lib, &["--location"]);
+    assert!(
+        String::from_utf8_lossy(&second.stderr).contains("locations up to date"),
+        "an unchanged library must skip: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+}
+
+#[test]
+fn the_watcher_respects_a_manual_radius() {
+    let lib = TestLibrary::new();
+    drop(lib.init_db());
+    let conn = lib.conn();
+    conn.execute(
+        "INSERT INTO file_hashes (path, hash, ext, gps_lat, gps_lon)
+         VALUES (?1, 'ha', 'jpg', 52.52, 13.405)",
+        [lib.context().paths.root.join("a.jpg").to_str().unwrap()],
+    )
+    .unwrap();
+    drop(conn);
+    // A manual recluster at a non-default radius: the watcher must leave it
+    // alone rather than silently recluster at the default.
+    let out = lib
+        .cmd()
+        .args(["locations", "--radius", "5", "--silent"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let pass = watch_once(&lib, &["--location"]);
+    assert!(
+        String::from_utf8_lossy(&pass.stderr).contains("manual radius 5km in effect"),
+        "the radius skip must say so: {}",
+        String::from_utf8_lossy(&pass.stderr)
+    );
+}

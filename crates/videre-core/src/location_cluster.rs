@@ -280,6 +280,7 @@ pub fn recompute_all(
 
     if coords.is_empty() {
         tx.commit()?;
+        store_recompute_state(conn, radius_km)?;
         return Ok(Vec::new());
     }
 
@@ -365,7 +366,19 @@ pub fn recompute_all(
 
     clusters.sort_by_key(|c| std::cmp::Reverse(c.photo_count));
     tx.commit()?;
+    store_recompute_state(conn, radius_km)?;
     Ok(clusters)
+}
+
+/// Record what a recompute covered, so the watcher's fingerprint gate and
+/// `videre status` can tell current clusters from stale ones. The fingerprint
+/// is over the GPS data, which the recompute does not change, so reading it
+/// back now yields the library's current fingerprint.
+fn store_recompute_state(conn: &Connection, radius_km: f64) -> anyhow::Result<()> {
+    let fingerprint = gps_fingerprint(conn)?;
+    crate::library_state::set_string(conn, LOCATIONS_GPS_FINGERPRINT, &fingerprint)?;
+    crate::library_state::set_string(conn, LOCATIONS_RADIUS, &format!("{radius_km}"))?;
+    Ok(())
 }
 
 #[cfg(test)]
