@@ -185,6 +185,10 @@ pub fn ensure_gps_index(conn: &Connection) {
 /// library_state keys for the location recluster gate: the GPS fingerprint the
 /// last recompute covered, and the radius it ran at.
 pub const LOCATIONS_GPS_FINGERPRINT: &str = "locations_gps_fingerprint";
+/// The radius the last recompute ran at, the watcher's gate input (it skips a
+/// manual, non-default radius). Distinct from `location_clusters.radius_km`,
+/// which records the radius per produced cluster: this is the gate's datum, that
+/// is the recompute's per-cluster output. Do not collapse one into the other.
 pub const LOCATIONS_RADIUS: &str = "locations_radius";
 
 /// The recompute radius the watcher runs at; a standalone run with a different

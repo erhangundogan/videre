@@ -132,6 +132,10 @@ fn faces_coverage(conn: &Connection) -> Result<StageCoverage> {
 /// Locations stage: geotagged photos with no cluster assignment yet. Grouping
 /// is a global recompute, so the count is informational; the command line
 /// names what closes it.
+///
+/// Computing `stale` recomputes the GPS fingerprint on every call, an ordered
+/// scan of all GPS-bearing rows served by the GPS index. Cheap at current
+/// scale; a library with very many GPS rows makes `status` marginally slower.
 fn locations_coverage(conn: &Connection) -> Result<StageCoverage> {
     let total: i64 = conn.query_row(
         "SELECT COUNT(*) FROM file_hashes WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL",
