@@ -7,6 +7,29 @@ use rusqlite::Connection;
 
 const EARTH_RADIUS_KM: f64 = 6371.0;
 
+/// Continents for the map view's world tier, as name plus approximate
+/// south/west/north/east bounding boxes, checked in order.
+pub const CONTINENTS: &[(&str, f64, f64, f64, f64)] = &[
+    ("Antarctica", -90.0, -180.0, -60.0, 180.0),
+    ("Oceania", -50.0, 110.0, 0.0, 180.0),
+    ("Europe", 34.0, -25.0, 72.0, 45.0),
+    ("Asia", -10.0, 25.0, 80.0, 180.0),
+    ("Africa", -37.0, -20.0, 35.0, 52.0),
+    ("North America", 7.0, -170.0, 85.0, -50.0),
+    ("South America", -56.0, -82.0, 13.0, -34.0),
+];
+
+/// Returns the continent grouping used by the map view's world tier.
+/// `Other` is the open-water fallback.
+pub fn continent_of(lat: f64, lon: f64) -> &'static str {
+    for (name, south, west, north, east) in CONTINENTS {
+        if lat >= *south && lat <= *north && lon >= *west && lon <= *east {
+            return name;
+        }
+    }
+    "Other"
+}
+
 /// Great-circle distance between two `(lat, lon)` points (in degrees), in km.
 pub fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     let d_lat = (lat2 - lat1).to_radians();
@@ -645,6 +668,29 @@ mod tests {
         let (lat, lon) = centroid(&points, &[0, 1]);
         assert!((lat - 1.0).abs() < 1e-9);
         assert!((lon - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn continent_of_assigns_representative_points() {
+        let cases = [
+            (52.52, 13.405, "Europe"),
+            (35.68, 139.69, "Asia"),
+            (-33.87, 151.21, "Oceania"),
+            (40.71, -74.01, "North America"),
+            (-23.55, -46.63, "South America"),
+            (6.45, 3.39, "Africa"),
+            (-75.0, 0.0, "Antarctica"),
+            (55.75, 37.62, "Europe"),
+            (-41.29, 174.78, "Oceania"),
+        ];
+        for (lat, lon, expected) in cases {
+            assert_eq!(continent_of(lat, lon), expected, "at {lat},{lon}");
+        }
+    }
+
+    #[test]
+    fn continent_of_names_the_ocean_fallback_for_unmatched_points() {
+        assert_eq!(continent_of(0.0, -30.0), "Other");
     }
 
     #[test]

@@ -14,6 +14,9 @@ rustc-ice-*.txt
 .claude/
 .codex/
 .agents/
+# Spec-driven-development scratch (briefs, ledgers, review diffs). The writing
+# about the work lives in the private companion repo, never in this checkout.
+.superpowers/
 
 # Private, always-loaded personal memory. Never committed.
 CLAUDE.local.md

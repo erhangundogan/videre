@@ -231,6 +231,158 @@ mod date_filter_tests {
     }
 }
 
+#[cfg(test)]
+mod location_cluster_tests {
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    fn gallery_state(root: &Path) -> Arc<AppState> {
+        let conn = Connection::open_in_memory().unwrap();
+        let library = Arc::new(
+            videre_core::library::LibraryContext::new(root, &root.join("cache"))
+                .expect("test library context should be valid"),
+        );
+        let context = Arc::new(crate::command_context::CommandContext {
+            library,
+            invocation_dir: root.to_path_buf(),
+            source: crate::command_context::LibrarySource::Cwd,
+        });
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel();
+        Arc::new(AppState {
+            conn: Mutex::new(conn),
+            shutdown_tx: Mutex::new(Some(shutdown_tx)),
+            model_id: String::new(),
+            report_heic: false,
+            report_heic_original: false,
+            serve_faces_ui: true,
+            gallery: true,
+            context,
+            embedder: Mutex::new(None),
+        })
+    }
+
+    #[tokio::test]
+    async fn location_clusters_endpoint_returns_rows_ordered_and_shaped() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        {
+            let conn = state.conn.lock().unwrap();
+            videre_core::location_cluster::ensure_location_clusters_table(&conn).unwrap();
+            conn.execute_batch(
+                "INSERT INTO location_clusters
+                    (centroid_lat, centroid_lon, name, photo_count, radius_km, created_at)
+                 VALUES
+                    (52.52, 13.405, 'Berlin', 5, 20.0, CURRENT_TIMESTAMP),
+                    (35.68, 139.69, 'Tokyo', 20, 20.0, CURRENT_TIMESTAMP),
+                    (40.71, -74.01, NULL, 10, 20.0, CURRENT_TIMESTAMP),
+                    (-33.87, 151.21, 'Sydney', 1, 20.0, CURRENT_TIMESTAMP);",
+            )
+            .unwrap();
+        }
+        let app = Router::new()
+            .route("/api/location-clusters", get(handle_location_clusters))
+            .with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/location-clusters")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let rows: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let rows = rows.as_array().unwrap();
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0]["name"], "Tokyo");
+        assert_eq!(rows[0]["continent"], "Asia");
+        assert_eq!(rows[1]["name"], "Unnamed location");
+        assert_eq!(rows[3]["continent"], "Oceania");
+        assert!(rows[0]["centroid_lat"].is_number());
+        assert!(rows[0]["radius_km"].is_number());
+    }
+
+    #[tokio::test]
+    async fn location_clusters_endpoint_on_an_empty_library_returns_an_empty_array() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        let app = Router::new()
+            .route("/api/location-clusters", get(handle_location_clusters))
+            .with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/location-clusters")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body.as_ref(), b"[]");
+    }
+
+    #[tokio::test]
+    async fn files_endpoint_cluster_parameter_filters_by_cluster() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        {
+            let conn = state.conn.lock().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE file_hashes (
+                    path TEXT PRIMARY KEY,
+                    hash TEXT NOT NULL,
+                    size_bytes INTEGER,
+                    ext TEXT,
+                    created_at TEXT,
+                    modified_at TEXT,
+                    exif_date TEXT,
+                    gps_lat REAL,
+                    gps_lon REAL,
+                    width INTEGER,
+                    height INTEGER,
+                    location_cluster_id INTEGER
+                 );
+                 INSERT INTO file_hashes
+                    (path, hash, size_bytes, ext, location_cluster_id)
+                 VALUES
+                    ('/a.jpg', 'aaa', 1, 'jpg', 7),
+                    ('/b.jpg', 'bbb', 2, 'jpg', 7),
+                    ('/c.jpg', 'ccc', 3, 'jpg', NULL);",
+            )
+            .unwrap();
+        }
+        let app = Router::new()
+            .route("/api/files", get(handle_files))
+            .with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/files?view=all&cluster=7")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["total"], 2);
+        assert_eq!(json["files"].as_array().unwrap().len(), 2);
+    }
+}
+
 // ---- Faces labeling server ----
 
 /// Maps a `videre-api` facade error to the HTTP status code the axum
@@ -289,12 +441,30 @@ mod pages {
         pub nav: Option<super::Section>,
     }
 
+    #[derive(Template)]
+    #[template(path = "map.html")]
+    pub struct Map {
+        pub chrome: &'static str,
+        pub gallery_css: &'static str,
+        pub css: &'static str,
+        pub justified_js: &'static str,
+        pub gallery_js: &'static str,
+        pub js: &'static str,
+        pub globals: String,
+        pub db: String,
+        pub generated_at: String,
+        pub total_files: i64,
+        pub nav: Option<super::Section>,
+    }
+
     pub const FACES_CSS: &str = include_str!("../../../static/faces.css");
     pub const FACES_JS: &str = include_str!("../../../static/faces.js");
     pub const CLUSTER_CSS: &str = include_str!("../../../static/cluster.css");
     pub const CLUSTER_JS: &str = include_str!("../../../static/cluster.js");
     pub const PERSON_CSS: &str = include_str!("../../../static/person.css");
     pub const PERSON_JS: &str = include_str!("../../../static/person.js");
+    pub const MAP_CSS: &str = include_str!("../../../static/map.css");
+    pub const MAP_JS: &str = include_str!("../../../static/map.js");
 }
 
 fn api_status(e: videre_api::Error) -> StatusCode {
@@ -481,6 +651,47 @@ async fn handle_gallery_date_day(
 ) -> Result<axum::response::Response, StatusCode> {
     let filter = route_date_filter(&year, Some(&month), Some(&day))?;
     render_live_date(&state, filter)
+}
+
+async fn handle_map(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    use askama::Template;
+    use chrono::Utc;
+
+    let (db_path, total_files, has_embeddings) = {
+        let conn = state.conn.lock().unwrap();
+        let total = conn
+            .query_row("SELECT COUNT(*) FROM file_hashes", [], |row| row.get(0))
+            .unwrap_or(0);
+        // Compute HAS_EMBEDDINGS exactly as the `/` handler does, so the Similar
+        // button gates identically: an embedded library must show it on the grid
+        // under the map too, not just on the files page.
+        let has_embeddings = query_embedded_count(&conn, &state.model_id).is_some_and(|n| n > 0);
+        (
+            conn.path().map(|path| path.to_string()).unwrap_or_default(),
+            total,
+            has_embeddings,
+        )
+    };
+    let globals = format!(
+        "var LIVE_SERVER=true;\nvar HAS_EMBEDDINGS={};\nvar VIDEO_POSTERS={};\n\
+         var GVIEW=\"all\";\nvar PEOPLE_ROOT=\"/people\";\nvar GDATE=null;\nvar GROUPS=[];",
+        has_embeddings,
+        cfg!(target_os = "macos")
+    );
+    let page = pages::Map {
+        chrome: CHROME_CSS,
+        gallery_css: include_str!("../../../static/gallery.css"),
+        css: pages::MAP_CSS,
+        justified_js: include_str!("../../../static/justified-layout.js"),
+        gallery_js: include_str!("../../../static/gallery.js"),
+        js: pages::MAP_JS,
+        globals,
+        db: esc(&db_path),
+        generated_at: Utc::now().format("%Y-%m-%d %H:%M UTC").to_string(),
+        total_files,
+        nav: Some(Section::Map),
+    };
+    axum::response::Html(page.render().expect("map template"))
 }
 
 #[derive(Deserialize)]
@@ -841,7 +1052,8 @@ async fn handle_files(
             } else {
                 None
             };
-            query_files_page(&conn, view, date_filter.as_ref(), offset, limit)
+            let cluster = (view != "date").then_some(q.cluster).flatten();
+            query_files_page(&conn, view, date_filter.as_ref(), offset, limit, cluster)
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         }
     };
@@ -883,6 +1095,56 @@ async fn handle_files(
     out.push_str("]}");
 
     Ok(json_response(out))
+}
+
+/// Returns every persisted location cluster with its derived continent,
+/// ordered largest first for the map legend and world overview.
+async fn handle_location_clusters(State(state): State<Arc<AppState>>) -> Response {
+    let conn = match state.conn.lock() {
+        Ok(conn) => conn,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    if videre_core::location_cluster::ensure_location_clusters_table(&conn).is_err() {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    let mut stmt = match conn.prepare(
+        "SELECT id, COALESCE(name, 'Unnamed location'), centroid_lat, centroid_lon, photo_count, radius_km
+         FROM location_clusters ORDER BY photo_count DESC, id ASC",
+    ) {
+        Ok(stmt) => stmt,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let rows = match stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, f64>(2)?,
+            row.get::<_, f64>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, f64>(5)?,
+        ))
+    }) {
+        Ok(rows) => rows,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    let mut out = String::from("[");
+    for (index, row) in rows.flatten().enumerate() {
+        let (id, name, lat, lon, count, radius) = row;
+        if index > 0 {
+            out.push(',');
+        }
+        let continent = videre_core::location_cluster::continent_of(lat, lon);
+        out.push_str(&format!(
+            "{{\"cluster_id\":{id},\"name\":{},\"centroid_lat\":{lat},\
+             \"centroid_lon\":{lon},\"photo_count\":{count},\"radius_km\":{radius},\
+             \"continent\":{}}}",
+            json_str(&name),
+            json_str(continent),
+        ));
+    }
+    out.push(']');
+    json_response(out)
 }
 
 /// The year/month/day tree, as counts with one representative row per bucket.
@@ -1273,6 +1535,9 @@ struct FilesQuery {
     from: Option<String>,
     /// Exclusive upper bound for date range filters.
     to: Option<String>,
+    /// Map drill-down: only rows assigned to this location cluster. Applied
+    /// only to the `all` view; the date view keeps its own deduplication rules.
+    cluster: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -1667,6 +1932,7 @@ async fn serve_faces_async(
         .route("/api/dates", get(handle_dates))
         .route("/api/search", get(handle_search))
         .route("/api/locations", get(handle_location))
+        .route("/api/location-clusters", get(handle_location_clusters))
         // people
         .route(
             "/api/people",
@@ -1704,7 +1970,7 @@ async fn serve_faces_async(
         .route("/date/{year}/{month}", get(handle_gallery_date_month))
         .route("/date/{year}", get(handle_gallery_date_year))
         .route("/date", get(handle_gallery_date))
-        .route("/map", get(handle_not_yet))
+        .route("/map", get(handle_map))
         .route("/events", get(handle_not_yet))
         .route("/smart", get(handle_not_yet));
 

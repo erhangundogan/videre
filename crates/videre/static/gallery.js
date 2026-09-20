@@ -566,6 +566,7 @@ document.getElementById('lb').addEventListener('click',function(e){
 // HASH_FILES stays for the inlined static export, whose rows carry no `copies`
 // field and so must be counted client-side.
 var GPAGE=200,gShown=0,HASH_FILES={},RESULT_ROWS={},galleryFiles=[];
+var GCLUSTER=null,gRequest=0;
 // See faces.js: the labeling sub-pages are not always under /people.
 function peopleRootG(){
   var r=(typeof PEOPLE_ROOT==='string')?PEOPLE_ROOT:'/people';
@@ -718,18 +719,38 @@ function renderGallery(){
   }
   if(gLoading)return;
   gLoading=true;
+  var request=++gRequest;
   var btn=document.getElementById('gallery-more');
   if(btn)btn.textContent='Loading\u2026';
-  fetch('/api/files?view='+encodeURIComponent(GVIEW)+'&offset='+gShown+'&limit='+GPAGE)
+  fetch('/api/files?view='+encodeURIComponent(GVIEW)+'&offset='+gShown+'&limit='+GPAGE+
+        (GCLUSTER!==null?('&cluster='+encodeURIComponent(GCLUSTER)):''))
     .then(function(r){ return r.json(); })
-    .then(function(d){ gLoading=false; appendCards(d.files||[],d.total||0); })
+    .then(function(d){
+      if(request!==gRequest)return;
+      gLoading=false;
+      appendCards(d.files||[],d.total||0);
+    })
     .catch(function(){
+      if(request!==gRequest)return;
       gLoading=false;
       // Say so, rather than leaving a button that silently does nothing.
       if(btn)btn.textContent='Could not load more. Click to retry.';
     });
 }
 function showMoreGallery(){renderGallery();}
+// The map page owns the location selection, while the shared gallery owns
+// paging and rendering. Reset all paging state before loading the first page
+// for the selected cluster; null returns to the complete library.
+window.setGalleryCluster=function(id){
+  GCLUSTER=id;
+  gRequest++;
+  gLoading=false;
+  gShown=0;
+  galleryFiles=[];
+  var gallery=document.getElementById('gallery');
+  if(gallery){clearTileMode(gallery);gallery.innerHTML='';}
+  renderGallery();
+};
 function findSimilar(hash){
   var panel=document.getElementById('results');
   if(panel){panel.style.display='block';panel.innerHTML='<div class="results-head"><h2>Searching&hellip;</h2></div>';}

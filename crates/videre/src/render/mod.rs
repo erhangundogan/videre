@@ -91,6 +91,7 @@ pub(crate) fn query_files_page(
     date_filter: Option<&FileDateFilter>,
     offset: i64,
     limit: i64,
+    cluster: Option<i64>,
 ) -> rusqlite::Result<(Vec<(FileRow, i64)>, i64)> {
     // `view=date` shows one row per hash, the same KEEP set `/date` renders.
     // Choosing it in SQL rather than in Rust is what makes it pageable.
@@ -108,29 +109,35 @@ pub(crate) fn query_files_page(
     // A date prefix narrows both the count and the page, so "Show more" counts
     // what is actually in the day rather than in the library.
     let effective = videre_core::query::EFFECTIVE_DATE_SQL;
-    let (where_sql, params): (String, Vec<String>) = match date_filter {
-        Some(FileDateFilter::Prefix(d)) if !d.is_empty() => (
-            format!(" WHERE substr({effective}, 1, {}) = ?", d.len()),
-            vec![d.to_string()],
-        ),
+    let mut clauses = Vec::new();
+    let mut params = Vec::<rusqlite::types::Value>::new();
+    match date_filter {
+        Some(FileDateFilter::Prefix(d)) if !d.is_empty() => {
+            clauses.push(format!("substr({effective}, 1, {}) = ?", d.len()));
+            params.push(d.clone().into());
+        }
         Some(FileDateFilter::Range { from, to }) => {
-            let mut clauses = Vec::new();
-            let mut params = Vec::new();
             if let Some(from) = from {
                 clauses.push(format!("{effective} >= ?"));
-                params.push(from.clone());
+                params.push(from.clone().into());
             }
             if let Some(to) = to {
                 clauses.push(format!("{effective} < ?"));
-                params.push(to.clone());
-            }
-            if clauses.is_empty() {
-                (String::new(), Vec::new())
-            } else {
-                (format!(" WHERE {}", clauses.join(" AND ")), params)
+                params.push(to.clone().into());
             }
         }
-        _ => (String::new(), Vec::new()),
+        _ => {}
+    }
+    if view != "date" {
+        if let Some(cluster) = cluster {
+            clauses.push("location_cluster_id = ?".to_string());
+            params.push(cluster.into());
+        }
+    }
+    let where_sql = if clauses.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", clauses.join(" AND "))
     };
 
     let total: i64 = conn
@@ -164,12 +171,9 @@ pub(crate) fn query_files_page(
             return Err(rusqlite::Error::InvalidQuery);
         }
     };
-    let mut bound: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-    for p in &params {
-        bound.push(Box::new(p.clone()));
-    }
-    bound.push(Box::new(limit));
-    bound.push(Box::new(offset));
+    let mut bound = params.clone();
+    bound.push(limit.into());
+    bound.push(offset.into());
     let rows = stmt
         .query_map(rusqlite::params_from_iter(bound.iter()), |r| {
             Ok((
@@ -727,6 +731,7 @@ pub(crate) enum Section {
     Duplicates,
     Date,
     People,
+    Map,
 }
 
 impl Section {
@@ -741,6 +746,9 @@ impl Section {
     }
     pub(crate) fn is_people(&self) -> bool {
         *self == Section::People
+    }
+    pub(crate) fn is_map(&self) -> bool {
+        *self == Section::Map
     }
 }
 

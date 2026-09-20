@@ -7,6 +7,7 @@
     { "method": "GET",    "path": "/api/dates" },
     { "method": "GET",    "path": "/api/search" },
     { "method": "GET",    "path": "/api/locations" },
+    { "method": "GET",    "path": "/api/location-clusters" },
     { "method": "GET",    "path": "/api/people" },
     { "method": "POST",   "path": "/api/people" },
     { "method": "GET",    "path": "/api/people/{name}" },
