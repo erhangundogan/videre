@@ -238,7 +238,7 @@ mod location_cluster_tests {
     use axum::http::Request;
     use tower::ServiceExt;
 
-    fn gallery_state(root: &Path) -> Arc<AppState> {
+    pub(super) fn gallery_state(root: &Path) -> Arc<AppState> {
         let conn = Connection::open_in_memory().unwrap();
         videre_core::location_cluster::register_haversine_sql_function(&conn).unwrap();
         let library = Arc::new(
@@ -261,6 +261,7 @@ mod location_cluster_tests {
             gallery: true,
             context,
             embedder: Mutex::new(None),
+            basemap_downloading: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 
@@ -596,6 +597,136 @@ mod location_cluster_tests {
     }
 }
 
+#[cfg(test)]
+mod basemap_tests {
+    use super::location_cluster_tests::gallery_state;
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::header;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    /// The archive path the handlers resolve for a given test state: the
+    /// shared geo cache under the library context, not a bare tempdir join.
+    fn archive_for(state: &AppState) -> std::path::PathBuf {
+        videre_core::basemap::archive_path(
+            &state.context.library.cache.geo,
+            &state.context.library.paths.state,
+        )
+    }
+
+    #[tokio::test]
+    async fn basemap_tile_endpoint_serves_ranges_and_absent_404() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+
+        // No archive yet: 404.
+        let app = Router::new()
+            .route("/tiles/basemap.pmtiles", get(handle_basemap_tiles))
+            .with_state(state.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/tiles/basemap.pmtiles")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        // An archive on disk: a Range returns exactly those bytes with 206.
+        let archive = archive_for(&state);
+        std::fs::create_dir_all(archive.parent().unwrap()).unwrap();
+        std::fs::write(&archive, b"0123456789").unwrap();
+        let app = Router::new()
+            .route("/tiles/basemap.pmtiles", get(handle_basemap_tiles))
+            .with_state(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/tiles/basemap.pmtiles")
+                    .header(header::RANGE, "bytes=4-7")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            response.headers().get(header::ACCEPT_RANGES).unwrap(),
+            "bytes"
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body.as_ref(), b"4567");
+    }
+
+    #[tokio::test]
+    async fn basemap_tile_endpoint_409s_while_a_download_is_in_flight() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        // A `.part` sibling with no final archive is the in-flight state.
+        let archive = archive_for(&state);
+        std::fs::create_dir_all(archive.parent().unwrap()).unwrap();
+        std::fs::write(archive.with_extension("pmtiles.part"), b"half").unwrap();
+        let app = Router::new()
+            .route("/tiles/basemap.pmtiles", get(handle_basemap_tiles))
+            .with_state(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/tiles/basemap.pmtiles")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("\"partial\""));
+    }
+
+    #[tokio::test]
+    async fn basemap_status_reports_absent_then_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        let app = Router::new()
+            .route("/api/basemap/status", get(handle_basemap_status))
+            .with_state(state.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/basemap/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("\"absent\""));
+
+        let archive = archive_for(&state);
+        std::fs::create_dir_all(archive.parent().unwrap()).unwrap();
+        std::fs::write(&archive, b"abc").unwrap();
+        let app = Router::new()
+            .route("/api/basemap/status", get(handle_basemap_status))
+            .with_state(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/basemap/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("\"ready\""));
+        assert!(text.contains("\"bytes\":3"));
+    }
+}
+
 // ---- Faces labeling server ----
 
 /// Maps a `videre-api` facade error to the HTTP status code the axum
@@ -772,6 +903,10 @@ struct AppState {
     /// Loaded on the first ranking search and kept for the process's life. Empty
     /// until then: a gallery whose library nobody searches never loads a model.
     embedder: Mutex<Option<videre_ml::model::Embedder>>,
+    /// Set while a basemap download is in flight, so a second `POST
+    /// /api/basemap/ensure` returns the current status instead of launching a
+    /// second download of the same once-per-machine archive.
+    basemap_downloading: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// The labeling UI. Served as `/people` under `videre gallery`, and as `/` on a
@@ -1453,6 +1588,96 @@ async fn handle_location_clusters(State(state): State<Arc<AppState>>) -> Respons
     }
     out.push(']');
     json_response(out)
+}
+
+/// The basemap archive path this server resolves: the per-library override
+/// when present (how tests seed one), else the machine-shared geo cache.
+fn basemap_archive_path(state: &AppState) -> std::path::PathBuf {
+    videre_core::basemap::archive_path(
+        &state.context.library.cache.geo,
+        &state.context.library.paths.state,
+    )
+}
+
+/// The `{"state":..,"bytes":n}` body the client polls, mapped straight from
+/// the on-disk archive status.
+fn basemap_status_json(path: &Path) -> String {
+    match videre_core::basemap::status(path) {
+        videre_core::basemap::BasemapStatus::Absent => {
+            "{\"state\":\"absent\",\"bytes\":0}".to_string()
+        }
+        videre_core::basemap::BasemapStatus::Partial { bytes } => {
+            format!("{{\"state\":\"partial\",\"bytes\":{bytes}}}")
+        }
+        videre_core::basemap::BasemapStatus::Ready { bytes } => {
+            format!("{{\"state\":\"ready\",\"bytes\":{bytes}}}")
+        }
+    }
+}
+
+/// `GET /tiles/basemap.pmtiles`: the local, Range-capable basemap endpoint
+/// MapLibre reads through the pmtiles protocol. Absent -> 404 (the client
+/// then POSTs ensure); a download in flight -> 409 with the status body (the
+/// client keeps polling); ready -> the file, served with full Range support
+/// by the same `ServeFile` the raw-video route uses.
+async fn handle_basemap_tiles(
+    State(state): State<Arc<AppState>>,
+    request: Request<Body>,
+) -> Response {
+    let path = basemap_archive_path(&state);
+    match videre_core::basemap::status(&path) {
+        videre_core::basemap::BasemapStatus::Absent => StatusCode::NOT_FOUND.into_response(),
+        videre_core::basemap::BasemapStatus::Partial { .. } => (
+            StatusCode::CONFLICT,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            basemap_status_json(&path),
+        )
+            .into_response(),
+        videre_core::basemap::BasemapStatus::Ready { .. } => {
+            match tower_http::services::ServeFile::new(&path)
+                .try_call(request)
+                .await
+            {
+                Ok(response) => response.map(Body::new),
+                Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            }
+        }
+    }
+}
+
+/// `GET /api/basemap/status`: absent / partial / ready plus a byte count.
+async fn handle_basemap_status(State(state): State<Arc<AppState>>) -> Response {
+    json_response(basemap_status_json(&basemap_archive_path(&state)))
+}
+
+/// `POST /api/basemap/ensure`: start the once-per-machine download if the
+/// archive is absent and none is already running, then return the current
+/// status immediately. The blocking `ureq` download runs on a blocking task;
+/// the guard flag keeps a second POST from launching a duplicate.
+async fn handle_basemap_ensure(State(state): State<Arc<AppState>>) -> Response {
+    use std::sync::atomic::Ordering;
+    let path = basemap_archive_path(&state);
+    let ready = matches!(
+        videre_core::basemap::status(&path),
+        videre_core::basemap::BasemapStatus::Ready { .. }
+    );
+    if !ready
+        && state
+            .basemap_downloading
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    {
+        let geo = state.context.library.cache.geo.clone();
+        let state_dir = state.context.library.paths.state.clone();
+        let flag = state.basemap_downloading.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = videre_core::basemap::ensure_downloaded(&geo, &state_dir, |_, _| {}) {
+                eprintln!("videre gallery: basemap download failed: {e}");
+            }
+            flag.store(false, Ordering::SeqCst);
+        });
+    }
+    json_response(basemap_status_json(&path))
 }
 
 /// The year/month/day tree, as counts with one representative row per bucket.
@@ -2257,6 +2482,7 @@ async fn serve_faces_async(
         gallery: opts.gallery,
         context: opts.context.clone(),
         embedder: Mutex::new(None),
+        basemap_downloading: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
 
     // `videre gallery` is the only server configuration (labeling-only went away
@@ -2273,6 +2499,10 @@ async fn serve_faces_async(
         .route("/api/search", get(handle_search))
         .route("/api/locations", get(handle_location))
         .route("/api/location-clusters", get(handle_location_clusters))
+        // basemap: the offline PMTiles archive and its download lifecycle
+        .route("/tiles/basemap.pmtiles", get(handle_basemap_tiles))
+        .route("/api/basemap/status", get(handle_basemap_status))
+        .route("/api/basemap/ensure", post(handle_basemap_ensure))
         // people
         .route(
             "/api/people",
@@ -2472,6 +2702,7 @@ mod thumbnail_tests {
             gallery: true,
             context,
             embedder: Mutex::new(None),
+            basemap_downloading: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 
