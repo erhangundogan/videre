@@ -39,6 +39,7 @@ and cannot answer these HTTP requests after the command exits.
 | `GET /people/cluster/{id}` | One face cluster |
 | `GET /people/person/{name}` | One person |
 | `GET /map` | Location cluster map with the full file grid |
+| `GET /map/location/{name}` | One addressable location drill-down |
 | `GET /events` | Reserved |
 | `GET /smart` | Reserved |
 
@@ -64,6 +65,13 @@ curl "http://127.0.0.1:7878/date?from=2016-05&to=2017"
 
 The reserved `/events` and `/smart` routes currently return a placeholder page
 with `404 Not Found`.
+
+Map location names use the same normalized, URL-safe identity rule as people.
+When more than one cluster has the same normalized name, the route selects the
+largest cluster, then the lowest cluster id. The optional positive `radius`
+query is measured in kilometers; without it the route uses the cluster's stored
+radius. An unknown name still returns the working map page with HTTP 200 and an
+unknown-location state.
 
 ## Files
 
@@ -295,6 +303,7 @@ curl "http://127.0.0.1:7878/api/location-clusters"
   {
     "cluster_id": 7,
     "name": "Berlin, Germany",
+    "route_name": "berlin_germany",
     "centroid_lat": 52.52,
     "centroid_lon": 13.405,
     "photo_count": 42,
@@ -303,6 +312,9 @@ curl "http://127.0.0.1:7878/api/location-clusters"
   }
 ]
 ```
+
+`route_name` is the normalized addressable identity used under
+`/map/location/{name}`.
 
 ## People
 

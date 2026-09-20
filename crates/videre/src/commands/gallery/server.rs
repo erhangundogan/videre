@@ -264,6 +264,113 @@ mod location_cluster_tests {
         })
     }
 
+    fn seed_map_locations(conn: &Connection) {
+        videre_core::location_cluster::ensure_location_clusters_table(conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO location_clusters
+                (id, centroid_lat, centroid_lon, name, photo_count, radius_km, created_at)
+             VALUES
+                (1, 41.01, 28.97, 'İstanbul', 5, 20.0, CURRENT_TIMESTAMP),
+                (2, 41.02, 28.98, 'istanbul', 20, 25.0, CURRENT_TIMESTAMP),
+                (3, 52.52, 13.405, 'Berlin', 10, 20.0, CURRENT_TIMESTAMP),
+                (4, 52.51, 13.40, 'Berlin', 10, 30.0, CURRENT_TIMESTAMP),
+                (5, 40.71, -74.01, NULL, 2, 15.0, CURRENT_TIMESTAMP),
+                (6, 40.72, -74.02, NULL, 8, 35.0, CURRENT_TIMESTAMP);",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn map_location_resolver_normalizes_and_prefers_the_largest_cluster() {
+        let conn = Connection::open_in_memory().unwrap();
+        seed_map_locations(&conn);
+
+        assert_eq!(
+            resolve_map_location(&conn, "istanbul").unwrap().unwrap().id,
+            2
+        );
+        assert_eq!(
+            resolve_map_location(&conn, "berlin").unwrap().unwrap().id,
+            3
+        );
+        assert_eq!(
+            resolve_map_location(&conn, "unnamed_location")
+                .unwrap()
+                .unwrap()
+                .id,
+            6
+        );
+        assert!(resolve_map_location(&conn, "!!!").unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn map_location_route_bootstraps_the_resolved_cluster() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        seed_map_locations(&state.conn.lock().unwrap());
+        let app = Router::new()
+            .route("/map/location/{name}", get(handle_map_location))
+            .with_state(state);
+
+        for (uri, radius) in [
+            ("/map/location/berlin", "20.0"),
+            ("/map/location/berlin?radius=25", "25.0"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let body = String::from_utf8(body.to_vec()).unwrap();
+            assert!(
+                body.contains(&format!(
+                    "var GLOC={{\"kind\":\"location\",\"name\":\"berlin\",\"radius\":{radius}}};"
+                )),
+                "{uri} did not carry the expected bootstrap: {body}"
+            );
+        }
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/map/location/berlin?radius=0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn unknown_map_location_renders_an_honest_200_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        seed_map_locations(&state.conn.lock().unwrap());
+        let app = Router::new()
+            .route("/map/location/{name}", get(handle_map_location))
+            .with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/map/location/not-a-place")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("var GLOC={\"kind\":\"unknown\",\"name\":\"notaplace\"};"));
+        assert!(!body.contains("\"latitude\""));
+        assert!(!body.contains("\"longitude\""));
+        assert!(!body.contains("\"cluster_id\""));
+    }
+
     #[tokio::test]
     async fn location_clusters_endpoint_returns_rows_ordered_and_shaped() {
         let dir = tempfile::tempdir().unwrap();
@@ -302,6 +409,7 @@ mod location_cluster_tests {
         let rows = rows.as_array().unwrap();
         assert_eq!(rows.len(), 4);
         assert_eq!(rows[0]["name"], "Tokyo");
+        assert_eq!(rows[0]["route_name"], "tokyo");
         assert_eq!(rows[0]["continent"], "Asia");
         assert_eq!(rows[1]["name"], "Unnamed location");
         assert_eq!(rows[3]["continent"], "Oceania");
@@ -751,7 +859,68 @@ async fn handle_gallery_date_day(
     render_live_date(&state, filter)
 }
 
-async fn handle_map(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+#[derive(Debug, Clone, PartialEq)]
+struct ResolvedMapLocation {
+    id: i64,
+    route_name: String,
+    display_name: String,
+    centroid_lat: f64,
+    centroid_lon: f64,
+    photo_count: i64,
+    radius_km: f64,
+}
+
+fn map_locations(conn: &Connection) -> rusqlite::Result<Vec<ResolvedMapLocation>> {
+    videre_core::location_cluster::ensure_location_clusters_table(conn)?;
+    let mut stmt = conn.prepare(
+        "SELECT id, COALESCE(name, 'Unnamed location'), centroid_lat, centroid_lon,
+                photo_count, radius_km
+         FROM location_clusters ORDER BY photo_count DESC, id ASC",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            let display_name = row.get::<_, String>(1)?;
+            let route_name = videre_core::person::normalize(&display_name)
+                .unwrap_or_else(|| "unnamed_location".to_string());
+            Ok(ResolvedMapLocation {
+                id: row.get(0)?,
+                route_name,
+                display_name,
+                centroid_lat: row.get(2)?,
+                centroid_lon: row.get(3)?,
+                photo_count: row.get(4)?,
+                radius_km: row.get(5)?,
+            })
+        })?
+        .collect();
+    rows
+}
+
+fn resolve_map_location(
+    conn: &Connection,
+    segment: &str,
+) -> rusqlite::Result<Option<ResolvedMapLocation>> {
+    let Some(wanted) = videre_core::person::normalize(segment) else {
+        return Ok(None);
+    };
+    Ok(map_locations(conn)?
+        .into_iter()
+        .find(|location| location.route_name == wanted))
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum MapLocationBootstrap {
+    Location { name: String, radius: f64 },
+    Unknown { name: String },
+}
+
+#[derive(Deserialize)]
+struct MapPageQuery {
+    radius: Option<f64>,
+}
+
+fn render_map(state: &AppState, location_json: &str) -> axum::response::Html<String> {
     use askama::Template;
     use chrono::Utc;
 
@@ -772,7 +941,7 @@ async fn handle_map(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     };
     let globals = format!(
         "var LIVE_SERVER=true;\nvar HAS_EMBEDDINGS={};\nvar VIDEO_POSTERS={};\n\
-         var GVIEW=\"all\";\nvar PEOPLE_ROOT=\"/people\";\nvar GDATE=null;\nvar GROUPS=[];",
+         var GVIEW=\"all\";\nvar PEOPLE_ROOT=\"/people\";\nvar GDATE=null;\nvar GLOC={location_json};\nvar GROUPS=[];",
         has_embeddings,
         cfg!(target_os = "macos")
     );
@@ -790,6 +959,40 @@ async fn handle_map(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         nav: Some(Section::Map),
     };
     axum::response::Html(page.render().expect("map template"))
+}
+
+async fn handle_map(State(state): State<Arc<AppState>>) -> axum::response::Html<String> {
+    render_map(&state, "null")
+}
+
+async fn handle_map_location(
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Query(query): Query<MapPageQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Result<axum::response::Html<String>, StatusCode> {
+    let radius = match query.radius {
+        Some(radius) if radius.is_finite() && radius > 0.0 => Some(radius),
+        Some(_) => return Err(StatusCode::BAD_REQUEST),
+        None => None,
+    };
+    let resolved = {
+        let conn = state
+            .conn
+            .lock()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        resolve_map_location(&conn, &name).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
+    let bootstrap = match resolved {
+        Some(location) => MapLocationBootstrap::Location {
+            name: location.route_name,
+            radius: radius.unwrap_or(location.radius_km),
+        },
+        None => MapLocationBootstrap::Unknown {
+            name: videre_core::person::normalize(&name).unwrap_or_default(),
+        },
+    };
+    let json = serde_json::to_string(&bootstrap).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(render_map(&state, &json))
 }
 
 #[derive(Deserialize)]
@@ -1211,42 +1414,29 @@ async fn handle_location_clusters(State(state): State<Arc<AppState>>) -> Respons
         Ok(conn) => conn,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    if videre_core::location_cluster::ensure_location_clusters_table(&conn).is_err() {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
-    let mut stmt = match conn.prepare(
-        "SELECT id, COALESCE(name, 'Unnamed location'), centroid_lat, centroid_lon, photo_count, radius_km
-         FROM location_clusters ORDER BY photo_count DESC, id ASC",
-    ) {
-        Ok(stmt) => stmt,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    let rows = match stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, f64>(2)?,
-            row.get::<_, f64>(3)?,
-            row.get::<_, i64>(4)?,
-            row.get::<_, f64>(5)?,
-        ))
-    }) {
+    let rows = match map_locations(&conn) {
         Ok(rows) => rows,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
     let mut out = String::from("[");
-    for (index, row) in rows.flatten().enumerate() {
-        let (id, name, lat, lon, count, radius) = row;
+    for (index, row) in rows.into_iter().enumerate() {
         if index > 0 {
             out.push(',');
         }
-        let continent = videre_core::location_cluster::continent_of(lat, lon);
+        let continent =
+            videre_core::location_cluster::continent_of(row.centroid_lat, row.centroid_lon);
         out.push_str(&format!(
-            "{{\"cluster_id\":{id},\"name\":{},\"centroid_lat\":{lat},\
-             \"centroid_lon\":{lon},\"photo_count\":{count},\"radius_km\":{radius},\
+            "{{\"cluster_id\":{},\"name\":{},\"route_name\":{},\"centroid_lat\":{},\
+             \"centroid_lon\":{},\"photo_count\":{},\"radius_km\":{},\
              \"continent\":{}}}",
-            json_str(&name),
+            row.id,
+            json_str(&row.display_name),
+            json_str(&row.route_name),
+            row.centroid_lat,
+            row.centroid_lon,
+            row.photo_count,
+            row.radius_km,
             json_str(continent),
         ));
     }
@@ -2112,6 +2302,7 @@ async fn serve_faces_async(
         .route("/date/{year}/{month}", get(handle_gallery_date_month))
         .route("/date/{year}", get(handle_gallery_date_year))
         .route("/date", get(handle_gallery_date))
+        .route("/map/location/{name}", get(handle_map_location))
         .route("/map", get(handle_map))
         .route("/events", get(handle_not_yet))
         .route("/smart", get(handle_not_yet));

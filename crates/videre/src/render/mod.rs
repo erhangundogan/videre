@@ -1059,7 +1059,7 @@ fn build_data_block(
     // `<video>` tile. See buildPreview in gallery.js.
     let video_posters = live && cfg!(target_os = "macos");
     out.push_str(&format!(
-        "<script>\nvar LIVE_SERVER={live};\nvar HAS_EMBEDDINGS={has_embeddings};\nvar VIDEO_POSTERS={video_posters};\nvar GVIEW={};\nvar PEOPLE_ROOT={};\nvar GDATE={};\n</script>\n",
+        "<script>\nvar LIVE_SERVER={live};\nvar HAS_EMBEDDINGS={has_embeddings};\nvar VIDEO_POSTERS={video_posters};\nvar GVIEW={};\nvar PEOPLE_ROOT={};\nvar GDATE={};\nvar GLOC=null;\n</script>\n",
         json_str(view),
         // `nav` is Some only under `videre gallery`, which is the one
         // configuration with a `/people`. See `people_root`.
