@@ -450,6 +450,107 @@ mod tests {
     }
 
     #[test]
+    fn mime_types_cover_gallery_image_and_video_extensions() {
+        for (ext, expected) in [
+            ("jpg", "image/jpeg"),
+            ("jpeg", "image/jpeg"),
+            ("png", "image/png"),
+            ("gif", "image/gif"),
+            ("webp", "image/webp"),
+            ("bmp", "image/bmp"),
+            ("tiff", "image/tiff"),
+            ("mov", "video/quicktime"),
+            ("mp4", "video/mp4"),
+            ("unknown", "application/octet-stream"),
+        ] {
+            assert_eq!(mime_for_ext(ext), expected, "extension {ext}");
+        }
+    }
+
+    #[test]
+    fn face_thumbnail_cache_is_returned_without_reading_the_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let ctx =
+            videre_core::library::LibraryContext::new(temp.path(), &temp.path().join("cache"))
+                .unwrap();
+        let lookup = FaceLookup {
+            bbox_json: "10,20,30,40".to_string(),
+            file_path: temp.path().join("missing.jpg").to_string_lossy().into(),
+            hash: "face-cache-hash".to_string(),
+            oriented: true,
+        };
+        let bbox = [10.0, 20.0, 40.0, 60.0];
+        let cache_path = videre_core::thumb_cache::face_thumb_path_in(
+            &ctx.cache,
+            &lookup.hash,
+            42,
+            bbox,
+            FACE_THUMB_SIZE,
+        );
+        std::fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+        std::fs::write(&cache_path, b"cached thumbnail").unwrap();
+
+        assert_eq!(
+            face_bytes_from_lookup(&lookup, 42, &ctx.cache).unwrap(),
+            b"cached thumbnail"
+        );
+    }
+
+    #[test]
+    fn malformed_face_bbox_is_not_found_before_image_io() {
+        let temp = tempfile::tempdir().unwrap();
+        let ctx =
+            videre_core::library::LibraryContext::new(temp.path(), &temp.path().join("cache"))
+                .unwrap();
+        for bbox_json in ["", "1,2,3", "1,2,three,4", "1,2,3,4,5"] {
+            let lookup = FaceLookup {
+                bbox_json: bbox_json.to_string(),
+                file_path: temp.path().join("missing.jpg").to_string_lossy().into(),
+                hash: "bad-bbox-hash".to_string(),
+                oriented: false,
+            };
+            assert!(matches!(
+                face_bytes_from_lookup(&lookup, 1, &ctx.cache),
+                Err(Error::NotFound)
+            ));
+        }
+    }
+
+    #[test]
+    fn original_bytes_preserve_plain_file_contents_and_choose_mime() {
+        let temp = tempfile::tempdir().unwrap();
+        let ctx =
+            videre_core::library::LibraryContext::new(temp.path(), &temp.path().join("cache"))
+                .unwrap();
+        let source = temp.path().join("original.JpEg");
+        std::fs::write(&source, b"original image bytes").unwrap();
+        let lookup = OriginalLookup {
+            file_path: source.to_string_lossy().into(),
+            hash: "original-hash".to_string(),
+        };
+
+        let (mime, bytes) = original_bytes_from_lookup(&lookup, 1, &ctx.cache).unwrap();
+        assert_eq!(mime, "image/jpeg");
+        assert_eq!(bytes, b"original image bytes");
+    }
+
+    #[test]
+    fn missing_original_file_is_not_found() {
+        let temp = tempfile::tempdir().unwrap();
+        let ctx =
+            videre_core::library::LibraryContext::new(temp.path(), &temp.path().join("cache"))
+                .unwrap();
+        let lookup = OriginalLookup {
+            file_path: temp.path().join("missing.jpg").to_string_lossy().into(),
+            hash: "missing-original-hash".to_string(),
+        };
+        assert!(matches!(
+            original_bytes_from_lookup(&lookup, 1, &ctx.cache),
+            Err(Error::NotFound)
+        ));
+    }
+
+    #[test]
     fn unknown_face_id_is_not_found() {
         let conn = Connection::open_in_memory().unwrap();
         videre_core::face_db::create_faces_table(&conn).unwrap();

@@ -193,7 +193,16 @@ pub fn reconcile_xmp_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
     use videre_core::marks::XmpPrecedence::{Db, File, Newest};
+
+    fn reconcile_test_connection() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        videre_core::library_db::ensure_scan_schema(&conn).unwrap();
+        videre_core::marks::ensure_marks_table(&conn).unwrap();
+        videre_core::tags::ensure_photo_tags_table(&conn).unwrap();
+        conn
+    }
 
     #[test]
     fn decide_reconcile_covers_every_case() {
@@ -265,5 +274,103 @@ mod tests {
         let want =
             videre_core::db::mtime_iso(std::fs::metadata(&side).unwrap().modified().unwrap());
         assert_eq!(state, want);
+    }
+
+    #[test]
+    fn reconcile_skips_an_unchanged_row_without_a_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = videre_core::library::LibraryContext::new(dir.path(), &dir.path().join("cache"))
+            .unwrap();
+        let path = dir.path().join("unchanged.jpg");
+        let conn = reconcile_test_connection();
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, xmp_sidecar_mtime) VALUES (?1, 'h1', '')",
+            [&path.to_string_lossy()],
+        )
+        .unwrap();
+
+        reconcile_xmp_in(&conn, &ctx, Db, &HashSet::new(), true).unwrap();
+
+        let state: String = conn
+            .query_row(
+                "SELECT xmp_sidecar_mtime FROM file_hashes WHERE hash = 'h1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "");
+        assert_eq!(videre_core::marks::get(&conn, "h1").unwrap().rating, None);
+    }
+
+    #[test]
+    fn reconcile_imports_a_changed_sidecar_and_records_its_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = videre_core::library::LibraryContext::new(dir.path(), &dir.path().join("cache"))
+            .unwrap();
+        let path = dir.path().join("changed.jpg");
+        std::fs::write(&path, b"not read by the sidecar-only path").unwrap();
+        let sidecar = crate::xmp::write::sidecar_path(&path);
+        std::fs::write(
+            &sidecar,
+            r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"
+                xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+                xmlns:dc="http://purl.org/dc/elements/1.1/"
+                xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+                <rdf:RDF><rdf:Description xmp:Rating="4"><dc:subject><rdf:Bag>
+                <rdf:li>holiday</rdf:li></rdf:Bag></dc:subject></rdf:Description></rdf:RDF>
+              </x:xmpmeta>"#,
+        )
+        .unwrap();
+        let conn = reconcile_test_connection();
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, xmp_sidecar_mtime) VALUES (?1, 'h2', 'old')",
+            [&path.to_string_lossy()],
+        )
+        .unwrap();
+
+        reconcile_xmp_in(&conn, &ctx, Db, &HashSet::new(), true).unwrap();
+
+        assert_eq!(
+            videre_core::marks::get(&conn, "h2").unwrap().rating,
+            Some(4)
+        );
+        assert_eq!(
+            videre_core::tags::tags_for_hash(&conn, "h2").unwrap(),
+            vec!["holiday"]
+        );
+        let state: String = conn
+            .query_row(
+                "SELECT xmp_sidecar_mtime FROM file_hashes WHERE hash = 'h2'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, current_sidecar_state(&path));
+        assert!(!state.is_empty());
+    }
+
+    #[test]
+    fn reconcile_a_never_seen_row_records_the_absent_sidecar_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = videre_core::library::LibraryContext::new(dir.path(), &dir.path().join("cache"))
+            .unwrap();
+        let path = dir.path().join("new.jpg");
+        let conn = reconcile_test_connection();
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, xmp_sidecar_mtime) VALUES (?1, 'h3', NULL)",
+            [&path.to_string_lossy()],
+        )
+        .unwrap();
+
+        reconcile_xmp_in(&conn, &ctx, Db, &HashSet::new(), true).unwrap();
+
+        let state: String = conn
+            .query_row(
+                "SELECT xmp_sidecar_mtime FROM file_hashes WHERE hash = 'h3'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "");
     }
 }

@@ -32,6 +32,23 @@ cargo test --workspace
 CI runs `make fmt-check` plus the full suite on Ubuntu and macOS. Both must be
 green.
 
+The browser E2E suite is opt-in while its stability baseline is established.
+It uses Playwright with Chromium, starts `videre gallery` against a temporary
+copy of tracked fixtures, and does not inspect a real library. Enable Corepack
+once if needed, then install the Yarn 4 dependencies and Chromium before
+running it:
+
+```bash
+corepack enable
+make e2e-install
+make e2e
+```
+
+`make e2e` builds the debug binary first. Its failure artifacts are written to
+`e2e/playwright-report/` and `e2e/test-results/`, both ignored by Git. The
+GitHub Actions runs the same Chromium suite for pull requests and pushes to
+`main`.
+
 Worth knowing before changing anything:
 
 - **Tests never download model weights.** Anything needing them either skips on

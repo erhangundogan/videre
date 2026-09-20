@@ -37,7 +37,7 @@ COVERAGE_TOOLCHAIN ?= $(TOOLCHAIN)
 
 .PHONY: help
 help: ## Show this help
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-16s\033[0m %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: build
 build: ## Build the release binary (target/release/videre)
@@ -132,6 +132,18 @@ docs-build: ## Build the docs site into docs/dist
 .PHONY: docs-og
 docs-og: ## Regenerate the social card at docs/public/og.png
 	yarn --cwd docs og
+
+# Browser E2E tests intentionally stay outside `test` and `verify` until their
+# stability baseline is established. They start a gallery over a temporary copy
+# of repository fixtures and need Chromium installed once per machine.
+.PHONY: e2e-install
+e2e-install: ## Install Playwright E2E dependencies and Chromium (Yarn 4)
+	yarn --cwd e2e install --immutable
+	yarn --cwd e2e exec playwright install chromium
+
+.PHONY: e2e
+e2e: build-dev ## Run the opt-in Chromium Playwright E2E suite
+	yarn --cwd e2e test
 
 # :warning: This installs into ~/.cargo/bin, which usually comes first on PATH
 # and will then shadow a Homebrew-installed videre, silently. `videre --version`
