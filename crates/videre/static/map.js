@@ -357,13 +357,16 @@
   radiusInput.addEventListener('change', function () {
     if (!activeCluster || activeRadius === null) return;
     var radius = radiusInput.valueAsNumber;
-    if (!Number.isFinite(radius) || radius < 1) {
+    // Accept any positive radius, matching the server (files_location_filter),
+    // so a sub-1 radius arriving by URL or a sub-1 cluster default can be nudged.
+    if (!Number.isFinite(radius) || radius <= 0) {
       radiusInput.value = String(activeRadius);
       return;
     }
     activeRadius = radius;
     wrapper.dataset.radius = String(radius);
-    focusSelection(activeCluster, radius);
+    // Only the ring resizes; the plot view holds still (spec asks for the ring
+    // redraw, not a re-zoom on every radius change).
     window.setGalleryLocation(activeCluster.centroid_lat, activeCluster.centroid_lon, radius);
     window.history.replaceState({}, '', locationPath(activeCluster, radius));
     render();
@@ -433,9 +436,18 @@
       empty.hidden = true;
       groupContinents();
       applyLocationState(typeof GLOC === 'object' ? GLOC : locationStateFromUrl());
+      // Canonicalize the address bar to the resolved route name without adding a
+      // history entry, so Back/Forward always see the normalized URL (a manually
+      // typed /map/location/Berlin becomes .../berlin and resolves on popstate).
+      if (activeCluster) {
+        window.history.replaceState(null, '', locationPath(activeCluster, activeRadius));
+      }
     })
     .catch(function () {
       empty.hidden = false;
       empty.textContent = 'Could not load locations.';
+      // The plot failed, but the grid still owns the page: load all files, since
+      // gallery.js defers the initial grid fetch to the map on this page.
+      window.setGalleryLocation(null, null, null);
     });
 })();

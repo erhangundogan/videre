@@ -353,22 +353,29 @@ mod location_cluster_tests {
             .route("/map/location/{name}", get(handle_map_location))
             .with_state(state);
 
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/map/location/not-a-place")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let body = String::from_utf8(body.to_vec()).unwrap();
-        assert!(body.contains("var GLOC={\"kind\":\"unknown\",\"name\":\"notaplace\"};"));
-        assert!(!body.contains("\"latitude\""));
-        assert!(!body.contains("\"longitude\""));
-        assert!(!body.contains("\"cluster_id\""));
+        // An unknown name is a working 200 page whatever the radius query is:
+        // an invalid radius must not turn it into a 400 for a place the map
+        // never had.
+        for uri in [
+            "/map/location/not-a-place",
+            "/map/location/not-a-place?radius=0",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let body = String::from_utf8(body.to_vec()).unwrap();
+            assert!(
+                body.contains("var GLOC={\"kind\":\"unknown\",\"name\":\"notaplace\"};"),
+                "{uri}"
+            );
+            assert!(!body.contains("\"latitude\""));
+            assert!(!body.contains("\"longitude\""));
+            assert!(!body.contains("\"cluster_id\""));
+        }
     }
 
     #[tokio::test]
@@ -970,11 +977,6 @@ async fn handle_map_location(
     Query(query): Query<MapPageQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Result<axum::response::Html<String>, StatusCode> {
-    let radius = match query.radius {
-        Some(radius) if radius.is_finite() && radius > 0.0 => Some(radius),
-        Some(_) => return Err(StatusCode::BAD_REQUEST),
-        None => None,
-    };
     let resolved = {
         let conn = state
             .conn
@@ -983,10 +985,21 @@ async fn handle_map_location(
         resolve_map_location(&conn, &name).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     };
     let bootstrap = match resolved {
-        Some(location) => MapLocationBootstrap::Location {
-            name: location.route_name,
-            radius: radius.unwrap_or(location.radius_km),
-        },
+        // The radius only matters for a resolved location, so validate it here:
+        // an unknown name renders the honest 200 page whatever the radius is,
+        // rather than turning an invalid radius into a 400 for a place the map
+        // never had.
+        Some(location) => {
+            let radius = match query.radius {
+                Some(radius) if radius.is_finite() && radius > 0.0 => Some(radius),
+                Some(_) => return Err(StatusCode::BAD_REQUEST),
+                None => None,
+            };
+            MapLocationBootstrap::Location {
+                name: location.route_name,
+                radius: radius.unwrap_or(location.radius_km),
+            }
+        }
         None => MapLocationBootstrap::Unknown {
             name: videre_core::person::normalize(&name).unwrap_or_default(),
         },

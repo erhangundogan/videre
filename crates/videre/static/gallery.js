@@ -821,8 +821,10 @@ if(typeof ALLFILES!=='undefined'){
     (HASH_FILES[f.hash]=HASH_FILES[f.hash]||[]).push(f);
   });
   renderGallery();
-}else if(document.getElementById('gallery')){
-  // Nothing inlined: a live page. Fetch the first page.
+}else if(document.getElementById('gallery')&&!document.getElementById('map-plot-wrap')){
+  // Nothing inlined: a live page. Fetch the first page. The map page is the one
+  // exception: it drives the grid through setGalleryLocation once its clusters
+  // load (or its plot fails), so gallery.js must not also fire an initial fetch.
   renderGallery();
 }
 document.addEventListener('click',function(e){
