@@ -39,6 +39,7 @@ and cannot answer these HTTP requests after the command exits.
 | `GET /people/cluster/{id}` | One face cluster |
 | `GET /people/person/{name}` | One person |
 | `GET /map` | Location cluster map with the full file grid |
+| `GET /map/location/{name}` | One addressable location drill-down |
 | `GET /events` | Reserved |
 | `GET /smart` | Reserved |
 
@@ -65,6 +66,13 @@ curl "http://127.0.0.1:7878/date?from=2016-05&to=2017"
 The reserved `/events` and `/smart` routes currently return a placeholder page
 with `404 Not Found`.
 
+Map location names use the same normalized, URL-safe identity rule as people.
+When more than one cluster has the same normalized name, the route selects the
+largest cluster, then the lowest cluster id. The optional positive `radius`
+query is measured in kilometers; without it the route uses the cluster's stored
+radius. An unknown name still returns the working map page with HTTP 200 and an
+unknown-location state.
+
 ## Files
 
 ### `GET /api/files`
@@ -81,11 +89,19 @@ Returns a page of file rows. By default it lists all scanned paths.
 | `from=YYYY[-MM[-DD]]` | Inclusive date lower bound for `view=date` |
 | `to=YYYY[-MM[-DD]]` | Exclusive date upper bound for `view=date` |
 | `hashes=<a,b,c>` | Comma-separated hashes to resolve after a search |
-| `cluster=<id>` | For `view=all`, return only files assigned to one location cluster |
+| `lat=<number>` | Center latitude for a `view=all` proximity filter |
+| `lon=<number>` | Center longitude for a `view=all` proximity filter |
+| `radius=<km>` | Positive radius in kilometers for a `view=all` proximity filter |
+
+`lat`, `lon` and `radius` must be supplied together. The server first narrows
+GPS-bearing rows with the coordinate index, then applies exact great-circle
+distance, so the returned page and `total` describe the same circle. The date
+view ignores all three parameters and keeps its own one-row-per-hash behavior.
 
 ```bash
 curl "http://127.0.0.1:7878/api/files?limit=1"
 curl "http://127.0.0.1:7878/api/files?view=date&from=2025-01-01&to=2026-01-01&limit=100"
+curl "http://127.0.0.1:7878/api/files?view=all&lat=52.52&lon=13.405&radius=25"
 ```
 
 ```json
@@ -287,6 +303,7 @@ curl "http://127.0.0.1:7878/api/location-clusters"
   {
     "cluster_id": 7,
     "name": "Berlin, Germany",
+    "route_name": "berlin_germany",
     "centroid_lat": 52.52,
     "centroid_lon": 13.405,
     "photo_count": 42,
@@ -295,6 +312,9 @@ curl "http://127.0.0.1:7878/api/location-clusters"
   }
 ]
 ```
+
+`route_name` is the normalized addressable identity used under
+`/map/location/{name}`.
 
 ## People
 

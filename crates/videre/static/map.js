@@ -11,12 +11,18 @@
   var ox = 0;
   var oy = 0;
   var activeCluster = null;
+  var activeRadius = null;
   var clusters = [];
   var byContinent = {};
   var wrapper = document.getElementById('map-plot-wrap');
   var canvas = document.getElementById('map-plot');
   var empty = document.getElementById('map-empty');
-  if (!wrapper || !canvas || !empty) return;
+  var selectionRow = document.getElementById('map-selection-row');
+  var breadcrumb = document.getElementById('map-breadcrumb');
+  var radiusInput = document.getElementById('map-radius');
+  var selectionStatus = document.getElementById('map-selection-status');
+  if (!wrapper || !canvas || !empty || !selectionRow || !breadcrumb ||
+      !radiusInput || !selectionStatus) return;
 
   var markerLayer = document.createElement('div');
   markerLayer.className = 'map-marker-layer';
@@ -89,7 +95,8 @@
     var button = document.createElement('button');
     button.type = 'button';
     button.className = 'map-marker' +
-      (clusterId !== null && clusterId === activeCluster ? ' active' : '');
+      (clusterId !== null && activeCluster && clusterId === activeCluster.cluster_id ?
+        ' active' : '');
     button.dataset.tier = markerTier;
     button.dataset.name = label;
     if (clusterId !== null) button.dataset.cluster = String(clusterId);
@@ -127,6 +134,49 @@
       context.lineTo(right.x, right.y);
       context.stroke();
     }
+    drawRadiusRing(context);
+  }
+
+  function destinationPoint(cluster, radius, bearing) {
+    var angular = radius / 6371;
+    var latitude = cluster.centroid_lat * Math.PI / 180;
+    var longitude = cluster.centroid_lon * Math.PI / 180;
+    var nextLatitude = Math.asin(
+      Math.sin(latitude) * Math.cos(angular) +
+      Math.cos(latitude) * Math.sin(angular) * Math.cos(bearing)
+    );
+    var nextLongitude = longitude + Math.atan2(
+      Math.sin(bearing) * Math.sin(angular) * Math.cos(latitude),
+      Math.cos(angular) - Math.sin(latitude) * Math.sin(nextLatitude)
+    );
+    return {
+      lat: nextLatitude * 180 / Math.PI,
+      lon: ((nextLongitude * 180 / Math.PI + 540) % 360) - 180
+    };
+  }
+
+  function drawRadiusRing(context) {
+    if (!activeCluster || activeRadius === null) return;
+    context.save();
+    context.strokeStyle = '#60a5fa';
+    context.lineWidth = 2;
+    context.beginPath();
+    var previous = null;
+    for (var index = 0; index <= 64; index++) {
+      var geographic = destinationPoint(
+        activeCluster,
+        activeRadius,
+        index / 64 * Math.PI * 2
+      );
+      var point = toCanvas(project(geographic.lat, geographic.lon));
+      if (!previous || Math.abs(point.x - previous.x) > wrapper.clientWidth) {
+        context.moveTo(point.x, point.y);
+      }
+      else context.lineTo(point.x, point.y);
+      previous = point;
+    }
+    context.stroke();
+    context.restore();
   }
 
   function render() {
@@ -150,10 +200,7 @@
         'cluster',
         cluster.cluster_id,
         function () {
-          activeCluster = cluster.cluster_id;
-          clearBtn.disabled = false;
-          window.setGalleryCluster(cluster.cluster_id);
-          render();
+          selectCluster(cluster, cluster.radius_km, 'push');
         }
       );
     });
@@ -170,6 +217,10 @@
 
   function zoomAt(nextScale, x, y) {
     nextScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, nextScale));
+    if (activeCluster && nextScale < CLUSTER_ZOOM) {
+      clearSelection('push');
+      return;
+    }
     var factor = nextScale / scale;
     ox = x - wrapper.clientWidth / 2 - (x - wrapper.clientWidth / 2 - ox) * factor;
     oy = y - wrapper.clientHeight / 2 - (y - wrapper.clientHeight / 2 - oy) * factor;
@@ -186,14 +237,112 @@
     render();
   }
 
-  function clearSelection() {
+  function locationPath(cluster, radius) {
+    return '/map/location/' + encodeURIComponent(cluster.route_name) +
+      '?radius=' + encodeURIComponent(radius);
+  }
+
+  function focusSelection(cluster, radius) {
+    var width = wrapper.clientWidth;
+    var height = wrapper.clientHeight;
+    var base = Math.min(width / 1.5, height);
+    var latitudeSpan = Math.max(radius / 111.32, 0.01) * 2;
+    var cosine = Math.max(Math.cos(cluster.centroid_lat * Math.PI / 180), 0.01);
+    var longitudeSpan = Math.min(360, radius / (111.32 * cosine) * 2);
+    var projectedWidth = longitudeSpan / 360 * base * 1.5;
+    var projectedHeight = latitudeSpan / 140 * base * 0.55;
+    var fit = Math.min(
+      width * 0.6 / Math.max(projectedWidth, 1),
+      height * 0.6 / Math.max(projectedHeight, 1)
+    );
+    scale = Math.max(CLUSTER_ZOOM, Math.min(MAX_SCALE, fit));
+    var center = project(cluster.centroid_lat, cluster.centroid_lon);
+    ox = -(center.x - 0.5) * base * 1.5 * scale;
+    oy = -(center.y - 0.5) * base * 0.55 * scale;
+  }
+
+  function showSelection(cluster, radius) {
+    selectionStatus.hidden = true;
+    selectionStatus.textContent = '';
+    selectionRow.hidden = false;
+    breadcrumb.innerHTML = '<a href="/map">Map</a> &gt; ' + escH(cluster.name);
+    radiusInput.value = String(radius);
+  }
+
+  function selectCluster(cluster, radius, historyMode) {
+    activeCluster = cluster;
+    activeRadius = radius;
+    wrapper.dataset.radius = String(radius);
+    clearBtn.disabled = false;
+    showSelection(cluster, radius);
+    focusSelection(cluster, radius);
+    window.setGalleryLocation(cluster.centroid_lat, cluster.centroid_lon, radius);
+    if (historyMode === 'push') {
+      window.history.pushState(null, '', locationPath(cluster, radius));
+    }
+    render();
+  }
+
+  function clearSelection(historyMode) {
     activeCluster = null;
+    activeRadius = null;
+    delete wrapper.dataset.radius;
     clearBtn.disabled = true;
+    selectionRow.hidden = true;
+    selectionStatus.hidden = true;
+    selectionStatus.textContent = '';
     scale = 1;
     ox = 0;
     oy = 0;
-    window.setGalleryCluster(null);
+    window.setGalleryLocation(null, null, null);
+    if (historyMode === 'push') window.history.pushState(null, '', '/map');
     render();
+  }
+
+  function showUnknownLocation() {
+    activeCluster = null;
+    activeRadius = null;
+    delete wrapper.dataset.radius;
+    clearBtn.disabled = true;
+    selectionRow.hidden = true;
+    selectionStatus.textContent = 'Unknown location';
+    selectionStatus.hidden = false;
+    scale = 1;
+    ox = 0;
+    oy = 0;
+    window.setGalleryLocation(null, null, null);
+    render();
+  }
+
+  function locationStateFromUrl() {
+    var match = /^\/map\/location\/([^/]+)$/.exec(window.location.pathname);
+    if (!match) return null;
+    var name;
+    try { name = decodeURIComponent(match[1]); }
+    catch (error) { return { kind: 'unknown' }; }
+    var radius = Number(new URLSearchParams(window.location.search).get('radius'));
+    return { kind: 'location', name: name, radius: radius };
+  }
+
+  function applyLocationState(state) {
+    if (!state) {
+      clearSelection('none');
+      return;
+    }
+    if (state.kind !== 'location') {
+      showUnknownLocation();
+      return;
+    }
+    var cluster = clusters.find(function (candidate) {
+      return candidate.route_name === state.name;
+    });
+    if (!cluster) {
+      showUnknownLocation();
+      return;
+    }
+    var radius = Number(state.radius);
+    if (!Number.isFinite(radius) || radius <= 0) radius = cluster.radius_km;
+    selectCluster(cluster, radius, 'none');
   }
 
   document.getElementById('map-zoom-in').addEventListener('click', function () {
@@ -202,7 +351,35 @@
   document.getElementById('map-zoom-out').addEventListener('click', function () {
     zoomAt(scale / 1.5, wrapper.clientWidth / 2, wrapper.clientHeight / 2);
   });
-  document.getElementById('map-clear').addEventListener('click', clearSelection);
+  document.getElementById('map-clear').addEventListener('click', function () {
+    clearSelection('push');
+  });
+  radiusInput.addEventListener('change', function () {
+    if (!activeCluster || activeRadius === null) return;
+    var radius = radiusInput.valueAsNumber;
+    // Accept any positive radius, matching the server (files_location_filter),
+    // so a sub-1 radius arriving by URL or a sub-1 cluster default can be nudged.
+    if (!Number.isFinite(radius) || radius <= 0) {
+      radiusInput.value = String(activeRadius);
+      return;
+    }
+    activeRadius = radius;
+    wrapper.dataset.radius = String(radius);
+    // Only the ring resizes; the plot view holds still (spec asks for the ring
+    // redraw, not a re-zoom on every radius change).
+    window.setGalleryLocation(activeCluster.centroid_lat, activeCluster.centroid_lon, radius);
+    window.history.replaceState({}, '', locationPath(activeCluster, radius));
+    render();
+  });
+  window.addEventListener('keydown', function (event) {
+    if (event.key !== 'Escape' || !activeCluster) return;
+    var lightbox = document.getElementById('lb');
+    if (lightbox && lightbox.classList.contains('on')) return;
+    clearSelection('push');
+  }, true);
+  window.addEventListener('popstate', function () {
+    applyLocationState(locationStateFromUrl());
+  });
 
   // Wheel and dblclick bind to the wrapper, not the canvas: the markers are DOM
   // buttons in a sibling layer above the canvas, so an event landing on a marker
@@ -254,14 +431,26 @@
       if (!clusters.length) {
         empty.hidden = false;
         render();
+        // No clusters to select, but the grid still owns the page: load all
+        // files, since gallery.js defers the initial grid fetch to the map here.
+        window.setGalleryLocation(null, null, null);
         return;
       }
       empty.hidden = true;
       groupContinents();
-      render();
+      applyLocationState(typeof GLOC === 'object' ? GLOC : locationStateFromUrl());
+      // Canonicalize the address bar to the resolved route name without adding a
+      // history entry, so Back/Forward always see the normalized URL (a manually
+      // typed /map/location/Berlin becomes .../berlin and resolves on popstate).
+      if (activeCluster) {
+        window.history.replaceState(null, '', locationPath(activeCluster, activeRadius));
+      }
     })
     .catch(function () {
       empty.hidden = false;
       empty.textContent = 'Could not load locations.';
+      // The plot failed, but the grid still owns the page: load all files, since
+      // gallery.js defers the initial grid fetch to the map on this page.
+      window.setGalleryLocation(null, null, null);
     });
 })();

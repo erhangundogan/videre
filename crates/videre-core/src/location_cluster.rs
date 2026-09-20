@@ -41,6 +41,25 @@ pub fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     EARTH_RADIUS_KM * c
 }
 
+/// Registers the exact distance primitive for SQL queries that need to combine
+/// indexed geographic bounds with a final great-circle check.
+pub fn register_haversine_sql_function(conn: &Connection) -> rusqlite::Result<()> {
+    use rusqlite::functions::FunctionFlags;
+    conn.create_scalar_function(
+        "haversine_km",
+        4,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            Ok(haversine_km(
+                ctx.get(0)?,
+                ctx.get(1)?,
+                ctx.get(2)?,
+                ctx.get(3)?,
+            ))
+        },
+    )
+}
+
 use std::collections::BinaryHeap;
 
 struct HeapEntry {
@@ -627,6 +646,21 @@ mod tests {
     fn haversine_paris_to_london_is_about_343_km() {
         let d = haversine_km(48.8566, 2.3522, 51.5074, -0.1278);
         assert!((d - 343.0).abs() < 5.0, "expected ~343km, got {d}");
+    }
+
+    #[test]
+    fn registered_haversine_sql_function_matches_rust_distance() {
+        let conn = Connection::open_in_memory().unwrap();
+        register_haversine_sql_function(&conn).unwrap();
+        let sql_distance: f64 = conn
+            .query_row(
+                "SELECT haversine_km(?1, ?2, ?3, ?4)",
+                rusqlite::params![52.52, 13.405, 48.8566, 2.3522],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let rust_distance = haversine_km(52.52, 13.405, 48.8566, 2.3522);
+        assert!((sql_distance - rust_distance).abs() < 1e-9);
     }
 
     #[test]
