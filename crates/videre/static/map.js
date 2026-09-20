@@ -27,8 +27,11 @@
   controls.innerHTML =
     '<button id="map-zoom-in" type="button" aria-label="Zoom in">+</button>' +
     '<button id="map-zoom-out" type="button" aria-label="Zoom out">&minus;</button>' +
-    '<button id="map-clear" type="button">Clear</button>';
+    '<button id="map-clear" type="button" disabled>Clear</button>';
   wrapper.appendChild(controls);
+  // Clear resets the selection and the view; it stays disabled until a cluster
+  // is active, so it never refetches page 1 for a selection that was never made.
+  var clearBtn = document.getElementById('map-clear');
 
   function project(lat, lon) {
     return {
@@ -148,6 +151,7 @@
         cluster.cluster_id,
         function () {
           activeCluster = cluster.cluster_id;
+          clearBtn.disabled = false;
           window.setGalleryCluster(cluster.cluster_id);
           render();
         }
@@ -184,6 +188,7 @@
 
   function clearSelection() {
     activeCluster = null;
+    clearBtn.disabled = true;
     scale = 1;
     ox = 0;
     oy = 0;
@@ -199,7 +204,12 @@
   });
   document.getElementById('map-clear').addEventListener('click', clearSelection);
 
-  canvas.addEventListener('wheel', function (event) {
+  // Wheel and dblclick bind to the wrapper, not the canvas: the markers are DOM
+  // buttons in a sibling layer above the canvas, so an event landing on a marker
+  // never reaches a canvas listener, and the cursor sits on a marker exactly
+  // when the user wants to zoom. Drag stays on the canvas so a press on a marker
+  // is a click, not a pan.
+  wrapper.addEventListener('wheel', function (event) {
     event.preventDefault();
     var bounds = wrapper.getBoundingClientRect();
     zoomAt(
@@ -208,7 +218,7 @@
       event.clientY - bounds.top
     );
   }, { passive: false });
-  canvas.addEventListener('dblclick', function (event) {
+  wrapper.addEventListener('dblclick', function (event) {
     var bounds = wrapper.getBoundingClientRect();
     zoomAt(scale * 1.5, event.clientX - bounds.left, event.clientY - bounds.top);
   });

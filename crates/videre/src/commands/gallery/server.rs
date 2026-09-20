@@ -657,19 +657,25 @@ async fn handle_map(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     use askama::Template;
     use chrono::Utc;
 
-    let (db_path, total_files) = {
+    let (db_path, total_files, has_embeddings) = {
         let conn = state.conn.lock().unwrap();
         let total = conn
             .query_row("SELECT COUNT(*) FROM file_hashes", [], |row| row.get(0))
             .unwrap_or(0);
+        // Compute HAS_EMBEDDINGS exactly as the `/` handler does, so the Similar
+        // button gates identically: an embedded library must show it on the grid
+        // under the map too, not just on the files page.
+        let has_embeddings = query_embedded_count(&conn, &state.model_id).is_some_and(|n| n > 0);
         (
             conn.path().map(|path| path.to_string()).unwrap_or_default(),
             total,
+            has_embeddings,
         )
     };
     let globals = format!(
-        "var LIVE_SERVER=true;\nvar HAS_EMBEDDINGS=false;\nvar VIDEO_POSTERS={};\n\
+        "var LIVE_SERVER=true;\nvar HAS_EMBEDDINGS={};\nvar VIDEO_POSTERS={};\n\
          var GVIEW=\"all\";\nvar PEOPLE_ROOT=\"/people\";\nvar GDATE=null;\nvar GROUPS=[];",
+        has_embeddings,
         cfg!(target_os = "macos")
     );
     let page = pages::Map {
