@@ -22,7 +22,7 @@ image = { version = "0.25", default-features = false, features = [
 ] }
 indicatif = "0.17"
 reverse_geocoder = "4"
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled", "functions"] }
 rustix = { version = "1.1.4", features = ["fs"] }
 toml = { version = "0.8", features = ["preserve_order"] }
 serde = { version = "1", features = ["derive"] }

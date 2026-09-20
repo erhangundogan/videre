@@ -1053,8 +1053,16 @@ async fn handle_files(
                 None
             };
             let cluster = (view != "date").then_some(q.cluster).flatten();
-            query_files_page(&conn, view, date_filter.as_ref(), offset, limit, cluster)
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            query_files_page(
+                &conn,
+                view,
+                date_filter.as_ref(),
+                offset,
+                limit,
+                cluster,
+                None,
+            )
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         }
     };
 

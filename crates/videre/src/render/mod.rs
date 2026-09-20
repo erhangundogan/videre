@@ -39,6 +39,63 @@ pub(crate) enum FileDateFilter {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct LocationFilter {
+    pub(crate) lat: f64,
+    pub(crate) lon: f64,
+    pub(crate) radius_km: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum LongitudeBounds {
+    Between { west: f64, east: f64 },
+    Wrapped { west: f64, east: f64 },
+    All,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LocationBounds {
+    south: f64,
+    north: f64,
+    longitude: LongitudeBounds,
+}
+
+fn normalize_longitude(lon: f64) -> f64 {
+    (lon + 180.0).rem_euclid(360.0) - 180.0
+}
+
+fn location_bounds(location: LocationFilter) -> LocationBounds {
+    const EARTH_RADIUS_KM: f64 = 6371.0;
+    let angular = location.radius_km / EARTH_RADIUS_KM;
+    let latitude_delta = angular.to_degrees();
+    let south = (location.lat - latitude_delta).max(-90.0);
+    let north = (location.lat + latitude_delta).min(90.0);
+
+    let longitude = if south <= -90.0 || north >= 90.0 || angular >= std::f64::consts::PI {
+        LongitudeBounds::All
+    } else {
+        let ratio = angular.sin() / location.lat.to_radians().cos();
+        if ratio.abs() >= 1.0 {
+            LongitudeBounds::All
+        } else {
+            let delta = ratio.asin().abs().to_degrees();
+            let west = normalize_longitude(location.lon - delta);
+            let east = normalize_longitude(location.lon + delta);
+            if west <= east {
+                LongitudeBounds::Between { west, east }
+            } else {
+                LongitudeBounds::Wrapped { west, east }
+            }
+        }
+    };
+
+    LocationBounds {
+        south,
+        north,
+        longitude,
+    }
+}
+
 /// How many files in this library are embedded under `model_id`, for the header
 /// stat. `None` when nothing is.
 ///
@@ -92,6 +149,7 @@ pub(crate) fn query_files_page(
     offset: i64,
     limit: i64,
     cluster: Option<i64>,
+    location: Option<&LocationFilter>,
 ) -> rusqlite::Result<(Vec<(FileRow, i64)>, i64)> {
     // `view=date` shows one row per hash, the same KEEP set `/date` renders.
     // Choosing it in SQL rather than in Rust is what makes it pageable.
@@ -132,6 +190,29 @@ pub(crate) fn query_files_page(
         if let Some(cluster) = cluster {
             clauses.push("location_cluster_id = ?".to_string());
             params.push(cluster.into());
+        }
+        if let Some(location) = location {
+            let bounds = location_bounds(*location);
+            clauses.push("gps_lat BETWEEN ? AND ?".to_string());
+            params.push(bounds.south.into());
+            params.push(bounds.north.into());
+            match bounds.longitude {
+                LongitudeBounds::Between { west, east } => {
+                    clauses.push("gps_lon BETWEEN ? AND ?".to_string());
+                    params.push(west.into());
+                    params.push(east.into());
+                }
+                LongitudeBounds::Wrapped { west, east } => {
+                    clauses.push("(gps_lon >= ? OR gps_lon <= ?)".to_string());
+                    params.push(west.into());
+                    params.push(east.into());
+                }
+                LongitudeBounds::All => {}
+            }
+            clauses.push("haversine_km(gps_lat, gps_lon, ?, ?) <= ?".to_string());
+            params.push(location.lat.into());
+            params.push(location.lon.into());
+            params.push(location.radius_km.into());
         }
     }
     let where_sql = if clauses.is_empty() {
@@ -1060,4 +1141,104 @@ fn build_data_block(
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn geo_connection(rows: &str) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (
+                path TEXT PRIMARY KEY,
+                hash TEXT NOT NULL,
+                size_bytes INTEGER,
+                ext TEXT,
+                created_at TEXT,
+                modified_at TEXT,
+                exif_date TEXT,
+                gps_lat REAL,
+                gps_lon REAL,
+                width INTEGER,
+                height INTEGER
+            );",
+        )
+        .unwrap();
+        conn.execute_batch(rows).unwrap();
+        videre_core::location_cluster::register_haversine_sql_function(&conn).unwrap();
+        conn
+    }
+
+    fn hashes(rows: &[(FileRow, i64)]) -> Vec<&str> {
+        rows.iter().map(|(row, _)| row.hash.as_str()).collect()
+    }
+
+    #[test]
+    fn location_page_excludes_bbox_corners_and_keeps_total_in_step() {
+        let conn = geo_connection(
+            "INSERT INTO file_hashes (path, hash, size_bytes, ext, gps_lat, gps_lon) VALUES
+                ('/a-center.jpg', 'center', 1, 'jpg', 52.52, 13.405),
+                ('/b-axis.jpg', 'axis', 1, 'jpg', 52.60, 13.405),
+                ('/c-corner.jpg', 'corner', 1, 'jpg', 52.70, 13.69),
+                ('/d-outside.jpg', 'outside', 1, 'jpg', 53.00, 13.405),
+                ('/e-no-gps.jpg', 'no_gps', 1, 'jpg', NULL, NULL);",
+        );
+        let filter = LocationFilter {
+            lat: 52.52,
+            lon: 13.405,
+            radius_km: 25.0,
+        };
+
+        let (first, first_total) =
+            query_files_page(&conn, "all", None, 0, 1, None, Some(&filter)).unwrap();
+        let (second, second_total) =
+            query_files_page(&conn, "all", None, 1, 1, None, Some(&filter)).unwrap();
+
+        assert_eq!(first_total, 2);
+        assert_eq!(second_total, 2);
+        assert_eq!(hashes(&first), vec!["center"]);
+        assert_eq!(hashes(&second), vec!["axis"]);
+    }
+
+    #[test]
+    fn location_page_wraps_antimeridian_and_unbounds_longitude_at_a_pole() {
+        let antimeridian = geo_connection(
+            "INSERT INTO file_hashes (path, hash, size_bytes, ext, gps_lat, gps_lon) VALUES
+                ('/a-east.jpg', 'east', 1, 'jpg', 0.0, 179.9),
+                ('/b-west.jpg', 'west', 1, 'jpg', 0.0, -179.9);",
+        );
+        let antimeridian_filter = LocationFilter {
+            lat: 0.0,
+            lon: 179.9,
+            radius_km: 30.0,
+        };
+        let (rows, total) = query_files_page(
+            &antimeridian,
+            "all",
+            None,
+            0,
+            10,
+            None,
+            Some(&antimeridian_filter),
+        )
+        .unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(hashes(&rows), vec!["east", "west"]);
+
+        let pole = geo_connection(
+            "INSERT INTO file_hashes (path, hash, size_bytes, ext, gps_lat, gps_lon) VALUES
+                ('/a-prime.jpg', 'prime', 1, 'jpg', 89.9, 0.0),
+                ('/b-opposite.jpg', 'opposite', 1, 'jpg', 89.9, 180.0);",
+        );
+        let pole_filter = LocationFilter {
+            lat: 89.9,
+            lon: 0.0,
+            radius_km: 30.0,
+        };
+        let (rows, total) =
+            query_files_page(&pole, "all", None, 0, 10, None, Some(&pole_filter)).unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(hashes(&rows), vec!["prime", "opposite"]);
+    }
 }
