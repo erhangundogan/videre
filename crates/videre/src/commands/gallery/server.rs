@@ -328,6 +328,57 @@ mod location_cluster_tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(body.as_ref(), b"[]");
     }
+
+    #[tokio::test]
+    async fn files_endpoint_cluster_parameter_filters_by_cluster() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        {
+            let conn = state.conn.lock().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE file_hashes (
+                    path TEXT PRIMARY KEY,
+                    hash TEXT NOT NULL,
+                    size_bytes INTEGER,
+                    ext TEXT,
+                    created_at TEXT,
+                    modified_at TEXT,
+                    exif_date TEXT,
+                    gps_lat REAL,
+                    gps_lon REAL,
+                    width INTEGER,
+                    height INTEGER,
+                    location_cluster_id INTEGER
+                 );
+                 INSERT INTO file_hashes
+                    (path, hash, size_bytes, ext, location_cluster_id)
+                 VALUES
+                    ('/a.jpg', 'aaa', 1, 'jpg', 7),
+                    ('/b.jpg', 'bbb', 2, 'jpg', 7),
+                    ('/c.jpg', 'ccc', 3, 'jpg', NULL);",
+            )
+            .unwrap();
+        }
+        let app = Router::new()
+            .route("/api/files", get(handle_files))
+            .with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/files?view=all&cluster=7")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["total"], 2);
+        assert_eq!(json["files"].as_array().unwrap().len(), 2);
+    }
 }
 
 // ---- Faces labeling server ----
@@ -940,7 +991,8 @@ async fn handle_files(
             } else {
                 None
             };
-            query_files_page(&conn, view, date_filter.as_ref(), offset, limit)
+            let cluster = (view != "date").then_some(q.cluster).flatten();
+            query_files_page(&conn, view, date_filter.as_ref(), offset, limit, cluster)
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         }
     };
@@ -1422,6 +1474,9 @@ struct FilesQuery {
     from: Option<String>,
     /// Exclusive upper bound for date range filters.
     to: Option<String>,
+    /// Map drill-down: only rows assigned to this location cluster. Applied
+    /// only to the `all` view; the date view keeps its own deduplication rules.
+    cluster: Option<i64>,
 }
 
 #[derive(Deserialize)]
