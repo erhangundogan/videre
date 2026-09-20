@@ -80,6 +80,9 @@
 
   function marker(label, count, lat, lon, markerTier, clusterId, click) {
     var position = toCanvas(project(lat, lon));
+    var padding = 80;
+    if (position.x < -padding || position.x > wrapper.clientWidth + padding ||
+        position.y < -padding || position.y > wrapper.clientHeight + padding) return;
     var button = document.createElement('button');
     button.type = 'button';
     button.className = 'map-marker' +
@@ -152,6 +155,15 @@
     });
   }
 
+  var pendingRender = null;
+  function scheduleRender() {
+    if (pendingRender !== null) return;
+    pendingRender = window.requestAnimationFrame(function () {
+      pendingRender = null;
+      render();
+    });
+  }
+
   function zoomAt(nextScale, x, y) {
     nextScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, nextScale));
     var factor = nextScale / scale;
@@ -216,7 +228,7 @@
     oy += event.clientY - dragY;
     dragX = event.clientX;
     dragY = event.clientY;
-    render();
+    scheduleRender();
   });
   canvas.addEventListener('pointerup', function () { dragging = false; });
   canvas.addEventListener('pointercancel', function () { dragging = false; });
