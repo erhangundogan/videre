@@ -231,6 +231,105 @@ mod date_filter_tests {
     }
 }
 
+#[cfg(test)]
+mod location_cluster_tests {
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    fn gallery_state(root: &Path) -> Arc<AppState> {
+        let conn = Connection::open_in_memory().unwrap();
+        let library = Arc::new(
+            videre_core::library::LibraryContext::new(root, &root.join("cache"))
+                .expect("test library context should be valid"),
+        );
+        let context = Arc::new(crate::command_context::CommandContext {
+            library,
+            invocation_dir: root.to_path_buf(),
+            source: crate::command_context::LibrarySource::Cwd,
+        });
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel();
+        Arc::new(AppState {
+            conn: Mutex::new(conn),
+            shutdown_tx: Mutex::new(Some(shutdown_tx)),
+            model_id: String::new(),
+            report_heic: false,
+            report_heic_original: false,
+            serve_faces_ui: true,
+            gallery: true,
+            context,
+            embedder: Mutex::new(None),
+        })
+    }
+
+    #[tokio::test]
+    async fn location_clusters_endpoint_returns_rows_ordered_and_shaped() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        {
+            let conn = state.conn.lock().unwrap();
+            videre_core::location_cluster::ensure_location_clusters_table(&conn).unwrap();
+            conn.execute_batch(
+                "INSERT INTO location_clusters
+                    (centroid_lat, centroid_lon, name, photo_count, radius_km, created_at)
+                 VALUES
+                    (52.52, 13.405, 'Berlin', 5, 20.0, CURRENT_TIMESTAMP),
+                    (35.68, 139.69, 'Tokyo', 20, 20.0, CURRENT_TIMESTAMP),
+                    (-33.87, 151.21, 'Sydney', 1, 20.0, CURRENT_TIMESTAMP);",
+            )
+            .unwrap();
+        }
+        let app = Router::new()
+            .route("/api/location-clusters", get(handle_location_clusters))
+            .with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/location-clusters")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let rows: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let rows = rows.as_array().unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0]["name"], "Tokyo");
+        assert_eq!(rows[0]["continent"], "Asia");
+        assert_eq!(rows[2]["continent"], "Oceania");
+        assert!(rows[0]["centroid_lat"].is_number());
+        assert!(rows[0]["radius_km"].is_number());
+    }
+
+    #[tokio::test]
+    async fn location_clusters_endpoint_on_an_empty_library_returns_an_empty_array() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        let app = Router::new()
+            .route("/api/location-clusters", get(handle_location_clusters))
+            .with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/location-clusters")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body.as_ref(), b"[]");
+    }
+}
+
 // ---- Faces labeling server ----
 
 /// Maps a `videre-api` facade error to the HTTP status code the axum
@@ -883,6 +982,56 @@ async fn handle_files(
     out.push_str("]}");
 
     Ok(json_response(out))
+}
+
+/// Returns every persisted location cluster with its derived continent,
+/// ordered largest first for the map legend and world overview.
+async fn handle_location_clusters(State(state): State<Arc<AppState>>) -> Response {
+    let conn = match state.conn.lock() {
+        Ok(conn) => conn,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    if videre_core::location_cluster::ensure_location_clusters_table(&conn).is_err() {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    let mut stmt = match conn.prepare(
+        "SELECT id, COALESCE(name, ''), centroid_lat, centroid_lon, photo_count, radius_km
+         FROM location_clusters ORDER BY photo_count DESC, id ASC",
+    ) {
+        Ok(stmt) => stmt,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let rows = match stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, f64>(2)?,
+            row.get::<_, f64>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, f64>(5)?,
+        ))
+    }) {
+        Ok(rows) => rows,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    let mut out = String::from("[");
+    for (index, row) in rows.flatten().enumerate() {
+        let (id, name, lat, lon, count, radius) = row;
+        if index > 0 {
+            out.push(',');
+        }
+        let continent = videre_core::location_cluster::continent_of(lat, lon);
+        out.push_str(&format!(
+            "{{\"cluster_id\":{id},\"name\":{},\"centroid_lat\":{lat},\
+             \"centroid_lon\":{lon},\"photo_count\":{count},\"radius_km\":{radius},\
+             \"continent\":{}}}",
+            json_str(&name),
+            json_str(continent),
+        ));
+    }
+    out.push(']');
+    json_response(out)
 }
 
 /// The year/month/day tree, as counts with one representative row per bucket.
@@ -1667,6 +1816,7 @@ async fn serve_faces_async(
         .route("/api/dates", get(handle_dates))
         .route("/api/search", get(handle_search))
         .route("/api/locations", get(handle_location))
+        .route("/api/location-clusters", get(handle_location_clusters))
         // people
         .route(
             "/api/people",
