@@ -16,6 +16,33 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.34.0] - 2026-09-20
+
+### Added
+
+- **The gallery grows a `/map` view.** Location clusters plot on a world map
+  grouped by continent; zooming in reveals each location cluster, and clicking
+  one filters the media grid below to its photos, in List or Tile view. The
+  plot draws entirely from the local library database - no map tiles, no map
+  library, no outbound requests. A `GET /api/location-clusters` endpoint
+  serves the aggregate, and `/api/files` accepts a `cluster=<id>` filter.
+- **Location clusters keep themselves current under watch.** A fingerprint
+  over the GPS-bearing data gates an automatic recluster in
+  `videre watch --location`: pruning, deduplicating, or adding geotagged
+  photos reclusters on the next reconcile instead of leaving
+  [`videre locations`](/commands/locations/) silently stale. A manual
+  `--radius` is respected by the watcher.
+
+### Changed
+
+- **`videre status` reports stale location clusters.** When the GPS data has
+  changed since the last recompute - including the prune and dedupe cases
+  that leave no unassigned row to count - the locations stage names the
+  staleness and the command that refreshes it.
+- **The location recompute core moved to videre-core**, shared by the
+  standalone command and the watcher.
+
+
 ## [0.33.0] - 2026-09-20
 
 ### Added
@@ -1993,7 +2020,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.33.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.34.0...HEAD
+[0.34.0]: https://github.com/erhangundogan/videre/compare/v0.33.0...v0.34.0
 [0.33.0]: https://github.com/erhangundogan/videre/compare/v0.32.0...v0.33.0
 [0.32.0]: https://github.com/erhangundogan/videre/compare/v0.31.0...v0.32.0
 [0.31.0]: https://github.com/erhangundogan/videre/compare/v0.30.0...v0.31.0
