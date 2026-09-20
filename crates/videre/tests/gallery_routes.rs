@@ -523,7 +523,7 @@ fn a_reserved_route_returns_404_with_an_explanation() {
     let lib = fixture();
     let server = Server::start(&lib);
 
-    for path in ["/map", "/events", "/smart"] {
+    for path in ["/events", "/smart"] {
         let (status, body) = server.get(path);
         assert_eq!(status, 404, "{path} should report that it is not built yet");
         assert!(
@@ -531,6 +531,31 @@ fn a_reserved_route_returns_404_with_an_explanation() {
             "{path} 404s without saying it is reserved, so it reads as a missing route"
         );
     }
+}
+
+#[test]
+fn map_route_renders_with_nav_marked_and_grid_rows() {
+    let lib = fixture();
+    let server = Server::start(&lib);
+
+    let (status, body) = server.get("/map");
+    assert_eq!(status, 200);
+    assert!(body.contains("id=\"map-plot\""));
+    assert!(body.contains("id=\"gallery\""));
+    assert!(body.contains("<a href=\"/map\" class=\"on\">"));
+}
+
+#[test]
+fn map_route_on_a_library_that_never_ran_locations_shows_the_empty_state() {
+    let lib = fixture();
+    let server = Server::start(&lib);
+
+    let (status, body) = server.get("/map");
+    assert_eq!(status, 200);
+    assert!(
+        body.contains("Run <code>videre locations</code>"),
+        "the empty state must name the command"
+    );
 }
 
 #[test]
@@ -881,7 +906,7 @@ fn every_gallery_view_links_to_the_others() {
     let lib = fixture();
     let server = Server::start(&lib);
 
-    for path in ["/", "/duplicates", "/date", "/people"] {
+    for path in ["/", "/duplicates", "/date", "/people", "/map"] {
         let (status, body) = server.get(path);
         assert_eq!(status, 200, "{path} did not render");
         for target in [
@@ -889,6 +914,7 @@ fn every_gallery_view_links_to_the_others() {
             "href=\"/duplicates\"",
             "href=\"/date\"",
             "href=\"/people\"",
+            "href=\"/map\"",
         ] {
             assert!(
                 body.contains(target),
@@ -914,6 +940,7 @@ fn the_current_section_is_marked_on_each_view() {
         ("/duplicates", "<a href=\"/duplicates\" class=\"on\">"),
         ("/date", "<a href=\"/date\" class=\"on\">"),
         ("/people", "<a href=\"/people\" class=\"on\">"),
+        ("/map", "<a href=\"/map\" class=\"on\">"),
     ] {
         let (_, body) = server.get(path);
         assert!(

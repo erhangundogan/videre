@@ -731,6 +731,7 @@ pub(crate) enum Section {
     Duplicates,
     Date,
     People,
+    Map,
 }
 
 impl Section {
@@ -745,6 +746,9 @@ impl Section {
     }
     pub(crate) fn is_people(&self) -> bool {
         *self == Section::People
+    }
+    pub(crate) fn is_map(&self) -> bool {
+        *self == Section::Map
     }
 }
 

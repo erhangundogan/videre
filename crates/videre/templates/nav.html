@@ -11,7 +11,7 @@
    labeling-only server has no `/date` or `/`. Every route linked here exists
    only under `videre gallery`, which routes all three together.
 
-   :warning: Reserved routes (`/map`, `/events`, `/smart`) are deliberately
+   :warning: Reserved routes (`/events`, `/smart`) are deliberately
    absent. They answer 404 "Not built yet", and a link to that is worse than no
    link. Add each one here when it renders. #}
 {% if let Some(current) = nav %}<style>
@@ -25,5 +25,6 @@
 <a href="/duplicates"{% if current.is_duplicates() %} class="on"{% endif %}>Duplicates</a>
 <a href="/date"{% if current.is_date() %} class="on"{% endif %}>Date</a>
 <a href="/people"{% if current.is_people() %} class="on"{% endif %}>People</a>
+<a href="/map"{% if current.is_map() %} class="on"{% endif %}>Map</a>
 </nav>
 {% endif %}

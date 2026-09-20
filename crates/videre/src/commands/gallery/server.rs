@@ -439,12 +439,30 @@ mod pages {
         pub nav: Option<super::Section>,
     }
 
+    #[derive(Template)]
+    #[template(path = "map.html")]
+    pub struct Map {
+        pub chrome: &'static str,
+        pub gallery_css: &'static str,
+        pub css: &'static str,
+        pub justified_js: &'static str,
+        pub gallery_js: &'static str,
+        pub js: &'static str,
+        pub globals: String,
+        pub db: String,
+        pub generated_at: String,
+        pub total_files: i64,
+        pub nav: Option<super::Section>,
+    }
+
     pub const FACES_CSS: &str = include_str!("../../../static/faces.css");
     pub const FACES_JS: &str = include_str!("../../../static/faces.js");
     pub const CLUSTER_CSS: &str = include_str!("../../../static/cluster.css");
     pub const CLUSTER_JS: &str = include_str!("../../../static/cluster.js");
     pub const PERSON_CSS: &str = include_str!("../../../static/person.css");
     pub const PERSON_JS: &str = include_str!("../../../static/person.js");
+    pub const MAP_CSS: &str = include_str!("../../../static/map.css");
+    pub const MAP_JS: &str = include_str!("../../../static/map.js");
 }
 
 fn api_status(e: videre_api::Error) -> StatusCode {
@@ -631,6 +649,41 @@ async fn handle_gallery_date_day(
 ) -> Result<axum::response::Response, StatusCode> {
     let filter = route_date_filter(&year, Some(&month), Some(&day))?;
     render_live_date(&state, filter)
+}
+
+async fn handle_map(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    use askama::Template;
+    use chrono::Utc;
+
+    let (db_path, total_files) = {
+        let conn = state.conn.lock().unwrap();
+        let total = conn
+            .query_row("SELECT COUNT(*) FROM file_hashes", [], |row| row.get(0))
+            .unwrap_or(0);
+        (
+            conn.path().map(|path| path.to_string()).unwrap_or_default(),
+            total,
+        )
+    };
+    let globals = format!(
+        "var LIVE_SERVER=true;\nvar HAS_EMBEDDINGS=false;\nvar VIDEO_POSTERS={};\n\
+         var GVIEW=\"all\";\nvar PEOPLE_ROOT=\"/people\";\nvar GDATE=null;\nvar GROUPS=[];",
+        cfg!(target_os = "macos")
+    );
+    let page = pages::Map {
+        chrome: CHROME_CSS,
+        gallery_css: include_str!("../../../static/gallery.css"),
+        css: pages::MAP_CSS,
+        justified_js: include_str!("../../../static/justified-layout.js"),
+        gallery_js: include_str!("../../../static/gallery.js"),
+        js: pages::MAP_JS,
+        globals,
+        db: esc(&db_path),
+        generated_at: Utc::now().format("%Y-%m-%d %H:%M UTC").to_string(),
+        total_files,
+        nav: Some(Section::Map),
+    };
+    axum::response::Html(page.render().expect("map template"))
 }
 
 #[derive(Deserialize)]
@@ -1909,7 +1962,7 @@ async fn serve_faces_async(
         .route("/date/{year}/{month}", get(handle_gallery_date_month))
         .route("/date/{year}", get(handle_gallery_date_year))
         .route("/date", get(handle_gallery_date))
-        .route("/map", get(handle_not_yet))
+        .route("/map", get(handle_map))
         .route("/events", get(handle_not_yet))
         .route("/smart", get(handle_not_yet));
 
