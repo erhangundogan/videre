@@ -3,7 +3,13 @@ use anyhow::{Context, Result};
 use clap::builder::PossibleValuesParser;
 use videre_core::library_config::{self, ConfigKey};
 
-const CONFIG_KEYS: &[&str] = &["model", "read-rate", "xmp", "export-xmp-on-watch"];
+const CONFIG_KEYS: &[&str] = &[
+    "model",
+    "read-rate",
+    "xmp",
+    "export-xmp-on-watch",
+    "watch-debounce-ms",
+];
 
 #[derive(clap::Args)]
 pub struct ConfigArgs {
@@ -45,6 +51,7 @@ fn config_key(key: &str) -> ConfigKey {
         "read-rate" => ConfigKey::ReadRate,
         "xmp" => ConfigKey::Xmp,
         "export-xmp-on-watch" => ConfigKey::ExportXmpOnWatch,
+        "watch-debounce-ms" => ConfigKey::WatchDebounceMs,
         _ => unreachable!("clap restricts keys to CONFIG_KEYS"),
     }
 }
@@ -65,6 +72,15 @@ fn config_value(key: &str, value: String) -> Result<(ConfigKey, toml::Value)> {
                 anyhow::anyhow!("export-xmp-on-watch must be true or false, got {value:?}")
             })?;
             toml::Value::Boolean(on)
+        }
+        ConfigKey::WatchDebounceMs => {
+            let ms: u64 = value.parse().map_err(|_| {
+                anyhow::anyhow!(
+                    "watch-debounce-ms must be a whole number of milliseconds, got {value:?}"
+                )
+            })?;
+            let ms = i64::try_from(ms).context("watch-debounce-ms is too large")?;
+            toml::Value::Integer(ms)
         }
     };
     Ok((key, value))
@@ -104,6 +120,13 @@ fn show(ctx: &CommandContext) -> Result<()> {
             "off"
         }
     );
+    match config.watch_debounce_ms {
+        Some(ms) => println!("watch-debounce-ms: {ms} ms"),
+        None => println!(
+            "watch-debounce-ms: {} ms (default)",
+            videre_core::library_config::WATCH_DEBOUNCE_MS_DEFAULT
+        ),
+    }
     Ok(())
 }
 

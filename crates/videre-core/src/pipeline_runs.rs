@@ -233,6 +233,21 @@ pub fn read_all_in(
     {
         out.push(read_one_in(conn, ctx, "location-names")?);
     }
+    // `face-recluster` is watch's periodic global face recluster, on the same
+    // only-once-a-row-exists rule: a library that never watched with --faces
+    // is not lectured about repair passes it never ran. Distinct from
+    // `faces`, whose row means a detection run.
+    if conn
+        .query_row(
+            "SELECT 1 FROM pipeline_runs WHERE command = 'face-recluster'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+        .is_some()
+    {
+        out.push(read_one_in(conn, ctx, "face-recluster")?);
+    }
     Ok(out)
 }
 
@@ -259,6 +274,14 @@ fn read_one_in(
         "locations" => {
             crate::library_locks::command_locked(ctx, "locations")?
                 && !crate::library_locks::command_locked(ctx, "location-names")?
+        }
+        // Same shared-lock shape as locations: watch's recluster holds the
+        // faces lock while its own face-recluster lock marks it as the
+        // holder, so a plain faces read must not claim detection is running
+        // on the strength of the shared lock alone.
+        "faces" => {
+            crate::library_locks::command_locked(ctx, "faces")?
+                && !crate::library_locks::command_locked(ctx, "face-recluster")?
         }
         other => crate::library_locks::command_locked(ctx, other)?,
     };
@@ -593,6 +616,74 @@ mod tests {
             .expect("a written location-names row must surface in the run read");
         assert_eq!(names.status.as_deref(), Some("success"));
         assert!(!names.currently_running);
+    }
+
+    #[test]
+    fn face_recluster_stage_surfaces_only_once_a_row_exists() {
+        let (_t, ctx, conn) = in_library();
+        // Same only-once-a-row-exists rule as location-names: a library that
+        // never watched with --faces is not lectured about repair passes it
+        // never ran.
+        assert!(read_all_in(&conn, &ctx)
+            .unwrap()
+            .iter()
+            .all(|r| r.command != "face-recluster"));
+        start_run(&conn, "face-recluster").unwrap();
+        finish_run(&conn, "face-recluster", "success", 5, None).unwrap();
+        let recluster = read_all_in(&conn, &ctx)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.command == "face-recluster")
+            .expect("a written face-recluster row must surface in the run read");
+        assert_eq!(recluster.status.as_deref(), Some("success"));
+        assert!(!recluster.currently_running);
+    }
+
+    #[test]
+    fn a_running_face_recluster_stage_reads_running_not_crashed() {
+        // The stage holds BOTH locks while it runs: `faces` for coordination
+        // with detection and the standalone command, and its own
+        // `face-recluster` lock as its identity. A healthy minutes-long pass
+        // therefore reads as running on its own row, never crashed, and the
+        // faces row must not claim detection is running on the strength of
+        // the shared lock alone.
+        let (_t, ctx, conn) = in_library();
+        let faces_guard = crate::library_locks::try_command(&ctx, "faces").unwrap();
+        let recluster_guard = crate::library_locks::try_command(&ctx, "face-recluster").unwrap();
+        start_run(&conn, "face-recluster").unwrap();
+
+        let recluster = read_all_in(&conn, &ctx)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.command == "face-recluster")
+            .expect("a started face-recluster row must surface");
+        assert_eq!(
+            recluster.status.as_deref(),
+            Some("running"),
+            "an actively running recluster is running, not crashed"
+        );
+        assert!(recluster.currently_running);
+
+        let faces = read_all_in(&conn, &ctx)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.command == "faces")
+            .unwrap();
+        assert!(
+            !faces.currently_running,
+            "the shared lock's holder is the recluster, not a detection run"
+        );
+
+        // Once the stage is gone without finishing, the stale running row
+        // reads back as exactly what it is.
+        drop(faces_guard);
+        drop(recluster_guard);
+        let recluster = read_all_in(&conn, &ctx)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.command == "face-recluster")
+            .unwrap();
+        assert_eq!(recluster.status.as_deref(), Some("crashed"));
     }
 
     #[test]

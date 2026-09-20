@@ -133,6 +133,31 @@ fn read_rate_roundtrips_and_invalid_values_preserve_prior_bytes() {
 }
 
 #[test]
+fn watch_debounce_ms_roundtrips_and_invalid_values_preserve_prior_bytes() {
+    let library = TestLibrary::new();
+    assert!(
+        run(&library, &["config", "set", "watch-debounce-ms", "250"])
+            .status
+            .success()
+    );
+    let before = config_text(&library);
+    assert!(before.contains("watch_debounce_ms = 250"), "{before}");
+
+    for value in ["0", "fast"] {
+        assert!(
+            !run(&library, &["config", "set", "watch-debounce-ms", value])
+                .status
+                .success()
+        );
+        assert_eq!(config_text(&library), before);
+    }
+    assert!(run(&library, &["config", "unset", "watch-debounce-ms"])
+        .status
+        .success());
+    assert!(!config_text(&library).contains("watch_debounce_ms"));
+}
+
+#[test]
 fn xmp_and_watch_export_settings_roundtrip() {
     let library = TestLibrary::new();
     assert!(run(&library, &["config", "set", "xmp", "newest"])
