@@ -431,6 +431,9 @@
       if (!clusters.length) {
         empty.hidden = false;
         render();
+        // No clusters to select, but the grid still owns the page: load all
+        // files, since gallery.js defers the initial grid fetch to the map here.
+        window.setGalleryLocation(null, null, null);
         return;
       }
       empty.hidden = true;
