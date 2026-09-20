@@ -32,6 +32,12 @@ pub struct StageCoverage {
     /// here so `done + outstanding + skipped == total` still holds. Zero for
     /// stages with no decode step (`decode_failures` never records them).
     pub skipped: i64,
+    /// True only for the locations stage when the live GPS fingerprint differs
+    /// from the one the last recompute stored: clusters are stale in a way the
+    /// outstanding count (which sees only unassigned rows) cannot. Prune and
+    /// dedupe shrink the data without leaving an unassigned row, so this is the
+    /// only signal for them. False for every other stage.
+    pub stale: bool,
 }
 
 /// Faces-eligible hashes: the same population `videre faces` walks (image
@@ -62,6 +68,7 @@ fn embed_coverage(conn: &Connection, embed_model: &str) -> Result<StageCoverage>
     let skipped = pending.iter().filter(|p| failed.contains(&p.hash)).count() as i64;
     Ok(StageCoverage {
         stage: "embed",
+        stale: false,
         outstanding: pending.len() as i64 - skipped,
         total,
         next_command: Some("videre embed"),
@@ -80,6 +87,7 @@ fn classify_coverage(conn: &Connection, classify_model: &str) -> Result<StageCov
     let outstanding = crate::classify::pending_hashes(conn, classify_model)?.len() as i64;
     Ok(StageCoverage {
         stage: "classify",
+        stale: false,
         outstanding,
         total,
         next_command: Some("videre classify"),
@@ -112,6 +120,7 @@ fn faces_coverage(conn: &Connection) -> Result<StageCoverage> {
     let skipped = untried.iter().filter(|h| failed.contains(**h)).count() as i64;
     Ok(StageCoverage {
         stage: "faces",
+        stale: false,
         outstanding: untried.len() as i64 - skipped,
         total: eligible.len() as i64,
         next_command: Some("videre faces"),
@@ -136,6 +145,13 @@ fn locations_coverage(conn: &Connection) -> Result<StageCoverage> {
         [],
         |r| r.get(0),
     )?;
+    // Stale only when a recompute has run (a stored fingerprint exists) and the
+    // GPS data has moved since. A library that never clustered is "never", not
+    // "stale": its unassigned rows already suggest the command.
+    let live = crate::location_cluster::gps_fingerprint(conn)?;
+    let stale =
+        crate::library_state::get_string(conn, crate::location_cluster::LOCATIONS_GPS_FINGERPRINT)?
+            .is_some_and(|stored| stored != live);
     Ok(StageCoverage {
         stage: "locations",
         outstanding,
@@ -143,6 +159,7 @@ fn locations_coverage(conn: &Connection) -> Result<StageCoverage> {
         next_command: Some("videre locations"),
         heavy: false,
         skipped: 0,
+        stale,
     })
 }
 
@@ -172,6 +189,7 @@ fn fix_dates_coverage(conn: &Connection) -> Result<StageCoverage> {
     }
     Ok(StageCoverage {
         stage: "fix-dates",
+        stale: false,
         outstanding,
         total,
         next_command: Some("videre fix-dates"),
@@ -522,6 +540,48 @@ mod tests {
         assert_eq!(
             locations.outstanding, 1,
             "a place name does not replace the missing cluster assignment"
+        );
+    }
+
+    #[test]
+    fn locations_coverage_reports_staleness_the_outstanding_count_cannot_see() {
+        let conn = seed_db("status_cov_locations_stale");
+        // Two GPS rows, both assigned to a cluster: outstanding is zero, so the
+        // coverage count alone looks complete.
+        conn.execute(
+            "INSERT INTO file_hashes
+             (path, hash, ext, gps_lat, gps_lon, location_cluster_id)
+             VALUES ('/a/1.jpg','h1','jpg',52.5,13.4,1), ('/a/2.jpg','h2','jpg',48.8,2.35,2)",
+            [],
+        )
+        .unwrap();
+        // The fingerprint the recompute would have stored for this data.
+        let fresh = crate::location_cluster::gps_fingerprint(&conn).unwrap();
+        crate::library_state::set_string(
+            &conn,
+            crate::location_cluster::LOCATIONS_GPS_FINGERPRINT,
+            &fresh,
+        )
+        .unwrap();
+
+        let cov = coverage_in(&conn, TEST_MODEL, TEST_MODEL).unwrap();
+        let locations = cov.iter().find(|c| c.stage == "locations").unwrap();
+        assert_eq!(locations.outstanding, 0);
+        assert!(!locations.stale, "a fresh fingerprint is not stale");
+
+        // A row disappears (the prune case): no unassigned row remains, but the
+        // fingerprint moved.
+        conn.execute("DELETE FROM file_hashes WHERE path = '/a/2.jpg'", [])
+            .unwrap();
+        let cov = coverage_in(&conn, TEST_MODEL, TEST_MODEL).unwrap();
+        let locations = cov.iter().find(|c| c.stage == "locations").unwrap();
+        assert_eq!(
+            locations.outstanding, 0,
+            "the surviving row is still assigned"
+        );
+        assert!(
+            locations.stale,
+            "shrunk data with an old fingerprint must read stale"
         );
     }
 
