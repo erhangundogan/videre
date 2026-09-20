@@ -67,7 +67,7 @@ default on.
 | `--scan` | Same scan and hash pipeline as [`videre scan`](/commands/scan/), including reading marks from XMP (`--xmp db\|file\|newest`, see [scan](/commands/scan/#reading-marks-from-xmp---xmp)) |
 | `--faces` | Detects faces in new images within seconds of arrival |
 | `--heic` | Pre-converts and caches HEIC thumbnails |
-| `--location` | Looks up place names for GPS coordinates that have none |
+| `--location` | Looks up place names for GPS coordinates that have none, and re-clusters locations when the GPS data changed (at the default radius; a manual radius is respected) |
 | `--prune` | Same cleanup as [`videre prune`](/commands/prune/); runs on the startup and maintenance passes, not per event |
 | `--export-xmp` | Writes labels to `.xmp` sidecars, same as [`videre export`](/commands/export/); runs on the startup and maintenance passes, not per event |
 

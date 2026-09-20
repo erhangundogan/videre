@@ -66,7 +66,17 @@ fn run_text(args: &StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
         } else {
             String::new()
         };
-        if c.outstanding == 0 {
+        if c.stale {
+            // Prune or dedupe shrank the data without leaving an unassigned row,
+            // so the count looks complete while the clusters are behind. Say so
+            // and name the command. Stale and outstanding can coexist (a dedupe
+            // shrinks while a scan adds unassigned rows), so keep the outstanding
+            // count on the line rather than hiding it behind the stale note.
+            println!(
+                "  {:10} {} of {} done, {} outstanding, clusters stale (data changed since the last recompute; run videre locations){}",
+                c.stage, done, c.total, c.outstanding, skipped_note
+            );
+        } else if c.outstanding == 0 {
             println!(
                 "  {:10} up to date ({} of {} done{})",
                 c.stage, done, c.total, skipped_note

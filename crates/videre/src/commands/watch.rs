@@ -653,6 +653,15 @@ fn reconcile(args: &WatchArgs, ctx: &CommandContext) -> Result<ReconcileOutcome>
                     complete = false;
                 }
             }
+            // Names first, then regroup: re-cluster when the GPS data changed.
+            match run_locations_recluster_stage(args, ctx, &conn) {
+                Ok(StageOutcome::Ran) => {}
+                Ok(StageOutcome::Busy) => complete = false,
+                Err(e) => {
+                    eprintln!("videre watch: locations recluster stage error: {e}");
+                    complete = false;
+                }
+            }
         }
         if args.faces {
             match run_recluster_stage(args, ctx, &conn) {
@@ -1082,6 +1091,65 @@ fn run_location_stage(
             }
             if !args.silent && resolved > 0 {
                 eprintln!("videre watch: location stage resolved {resolved} coordinate(s)");
+            }
+            Ok(())
+        },
+    )
+}
+
+/// The location recluster: the same from-scratch pass the standalone command
+/// runs, gated by a fingerprint over the GPS-bearing data. The gate is one
+/// query; the recompute is the expensive part. Runs on the reconcile only
+/// (never in the event-batch drain) - cluster staleness is map-view staleness,
+/// and reconcile freshness is the contract. Tracked under the `locations` row
+/// and lock, the same work the standalone command does, so status liveness
+/// needs no new machinery. A standalone run at a non-default radius is a manual
+/// choice: the watcher leaves it alone rather than silently reclustering at the
+/// default (the radius the last recompute used is recorded by that recompute).
+fn run_locations_recluster_stage(
+    args: &WatchArgs,
+    ctx: &CommandContext,
+    conn: &rusqlite::Connection,
+) -> Result<StageOutcome> {
+    use videre_core::location_cluster;
+    tracked_stage(
+        ctx,
+        conn,
+        "locations",
+        "locations",
+        videre_core::library_locks::ActivityMode::Shared,
+        args.silent,
+        || {
+            let live = location_cluster::gps_fingerprint(conn)?;
+            let stored_fp = videre_core::library_state::get_string(
+                conn,
+                location_cluster::LOCATIONS_GPS_FINGERPRINT,
+            )?;
+            let stored_radius =
+                videre_core::library_state::get_string(conn, location_cluster::LOCATIONS_RADIUS)?
+                    .and_then(|s| s.parse::<f64>().ok());
+            let radius = location_cluster::DEFAULT_CLUSTER_RADIUS_KM;
+            if let Some(r) = stored_radius {
+                if (r - radius).abs() > f64::EPSILON {
+                    if !args.silent {
+                        eprintln!(
+                            "videre watch: locations: manual radius {r}km in effect; \
+                             the watcher leaves it alone"
+                        );
+                    }
+                    return Ok(());
+                }
+            }
+            if stored_fp.as_deref() == Some(live.as_str()) {
+                if !args.silent {
+                    eprintln!("videre watch: locations up to date");
+                }
+                return Ok(());
+            }
+            // recompute_all records the fresh fingerprint and radius itself.
+            location_cluster::recompute_all(conn, &ctx.library.cache, radius, args.silent)?;
+            if !args.silent {
+                eprintln!("videre watch: location clusters rebuilt");
             }
             Ok(())
         },

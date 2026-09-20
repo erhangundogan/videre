@@ -10,7 +10,7 @@ pub struct LocationsArgs {
     /// Clustering radius in km, how close two coordinates must be to join
     /// the same location cluster. Default 15 ("which city was I in"
     /// granularity).
-    #[arg(long, default_value_t = 15.0)]
+    #[arg(long, default_value_t = location_cluster::DEFAULT_CLUSTER_RADIUS_KM)]
     radius: f64,
 
     /// Emit a single JSON object on stdout instead of human-readable text
@@ -110,157 +110,27 @@ fn run_locations_tracked(
     })
 }
 
-/// The actual clustering work, wrapped by `track()` above. Full recompute
-/// every run: truncates `location_clusters` and clears
-/// `file_hashes.location_cluster_id`, then reclusters from scratch over
-/// every distinct GPS coordinate. Cluster IDs are therefore not stable
-/// across reruns (see the design spec's section 1).
+/// Delegates the whole-library recompute to `videre-core`, mapping its result
+/// into the command's `ClusterJson`. The recompute is a full rebuild every run
+/// (cluster ids are not stable across reruns); its rationale lives with
+/// `location_cluster::recompute_all`.
 fn run_locations(
     args: &LocationsArgs,
     ctx: &CommandContext,
     conn: &Connection,
 ) -> Result<Vec<ClusterJson>> {
-    let tx = conn.unchecked_transaction()?;
-
-    location_cluster::ensure_location_clusters_table(&tx)?;
-    location_cluster::ensure_location_cluster_id_column(&tx);
-    location_cluster::ensure_gps_index(&tx);
-
-    // Deliberately takes no selection, unlike the other database commands.
-    // The recompute below is global: it drops every cluster and clears every
-    // location_cluster_id first, so clustering a scoped subset would not narrow
-    // the work, it would leave every file outside the scope permanently
-    // unclustered. A partial recompute of a global partition is data loss, not
-    // a filter.
-    let coords: Vec<(f64, f64)> = {
-        let mut stmt = tx.prepare(
-            "SELECT DISTINCT gps_lat, gps_lon FROM file_hashes \
-             WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL",
-        )?;
-        let rows = stmt
-            .query_map([], |r| Ok((r.get::<_, f64>(0)?, r.get::<_, f64>(1)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows
-    };
-
-    tx.execute("DELETE FROM location_clusters", [])?;
-    tx.execute(
-        "UPDATE file_hashes SET location_cluster_id = NULL WHERE location_cluster_id IS NOT NULL",
-        [],
-    )?;
-
-    if coords.is_empty() {
-        tx.commit()?;
-        return Ok(Vec::new());
-    }
-
-    // Everything below is silent for minutes without this. The clustering maths
-    // is sub-second; the cost is the per-coordinate UPDATE further down, which
-    // is unindexable and runs once per distinct coordinate. On a 70k-file
-    // library that is ~5,500 full-table updates and about eight minutes, during
-    // which the command printed nothing at all and read as a hang.
-    //
-    // Progress is counted in coordinates rather than clusters because that is
-    // where the time actually goes: one cluster may hold thousands of
-    // coordinates and another may hold one.
     let quiet = args.silent || args.json || args.geojson;
-    if !quiet {
-        eprintln!(
-            "Clustering {} distinct coordinate(s) at radius {}km...",
-            coords.len(),
-            args.radius
-        );
-    }
-
-    // The matrix build dominates: ~n^2/2 haversine calls behind an n*n*8 byte
-    // allocation. Reported per row, because a caller staring at a single
-    // "clustering..." line for a minute cannot tell it from a hang.
-    if !quiet {
-        let gb = (coords.len() as f64).powi(2) * 8.0 / 1_073_741_824.0;
-        if gb >= 1.0 {
-            eprintln!("Building the distance matrix (~{gb:.1}GB, this is the slow part)");
-        }
-    }
-    let matrix =
-        videre_core::progress::Progress::new_counting(coords.len() as u64, quiet, "coordinates");
-    let member_groups =
-        location_cluster::cluster_by_distance_reporting(&coords, args.radius, |_, _| {
-            matrix.tick();
-        });
-    matrix.finish();
-
-    if !quiet {
-        eprintln!(
-            "{} cluster(s); naming them and assigning photos",
-            member_groups.len()
-        );
-    }
-    let progress =
-        videre_core::progress::Progress::new_counting(coords.len() as u64, quiet, "coordinates");
-
-    let mut clusters = Vec::with_capacity(member_groups.len());
-    for members in &member_groups {
-        let (centroid_lat, centroid_lon) = location_cluster::centroid(&coords, members);
-        // Cache-aware and fail-loud: a place-name lookup that cannot materialize
-        // its dataset propagates rather than silently producing a different name.
-        let name = videre_core::location::location_name_in(
-            &ctx.library.cache,
-            centroid_lat,
-            centroid_lon,
-        )?;
-
-        tx.execute(
-            "INSERT INTO location_clusters \
-             (centroid_lat, centroid_lon, name, photo_count, radius_km, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
-            rusqlite::params![centroid_lat, centroid_lon, name, 0i64, args.radius],
-        )?;
-        let id = tx.last_insert_rowid();
-
-        let mut photo_count = 0i64;
-        for &idx in members {
-            let (lat, lon) = coords[idx];
-            // Exact equality, not ROUND(). Two reasons, and they are the same
-            // line of SQL:
-            //
-            // Correctness. `coords` comes from SELECT DISTINCT gps_lat, gps_lon,
-            // so these are the exact stored values and matching them back
-            // exactly returns exactly the rows they came from. ROUND matched
-            // more than that: two coordinates differing past the 6th decimal
-            // round to the same value, so both cluster assignments claimed the
-            // same photo and photo_count double-counted it. Real, not
-            // hypothetical - 52.5536,13.4300 matched 178 rows exactly and 179
-            // under ROUND in a 70,601-file library.
-            //
-            // Speed. A function call on a column makes an index unusable, so
-            // this ran as a full table scan once per distinct coordinate.
-            let affected = tx.execute(
-                "UPDATE file_hashes SET location_cluster_id = ?1 \
-                 WHERE gps_lat = ?2 AND gps_lon = ?3",
-                rusqlite::params![id, lat, lon],
-            )?;
-            photo_count += affected as i64;
-            progress.tick();
-        }
-
-        tx.execute(
-            "UPDATE location_clusters SET photo_count = ?1 WHERE id = ?2",
-            rusqlite::params![photo_count, id],
-        )?;
-
-        clusters.push(ClusterJson {
-            id,
-            name,
-            centroid_lat,
-            centroid_lon,
-            photo_count,
-        });
-    }
-    progress.finish();
-
-    clusters.sort_by_key(|c| std::cmp::Reverse(c.photo_count));
-    tx.commit()?;
-    Ok(clusters)
+    let clusters = location_cluster::recompute_all(conn, &ctx.library.cache, args.radius, quiet)?;
+    Ok(clusters
+        .into_iter()
+        .map(|c| ClusterJson {
+            id: c.id,
+            name: c.name,
+            centroid_lat: c.centroid_lat,
+            centroid_lon: c.centroid_lon,
+            photo_count: c.photo_count,
+        })
+        .collect())
 }
 
 fn print_summary(clusters: &[ClusterJson], radius_km: f64, silent: bool) {

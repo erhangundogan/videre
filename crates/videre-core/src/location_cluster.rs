@@ -205,9 +205,336 @@ pub fn ensure_gps_index(conn: &Connection) {
     );
 }
 
+/// library_state keys for the location recluster gate: the GPS fingerprint the
+/// last recompute covered, and the radius it ran at.
+pub const LOCATIONS_GPS_FINGERPRINT: &str = "locations_gps_fingerprint";
+/// The radius the last recompute ran at, the watcher's gate input (it skips a
+/// manual, non-default radius). Distinct from `location_clusters.radius_km`,
+/// which records the radius per produced cluster: this is the gate's datum, that
+/// is the recompute's per-cluster output. Do not collapse one into the other.
+pub const LOCATIONS_RADIUS: &str = "locations_radius";
+
+/// The recompute radius the watcher runs at; a standalone run with a different
+/// radius is a manual choice the watcher respects (see the watch stage) and
+/// records instead of overriding.
+pub const DEFAULT_CLUSTER_RADIUS_KM: f64 = 15.0;
+
+/// A fingerprint over the GPS-bearing data: GPS-bearing row count, distinct
+/// coordinate count, and coordinate sums accumulated in
+/// `ORDER BY gps_lat, gps_lon` order (the GPS index serves this), so the same
+/// data always produces the same fingerprint. The row count is the component
+/// `photo_count` cares about: dedupe removing one copy of a pair changes it
+/// while the coordinate set stays put.
+///
+/// Format: `v1:{rows}:{distinct}:{sum_lat}:{sum_lon}`.
+pub fn gps_fingerprint(conn: &Connection) -> rusqlite::Result<String> {
+    let rows: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM file_hashes
+         WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    let mut stmt = conn.prepare(
+        "SELECT gps_lat, gps_lon FROM file_hashes
+         WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL
+         ORDER BY gps_lat, gps_lon",
+    )?;
+    let mut distinct = 0i64;
+    let mut sum_lat = 0.0f64;
+    let mut sum_lon = 0.0f64;
+    let mut last: Option<(f64, f64)> = None;
+    let mut iter = stmt.query_map([], |r| Ok((r.get::<_, f64>(0)?, r.get::<_, f64>(1)?)))?;
+    while let Some((lat, lon)) = iter.next().transpose()? {
+        if last != Some((lat, lon)) {
+            distinct += 1;
+        }
+        sum_lat += lat;
+        sum_lon += lon;
+        last = Some((lat, lon));
+    }
+    Ok(format!("v1:{rows}:{distinct}:{sum_lat}:{sum_lon}"))
+}
+
+/// One location cluster produced by [`recompute_all`]: the same five fields
+/// the standalone command serializes.
+pub struct RecomputedCluster {
+    pub id: i64,
+    pub name: Option<String>,
+    pub centroid_lat: f64,
+    pub centroid_lon: f64,
+    pub photo_count: i64,
+}
+
+/// The full location recompute: wipes `location_clusters` and every
+/// `location_cluster_id`, then reclusters over every distinct GPS coordinate
+/// and names each cluster from its centroid. One transaction. `quiet`
+/// suppresses the progress reporting. Cluster ids are not stable across runs,
+/// by design (see the location clustering design spec, section 1).
+///
+/// Deliberately takes no selection: the recompute is global. It drops every
+/// cluster and clears every `location_cluster_id` first, so clustering a
+/// scoped subset would not narrow the work, it would leave every file outside
+/// the scope permanently unclustered. A partial recompute of a global
+/// partition is data loss, not a filter.
+pub fn recompute_all(
+    conn: &Connection,
+    cache: &crate::library::CachePaths,
+    radius_km: f64,
+    quiet: bool,
+) -> anyhow::Result<Vec<RecomputedCluster>> {
+    let tx = conn.unchecked_transaction()?;
+
+    ensure_location_clusters_table(&tx)?;
+    ensure_location_cluster_id_column(&tx);
+    ensure_gps_index(&tx);
+
+    let coords: Vec<(f64, f64)> = {
+        let mut stmt = tx.prepare(
+            "SELECT DISTINCT gps_lat, gps_lon FROM file_hashes \
+             WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, f64>(0)?, r.get::<_, f64>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+
+    tx.execute("DELETE FROM location_clusters", [])?;
+    tx.execute(
+        "UPDATE file_hashes SET location_cluster_id = NULL WHERE location_cluster_id IS NOT NULL",
+        [],
+    )?;
+
+    if coords.is_empty() {
+        tx.commit()?;
+        store_recompute_state(conn, radius_km)?;
+        return Ok(Vec::new());
+    }
+
+    // The clustering maths is sub-second; the cost is the per-coordinate UPDATE
+    // below, unindexable and run once per distinct coordinate. On a 70k-file
+    // library that is thousands of full-table updates and minutes, during which
+    // the command otherwise prints nothing and reads as a hang.
+    if !quiet {
+        eprintln!(
+            "Clustering {} distinct coordinate(s) at radius {}km...",
+            coords.len(),
+            radius_km
+        );
+        // The matrix build dominates: ~n^2/2 haversine calls behind an n*n*8
+        // byte allocation.
+        let gb = (coords.len() as f64).powi(2) * 8.0 / 1_073_741_824.0;
+        if gb >= 1.0 {
+            eprintln!("Building the distance matrix (~{gb:.1}GB, this is the slow part)");
+        }
+    }
+
+    let matrix = crate::progress::Progress::new_counting(coords.len() as u64, quiet, "coordinates");
+    let member_groups = cluster_by_distance_reporting(&coords, radius_km, |_, _| {
+        matrix.tick();
+    });
+    matrix.finish();
+
+    if !quiet {
+        eprintln!(
+            "{} cluster(s); naming them and assigning photos",
+            member_groups.len()
+        );
+    }
+    let progress =
+        crate::progress::Progress::new_counting(coords.len() as u64, quiet, "coordinates");
+
+    let mut clusters = Vec::with_capacity(member_groups.len());
+    for members in &member_groups {
+        let (centroid_lat, centroid_lon) = centroid(&coords, members);
+        // Cache-aware and fail-loud: a place-name lookup that cannot materialize
+        // its dataset propagates rather than silently producing a different name.
+        let name = crate::location::location_name_in(cache, centroid_lat, centroid_lon)?;
+
+        tx.execute(
+            "INSERT INTO location_clusters \
+             (centroid_lat, centroid_lon, name, photo_count, radius_km, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
+            rusqlite::params![centroid_lat, centroid_lon, name, 0i64, radius_km],
+        )?;
+        let id = tx.last_insert_rowid();
+
+        let mut photo_count = 0i64;
+        for &idx in members {
+            let (lat, lon) = coords[idx];
+            // Exact equality, not ROUND(): `coords` came from SELECT DISTINCT
+            // gps_lat, gps_lon, so matching them back exactly returns exactly the
+            // rows they came from (ROUND double-counted coordinates differing past
+            // the 6th decimal), and a function on the column would make the index
+            // unusable, so this stays a single indexed lookup per coordinate.
+            let affected = tx.execute(
+                "UPDATE file_hashes SET location_cluster_id = ?1 \
+                 WHERE gps_lat = ?2 AND gps_lon = ?3",
+                rusqlite::params![id, lat, lon],
+            )?;
+            photo_count += affected as i64;
+            progress.tick();
+        }
+
+        tx.execute(
+            "UPDATE location_clusters SET photo_count = ?1 WHERE id = ?2",
+            rusqlite::params![photo_count, id],
+        )?;
+
+        clusters.push(RecomputedCluster {
+            id,
+            name,
+            centroid_lat,
+            centroid_lon,
+            photo_count,
+        });
+    }
+    progress.finish();
+
+    clusters.sort_by_key(|c| std::cmp::Reverse(c.photo_count));
+    tx.commit()?;
+    store_recompute_state(conn, radius_km)?;
+    Ok(clusters)
+}
+
+/// Record what a recompute covered, so the watcher's fingerprint gate and
+/// `videre status` can tell current clusters from stale ones. The fingerprint
+/// is over the GPS data, which the recompute does not change, so reading it
+/// back now yields the library's current fingerprint.
+fn store_recompute_state(conn: &Connection, radius_km: f64) -> anyhow::Result<()> {
+    let fingerprint = gps_fingerprint(conn)?;
+    crate::library_state::set_string(conn, LOCATIONS_GPS_FINGERPRINT, &fingerprint)?;
+    crate::library_state::set_string(conn, LOCATIONS_RADIUS, &format!("{radius_km}"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gps_fingerprint_is_stable_for_identical_data() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, gps_lat REAL, gps_lon REAL);
+             INSERT INTO file_hashes VALUES ('a', 52.5, 13.4), ('b', 52.5, 13.4), ('c', 48.8, 2.35);",
+        )
+        .unwrap();
+        let first = gps_fingerprint(&conn).unwrap();
+        let second = gps_fingerprint(&conn).unwrap();
+        assert_eq!(first, second, "identical data, identical fingerprint");
+    }
+
+    #[test]
+    fn gps_fingerprint_changes_when_gps_data_changes() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, gps_lat REAL, gps_lon REAL);
+             INSERT INTO file_hashes VALUES ('a', 52.5, 13.4);",
+        )
+        .unwrap();
+        let before = gps_fingerprint(&conn).unwrap();
+
+        // A coordinate moves: the fingerprint must see it.
+        conn.execute("UPDATE file_hashes SET gps_lon = 14.0", [])
+            .unwrap();
+        let moved = gps_fingerprint(&conn).unwrap();
+        assert_ne!(before, moved, "a moved coordinate is a change");
+
+        // A row is added with a NEW coordinate: seen.
+        conn.execute("INSERT INTO file_hashes VALUES ('b', 48.8, 2.35)", [])
+            .unwrap();
+        let added = gps_fingerprint(&conn).unwrap();
+        assert_ne!(moved, added, "a new coordinate is a change");
+
+        // A row is REMOVED while its coordinate survives on another row: the
+        // coordinate set is unchanged but the row count dropped, and
+        // photo_count counts rows, so this must be visible too.
+        conn.execute("DELETE FROM file_hashes WHERE path = 'b'", [])
+            .unwrap();
+        conn.execute("UPDATE file_hashes SET gps_lon = 13.4", [])
+            .unwrap();
+        let shrunk = gps_fingerprint(&conn).unwrap();
+        assert_ne!(added, shrunk, "losing a row is a change");
+    }
+
+    #[test]
+    fn gps_fingerprint_on_a_library_without_gps_is_a_known_value() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, gps_lat REAL, gps_lon REAL);",
+        )
+        .unwrap();
+        let fp = gps_fingerprint(&conn).unwrap();
+        assert_eq!(
+            fp, "v1:0:0:0:0",
+            "document the empty shape: rows:distinct:sumlat:sumlon"
+        );
+    }
+
+    fn temp_cache() -> crate::library::CachePaths {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_path_buf();
+        // The cities dataset is materialized under `geo` during the test; keep
+        // the directory alive by leaking the guard (a test-only temp dir).
+        std::mem::forget(dir);
+        crate::library::CachePaths {
+            thumbnails: base.join("thumbnails"),
+            geo: base.join("geo"),
+            base,
+        }
+    }
+
+    #[test]
+    fn recompute_all_clusters_assigns_and_counts() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, gps_lat REAL, gps_lon REAL);
+             INSERT INTO file_hashes VALUES
+               ('a', 52.5, 13.4), ('b', 52.5001, 13.4001), ('c', -33.87, 151.21);",
+        )
+        .unwrap();
+        let cache = temp_cache();
+        let clusters = recompute_all(&conn, &cache, 15.0, true).unwrap();
+        // Two Berlin-area coordinates cluster; Sydney stands alone; every row
+        // gets an assignment and a count.
+        assert_eq!(clusters.len(), 2, "{:?}", clusters.len());
+        let total: i64 = clusters.iter().map(|c| c.photo_count).sum();
+        assert_eq!(total, 3, "every photo lands in exactly one cluster");
+        let assigned: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_hashes WHERE location_cluster_id IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(assigned, 3);
+    }
+
+    #[test]
+    fn recompute_all_on_empty_gps_wipes_cleanly() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, gps_lat REAL, gps_lon REAL);",
+        )
+        .unwrap();
+        let cache = temp_cache();
+        // Seed a stale cluster (the table must exist first), then recompute over
+        // no GPS rows: the wipe must clear it.
+        ensure_location_clusters_table(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO location_clusters \
+             (centroid_lat, centroid_lon, name, photo_count, radius_km, created_at) \
+             VALUES (52.5, 13.4, 'ghost', 1, 15.0, datetime('now'))",
+            [],
+        )
+        .unwrap();
+        recompute_all(&conn, &cache, 15.0, true).unwrap();
+        let clusters: i64 = conn
+            .query_row("SELECT COUNT(*) FROM location_clusters", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(clusters, 0, "the stale cluster must be wiped");
+    }
 
     #[test]
     fn the_gps_index_exists_and_serves_an_exact_match() {
