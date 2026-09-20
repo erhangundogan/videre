@@ -546,6 +546,28 @@ fn map_route_renders_with_nav_marked_and_grid_rows() {
 }
 
 #[test]
+fn map_location_route_renders_the_map_with_a_location_bootstrap() {
+    let lib = fixture();
+    let conn = lib.conn();
+    videre_core::location_cluster::ensure_location_clusters_table(&conn).unwrap();
+    conn.execute(
+        "INSERT INTO location_clusters
+            (centroid_lat, centroid_lon, name, photo_count, radius_km, created_at)
+         VALUES (52.52, 13.405, 'Berlin', 1, 20.0, CURRENT_TIMESTAMP)",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let server = Server::start(&lib);
+
+    let (status, body) = server.get("/map/location/berlin");
+    assert_eq!(status, 200);
+    assert!(body.contains("id=\"map-plot\""));
+    assert!(body.contains("var GLOC={\"kind\":\"location\",\"name\":\"berlin\",\"radius\":20.0};"));
+    assert!(body.contains("<a href=\"/map\" class=\"on\">"));
+}
+
+#[test]
 fn map_route_on_a_library_that_never_ran_locations_shows_the_empty_state() {
     let lib = fixture();
     let server = Server::start(&lib);

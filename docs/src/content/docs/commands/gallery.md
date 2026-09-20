@@ -53,6 +53,7 @@ people or location data yet.
 | `/date` | A Year / Month / Day drill-down |
 | `/date/2024`, `/date/2024/09`, `/date/2024/09/26` | The media of that year, month, or day, each with its item count |
 | `/map` | Location clusters plotted on a world map, with the full file grid below; click a cluster to see its photos |
+| `/map/location/berlin?radius=25` | An addressable location drill-down with a proximity radius in kilometers |
 | `/events` | Reserved, not built yet |
 | `/smart` | Reserved, not built yet |
 
@@ -62,9 +63,14 @@ bar. The reserved routes are deliberately not in it; each one appears when it
 renders something.
 
 The Map view begins with clusters grouped by continent. Zoom in to see each
-location cluster, then click one to filter the file grid below it. **Clear**
-returns the grid to all files. The plot draws entirely from the local library
-database and makes no outbound map or tile requests.
+location cluster, then click one to open an addressable drill-down. Route names
+use the normalized place name, such as `berlin`. The radius starts at the value
+stored when the cluster was created. Changing it updates the URL and grows or
+shrinks the grid to include every GPS-bearing file within that exact distance,
+regardless of its original cluster membership. The **Map > Berlin** breadcrumb,
+**Clear**, **Escape**, or zooming back to the world returns to the unselected
+map and the full grid. The plot draws entirely from the local library database
+and makes no outbound map or tile requests.
 
 They link to each other in smaller ways too, which is the point of serving them
 together: a face in
