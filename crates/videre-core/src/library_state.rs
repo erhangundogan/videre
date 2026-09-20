@@ -44,6 +44,47 @@ pub fn set(conn: &Connection, key: &str, value: i64) -> Result<()> {
     Ok(())
 }
 
+/// The string-valued form, for non-numeric state such as the location
+/// fingerprint. SQLite's dynamic typing stores the text in the same `value`
+/// column the integer accessors use; a key is only ever read back through the
+/// accessor that wrote it, so the integer watermark and the text keys never
+/// collide.
+pub fn get_string(conn: &Connection, key: &str) -> Result<Option<String>> {
+    ensure_table(conn)?;
+    let v = conn
+        .query_row(
+            "SELECT value FROM library_state WHERE key = ?1",
+            [key],
+            |r| {
+                // The `value` column has INTEGER affinity, so a numeric string such
+                // as a radius ("15") is coerced to an integer on write. Read it back
+                // through a dynamic value so both a text fingerprint and a coerced
+                // number round-trip as strings.
+                use rusqlite::types::ValueRef;
+                Ok(match r.get_ref(0)? {
+                    ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned(),
+                    ValueRef::Integer(i) => i.to_string(),
+                    ValueRef::Real(f) => f.to_string(),
+                    ValueRef::Blob(b) => String::from_utf8_lossy(b).into_owned(),
+                    ValueRef::Null => String::new(),
+                })
+            },
+        )
+        .optional()?;
+    Ok(v)
+}
+
+/// Store a string `value` under `key` (see [`get_string`]).
+pub fn set_string(conn: &Connection, key: &str, value: &str) -> Result<()> {
+    ensure_table(conn)?;
+    conn.execute(
+        "INSERT INTO library_state (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        rusqlite::params![key, value],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -61,6 +102,21 @@ mod tests {
         set(&conn, FACE_RECLUSTER_WATERMARK, 7).unwrap();
         set(&conn, FACE_RECLUSTER_WATERMARK, 42).unwrap();
         assert_eq!(get(&conn, FACE_RECLUSTER_WATERMARK).unwrap(), Some(42));
+    }
+
+    #[test]
+    fn set_string_get_string_round_trips_text_and_coerced_numbers() {
+        let conn = Connection::open_in_memory().unwrap();
+        set_string(&conn, "fp", "v1:2:2:101.37:15.755").unwrap();
+        assert_eq!(
+            get_string(&conn, "fp").unwrap().as_deref(),
+            Some("v1:2:2:101.37:15.755")
+        );
+        // A numeric string is coerced to an integer by the INTEGER-affinity
+        // column; get_string still reads back the same digits.
+        set_string(&conn, "radius", "15").unwrap();
+        assert_eq!(get_string(&conn, "radius").unwrap().as_deref(), Some("15"));
+        assert_eq!(get_string(&conn, "missing").unwrap(), None);
     }
 
     #[test]
