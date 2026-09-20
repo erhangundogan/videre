@@ -182,9 +182,115 @@ pub fn ensure_gps_index(conn: &Connection) {
     );
 }
 
+/// library_state keys for the location recluster gate: the GPS fingerprint the
+/// last recompute covered, and the radius it ran at.
+pub const LOCATIONS_GPS_FINGERPRINT: &str = "locations_gps_fingerprint";
+pub const LOCATIONS_RADIUS: &str = "locations_radius";
+
+/// The recompute radius the watcher runs at; a standalone run with a different
+/// radius is a manual choice the watcher respects (see the watch stage) and
+/// records instead of overriding.
+pub const DEFAULT_CLUSTER_RADIUS_KM: f64 = 15.0;
+
+/// A fingerprint over the GPS-bearing data: GPS-bearing row count, distinct
+/// coordinate count, and coordinate sums accumulated in
+/// `ORDER BY gps_lat, gps_lon` order (the GPS index serves this), so the same
+/// data always produces the same fingerprint. The row count is the component
+/// `photo_count` cares about: dedupe removing one copy of a pair changes it
+/// while the coordinate set stays put.
+///
+/// Format: `v1:{rows}:{distinct}:{sum_lat}:{sum_lon}`.
+pub fn gps_fingerprint(conn: &Connection) -> rusqlite::Result<String> {
+    let rows: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM file_hashes
+         WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    let mut stmt = conn.prepare(
+        "SELECT gps_lat, gps_lon FROM file_hashes
+         WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL
+         ORDER BY gps_lat, gps_lon",
+    )?;
+    let mut distinct = 0i64;
+    let mut sum_lat = 0.0f64;
+    let mut sum_lon = 0.0f64;
+    let mut last: Option<(f64, f64)> = None;
+    let mut iter = stmt.query_map([], |r| Ok((r.get::<_, f64>(0)?, r.get::<_, f64>(1)?)))?;
+    while let Some((lat, lon)) = iter.next().transpose()? {
+        if last != Some((lat, lon)) {
+            distinct += 1;
+        }
+        sum_lat += lat;
+        sum_lon += lon;
+        last = Some((lat, lon));
+    }
+    Ok(format!("v1:{rows}:{distinct}:{sum_lat}:{sum_lon}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gps_fingerprint_is_stable_for_identical_data() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, gps_lat REAL, gps_lon REAL);
+             INSERT INTO file_hashes VALUES ('a', 52.5, 13.4), ('b', 52.5, 13.4), ('c', 48.8, 2.35);",
+        )
+        .unwrap();
+        let first = gps_fingerprint(&conn).unwrap();
+        let second = gps_fingerprint(&conn).unwrap();
+        assert_eq!(first, second, "identical data, identical fingerprint");
+    }
+
+    #[test]
+    fn gps_fingerprint_changes_when_gps_data_changes() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, gps_lat REAL, gps_lon REAL);
+             INSERT INTO file_hashes VALUES ('a', 52.5, 13.4);",
+        )
+        .unwrap();
+        let before = gps_fingerprint(&conn).unwrap();
+
+        // A coordinate moves: the fingerprint must see it.
+        conn.execute("UPDATE file_hashes SET gps_lon = 14.0", [])
+            .unwrap();
+        let moved = gps_fingerprint(&conn).unwrap();
+        assert_ne!(before, moved, "a moved coordinate is a change");
+
+        // A row is added with a NEW coordinate: seen.
+        conn.execute("INSERT INTO file_hashes VALUES ('b', 48.8, 2.35)", [])
+            .unwrap();
+        let added = gps_fingerprint(&conn).unwrap();
+        assert_ne!(moved, added, "a new coordinate is a change");
+
+        // A row is REMOVED while its coordinate survives on another row: the
+        // coordinate set is unchanged but the row count dropped, and
+        // photo_count counts rows, so this must be visible too.
+        conn.execute("DELETE FROM file_hashes WHERE path = 'b'", [])
+            .unwrap();
+        conn.execute("UPDATE file_hashes SET gps_lon = 13.4", [])
+            .unwrap();
+        let shrunk = gps_fingerprint(&conn).unwrap();
+        assert_ne!(added, shrunk, "losing a row is a change");
+    }
+
+    #[test]
+    fn gps_fingerprint_on_a_library_without_gps_is_a_known_value() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, gps_lat REAL, gps_lon REAL);",
+        )
+        .unwrap();
+        let fp = gps_fingerprint(&conn).unwrap();
+        assert_eq!(
+            fp, "v1:0:0:0:0",
+            "document the empty shape: rows:distinct:sumlat:sumlon"
+        );
+    }
 
     #[test]
     fn the_gps_index_exists_and_serves_an_exact_match() {
