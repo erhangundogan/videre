@@ -45,3 +45,7 @@ pub mod video_meta;
 pub mod video_probe;
 pub mod work;
 pub mod xmp_gather;
+
+/// The basemap module: the offline PMTiles archive and its bounded
+/// first-use downloader.
+pub mod basemap;
