@@ -77,6 +77,64 @@ test.describe("map clusters", () => {
     await expect(page.locator("#gallery .card")).toHaveCount(2);
   });
 
+  test("changing radius replaces history and grows or shrinks the grid", async ({ page, gallery }) => {
+    await page.goto(`${gallery.baseURL}/map/location/berlin?radius=20`);
+    const before = await page.evaluate(() => history.length);
+
+    await page.locator("#map-radius").fill("5");
+    await page.locator("#map-radius").dispatchEvent("change");
+    await expect(page).toHaveURL(/radius=5$/);
+    await expect(page.locator("#map-plot-wrap")).toHaveAttribute("data-radius", "5");
+    await expect(page.locator("#gallery .card")).toHaveCount(1);
+    expect(await page.evaluate(() => history.length)).toBe(before);
+
+    await page.locator("#map-radius").fill("20");
+    await page.locator("#map-radius").dispatchEvent("change");
+    await expect(page.locator("#map-plot-wrap")).toHaveAttribute("data-radius", "20");
+    await expect(page.locator("#gallery .card")).toHaveCount(2);
+  });
+
+  test("Clear returns to the unselected map", async ({ page, gallery }) => {
+    await page.goto(`${gallery.baseURL}/map/location/berlin?radius=20`);
+    await page.locator("#map-clear").click();
+
+    await expect(page).toHaveURL(`${gallery.baseURL}/map`);
+    await expect(page.locator("#map-selection-row")).toBeHidden();
+    await expect(page.locator("#map-plot-wrap")).not.toHaveAttribute("data-radius", /.+/);
+    await expect(page.locator("#gallery .card")).toHaveCount(3);
+  });
+
+  test("Escape clears a selection when the lightbox is closed", async ({ page, gallery }) => {
+    await page.goto(`${gallery.baseURL}/map/location/berlin?radius=20`);
+    await page.keyboard.press("Escape");
+
+    await expect(page).toHaveURL(`${gallery.baseURL}/map`);
+    await expect(page.locator("#map-selection-row")).toBeHidden();
+    await expect(page.locator("#gallery .card")).toHaveCount(3);
+  });
+
+  test("Escape closes an open lightbox without clearing the selection", async ({ page, gallery }) => {
+    await page.goto(`${gallery.baseURL}/map/location/berlin?radius=20`);
+    await page.locator("#gallery [data-lb-url]").first().click();
+    await expect(page.locator("#lb")).toHaveClass(/on/);
+    await page.keyboard.press("Escape");
+
+    await expect(page.locator("#lb")).not.toHaveClass(/on/);
+    await expect(page).toHaveURL(/\/map\/location\/berlin\?radius=20$/);
+    await expect(page.locator("#map-selection-row")).toBeVisible();
+    await expect(page.locator("#gallery .card")).toHaveCount(2);
+  });
+
+  test("zooming back to the world clears the selection", async ({ page, gallery }) => {
+    await page.goto(`${gallery.baseURL}/map/location/berlin?radius=20`);
+    for (let click = 0; click < 8; click++) await page.locator("#map-zoom-out").click();
+
+    await expect(page).toHaveURL(`${gallery.baseURL}/map`);
+    await expect(page.locator("#map-selection-row")).toBeHidden();
+    await expect(page.locator(".map-marker[data-tier='continent']")).toHaveCount(2);
+    await expect(page.locator("#gallery .card")).toHaveCount(3);
+  });
+
   test("unknown location keeps the map working without a selection", async ({ page, gallery }) => {
     const response = await page.goto(`${gallery.baseURL}/map/location/not-a-place`);
     expect(response?.status()).toBe(200);

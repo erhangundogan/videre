@@ -11,6 +11,7 @@
   var ox = 0;
   var oy = 0;
   var activeCluster = null;
+  var activeRadius = null;
   var clusters = [];
   var byContinent = {};
   var wrapper = document.getElementById('map-plot-wrap');
@@ -133,6 +134,49 @@
       context.lineTo(right.x, right.y);
       context.stroke();
     }
+    drawRadiusRing(context);
+  }
+
+  function destinationPoint(cluster, radius, bearing) {
+    var angular = radius / 6371;
+    var latitude = cluster.centroid_lat * Math.PI / 180;
+    var longitude = cluster.centroid_lon * Math.PI / 180;
+    var nextLatitude = Math.asin(
+      Math.sin(latitude) * Math.cos(angular) +
+      Math.cos(latitude) * Math.sin(angular) * Math.cos(bearing)
+    );
+    var nextLongitude = longitude + Math.atan2(
+      Math.sin(bearing) * Math.sin(angular) * Math.cos(latitude),
+      Math.cos(angular) - Math.sin(latitude) * Math.sin(nextLatitude)
+    );
+    return {
+      lat: nextLatitude * 180 / Math.PI,
+      lon: ((nextLongitude * 180 / Math.PI + 540) % 360) - 180
+    };
+  }
+
+  function drawRadiusRing(context) {
+    if (!activeCluster || activeRadius === null) return;
+    context.save();
+    context.strokeStyle = '#60a5fa';
+    context.lineWidth = 2;
+    context.beginPath();
+    var previous = null;
+    for (var index = 0; index <= 64; index++) {
+      var geographic = destinationPoint(
+        activeCluster,
+        activeRadius,
+        index / 64 * Math.PI * 2
+      );
+      var point = toCanvas(project(geographic.lat, geographic.lon));
+      if (!previous || Math.abs(point.x - previous.x) > wrapper.clientWidth) {
+        context.moveTo(point.x, point.y);
+      }
+      else context.lineTo(point.x, point.y);
+      previous = point;
+    }
+    context.stroke();
+    context.restore();
   }
 
   function render() {
@@ -173,6 +217,10 @@
 
   function zoomAt(nextScale, x, y) {
     nextScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, nextScale));
+    if (activeCluster && nextScale < CLUSTER_ZOOM) {
+      clearSelection('push');
+      return;
+    }
     var factor = nextScale / scale;
     ox = x - wrapper.clientWidth / 2 - (x - wrapper.clientWidth / 2 - ox) * factor;
     oy = y - wrapper.clientHeight / 2 - (y - wrapper.clientHeight / 2 - oy) * factor;
@@ -223,6 +271,8 @@
 
   function selectCluster(cluster, radius, historyMode) {
     activeCluster = cluster;
+    activeRadius = radius;
+    wrapper.dataset.radius = String(radius);
     clearBtn.disabled = false;
     showSelection(cluster, radius);
     focusSelection(cluster, radius);
@@ -235,6 +285,8 @@
 
   function clearSelection(historyMode) {
     activeCluster = null;
+    activeRadius = null;
+    delete wrapper.dataset.radius;
     clearBtn.disabled = true;
     selectionRow.hidden = true;
     selectionStatus.hidden = true;
@@ -249,6 +301,8 @@
 
   function showUnknownLocation() {
     activeCluster = null;
+    activeRadius = null;
+    delete wrapper.dataset.radius;
     clearBtn.disabled = true;
     selectionRow.hidden = true;
     selectionStatus.textContent = 'Unknown location';
@@ -300,6 +354,26 @@
   document.getElementById('map-clear').addEventListener('click', function () {
     clearSelection('push');
   });
+  radiusInput.addEventListener('change', function () {
+    if (!activeCluster || activeRadius === null) return;
+    var radius = radiusInput.valueAsNumber;
+    if (!Number.isFinite(radius) || radius < 1) {
+      radiusInput.value = String(activeRadius);
+      return;
+    }
+    activeRadius = radius;
+    wrapper.dataset.radius = String(radius);
+    focusSelection(activeCluster, radius);
+    window.setGalleryLocation(activeCluster.centroid_lat, activeCluster.centroid_lon, radius);
+    window.history.replaceState({}, '', locationPath(activeCluster, radius));
+    render();
+  });
+  window.addEventListener('keydown', function (event) {
+    if (event.key !== 'Escape' || !activeCluster) return;
+    var lightbox = document.getElementById('lb');
+    if (lightbox && lightbox.classList.contains('on')) return;
+    clearSelection('push');
+  }, true);
   window.addEventListener('popstate', function () {
     applyLocationState(locationStateFromUrl());
   });
