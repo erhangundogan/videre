@@ -240,6 +240,7 @@ mod location_cluster_tests {
 
     fn gallery_state(root: &Path) -> Arc<AppState> {
         let conn = Connection::open_in_memory().unwrap();
+        videre_core::location_cluster::register_haversine_sql_function(&conn).unwrap();
         let library = Arc::new(
             videre_core::library::LibraryContext::new(root, &root.join("cache"))
                 .expect("test library context should be valid"),
@@ -332,7 +333,7 @@ mod location_cluster_tests {
     }
 
     #[tokio::test]
-    async fn files_endpoint_cluster_parameter_filters_by_cluster() {
+    async fn files_endpoint_filters_by_exact_proximity_with_correct_total() {
         let dir = tempfile::tempdir().unwrap();
         let state = gallery_state(dir.path());
         {
@@ -353,11 +354,13 @@ mod location_cluster_tests {
                     location_cluster_id INTEGER
                  );
                  INSERT INTO file_hashes
-                    (path, hash, size_bytes, ext, location_cluster_id)
+                    (path, hash, size_bytes, ext, gps_lat, gps_lon)
                  VALUES
-                    ('/a.jpg', 'aaa', 1, 'jpg', 7),
-                    ('/b.jpg', 'bbb', 2, 'jpg', 7),
-                    ('/c.jpg', 'ccc', 3, 'jpg', NULL);",
+                    ('/a-center.jpg', 'aaa', 1, 'jpg', 52.52, 13.405),
+                    ('/b-axis.jpg', 'bbb', 2, 'jpg', 52.60, 13.405),
+                    ('/c-corner.jpg', 'ccc', 3, 'jpg', 52.70, 13.69),
+                    ('/d-outside.jpg', 'ddd', 4, 'jpg', 53.00, 13.405),
+                    ('/e-no-gps.jpg', 'eee', 5, 'jpg', NULL, NULL);",
             )
             .unwrap();
         }
@@ -366,9 +369,10 @@ mod location_cluster_tests {
             .with_state(state);
 
         let response = app
+            .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/files?view=all&cluster=7")
+                    .uri("/api/files?view=all&lat=52.52&lon=13.405&radius=25&limit=1")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -379,7 +383,101 @@ mod location_cluster_tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["total"], 2);
-        assert_eq!(json["files"].as_array().unwrap().len(), 2);
+        assert_eq!(json["files"].as_array().unwrap().len(), 1);
+        assert_eq!(json["files"][0]["hash"], "aaa");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/files?view=all&lat=52.52&lon=13.405&radius=25&offset=1&limit=1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["total"], 2);
+        assert_eq!(json["files"].as_array().unwrap().len(), 1);
+        assert_eq!(json["files"][0]["hash"], "bbb");
+    }
+
+    #[tokio::test]
+    async fn files_endpoint_rejects_partial_or_invalid_proximity() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        state
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE file_hashes (
+                    path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
+                    ext TEXT, created_at TEXT, modified_at TEXT, exif_date TEXT,
+                    gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER,
+                    location_cluster_id INTEGER
+                );",
+            )
+            .unwrap();
+        let app = Router::new()
+            .route("/api/files", get(handle_files))
+            .with_state(state);
+
+        for uri in [
+            "/api/files?lat=52.52",
+            "/api/files?lat=52.52&lon=13.405",
+            "/api/files?lat=91&lon=13.405&radius=20",
+            "/api/files?lat=52.52&lon=181&radius=20",
+            "/api/files?lat=52.52&lon=13.405&radius=0",
+            "/api/files?lat=52.52&lon=13.405&radius=-1",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn date_view_ignores_proximity_parameters() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        state
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE file_hashes (
+                    path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
+                    ext TEXT, created_at TEXT, modified_at TEXT, exif_date TEXT,
+                    gps_lat REAL, gps_lon REAL, width INTEGER, height INTEGER,
+                    location_cluster_id INTEGER
+                );
+                INSERT INTO file_hashes
+                    (path, hash, size_bytes, ext, exif_date, gps_lat, gps_lon)
+                VALUES ('/a.jpg', 'aaa', 1, 'jpg', '2025-01-01', 52.52, 13.405);",
+            )
+            .unwrap();
+        let app = Router::new()
+            .route("/api/files", get(handle_files))
+            .with_state(state);
+
+        let mut responses = Vec::new();
+        for uri in ["/api/files?view=date", "/api/files?view=date&lat=999"] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            responses.push(serde_json::from_slice::<serde_json::Value>(&body).unwrap());
+        }
+        assert_eq!(responses[0]["total"], responses[1]["total"]);
+        assert_eq!(responses[0]["files"], responses[1]["files"]);
     }
 }
 
@@ -1052,6 +1150,7 @@ async fn handle_files(
             } else {
                 None
             };
+            let location = files_location_filter(&q, view)?;
             let cluster = (view != "date").then_some(q.cluster).flatten();
             query_files_page(
                 &conn,
@@ -1060,7 +1159,7 @@ async fn handle_files(
                 offset,
                 limit,
                 cluster,
-                None,
+                location.as_ref(),
             )
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         }
@@ -1543,9 +1642,43 @@ struct FilesQuery {
     from: Option<String>,
     /// Exclusive upper bound for date range filters.
     to: Option<String>,
-    /// Map drill-down: only rows assigned to this location cluster. Applied
-    /// only to the `all` view; the date view keeps its own deduplication rules.
+    /// Map drill-down center latitude. Geographic parameters are applied only
+    /// when all three are present on the `all` view.
+    lat: Option<f64>,
+    /// Map drill-down center longitude.
+    lon: Option<f64>,
+    /// Map drill-down radius in positive kilometers.
+    radius: Option<f64>,
+    /// Transitional map membership filter. Removed when the map client moves
+    /// to the proximity parameters above.
     cluster: Option<i64>,
+}
+
+fn files_location_filter(
+    query: &FilesQuery,
+    view: &str,
+) -> Result<Option<LocationFilter>, StatusCode> {
+    if view == "date" {
+        return Ok(None);
+    }
+    match (query.lat, query.lon, query.radius) {
+        (None, None, None) => Ok(None),
+        (Some(lat), Some(lon), Some(radius_km))
+            if lat.is_finite()
+                && lon.is_finite()
+                && radius_km.is_finite()
+                && (-90.0..=90.0).contains(&lat)
+                && (-180.0..=180.0).contains(&lon)
+                && radius_km > 0.0 =>
+        {
+            Ok(Some(LocationFilter {
+                lat,
+                lon,
+                radius_km,
+            }))
+        }
+        _ => Err(StatusCode::BAD_REQUEST),
+    }
 }
 
 #[derive(Deserialize)]
@@ -1881,6 +2014,7 @@ async fn serve_faces_async(
     opts: ServeOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let conn = videre_core::db::open_wal(db)?;
+    videre_core::location_cluster::register_haversine_sql_function(&conn)?;
     videre_core::location::ensure_location_column(&conn);
     // Thumbnail decode-failure records are the one skip with no --reprocess
     // hatch, so clear them once per server run: a HEIC that hit two transient

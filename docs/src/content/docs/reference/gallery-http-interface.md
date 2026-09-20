@@ -81,11 +81,19 @@ Returns a page of file rows. By default it lists all scanned paths.
 | `from=YYYY[-MM[-DD]]` | Inclusive date lower bound for `view=date` |
 | `to=YYYY[-MM[-DD]]` | Exclusive date upper bound for `view=date` |
 | `hashes=<a,b,c>` | Comma-separated hashes to resolve after a search |
-| `cluster=<id>` | For `view=all`, return only files assigned to one location cluster |
+| `lat=<number>` | Center latitude for a `view=all` proximity filter |
+| `lon=<number>` | Center longitude for a `view=all` proximity filter |
+| `radius=<km>` | Positive radius in kilometers for a `view=all` proximity filter |
+
+`lat`, `lon` and `radius` must be supplied together. The server first narrows
+GPS-bearing rows with the coordinate index, then applies exact great-circle
+distance, so the returned page and `total` describe the same circle. The date
+view ignores all three parameters and keeps its own one-row-per-hash behavior.
 
 ```bash
 curl "http://127.0.0.1:7878/api/files?limit=1"
 curl "http://127.0.0.1:7878/api/files?view=date&from=2025-01-01&to=2026-01-01&limit=100"
+curl "http://127.0.0.1:7878/api/files?view=all&lat=52.52&lon=13.405&radius=25"
 ```
 
 ```json
