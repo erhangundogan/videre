@@ -379,15 +379,19 @@ let facesData = { people: [], clusters: [], singletons: [] };
       const faceIdsJson = JSON.stringify(faceIds);
       const inputId = `np-input-${faceIds[0]}`;
       area.innerHTML = `
-        <input type="text" class="np-input" id="${inputId}" placeholder="Person name" maxlength="${MAX_NAME_LEN}" autofocus>
+        <input type="text" class="np-input" id="${inputId}" placeholder="Person name" maxlength="${MAX_NAME_LEN}">
         <div class="np-btn-row">
           <button class="np-create-btn" onclick="submitNewPerson('${inputId}', ${faceIdsJson})">Create</button>
           <button class="new-person-btn" onclick="loadFaces()">Cancel</button>
         </div>
       `;
-      document.getElementById(inputId).addEventListener('keydown', function(e) {
+      // The autofocus attribute does nothing on HTML inserted after the page
+      // loaded, so focus explicitly: typing the name is the next action.
+      const inp = document.getElementById(inputId);
+      inp.addEventListener('keydown', function(e) {
         if (e.key === 'Enter') { e.preventDefault(); submitNewPerson(inputId, faceIds); }
       });
+      inp.focus();
     }
 
     async function submitNewPerson(inputId, faceIds) {

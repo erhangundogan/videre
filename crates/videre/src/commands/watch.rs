@@ -665,8 +665,13 @@ fn reconcile(args: &WatchArgs, ctx: &CommandContext) -> Result<ReconcileOutcome>
             }
         }
         if args.prune {
-            if let Err(e) = run_prune_stage(args, ctx, &conn) {
-                eprintln!("videre watch: prune stage error: {e}");
+            match run_prune_stage(args, ctx, &conn) {
+                Ok(StageOutcome::Ran) => {}
+                Ok(StageOutcome::Busy) => complete = false,
+                Err(e) => {
+                    eprintln!("videre watch: prune stage error: {e}");
+                    complete = false;
+                }
             }
         }
         if args.export_xmp {
@@ -709,7 +714,7 @@ fn run_prune_stage(
     args: &WatchArgs,
     ctx: &CommandContext,
     conn: &rusqlite::Connection,
-) -> Result<()> {
+) -> Result<StageOutcome> {
     let prune_args = super::prune::PruneArgs::for_watch_stage(args.silent);
     tracked_stage(
         ctx,
@@ -725,8 +730,7 @@ fn run_prune_stage(
             }
             Ok(())
         },
-    )?;
-    Ok(())
+    )
 }
 
 /// Queries (path, hash) pairs from file_hashes matching a SQL WHERE clause,

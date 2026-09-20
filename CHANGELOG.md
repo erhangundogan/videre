@@ -16,6 +16,45 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.32.0] - 2026-09-20
+
+### Added
+
+- **`videre watch` now responds to live filesystem events.** New and changed
+  media are processed within seconds instead of waiting for the next polling
+  interval. Event bursts are coalesced using the configurable
+  `watch-debounce-ms` window, while startup, dropped-event, and periodic
+  reconciliations keep the library correct when events are unavailable or
+  incomplete. Face detection stays on the fast path, and global face
+  reclustering runs only when new detections require it.
+- **The gallery lightbox can enter fullscreen for photos.** The navigation and
+  information controls remain available, and closing the lightbox also exits
+  fullscreen.
+- **Drilled-down date pages show how many items they contain.** Counts are
+  available on direct year, month, day, and custom-range URLs.
+
+### Changed
+
+- **Gallery Tile view thumbnails are sharper and use square corners.** Tile and
+  grid views now request 480-pixel thumbnails for better rendering on HiDPI
+  displays.
+- **The New Person action focuses the name field immediately,** so typing can
+  begin without an extra click.
+- **Commands in `videre --help` are listed alphabetically.**
+
+### Removed
+
+- **`videre watch --interval` has been removed.** Watch scheduling is now
+  driven by filesystem events and internal reconciliation. Scripts passing the
+  old option must remove it.
+
+### Internal
+
+- Added a Chromium Playwright suite for gallery routes and interactions, and
+  enabled it in pull request and `main` CI.
+- Expanded unit and integration coverage for image serving, thumbnail caching,
+  XMP reconciliation, watch scheduling, and filesystem event handling.
+
 ## [0.31.0] - 2026-09-17
 
 ### Added
@@ -1914,7 +1953,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.31.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.32.0...HEAD
+[0.32.0]: https://github.com/erhangundogan/videre/compare/v0.31.0...v0.32.0
 [0.31.0]: https://github.com/erhangundogan/videre/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/erhangundogan/videre/compare/v0.29.1...v0.30.0
 [0.29.1]: https://github.com/erhangundogan/videre/compare/v0.29.0...v0.29.1
