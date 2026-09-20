@@ -33,8 +33,10 @@ Once the lightbox is open, move through the items without closing it: the
 on-screen arrows at the left and right edges, or the **Left** and **Right**
 arrow keys, step to the previous and next item. Stepping past the last loaded
 item pulls in the next page automatically and keeps going, so **Show more** is
-not needed to browse to the end. **Escape** or a click outside the item closes
-the lightbox.
+not needed to browse to the end. The **Fullscreen** button in the top corner of
+the item blows the whole lightbox up to the screen, arrows and info panel
+included; the same button (or **Escape**) steps back. **Escape** or a click
+outside the item closes the lightbox.
 
 An info panel sits directly under the media: the labeled people in the photo
 (each links to that person's page), the place name when the file has GPS, and
@@ -49,6 +51,7 @@ people or location data yet.
 | `/duplicates` | Duplicate groups, the same review `dedupe --html` writes |
 | `/people` | Face groups, and naming them |
 | `/date` | A Year / Month / Day drill-down |
+| `/date/2024`, `/date/2024/09`, `/date/2024/09/26` | The media of that year, month, or day, each with its item count |
 | `/map` | Reserved, not built yet |
 | `/events` | Reserved, not built yet |
 | `/smart` | Reserved, not built yet |
@@ -73,6 +76,7 @@ ratios; files with no recorded dimensions use a square tile.
 Your browser remembers the choice across both tabs and page reloads. Tile rows
 adapt when you resize the window or load more files on the Files tab. Click a
 tile to open the same lightbox, with the same previous/next navigation.
+Thumbnails are served at 480px so tiles stay sharp on high-DPI displays.
 
 ## Options
 
