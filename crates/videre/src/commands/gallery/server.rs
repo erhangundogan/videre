@@ -276,6 +276,7 @@ mod location_cluster_tests {
                  VALUES
                     (52.52, 13.405, 'Berlin', 5, 20.0, CURRENT_TIMESTAMP),
                     (35.68, 139.69, 'Tokyo', 20, 20.0, CURRENT_TIMESTAMP),
+                    (40.71, -74.01, NULL, 10, 20.0, CURRENT_TIMESTAMP),
                     (-33.87, 151.21, 'Sydney', 1, 20.0, CURRENT_TIMESTAMP);",
             )
             .unwrap();
@@ -298,10 +299,11 @@ mod location_cluster_tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let rows: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let rows = rows.as_array().unwrap();
-        assert_eq!(rows.len(), 3);
+        assert_eq!(rows.len(), 4);
         assert_eq!(rows[0]["name"], "Tokyo");
         assert_eq!(rows[0]["continent"], "Asia");
-        assert_eq!(rows[2]["continent"], "Oceania");
+        assert_eq!(rows[1]["name"], "Unnamed location");
+        assert_eq!(rows[3]["continent"], "Oceania");
         assert!(rows[0]["centroid_lat"].is_number());
         assert!(rows[0]["radius_km"].is_number());
     }
@@ -1100,7 +1102,7 @@ async fn handle_location_clusters(State(state): State<Arc<AppState>>) -> Respons
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     let mut stmt = match conn.prepare(
-        "SELECT id, COALESCE(name, ''), centroid_lat, centroid_lon, photo_count, radius_km
+        "SELECT id, COALESCE(name, 'Unnamed location'), centroid_lat, centroid_lon, photo_count, radius_km
          FROM location_clusters ORDER BY photo_count DESC, id ASC",
     ) {
         Ok(stmt) => stmt,
