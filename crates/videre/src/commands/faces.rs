@@ -34,9 +34,16 @@ pub struct FacesArgs {
     #[command(flatten)]
     xmp: crate::xmp::XmpArg,
 
+    /// Wipe all face state: people labels, grouping, and detection markers,
+    /// then re-detect and regroup from scratch. Asks for confirmation; use
+    /// --yes to skip
+    #[arg(long, alias = "reprocess", conflicts_with_all = ["recluster", "limit"])]
+    reset: bool,
+    /// Skip the --reset confirmation prompt
     #[arg(long)]
-    reprocess: bool,
-    /// Skip detection; just re-run clustering on existing embeddings
+    yes: bool,
+    /// Regroup unassigned faces only. Labeled people are never moved; tuning
+    /// flags make experimentation safe
     #[arg(long)]
     recluster: bool,
     #[arg(long, default_value = "8")]
@@ -159,18 +166,22 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
     videre_core::library_guard::validate_paths(&ctx.library, &args.paths.path)?;
 
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
-    // Reprocessing (clearing and re-detecting every face) or reclustering
+    // Resetting (wiping and re-detecting every face) or reclustering
     // rewrites the whole face partition, so it takes the library's exclusive
     // activity lease and locks out every other operation; ordinary incremental
     // detection is shared work that coexists with readers. Held for the whole
     // run, released when this returns.
-    let activity_mode = if args.reprocess || args.recluster {
+    let activity_mode = if args.reset || args.recluster {
         videre_core::library_locks::ActivityMode::Exclusive
     } else {
         videre_core::library_locks::ActivityMode::Shared
     };
     let _activity = videre_core::library_locks::try_activity(&ctx.library, activity_mode)?;
-    face_db::create_faces_table(&conn)?;
+    // The faces tables (and the migrations create_faces_table runs, notably
+    // the labeled-face cluster detach) are deliberately NOT created here:
+    // a --reset dry-run or refusal must leave the library's face state
+    // completely untouched, migrations included. The table creation happens
+    // after the reset block below, and reset_all runs it itself post-consent.
     // Held for the whole run, both the detection and the recluster-only paths,
     // so a second faces run against this library is refused rather than racing.
     let guard = videre_core::library_locks::try_command(&ctx.library, "faces")?;
@@ -198,6 +209,79 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
         Some(&args.marks),
         Some(&args.tags),
     )?;
+
+    if args.reset {
+        // A reset rebuilds the whole library: scoping the rebuild would wipe
+        // everything and redetect only a slice, and --recluster would wipe
+        // everything and then skip detection entirely. Both are refused
+        // before anything is deleted. (--recluster and --limit are also
+        // refused at parse time via conflicts_with; the selection flags are
+        // runtime values, so they are checked here.)
+        if !selection.is_empty() {
+            anyhow::bail!(
+                "--reset rebuilds the entire library; selection flags would \
+                 wipe everything and rebuild only part of it"
+            );
+        }
+        // Upgraded libraries can carry face rows from before the marker
+        // table existed, so faces alone counts as state to reset; both
+        // empty is the only "faces never ran".
+        let scanned: i64 =
+            conn.query_row("SELECT COUNT(*) FROM faces_scanned", [], |r| r.get(0))?;
+        let face_rows: i64 = conn.query_row("SELECT COUNT(*) FROM faces", [], |r| r.get(0))?;
+        if scanned == 0 && face_rows == 0 {
+            anyhow::bail!("faces has not run on this library; nothing to reset");
+        }
+        let (labeled, people) = videre_core::face_db::labeled_state_counts(&conn)?;
+        if args.dry_run {
+            eprintln!(
+                "videre faces --reset would delete {labeled} labeled face(s) across \
+                 {people} people, all grouping, and detection markers, then \
+                 re-detect and regroup the library; nothing was deleted"
+            );
+            return Ok(());
+        }
+        if !args.yes {
+            use std::io::IsTerminal;
+            if !std::io::stdin().is_terminal() {
+                anyhow::bail!(
+                    "refusing to wipe {labeled} labeled face(s) across {people} people \
+                     in a non-interactive session; rerun with --yes to accept"
+                );
+            }
+            let ok = super::confirm(&format!(
+                "videre faces --reset deletes {labeled} labeled face(s) across \
+                 {people} people, all grouping, and detection markers, then \
+                 re-detects and regroups the library. Continue?"
+            ))?;
+            if !ok {
+                anyhow::bail!("aborted; nothing was deleted");
+            }
+        }
+        let total: i64 = conn.query_row("SELECT COUNT(*) FROM faces", [], |r| r.get(0))?;
+        let scanned: i64 =
+            conn.query_row("SELECT COUNT(*) FROM faces_scanned", [], |r| r.get(0))?;
+        videre_core::face_db::reset_all(&conn)?;
+        // The receipt for a consented destructive action prints even under
+        // --silent; the rebuild's own progress obeys --silent as usual.
+        eprintln!(
+            "videre faces: reset wiped {total} face row(s) ({labeled} labeled \
+             across {people} people), {scanned} detection marker(s), and all \
+             grouping; rebuilding from absolute beginning"
+        );
+    }
+
+    // Everything past this point either consented to mutation (the wipe
+    // already ran) or never writes face state: now the tables and their
+    // migrations may come into being. --dry-run is the exception from the
+    // other side: it promises to write nothing, and create_faces_table runs
+    // migrations (the labeled-face cluster detach) that write. The tables
+    // exist either way (the library schema creates them at init), so the
+    // reads below lose nothing.
+    if !args.dry_run {
+        face_db::create_faces_table(&conn)?;
+    }
+
     // Shares `narrow` with embed and classify: same filtering, same "N of M"
     // line, one implementation.
     //
@@ -240,25 +324,19 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
     // Union in hashes that already have faces so a first run after upgrading (when
     // the marker table is empty but faces exist) doesn't redo that work.
     decode_failures::ensure_table(&conn)?;
-    let skip_hashes: std::collections::HashSet<String> = if args.reprocess {
-        // --reprocess is the retry hatch: forget this stage's recorded decode
-        // failures so an undecodable file is tried again (a videre fix may have
-        // made it decodable).
-        decode_failures::clear_stage(&conn, decode_failures::STAGE_FACES)?;
-        std::collections::HashSet::new()
-    } else {
-        let mut s: std::collections::HashSet<String> =
-            face_db::scanned_hashes(&conn)?.into_iter().collect();
-        s.extend(face_db::hashes_with_faces(&conn)?);
-        // Drop hashes the face decode has already failed on enough times: they
-        // would only re-pay the same timeout for the same guaranteed failure.
-        s.extend(decode_failures::failed_hashes(
-            &conn,
-            decode_failures::STAGE_FACES,
-            decode_failures::FAILURE_THRESHOLD,
-        )?);
-        s
-    };
+    // --reset needs no special case here: reset_all already cleared the
+    // scanned markers and decode failures, so the normal skip set below is
+    // empty and every hash is processed, exactly like a first-ever run.
+    let mut skip_hashes: std::collections::HashSet<String> =
+        face_db::scanned_hashes(&conn)?.into_iter().collect();
+    skip_hashes.extend(face_db::hashes_with_faces(&conn)?);
+    // Drop hashes the face decode has already failed on enough times: they
+    // would only re-pay the same timeout for the same guaranteed failure.
+    skip_hashes.extend(decode_failures::failed_hashes(
+        &conn,
+        decode_failures::STAGE_FACES,
+        decode_failures::FAILURE_THRESHOLD,
+    )?);
 
     // Dedup by hash, drop skipped, cap at --limit for a partial/lazy pass.
     let to_process = face_db::select_unscanned(&all_paths, &skip_hashes, args.limit);
@@ -292,20 +370,36 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
         return Ok(());
     }
 
-    if let Err(e) =
-        videre_core::pipeline_runs::install_sigint_handler_in(ctx.library.clone(), "faces")
-    {
-        eprintln!("Warning: could not install interrupt handler: {e:#}");
+    // The interrupt handler marks the current faces row `interrupted` when
+    // Ctrl-C lands. A dry run has no row of ours to mark and must not
+    // overwrite a historical one, so it runs without the handler.
+    if !args.dry_run {
+        if let Err(e) =
+            videre_core::pipeline_runs::install_sigint_handler_in(ctx.library.clone(), "faces")
+        {
+            eprintln!("Warning: could not install interrupt handler: {e:#}");
+        }
     }
-    let outcome =
+    // A dry run writes nothing, and "nothing" includes the pipeline bookkeeping:
+    // track_in upserts the faces run row the moment it is entered and records
+    // the result on the way out. The run executes untracked, identically
+    // otherwise.
+    let outcome = if args.dry_run {
+        run_detection_and_clustering(&args, ctx, &conn, &to_process)?
+    } else {
         videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "faces", || {
             run_detection_and_clustering(&args, ctx, &conn, &to_process)
-        })?;
+        })?
+    };
 
     // Import any face names from XMP sidecars onto the faces just detected,
     // symmetric with the marks read-back on scan. Governed by the shared --xmp
     // precedence; db (the default) fills only unconfirmed faces.
-    let imported = import_face_regions(&args, ctx, &conn, &to_process)?;
+    let imported = if args.dry_run {
+        0
+    } else {
+        import_face_regions(&args, ctx, &conn, &to_process)?
+    };
     if imported > 0 && !args.silent {
         eprintln!("Imported {imported} face name(s) from XMP");
     }

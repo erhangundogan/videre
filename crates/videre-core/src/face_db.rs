@@ -68,6 +68,17 @@ pub fn create_faces_table(conn: &Connection) -> rusqlite::Result<()> {
     // report into a failure. This runs from the commands that already write
     // faces, and is a single COUNT once the migration has happened.
     let _ = migrate_person_labels(conn);
+    // Frozen faces: a labeled face's identity is its person label, never a
+    // machine cluster id. Libraries written before the detach-on-assignment
+    // rule carry stale cluster ids on confirmed faces; recluster renumbers
+    // unlabeled clusters from 0 and collides with them, mixing named people
+    // into unassigned cluster pages. Clear the tombstones on every writer
+    // pass; steady state touches zero rows.
+    let _ = conn.execute(
+        "UPDATE faces SET cluster_id = NULL
+         WHERE confirmed = 1 AND person_label IS NOT NULL AND cluster_id IS NOT NULL",
+        [],
+    );
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS faces (
             id            INTEGER PRIMARY KEY,
@@ -124,6 +135,47 @@ pub fn recluster_watermark(conn: &Connection) -> anyhow::Result<i64> {
 pub fn advance_recluster_watermark(conn: &Connection) -> anyhow::Result<()> {
     let max_id: i64 = conn.query_row("SELECT COALESCE(MAX(id), 0) FROM faces", [], |r| r.get(0))?;
     crate::library_state::set(conn, crate::library_state::FACE_RECLUSTER_WATERMARK, max_id)
+}
+
+/// Destroy all face state: face rows, people records, scanned markers,
+/// faces decode-failure entries, and the recluster watermark. The
+/// `videre faces --reset` escape hatch: after this, the next faces run
+/// starts from absolute beginning. The caller owns consent.
+pub fn reset_all(conn: &Connection) -> anyhow::Result<()> {
+    // Ensures every table the deletes name exists, even on a library that
+    // never ran faces before.
+    create_faces_table(conn)?;
+    crate::decode_failures::ensure_table(conn)?;
+    conn.execute_batch("BEGIN")?;
+    let result = (|| -> anyhow::Result<()> {
+        conn.execute("DELETE FROM faces", [])?;
+        conn.execute("DELETE FROM people", [])?;
+        conn.execute("DELETE FROM faces_scanned", [])?;
+        crate::decode_failures::clear_stage(conn, crate::decode_failures::STAGE_FACES)?;
+        crate::library_state::set(conn, crate::library_state::FACE_RECLUSTER_WATERMARK, 0)?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+/// (labeled faces, people) for the reset confirmation prompt.
+pub fn labeled_state_counts(conn: &Connection) -> anyhow::Result<(i64, i64)> {
+    let labeled: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM faces WHERE confirmed = 1 AND person_label IS NOT NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    let people: i64 = conn.query_row("SELECT COUNT(*) FROM people", [], |r| r.get(0))?;
+    Ok((labeled, people))
 }
 
 /// Marks a hash as face-scanned (idempotent). Call after detection runs for a
@@ -356,6 +408,63 @@ mod tests {
     }
 
     #[test]
+    fn the_detach_migration_clears_tombstones_and_keeps_labels() {
+        let conn = open();
+        conn.execute(
+            "INSERT INTO faces (hash, bbox, embedding, cluster_id, confirmed, person_label)
+             VALUES ('h1', '0,0,50,50', X'0000', 0, 1, 'elena')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO faces (hash, bbox, embedding, cluster_id)
+             VALUES ('h2', '0,0,50,50', X'0000', 0)",
+            [],
+        )
+        .unwrap();
+
+        create_faces_table(&conn).unwrap();
+
+        let (cid, label): (Option<i64>, Option<String>) = conn
+            .query_row(
+                "SELECT cluster_id, person_label FROM faces WHERE hash = 'h1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            cid, None,
+            "a labeled face must not carry a machine cluster id"
+        );
+        assert_eq!(label.as_deref(), Some("elena"), "the label is untouched");
+        let cid: Option<i64> = conn
+            .query_row("SELECT cluster_id FROM faces WHERE hash = 'h2'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(Some(0), cid, "unlabeled faces keep their machine grouping");
+    }
+
+    #[test]
+    fn the_detach_migration_is_idempotent() {
+        let conn = open();
+        conn.execute(
+            "INSERT INTO faces (hash, bbox, embedding, cluster_id, confirmed, person_label)
+             VALUES ('h1', '0,0,50,50', X'0000', 7, 1, 'elena')",
+            [],
+        )
+        .unwrap();
+        create_faces_table(&conn).unwrap();
+        create_faces_table(&conn).unwrap();
+        let cid: Option<i64> = conn
+            .query_row("SELECT cluster_id FROM faces WHERE hash = 'h1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(cid, None);
+    }
+
+    #[test]
     fn the_watermark_starts_absent_and_advance_records_the_highest_face_id() {
         let conn = open();
         assert_eq!(recluster_watermark(&conn).unwrap(), 0);
@@ -381,6 +490,70 @@ mod tests {
         let conn = open();
         advance_recluster_watermark(&conn).unwrap();
         assert_eq!(recluster_watermark(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn reset_all_returns_face_state_to_absolute_beginning() {
+        let conn = open();
+        conn.execute(
+            "INSERT INTO faces (hash, bbox, embedding, cluster_id, confirmed, person_label)
+             VALUES ('h1', '0,0,50,50', X'0000', 0, 1, 'elena')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO faces (hash, bbox, embedding, cluster_id)
+             VALUES ('h2', '0,0,50,50', X'0000', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO people (name, full_name) VALUES ('elena', 'Elena')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO faces_scanned (hash) VALUES ('h1')", [])
+            .unwrap();
+        crate::library_state::set(&conn, crate::library_state::FACE_RECLUSTER_WATERMARK, 5000)
+            .unwrap();
+
+        reset_all(&conn).unwrap();
+
+        for table in ["faces", "people", "faces_scanned"] {
+            let n: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0, "{table} must be empty after reset");
+        }
+        let wm = recluster_watermark(&conn).unwrap();
+        assert_eq!(
+            wm, 0,
+            "the recluster watermark must clear, or the gated recluster would never fire again"
+        );
+    }
+
+    #[test]
+    fn labeled_state_counts_reports_what_the_reset_prompt_names() {
+        let conn = open();
+        assert_eq!(labeled_state_counts(&conn).unwrap(), (0, 0));
+        conn.execute(
+            "INSERT INTO faces (hash, bbox, embedding, confirmed, person_label)
+             VALUES ('h1', '0,0,50,50', X'0000', 1, 'elena')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO faces (hash, bbox, embedding, confirmed, person_label)
+             VALUES ('h2', '0,0,50,50', X'0000', 1, 'erhan')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO people (name, full_name) VALUES ('elena', 'Elena')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(labeled_state_counts(&conn).unwrap(), (2, 1));
     }
 
     #[test]

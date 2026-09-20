@@ -140,10 +140,14 @@ pub fn faces_list(conn: &Connection) -> Result<FacesData> {
 
 /// Every face in one unassigned cluster (for the cluster detail page).
 pub fn cluster_detail(conn: &Connection, cluster_id: i64) -> Result<ClusterDetail> {
+    // Same unlabeled filter the cluster card uses: the page a card opens
+    // must show the population the card counted. A labeled face can hold no
+    // cluster id any more; the filter stays so the two queries cannot drift.
     let mut stmt = conn.prepare(
         "SELECT f.id, f.hash, fh.path FROM faces f \
          JOIN file_hashes fh ON f.hash = fh.hash \
-         WHERE f.cluster_id = ?1 ORDER BY f.id",
+         WHERE f.cluster_id = ?1 AND (f.confirmed = 0 OR f.person_label IS NULL) \
+         ORDER BY f.id",
     )?;
     let faces = stmt
         .query_map([cluster_id], |r| {
@@ -228,8 +232,11 @@ pub fn assign(conn: &Connection, face_ids: &[i64], person_label: &str) -> Result
             rusqlite::params![&label, &display],
         )?;
         for id in face_ids {
+            // Frozen faces: assignment detaches the face from machine
+            // grouping. A labeled face must never carry a cluster id for a
+            // later recluster to collide with.
             let n = conn.execute(
-                "UPDATE faces SET person_label = ?1, confirmed = 1 WHERE id = ?2",
+                "UPDATE faces SET person_label = ?1, confirmed = 1, cluster_id = NULL WHERE id = ?2",
                 rusqlite::params![label, id],
             )?;
             if n == 0 {
@@ -312,11 +319,39 @@ pub fn set_full_name(conn: &Connection, name: &str, full_name: &str) -> Result<(
 
 pub fn delete_person(conn: &Connection, label: &str) -> Result<()> {
     let label = videre_core::person::normalize(label).unwrap_or_else(|| label.to_string());
-    conn.execute(
-        "UPDATE faces SET person_label = NULL, confirmed = 0, is_primary = 0 WHERE person_label = ?1",
-        rusqlite::params![label],
-    )?;
-    Ok(())
+    // One transaction: the faces either come back unassigned AND the
+    // regroup gate reopens, or nothing changes at all.
+    conn.execute_batch("BEGIN")?;
+    let result = (|| -> Result<()> {
+        let n = conn.execute(
+            "UPDATE faces SET person_label = NULL, confirmed = 0, is_primary = 0, cluster_id = NULL WHERE person_label = ?1",
+            rusqlite::params![label],
+        )?;
+        if n > 0 {
+            // The returned faces sit in the unassigned pool with ids the
+            // recluster watermark already covers: without resetting it, the
+            // gate stays closed and they wait for new faces before any
+            // regroup runs again. One real delete reopens the machine's
+            // regroup for the whole library. A delete that matched nothing
+            // must not schedule that pass for nothing.
+            videre_core::library_state::set(
+                conn,
+                videre_core::library_state::FACE_RECLUSTER_WATERMARK,
+                0,
+            )?;
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
 }
 
 /// Mark one face as the person's primary (their labeling-page thumbnail),
@@ -360,6 +395,49 @@ pub fn set_primary(conn: &Connection, face_id: i64, person_label: &str) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assign_detaches_the_face_from_its_cluster() {
+        let conn = seed();
+        // Face 3 sits in cluster 7 (unassigned). Assigning it to a person
+        // must detach the machine grouping in the same write.
+        assign(&conn, &[3], "Bob").unwrap();
+        let (label, confirmed, cid): (Option<String>, i64, Option<i64>) = conn
+            .query_row(
+                "SELECT person_label, confirmed, cluster_id FROM faces WHERE id = 3",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(label.as_deref(), Some("bob"));
+        assert_eq!(confirmed, 1);
+        assert_eq!(cid, None, "assignment must detach the machine grouping");
+    }
+
+    #[test]
+    fn cluster_detail_never_shows_labeled_faces() {
+        let conn = seed();
+        // A tombstone the detach migration should have cleared: a labeled
+        // face still carrying a cluster id. The filter keeps the detail
+        // page from ever showing it, whatever wrote that row.
+        conn.execute(
+            "INSERT INTO faces (id,hash,bbox,embedding,cluster_id,person_label,confirmed) VALUES
+                (11,'h6','0,0,9,9',X'0000',7,'alice',1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO file_hashes (hash, path) VALUES ('h6','/p/6.jpg')",
+            [],
+        )
+        .unwrap();
+        let detail = cluster_detail(&conn, 7).unwrap();
+        assert_eq!(
+            detail.faces.len(),
+            2,
+            "only the unlabeled faces of cluster 7 belong on the page"
+        );
+    }
 
     /// In-memory db with the faces + file_hashes tables and a few rows:
     /// - face 1: person "Alice", confirmed, is_primary
@@ -528,25 +606,58 @@ mod tests {
     }
 
     #[test]
-    fn delete_person_unassigns_without_touching_cluster() {
+    fn deleting_a_missing_person_leaves_the_regrouping_gate_alone() {
+        // A delete that matched zero faces is a no-op by design; it must not
+        // schedule a whole-library regroup (watermark reset) for nothing.
         let conn = seed();
-        // Give one of Alice's faces a cluster_id so we can prove delete_person
-        // leaves cluster_id intact (it must, so the face rejoins its cluster's
-        // unassigned group rather than scattering to singletons).
-        conn.execute("UPDATE faces SET cluster_id = 42 WHERE id = 1", [])
-            .unwrap();
+        videre_core::face_db::advance_recluster_watermark(&conn).unwrap();
+        let before = videre_core::face_db::recluster_watermark(&conn).unwrap();
+        assert!(before > 0);
+        delete_person(&conn, "ghost").unwrap();
+        assert_eq!(
+            videre_core::face_db::recluster_watermark(&conn).unwrap(),
+            before,
+            "a no-op delete must not reopen the gated regroup"
+        );
+    }
+
+    #[test]
+    fn delete_person_returns_faces_to_the_unassigned_pool_and_reopens_regrouping() {
+        // The real workflow: assign through the public path (which detaches
+        // the cluster, per the frozen-faces contract), then delete the
+        // person. The faces go back to the unassigned pool, and the recluster
+        // watermark resets so the next gated pass regroups them: without the
+        // reset, these pre-existing face ids sit below the watermark and the
+        // gate stays closed forever.
+        let conn = seed();
+        assign(&conn, &[1, 2], "Alice").unwrap();
+        assert_eq!(faces_list(&conn).unwrap().people.len(), 1);
+        // Simulate a completed recluster covering these faces: the watermark
+        // sits at their ids, so the gate would stay closed for them forever.
+        videre_core::face_db::advance_recluster_watermark(&conn).unwrap();
+        assert!(videre_core::face_db::recluster_watermark(&conn).unwrap() > 0);
+
         delete_person(&conn, "Alice").unwrap();
         assert_eq!(faces_list(&conn).unwrap().people.len(), 0, "Alice is gone");
-        let (cid, label, confirmed): (Option<i64>, Option<String>, i64) = conn
-            .query_row(
-                "SELECT cluster_id, person_label, confirmed FROM faces WHERE id = 1",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(cid, Some(42), "cluster_id must be preserved");
-        assert_eq!(label, None, "person_label cleared");
-        assert_eq!(confirmed, 0, "confirmed cleared");
+        assert_eq!(
+            videre_core::face_db::recluster_watermark(&conn).unwrap(),
+            0,
+            "deleting a person must reopen the gated regroup for their faces"
+        );
+        let rows: Vec<(Option<i64>, Option<String>, i64)> = {
+            let mut s = conn
+                .prepare("SELECT cluster_id, person_label, confirmed FROM faces WHERE id IN (1, 2) ORDER BY id")
+                .unwrap();
+            s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        assert!(
+            rows.iter()
+                .all(|(cid, label, confirmed)| cid.is_none() && label.is_none() && *confirmed == 0),
+            "every face returns to the unassigned pool: {rows:?}"
+        );
     }
 
     #[test]

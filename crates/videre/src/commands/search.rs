@@ -554,6 +554,21 @@ fn describe_query(args: &SearchArgs, dates: &(Option<String>, Option<String>)) -
     for field in &args.presence.missing {
         parts.push(format!("missing={field}"));
     }
+    if let Some(rating) = args.marks.rating {
+        parts.push(format!("rating={rating}"));
+    }
+    if let Some(pick) = &args.marks.pick {
+        parts.push(format!("pick={pick}"));
+    }
+    if let Some(label) = &args.marks.label {
+        parts.push(format!("label={label}"));
+    }
+    if args.marks.like {
+        parts.push("like=true".to_string());
+    }
+    for tag in &args.tags.tags {
+        parts.push(format!("tag={tag}"));
+    }
     QueryJson {
         kind: "filter",
         value: parts.join(" "),
@@ -947,6 +962,20 @@ mod tests {
         let q = describe_query(&args, &(None, None));
         assert_eq!(q.kind, "filter");
         assert_eq!(q.value, "type=image ext=jpg");
+    }
+
+    #[test]
+    fn mark_and_tag_filters_are_named_in_a_composed_query() {
+        let args = parse(&[
+            "videre", "--rating", "4", "--pick", "keep", "--label", "Green", "--like", "--tag",
+            "beach", "--tag", "summer",
+        ]);
+        let q = describe_query(&args, &(None, None));
+        assert_eq!(q.kind, "filter");
+        assert_eq!(
+            q.value,
+            "rating=4 pick=keep label=Green like=true tag=beach tag=summer"
+        );
     }
 
     #[test]

@@ -40,8 +40,8 @@ Coverage (model google/siglip-base-patch16-224):
 - **skipped as undecodable** appears on a stage when a file has failed to decode
   enough times that `embed` or `faces` has stopped attempting it (an unreadable
   file, or one that repeatedly times out). Such files are not counted as
-  outstanding, since the command will not act on them; `embed`/`faces
-  --reprocess` retries them.
+  outstanding, since the command will not act on them; `embed --reprocess`
+  retries them for embed, and `faces --reset` for faces.
 - Duplicates are deliberately absent: finding them is
   [`videre dedupe`](/commands/dedupe/)'s job, and deleting anything is always
   yours.
