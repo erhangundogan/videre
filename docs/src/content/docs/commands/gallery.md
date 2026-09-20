@@ -52,13 +52,19 @@ people or location data yet.
 | `/people` | Face groups, and naming them |
 | `/date` | A Year / Month / Day drill-down |
 | `/date/2024`, `/date/2024/09`, `/date/2024/09/26` | The media of that year, month, or day, each with its item count |
-| `/map` | Reserved, not built yet |
+| `/map` | Location clusters plotted on a world map, with the full file grid below; click a cluster to see its photos |
 | `/events` | Reserved, not built yet |
 | `/smart` | Reserved, not built yet |
 
-**Files**, **Duplicates**, **Date** and **People** sit in a strip along the top
-of every page, so you switch between them without touching the address bar. The reserved routes are
-deliberately not in it; each one appears when it renders something.
+**Files**, **Duplicates**, **Date**, **People** and **Map** sit in a strip along
+the top of every page, so you switch between them without touching the address
+bar. The reserved routes are deliberately not in it; each one appears when it
+renders something.
+
+The Map view begins with clusters grouped by continent. Zoom in to see each
+location cluster, then click one to filter the file grid below it. **Clear**
+returns the grid to all files. The plot draws entirely from the local library
+database and makes no outbound map or tile requests.
 
 They link to each other in smaller ways too, which is the point of serving them
 together: a face in

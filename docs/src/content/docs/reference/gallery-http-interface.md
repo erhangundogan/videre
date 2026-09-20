@@ -38,7 +38,7 @@ and cannot answer these HTTP requests after the command exits.
 | `GET /date/{year}/{month}/{day}` | Files for one day |
 | `GET /people/cluster/{id}` | One face cluster |
 | `GET /people/person/{name}` | One person |
-| `GET /map` | Reserved |
+| `GET /map` | Location cluster map with the full file grid |
 | `GET /events` | Reserved |
 | `GET /smart` | Reserved |
 
@@ -62,7 +62,8 @@ curl "http://127.0.0.1:7878/date/2025/06/03"
 curl "http://127.0.0.1:7878/date?from=2016-05&to=2017"
 ```
 
-The reserved routes currently return a placeholder page with `404 Not Found`.
+The reserved `/events` and `/smart` routes currently return a placeholder page
+with `404 Not Found`.
 
 ## Files
 
@@ -80,6 +81,7 @@ Returns a page of file rows. By default it lists all scanned paths.
 | `from=YYYY[-MM[-DD]]` | Inclusive date lower bound for `view=date` |
 | `to=YYYY[-MM[-DD]]` | Exclusive date upper bound for `view=date` |
 | `hashes=<a,b,c>` | Comma-separated hashes to resolve after a search |
+| `cluster=<id>` | For `view=all`, return only files assigned to one location cluster |
 
 ```bash
 curl "http://127.0.0.1:7878/api/files?limit=1"
@@ -267,6 +269,31 @@ When the location cannot be resolved, `name` is `null`.
 {
   "name": null
 }
+```
+
+### `GET /api/location-clusters`
+
+Returns the clusters produced by `videre locations`, largest first. The
+`continent` field is derived locally from each centroid and is used by the Map
+view's world overview. A library that has not run `videre locations` returns an
+empty array.
+
+```bash
+curl "http://127.0.0.1:7878/api/location-clusters"
+```
+
+```json
+[
+  {
+    "cluster_id": 7,
+    "name": "Berlin, Germany",
+    "centroid_lat": 52.52,
+    "centroid_lon": 13.405,
+    "photo_count": 42,
+    "radius_km": 15.0,
+    "continent": "Europe"
+  }
+]
 ```
 
 ## People
@@ -521,6 +548,7 @@ content-length: 0
 | `GET /api/dates` | Read date buckets |
 | `GET /api/search` | Rank by text or by an existing file hash |
 | `GET /api/locations` | Resolve one coordinate pair to a place name |
+| `GET /api/location-clusters` | List location clusters for the Map view |
 | `GET /api/people` | Search people |
 | `POST /api/people` | Create a person from faces |
 | `GET /api/people/{name}` | Read one person |
