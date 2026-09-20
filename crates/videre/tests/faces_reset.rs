@@ -1,6 +1,71 @@
 mod common;
 use common::TestLibrary;
 
+fn embedding_at(angle: f32) -> Vec<u8> {
+    let radians = angle.to_radians();
+    [radians.cos(), radians.sin()]
+        .into_iter()
+        .flat_map(|value| half::f16::from_f32(value).to_le_bytes())
+        .collect()
+}
+
+fn seed_unlabeled_faces(lib: &TestLibrary, angles: &[f32]) {
+    let conn = lib.conn();
+    for (index, angle) in angles.iter().enumerate() {
+        let id = index as i64 + 1;
+        let hash = format!("face-{id}");
+        let path = lib.context().paths.root.join(format!("{hash}.jpg"));
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, ext, mime) VALUES (?1, ?2, 'jpg', 'image/jpeg')",
+            rusqlite::params![path.to_string_lossy(), hash],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO faces (id, hash, bbox, embedding, det_score, blur)
+             VALUES (?1, ?2, '0,0,100,100', ?3, 0.9, 500.0)",
+            rusqlite::params![id, hash, embedding_at(*angle)],
+        )
+        .unwrap();
+    }
+}
+
+fn recluster(lib: &TestLibrary, tuning: &[&str]) {
+    let out = lib
+        .cmd()
+        .args(["faces", "--recluster"])
+        .args(tuning)
+        .args([
+            "--min-face-size",
+            "0",
+            "--max-generic-sim",
+            "1",
+            "--max-landmark-error",
+            "1000",
+            "--min-blur",
+            "0",
+            "--attach-sim",
+            "1",
+            "--silent",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "recluster {tuning:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+fn cluster_shape(lib: &TestLibrary) -> (i64, i64) {
+    lib.conn()
+        .query_row(
+            "SELECT COUNT(cluster_id), COUNT(DISTINCT cluster_id) FROM faces",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+}
+
 /// A library with one labeled face, one person record, a scanned marker,
 /// and one image on disk.
 fn seeded() -> TestLibrary {
@@ -391,6 +456,84 @@ fn reset_with_yes_wipes_and_starts_over() {
 }
 
 #[test]
+fn reset_with_yes_clears_every_face_state_without_needing_models() {
+    let lib = TestLibrary::new();
+    let conn = lib.init_db();
+    conn.execute(
+        "INSERT INTO faces
+         (hash, bbox, embedding, cluster_id, confirmed, person_label, is_primary)
+         VALUES ('orphan', '0,0,50,50', X'0000', 7, 1, 'elena', 1)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO people (name, full_name) VALUES ('elena', 'Elena')",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO faces_scanned (hash) VALUES ('orphan')", [])
+        .unwrap();
+    videre_core::decode_failures::record(
+        &conn,
+        "orphan",
+        videre_core::decode_failures::STAGE_FACES,
+        "bad image",
+    )
+    .unwrap();
+    videre_core::decode_failures::record(
+        &conn,
+        "orphan",
+        videre_core::decode_failures::STAGE_EMBED,
+        "bad image",
+    )
+    .unwrap();
+    drop(conn);
+
+    // There is deliberately no file_hashes row. The consented wipe completes,
+    // then the empty rebuild exits before model loading.
+    let out = lib
+        .cmd()
+        .args(["faces", "--reset", "--yes", "--silent"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let conn = lib.conn();
+    for table in ["faces", "people", "faces_scanned"] {
+        let count: i64 = conn
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 0, "--reset must empty {table}");
+    }
+    assert_eq!(
+        videre_core::decode_failures::fail_count(
+            &conn,
+            "orphan",
+            videre_core::decode_failures::STAGE_FACES,
+        )
+        .unwrap(),
+        0,
+        "face decode failures must be retried after reset"
+    );
+    assert_eq!(
+        videre_core::decode_failures::fail_count(
+            &conn,
+            "orphan",
+            videre_core::decode_failures::STAGE_EMBED,
+        )
+        .unwrap(),
+        1,
+        "reset must not erase another pipeline's failures"
+    );
+}
+
+#[test]
 fn the_legacy_alias_reaches_the_same_refusal() {
     let lib = seeded();
     let out = lib
@@ -497,19 +640,67 @@ fn labeling_then_reclustering_never_contaminates_cluster_pages() {
     ids.sort();
     assert_eq!(ids.len(), 2, "the pair must cluster together");
     videre_api::assign(&conn, &ids, "Elena").unwrap();
+    videre_api::set_primary(&conn, ids[1], "Elena").unwrap();
+    let before = videre_api::person_detail(&conn, "Elena").unwrap();
     drop(conn);
 
-    let out = lib
-        .cmd()
-        .args(["faces", "--recluster", "--eps", "0.95"])
-        .args(common_flags)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    for tuning in [
+        ["--eps", "0.95", "--min-cluster-size", "2"],
+        ["--eps", "0.05", "--min-cluster-size", "3"],
+    ] {
+        let out = lib
+            .cmd()
+            .args(["faces", "--recluster"])
+            .args(tuning)
+            .args([
+                "--min-face-size",
+                "50",
+                "--max-generic-sim",
+                "1",
+                "--attach-sim",
+                "1",
+                "--merge-sim",
+                "1",
+                "--silent",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "recluster {tuning:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let after = videre_api::person_detail(&lib.conn(), "Elena").unwrap();
+        assert_eq!(after.full_name, before.full_name);
+        assert_eq!(after.faces.len(), before.faces.len());
+        assert_eq!(
+            after
+                .faces
+                .iter()
+                .map(|face| (face.face_id, face.is_primary))
+                .collect::<Vec<_>>(),
+            before
+                .faces
+                .iter()
+                .map(|face| (face.face_id, face.is_primary))
+                .collect::<Vec<_>>(),
+            "reclustering must preserve the person's membership and primary face"
+        );
+        let attached: i64 = lib
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM faces
+                 WHERE confirmed = 1 AND person_label IS NOT NULL AND cluster_id IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            attached, 0,
+            "every recluster profile must keep labeled faces out of machine clusters"
+        );
+    }
 
     let conn = lib.conn();
     let (labeled, detached): (i64, i64) = conn
@@ -532,5 +723,96 @@ fn labeling_then_reclustering_never_contaminates_cluster_pages() {
     assert_eq!(
         contaminated, 0,
         "cluster pages cannot contain labeled faces"
+    );
+}
+
+#[test]
+fn recluster_eps_and_min_cluster_size_control_unlabeled_grouping() {
+    let lib = TestLibrary::new();
+    drop(lib.init_db());
+    seed_unlabeled_faces(&lib, &[0.0, 10.0, 90.0, 100.0]);
+
+    recluster(
+        &lib,
+        &[
+            "--eps",
+            "0.01",
+            "--min-cluster-size",
+            "2",
+            "--merge-sim",
+            "1",
+        ],
+    );
+    assert_eq!(cluster_shape(&lib), (0, 0), "strict eps splits every pair");
+
+    recluster(
+        &lib,
+        &[
+            "--eps",
+            "0.05",
+            "--min-cluster-size",
+            "2",
+            "--merge-sim",
+            "1",
+        ],
+    );
+    assert_eq!(
+        cluster_shape(&lib),
+        (4, 2),
+        "wider eps forms the two hand-checked pairs"
+    );
+
+    recluster(
+        &lib,
+        &[
+            "--eps",
+            "0.05",
+            "--min-cluster-size",
+            "3",
+            "--merge-sim",
+            "1",
+        ],
+    );
+    assert_eq!(
+        cluster_shape(&lib),
+        (0, 0),
+        "raising the minimum above each pair returns them to singletons"
+    );
+}
+
+#[test]
+fn recluster_merge_sim_can_reunite_two_subclusters() {
+    let lib = TestLibrary::new();
+    drop(lib.init_db());
+    seed_unlabeled_faces(&lib, &[0.0, 5.0, 45.0, 50.0]);
+
+    recluster(
+        &lib,
+        &[
+            "--eps",
+            "0.01",
+            "--min-cluster-size",
+            "2",
+            "--merge-sim",
+            "0.8",
+        ],
+    );
+    assert_eq!(cluster_shape(&lib), (4, 2));
+
+    recluster(
+        &lib,
+        &[
+            "--eps",
+            "0.01",
+            "--min-cluster-size",
+            "2",
+            "--merge-sim",
+            "0.7",
+        ],
+    );
+    assert_eq!(
+        cluster_shape(&lib),
+        (4, 1),
+        "lowering the centroid threshold reunites the nearby subclusters"
     );
 }

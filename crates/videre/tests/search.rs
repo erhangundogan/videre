@@ -154,6 +154,148 @@ fn presence_library() -> TestLibrary {
     lib
 }
 
+/// Eight rows arranged so each additional search argument removes exactly one
+/// candidate. This makes the composition test prove AND semantics across the
+/// argument groups instead of merely ending at a plausible single result.
+fn composition_library() -> TestLibrary {
+    let lib = TestLibrary::new();
+    let root = lib.context().paths.root;
+    let conn = lib.init_db();
+    for (rel, hash, date, ext, mime, has_gps) in [
+        (
+            "trip/target.jpg",
+            "target",
+            "2025-05-01T10:00:00",
+            "jpg",
+            "image/jpeg",
+            true,
+        ),
+        (
+            "trip/marks.jpg",
+            "marks",
+            "2025-05-02T10:00:00",
+            "jpg",
+            "image/jpeg",
+            true,
+        ),
+        (
+            "trip/date.jpg",
+            "date",
+            "2025-06-01T10:00:00",
+            "jpg",
+            "image/jpeg",
+            true,
+        ),
+        (
+            "trip/category.jpg",
+            "category",
+            "2025-05-03T10:00:00",
+            "jpg",
+            "image/jpeg",
+            true,
+        ),
+        (
+            "trip/person.jpg",
+            "person",
+            "2025-05-04T10:00:00",
+            "jpg",
+            "image/jpeg",
+            true,
+        ),
+        (
+            "trip/gps.jpg",
+            "gps",
+            "2025-05-05T10:00:00",
+            "jpg",
+            "image/jpeg",
+            false,
+        ),
+        (
+            "outside/path.jpg",
+            "path",
+            "2025-05-06T10:00:00",
+            "jpg",
+            "image/jpeg",
+            true,
+        ),
+        (
+            "trip/video.mov",
+            "video",
+            "2025-05-07T10:00:00",
+            "mov",
+            "video/quicktime",
+            true,
+        ),
+    ] {
+        let path = root.join(rel);
+        let (lat, lon) = has_gps.then_some((41.0, 29.0)).unzip();
+        conn.execute(
+            "INSERT INTO file_hashes
+             (path, hash, size_bytes, modified_at, exif_date, ext, mime, gps_lat, gps_lon)
+             VALUES (?1, ?2, 10, ?3, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                path.to_string_lossy().as_ref(),
+                hash,
+                date,
+                ext,
+                mime,
+                lat,
+                lon
+            ],
+        )
+        .unwrap();
+    }
+
+    for hash in [
+        "target", "marks", "date", "category", "gps", "path", "video",
+    ] {
+        conn.execute(
+            "INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
+             VALUES (?1, '0,0,50,50', X'0000', 'alice', 1)",
+            [hash],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
+         VALUES ('person', '0,0,50,50', X'0000', 'bob', 1)",
+        [],
+    )
+    .unwrap();
+
+    for hash in ["target", "marks", "date", "person", "gps", "path", "video"] {
+        conn.execute(
+            "INSERT INTO classifications
+             (model_id, hash, category, confidence, classified_at)
+             VALUES (?1, ?2, 'document', 0.9, '2026-01-01')",
+            params![videre_core::embeddings::DEFAULT_MODEL_ID, hash],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "INSERT INTO classifications
+         (model_id, hash, category, confidence, classified_at)
+         VALUES (?1, 'category', 'photo', 0.9, '2026-01-01')",
+        [videre_core::embeddings::DEFAULT_MODEL_ID],
+    )
+    .unwrap();
+
+    videre_core::marks::set(
+        &conn,
+        &["target".to_string()],
+        &videre_core::marks::change_from_parts(Some(5), Some("keep"), Some("Green"), Some(true)),
+    )
+    .unwrap();
+    videre_core::tags::set_tags(
+        &conn,
+        &["target".to_string()],
+        &["beach".to_string(), "summer".to_string()],
+    )
+    .unwrap();
+    drop(conn);
+    lib
+}
+
 /// Seed a place into the local geocode cache so a `--location` search resolves
 /// without a network call.
 fn seed_geocode(lib: &TestLibrary, query: &str, lat: f64, lon: f64) {
@@ -800,4 +942,37 @@ fn mark_and_tag_filters_narrow_search() {
     // A tag no file carries intersects to nothing, even paired with a rating
     // some file meets.
     assert!(search_rel(&lib, &["--rating", "1", "--tag", "sea"]).is_empty());
+}
+
+#[test]
+fn composition_arguments_intersect_across_every_filter_group() {
+    let lib = composition_library();
+    let mut args = vec!["--type", "image"];
+    assert_eq!(search_rel(&lib, &args).len(), 7);
+    for (more, expected) in [
+        (&["--path", "trip"][..], 6),
+        (&["--has", "gps,date"][..], 5),
+        (&["--person", "Alice"][..], 4),
+        (&["--category", "document"][..], 3),
+        (&["--date", "2025-05"][..], 2),
+        (
+            &[
+                "--rating", "4", "--pick", "keep", "--label", "Green", "--like", "--tag", "beach",
+                "--tag", "summer",
+            ][..],
+            1,
+        ),
+    ] {
+        args.extend_from_slice(more);
+        assert_eq!(
+            search_rel(&lib, &args).len(),
+            expected,
+            "each additional filter group must narrow with AND semantics: {args:?}"
+        );
+    }
+    assert_eq!(
+        search_rel(&lib, &args),
+        vec!["trip/target.jpg"],
+        "the fully composed request must retain only the row satisfying every argument"
+    );
 }

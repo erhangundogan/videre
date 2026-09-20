@@ -426,6 +426,8 @@ the drive unplugged; the paths it prints just will not resolve.
 | `--location` | `path`, `hash`, `distance_km` |
 
 `--scores` is a no-op under `--json`, since the score is always included.
+For a filter-only search, `query.value` summarizes the active filters, including
+ratings, picks, colour labels, likes, and tags.
 
 ## More detail
 
