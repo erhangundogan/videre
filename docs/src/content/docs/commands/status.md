@@ -33,7 +33,10 @@ Coverage (model google/siglip-base-patch16-224):
   them. A landscape that was scanned and found faceless is done.
 - **locations** counts photos with GPS but no location-cluster assignment.
   Place names are separate metadata and do not determine whether clustering is
-  complete.
+  complete. It also reports `clusters stale` when the GPS data changed since the
+  last recompute (for example after a prune or dedupe removed geotagged photos),
+  which the outstanding count alone cannot see; run
+  [`videre locations`](/commands/locations/) to refresh them.
 - **fix-dates** counts photos whose file date represents a different instant
   from the camera date. Equivalent timezone-offset representations count as
   the same date.

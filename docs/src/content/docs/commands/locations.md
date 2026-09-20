@@ -58,6 +58,24 @@ There is no correct value. A single holiday reads better at 5 km, a decade of
 photos at 15 or more. Since every run recomputes from scratch, trying another
 radius costs nothing but time.
 
+## Keeping clusters current
+
+Clustering is a whole-library recompute, and the results go stale when the
+underlying photos change: a [`prune`](/commands/prune/) or
+[`dedupe`](/commands/dedupe/) that removes GPS-bearing photos, or a fresh
+[`scan`](/commands/scan/) that adds them, leaves the old clusters counting
+photos that no longer match.
+
+[`videre watch --location`](/commands/watch/) keeps them current automatically:
+whenever the GPS data changes it re-runs the recompute at the default radius.
+After changing the library without a watcher running, re-run `videre locations`
+yourself. [`videre status`](/commands/status/) reports when the clusters are
+stale.
+
+A manual `--radius` is respected: the watcher records the radius the last run
+used, and when it differs from the default it leaves the regrouping to you
+rather than silently reclustering at the default.
+
 ```bash
 videre locations --radius 5     # break a city into districts
 videre locations --radius 200   # collapse a trip into one place
