@@ -16,6 +16,46 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.33.0] - 2026-09-20
+
+### Added
+
+- **`videre faces --reset` provides a guarded full rebuild of face data.** It
+  reports how many faces and people will be removed, asks for confirmation,
+  clears detections, labels, grouping state, and face decode failures, then
+  reruns detection and grouping. `--yes` supports deliberate scripted use, and
+  `--dry-run` reports the impact without changing the library.
+
+### Changed
+
+- **Labeled faces are frozen during every automatic grouping pass.** Running
+  `faces --recluster`, changing its tuning parameters, or allowing watch to
+  regroup new detections no longer moves named faces or changes a person's
+  membership and primary face. Removing a person returns those faces to the
+  unassigned pool so they can be grouped again.
+
+### Fixed
+
+- **`videre faces --dry-run` is now fully write-free.** It does not create or
+  migrate face tables, record pipeline runs, install interrupt tracking, or
+  import XMP labels while evaluating the requested work.
+- **Filter-only search JSON describes mark and tag filters.** The reported
+  query value now includes ratings, picks, colour labels, likes, and tags along
+  with the other composed filters.
+
+### Removed
+
+- **`videre faces --reprocess` has been replaced by `--reset`.** The old flag
+  did not clearly communicate that starting over deletes named people and face
+  labels. Use `videre faces --reset`, review the reported counts, and confirm
+  the rebuild instead.
+
+### Internal
+
+- Expanded deterministic coverage for face resets, reclustering parameters,
+  frozen labels, primary faces, and composed search filters without requiring
+  model inference.
+
 ## [0.32.0] - 2026-09-20
 
 ### Added
@@ -1953,7 +1993,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.32.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.33.0...HEAD
+[0.33.0]: https://github.com/erhangundogan/videre/compare/v0.32.0...v0.33.0
 [0.32.0]: https://github.com/erhangundogan/videre/compare/v0.31.0...v0.32.0
 [0.31.0]: https://github.com/erhangundogan/videre/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/erhangundogan/videre/compare/v0.29.1...v0.30.0
