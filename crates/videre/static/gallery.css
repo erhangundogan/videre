@@ -104,10 +104,16 @@ th.preview-th{width:130px}
 .gallery-head{padding:20px 16px 4px;display:flex;align-items:baseline;gap:12px}
 .gallery-head h2{font-size:16px}
 .gallery{padding:12px 16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
-.card{background:#fff;border:1px solid #e4e4e7;border-radius:10px;padding:8px;text-align:center;position:relative}
+/* Flex column so the Similar button can be pinned to the card's bottom. Grid
+   stretches every card in a row to the same height, so the pinned buttons line
+   up across the row instead of floating under each thumbnail. */
+.card{background:#fff;border:1px solid #e4e4e7;border-radius:10px;padding:8px;text-align:center;position:relative;display:flex;flex-direction:column}
 .card .thumb{max-width:100%;max-height:130px}
 .card-meta{font-size:11px;color:#71717a;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .similar-btn{margin-top:6px;padding:2px 10px;font-size:11px}
+/* In the card grid the button is pinned to the card bottom (see .card); the
+   table and results strip keep the plain top margin above. */
+.card .similar-btn{margin-top:auto;align-self:center}
 .date-view{padding:24px 16px}
 .date-breadcrumb{margin-bottom:16px;font-size:13px;color:#71717a}
 .date-breadcrumb a{color:#3f3f46;cursor:pointer;text-decoration:underline}
