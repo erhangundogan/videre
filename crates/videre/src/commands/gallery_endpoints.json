@@ -4,6 +4,7 @@
     { "method": "GET",    "path": "/api/files" },
     { "method": "PATCH",  "path": "/api/files/{hash}" },
     { "method": "GET",    "path": "/api/files/{hash}/raw" },
+    { "method": "POST",   "path": "/api/files/{hash}/rotate" },
     { "method": "GET",    "path": "/api/dates" },
     { "method": "GET",    "path": "/api/search" },
     { "method": "GET",    "path": "/api/locations" },

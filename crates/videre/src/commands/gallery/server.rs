@@ -1632,6 +1632,81 @@ async fn handle_vendor_asset(
         .into_response()
 }
 
+/// Delete every cached preview for one content hash, so the next request
+/// re-renders it. All caches (HEIC thumbnail, raster preview, video poster,
+/// full conversion, face crops) are named `<hash>_...` in the one thumbnails
+/// directory, so a prefix sweep covers them.
+fn invalidate_thumb_cache(cache: &videre_core::library::CachePaths, hash: &str) {
+    let prefix = format!("{hash}_");
+    if let Ok(entries) = std::fs::read_dir(&cache.thumbnails) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
+/// `POST /api/files/{hash}/rotate`: rotate one photo 90 degrees clockwise by
+/// bumping its EXIF Orientation tag in place, then drop its cached previews so
+/// the grid and lightbox re-render upright. Refuses a format that carries no
+/// EXIF orientation (video, HEIC, and the like) with 415, matching the button
+/// the gallery only shows for supported images.
+async fn handle_rotate_file(
+    axum::extract::Path(hash): axum::extract::Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    let path = {
+        let conn = match state.conn.lock() {
+            Ok(conn) => conn,
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        };
+        match conn
+            .query_row(
+                "SELECT path FROM file_hashes WHERE hash = ?1 LIMIT 1",
+                [&hash],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+        {
+            Ok(Some(path)) => path,
+            Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        }
+    };
+    let ext = std::path::Path::new(&path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if !super::rotate::supports_exif_orientation(&ext) {
+        return (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "rotation is only supported for EXIF-bearing images",
+        )
+            .into_response();
+    }
+
+    let cache = state.context.library.cache.clone();
+    let hash_for_task = hash.clone();
+    // EXIF read/write and the cache sweep are blocking file I/O.
+    let result = tokio::task::spawn_blocking(move || {
+        let orientation = super::rotate::rotate_cw_in_place(std::path::Path::new(&path), &ext)?;
+        invalidate_thumb_cache(&cache, &hash_for_task);
+        Ok::<u16, anyhow::Error>(orientation)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(orientation)) => json_response(format!("{{\"orientation\":{orientation}}}")),
+        Ok(Err(e)) => {
+            eprintln!("videre gallery: rotate failed for {hash}: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
 /// The basemap archive path this server resolves: the per-library override
 /// when present (how tests seed one), else the machine-shared geo cache.
 fn basemap_archive_path(state: &AppState) -> std::path::PathBuf {
@@ -2537,6 +2612,7 @@ async fn serve_faces_async(
         .route("/api/files", get(handle_files))
         .route("/api/files/{hash}", patch(handle_set_mark))
         .route("/api/files/{hash}/raw", get(handle_raw_file))
+        .route("/api/files/{hash}/rotate", post(handle_rotate_file))
         .route("/api/dates", get(handle_dates))
         .route("/api/search", get(handle_search))
         .route("/api/locations", get(handle_location))

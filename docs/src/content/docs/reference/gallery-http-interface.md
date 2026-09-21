@@ -198,6 +198,23 @@ content-range: bytes 0-1023/2457600
 content-length: 1024
 ```
 
+### `POST /api/files/{hash}/rotate`
+
+Rotates one photo 90 degrees clockwise by bumping its EXIF `Orientation` tag in
+place - no pixels are re-encoded - and drops the file's cached previews so the
+grid and lightbox re-render upright. Supported for EXIF-bearing images (JPEG,
+PNG, TIFF, WebP); any other format (video, HEIC, and the like) returns `415
+Unsupported Media Type`. The response body carries the new orientation value.
+
+```bash
+curl -X POST \
+  "http://127.0.0.1:7878/api/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/rotate"
+```
+
+```json
+{ "orientation": 6 }
+```
+
 ## Dates, search and locations
 
 ### `GET /api/dates`
@@ -610,6 +627,7 @@ content-length: 0
 | `GET /api/files` | List files or fetch files by hash |
 | `PATCH /api/files/{hash}` | Update marks on one file |
 | `GET /api/files/{hash}/raw` | Serve bytes for one library file |
+| `POST /api/files/{hash}/rotate` | Rotate one photo 90 degrees clockwise (EXIF) |
 | `GET /api/dates` | Read date buckets |
 | `GET /api/search` | Rank by text or by an existing file hash |
 | `GET /api/locations` | Resolve one coordinate pair to a place name |

@@ -129,6 +129,83 @@ test("the fullscreen and close controls sit at the image's top right", async ({ 
   expect(Math.abs(fsBox.y - closeBox.y)).toBeLessThan(2);
 });
 
+test("small media keeps the lightbox controls clear of the metadata", async ({ page, gallery }) => {
+  // The fixture is a tiny 64px image; without a minimum stage size the control
+  // bar would overlap the metadata panel below.
+  await page.goto(gallery.baseURL);
+  await page.locator("#gallery [data-lb-type='image']").first().click();
+  await expect(page.locator("#lb-img")).toBeVisible();
+
+  const controls = await page.locator(".lb-controls").boundingBox();
+  const meta = await page.locator("#lbMeta").boundingBox();
+  if (!controls || !meta) throw new Error("missing bounding boxes");
+  // The control bar sits entirely above the metadata panel, not over it.
+  expect(controls.y + controls.height).toBeLessThanOrEqual(meta.y + 1);
+});
+
+test("the lightbox date links to its day view", async ({ page, gallery }) => {
+  await page.goto(gallery.baseURL);
+  await page.locator("#gallery [data-lb-type='image']").first().click();
+  const dateLink = page.locator("#lbMeta a.lb-link[href^='/date/']");
+  await expect(dateLink).toBeVisible();
+  await expect(dateLink).toHaveAttribute("href", /^\/date\/\d{4}\/\d{2}\/\d{2}$/);
+  // Following it lands on that day's view.
+  const href = await dateLink.getAttribute("href");
+  await page.goto(`${gallery.baseURL}${href}`);
+  await expect(page.locator("#dateGrid [data-lb-url]").first()).toBeVisible();
+});
+
+test("clicking the lightbox image zooms it and toggles back to fit", async ({ page, gallery }) => {
+  await page.goto(gallery.baseURL);
+  await page.locator("#gallery [data-lb-type='image']").first().click();
+  const img = page.locator("#lb-img");
+  await expect(img).toBeVisible();
+  await expect(img).toHaveCSS("transform", "none");
+
+  // A click zooms in: the stage enters its pan viewport and the image is scaled,
+  // loading the full-resolution original for detail.
+  await img.click();
+  await expect(page.locator(".lb-stage")).toHaveClass(/zooming/);
+  await expect(img).not.toHaveCSS("transform", "none");
+  await expect(async () => {
+    const natural = await img.evaluate((el: HTMLImageElement) => el.naturalWidth);
+    expect(natural).toBeGreaterThan(0);
+  }).toPass();
+
+  // A second click returns to fit.
+  await img.click();
+  await expect(page.locator(".lb-stage")).not.toHaveClass(/zooming/);
+  await expect(img).toHaveCSS("transform", "none");
+});
+
+test("rotate is offered for photos, rotates, and is hidden for video", async ({ page, gallery }) => {
+  await page.goto(gallery.baseURL);
+
+  // A photo: three controls in order rotate, fullscreen, close.
+  await page.locator("#gallery [data-lb-type='image']").first().click();
+  await expect(page.locator("#lb")).toHaveClass(/on/);
+  await expect(page.locator("#lb-rotate")).toBeVisible();
+  const ids = await page.locator(".lb-controls button").evaluateAll((els) => els.map((e) => e.id));
+  expect(ids).toEqual(["lb-rotate", "lb-fs", "lb-close"]);
+
+  // Rotating posts to the endpoint and re-fetches the preview (cache-busted).
+  const rotateResponse = page.waitForResponse(
+    (r) => /\/api\/files\/[^/]+\/rotate$/.test(new URL(r.url()).pathname) && r.request().method() === "POST"
+  );
+  const before = await page.locator("#lb-img").getAttribute("src");
+  await page.locator("#lb-rotate").click();
+  expect((await rotateResponse).status()).toBe(200);
+  await expect(page.locator("#lb-img")).not.toHaveAttribute("src", before ?? "");
+  await expect(page.locator("#lb-img")).toHaveAttribute("src", /[?&]b=\d+/);
+  await expect(page.locator("#lb-rotate")).toBeEnabled();
+
+  // A video carries no EXIF orientation, so the rotate button is hidden.
+  await page.keyboard.press("Escape");
+  await page.locator("#gallery [data-lb-type='video']").first().click();
+  await expect(page.locator("#lb")).toHaveClass(/on/);
+  await expect(page.locator("#lb-rotate")).toBeHidden();
+});
+
 test("opens a scanned MP4 in the lightbox", async ({ page, gallery }) => {
   await page.goto(gallery.baseURL);
   const video = page.locator("#gallery [data-lb-type='video']");
