@@ -29,7 +29,10 @@
    where the Files page reads `?q=` and runs a semantic search; from any other
    section it just navigates there first. */
 .secnav-search{margin-left:auto;display:flex}
-.secnav-search input{width:200px;max-width:42vw;padding:6px 12px;border:1px solid #2a2a33;border-radius:6px;background:#25252d;color:#d8d8e0;font:500 14px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+/* 5px vertical padding (not 6px) so the input's 1px border does not make it
+   taller than the borderless section links; the strip is then the same height
+   whether the search box shows or is hidden. */
+.secnav-search input{width:200px;max-width:42vw;padding:5px 12px;border:1px solid #2a2a33;border-radius:6px;background:#25252d;color:#d8d8e0;font:500 14px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 .secnav-search input::placeholder{color:#71717a}
 .secnav-search input:focus-visible{outline:2px solid #3b82f6;outline-offset:1px}
 </style>
