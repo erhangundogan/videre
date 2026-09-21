@@ -1,7 +1,7 @@
 .sort-label{font-size:12px;color:#3f3f46;display:flex;align-items:center;gap:6px}
 .sort-label select{padding:4px 8px;border:1px solid #d4d4d8;border-radius:6px;font-size:12px;background:#fff;color:#3f3f46;cursor:pointer}
 .info{margin-left:auto;color:#a1a1aa;font-size:12px}
-.groups{padding:16px 32px;display:flex;flex-direction:column;gap:10px}
+.groups{padding:16px;display:flex;flex-direction:column;gap:10px}
 .group{background:#fff;border-radius:10px;border:1px solid #e4e4e7;overflow:hidden}
 .group-header{padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:10px;user-select:none}
 .group-header:hover{background:#fafafa}
@@ -91,7 +91,7 @@ th.preview-th{width:130px}
 @keyframes spin{to{transform:rotate(360deg)}}
 .more-wrap{text-align:center;padding:16px 0 32px}
 #more-btn{padding:8px 28px;font-size:13px;display:none}
-.results-panel{margin:16px 32px;padding:14px 16px;background:#fff;border:1px solid #e4e4e7;border-radius:10px;scroll-margin-top:56px}
+.results-panel{margin:16px;padding:14px 16px;background:#fff;border:1px solid #e4e4e7;border-radius:10px;scroll-margin-top:56px}
 .results-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}
 .results-head h2{font-size:14px}
 .results-strip{display:flex;gap:10px;overflow-x:auto;padding-bottom:6px}
@@ -101,14 +101,14 @@ th.preview-th{width:130px}
 .score{position:absolute;top:4px;left:8px;background:rgba(24,24,27,.75);color:#fff;font-size:10px;padding:1px 5px;border-radius:4px}
 .copies{position:absolute;top:4px;right:8px;background:#fbbf24;color:#18181b;font-size:10px;font-weight:700;padding:1px 5px;border-radius:4px}
 .rname{font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#52525b;margin-top:2px}
-.gallery-head{padding:20px 32px 4px;display:flex;align-items:baseline;gap:12px}
+.gallery-head{padding:20px 16px 4px;display:flex;align-items:baseline;gap:12px}
 .gallery-head h2{font-size:16px}
-.gallery{padding:12px 32px;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.gallery{padding:12px 16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
 .card{background:#fff;border:1px solid #e4e4e7;border-radius:10px;padding:8px;text-align:center;position:relative}
 .card .thumb{max-width:100%;max-height:130px}
 .card-meta{font-size:11px;color:#71717a;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .similar-btn{margin-top:6px;padding:2px 10px;font-size:11px}
-.date-view{padding:24px 32px}
+.date-view{padding:24px 16px}
 .date-breadcrumb{margin-bottom:16px;font-size:13px;color:#71717a}
 .date-breadcrumb a{color:#3f3f46;cursor:pointer;text-decoration:underline}
 .date-period-count{margin-left:10px;color:#71717a;white-space:nowrap}
