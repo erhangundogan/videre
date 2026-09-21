@@ -9,6 +9,7 @@
 //! Rendering a set a command just produced is the other half, and stays static:
 //! see `dedupe --html` and `search --html`.
 
+mod rotate;
 mod server;
 
 use crate::command_context::CommandContext;

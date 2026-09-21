@@ -33,7 +33,9 @@ function buildPreview(f){
   var metaAttr=escA(JSON.stringify(Object.assign({}, f.meta, {
     name: (f.path.split('/').pop()||f.path),
     size: f.size,
-    date: bestDateJs(f)
+    date: bestDateJs(f),
+    ext: f.ext,
+    hash: f.hash
   })));
   if(ext==='jpg'||ext==='jpeg'||ext==='png'||ext==='gif'||ext==='webp'||ext==='bmp'){
     // Grid/tile thumbnails are server-downscaled, not the full original:
@@ -227,6 +229,10 @@ function renderMetaPanel(meta){
 }
 var lbIndex=-1;      // index of the open item among the currently visible tiles
 var lbLoading=false; // guards the auto-paginate load so it fires once
+// The formats whose EXIF orientation the rotate button can edit; must match
+// videre gallery's rotate endpoint (supports_exif_orientation).
+var ROTATABLE_EXTS=['jpg','jpeg','png','tif','tiff','webp'];
+var lbCurrent=null;
 function openLb(url,type,metaJson){
   var meta = null;
   try { meta = metaJson ? JSON.parse(metaJson) : null; } catch(e) {}
@@ -236,6 +242,13 @@ function openLb(url,type,metaJson){
   // Fullscreen is for photos: a playing video already has it in its own
   // controls, and two fullscreen buttons on one player is noise.
   document.getElementById('lb-fs').hidden = (type==='video');
+  // Rotate is offered only for EXIF-bearing images: the endpoint refuses the
+  // rest, so the button never appears where it cannot work.
+  var ext=(meta&&meta.ext?String(meta.ext):'').toLowerCase();
+  var canRotate = type!=='video' && ROTATABLE_EXTS.indexOf(ext)>=0;
+  var rotateBtn=document.getElementById('lb-rotate');
+  if(rotateBtn){ rotateBtn.hidden=!canRotate; rotateBtn.disabled=false; }
+  lbCurrent = { hash: meta&&meta.hash, url: url };
   if(type==='video'){
     img.style.display='none';vid.style.display='block';
     vid.src=url;vid.play();
@@ -275,6 +288,43 @@ document.addEventListener('fullscreenchange',function(){
   b.title=on?'Exit fullscreen':'Fullscreen';
   b.setAttribute('aria-label',b.title);
 });
+// Append a cache-busting token to a raw-file URL so a re-rendered preview is
+// refetched rather than served from the browser cache.
+function bustUrl(url,token){
+  var clean=url.split('#')[0].replace(/([&?])b=\d+/,'$1'+token);
+  if(clean.indexOf('b='+token.split('=')[1])>=0)return clean;
+  return clean+(clean.indexOf('?')>=0?'&':'?')+token;
+}
+// Refresh every on-page thumbnail for one hash after its orientation changed,
+// so the grid tile turns with the lightbox rather than lagging until reload.
+function refreshTilesFor(hash,token){
+  var needle='/api/files/'+encodeURIComponent(hash)+'/raw';
+  var imgs=document.querySelectorAll('img');
+  for(var i=0;i<imgs.length;i++){
+    if(imgs[i].id==='lb-img')continue;
+    if(imgs[i].src&&imgs[i].src.indexOf(needle)>=0)imgs[i].src=bustUrl(imgs[i].src,token);
+  }
+}
+// Rotate the open photo 90 clockwise. The click is debounced: the button is
+// disabled while the request is in flight, so a rapid double-click cannot queue
+// two rotations. On success the source EXIF is bumped and its caches dropped, so
+// re-requesting the preview with a fresh token renders it upright.
+var lbRotating=false;
+function rotateLb(){
+  if(lbRotating||!lbCurrent||!lbCurrent.hash)return;
+  var btn=document.getElementById('lb-rotate');
+  lbRotating=true;
+  if(btn)btn.disabled=true;
+  fetch('/api/files/'+encodeURIComponent(lbCurrent.hash)+'/rotate',{method:'POST'})
+    .then(function(r){ if(!r.ok)throw new Error('rotate failed'); return r.json(); })
+    .then(function(){
+      var token='b='+Date.now();
+      document.getElementById('lb-img').src=bustUrl(lbCurrent.url,token);
+      refreshTilesFor(lbCurrent.hash,token);
+    })
+    .catch(function(){})
+    .then(function(){ lbRotating=false; if(btn)btn.disabled=false; });
+}
 // Prev/next across the visible tiles in DOM order. Every view and the static
 // export renders its tiles with data-lb-url, so one walk covers them all; a
 // tile hidden inside a collapsed group (offsetParent === null) is skipped.

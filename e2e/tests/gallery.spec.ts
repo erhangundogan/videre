@@ -129,6 +129,34 @@ test("the fullscreen and close controls sit at the image's top right", async ({ 
   expect(Math.abs(fsBox.y - closeBox.y)).toBeLessThan(2);
 });
 
+test("rotate is offered for photos, rotates, and is hidden for video", async ({ page, gallery }) => {
+  await page.goto(gallery.baseURL);
+
+  // A photo: three controls in order rotate, fullscreen, close.
+  await page.locator("#gallery [data-lb-type='image']").first().click();
+  await expect(page.locator("#lb")).toHaveClass(/on/);
+  await expect(page.locator("#lb-rotate")).toBeVisible();
+  const ids = await page.locator(".lb-controls button").evaluateAll((els) => els.map((e) => e.id));
+  expect(ids).toEqual(["lb-rotate", "lb-fs", "lb-close"]);
+
+  // Rotating posts to the endpoint and re-fetches the preview (cache-busted).
+  const rotateResponse = page.waitForResponse(
+    (r) => /\/api\/files\/[^/]+\/rotate$/.test(new URL(r.url()).pathname) && r.request().method() === "POST"
+  );
+  const before = await page.locator("#lb-img").getAttribute("src");
+  await page.locator("#lb-rotate").click();
+  expect((await rotateResponse).status()).toBe(200);
+  await expect(page.locator("#lb-img")).not.toHaveAttribute("src", before ?? "");
+  await expect(page.locator("#lb-img")).toHaveAttribute("src", /[?&]b=\d+/);
+  await expect(page.locator("#lb-rotate")).toBeEnabled();
+
+  // A video carries no EXIF orientation, so the rotate button is hidden.
+  await page.keyboard.press("Escape");
+  await page.locator("#gallery [data-lb-type='video']").first().click();
+  await expect(page.locator("#lb")).toHaveClass(/on/);
+  await expect(page.locator("#lb-rotate")).toBeHidden();
+});
+
 test("opens a scanned MP4 in the lightbox", async ({ page, gallery }) => {
   await page.goto(gallery.baseURL);
   const video = page.locator("#gallery [data-lb-type='video']");
