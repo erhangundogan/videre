@@ -62,6 +62,7 @@ pub fn ensure_people_table(conn: &Connection) {
 
 pub fn create_faces_table(conn: &Connection) -> rusqlite::Result<()> {
     ensure_people_table(conn);
+    crate::face_learning::ensure_profile_table(conn)?;
     // Writers migrate; readers do not. `open_wal` only creates the empty table,
     // because `stats` and `search` open databases they must not write to - a
     // read-only mount or another process holding the writer lock would turn a
@@ -151,6 +152,7 @@ pub fn reset_all(conn: &Connection) -> anyhow::Result<()> {
         conn.execute("DELETE FROM faces", [])?;
         conn.execute("DELETE FROM people", [])?;
         conn.execute("DELETE FROM faces_scanned", [])?;
+        conn.execute("DELETE FROM face_learning_profiles", [])?;
         crate::decode_failures::clear_stage(conn, crate::decode_failures::STAGE_FACES)?;
         crate::library_state::set(conn, crate::library_state::FACE_RECLUSTER_WATERMARK, 0)?;
         Ok(())
@@ -270,6 +272,27 @@ pub fn load_face_embeddings(conn: &Connection) -> rusqlite::Result<Vec<(i64, Vec
         out.push((id, emb));
     }
     Ok(out)
+}
+
+/// Loads confirmed person labels as evaluation truth without migrating or
+/// modifying face state.
+pub fn load_confirmed_face_labels(
+    conn: &Connection,
+) -> rusqlite::Result<Vec<crate::face_learning::LabeledFace>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, person_label FROM faces
+         WHERE confirmed = 1 AND person_label IS NOT NULL
+         ORDER BY id",
+    )?;
+    let labels = stmt
+        .query_map([], |row| {
+            Ok(crate::face_learning::LabeledFace::new(
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+            ))
+        })?
+        .collect();
+    labels
 }
 
 /// Like [`load_face_embeddings`] but also returns each face's smaller bbox
@@ -533,6 +556,29 @@ mod tests {
     }
 
     #[test]
+    fn reset_all_removes_face_learning_profiles() {
+        let conn = open();
+        conn.execute(
+            "INSERT INTO face_learning_profiles (
+                artifact_version, embedding_model_id, feature_schema_version,
+                model_kind, parameters, training_evidence_json,
+                validation_report_json, stage, status
+             ) VALUES (1, 'test', 1, 'test', X'00', '{}', '{}', 'shadow', 'candidate')",
+            [],
+        )
+        .unwrap();
+
+        reset_all(&conn).unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM face_learning_profiles", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
     fn labeled_state_counts_reports_what_the_reset_prompt_names() {
         let conn = open();
         assert_eq!(labeled_state_counts(&conn).unwrap(), (0, 0));
@@ -758,6 +804,55 @@ mod tests {
         assert_eq!(rows[0].2, 200.0, "min side of 200x300 bbox");
         assert_eq!(rows[1].2, 25.0, "min side of 40x25 bbox");
         assert_eq!(rows[0].1.len(), 512, "embedding still decoded");
+    }
+
+    #[test]
+    fn load_confirmed_face_labels_returns_only_ordered_truth_without_mutation() {
+        let conn = open();
+        for (id, confirmed, label, cluster_id) in [
+            (4, 0, Some("unconfirmed"), Some(40)),
+            (3, 1, None, Some(30)),
+            (2, 1, Some("zoe"), Some(20)),
+            (1, 1, Some("İpek"), Some(10)),
+            (5, 0, None, None),
+        ] {
+            conn.execute(
+                "INSERT INTO faces
+                 (id, hash, bbox, embedding, cluster_id, person_label, confirmed)
+                 VALUES (?1, ?2, '0,0,10,10', X'0000', ?3, ?4, ?5)",
+                rusqlite::params![id, format!("h{id}"), cluster_id, label, confirmed],
+            )
+            .unwrap();
+        }
+        let before: Vec<(i64, Option<i64>, Option<String>, i64)> = conn
+            .prepare("SELECT id, cluster_id, person_label, confirmed FROM faces ORDER BY id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+
+        let labels = load_confirmed_face_labels(&conn).unwrap();
+
+        assert_eq!(
+            labels,
+            vec![
+                crate::face_learning::LabeledFace::new(1, "İpek"),
+                crate::face_learning::LabeledFace::new(2, "zoe"),
+            ]
+        );
+        let after: Vec<(i64, Option<i64>, Option<String>, i64)> = conn
+            .prepare("SELECT id, cluster_id, person_label, confirmed FROM faces ORDER BY id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(after, before);
     }
 
     #[test]
