@@ -62,6 +62,7 @@ pub fn ensure_people_table(conn: &Connection) {
 
 pub fn create_faces_table(conn: &Connection) -> rusqlite::Result<()> {
     ensure_people_table(conn);
+    crate::face_learning::ensure_profile_table(conn)?;
     // Writers migrate; readers do not. `open_wal` only creates the empty table,
     // because `stats` and `search` open databases they must not write to - a
     // read-only mount or another process holding the writer lock would turn a
@@ -151,6 +152,7 @@ pub fn reset_all(conn: &Connection) -> anyhow::Result<()> {
         conn.execute("DELETE FROM faces", [])?;
         conn.execute("DELETE FROM people", [])?;
         conn.execute("DELETE FROM faces_scanned", [])?;
+        conn.execute("DELETE FROM face_learning_profiles", [])?;
         crate::decode_failures::clear_stage(conn, crate::decode_failures::STAGE_FACES)?;
         crate::library_state::set(conn, crate::library_state::FACE_RECLUSTER_WATERMARK, 0)?;
         Ok(())
@@ -530,6 +532,29 @@ mod tests {
             wm, 0,
             "the recluster watermark must clear, or the gated recluster would never fire again"
         );
+    }
+
+    #[test]
+    fn reset_all_removes_face_learning_profiles() {
+        let conn = open();
+        conn.execute(
+            "INSERT INTO face_learning_profiles (
+                artifact_version, embedding_model_id, feature_schema_version,
+                model_kind, parameters, training_evidence_json,
+                validation_report_json, stage, status
+             ) VALUES (1, 'test', 1, 'test', X'00', '{}', '{}', 'shadow', 'candidate')",
+            [],
+        )
+        .unwrap();
+
+        reset_all(&conn).unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM face_learning_profiles", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[test]
