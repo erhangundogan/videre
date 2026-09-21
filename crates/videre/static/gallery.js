@@ -529,6 +529,11 @@ function dateCrumb(label,prefix,action){
   if(LIVE_SERVER) return '<a href="'+escA(dateHref(prefix))+'">'+escH(label)+'</a>';
   return '<a onclick="'+action+'">'+escH(label)+'</a>';
 }
+// The topmost breadcrumb, back to the full year overview: the /date route on a
+// live server, or buildYearView() in a static export.
+function dateRootCrumb(){
+  return LIVE_SERVER ? '<a href="/date">All Dates</a>' : '<a onclick="buildYearView()">All Dates</a>';
+}
 
 function dateCards(buckets,actionFor){
   return buckets.map(function(b){
@@ -565,7 +570,7 @@ function groupInlined(len,parent){
 
 function buildYearView(){
   dateState={level:'year',year:null,month:null};
-  document.getElementById('dateBreadcrumb').innerHTML='';
+  document.getElementById('dateBreadcrumb').innerHTML='All Dates';
   var narrowing=document.getElementById('dateNarrowing');
   if(narrowing)narrowing.innerHTML='';
   var draw=function(b){
@@ -577,7 +582,7 @@ function buildYearView(){
 function buildMonthView(year){
   dateState={level:'month',year:year,month:null};
   document.getElementById('dateBreadcrumb').innerHTML=
-    dateCrumb(year,year,'buildYearView()');
+    dateRootCrumb()+' &gt; '+dateCrumb(year,year,'buildYearView()');
   var narrowing=document.getElementById('dateNarrowing');
   if(narrowing)narrowing.innerHTML='';
   var draw=function(b){
@@ -590,6 +595,7 @@ function buildMonthView(year){
 function buildDayView(month){
   dateState={level:'day',year:dateState.year||month.slice(0,4),month:month};
   document.getElementById('dateBreadcrumb').innerHTML=
+    dateRootCrumb()+' &gt; '+
     dateCrumb(dateState.year,dateState.year,'buildYearView()')+' &gt; '+
     dateCrumb(month,month,"buildMonthView('"+dateState.year+"')");
   var narrowing=document.getElementById('dateNarrowing');
@@ -603,6 +609,7 @@ function buildDayView(month){
 }
 function buildDayGallery(day){
   document.getElementById('dateBreadcrumb').innerHTML=
+    dateRootCrumb()+' &gt; '+
     dateCrumb(dateState.year,dateState.year,'buildYearView()')+' &gt; '+
     dateCrumb(dateState.month,dateState.month,"buildMonthView('"+dateState.year+"')")+' &gt; '+escH(day);
   var narrowing=document.getElementById('dateNarrowing');
@@ -638,15 +645,16 @@ function fetchDateFiles(params,emptyText){
 }
 function renderDateBreadcrumb(prefix){
   var parts=prefix.split('-');
+  var root=dateRootCrumb()+' &gt; ';
   if(parts.length===1){
-    document.getElementById('dateBreadcrumb').innerHTML=dateCrumb(parts[0],parts[0],'buildYearView()');
+    document.getElementById('dateBreadcrumb').innerHTML=root+dateCrumb(parts[0],parts[0],'buildYearView()');
   }else if(parts.length===2){
-    document.getElementById('dateBreadcrumb').innerHTML=
+    document.getElementById('dateBreadcrumb').innerHTML=root+
       dateCrumb(parts[0],parts[0],'buildYearView()')+' &gt; '+
       dateCrumb(prefix,prefix,"buildMonthView('"+parts[0]+"')");
   }else{
     var month=parts[0]+'-'+parts[1];
-    document.getElementById('dateBreadcrumb').innerHTML=
+    document.getElementById('dateBreadcrumb').innerHTML=root+
       dateCrumb(parts[0],parts[0],'buildYearView()')+' &gt; '+
       dateCrumb(month,month,"buildMonthView('"+parts[0]+"')")+' &gt; '+escH(prefix);
   }
@@ -674,7 +682,7 @@ function buildPrefixGallery(prefix){
   fetchDateFiles('date='+encodeURIComponent(prefix),'No files for '+prefix+'.');
 }
 function buildRangeGallery(range){
-  document.getElementById('dateBreadcrumb').innerHTML='Date range';
+  document.getElementById('dateBreadcrumb').innerHTML=dateRootCrumb()+' &gt; Date range';
   var narrowing=document.getElementById('dateNarrowing');
   if(narrowing)narrowing.innerHTML='';
   var params=[];
