@@ -103,6 +103,7 @@ pub enum EvidenceError {
     ContributionMismatch,
     CalibratedScoreMismatch,
     MarginMismatch,
+    OutcomeMismatch,
     DuplicateFeatureName(String),
     DuplicateRuleId(i64),
 }
@@ -133,6 +134,12 @@ impl fmt::Display for EvidenceError {
                 write!(
                     f,
                     "face evidence margin does not match confidence minus threshold"
+                )
+            }
+            Self::OutcomeMismatch => {
+                write!(
+                    f,
+                    "face evidence outcome contradicts its score or rule vetoes"
                 )
             }
             Self::DuplicateFeatureName(name) => {
@@ -206,7 +213,7 @@ impl DecisionEvidence {
             ("validation_metric", self.validation.suggestion_coverage),
         ] {
             if let Some(value) = value {
-                ensure_finite(field, value)?;
+                ensure_probability(field, value)?;
             }
         }
 
@@ -230,6 +237,18 @@ impl DecisionEvidence {
             > RECONSTRUCTION_TOLERANCE
         {
             return Err(EvidenceError::MarginMismatch);
+        }
+        let outcome_matches = match self.outcome {
+            DecisionOutcome::Allowed => {
+                self.calibrated_confidence >= self.threshold && self.rule_vetoes.is_empty()
+            }
+            DecisionOutcome::RejectedByScore => {
+                self.calibrated_confidence < self.threshold && self.rule_vetoes.is_empty()
+            }
+            DecisionOutcome::VetoedByRule => !self.rule_vetoes.is_empty(),
+        };
+        if !outcome_matches {
+            return Err(EvidenceError::OutcomeMismatch);
         }
         Ok(())
     }
@@ -404,6 +423,51 @@ mod tests {
         assert_eq!(evidence.raw_logit, model_score);
         assert_eq!(evidence.features, contributions);
         assert_eq!(evidence.rule_vetoes.len(), 1);
+    }
+
+    #[test]
+    fn outcome_must_match_threshold_and_rule_vetoes() {
+        let mut allowed_below_threshold = fixture();
+        allowed_below_threshold.threshold = 0.80;
+        allowed_below_threshold.margin =
+            allowed_below_threshold.calibrated_confidence - allowed_below_threshold.threshold;
+        assert_eq!(
+            allowed_below_threshold.validate(),
+            Err(EvidenceError::OutcomeMismatch)
+        );
+
+        let mut allowed_with_veto = fixture();
+        allowed_with_veto.rule_vetoes = vec![RuleVeto::new(9, "not_person")];
+        assert_eq!(
+            allowed_with_veto.validate(),
+            Err(EvidenceError::OutcomeMismatch)
+        );
+
+        let mut rejected_above_threshold = fixture();
+        rejected_above_threshold.outcome = DecisionOutcome::RejectedByScore;
+        assert_eq!(
+            rejected_above_threshold.validate(),
+            Err(EvidenceError::OutcomeMismatch)
+        );
+
+        let mut vetoed_without_rule = fixture();
+        vetoed_without_rule.outcome = DecisionOutcome::VetoedByRule;
+        assert_eq!(
+            vetoed_without_rule.validate(),
+            Err(EvidenceError::OutcomeMismatch)
+        );
+    }
+
+    #[test]
+    fn validation_summary_rates_must_be_probabilities() {
+        let mut evidence = fixture();
+        evidence.validation.pair_precision = Some(1.01);
+        assert_eq!(
+            evidence.validate(),
+            Err(EvidenceError::ProbabilityOutOfRange(
+                "validation_metric".into()
+            ))
+        );
     }
 
     #[test]

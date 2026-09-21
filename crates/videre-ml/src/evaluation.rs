@@ -33,6 +33,7 @@ pub struct BaselineEvaluation {
 pub enum ReplayError {
     Database(rusqlite::Error),
     Evaluation(EvaluationError),
+    InvalidParameter(&'static str),
 }
 
 impl fmt::Display for ReplayError {
@@ -40,6 +41,7 @@ impl fmt::Display for ReplayError {
         match self {
             Self::Database(error) => write!(f, "could not read face data: {error}"),
             Self::Evaluation(error) => error.fmt(f),
+            Self::InvalidParameter(name) => write!(f, "invalid clustering parameter {name}"),
         }
     }
 }
@@ -49,8 +51,47 @@ impl std::error::Error for ReplayError {
         match self {
             Self::Database(error) => Some(error),
             Self::Evaluation(error) => Some(error),
+            Self::InvalidParameter(_) => None,
         }
     }
+}
+
+type ClusteringFace = (i64, Vec<f32>, f32, Option<String>, Option<f32>);
+
+fn ordered_faces_for_evaluation(mut faces: Vec<ClusteringFace>) -> Vec<ClusteringFace> {
+    faces.sort_by_key(|face| face.0);
+    faces
+}
+
+fn validate_parameters(parameters: &ClusteringParameters) -> Result<(), ReplayError> {
+    fn in_range(value: f32, range: std::ops::RangeInclusive<f32>) -> bool {
+        value.is_finite() && range.contains(&value)
+    }
+    if !in_range(parameters.eps, 0.0..=2.0) {
+        return Err(ReplayError::InvalidParameter("eps"));
+    }
+    if parameters.min_cluster_size == 0 {
+        return Err(ReplayError::InvalidParameter("min_cluster_size"));
+    }
+    for (value, name) in [
+        (parameters.merge_sim, "merge_sim"),
+        (parameters.max_generic_sim, "max_generic_sim"),
+        (parameters.attach_sim, "attach_sim"),
+    ] {
+        if !in_range(value, -1.0..=1.0) {
+            return Err(ReplayError::InvalidParameter(name));
+        }
+    }
+    for (value, name) in [
+        (parameters.min_face_size, "min_face_size"),
+        (parameters.max_landmark_error, "max_landmark_error"),
+        (parameters.min_blur, "min_blur"),
+    ] {
+        if !value.is_finite() || value < 0.0 {
+            return Err(ReplayError::InvalidParameter(name));
+        }
+    }
+    Ok(())
 }
 
 impl From<rusqlite::Error> for ReplayError {
@@ -69,7 +110,9 @@ pub fn evaluate_current_clustering(
     conn: &Connection,
     parameters: &ClusteringParameters,
 ) -> Result<BaselineEvaluation, ReplayError> {
-    let faces = videre_core::face_db::load_faces_for_clustering(conn)?;
+    validate_parameters(parameters)?;
+    let faces =
+        ordered_faces_for_evaluation(videre_core::face_db::load_faces_for_clustering(conn)?);
     let labels = videre_core::face_db::load_confirmed_face_labels(conn)?;
     if labels.is_empty() {
         return Err(EvaluationError::NoLabeledFaces.into());
@@ -221,5 +264,40 @@ mod tests {
         assert_eq!(report.evaluation.clustering.pair_precision, None);
         assert_eq!(report.evaluation.clustering.pair_recall, None);
         assert_eq!(report.evaluation.suggestions, None);
+    }
+
+    #[test]
+    fn evaluation_orders_faces_by_id_before_clustering() {
+        let faces = vec![
+            (3, vec![0.0], 1.0, None, None),
+            (1, vec![0.0], 1.0, None, None),
+            (2, vec![0.0], 1.0, None, None),
+        ];
+        assert_eq!(
+            ordered_faces_for_evaluation(faces)
+                .into_iter()
+                .map(|face| face.0)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn invalid_parameters_fail_before_replay() {
+        let conn = connection();
+        insert_face(&conn, 1, 0.0, Some("alpha"), None);
+        let mut invalid = parameters();
+        invalid.eps = f32::NAN;
+        assert!(matches!(
+            evaluate_current_clustering(&conn, &invalid),
+            Err(ReplayError::InvalidParameter("eps"))
+        ));
+
+        let mut invalid = parameters();
+        invalid.min_cluster_size = 0;
+        assert!(matches!(
+            evaluate_current_clustering(&conn, &invalid),
+            Err(ReplayError::InvalidParameter("min_cluster_size"))
+        ));
     }
 }

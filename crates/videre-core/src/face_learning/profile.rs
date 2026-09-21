@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+pub const PROFILE_ARTIFACT_VERSION: u32 = 1;
+const METRIC_TOLERANCE: f64 = 1e-9;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProfileStage {
@@ -99,6 +102,7 @@ pub struct PromotionGates {
     pub max_hard_rule_violations: usize,
     pub max_invalid_explanations: usize,
     pub min_suggestion_precision: f64,
+    pub min_suggestion_precision_wilson_lower_bound: f64,
     pub min_suggestion_coverage: f64,
     pub max_wall_time_ms: f64,
     pub max_peak_memory_mib: f64,
@@ -156,6 +160,8 @@ pub enum PromotionOutcome {
 pub enum ProfileError {
     InvalidGate(&'static str),
     InvalidReport(String),
+    InvalidProfile(String),
+    IncompatibleProfile(String),
     InvalidStoredValue(String),
     CandidateNotFound(i64),
     NotCandidate(i64),
@@ -168,6 +174,10 @@ impl fmt::Display for ProfileError {
         match self {
             Self::InvalidGate(name) => write!(f, "invalid promotion gate {name}"),
             Self::InvalidReport(reason) => write!(f, "invalid validation report: {reason}"),
+            Self::InvalidProfile(reason) => write!(f, "invalid face profile: {reason}"),
+            Self::IncompatibleProfile(reason) => {
+                write!(f, "incompatible face profile: {reason}")
+            }
             Self::InvalidStoredValue(reason) => write!(f, "invalid stored profile: {reason}"),
             Self::CandidateNotFound(id) => write!(f, "profile candidate {id} was not found"),
             Self::NotCandidate(id) => write!(f, "profile {id} is not a candidate"),
@@ -225,6 +235,10 @@ fn validate_gates(gates: &PromotionGates) -> Result<(), ProfileError> {
     }
     for (value, name) in [
         (gates.min_suggestion_precision, "min_suggestion_precision"),
+        (
+            gates.min_suggestion_precision_wilson_lower_bound,
+            "min_suggestion_precision_wilson_lower_bound",
+        ),
         (gates.min_suggestion_coverage, "min_suggestion_coverage"),
         (gates.max_wall_time_ms, "max_wall_time_ms"),
         (gates.max_peak_memory_mib, "max_peak_memory_mib"),
@@ -246,8 +260,172 @@ fn validate_gates(gates: &PromotionGates) -> Result<(), ProfileError> {
     ] {
         validate_finite_nonnegative(value, name)?;
     }
-    if gates.min_suggestion_precision > 1.0 || gates.min_suggestion_coverage > 1.0 {
+    if gates.min_suggestion_precision > 1.0
+        || gates.min_suggestion_precision_wilson_lower_bound > 1.0
+        || gates.min_suggestion_coverage > 1.0
+    {
         return Err(ProfileError::InvalidGate("suggestion_threshold"));
+    }
+    Ok(())
+}
+
+fn choose_two(value: usize) -> u64 {
+    let value = value as u64;
+    value.saturating_mul(value.saturating_sub(1)) / 2
+}
+
+fn balanced_pair_minimum(faces: usize, buckets: usize) -> u64 {
+    if buckets == 0 {
+        return 0;
+    }
+    let quotient = faces / buckets;
+    let remainder = faces % buckets;
+    remainder as u64 * choose_two(quotient + 1)
+        + (buckets - remainder) as u64 * choose_two(quotient)
+}
+
+fn close(left: f64, right: f64) -> bool {
+    (left - right).abs() <= METRIC_TOLERANCE
+}
+
+fn expected_ratio(numerator: u64, denominator: u64) -> Option<f64> {
+    (denominator != 0).then(|| numerator as f64 / denominator as f64)
+}
+
+fn validate_optional_metric(
+    dataset_key: &str,
+    name: &str,
+    observed: Option<f64>,
+    expected: Option<f64>,
+) -> Result<(), ProfileError> {
+    let valid = match (observed, expected) {
+        (None, None) => true,
+        (Some(observed), Some(expected)) => {
+            observed.is_finite() && (0.0..=1.0).contains(&observed) && close(observed, expected)
+        }
+        _ => false,
+    };
+    if !valid {
+        return Err(ProfileError::InvalidReport(format!(
+            "{dataset_key} has inconsistent {name}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_clustering(dataset_key: &str, metrics: &ClusteringMetrics) -> Result<(), ProfileError> {
+    if metrics.labeled_faces == 0
+        || metrics.labeled_identities == 0
+        || metrics.labeled_identities > metrics.labeled_faces
+        || metrics.unassigned_labeled_faces > metrics.labeled_faces
+        || metrics.predicted_clusters > metrics.labeled_faces - metrics.unassigned_labeled_faces
+        || (metrics.predicted_clusters == 0
+            && metrics.unassigned_labeled_faces != metrics.labeled_faces)
+        || metrics.mixed_clusters > metrics.predicted_clusters
+        || metrics.fragmented_identities > metrics.labeled_identities
+    {
+        return Err(ProfileError::InvalidReport(format!(
+            "{dataset_key} has impossible clustering counts"
+        )));
+    }
+
+    let actual_pairs = metrics
+        .true_positive_pairs
+        .checked_add(metrics.false_negative_pairs)
+        .ok_or_else(|| {
+            ProfileError::InvalidReport(format!("{dataset_key} pair counts overflow"))
+        })?;
+    let predicted_pairs = metrics
+        .true_positive_pairs
+        .checked_add(metrics.false_positive_pairs)
+        .ok_or_else(|| {
+            ProfileError::InvalidReport(format!("{dataset_key} pair counts overflow"))
+        })?;
+    let max_pairs = choose_two(metrics.labeled_faces);
+    let min_actual = balanced_pair_minimum(metrics.labeled_faces, metrics.labeled_identities);
+    let assigned = metrics.labeled_faces - metrics.unassigned_labeled_faces;
+    let min_predicted = balanced_pair_minimum(assigned, metrics.predicted_clusters);
+    if actual_pairs < min_actual
+        || actual_pairs > max_pairs
+        || predicted_pairs < min_predicted
+        || predicted_pairs > choose_two(assigned)
+    {
+        return Err(ProfileError::InvalidReport(format!(
+            "{dataset_key} has impossible pair counts"
+        )));
+    }
+
+    let expected_precision = expected_ratio(metrics.true_positive_pairs, predicted_pairs);
+    let expected_recall = expected_ratio(metrics.true_positive_pairs, actual_pairs);
+    validate_optional_metric(
+        dataset_key,
+        "pair_precision",
+        metrics.pair_precision,
+        expected_precision,
+    )?;
+    validate_optional_metric(
+        dataset_key,
+        "pair_recall",
+        metrics.pair_recall,
+        expected_recall,
+    )?;
+    let expected_f1 = match (expected_precision, expected_recall) {
+        (Some(precision), Some(recall)) if precision + recall > 0.0 => {
+            Some(2.0 * precision * recall / (precision + recall))
+        }
+        (Some(_), Some(_)) => Some(0.0),
+        _ => None,
+    };
+    validate_optional_metric(dataset_key, "pair_f1", metrics.pair_f1, expected_f1)?;
+
+    let expected_unassigned =
+        metrics.unassigned_labeled_faces as f64 / metrics.labeled_faces as f64;
+    if !metrics.unassigned_rate.is_finite()
+        || !(0.0..=1.0).contains(&metrics.unassigned_rate)
+        || !close(metrics.unassigned_rate, expected_unassigned)
+    {
+        return Err(ProfileError::InvalidReport(format!(
+            "{dataset_key} has inconsistent unassigned_rate"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_suggestions(
+    dataset_key: &str,
+    labeled_faces: usize,
+    metrics: &SuggestionMetrics,
+) -> Result<(), ProfileError> {
+    let suggested = metrics
+        .correct
+        .checked_add(metrics.incorrect)
+        .ok_or_else(|| {
+            ProfileError::InvalidReport(format!("{dataset_key} suggestion counts overflow"))
+        })?;
+    let total = suggested
+        .checked_add(metrics.not_suggested)
+        .ok_or_else(|| {
+            ProfileError::InvalidReport(format!("{dataset_key} suggestion counts overflow"))
+        })?;
+    if total != labeled_faces {
+        return Err(ProfileError::InvalidReport(format!(
+            "{dataset_key} suggestion counts do not cover labeled faces"
+        )));
+    }
+    validate_optional_metric(
+        dataset_key,
+        "suggestion precision",
+        metrics.precision,
+        expected_ratio(metrics.correct as u64, suggested as u64),
+    )?;
+    let expected_coverage = suggested as f64 / labeled_faces as f64;
+    if !metrics.coverage.is_finite()
+        || !(0.0..=1.0).contains(&metrics.coverage)
+        || !close(metrics.coverage, expected_coverage)
+    {
+        return Err(ProfileError::InvalidReport(format!(
+            "{dataset_key} has inconsistent suggestion coverage"
+        )));
     }
     Ok(())
 }
@@ -271,8 +449,58 @@ fn validate_report(report: &ValidationReport) -> Result<(), ProfileError> {
                 dataset.dataset_key
             )));
         }
+        validate_clustering(&dataset.dataset_key, &dataset.clustering)?;
+        if let Some(suggestions) = &dataset.suggestions {
+            validate_suggestions(
+                &dataset.dataset_key,
+                dataset.clustering.labeled_faces,
+                suggestions,
+            )?;
+        }
     }
     Ok(())
+}
+
+fn validate_profile_metadata(
+    artifact_version: u32,
+    embedding_model_id: &str,
+    feature_schema_version: u32,
+    model_kind: &str,
+    report: &ValidationReport,
+) -> Result<(), ProfileError> {
+    if artifact_version != PROFILE_ARTIFACT_VERSION {
+        return Err(ProfileError::InvalidProfile(format!(
+            "unsupported artifact version {artifact_version}"
+        )));
+    }
+    if embedding_model_id.trim().is_empty() {
+        return Err(ProfileError::InvalidProfile(
+            "embedding model id is empty".into(),
+        ));
+    }
+    if model_kind.trim().is_empty() {
+        return Err(ProfileError::InvalidProfile("model kind is empty".into()));
+    }
+    if feature_schema_version != report.feature_schema_version {
+        return Err(ProfileError::InvalidProfile(format!(
+            "profile feature schema {feature_schema_version} does not match report feature schema {}",
+            report.feature_schema_version
+        )));
+    }
+    validate_report(report)
+}
+
+fn wilson_lower_bound(correct: usize, total: usize) -> Option<f64> {
+    if total == 0 {
+        return None;
+    }
+    const Z: f64 = 1.959_963_984_540_054;
+    let total = total as f64;
+    let proportion = correct as f64 / total;
+    let z_squared = Z * Z;
+    let center = proportion + z_squared / (2.0 * total);
+    let margin = Z * ((proportion * (1.0 - proportion) + z_squared / (4.0 * total)) / total).sqrt();
+    Some((center - margin) / (1.0 + z_squared / total))
 }
 
 fn failure(
@@ -346,6 +574,23 @@ pub fn evaluate_promotion(
         .flat_map(|report| &report.datasets)
         .map(|dataset| (dataset.dataset_key.as_str(), dataset))
         .collect();
+    if active.is_some() {
+        let candidate_keys: BTreeSet<_> = candidate
+            .datasets
+            .iter()
+            .map(|dataset| dataset.dataset_key.as_str())
+            .collect();
+        for key in active_by_key.keys() {
+            if !candidate_keys.contains(key) {
+                failures.push(failure(key, "missing_dataset", None, None));
+            }
+        }
+        for key in &candidate_keys {
+            if !active_by_key.contains_key(key) {
+                failures.push(failure(key, "unexpected_dataset", None, None));
+            }
+        }
+    }
     let mut quality_gain = false;
 
     for dataset in &candidate.datasets {
@@ -394,6 +639,17 @@ pub fn evaluate_promotion(
                             "suggestion_precision",
                             observed,
                             Some(gates.min_suggestion_precision),
+                        )),
+                    }
+                    let suggested = metrics.correct + metrics.incorrect;
+                    match wilson_lower_bound(metrics.correct, suggested) {
+                        Some(value)
+                            if value >= gates.min_suggestion_precision_wilson_lower_bound => {}
+                        observed => failures.push(failure(
+                            key,
+                            "suggestion_precision_wilson_lower_bound",
+                            observed,
+                            Some(gates.min_suggestion_precision_wilson_lower_bound),
                         )),
                     }
                     if metrics.coverage < gates.min_suggestion_coverage {
@@ -501,7 +757,13 @@ pub fn evaluate_promotion(
 
 pub fn insert_candidate(conn: &Connection, profile: &NewProfile) -> Result<i64, ProfileError> {
     ensure_profile_table(conn)?;
-    validate_report(&profile.validation_report)?;
+    validate_profile_metadata(
+        profile.artifact_version,
+        &profile.embedding_model_id,
+        profile.feature_schema_version,
+        &profile.model_kind,
+        &profile.validation_report,
+    )?;
     let evidence = serde_json::to_string(&profile.training_evidence)?;
     let report = serde_json::to_string(&profile.validation_report)?;
     conn.execute(
@@ -601,7 +863,29 @@ pub fn evaluate_and_promote(
         if candidate.status != ProfileStatus::Candidate {
             return Err(ProfileError::NotCandidate(candidate_id));
         }
+        validate_profile_metadata(
+            candidate.artifact_version,
+            &candidate.embedding_model_id,
+            candidate.feature_schema_version,
+            &candidate.model_kind,
+            &candidate.validation_report,
+        )?;
         let active = active_profile(conn)?;
+        if let Some(active) = &active {
+            validate_profile_metadata(
+                active.artifact_version,
+                &active.embedding_model_id,
+                active.feature_schema_version,
+                &active.model_kind,
+                &active.validation_report,
+            )?;
+            if active.embedding_model_id != candidate.embedding_model_id {
+                return Err(ProfileError::IncompatibleProfile(format!(
+                    "embedding model {} does not match active model {}",
+                    candidate.embedding_model_id, active.embedding_model_id
+                )));
+            }
+        }
         let failures = evaluate_promotion(
             active.as_ref().map(|profile| &profile.validation_report),
             &candidate.validation_report,
@@ -630,8 +914,12 @@ pub fn evaluate_and_promote(
     })();
     match result {
         Ok(outcome) => {
-            conn.execute_batch("COMMIT")?;
-            Ok(outcome)
+            if let Err(error) = conn.execute_batch("COMMIT") {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error.into())
+            } else {
+                Ok(outcome)
+            }
         }
         Err(error) => {
             let _ = conn.execute_batch("ROLLBACK");
@@ -647,16 +935,17 @@ mod tests {
     use rusqlite::Connection;
 
     fn clustering(recall: f64, fragmented: usize) -> ClusteringMetrics {
+        let true_positive_pairs = (recall * 1000.0).round() as u64;
         ClusteringMetrics {
             labeled_faces: 100,
             labeled_identities: 10,
             predicted_clusters: 10,
-            true_positive_pairs: 70,
-            false_positive_pairs: 2,
-            false_negative_pairs: 30,
-            pair_precision: Some(0.98),
+            true_positive_pairs,
+            false_positive_pairs: 0,
+            false_negative_pairs: 1000 - true_positive_pairs,
+            pair_precision: Some(1.0),
             pair_recall: Some(recall),
-            pair_f1: Some(0.81),
+            pair_f1: Some(2.0 * recall / (1.0 + recall)),
             mixed_clusters: 1,
             fragmented_identities: fragmented,
             unassigned_labeled_faces: 10,
@@ -666,11 +955,11 @@ mod tests {
 
     fn suggestions() -> SuggestionMetrics {
         SuggestionMetrics {
-            correct: 40,
+            correct: 100,
             incorrect: 0,
-            not_suggested: 60,
+            not_suggested: 0,
             precision: Some(1.0),
-            coverage: 0.40,
+            coverage: 1.0,
         }
     }
 
@@ -711,6 +1000,7 @@ mod tests {
             max_hard_rule_violations: 0,
             max_invalid_explanations: 0,
             min_suggestion_precision: 0.99,
+            min_suggestion_precision_wilson_lower_bound: 0.95,
             min_suggestion_coverage: 0.01,
             max_wall_time_ms: 200.0,
             max_peak_memory_mib: 100.0,
@@ -775,8 +1065,15 @@ mod tests {
         let active = report(0.70, 3);
         let mut candidate = report(0.72, 3);
         candidate.datasets[0].suggestions = None;
+        candidate.datasets[1].clustering.labeled_identities = 100;
+        candidate.datasets[1].clustering.predicted_clusters = 90;
+        candidate.datasets[1].clustering.true_positive_pairs = 0;
+        candidate.datasets[1].clustering.false_positive_pairs = 0;
+        candidate.datasets[1].clustering.false_negative_pairs = 0;
         candidate.datasets[1].clustering.pair_precision = None;
         candidate.datasets[1].clustering.pair_recall = None;
+        candidate.datasets[1].clustering.pair_f1 = None;
+        candidate.datasets[1].clustering.mixed_clusters = 0;
 
         let failures =
             evaluate_promotion(Some(&active), &candidate, &gates(), ProfileStage::Grouping)
@@ -823,7 +1120,11 @@ mod tests {
         assert!(failure_keys(&failures).contains(&("", "quality_gain")));
 
         let mut regressed = report(0.72, 3);
-        regressed.datasets[0].clustering.pair_precision = Some(0.97);
+        regressed.datasets[0].clustering.false_positive_pairs = 1;
+        let precision = 720.0 / 721.0;
+        regressed.datasets[0].clustering.pair_precision = Some(precision);
+        regressed.datasets[0].clustering.pair_f1 =
+            Some(2.0 * precision * 0.72 / (precision + 0.72));
         regressed.datasets[1].clustering.mixed_clusters = 2;
         let failures =
             evaluate_promotion(Some(&active), &regressed, &gates(), ProfileStage::Grouping)
@@ -862,6 +1163,116 @@ mod tests {
             ),
             Err(ProfileError::InvalidGate("max_wall_time_ms"))
         ));
+    }
+
+    #[test]
+    fn malformed_aggregate_metrics_are_rejected_before_gating() {
+        let mut invalid = report(0.72, 3);
+        invalid.datasets[0].clustering.pair_precision = Some(1.01);
+        assert!(matches!(
+            evaluate_promotion(None, &invalid, &gates(), ProfileStage::Shadow),
+            Err(ProfileError::InvalidReport(_))
+        ));
+
+        let mut invalid = report(0.72, 3);
+        invalid.datasets[0].suggestions.as_mut().unwrap().correct = 99;
+        assert!(matches!(
+            evaluate_promotion(None, &invalid, &gates(), ProfileStage::Shadow),
+            Err(ProfileError::InvalidReport(_))
+        ));
+
+        let mut invalid = report(0.72, 3);
+        invalid.datasets[0].clustering.unassigned_rate = f64::NAN;
+        assert!(matches!(
+            evaluate_promotion(None, &invalid, &gates(), ProfileStage::Shadow),
+            Err(ProfileError::InvalidReport(_))
+        ));
+
+        let mut invalid = report(0.72, 3);
+        let clustering = &mut invalid.datasets[0].clustering;
+        clustering.predicted_clusters = 0;
+        clustering.true_positive_pairs = 0;
+        clustering.false_positive_pairs = 0;
+        clustering.false_negative_pairs = 1_000;
+        clustering.mixed_clusters = 0;
+        clustering.pair_precision = None;
+        clustering.pair_recall = Some(0.0);
+        clustering.pair_f1 = None;
+        assert!(matches!(
+            evaluate_promotion(None, &invalid, &gates(), ProfileStage::Shadow),
+            Err(ProfileError::InvalidReport(_))
+        ));
+    }
+
+    #[test]
+    fn candidate_must_cover_the_same_frozen_datasets() {
+        let active = report(0.70, 3);
+        let mut candidate = report(0.72, 3);
+        candidate.datasets[1].dataset_key = "library-c".into();
+        let failures =
+            evaluate_promotion(Some(&active), &candidate, &gates(), ProfileStage::Grouping)
+                .unwrap();
+        assert!(failure_keys(&failures).contains(&("library-b", "missing_dataset")));
+        assert!(failure_keys(&failures).contains(&("library-c", "unexpected_dataset")));
+    }
+
+    #[test]
+    fn suggestion_precision_requires_enough_evidence() {
+        let mut candidate = report(0.72, 3);
+        for dataset in &mut candidate.datasets {
+            dataset.suggestions = Some(SuggestionMetrics {
+                correct: 1,
+                incorrect: 0,
+                not_suggested: 99,
+                precision: Some(1.0),
+                coverage: 0.01,
+            });
+        }
+        let failures =
+            evaluate_promotion(None, &candidate, &gates(), ProfileStage::Suggestion).unwrap();
+        assert!(failure_keys(&failures)
+            .contains(&("library-a", "suggestion_precision_wilson_lower_bound")));
+    }
+
+    #[test]
+    fn profile_metadata_must_match_the_report_and_active_embedding_model() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_profile_table(&conn).unwrap();
+        let mut mismatch = candidate(ProfileStage::Shadow, report(0.70, 3));
+        mismatch.feature_schema_version = 2;
+        assert!(matches!(
+            insert_candidate(&conn, &mismatch),
+            Err(ProfileError::InvalidProfile(_))
+        ));
+
+        let active_id =
+            insert_candidate(&conn, &candidate(ProfileStage::Shadow, report(0.70, 3))).unwrap();
+        evaluate_and_promote(&conn, active_id, &gates()).unwrap();
+        let mut other_model = candidate(ProfileStage::Grouping, report(0.72, 3));
+        other_model.embedding_model_id = "other/test-model".into();
+        let other_id = insert_candidate(&conn, &other_model).unwrap();
+        assert!(matches!(
+            evaluate_and_promote(&conn, other_id, &gates()),
+            Err(ProfileError::IncompatibleProfile(_))
+        ));
+    }
+
+    #[test]
+    fn promotion_revalidates_metadata_loaded_inside_the_transaction() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_profile_table(&conn).unwrap();
+        let id =
+            insert_candidate(&conn, &candidate(ProfileStage::Shadow, report(0.70, 3))).unwrap();
+        conn.execute(
+            "UPDATE face_learning_profiles SET feature_schema_version = 2 WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+        assert!(matches!(
+            evaluate_and_promote(&conn, id, &gates()),
+            Err(ProfileError::InvalidProfile(_))
+        ));
+        assert!(conn.is_autocommit());
     }
 
     #[test]
@@ -939,5 +1350,41 @@ mod tests {
             )
             .unwrap();
         assert_eq!(candidate_status, "candidate");
+    }
+
+    #[test]
+    fn commit_failure_rolls_back_and_closes_the_transaction() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
+        ensure_profile_table(&conn).unwrap();
+        let active_id =
+            insert_candidate(&conn, &candidate(ProfileStage::Shadow, report(0.70, 3))).unwrap();
+        evaluate_and_promote(&conn, active_id, &gates()).unwrap();
+        let candidate_id =
+            insert_candidate(&conn, &candidate(ProfileStage::Grouping, report(0.72, 3))).unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TABLE profile_commit_parent (id INTEGER PRIMARY KEY);
+             CREATE TABLE profile_commit_child (
+                 parent_id INTEGER REFERENCES profile_commit_parent(id)
+                     DEFERRABLE INITIALLY DEFERRED
+             );
+             CREATE TRIGGER fail_profile_commit
+             AFTER UPDATE OF status ON face_learning_profiles
+             WHEN NEW.id = {candidate_id} AND NEW.status = 'active'
+             BEGIN INSERT INTO profile_commit_child(parent_id) VALUES (999); END;"
+        ))
+        .unwrap();
+
+        assert!(evaluate_and_promote(&conn, candidate_id, &gates()).is_err());
+        assert!(conn.is_autocommit());
+        assert_eq!(active_profile(&conn).unwrap().unwrap().id, active_id);
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM face_learning_profiles WHERE id = ?1",
+                [candidate_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "candidate");
     }
 }
