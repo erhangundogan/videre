@@ -33,11 +33,17 @@ Once the lightbox is open, move through the items without closing it: the
 on-screen arrows at the left and right edges, or the **Left** and **Right**
 arrow keys, step to the previous and next item. Stepping past the last loaded
 item pulls in the next page automatically and keeps going, so **Show more** is
-not needed to browse to the end. At the item's top-right corner sit two
-buttons: **Fullscreen** blows the whole lightbox up to the screen, arrows and
-info panel included (the same button, or **Escape**, steps back), and **Close**
-(the &#215; at its right) dismisses it. The close button, **Escape**, or a click
-outside the item all close the lightbox.
+not needed to browse to the end. At the item's top-right corner sit up to three
+buttons: **Rotate** (photos only) turns the image 90 degrees clockwise by
+editing its EXIF orientation in place; **Fullscreen** blows the whole lightbox
+up to the screen, arrows and info panel included (the same button, or
+**Escape**, steps back); and **Close** (the &#215; at its right) dismisses it.
+The close button, **Escape**, or a click outside the item all close the
+lightbox.
+
+The preview shown is a downscaled render, so **click the photo** (or scroll over
+it) to zoom in and **drag** to pan: the full-resolution original is loaded on
+the first zoom, so you can inspect it up close. Click again to return to fit.
 
 An info panel sits directly under the media: the labeled people in the photo
 (each links to that person's page), the place name when the file has GPS, and

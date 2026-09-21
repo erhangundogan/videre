@@ -249,6 +249,11 @@ function openLb(url,type,metaJson){
   var rotateBtn=document.getElementById('lb-rotate');
   if(rotateBtn){ rotateBtn.hidden=!canRotate; rotateBtn.disabled=false; }
   lbCurrent = { hash: meta&&meta.hash, url: url };
+  // A fresh image starts fit-to-screen at the preview resolution; the full-res
+  // original is loaded lazily on the first zoom.
+  lbz={scale:1,x:0,y:0,full:false};
+  img.style.transform='';
+  var stage0=img.closest('.lb-stage'); if(stage0)stage0.classList.remove('zooming');
   if(type==='video'){
     img.style.display='none';vid.style.display='block';
     vid.src=url;vid.play();
@@ -263,7 +268,11 @@ function openLb(url,type,metaJson){
 function closeLb(){
   var vid=document.getElementById('lb-vid');
   vid.pause();vid.src='';
-  document.getElementById('lb-img').src='';
+  lbz={scale:1,x:0,y:0,full:false};
+  var ci=document.getElementById('lb-img');
+  ci.style.transform='';
+  var cs=ci.closest('.lb-stage'); if(cs)cs.classList.remove('zooming');
+  ci.src='';
   // Leave fullscreen on close, so the next open starts grounded (and Escape
   // does not have to be pressed twice to get back to the page).
   if(document.fullscreenElement)document.exitFullscreen();
@@ -324,6 +333,69 @@ function rotateLb(){
     })
     .catch(function(){})
     .then(function(){ lbRotating=false; if(btn)btn.disabled=false; });
+}
+
+// ---- Lightbox zoom & pan --------------------------------------------------
+// The lightbox preview is a downscaled render (1200px), so fit-to-screen never
+// shows a large photo at full detail. Clicking the image (or wheeling over it)
+// zooms in: the full-resolution original is loaded once and can be panned, so
+// the user can inspect it 1:1. The stage grows to a large viewport while zoomed
+// so there is room to pan, and the metadata bar hides to give the image space.
+var LB_MIN_ZOOM=1, LB_MAX_ZOOM=8;
+var lbz={scale:1,x:0,y:0,full:false};
+function lbImg(){ return document.getElementById('lb-img'); }
+function lbApply(){
+  var img=lbImg();
+  img.style.transform = lbz.scale===1 ? '' : 'translate('+lbz.x+'px,'+lbz.y+'px) scale('+lbz.scale+')';
+  var stage=img.closest('.lb-stage');
+  if(stage)stage.classList.toggle('zooming', lbz.scale>1);
+}
+function lbResetZoom(){
+  lbz={scale:1,x:0,y:0,full:lbz.full};
+  var img=lbImg();
+  img.style.transform='';
+  var stage=img.closest('.lb-stage');
+  if(stage)stage.classList.remove('zooming');
+}
+// Swap in the full-resolution original the first time we zoom, so detail is
+// actually there to see. Kept for the life of this lightbox open.
+function lbLoadFull(){
+  if(lbz.full||!lbCurrent||!lbCurrent.hash)return;
+  lbz.full=true;
+  lbImg().src='/api/files/'+encodeURIComponent(lbCurrent.hash)+'/raw';
+}
+function lbClampPan(){
+  var img=lbImg(), stage=img.closest('.lb-stage');
+  if(!stage)return;
+  var ir=img.getBoundingClientRect(), sr=stage.getBoundingClientRect();
+  var maxX=Math.max(0,(ir.width-sr.width)/2+16);
+  var maxY=Math.max(0,(ir.height-sr.height)/2+16);
+  lbz.x=Math.max(-maxX,Math.min(maxX,lbz.x));
+  lbz.y=Math.max(-maxY,Math.min(maxY,lbz.y));
+}
+// Zoom to `scale`, keeping the point (cx,cy) under the cursor fixed.
+function lbZoomAt(scale,cx,cy){
+  scale=Math.max(LB_MIN_ZOOM,Math.min(LB_MAX_ZOOM,scale));
+  var img=lbImg();
+  if(img.style.display==='none')return; // videos do not zoom
+  var s0=lbz.scale;
+  if(scale===s0)return;
+  if(scale>1)lbLoadFull();
+  var r=img.getBoundingClientRect();
+  // Untransformed centre = current transformed centre minus the translate.
+  var cX=(r.left+r.width/2)-lbz.x, cY=(r.top+r.height/2)-lbz.y;
+  var dx=cx-cX, dy=cy-cY, k=scale/s0;
+  lbz.x=dx-(dx-lbz.x)*k;
+  lbz.y=dy-(dy-lbz.y)*k;
+  lbz.scale=scale;
+  if(scale===1){ lbz.x=0; lbz.y=0; }
+  lbApply();
+  lbClampPan();
+  lbApply();
+}
+function lbToggleZoom(cx,cy){
+  if(lbz.scale>1) lbZoomAt(1,cx,cy);
+  else lbZoomAt(2.5,cx,cy);
 }
 // Prev/next across the visible tiles in DOM order. Every view and the static
 // export renders its tiles with data-lb-url, so one walk covers them all; a
@@ -610,6 +682,39 @@ document.addEventListener('keydown',function(e){
 document.getElementById('lb').addEventListener('click',function(e){
   if(e.target===this)closeLb();
 });
+
+// Click to zoom (toggle), wheel to zoom toward the cursor, drag to pan. A click
+// is distinguished from a pan by the pointer barely moving, so dragging the
+// zoomed image never toggles it back to fit.
+(function(){
+  var img=document.getElementById('lb-img');
+  if(!img)return;
+  var down=false,moved=false,sx=0,sy=0,ox=0,oy=0,pid=null;
+  img.addEventListener('wheel',function(e){
+    if(img.style.display==='none')return;
+    e.preventDefault();
+    lbZoomAt(lbz.scale*(e.deltaY<0?1.2:1/1.2),e.clientX,e.clientY);
+  },{passive:false});
+  img.addEventListener('pointerdown',function(e){
+    if(img.style.display==='none')return;
+    down=true;moved=false;sx=e.clientX;sy=e.clientY;ox=lbz.x;oy=lbz.y;pid=e.pointerId;
+    try{img.setPointerCapture(pid);}catch(err){}
+  });
+  img.addEventListener('pointermove',function(e){
+    if(!down)return;
+    var dx=e.clientX-sx,dy=e.clientY-sy;
+    if(Math.abs(dx)>4||Math.abs(dy)>4)moved=true;
+    if(lbz.scale>1){ lbz.x=ox+dx; lbz.y=oy+dy; lbClampPan(); lbApply(); }
+  });
+  function end(e){
+    if(!down)return;
+    down=false;
+    try{img.releasePointerCapture(pid);}catch(err){}
+    if(!moved)lbToggleZoom(e.clientX,e.clientY);
+  }
+  img.addEventListener('pointerup',end);
+  img.addEventListener('pointercancel',function(){down=false;});
+})();
 
 // ---- All-files gallery and similarity search (active only with --all) ----
 // RESULT_ROWS holds only the rows a search returned, a couple of dozen at most.

@@ -143,6 +143,29 @@ test("small media keeps the lightbox controls clear of the metadata", async ({ p
   expect(controls.y + controls.height).toBeLessThanOrEqual(meta.y + 1);
 });
 
+test("clicking the lightbox image zooms it and toggles back to fit", async ({ page, gallery }) => {
+  await page.goto(gallery.baseURL);
+  await page.locator("#gallery [data-lb-type='image']").first().click();
+  const img = page.locator("#lb-img");
+  await expect(img).toBeVisible();
+  await expect(img).toHaveCSS("transform", "none");
+
+  // A click zooms in: the stage enters its pan viewport and the image is scaled,
+  // loading the full-resolution original for detail.
+  await img.click();
+  await expect(page.locator(".lb-stage")).toHaveClass(/zooming/);
+  await expect(img).not.toHaveCSS("transform", "none");
+  await expect(async () => {
+    const natural = await img.evaluate((el: HTMLImageElement) => el.naturalWidth);
+    expect(natural).toBeGreaterThan(0);
+  }).toPass();
+
+  // A second click returns to fit.
+  await img.click();
+  await expect(page.locator(".lb-stage")).not.toHaveClass(/zooming/);
+  await expect(img).toHaveCSS("transform", "none");
+});
+
 test("rotate is offered for photos, rotates, and is hidden for video", async ({ page, gallery }) => {
   await page.goto(gallery.baseURL);
 
