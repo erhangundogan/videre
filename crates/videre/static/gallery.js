@@ -815,8 +815,11 @@ function tileHtml(f,box){
 function layoutTiles(container,files){
   var width=container.clientWidth||container.offsetWidth||0;
   if(!width){ requestAnimationFrame(function(){layoutTiles(container,files);}); return; }
+  // Match the list view's gutters (.gallery padding: 12px 16px): the layout
+  // offsets every box by this padding and folds top+bottom into the container
+  // height, so tile mode lines up with the list grid and the strip above it.
   var geo=justifiedLayout(files.map(tileRatio),{
-    containerWidth:width, containerPadding:0, boxSpacing:6, targetRowHeight:220
+    containerWidth:width, containerPadding:{top:12,right:16,bottom:12,left:16}, boxSpacing:6, targetRowHeight:220
   });
   var html='';
   for(var i=0;i<files.length;i++) html+=tileHtml(files[i],geo.boxes[i]);
