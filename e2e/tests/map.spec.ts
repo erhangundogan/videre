@@ -1,6 +1,19 @@
+import { copyFileSync, mkdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { expect, test } from "../support/gallery";
+
+const FIXTURES = resolve(dirname(fileURLToPath(import.meta.url)), "../../crates/videre/tests/fixtures");
+
+// Seed the per-library basemap override so the MapLibre path finds a ready
+// archive and never downloads at test time. archive_path prefers this path
+// over the shared geo cache.
+function seedBasemap(libraryRoot: string): void {
+  const dir = join(libraryRoot, ".videre", "basemap");
+  mkdirSync(dir, { recursive: true });
+  copyFileSync(join(FIXTURES, "basemap-tiny.pmtiles"), join(dir, "basemap.pmtiles"));
+}
 
 function openDatabase(libraryRoot: string): DatabaseSync {
   return new DatabaseSync(join(libraryRoot, ".videre", "hashes.db"));
@@ -36,8 +49,14 @@ function seedClusters(libraryRoot: string): void {
 }
 
 test.describe("map clusters", () => {
-  test.beforeEach(async ({ gallery }) => {
+  // These specs assert the interaction contract, which both renderers honor.
+  // Force the canvas fallback so they run deterministically without depending
+  // on headless WebGL; the MapLibre path has its own gated specs below.
+  test.beforeEach(async ({ page, gallery }) => {
     seedClusters(gallery.libraryRoot);
+    await page.addInitScript(() => {
+      (window as unknown as { __VIDERE_FORCE_CANVAS_MAP__: boolean }).__VIDERE_FORCE_CANVAS_MAP__ = true;
+    });
   });
 
   test("world view shows continent markers, not clusters", async ({ page, gallery }) => {
@@ -155,11 +174,100 @@ test.describe("map clusters", () => {
   });
 });
 
+test("the basemap tile endpoint answers absent or a byte range", async ({ page, gallery }) => {
+  // MapLibre reads the archive with a Range request. Absent is tolerated (the
+  // fixture never downloads); a served archive answers 200/206.
+  const response = await page.request.get(`${gallery.baseURL}/tiles/basemap.pmtiles`, {
+    headers: { range: "bytes=0-15" }
+  });
+  expect([200, 206, 404]).toContain(response.status());
+});
+
+test("the vendored map libraries are served on their own route", async ({ page, gallery }) => {
+  // The version segment is a cache buster the handler does not validate.
+  const js = await page.request.get(`${gallery.baseURL}/vendor/9.9.9/maplibre-gl.js`);
+  expect(js.status()).toBe(200);
+  expect(js.headers()["cache-control"]).toContain("immutable");
+  const pmtiles = await page.request.get(`${gallery.baseURL}/vendor/9.9.9/pmtiles.js`);
+  expect(pmtiles.status()).toBe(200);
+  const unknown = await page.request.get(`${gallery.baseURL}/vendor/9.9.9/nope.js`);
+  expect(unknown.status()).toBe(404);
+});
+
+test("the map renders MapLibre with attribution when WebGL is available", async ({ page, gallery }) => {
+  seedClusters(gallery.libraryRoot);
+  seedBasemap(gallery.libraryRoot);
+  await page.goto(`${gallery.baseURL}/map`);
+
+  // Gate on the same feature-detect the page uses: a headless runner without
+  // working WebGL skips to nothing rather than flaking on a renderer it cannot
+  // run. The interaction contract is covered by the canvas specs above.
+  const webgl = await page.evaluate(() => {
+    try {
+      const probe = document.createElement("canvas");
+      return !!(probe.getContext("webgl2") || probe.getContext("webgl"));
+    } catch {
+      return false;
+    }
+  });
+  test.skip(!webgl, "no working WebGL in this browser");
+
+  await expect(page.locator("#map-gl canvas.maplibregl-canvas")).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator("#map-attribution")).toContainText("OpenStreetMap");
+  await page.waitForFunction(
+    () => (window as unknown as { maplibreInitialized?: boolean }).maplibreInitialized === true,
+    null,
+    { timeout: 15_000 }
+  );
+  // The grid loads independent of the renderer, so the two Berlin/Tokyo files
+  // are present even under MapLibre.
+  await expect(page.locator("#gallery .card")).toHaveCount(3);
+});
+
+test("zooming out to the world clears a MapLibre selection", async ({ page, gallery }) => {
+  seedClusters(gallery.libraryRoot);
+  seedBasemap(gallery.libraryRoot);
+  await page.goto(`${gallery.baseURL}/map/location/berlin?radius=20`);
+
+  const webgl = await page.evaluate(() => {
+    try {
+      const probe = document.createElement("canvas");
+      return !!(probe.getContext("webgl2") || probe.getContext("webgl"));
+    } catch {
+      return false;
+    }
+  });
+  test.skip(!webgl, "no working WebGL in this browser");
+
+  await page.waitForFunction(
+    () => (window as unknown as { maplibreInitialized?: boolean }).maplibreInitialized === true,
+    null,
+    { timeout: 15_000 }
+  );
+  await expect(page.locator("#map-selection-row")).toBeVisible();
+
+  // Zooming back to the world tier drops the selection, matching the canvas
+  // renderer. This is the regression the map's zoom handler now guards against.
+  // MapLibre's zoom-out is animated, so let each step settle before the next
+  // rather than firing eight clicks into one in-flight animation.
+  for (let click = 0; click < 8; click++) {
+    await page.locator("#map-zoom-out").click();
+    await page.waitForTimeout(200);
+  }
+
+  await expect(page).toHaveURL(`${gallery.baseURL}/map`);
+  await expect(page.locator("#map-selection-row")).toBeHidden();
+  await expect(page.locator("#gallery .card")).toHaveCount(3);
+});
+
 test("a library that never clustered shows the empty state with a working grid", async ({ page, gallery }) => {
   const db = openDatabase(gallery.libraryRoot);
   db.exec("DELETE FROM location_clusters; UPDATE file_hashes SET location_cluster_id = NULL;");
   db.close();
 
+  await page.addInitScript(() => {
+    (window as unknown as { __VIDERE_FORCE_CANVAS_MAP__: boolean }).__VIDERE_FORCE_CANVAS_MAP__ = true;
+  });
   await page.goto(`${gallery.baseURL}/map`);
   await expect(page.locator("#map-empty")).toBeVisible();
   await expect(page.locator("#gallery [data-lb-url]").first()).toBeVisible();

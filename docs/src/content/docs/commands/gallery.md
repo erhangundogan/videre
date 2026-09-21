@@ -69,8 +69,16 @@ stored when the cluster was created. Changing it updates the URL and grows or
 shrinks the grid to include every GPS-bearing file within that exact distance,
 regardless of its original cluster membership. The **Map > Berlin** breadcrumb,
 **Clear**, **Escape**, or zooming back to the world returns to the unselected
-map and the full grid. The plot draws entirely from the local library database
-and makes no outbound map or tile requests.
+map and the full grid.
+
+The map renders real coastlines and borders with
+[MapLibre GL JS](https://maplibre.org) over an offline vector basemap built from
+OpenStreetMap data, downloaded once on first use and stored in the shared cache
+(see [Install](/start/install/)); `© OpenStreetMap contributors` is shown on the
+map. Your location clusters and every drill-down are drawn from the local
+library database, and once the basemap is present the view makes no outbound map
+or tile requests. On a machine without working WebGL the map falls back to a
+self-drawn plot with the same clusters, drill-down, and grid.
 
 They link to each other in smaller ways too, which is the point of serving them
 together: a face in

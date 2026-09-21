@@ -316,6 +316,51 @@ curl "http://127.0.0.1:7878/api/location-clusters"
 `route_name` is the normalized addressable identity used under
 `/map/location/{name}`.
 
+## Map basemap
+
+The Map view renders MapLibre GL JS over an offline vector basemap: a PMTiles
+archive downloaded once per machine into the shared geo cache on first use.
+View time is fully offline; these three endpoints drive the one-time
+acquisition and the local, Range-capable serving of the archive.
+
+### `GET /tiles/basemap.pmtiles`
+
+Serves the basemap archive with HTTP Range support (`Accept-Ranges: bytes`),
+which is how the PMTiles protocol reads byte ranges out of the file. Returns
+`404` when the archive is absent (the client then POSTs to
+`/api/basemap/ensure`), `409` with the status body while a download is in
+flight (the client keeps polling), and `200`/`206` once the archive is ready.
+
+### `GET /api/basemap/status`
+
+Reports the archive's download state, which the page polls after starting a
+download.
+
+```bash
+curl "http://127.0.0.1:7878/api/basemap/status"
+```
+
+```json
+{ "state": "ready", "bytes": 41943040 }
+```
+
+`state` is `absent`, `partial` (a download is in progress), or `ready`.
+
+### `POST /api/basemap/ensure`
+
+Starts the once-per-machine download if the archive is absent and none is
+already running, then returns the current status immediately (same body shape
+as the status endpoint). Repeated calls while a download runs are no-ops.
+
+### `GET /vendor/{version}/{asset}`
+
+Serves the vendored map libraries compiled into the binary, with a long-lived
+immutable cache: `maplibre-gl.js`, `maplibre-gl.css`, and `pmtiles.js`. Loaded
+only by the Map page, so the ~1 MB of script never weighs on the other gallery
+views. The `{version}` segment is videre's own version, emitted by the page as a
+cache buster so an upgrade fetches fresh bytes on the same port; its value is not
+validated. Any other `{asset}` is `404`.
+
 ## People
 
 ### `GET /api/people`
@@ -569,6 +614,10 @@ content-length: 0
 | `GET /api/search` | Rank by text or by an existing file hash |
 | `GET /api/locations` | Resolve one coordinate pair to a place name |
 | `GET /api/location-clusters` | List location clusters for the Map view |
+| `GET /tiles/basemap.pmtiles` | Serve the offline basemap archive (Range) |
+| `GET /api/basemap/status` | Report the basemap download state |
+| `POST /api/basemap/ensure` | Start the one-time basemap download |
+| `GET /vendor/{version}/{asset}` | Serve a vendored map library (MapLibre, pmtiles) |
 | `GET /api/people` | Search people |
 | `POST /api/people` | Create a person from faces |
 | `GET /api/people/{name}` | Read one person |

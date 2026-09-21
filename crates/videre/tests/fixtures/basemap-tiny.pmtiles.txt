@@ -1,0 +1,12 @@
+basemap-tiny.pmtiles
+
+A tiny world vector basemap archive (PMTiles v3, zoom levels 0-2, ~795 KB),
+used to seed the gallery Map view's basemap in the E2E suite so the MapLibre
+path is exercised without downloading anything at test time.
+
+Provenance: extracted with `pmtiles extract` from a Protomaps public planet
+build of OpenStreetMap data (the protomaps-sample-datasets planet archive),
+capped at maxzoom 2. The map data is (c) OpenStreetMap contributors, available
+under the Open Database License (ODbL). See https://openstreetmap.org/copyright
+and https://protomaps.com. Excluded from the published crate via
+crates/videre/Cargo.toml's `exclude = ["tests/fixtures/*"]`.
