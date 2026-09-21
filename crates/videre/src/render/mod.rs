@@ -25,10 +25,7 @@ pub(crate) struct FileRow {
 }
 
 pub(crate) struct Stats {
-    total_files: i64,
     duplicate_groups: i64,
-    duplicate_files: i64,
-    wasted_bytes: i64,
 }
 
 pub(crate) enum FileDateFilter {
@@ -643,10 +640,7 @@ fn group_to_json(
 pub(crate) fn query_stats(conn: &Connection) -> Stats {
     let s = videre_core::library_stats::compute(conn).unwrap_or_default();
     Stats {
-        total_files: s.total_files,
         duplicate_groups: s.duplicate_group_count,
-        duplicate_files: s.duplicate_file_count,
-        wasted_bytes: s.wasted_bytes,
     }
 }
 
@@ -842,15 +836,13 @@ struct GalleryPage<'a> {
     /// The `var GROUPS=[...]` script block. Built in Rust because it is
     /// serialisation, not markup; the template only decides where it goes.
     data: &'a str,
-    /// Pre-escaped by `esc`, so the template must not escape it again.
-    db: String,
+    /// The library root (the db path with its `/.videre/hashes.db` tail
+    /// removed), shown in the header. Pre-escaped by `esc`, so the template must
+    /// not escape it again.
+    library: String,
     generated_at: &'a str,
-    total_files: i64,
     has_groups: bool,
     duplicate_groups: i64,
-    duplicate_files: i64,
-    wasted: String,
-    embedded: Option<usize>,
     all_files_count: Option<usize>,
     has_keep_files: bool,
     /// The current section, or `None` on a page with nowhere to navigate to.
@@ -1017,14 +1009,13 @@ pub(crate) fn render(set: &RenderSet) -> String {
         js: include_str!("../../static/gallery.js"),
         justified_js: include_str!("../../static/justified-layout.js"),
         data: &data,
-        db: esc(db_path),
+        // The header shows the library root, not the database file inside it.
+        library: esc(db_path
+            .strip_suffix("/.videre/hashes.db")
+            .unwrap_or(db_path)),
         generated_at: &now,
-        total_files: stats.total_files,
         has_groups: !groups.is_empty(),
         duplicate_groups: stats.duplicate_groups,
-        duplicate_files: stats.duplicate_files,
-        wasted: videre_core::disk::human_bytes(stats.wasted_bytes.max(0) as u64),
-        embedded,
         all_files_count: all_files.map(|f| f.len()),
         has_keep_files: keep_files.is_some(),
         nav,
