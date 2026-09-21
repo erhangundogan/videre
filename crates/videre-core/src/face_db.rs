@@ -274,6 +274,71 @@ pub fn load_face_embeddings(conn: &Connection) -> rusqlite::Result<Vec<(i64, Vec
     Ok(out)
 }
 
+/// Load the complete, generic inputs used by face-learning feature extraction.
+/// Requested ids are deduplicated and rows are returned in ascending id order.
+/// Missing ids and malformed embedding blobs fail the whole load so a user
+/// action can roll back rather than silently lose its learning evidence.
+pub fn load_face_observations(
+    conn: &Connection,
+    face_ids: &[i64],
+) -> rusqlite::Result<Vec<crate::face_learning::FaceObservation>> {
+    use rusqlite::OptionalExtension;
+    use std::collections::BTreeSet;
+
+    let ids: BTreeSet<_> = face_ids.iter().copied().collect();
+    let mut statement = conn.prepare(
+        "SELECT embedding, bbox, landmark, blur, det_score, hash FROM faces WHERE id = ?1",
+    )?;
+    let mut observations = Vec::with_capacity(ids.len());
+    for id in ids {
+        let row = statement
+            .query_row([id], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<f64>>(3)?,
+                    row.get::<_, Option<f64>>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })
+            .optional()?
+            .ok_or_else(|| {
+                rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(format!(
+                    "requested face {id} was not found"
+                ))))
+            })?;
+        let (blob, bbox, landmark, blur, det_score, photo_hash) = row;
+        if blob.len() % 2 != 0 {
+            return Err(rusqlite::Error::FromSqlConversionFailure(
+                blob.len(),
+                rusqlite::types::Type::Blob,
+                Box::new(std::io::Error::other(format!(
+                    "face {id} has a malformed embedding blob"
+                ))),
+            ));
+        }
+        let embedding = blob
+            .chunks_exact(2)
+            .map(|bytes| f16::from_le_bytes([bytes[0], bytes[1]]).to_f32())
+            .collect();
+        let landmark_residual = landmark
+            .as_deref()
+            .and_then(crate::face_learning::parse_landmarks)
+            .map(|points| crate::face_learning::landmark_residual(&points) as f64);
+        observations.push(crate::face_learning::FaceObservation {
+            face_id: id,
+            embedding,
+            bbox_min_side: bbox_min_side_option(&bbox).map(f64::from),
+            blur,
+            det_score,
+            landmark_residual,
+            photo_hash,
+        });
+    }
+    Ok(observations)
+}
+
 /// Loads confirmed person labels as evaluation truth without migrating or
 /// modifying face state.
 pub fn load_confirmed_face_labels(
@@ -339,6 +404,19 @@ fn bbox_min_side(bbox: &str) -> f32 {
         nums[2].min(nums[3])
     } else {
         0.0
+    }
+}
+
+fn bbox_min_side_option(bbox: &str) -> Option<f32> {
+    let nums: Vec<f32> = bbox
+        .split(',')
+        .map(|s| s.trim().parse())
+        .collect::<Result<_, _>>()
+        .ok()?;
+    if nums.len() >= 4 && nums[2].is_finite() && nums[3].is_finite() {
+        Some(nums[2].min(nums[3]))
+    } else {
+        None
     }
 }
 
@@ -804,6 +882,37 @@ mod tests {
         assert_eq!(rows[0].2, 200.0, "min side of 200x300 bbox");
         assert_eq!(rows[1].2, 25.0, "min side of 40x25 bbox");
         assert_eq!(rows[0].1.len(), 512, "embedding still decoded");
+    }
+
+    #[test]
+    fn load_face_observations_is_ordered_complete_and_preserves_missing_quality() {
+        let conn = open();
+        let emb = make_embedding(&[1.0, 0.0]);
+        conn.execute(
+            "INSERT INTO faces
+             (id, hash, bbox, landmark, embedding, det_score, blur)
+             VALUES (2, 'h2', '0,0,40,25', NULL, ?1, NULL, NULL),
+                    (1, 'h1', '0,0,20,30',
+                     '38.2946,51.6963,73.5318,51.5014,56.0252,71.7366,41.5493,92.3655,70.7299,92.2041',
+                     ?1, 0.9, 200.0)",
+            [emb],
+        )
+        .unwrap();
+
+        let rows = load_face_observations(&conn, &[2, 1]).unwrap();
+        assert_eq!(
+            rows.iter().map(|row| row.face_id).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(rows[0].bbox_min_side, Some(20.0));
+        assert!(rows[0].landmark_residual.unwrap() < 1e-3);
+        assert_eq!(rows[1].bbox_min_side, Some(25.0));
+        assert_eq!(rows[1].blur, None);
+        assert_eq!(rows[1].det_score, None);
+        assert_eq!(rows[1].landmark_residual, None);
+
+        let error = load_face_observations(&conn, &[1, 3]).unwrap_err();
+        assert!(error.to_string().contains("requested face 3 was not found"));
     }
 
     #[test]
