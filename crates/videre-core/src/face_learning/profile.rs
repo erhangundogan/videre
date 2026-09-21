@@ -229,6 +229,13 @@ fn validate_finite_nonnegative(value: f64, name: &'static str) -> Result<(), Pro
     Ok(())
 }
 
+fn validate_probability(value: f64, name: &'static str) -> Result<(), ProfileError> {
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        return Err(ProfileError::InvalidGate(name));
+    }
+    Ok(())
+}
+
 fn validate_gates(gates: &PromotionGates) -> Result<(), ProfileError> {
     if gates.min_datasets == 0 {
         return Err(ProfileError::InvalidGate("min_datasets"));
@@ -240,8 +247,6 @@ fn validate_gates(gates: &PromotionGates) -> Result<(), ProfileError> {
             "min_suggestion_precision_wilson_lower_bound",
         ),
         (gates.min_suggestion_coverage, "min_suggestion_coverage"),
-        (gates.max_wall_time_ms, "max_wall_time_ms"),
-        (gates.max_peak_memory_mib, "max_peak_memory_mib"),
         (gates.max_pair_precision_drop, "max_pair_precision_drop"),
         (gates.max_pair_recall_drop, "max_pair_recall_drop"),
         (
@@ -258,13 +263,13 @@ fn validate_gates(gates: &PromotionGates) -> Result<(), ProfileError> {
         ),
         (gates.min_pair_recall_gain, "min_pair_recall_gain"),
     ] {
-        validate_finite_nonnegative(value, name)?;
+        validate_probability(value, name)?;
     }
-    if gates.min_suggestion_precision > 1.0
-        || gates.min_suggestion_precision_wilson_lower_bound > 1.0
-        || gates.min_suggestion_coverage > 1.0
-    {
-        return Err(ProfileError::InvalidGate("suggestion_threshold"));
+    for (value, name) in [
+        (gates.max_wall_time_ms, "max_wall_time_ms"),
+        (gates.max_peak_memory_mib, "max_peak_memory_mib"),
+    ] {
+        validate_finite_nonnegative(value, name)?;
     }
     Ok(())
 }
@@ -531,6 +536,29 @@ pub fn evaluate_promotion(
     validate_report(candidate)?;
     if let Some(active) = active {
         validate_report(active)?;
+        for (observed, required, name) in [
+            (
+                active.protocol_version,
+                gates.protocol_version,
+                "protocol_version",
+            ),
+            (
+                active.evidence_schema_version,
+                gates.evidence_schema_version,
+                "evidence_schema_version",
+            ),
+            (
+                active.feature_schema_version,
+                gates.feature_schema_version,
+                "feature_schema_version",
+            ),
+        ] {
+            if observed != required {
+                return Err(ProfileError::IncompatibleProfile(format!(
+                    "active {name} {observed} does not match required version {required}"
+                )));
+            }
+        }
     }
 
     let mut failures = Vec::new();
@@ -1061,6 +1089,29 @@ mod tests {
     }
 
     #[test]
+    fn active_baseline_schema_must_match_the_promotion_protocol() {
+        for field in ["protocol", "evidence", "feature"] {
+            let mut active = report(0.70, 3);
+            match field {
+                "protocol" => active.protocol_version = 2,
+                "evidence" => active.evidence_schema_version = 2,
+                "feature" => active.feature_schema_version = 2,
+                _ => unreachable!(),
+            }
+
+            assert!(matches!(
+                evaluate_promotion(
+                    Some(&active),
+                    &report(0.72, 3),
+                    &gates(),
+                    ProfileStage::Grouping,
+                ),
+                Err(ProfileError::IncompatibleProfile(_))
+            ));
+        }
+    }
+
+    #[test]
     fn stage_specific_metrics_are_required() {
         let active = report(0.70, 3);
         let mut candidate = report(0.72, 3);
@@ -1162,6 +1213,33 @@ mod tests {
                 ProfileStage::Grouping,
             ),
             Err(ProfileError::InvalidGate("max_wall_time_ms"))
+        ));
+    }
+
+    #[test]
+    fn rate_gates_must_be_probabilities() {
+        let mut invalid = gates();
+        invalid.max_pair_precision_drop = 1.01;
+        assert!(matches!(
+            evaluate_promotion(
+                Some(&report(0.70, 3)),
+                &report(0.72, 3),
+                &invalid,
+                ProfileStage::Grouping,
+            ),
+            Err(ProfileError::InvalidGate("max_pair_precision_drop"))
+        ));
+
+        let mut invalid = gates();
+        invalid.min_pair_recall_gain = 1.01;
+        assert!(matches!(
+            evaluate_promotion(
+                Some(&report(0.70, 3)),
+                &report(0.72, 3),
+                &invalid,
+                ProfileStage::Grouping,
+            ),
+            Err(ProfileError::InvalidGate("min_pair_recall_gain"))
         ));
     }
 
