@@ -30,7 +30,7 @@
 <div class="groups" id="groups-container"></div>
 <div class="more-wrap"><button id="more-btn" onclick="showMore()"></button></div>
 {% endif %}{% if let Some(n) = all_files_count %}<div class="results-panel" id="results" style="display:none"></div>
-<div class="gallery-head"><h2>All files</h2><label class="view-toggle">View <select class="view-mode-select" onchange="setViewMode(this.value)"><option value="list">List</option><option value="tile">Tile</option></select></label><span class="info" id="gallery-info">{{ n }} files</span></div>
+<div class="gallery-head"><h2>All files</h2><span class="info" id="gallery-info">{{ n }} files</span><label class="view-toggle">View <select class="view-mode-select" onchange="setViewMode(this.value)"><option value="list">List</option><option value="tile">Tile</option></select></label></div>
 <div class="gallery" id="gallery"></div>
 <div class="more-wrap"><button id="gallery-more" onclick="showMoreGallery()"></button></div>
 {% endif %}{% if no_duplicates %}<div class="empty-state">
