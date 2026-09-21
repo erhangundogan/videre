@@ -6,6 +6,7 @@
 <title>videre map</title>
 <style>{{ chrome|safe }}</style>
 <style>{{ gallery_css|safe }}</style>
+<link rel="stylesheet" href="/vendor/maplibre-gl.css">
 <style>{{ css|safe }}</style>
 </head>
 <body>
@@ -45,6 +46,9 @@
   <div class="more-wrap"><button id="gallery-more" onclick="showMoreGallery()"></button></div>
 </main>
 <script>{{ globals|safe }}</script>
+<script>window.BASEMAP_STYLE={{ basemap_style|safe }};</script>
+<script src="/vendor/maplibre-gl.js"></script>
+<script src="/vendor/pmtiles.js"></script>
 <script>{{ justified_js|safe }}</script>
 <script>{{ gallery_js|safe }}</script>
 <script>{{ js|safe }}</script>

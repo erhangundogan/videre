@@ -352,6 +352,13 @@ Starts the once-per-machine download if the archive is absent and none is
 already running, then returns the current status immediately (same body shape
 as the status endpoint). Repeated calls while a download runs are no-ops.
 
+### `GET /vendor/{asset}`
+
+Serves the vendored map libraries compiled into the binary, with a long-lived
+immutable cache: `maplibre-gl.js`, `maplibre-gl.css`, and `pmtiles.js`. Loaded
+only by the Map page, so the ~1 MB of script never weighs on the other gallery
+views. Any other `{asset}` is `404`.
+
 ## People
 
 ### `GET /api/people`
@@ -608,6 +615,7 @@ content-length: 0
 | `GET /tiles/basemap.pmtiles` | Serve the offline basemap archive (Range) |
 | `GET /api/basemap/status` | Report the basemap download state |
 | `POST /api/basemap/ensure` | Start the one-time basemap download |
+| `GET /vendor/{asset}` | Serve a vendored map library (MapLibre, pmtiles) |
 | `GET /api/people` | Search people |
 | `POST /api/people` | Create a person from faces |
 | `GET /api/people/{name}` | Read one person |

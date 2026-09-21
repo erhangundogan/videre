@@ -1,0 +1,57 @@
+{
+  "version": 8,
+  "name": "videre-offline-basemap",
+  "sources": {
+    "basemap": {
+      "type": "vector",
+      "url": "pmtiles:///tiles/basemap.pmtiles",
+      "attribution": "© OpenStreetMap contributors"
+    }
+  },
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": { "background-color": "#0b1120" }
+    },
+    {
+      "id": "earth",
+      "type": "fill",
+      "source": "basemap",
+      "source-layer": "earth",
+      "paint": { "fill-color": "#1e293b" }
+    },
+    {
+      "id": "landcover",
+      "type": "fill",
+      "source": "basemap",
+      "source-layer": "landcover",
+      "paint": { "fill-color": "#233043", "fill-opacity": 0.6 }
+    },
+    {
+      "id": "landuse",
+      "type": "fill",
+      "source": "basemap",
+      "source-layer": "landuse",
+      "paint": { "fill-color": "#243248", "fill-opacity": 0.5 }
+    },
+    {
+      "id": "water",
+      "type": "fill",
+      "source": "basemap",
+      "source-layer": "water",
+      "paint": { "fill-color": "#0e2036" }
+    },
+    {
+      "id": "boundaries",
+      "type": "line",
+      "source": "basemap",
+      "source-layer": "boundaries",
+      "paint": {
+        "line-color": "#64748b",
+        "line-opacity": 0.35,
+        "line-width": 0.6
+      }
+    }
+  ]
+}

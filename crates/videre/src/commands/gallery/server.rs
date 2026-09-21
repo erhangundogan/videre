@@ -794,6 +794,7 @@ mod pages {
         pub justified_js: &'static str,
         pub gallery_js: &'static str,
         pub js: &'static str,
+        pub basemap_style: &'static str,
         pub globals: String,
         pub db: String,
         pub generated_at: String,
@@ -809,6 +810,14 @@ mod pages {
     pub const PERSON_JS: &str = include_str!("../../../static/person.js");
     pub const MAP_CSS: &str = include_str!("../../../static/map.css");
     pub const MAP_JS: &str = include_str!("../../../static/map.js");
+    /// The geometry-only MapLibre style, checked in and injected into the map
+    /// page as a JS global so it needs no HTTP route of its own.
+    pub const BASEMAP_STYLE: &str = include_str!("../../../static/basemap-style.json");
+    /// MapLibre GL JS and the pmtiles protocol plugin, vendored and served on
+    /// the Map page only through `/vendor/{asset}` (never inlined: ~1 MB).
+    pub const MAPLIBRE_JS: &str = include_str!("../../../static/maplibre-gl.js");
+    pub const MAPLIBRE_CSS: &str = include_str!("../../../static/maplibre-gl.css");
+    pub const PMTILES_JS: &str = include_str!("../../../static/pmtiles.js");
 }
 
 fn api_status(e: videre_api::Error) -> StatusCode {
@@ -1094,6 +1103,7 @@ fn render_map(state: &AppState, location_json: &str) -> axum::response::Html<Str
         justified_js: include_str!("../../../static/justified-layout.js"),
         gallery_js: include_str!("../../../static/gallery.js"),
         js: pages::MAP_JS,
+        basemap_style: pages::BASEMAP_STYLE,
         globals,
         db: esc(&db_path),
         generated_at: Utc::now().format("%Y-%m-%d %H:%M UTC").to_string(),
@@ -1588,6 +1598,31 @@ async fn handle_location_clusters(State(state): State<Arc<AppState>>) -> Respons
     }
     out.push(']');
     json_response(out)
+}
+
+/// `GET /vendor/{asset}`: the vendored map libraries (MapLibre GL JS, its CSS,
+/// and the pmtiles protocol plugin), compiled into the binary and served only
+/// here so `map.html` can load ~1 MB of script off the page rather than inline
+/// it into every gallery view. Immutable, long-lived cache: the bytes are
+/// pinned to the vendored version.
+async fn handle_vendor_asset(axum::extract::Path(asset): axum::extract::Path<String>) -> Response {
+    let (body, content_type): (&'static str, &'static str) = match asset.as_str() {
+        "maplibre-gl.js" => (pages::MAPLIBRE_JS, "text/javascript; charset=utf-8"),
+        "maplibre-gl.css" => (pages::MAPLIBRE_CSS, "text/css; charset=utf-8"),
+        "pmtiles.js" => (pages::PMTILES_JS, "text/javascript; charset=utf-8"),
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, content_type),
+            (
+                axum::http::header::CACHE_CONTROL,
+                "public, max-age=31536000, immutable",
+            ),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 /// The basemap archive path this server resolves: the per-library override
@@ -2503,6 +2538,7 @@ async fn serve_faces_async(
         .route("/tiles/basemap.pmtiles", get(handle_basemap_tiles))
         .route("/api/basemap/status", get(handle_basemap_status))
         .route("/api/basemap/ensure", post(handle_basemap_ensure))
+        .route("/vendor/{asset}", get(handle_vendor_asset))
         // people
         .route(
             "/api/people",
