@@ -134,8 +134,8 @@ th.preview-th{width:130px}
    video and photo buckets line up and the play badge stays on the image. */
 .date-card .vthumb{display:block;width:100%;max-width:120px;aspect-ratio:1;margin-left:auto;margin-right:auto}
 .date-card .vthumb img{width:100%;height:100%}
-.date-card .date-card-label{padding:6px 0 0;font-size:13px;font-weight:600}
-.date-card .date-card-count{padding:2px 0 0;font-size:11px;color:#71717a}
+.date-card .date-card-label{padding:6px 0 0;font-size:16px;font-weight:600;text-align:center}
+.date-card .date-card-count{padding:2px 0 0;font-size:11px;color:#71717a;text-align:center}
 img.heic-loading{display:block;width:100%;aspect-ratio:1;object-fit:cover;background:linear-gradient(90deg,#e4e4e7 25%,#f4f4f5 37%,#e4e4e7 63%);background-size:400% 100%;animation:heicShimmer 1.4s ease infinite}
 @keyframes heicShimmer{0%{background-position:100% 0}100%{background-position:0 0}}
 
