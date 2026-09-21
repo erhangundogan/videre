@@ -47,12 +47,11 @@
     var wrapper = document.getElementById('map-plot-wrap');
     var canvas = document.getElementById('map-plot');
     var empty = document.getElementById('map-empty');
-    var selectionRow = document.getElementById('map-selection-row');
     var breadcrumb = document.getElementById('map-breadcrumb');
     var radiusInput = document.getElementById('map-radius');
     var radiusGroup = document.getElementById('map-radius-group');
     var selectionStatus = document.getElementById('map-selection-status');
-    if (!wrapper || !canvas || !empty || !selectionRow || !breadcrumb ||
+    if (!wrapper || !canvas || !empty || !breadcrumb ||
         !radiusInput || !radiusGroup || !selectionStatus) return;
 
     // The canvas is the fallback's surface; MapLibre draws into its own child.
@@ -236,7 +235,7 @@
     function showSelection(cluster, radius) {
       selectionStatus.hidden = true;
       selectionStatus.textContent = '';
-      selectionRow.hidden = false;
+      breadcrumb.hidden = false;
       radiusGroup.hidden = false;
       breadcrumb.textContent = cluster.name;
       radiusInput.value = String(radius);
@@ -262,7 +261,7 @@
       activeRadius = null;
       delete wrapper.dataset.radius;
       clearBtn.disabled = true;
-      selectionRow.hidden = true;
+      breadcrumb.hidden = true;
       radiusGroup.hidden = true;
       selectionStatus.hidden = true;
       selectionStatus.textContent = '';
@@ -278,7 +277,7 @@
       activeRadius = null;
       delete wrapper.dataset.radius;
       clearBtn.disabled = true;
-      selectionRow.hidden = true;
+      breadcrumb.hidden = true;
       radiusGroup.hidden = true;
       selectionStatus.textContent = 'Unknown location';
       selectionStatus.hidden = false;
@@ -498,12 +497,11 @@
     var wrapper = document.getElementById('map-plot-wrap');
     var canvas = document.getElementById('map-plot');
     var empty = document.getElementById('map-empty');
-    var selectionRow = document.getElementById('map-selection-row');
     var breadcrumb = document.getElementById('map-breadcrumb');
     var radiusInput = document.getElementById('map-radius');
     var radiusGroup = document.getElementById('map-radius-group');
     var selectionStatus = document.getElementById('map-selection-status');
-    if (!wrapper || !canvas || !empty || !selectionRow || !breadcrumb ||
+    if (!wrapper || !canvas || !empty || !breadcrumb ||
         !radiusInput || !radiusGroup || !selectionStatus) return;
 
     var markerLayer = document.createElement('div');
@@ -746,7 +744,7 @@
     function showSelection(cluster, radius) {
       selectionStatus.hidden = true;
       selectionStatus.textContent = '';
-      selectionRow.hidden = false;
+      breadcrumb.hidden = false;
       radiusGroup.hidden = false;
       breadcrumb.textContent = cluster.name;
       radiusInput.value = String(radius);
@@ -771,7 +769,7 @@
       activeRadius = null;
       delete wrapper.dataset.radius;
       clearBtn.disabled = true;
-      selectionRow.hidden = true;
+      breadcrumb.hidden = true;
       radiusGroup.hidden = true;
       selectionStatus.hidden = true;
       selectionStatus.textContent = '';
@@ -788,7 +786,7 @@
       activeRadius = null;
       delete wrapper.dataset.radius;
       clearBtn.disabled = true;
-      selectionRow.hidden = true;
+      breadcrumb.hidden = true;
       radiusGroup.hidden = true;
       selectionStatus.textContent = 'Unknown location';
       selectionStatus.hidden = false;

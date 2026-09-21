@@ -1,13 +1,11 @@
 .map-page{padding-bottom:32px}
-.map-selection-row,.map-selection-status{width:calc(100% - 32px);margin:12px 16px 0}
-.map-selection-row{display:flex;align-items:center;gap:12px;min-height:32px;color:#71717a}
-.map-selection-row[hidden],.map-selection-status[hidden]{display:none}
-/* Dark text: the area below the map is the light page background, not the dark
-   plot. White here (the old dark-context color) rendered invisible. */
-.map-selection-row .map-place{color:#18181b;font-weight:600;font-size:16px}
-/* The radius control lives in the grid head next to the View selector, shown
-   only while a location is selected. */
-.map-radius-group{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:#a1a1aa}
+.map-selection-status{width:calc(100% - 32px);margin:12px 16px 0}
+.map-selection-status[hidden]{display:none}
+/* The selected place name and the radius control both live in the grid head
+   next to the View selector, shown only while a location is selected. */
+.map-place{font-weight:600;font-size:14px;color:#18181b}
+.map-place[hidden]{display:none}
+.map-radius-group{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:#71717a}
 .map-radius-group[hidden]{display:none}
 .map-radius-group input{width:76px;padding:6px 8px;border:1px solid #3f3f46;border-radius:6px;background:#18181b;color:#f4f4f5}
 .map-radius-group input:focus-visible{outline:2px solid #60a5fa;outline-offset:2px}
