@@ -16,6 +16,30 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.35.0] - 2026-09-21
+
+### Added
+
+- **Addressable location drill-down on the map.** Clicking a cluster now opens
+  a proximity view at `/map/location/<place>?radius=<km>`: a breadcrumb, a
+  radius control that grows or shrinks the media grid to every GPS-bearing file
+  within that exact distance (regardless of its original cluster), and real
+  URLs that restore the same state on reload, Back, and Forward. Clear, Escape,
+  or zooming back to the world returns to the unselected map. An unknown place
+  keeps the map and grid working without a selection.
+
+### Changed
+
+- **The map draws real cartography from an offline basemap.** The `/map` plot
+  now renders with MapLibre GL JS over a vector basemap - coastlines, land,
+  water, and borders - built from OpenStreetMap data, downloaded once per
+  machine on first `/map` visit into the shared cache and fully offline at view
+  time. An `OpenStreetMap contributors` attribution shows on the map. A machine
+  without working WebGL falls back to the previous self-drawn plot, so the
+  two-tier clusters, cluster-click filtering, drill-down, and grid never
+  regress. This one-time download is a new outbound request, alongside
+  `search --location` geocoding; nothing about your library is sent out.
+
 ## [0.34.0] - 2026-09-20
 
 ### Added
@@ -2020,7 +2044,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.34.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.35.0...HEAD
+[0.35.0]: https://github.com/erhangundogan/videre/compare/v0.34.0...v0.35.0
 [0.34.0]: https://github.com/erhangundogan/videre/compare/v0.33.0...v0.34.0
 [0.33.0]: https://github.com/erhangundogan/videre/compare/v0.32.0...v0.33.0
 [0.32.0]: https://github.com/erhangundogan/videre/compare/v0.31.0...v0.32.0

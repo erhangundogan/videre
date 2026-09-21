@@ -712,3 +712,6 @@ above.
 - `watch --prune` cannot override the guards -> `commands::prune::PruneArgs::for_watch_stage`
 - `videre locations` is a global recompute -> `commands::locations`
 - Undecodable files are skipped after two strikes -> `videre_core::decode_failures`
+- Offline map basemap: one shared PMTiles archive per machine, downloaded once
+  behind a cross-process flock; the map grid never gates on MapLibre's load
+  (a WebGL probe can pass where the context still cannot render) -> `videre_core::basemap`, `commands::gallery::server` (`handle_basemap_*`), `static/map.js`
