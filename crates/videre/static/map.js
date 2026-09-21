@@ -39,6 +39,10 @@
     var activeRadius = null;
     var map = null;
     var ready = false;
+    // Set while a programmatic fly/jump is animating, so the zoom-to-world
+    // auto-clear does not fire on our own camera moves (a selection's flyTo
+    // starts below the cluster threshold before climbing above it).
+    var programmaticView = false;
 
     var wrapper = document.getElementById('map-plot-wrap');
     var canvas = document.getElementById('map-plot');
@@ -152,7 +156,11 @@
       var nextLongitude = longitude + Math.atan2(
         Math.sin(bearing) * Math.sin(angular) * Math.cos(latitude),
         Math.cos(angular) - Math.sin(latitude) * Math.sin(nextLatitude));
-      return [((nextLongitude * 180 / Math.PI + 540) % 360) - 180, nextLatitude * 180 / Math.PI];
+      // Deliberately unwrapped: keep the ring's longitudes continuous around
+      // the loop so a cluster near +/-180 does not jump from +179 to -179 and
+      // draw one line across the whole map. MapLibre wraps out-of-range
+      // longitudes for display, so the geometry stays a clean circle.
+      return [nextLongitude * 180 / Math.PI, nextLatitude * 180 / Math.PI];
     }
 
     function ringGeoJson() {
@@ -198,7 +206,7 @@
         window.history.pushState(null, '', locationPath(cluster, radius));
       }
       updateRing();
-      if (ready) map.flyTo({ center: [cluster.centroid_lon, cluster.centroid_lat], zoom: CLUSTER_ZOOM + 2 });
+      if (ready) viewFlyTo({ center: [cluster.centroid_lon, cluster.centroid_lat], zoom: CLUSTER_ZOOM + 2 });
       updateMarkers();
     }
 
@@ -213,7 +221,7 @@
       window.setGalleryLocation(null, null, null);
       updateRing();
       if (historyMode === 'push') window.history.pushState(null, '', '/map');
-      if (ready) map.flyTo({ center: [10, 30], zoom: 1 });
+      if (ready) viewFlyTo({ center: [10, 30], zoom: 1 });
       updateMarkers();
     }
 
@@ -307,7 +315,7 @@
     }
 
     // Poll the basemap status; attach the vector tiles once the archive is
-    // ready, kicking the one-time download once if it is absent. Bounded and
+    // ready, kicking the download once when it is not. Bounded and
     // fire-and-forget: view time on a seeded machine never touches the network.
     var basemapPolls = 0;
     function pollBasemap() {
@@ -315,7 +323,11 @@
         .then(function (response) { return response.json(); })
         .then(function (status) {
           if (status.state === 'ready') { addBasemapLayers(); return; }
-          if (status.state === 'absent' && basemapPolls === 0) {
+          // Kick the download for both absent and partial: a `.part` sibling
+          // left by an interrupted run reports partial, and ensure resumes it
+          // (the server guard collapses concurrent kicks). Without this a
+          // partial archive would only be polled, never resumed.
+          if (status.state !== 'ready' && basemapPolls === 0) {
             fetch('/api/basemap/ensure', { method: 'POST' }).catch(function () {});
           }
           if (++basemapPolls < 120) window.setTimeout(pollBasemap, 1500);
@@ -350,7 +362,23 @@
         pollBasemap();
       });
       map.on('move', updateMarkers);
-      map.on('zoom', updateMarkers);
+      map.on('moveend', function () { programmaticView = false; });
+      map.on('zoom', function () {
+        updateMarkers();
+        // Zooming out to the world tier clears any active selection, matching
+        // the canvas renderer. Skipped during our own fly/jump (which begins
+        // below the threshold on the way to a selection).
+        if (activeCluster && !programmaticView && map.getZoom() < CLUSTER_ZOOM) {
+          clearSelection('push');
+        }
+      });
+    }
+
+    // A programmatic camera move that must not trip the zoom-to-world
+    // auto-clear. The flag resets on moveend.
+    function viewFlyTo(options) {
+      programmaticView = true;
+      map.flyTo(options);
     }
 
     // Reflect the current selection onto the map once it can render. Never
@@ -361,6 +389,7 @@
       if (!map || !ready) return;
       updateRing();
       if (activeCluster) {
+        programmaticView = true;
         map.jumpTo({
           center: [activeCluster.centroid_lon, activeCluster.centroid_lat],
           zoom: CLUSTER_ZOOM + 2

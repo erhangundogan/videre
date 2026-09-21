@@ -11,7 +11,7 @@
     { "method": "GET",    "path": "/tiles/basemap.pmtiles" },
     { "method": "GET",    "path": "/api/basemap/status" },
     { "method": "POST",   "path": "/api/basemap/ensure" },
-    { "method": "GET",    "path": "/vendor/{asset}" },
+    { "method": "GET",    "path": "/vendor/{version}/{asset}" },
     { "method": "GET",    "path": "/api/people" },
     { "method": "POST",   "path": "/api/people" },
     { "method": "GET",    "path": "/api/people/{name}" },

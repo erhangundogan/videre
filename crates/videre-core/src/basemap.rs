@@ -63,12 +63,40 @@ fn ensure_downloaded_with_url(
     url: &str,
     mut progress: impl FnMut(u64, u64),
 ) -> anyhow::Result<PathBuf> {
+    use fs2::FileExt;
+
     let path = archive_path(geo, state_dir);
     if let BasemapStatus::Ready { bytes } = status(&path) {
         progress(bytes, bytes);
         return Ok(path);
     }
-    std::fs::create_dir_all(path.parent().context("basemap parent directory")?)?;
+    let parent = path.parent().context("basemap parent directory")?;
+    std::fs::create_dir_all(parent)?;
+
+    // The archive lives in the shared geo cache, so two gallery processes (say,
+    // two libraries on different ports) can race the same `.part` file and
+    // rename. A cross-process, non-blocking exclusive lock on a sibling file
+    // makes exactly one process download at a time; the loser bails and its
+    // client keeps polling the status the winner is advancing. The per-process
+    // AtomicBool in the server is the cheap first gate; this is the correctness
+    // one. The lock lives on the inode and releases when this handle drops (or
+    // the process dies).
+    let lock_path = parent.join("download.lock");
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| format!("opening {}", lock_path.display()))?;
+    if FileExt::try_lock_exclusive(&lock).is_err() {
+        anyhow::bail!("another process is already downloading the basemap");
+    }
+    // A racing winner may have finished between the first check and the lock.
+    if let BasemapStatus::Ready { bytes } = status(&path) {
+        progress(bytes, bytes);
+        return Ok(path);
+    }
+
     let part = path.with_extension("pmtiles.part");
     let partial = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
 
@@ -237,6 +265,33 @@ mod tests {
         let path = ensure_downloaded_with_url(&geo, &state, &url, |_, _| {}).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"tilebytes");
         assert!(matches!(status(&path), BasemapStatus::Ready { bytes: 9 }));
+    }
+
+    #[test]
+    fn ensure_downloaded_bails_when_another_process_holds_the_lock() {
+        use fs2::FileExt;
+        let dir = tempfile::tempdir().unwrap();
+        let (geo, state) = (dir.path().join("geo"), dir.path().join("state"));
+        let path = archive_path(&geo, &state);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // Simulate another process holding the download lock.
+        let lock_path = path.parent().unwrap().join("download.lock");
+        let held = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap();
+        FileExt::try_lock_exclusive(&held).unwrap();
+
+        // The URL is never contacted: the lock is checked first, so a bogus
+        // address is fine and proves no download was attempted.
+        let error = ensure_downloaded_with_url(&geo, &state, "http://127.0.0.1:0/x", |_, _| {})
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("another process"),
+            "expected a lock-contention error, got: {error}"
+        );
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import { once } from "node:events";
-import { access, copyFile, mkdtemp, rm } from "node:fs/promises";
+import { access, copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { get, request } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -48,8 +48,8 @@ async function binaryPath(): Promise<string> {
   return binary;
 }
 
-async function run(binary: string, args: string[]): Promise<void> {
-  const child = spawn(binary, args, { stdio: "pipe" });
+async function run(binary: string, args: string[], env?: NodeJS.ProcessEnv): Promise<void> {
+  const child = spawn(binary, args, { stdio: "pipe", env });
   const stdout = logBuffer(child.stdout);
   const stderr = logBuffer(child.stderr);
   const [code] = await once(child, "exit") as [number | null];
@@ -130,15 +130,24 @@ async function stopGallery(session: ManagedGallery): Promise<void> {
 async function startGallery(): Promise<ManagedGallery> {
   const binary = await binaryPath();
   const libraryRoot = await mkdtemp(join(tmpdir(), "videre-e2e-"));
+  // Isolate the cache: videre derives its cache (thumbnails and the shared geo
+  // cache, including the basemap archive) from HOME/.cache. Pointing HOME at a
+  // per-run temp directory keeps the suite off the developer/CI machine cache,
+  // so a test never reads a pre-existing basemap or writes one, and results do
+  // not depend on the machine's cache state.
+  const home = join(libraryRoot, "home");
+  await mkdir(home, { recursive: true });
+  const env = { ...process.env, HOME: home };
   try {
     await copyFile(join(FIXTURES, "tiny.jpg"), join(libraryRoot, "first.jpg"));
     await copyFile(join(FIXTURES, "tiny.jpg"), join(libraryRoot, "second.jpg"));
     await copyFile(join(FIXTURES, "red_1s.mp4"), join(libraryRoot, "clip.mp4"));
-    await run(binary, ["--library", libraryRoot, "scan", "--silent"]);
+    await run(binary, ["--library", libraryRoot, "scan", "--silent"], env);
 
     const port = await freePort();
     const child = spawn(binary, ["--library", libraryRoot, "gallery", "--port", String(port)], {
-      stdio: "pipe"
+      stdio: "pipe",
+      env
     });
     const stderr = logBuffer(child.stderr);
     const stdout = logBuffer(child.stdout);
