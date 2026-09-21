@@ -77,6 +77,8 @@ th.preview-th{width:130px}
 .lb-row{display:flex;align-items:flex-start;gap:6px;color:#e4e4e7;font-size:12px;line-height:1.4;min-width:0;max-width:100%}
 .lb-row svg{width:14px;height:14px;flex:none;opacity:.75;margin-top:1px}
 .lb-row span{min-width:0;word-break:break-word}
+.lb-row a.lb-link{color:#93c5fd;text-decoration:none}
+.lb-row a.lb-link:hover{text-decoration:underline}
 .lb-fname{color:#fff}
 .lb-fname span{word-break:break-all}
 .lb-people{flex:0 1 auto;min-width:0;display:flex;flex-wrap:wrap;gap:12px;justify-content:flex-end;align-content:flex-start}

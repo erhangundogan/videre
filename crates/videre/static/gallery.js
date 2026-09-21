@@ -201,15 +201,36 @@ function renderMetaPanel(meta){
   if(!meta){ el.innerHTML=''; return; }
   const rows = [];
   if(meta.name) rows.push('<div class="lb-row lb-fname">'+ICON_FILE+'<span>'+escH(meta.name)+'</span></div>');
-  if(meta.date) rows.push('<div class="lb-row">'+ICON_DATE+'<span>'+escH(humanDate(meta.date))+'</span></div>');
+  if(meta.date){
+    // On a live server the date links to its day view; a static export has no
+    // such route, so it stays plain text.
+    const dm = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(meta.date));
+    const dLabel = escH(humanDate(meta.date));
+    const dInner = (LIVE_SERVER && dm)
+      ? '<a class="lb-link" href="/date/'+dm[1]+'/'+dm[2]+'/'+dm[3]+'">'+dLabel+'</a>'
+      : dLabel;
+    rows.push('<div class="lb-row">'+ICON_DATE+'<span>'+dInner+'</span></div>');
+  }
   if(meta.size!=null) rows.push('<div class="lb-row">'+ICON_SIZE+'<span>'+fmtB(meta.size)+'</span></div>');
   if(meta.location){
     const locId = 'lbLoc'+Math.random().toString(36).slice(2);
-    // Plain text for now; becomes a link once the locations route exists.
     rows.push('<div class="lb-row lb-location">'+ICON_PIN+'<span id="'+locId+'">Loading location...</span></div>');
     fetch('/api/locations?lat='+meta.location.lat+'&lon='+meta.location.lon)
       .then(r => r.json())
-      .then(d => { const n = document.getElementById(locId); if(n) n.textContent = d.name || 'Unknown location'; })
+      .then(d => {
+        const n = document.getElementById(locId);
+        if(!n) return;
+        if(d.name){
+          // On a live server the place links to its map drill-down; the route
+          // resolves the name to a cluster and selects its tag (or shows the
+          // honest unknown-location state when nothing matches).
+          n.innerHTML = LIVE_SERVER
+            ? '<a class="lb-link" href="/map/location/'+encodeURIComponent(d.name)+'">'+escH(d.name)+'</a>'
+            : escH(d.name);
+        } else {
+          n.textContent = 'Unknown location';
+        }
+      })
       .catch(() => { const n = document.getElementById(locId); if(n) n.textContent = 'Location unavailable'; });
   }
   const hasPeople = !!(meta.faces && meta.faces.length);

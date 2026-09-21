@@ -45,6 +45,10 @@ The preview shown is a downscaled render, so **click the photo** (or scroll over
 it) to zoom in and **drag** to pan: the full-resolution original is loaded on
 the first zoom, so you can inspect it up close. Click again to return to fit.
 
+In the info panel, the **date** links to that day's view and the **place** links
+to its map drill-down, so one click jumps from a photo to everything else taken
+then or there.
+
 An info panel sits directly under the media: the labeled people in the photo
 (each links to that person's page), the place name when the file has GPS, and
 the filename, size, and date. It stays visible even when a file has none of the

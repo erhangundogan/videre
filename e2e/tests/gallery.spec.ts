@@ -143,6 +143,18 @@ test("small media keeps the lightbox controls clear of the metadata", async ({ p
   expect(controls.y + controls.height).toBeLessThanOrEqual(meta.y + 1);
 });
 
+test("the lightbox date links to its day view", async ({ page, gallery }) => {
+  await page.goto(gallery.baseURL);
+  await page.locator("#gallery [data-lb-type='image']").first().click();
+  const dateLink = page.locator("#lbMeta a.lb-link[href^='/date/']");
+  await expect(dateLink).toBeVisible();
+  await expect(dateLink).toHaveAttribute("href", /^\/date\/\d{4}\/\d{2}\/\d{2}$/);
+  // Following it lands on that day's view.
+  const href = await dateLink.getAttribute("href");
+  await page.goto(`${gallery.baseURL}${href}`);
+  await expect(page.locator("#dateGrid [data-lb-url]").first()).toBeVisible();
+});
+
 test("clicking the lightbox image zooms it and toggles back to fit", async ({ page, gallery }) => {
   await page.goto(gallery.baseURL);
   await page.locator("#gallery [data-lb-type='image']").first().click();
