@@ -16,13 +16,14 @@
    link. Add each one here when it renders. #}
 {% if let Some(current) = nav %}<style>
 .secnav{display:flex;align-items:center;gap:2px;padding:10px 16px;background:#1a1a1f;border-bottom:1px solid #2a2a33;position:sticky;top:0;z-index:50}
-.secnav a{padding:6px 14px;border-radius:6px;color:#9a9aa8;text-decoration:none;font:500 14px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-.secnav a:hover{background:#25252d;color:#d8d8e0}
+/* The brand link is excluded from these rules so it never gets the section
+   buttons' hover/active highlight. */
+.secnav a:not(.secnav-brand){padding:6px 14px;border-radius:6px;color:#9a9aa8;text-decoration:none;font:500 14px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.secnav a:not(.secnav-brand):hover{background:#25252d;color:#d8d8e0}
 .secnav a.on{background:#3b82f6;color:#fff}
-/* The videre wordmark (the docs-site logo) links home from the far left. It
-   carries its own hover/padding so the section-link rules above do not apply. */
-.secnav-brand{display:flex;align-items:center;padding:2px 8px 2px 0;margin-right:4px}
-.secnav-brand:hover{background:none}
+/* The videre wordmark (the docs-site logo) links home from the far left. It is
+   never highlighted: no background on hover, no active state. */
+.secnav-brand{display:flex;align-items:center;padding:2px 8px 2px 0;margin-right:4px;text-decoration:none}
 .secnav-logo{display:block;height:20px;width:auto;color:#f4f4f5}
 /* The search box sits at the far right of the strip. It always submits to `/`,
    where the Files page reads `?q=` and runs a semantic search; from any other
