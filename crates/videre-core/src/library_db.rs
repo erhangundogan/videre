@@ -328,6 +328,20 @@ fn open_existing_conn(ctx: &LibraryContext) -> Result<Connection> {
     Ok(conn)
 }
 
+fn open_existing_read_only_conn(ctx: &LibraryContext) -> Result<Connection> {
+    use rusqlite::OpenFlags;
+    let conn = Connection::open_with_flags(
+        &ctx.paths.db,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .with_context(|| format!("open {} read-only", ctx.paths.db.display()))?;
+    conn.busy_timeout(BUSY_TIMEOUT)
+        .context("set the library database busy timeout")?;
+    Ok(conn)
+}
+
 /// The WAL behaviour every library open applies, idempotent and persistent
 /// in the file (see `db::open_wal` for why it matters).
 fn set_wal(conn: &Connection) -> Result<()> {
@@ -696,6 +710,48 @@ pub fn open_existing(ctx: &LibraryContext) -> Result<Connection> {
     Ok(conn)
 }
 
+/// Opens a complete current library without creating, migrating, or changing
+/// its database. Libraries that need preparation are refused with an
+/// instruction to run a normal writer command first.
+pub fn open_existing_read_only(ctx: &LibraryContext) -> Result<Connection> {
+    crate::library_locks::verify_state(ctx)?;
+    let _activity = crate::library_locks::try_activity(ctx, ActivityMode::Shared)?;
+    crate::library_locks::reject_redirect(&ctx.paths.config, "the library config")?;
+    crate::library_locks::reject_dir_redirect(&ctx.paths.embeddings, "the embeddings directory")?;
+    match inspect_db_file(ctx)? {
+        DbFile::Present => {}
+        DbFile::Absent => bail!(
+            "library {} has not been initialized: no database at {}",
+            ctx.paths.root.display(),
+            ctx.paths.db.display()
+        ),
+        DbFile::ZeroByte => bail!(
+            "library {} was never fully initialized: {} is empty; initialize it (for example with videre scan)",
+            ctx.paths.root.display(),
+            ctx.paths.db.display()
+        ),
+    }
+
+    let conn = open_existing_read_only_conn(ctx)?;
+    let version = user_version(&conn)?;
+    if version > SCHEMA_VERSION {
+        bail!(
+            "the library at {} was written by a newer videre (schema version {version}, this build understands up to {SCHEMA_VERSION}); upgrade videre to open it",
+            ctx.paths.root.display()
+        );
+    }
+    require_supported_library(&conn, &ctx.paths.db)?;
+    validate_row_containment(ctx, &conn)?;
+    if version < SCHEMA_VERSION || !schema_complete(&conn)? {
+        bail!(
+            "the library at {} requires an upgrade before it can be opened read-only; run a normal writer command such as `videre scan`, then retry",
+            ctx.paths.root.display()
+        );
+    }
+    verify_schema(&conn)?;
+    Ok(conn)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -751,6 +807,40 @@ mod tests {
             .query_row("SELECT count(*) FROM file_hashes", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn open_existing_read_only_refuses_an_older_schema_without_changing_bytes() {
+        let (_temp, ctx) = library();
+        let conn = initialize(&ctx).unwrap();
+        conn.pragma_update(None, "user_version", 0).unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .unwrap();
+        drop(conn);
+        let before = std::fs::read(&ctx.paths.db).unwrap();
+
+        let error = open_existing_read_only(&ctx).unwrap_err();
+
+        assert!(format!("{error:#}").contains("requires an upgrade"));
+        assert_eq!(std::fs::read(&ctx.paths.db).unwrap(), before);
+        let conn = open_without_create(&ctx.paths.db).unwrap();
+        assert_eq!(user_version(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn open_existing_read_only_opens_current_schema_and_rejects_writes() {
+        let (_temp, ctx) = library();
+        drop(initialize(&ctx).unwrap());
+
+        let conn = open_existing_read_only(&ctx).unwrap();
+        let error = conn
+            .execute("INSERT INTO file_hashes (path, hash) VALUES ('x', 'h')", [])
+            .unwrap_err();
+
+        assert_eq!(
+            error.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::ReadOnly)
+        );
     }
 
     #[test]
