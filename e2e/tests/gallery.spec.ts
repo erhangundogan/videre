@@ -87,6 +87,48 @@ test("closes the lightbox with Escape", async ({ page, gallery }) => {
   await expect(page.locator("#lb-img")).toHaveAttribute("src", "");
 });
 
+test("closes the lightbox from the close button and from a click outside", async ({ page, gallery }) => {
+  await page.goto(gallery.baseURL);
+
+  // The close button closes it.
+  await page.locator("#gallery [data-lb-type='image']").first().click();
+  await expect(page.locator("#lb")).toHaveClass(/on/);
+  await page.locator("#lb-close").click();
+  await expect(page.locator("#lb")).not.toHaveClass(/on/);
+
+  // Clicking outside the image (on the overlay) also closes it.
+  await page.locator("#gallery [data-lb-type='image']").first().click();
+  await expect(page.locator("#lb")).toHaveClass(/on/);
+  // Click the overlay itself, away from the stage, at the top-left corner.
+  await page.locator("#lb").click({ position: { x: 5, y: 5 } });
+  await expect(page.locator("#lb")).not.toHaveClass(/on/);
+});
+
+test("the fullscreen and close controls sit at the image's top right", async ({ page, gallery }) => {
+  await page.goto(gallery.baseURL);
+  await page.locator("#gallery [data-lb-type='image']").first().click();
+  await expect(page.locator("#lb-img")).toBeVisible();
+
+  const fs = page.locator("#lb-fs");
+  const close = page.locator("#lb-close");
+  await expect(fs).toBeVisible();
+  await expect(close).toBeVisible();
+
+  const stage = await page.locator(".lb-stage").boundingBox();
+  const controls = await page.locator(".lb-controls").boundingBox();
+  const fsBox = await fs.boundingBox();
+  const closeBox = await close.boundingBox();
+  if (!stage || !controls || !fsBox || !closeBox) throw new Error("missing bounding boxes");
+
+  // Anchored to the image stage, not the viewport: the controls hug the stage's
+  // top-right corner rather than the screen corner.
+  expect(controls.x + controls.width).toBeGreaterThan(stage.x + stage.width - 24);
+  expect(controls.y).toBeLessThan(stage.y + 24);
+  // Fullscreen and close are side by side, fullscreen first.
+  expect(fsBox.x).toBeLessThan(closeBox.x);
+  expect(Math.abs(fsBox.y - closeBox.y)).toBeLessThan(2);
+});
+
 test("opens a scanned MP4 in the lightbox", async ({ page, gallery }) => {
   await page.goto(gallery.baseURL);
   const video = page.locator("#gallery [data-lb-type='video']");

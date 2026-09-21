@@ -14,7 +14,10 @@
 <div class="lightbox" id="lb" onclick="closeLb()">
   <button type="button" class="lb-nav lb-prev" id="lb-prev" aria-label="Previous" onclick="event.stopPropagation();lbStep(-1)" hidden>&#8249;</button>
   <div class="lb-stage" onclick="event.stopPropagation()">
-    <button type="button" class="lb-fs" id="lb-fs" aria-label="Fullscreen" title="Fullscreen" onclick="toggleLbFullscreen()" hidden>&#x26F6;</button>
+    <div class="lb-controls">
+      <button type="button" class="lb-fs" id="lb-fs" aria-label="Fullscreen" title="Fullscreen" onclick="toggleLbFullscreen()" hidden>&#x26F6;</button>
+      <button type="button" class="lb-close" id="lb-close" aria-label="Close" title="Close" onclick="closeLb()">&times;</button>
+    </div>
     <img id="lb-img" src="" alt="">
     <video id="lb-vid" src="" controls autoplay style="display:none"></video>
     <div class="lb-meta" id="lbMeta"></div>
