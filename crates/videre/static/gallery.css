@@ -114,6 +114,10 @@ th.preview-th{width:130px}
 /* In the card grid the button is pinned to the card bottom (see .card); the
    table and results strip keep the plain top margin above. */
 .card .similar-btn{margin-top:auto;align-self:center}
+/* margin-top:auto collapses to 0 in a card with no spare height, leaving the
+   button touching the filename. A bottom margin on the line above it keeps a
+   gap there regardless. */
+.card .card-meta:has(+ .similar-btn){margin-bottom:8px}
 .date-view{padding:24px 16px}
 .date-breadcrumb{margin-bottom:16px;font-size:13px;color:#71717a}
 .date-breadcrumb a{color:#3f3f46;cursor:pointer;text-decoration:underline}
