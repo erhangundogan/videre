@@ -25,6 +25,7 @@ pub(crate) struct FileRow {
 }
 
 pub(crate) struct Stats {
+    total_files: i64,
     duplicate_groups: i64,
 }
 
@@ -640,6 +641,7 @@ fn group_to_json(
 pub(crate) fn query_stats(conn: &Connection) -> Stats {
     let s = videre_core::library_stats::compute(conn).unwrap_or_default();
     Stats {
+        total_files: s.total_files,
         duplicate_groups: s.duplicate_group_count,
     }
 }
@@ -841,6 +843,10 @@ struct GalleryPage<'a> {
     /// not escape it again.
     library: String,
     generated_at: &'a str,
+    /// Total scanned files and how many carry embeddings, shown as the header's
+    /// "Files/Embedding Count" line on the home page.
+    total_files: i64,
+    embedded: Option<usize>,
     has_groups: bool,
     duplicate_groups: i64,
     all_files_count: Option<usize>,
@@ -1014,6 +1020,8 @@ pub(crate) fn render(set: &RenderSet) -> String {
             .strip_suffix("/.videre/hashes.db")
             .unwrap_or(db_path)),
         generated_at: &now,
+        total_files: stats.total_files,
+        embedded,
         has_groups: !groups.is_empty(),
         duplicate_groups: stats.duplicate_groups,
         all_files_count: all_files.map(|f| f.len()),
