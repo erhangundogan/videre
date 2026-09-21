@@ -16,6 +16,26 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.36.0] - 2026-09-21
+
+### Added
+
+- **`videre faces --evaluate` scores the current face clustering against
+  confirmed labels.** The command replays grouping over stored embeddings and
+  reports pair precision, pair recall, mixed clusters, fragmented identities,
+  and the unassigned rate - read-only, model-free, and deterministic.
+  `--json` emits the full report; tuning flags (`--eps`, `--merge-sim`, and
+  the rest) let you evaluate hypothetical parameter changes without touching
+  face state.
+- **Decision evidence, identity-balanced sampling, and face learning
+  profiles** land as the evaluation foundation for face clustering quality
+  work: reconstructable decision evidence with versioned schemas,
+  identity-held-out validation folds, Wilson-bound suggestion gates,
+  fail-closed profile promotion with atomic activation, and frozen-dataset
+  comparison. These are plumbing for upcoming quality improvements; nothing
+  in this release changes grouping behavior for labeled faces.
+
+
 ## [0.35.0] - 2026-09-21
 
 ### Added
@@ -2044,7 +2064,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.35.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.36.0...HEAD
+[0.36.0]: https://github.com/erhangundogan/videre/compare/v0.35.0...v0.36.0
 [0.35.0]: https://github.com/erhangundogan/videre/compare/v0.34.0...v0.35.0
 [0.34.0]: https://github.com/erhangundogan/videre/compare/v0.33.0...v0.34.0
 [0.33.0]: https://github.com/erhangundogan/videre/compare/v0.32.0...v0.33.0
