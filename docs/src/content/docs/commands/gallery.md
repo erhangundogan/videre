@@ -33,10 +33,11 @@ Once the lightbox is open, move through the items without closing it: the
 on-screen arrows at the left and right edges, or the **Left** and **Right**
 arrow keys, step to the previous and next item. Stepping past the last loaded
 item pulls in the next page automatically and keeps going, so **Show more** is
-not needed to browse to the end. The **Fullscreen** button in the top corner of
-the item blows the whole lightbox up to the screen, arrows and info panel
-included; the same button (or **Escape**) steps back. **Escape** or a click
-outside the item closes the lightbox.
+not needed to browse to the end. At the item's top-right corner sit two
+buttons: **Fullscreen** blows the whole lightbox up to the screen, arrows and
+info panel included (the same button, or **Escape**, steps back), and **Close**
+(the &#215; at its right) dismisses it. The close button, **Escape**, or a click
+outside the item all close the lightbox.
 
 An info panel sits directly under the media: the labeled people in the photo
 (each links to that person's page), the place name when the file has GPS, and
