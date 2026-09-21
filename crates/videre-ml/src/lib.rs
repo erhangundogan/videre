@@ -1,5 +1,6 @@
 pub mod classify;
 pub mod device;
+pub mod evaluation;
 pub mod face_align;
 pub mod face_detect;
 pub mod face_embed;

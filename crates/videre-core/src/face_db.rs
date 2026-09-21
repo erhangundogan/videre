@@ -274,6 +274,27 @@ pub fn load_face_embeddings(conn: &Connection) -> rusqlite::Result<Vec<(i64, Vec
     Ok(out)
 }
 
+/// Loads confirmed person labels as evaluation truth without migrating or
+/// modifying face state.
+pub fn load_confirmed_face_labels(
+    conn: &Connection,
+) -> rusqlite::Result<Vec<crate::face_learning::LabeledFace>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, person_label FROM faces
+         WHERE confirmed = 1 AND person_label IS NOT NULL
+         ORDER BY id",
+    )?;
+    let labels = stmt
+        .query_map([], |row| {
+            Ok(crate::face_learning::LabeledFace::new(
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+            ))
+        })?
+        .collect();
+    labels
+}
+
 /// Like [`load_face_embeddings`] but also returns each face's smaller bbox
 /// side in pixels (the shorter of width/height), parsed from the `"x,y,w,h"`
 /// bbox string. Used as a quality signal: very small face crops embed into
@@ -783,6 +804,55 @@ mod tests {
         assert_eq!(rows[0].2, 200.0, "min side of 200x300 bbox");
         assert_eq!(rows[1].2, 25.0, "min side of 40x25 bbox");
         assert_eq!(rows[0].1.len(), 512, "embedding still decoded");
+    }
+
+    #[test]
+    fn load_confirmed_face_labels_returns_only_ordered_truth_without_mutation() {
+        let conn = open();
+        for (id, confirmed, label, cluster_id) in [
+            (4, 0, Some("unconfirmed"), Some(40)),
+            (3, 1, None, Some(30)),
+            (2, 1, Some("zoe"), Some(20)),
+            (1, 1, Some("İpek"), Some(10)),
+            (5, 0, None, None),
+        ] {
+            conn.execute(
+                "INSERT INTO faces
+                 (id, hash, bbox, embedding, cluster_id, person_label, confirmed)
+                 VALUES (?1, ?2, '0,0,10,10', X'0000', ?3, ?4, ?5)",
+                rusqlite::params![id, format!("h{id}"), cluster_id, label, confirmed],
+            )
+            .unwrap();
+        }
+        let before: Vec<(i64, Option<i64>, Option<String>, i64)> = conn
+            .prepare("SELECT id, cluster_id, person_label, confirmed FROM faces ORDER BY id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+
+        let labels = load_confirmed_face_labels(&conn).unwrap();
+
+        assert_eq!(
+            labels,
+            vec![
+                crate::face_learning::LabeledFace::new(1, "İpek"),
+                crate::face_learning::LabeledFace::new(2, "zoe"),
+            ]
+        );
+        let after: Vec<(i64, Option<i64>, Option<String>, i64)> = conn
+            .prepare("SELECT id, cluster_id, person_label, confirmed FROM faces ORDER BY id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(after, before);
     }
 
     #[test]
