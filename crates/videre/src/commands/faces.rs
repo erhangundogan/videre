@@ -34,6 +34,24 @@ pub struct FacesArgs {
     #[command(flatten)]
     xmp: crate::xmp::XmpArg,
 
+    /// Replay grouping over stored embeddings and score it against confirmed labels.
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "reset",
+            "recluster",
+            "limit",
+            "dry_run",
+            "profile",
+            "workers",
+            "qlmanage_concurrency"
+        ]
+    )]
+    evaluate: bool,
+    /// Print the evaluation report as JSON.
+    #[arg(long, requires = "evaluate")]
+    json: bool,
+
     /// Wipe all face state: people labels, grouping, and detection markers,
     /// then re-detect and regroup from scratch. Asks for confirmation; use
     /// --yes to skip
@@ -153,6 +171,54 @@ impl FacesArgs {
     }
 }
 
+fn validate_evaluation_arguments(args: &FacesArgs) -> Result<()> {
+    let selection = super::selection_args::row_selection(
+        Some(&args.media),
+        Some(&args.dates),
+        Some(&args.place),
+        None,
+        Some(&args.presence),
+        Some(&args.paths),
+        Some(&args.marks),
+        Some(&args.tags),
+    )?;
+    if !selection.is_empty() || args.yes {
+        anyhow::bail!(
+            "--evaluate always covers the complete labeled library; selection flags and --yes are not accepted"
+        );
+    }
+    Ok(())
+}
+
+fn format_evaluation(report: &videre_ml::evaluation::BaselineEvaluation) -> String {
+    fn percent(value: Option<f64>) -> String {
+        value
+            .map(|value| format!("{:.2}%", value * 100.0))
+            .unwrap_or_else(|| "n/a".to_string())
+    }
+
+    let metrics = &report.evaluation.clustering;
+    format!(
+        "Face clustering evaluation\n\
+         Labeled faces: {}\n\
+         Identities: {}\n\
+         Pair precision: {}\n\
+         Pair recall: {}\n\
+         Mixed clusters: {}\n\
+         Fragmented identities: {}\n\
+         Unassigned rate: {}\n\
+         Clustering time: {} ms",
+        metrics.labeled_faces,
+        metrics.labeled_identities,
+        percent(metrics.pair_precision),
+        percent(metrics.pair_recall),
+        metrics.mixed_clusters,
+        metrics.fragmented_identities,
+        percent(Some(metrics.unassigned_rate)),
+        report.clustering_time_ms,
+    )
+}
+
 pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
     // Must happen before any HEIC file could be converted (the semaphore is a
     // OnceLock: first use wins for the life of this process). Clamped to at
@@ -165,7 +231,11 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
     // reader of models, so it never creates a model store.
     videre_core::library_guard::validate_paths(&ctx.library, &args.paths.path)?;
 
-    let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    let conn = if args.evaluate {
+        videre_core::library_db::open_existing_read_only(&ctx.library)?
+    } else {
+        videre_core::library_db::open_existing(&ctx.library)?
+    };
     // Resetting (wiping and re-detecting every face) or reclustering
     // rewrites the whole face partition, so it takes the library's exclusive
     // activity lease and locks out every other operation; ordinary incremental
@@ -185,6 +255,28 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
     // Held for the whole run, both the detection and the recluster-only paths,
     // so a second faces run against this library is refused rather than racing.
     let guard = videre_core::library_locks::try_command(&ctx.library, "faces")?;
+
+    if args.evaluate {
+        validate_evaluation_arguments(&args)?;
+        conn.execute_batch("PRAGMA query_only = ON")?;
+        let parameters = videre_ml::evaluation::ClusteringParameters {
+            eps: args.eps,
+            min_cluster_size: args.min_cluster_size,
+            merge_sim: args.merge_sim,
+            min_face_size: args.min_face_size,
+            max_generic_sim: args.max_generic_sim,
+            max_landmark_error: args.max_landmark_error,
+            min_blur: args.min_blur,
+            attach_sim: args.attach_sim,
+        };
+        let report = videre_ml::evaluation::evaluate_current_clustering(&conn, &parameters)?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            println!("{}", format_evaluation(&report));
+        }
+        return Ok(());
+    }
 
     // 1. Determine which hashes to process
     let all_paths: Vec<(String, String)> = {
@@ -602,6 +694,77 @@ mod tests {
         // The derived-data gap holds: person/category are not part of faces's vocabulary.
         assert!(Wrap::try_parse_from(["faces", "--person", "Ada"]).is_err());
         assert!(Wrap::try_parse_from(["faces", "--category", "photo"]).is_err());
+    }
+
+    #[test]
+    fn evaluation_flags_parse_with_tuning_and_json_requires_evaluation() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Wrap {
+            #[command(flatten)]
+            a: FacesArgs,
+        }
+        let args = Wrap::try_parse_from([
+            "faces",
+            "--evaluate",
+            "--json",
+            "--eps",
+            "0.1",
+            "--min-cluster-size",
+            "2",
+            "--attach-sim",
+            "1",
+        ])
+        .unwrap()
+        .a;
+        assert!(args.evaluate && args.json);
+        assert_eq!(args.eps, 0.1);
+        assert_eq!(args.min_cluster_size, 2);
+        assert_eq!(args.attach_sim, 1.0);
+        assert!(Wrap::try_parse_from(["faces", "--json"]).is_err());
+    }
+
+    #[test]
+    fn evaluation_conflicts_with_mutating_and_pipeline_controls() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Wrap {
+            #[command(flatten)]
+            a: FacesArgs,
+        }
+        for arguments in [
+            vec!["faces", "--evaluate", "--reset"],
+            vec!["faces", "--evaluate", "--recluster"],
+            vec!["faces", "--evaluate", "--limit", "1"],
+            vec!["faces", "--evaluate", "--dry-run"],
+            vec!["faces", "--evaluate", "--profile"],
+            vec!["faces", "--evaluate", "--workers", "1"],
+            vec!["faces", "--evaluate", "--qlmanage-concurrency", "1"],
+        ] {
+            assert!(Wrap::try_parse_from(arguments).is_err());
+        }
+    }
+
+    #[test]
+    fn evaluation_rejects_selection_and_yes_with_complete_library_message() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Wrap {
+            #[command(flatten)]
+            a: FacesArgs,
+        }
+        for arguments in [
+            vec!["faces", "--evaluate", "--date", "2024"],
+            vec!["faces", "--evaluate", "--tag", "trip"],
+            vec!["faces", "--evaluate", "--yes"],
+        ] {
+            let args = Wrap::try_parse_from(arguments).unwrap().a;
+            let error = validate_evaluation_arguments(&args).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("complete labeled library"),
+                "{error:#}"
+            );
+        }
     }
 
     #[test]

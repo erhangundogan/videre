@@ -82,6 +82,44 @@ have not named. A face you assigned to a person keeps its name and its person
 page exactly as it is, whatever tuning flags you pass, so experimenting is
 safe.
 
+## Evaluate grouping quality
+
+If you have named some faces, `--evaluate` can measure how the current grouping
+parameters reproduce those confirmed labels:
+
+```bash
+videre faces --evaluate
+videre faces --evaluate --json
+videre faces --evaluate --eps 0.55 --min-cluster-size 3 --json
+```
+
+Confirmed labels act as ground truth only for this report. Evaluation replays
+the selected grouping parameters over every stored face embedding in memory,
+including labeled faces, then compares the temporary groups with the labels. It
+does not detect faces, load or download models, migrate the database, or write
+group assignments. The groups and labels stored in your library stay unchanged.
+
+The report includes:
+
+- **Pair precision:** among pairs placed in the same group, the share with the
+  same confirmed identity.
+- **Pair recall:** among pairs with the same confirmed identity, the share
+  placed in the same group.
+- **Mixed clusters:** groups containing more than one confirmed identity.
+- **Fragmented identities:** confirmed identities spread across more than one
+  group or the unassigned outcome.
+- **Unassigned rate:** the share of labeled faces left outside a group.
+
+When a denominator does not exist, such as pair metrics for one labeled face,
+the human report says `n/a` and JSON uses `null`. Current videre does not
+suggest person labels, so suggestion coverage is zero and the JSON
+`suggestions` field is `null` rather than a fabricated score.
+
+Evaluation always covers the complete labeled library, so it rejects selection
+flags such as `--date`, `--path`, and `--tag`. JSON output contains aggregate
+measurements and selected parameters only. It intentionally excludes paths,
+hashes, person names, face ids, and embeddings.
+
 ## Your labels are frozen
 
 Assigning a face to a person freezes it. Clustering, `--recluster`, watch, and
