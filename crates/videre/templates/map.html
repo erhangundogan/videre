@@ -30,17 +30,17 @@
   <div class="stats"><div class="stat"><span class="num">{{ total_files }}</span><span class="label">Files scanned</span></div></div>
 </div>
 <main class="map-page">
+  <div id="map-plot-wrap">
+    <canvas id="map-plot"></canvas>
+    <div id="map-empty" class="muted" hidden>Run <code>videre locations</code> to plot your photos</div>
+  </div>
   <div id="map-selection-row" class="map-selection-row" hidden>
-    <nav id="map-breadcrumb" aria-label="Map breadcrumb"></nav>
+    <span id="map-breadcrumb" class="map-place"></span>
     <label for="map-radius">Radius</label>
     <input id="map-radius" type="number" min="1" step="1">
     <span>km</span>
   </div>
   <p id="map-selection-status" class="map-selection-status" role="status" hidden></p>
-  <div id="map-plot-wrap">
-    <canvas id="map-plot"></canvas>
-    <div id="map-empty" class="muted" hidden>Run <code>videre locations</code> to plot your photos</div>
-  </div>
   <div class="gallery-head">
     <h2>All files</h2>
     <label class="view-toggle">View <select class="view-mode-select" onchange="setViewMode(this.value)"><option value="list">List</option><option value="tile">Tile</option></select></label>

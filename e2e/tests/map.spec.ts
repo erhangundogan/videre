@@ -81,7 +81,7 @@ test.describe("map clusters", () => {
     await page.locator(".map-marker[data-name='Berlin']").click();
 
     await expect(page).toHaveURL(/\/map\/location\/berlin\?radius=20(?:\.0)?$/);
-    await expect(page.locator("#map-breadcrumb")).toContainText("Map > Berlin");
+    await expect(page.locator("#map-breadcrumb")).toHaveText("Berlin");
     await expect(page.locator(".map-marker[data-name='Berlin']")).toHaveClass(/active/);
     await expect(page.locator("#gallery .card")).toHaveCount(2);
 
@@ -91,7 +91,7 @@ test.describe("map clusters", () => {
 
   test("direct location URL lands in the same selected state", async ({ page, gallery }) => {
     await page.goto(`${gallery.baseURL}/map/location/berlin?radius=20`);
-    await expect(page.locator("#map-breadcrumb")).toContainText("Map > Berlin");
+    await expect(page.locator("#map-breadcrumb")).toHaveText("Berlin");
     await expect(page.locator(".map-marker[data-name='Berlin']")).toHaveClass(/active/);
     await expect(page.locator("#gallery .card")).toHaveCount(2);
   });

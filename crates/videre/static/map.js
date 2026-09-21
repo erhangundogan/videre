@@ -106,21 +106,49 @@
         point.y >= -padding && point.y <= wrapper.clientHeight + padding;
     }
 
-    function addMarker(label, count, lat, lon, markerTier, clusterId, click) {
-      var point = map.project([lon, lat]);
+    // Estimate a marker's on-screen box from its label, so overlap can be
+    // tested without a reflow per tag on every move/zoom. The chip is centred
+    // on its point (translate(-50%,-50%)) and sized like the CSS pill.
+    function markerBox(point, label) {
+      var width = Math.min(180, Math.max(88, label.length * 7.2 + 46));
+      var height = 30;
+      return {
+        left: point.x - width / 2, right: point.x + width / 2,
+        top: point.y - height / 2, bottom: point.y + height / 2
+      };
+    }
+
+    function overlaps(a, b) {
+      var gap = 4;
+      return !(a.right + gap < b.left || a.left - gap > b.right ||
+        a.bottom + gap < b.top || a.top - gap > b.bottom);
+    }
+
+    function addMarker(spec, placed) {
+      var point = map.project([spec.lon, spec.lat]);
       if (!inView(point)) return;
+      var box = markerBox(point, spec.label);
+      // Declutter: a tag yields to an already-placed, higher-priority tag it
+      // would overlap, so nearby markers thin out instead of piling into an
+      // unreadable clump. Zooming in spreads the points and reveals more. The
+      // active selection is always kept.
+      if (!spec.active) {
+        for (var i = 0; i < placed.length; i++) {
+          if (overlaps(box, placed[i])) return;
+        }
+      }
+      placed.push(box);
       var button = document.createElement('button');
       button.type = 'button';
-      button.className = 'map-marker' +
-        (clusterId !== null && activeCluster && clusterId === activeCluster.cluster_id ?
-          ' active' : '');
-      button.dataset.tier = markerTier;
-      button.dataset.name = label;
-      if (clusterId !== null) button.dataset.cluster = String(clusterId);
+      button.className = 'map-marker' + (spec.active ? ' active' : '');
+      button.dataset.tier = spec.tier;
+      button.dataset.name = spec.label;
+      if (spec.clusterId !== null) button.dataset.cluster = String(spec.clusterId);
       button.style.left = point.x + 'px';
       button.style.top = point.y + 'px';
-      button.innerHTML = escH(label) + '<span class="map-marker-count">' + count + '</span>';
-      button.addEventListener('click', click);
+      button.innerHTML = escH(spec.label) +
+        '<span class="map-marker-count">' + spec.count + '</span>';
+      button.addEventListener('click', spec.click);
       markerLayer.appendChild(button);
     }
 
@@ -128,22 +156,39 @@
       return map.getZoom() < CLUSTER_ZOOM ? 'world' : 'clusters';
     }
 
+    // Marker specs for the current tier, ordered by priority so decluttering
+    // keeps the most significant tags: the active selection first, then the
+    // largest by photo count.
+    function markerSpecs() {
+      if (tier() === 'world') {
+        return Object.keys(byContinent).map(function (name) {
+          var group = byContinent[name];
+          return {
+            label: group.name, count: group.count, lat: group.lat, lon: group.lon,
+            tier: 'continent', clusterId: null, active: false,
+            click: function () { map.flyTo({ center: [group.lon, group.lat], zoom: CLUSTER_ZOOM + 1 }); }
+          };
+        }).sort(function (a, b) { return b.count - a.count; });
+      }
+      return clusters.map(function (cluster) {
+        var isActive = !!(activeCluster && cluster.cluster_id === activeCluster.cluster_id);
+        return {
+          label: cluster.name, count: cluster.photo_count,
+          lat: cluster.centroid_lat, lon: cluster.centroid_lon,
+          tier: 'cluster', clusterId: cluster.cluster_id, active: isActive,
+          click: function () { selectCluster(cluster, cluster.radius_km, 'push'); }
+        };
+      }).sort(function (a, b) {
+        if (a.active !== b.active) return a.active ? -1 : 1;
+        return b.count - a.count;
+      });
+    }
+
     function updateMarkers() {
       if (!map) return;
       markerLayer.innerHTML = '';
-      if (tier() === 'world') {
-        Object.keys(byContinent).sort().forEach(function (name) {
-          var group = byContinent[name];
-          addMarker(group.name, group.count, group.lat, group.lon, 'continent', null,
-            function () { map.flyTo({ center: [group.lon, group.lat], zoom: CLUSTER_ZOOM + 1 }); });
-        });
-        return;
-      }
-      clusters.forEach(function (cluster) {
-        addMarker(cluster.name, cluster.photo_count, cluster.centroid_lat, cluster.centroid_lon,
-          'cluster', cluster.cluster_id,
-          function () { selectCluster(cluster, cluster.radius_km, 'push'); });
-      });
+      var placed = [];
+      markerSpecs().forEach(function (spec) { addMarker(spec, placed); });
     }
 
     function destinationPoint(cluster, radius, bearing) {
@@ -191,7 +236,7 @@
       selectionStatus.hidden = true;
       selectionStatus.textContent = '';
       selectionRow.hidden = false;
-      breadcrumb.innerHTML = '<a href="/map">Map</a> &gt; ' + escH(cluster.name);
+      breadcrumb.textContent = cluster.name;
       radiusInput.value = String(radius);
     }
 
@@ -697,7 +742,7 @@
       selectionStatus.hidden = true;
       selectionStatus.textContent = '';
       selectionRow.hidden = false;
-      breadcrumb.innerHTML = '<a href="/map">Map</a> &gt; ' + escH(cluster.name);
+      breadcrumb.textContent = cluster.name;
       radiusInput.value = String(radius);
     }
 
