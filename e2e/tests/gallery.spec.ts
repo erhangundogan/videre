@@ -129,6 +129,20 @@ test("the fullscreen and close controls sit at the image's top right", async ({ 
   expect(Math.abs(fsBox.y - closeBox.y)).toBeLessThan(2);
 });
 
+test("small media keeps the lightbox controls clear of the metadata", async ({ page, gallery }) => {
+  // The fixture is a tiny 64px image; without a minimum stage size the control
+  // bar would overlap the metadata panel below.
+  await page.goto(gallery.baseURL);
+  await page.locator("#gallery [data-lb-type='image']").first().click();
+  await expect(page.locator("#lb-img")).toBeVisible();
+
+  const controls = await page.locator(".lb-controls").boundingBox();
+  const meta = await page.locator("#lbMeta").boundingBox();
+  if (!controls || !meta) throw new Error("missing bounding boxes");
+  // The control bar sits entirely above the metadata panel, not over it.
+  expect(controls.y + controls.height).toBeLessThanOrEqual(meta.y + 1);
+});
+
 test("rotate is offered for photos, rotates, and is hidden for video", async ({ page, gallery }) => {
   await page.goto(gallery.baseURL);
 
