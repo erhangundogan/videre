@@ -39,6 +39,66 @@ pub fn next_orientation_cw(current: u16) -> u16 {
     }
 }
 
+/// The display-canvas dimensions of `path` as it decodes *right now*, before any
+/// rotation: the raw pixel dimensions with the current EXIF Orientation applied.
+/// A transposing orientation (5-8) swaps width and height, so a landscape sensor
+/// buffer displayed portrait reports its portrait dimensions here.
+///
+/// Used to transform stored face geometry when the orientation is bumped: the
+/// bbox/landmark coordinates are in this pre-rotation display canvas, so the turn
+/// that maps a point to the new canvas needs this canvas's height. Returns `None`
+/// if the dimensions cannot be read.
+pub fn current_display_dimensions(path: &Path) -> Option<(u32, u32)> {
+    let (w, h) = image::image_dimensions(path).ok()?;
+    if matches!(current_orientation(path), 5..=8) {
+        Some((h, w))
+    } else {
+        Some((w, h))
+    }
+}
+
+/// Rotate an `"x,y,w,h"` bbox string (integers, as `videre faces` writes them)
+/// 90 degrees clockwise on a display canvas of height `display_h` pixels, giving
+/// its position in the canvas after one clockwise turn. A point `(x, y)` maps to
+/// `(display_h - y, x)`; the box's width and height swap. Returns `None` if the
+/// string is not four integers.
+pub fn rotate_bbox_cw(bbox: &str, display_h: i32) -> Option<String> {
+    let v: Vec<i32> = bbox
+        .split(',')
+        .map(|s| s.trim().parse().ok())
+        .collect::<Option<_>>()?;
+    if v.len() != 4 {
+        return None;
+    }
+    let (x, y, w, h) = (v[0], v[1], v[2], v[3]);
+    // Top-left corner (x, y) turns to (display_h - y, x); the opposite corner
+    // (x+w, y+h) turns to (display_h - y - h, x + w). The new top-left is the
+    // smaller of the two, so x' = display_h - y - h, y' = x, and the sides swap.
+    Some(format!("{},{},{},{}", display_h - y - h, x, h, w))
+}
+
+/// Rotate a `"x1,y1,...,x5,y5"` landmark string 90 degrees clockwise on a
+/// display canvas of height `display_h`, mapping each point `(x, y)` to
+/// `(display_h - y, x)`. Returns `None` if the string is not an even, non-empty
+/// list of floats. Coordinates are formatted like the detector writes them
+/// (default float `Display`).
+pub fn rotate_landmark_cw(landmark: &str, display_h: f32) -> Option<String> {
+    let v: Vec<f32> = landmark
+        .split(',')
+        .map(|s| s.trim().parse().ok())
+        .collect::<Option<_>>()?;
+    if v.is_empty() || !v.len().is_multiple_of(2) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(v.len());
+    for pair in v.chunks_exact(2) {
+        let (x, y) = (pair[0], pair[1]);
+        out.push((display_h - y).to_string());
+        out.push(x.to_string());
+    }
+    Some(out.join(","))
+}
+
 /// Read the current Orientation tag, defaulting to 1 when the file carries
 /// none (or none can be parsed).
 fn current_orientation(path: &Path) -> u16 {
@@ -120,6 +180,39 @@ mod tests {
         let after2 = rotate_cw_in_place(&path, "jpg").unwrap();
         assert_eq!(after2, next_orientation_cw(after));
         assert_eq!(current_orientation(&path), after2);
+    }
+
+    #[test]
+    fn bbox_turns_clockwise_and_swaps_sides() {
+        // On a 100-tall display canvas, a box at (10, 20) sized 30x40 turns so
+        // its new top-left x is 100 - 20 - 40 = 40, y is the old x (10), and the
+        // width/height swap to 40x30.
+        assert_eq!(
+            rotate_bbox_cw("10,20,30,40", 100),
+            Some("40,10,40,30".into())
+        );
+        // Four turns return to the start (canvas height alternates W<->H).
+        let b0 = "10,20,30,40";
+        let b1 = rotate_bbox_cw(b0, 100).unwrap(); // canvas 80x100 -> 100x80
+        let b2 = rotate_bbox_cw(&b1, 80).unwrap(); // canvas 100x80 -> 80x100
+        let b3 = rotate_bbox_cw(&b2, 100).unwrap();
+        let b4 = rotate_bbox_cw(&b3, 80).unwrap();
+        assert_eq!(b4, b0);
+        // Malformed input is refused rather than corrupted.
+        assert_eq!(rotate_bbox_cw("1,2,3", 100), None);
+        assert_eq!(rotate_bbox_cw("a,b,c,d", 100), None);
+    }
+
+    #[test]
+    fn landmark_turns_each_point_clockwise() {
+        // (x, y) -> (H - y, x); two points on a 100-tall canvas.
+        assert_eq!(
+            rotate_landmark_cw("10,20,30,40", 100.0),
+            Some("80,10,60,30".into())
+        );
+        // An odd or empty list is refused.
+        assert_eq!(rotate_landmark_cw("1,2,3", 100.0), None);
+        assert_eq!(rotate_landmark_cw("", 100.0), None);
     }
 
     #[test]

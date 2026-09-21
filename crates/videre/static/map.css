@@ -3,7 +3,9 @@
 .map-selection-row{display:flex;align-items:center;gap:12px;min-height:32px;color:#a1a1aa}
 .map-selection-row[hidden],.map-selection-status[hidden]{display:none}
 .map-selection-row .map-place{color:#f4f4f5;font-weight:600}
-.map-selection-row label{font-size:13px}
+/* Breadcrumb stays left; the radius label/input/unit are pushed to the right
+   edge of the row so the selected place and its radius sit at opposite ends. */
+.map-selection-row label{font-size:13px;margin-left:auto}
 .map-selection-row input{width:76px;padding:6px 8px;border:1px solid #3f3f46;border-radius:6px;background:#18181b;color:#f4f4f5}
 .map-selection-row input:focus-visible{outline:2px solid #60a5fa;outline-offset:2px}
 .map-selection-status{color:#fbbf24}

@@ -221,11 +221,13 @@ function renderMetaPanel(meta){
         const n = document.getElementById(locId);
         if(!n) return;
         if(d.name){
-          // On a live server the place links to its map drill-down; the route
-          // resolves the name to a cluster and selects its tag (or shows the
-          // honest unknown-location state when nothing matches).
+          // On a live server the place links to the map by the photo's own
+          // coordinates, not by this reverse-geocoded name: the name is finer
+          // ("Schöneberg, DE") than any cluster's ("Berlin"), so the server
+          // resolves the point to the nearest cluster and selects its tag. A
+          // static export has no server, so it stays plain text.
           n.innerHTML = LIVE_SERVER
-            ? '<a class="lb-link" href="/map/location/'+encodeURIComponent(d.name)+'">'+escH(d.name)+'</a>'
+            ? '<a class="lb-link" href="/map?near='+encodeURIComponent(meta.location.lat+','+meta.location.lon)+'">'+escH(d.name)+'</a>'
             : escH(d.name);
         } else {
           n.textContent = 'Unknown location';
@@ -704,7 +706,7 @@ document.getElementById('lb').addEventListener('click',function(e){
   if(e.target===this)closeLb();
 });
 
-// Click to zoom (toggle), wheel to zoom toward the cursor, drag to pan. A click
+// Click to zoom (toggle 1:1), drag to pan, wheel to pan while zoomed. A click
 // is distinguished from a pan by the pointer barely moving, so dragging the
 // zoomed image never toggles it back to fit.
 (function(){
@@ -713,8 +715,14 @@ document.getElementById('lb').addEventListener('click',function(e){
   var down=false,moved=false,sx=0,sy=0,ox=0,oy=0,pid=null;
   img.addEventListener('wheel',function(e){
     if(img.style.display==='none')return;
+    // The wheel no longer zooms: zoom is reached only by clicking the image
+    // (toggle 1:1) or the fullscreen button. While zoomed the wheel pans over
+    // the enlarged image; while fit-to-screen it does nothing, but is still
+    // swallowed so the page behind the open lightbox does not scroll.
     e.preventDefault();
-    lbZoomAt(lbz.scale*(e.deltaY<0?1.2:1/1.2),e.clientX,e.clientY);
+    if(lbz.scale<=1)return;
+    lbz.x-=e.deltaX; lbz.y-=e.deltaY;
+    lbClampPan(); lbApply();
   },{passive:false});
   img.addEventListener('pointerdown',function(e){
     if(img.style.display==='none')return;
@@ -992,6 +1000,63 @@ function clearResults(){
   panel.style.display='none';
   panel.innerHTML='';
 }
+// The nav search box submits to `/?q=`; the Files page reads it here and ranks
+// the library semantically through the same /api/search endpoint the Similar
+// button uses, rendering into the same #results strip. Only the Files page has
+// that panel, so a search from another section navigates here first.
+function runTextSearch(q){
+  var panel=document.getElementById('results');
+  if(!panel)return;
+  panel.style.display='block';
+  panel.innerHTML='<div class="results-head"><h2>Searching&hellip;</h2></div>';
+  fetch('/api/search?q='+encodeURIComponent(q)+'&limit=48')
+    .then(function(r){ if(!r.ok)throw 0; return r.json(); })
+    .then(function(d){ resolveTextResults(q,d.results||[]); })
+    .catch(function(){
+      panel.innerHTML='<div class="results-head"><h2>Search failed</h2>'+
+        '<button onclick="clearResults()">Clear</button></div>';
+    });
+}
+// Search returns a ranking of hashes; resolve the rows behind them by hash
+// (the same seam similarity uses) before drawing. See renderResults.
+function resolveTextResults(query,scored){
+  var missing=scored.map(function(s){return s.hash;}).filter(function(h){return !RESULT_ROWS[h];});
+  if(missing.length===0){ drawTextResults(query,scored); return; }
+  fetch('/api/files?hashes='+encodeURIComponent(missing.join(',')))
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      (d.files||[]).forEach(function(f){ RESULT_ROWS[f.hash]=f; });
+      drawTextResults(query,scored);
+    })
+    .catch(function(){ drawTextResults(query,scored); });
+}
+function drawTextResults(query,scored){
+  var panel=document.getElementById('results');
+  var html='<div class="results-head"><h2>Results for &ldquo;'+escH(query)+'&rdquo;</h2>'+
+    '<button onclick="clearResults()">Clear</button></div><div class="results-strip">';
+  for(var i=0;i<scored.length;i++)html+=resultCard(scored[i].hash,scored[i].score,false);
+  html+='</div>';
+  if(!scored.length)html='<div class="results-head"><h2>No matches for &ldquo;'+escH(query)+
+    '&rdquo;</h2><button onclick="clearResults()">Clear</button></div>';
+  panel.innerHTML=html;
+  panel.style.display='block';
+  panel.querySelectorAll('img').forEach(function(img){if(img.loading==='lazy')img.loading='eager';});
+  panel.scrollIntoView({behavior:'smooth',block:'start'});
+}
+// Wire the shared nav search box: prefill it from the URL, hide it where the
+// library has no embeddings to rank against, and run any `?q=` on the Files page.
+(function(){
+  if(typeof HAS_EMBEDDINGS!=='undefined'&&!HAS_EMBEDDINGS){
+    var form=document.querySelector('.secnav-search');
+    if(form)form.style.display='none';
+    return;
+  }
+  var q=new URLSearchParams(window.location.search).get('q');
+  if(!q)return;
+  var navInput=document.getElementById('nav-search');
+  if(navInput)navInput.value=q;
+  if(typeof LIVE_SERVER!=='undefined'&&LIVE_SERVER&&document.getElementById('results'))runTextSearch(q);
+})();
 if(typeof ALLFILES!=='undefined'){
   ALLFILES.forEach(function(f){
     (HASH_FILES[f.hash]=HASH_FILES[f.hash]||[]).push(f);

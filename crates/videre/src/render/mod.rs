@@ -856,6 +856,11 @@ struct GalleryPage<'a> {
     /// The current section, or `None` on a page with nowhere to navigate to.
     /// Read by the included `nav.html`, which documents the rule.
     nav: Option<Section>,
+    /// Whether to render the tall library header. It belongs on the home page
+    /// (`/`, the All-files section) and on a standalone static export, and is
+    /// dropped on the secondary sections (`/duplicates`, `/date`) where the nav
+    /// strip already names where you are and the header only pushed content down.
+    show_header: bool,
     /// A duplicates page with no duplicates. Without this the page renders a
     /// header and nothing else, which reads as broken rather than as good news,
     /// and a library that has already been deduped is the common case.
@@ -1023,6 +1028,9 @@ pub(crate) fn render(set: &RenderSet) -> String {
         all_files_count: all_files.map(|f| f.len()),
         has_keep_files: keep_files.is_some(),
         nav,
+        // Home (`/` = All) and standalone exports (no nav) keep the header; the
+        // secondary sections drop it. See `GalleryPage::show_header`.
+        show_header: nav.is_none() || nav == Some(Section::All),
         no_duplicates: groups_view && groups.is_empty(),
     };
     page.render().expect("gallery template")

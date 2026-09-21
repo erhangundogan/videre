@@ -15,10 +15,17 @@
    absent. They answer 404 "Not built yet", and a link to that is worse than no
    link. Add each one here when it renders. #}
 {% if let Some(current) = nav %}<style>
-.secnav{display:flex;gap:2px;padding:10px 16px;background:#1a1a1f;border-bottom:1px solid #2a2a33;position:sticky;top:0;z-index:50}
+.secnav{display:flex;align-items:center;gap:2px;padding:10px 16px;background:#1a1a1f;border-bottom:1px solid #2a2a33;position:sticky;top:0;z-index:50}
 .secnav a{padding:6px 14px;border-radius:6px;color:#9a9aa8;text-decoration:none;font:500 14px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 .secnav a:hover{background:#25252d;color:#d8d8e0}
 .secnav a.on{background:#3b82f6;color:#fff}
+/* The search box sits at the far right of the strip. It always submits to `/`,
+   where the Files page reads `?q=` and runs a semantic search; from any other
+   section it just navigates there first. */
+.secnav-search{margin-left:auto;display:flex}
+.secnav-search input{width:200px;max-width:42vw;padding:6px 12px;border:1px solid #2a2a33;border-radius:6px;background:#25252d;color:#d8d8e0;font:500 14px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.secnav-search input::placeholder{color:#71717a}
+.secnav-search input:focus-visible{outline:2px solid #3b82f6;outline-offset:1px}
 </style>
 <nav class="secnav">
 <a href="/"{% if current.is_all() %} class="on"{% endif %}>Files</a>
@@ -26,5 +33,8 @@
 <a href="/date"{% if current.is_date() %} class="on"{% endif %}>Date</a>
 <a href="/people"{% if current.is_people() %} class="on"{% endif %}>People</a>
 <a href="/map"{% if current.is_map() %} class="on"{% endif %}>Map</a>
+<form class="secnav-search" action="/" method="get" role="search">
+<input type="search" name="q" id="nav-search" placeholder="Search photos&hellip;" aria-label="Search photos" autocomplete="off">
+</form>
 </nav>
 {% endif %}

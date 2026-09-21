@@ -9,7 +9,10 @@
 </head>
 <body>
   {% include "nav.html" %}
-  <div class="header">
+  {# The header shows only on a labeling-only server, whose `/` is this page and
+     has no nav strip. Under `videre gallery` this is the secondary `/people`
+     section (nav = People), which drops the header like the other sections. #}
+  {% if nav.is_none() %}<div class="header">
     <h1>videre</h1>
     <p class="subtitle">{{ db|safe }} &mdash; {{ generated_at }}</p>
     <div class="stats">
@@ -18,7 +21,7 @@
       <div class="stat"><span class="num" id="stat-clusters">0</span><span class="label">Clusters</span></div>
       <div class="stat"><span class="num" id="stat-singletons">0</span><span class="label">Singletons</span></div>
     </div>
-  </div>
+  </div>{% endif %}
   <div class="page-body">
     <div class="people-section">
       <h2 class="title-people">People <span id="people-count" class="badge badge-blue">0</span> <button id="layout-toggle" class="primary" onclick="toggleLayout()">People: Top</button></h2>
