@@ -192,6 +192,15 @@ They are only fetched once and then reused, including by later runs against a
 different library. The download happens at the start of the run, before any of
 your photos are processed.
 
+The gallery Map view also downloads a world map archive the first time you open
+`/map`: a vector basemap (coastlines and borders) built from OpenStreetMap data
+by [Protomaps](https://protomaps.com), stored once in the shared cache and used
+offline afterward. It is resumable and shared across libraries, and no map or
+tile request is made once it is present. Until it finishes, the map still works
+from your own location clusters. The map renders it with
+[MapLibre GL JS](https://maplibre.org), with `© OpenStreetMap contributors`
+shown on the map.
+
 ### Where they are stored
 
 In the standard Hugging Face cache, shared with any other tool that uses it:
@@ -218,6 +227,8 @@ for them by name.
 
 :::note[Nothing is uploaded]
 These are downloads only. The models run on your machine, and your photos are
-never sent anywhere. The one feature that makes an outbound request is
-[`videre search --location`](/commands/search/), which looks up a place name.
+never sent anywhere. Two features make an outbound request:
+[`videre search --location`](/commands/search/), which looks up a place name,
+and the gallery Map view, which downloads a world basemap once on first use
+(below). Both fetch data in; neither sends anything about your library out.
 :::

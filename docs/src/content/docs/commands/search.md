@@ -343,8 +343,10 @@ error: --sort distance needs --location <place>
 ## `--location` is the one mode that uses the network
 
 It looks up an arbitrary place name, not limited to places already in your
-library, via the Nominatim (OpenStreetMap) public geocoding API. This is the
-only network call videre ever makes.
+library, via the Nominatim (OpenStreetMap) public geocoding API. Geocoding is
+the only network call the command line ever makes; the only other outbound
+request videre makes at all is the gallery Map view's one-time basemap download
+(see [Install](/start/install/)).
 
 ```bash
 videre search --location "Kreuzberg, Berlin" --radius 3
