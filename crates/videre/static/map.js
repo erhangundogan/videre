@@ -50,9 +50,10 @@
     var selectionRow = document.getElementById('map-selection-row');
     var breadcrumb = document.getElementById('map-breadcrumb');
     var radiusInput = document.getElementById('map-radius');
+    var radiusGroup = document.getElementById('map-radius-group');
     var selectionStatus = document.getElementById('map-selection-status');
     if (!wrapper || !canvas || !empty || !selectionRow || !breadcrumb ||
-        !radiusInput || !selectionStatus) return;
+        !radiusInput || !radiusGroup || !selectionStatus) return;
 
     // The canvas is the fallback's surface; MapLibre draws into its own child.
     canvas.style.display = 'none';
@@ -236,6 +237,7 @@
       selectionStatus.hidden = true;
       selectionStatus.textContent = '';
       selectionRow.hidden = false;
+      radiusGroup.hidden = false;
       breadcrumb.textContent = cluster.name;
       radiusInput.value = String(radius);
     }
@@ -261,6 +263,7 @@
       delete wrapper.dataset.radius;
       clearBtn.disabled = true;
       selectionRow.hidden = true;
+      radiusGroup.hidden = true;
       selectionStatus.hidden = true;
       selectionStatus.textContent = '';
       window.setGalleryLocation(null, null, null);
@@ -276,6 +279,7 @@
       delete wrapper.dataset.radius;
       clearBtn.disabled = true;
       selectionRow.hidden = true;
+      radiusGroup.hidden = true;
       selectionStatus.textContent = 'Unknown location';
       selectionStatus.hidden = false;
       window.setGalleryLocation(null, null, null);
@@ -497,9 +501,10 @@
     var selectionRow = document.getElementById('map-selection-row');
     var breadcrumb = document.getElementById('map-breadcrumb');
     var radiusInput = document.getElementById('map-radius');
+    var radiusGroup = document.getElementById('map-radius-group');
     var selectionStatus = document.getElementById('map-selection-status');
     if (!wrapper || !canvas || !empty || !selectionRow || !breadcrumb ||
-        !radiusInput || !selectionStatus) return;
+        !radiusInput || !radiusGroup || !selectionStatus) return;
 
     var markerLayer = document.createElement('div');
     markerLayer.className = 'map-marker-layer';
@@ -742,6 +747,7 @@
       selectionStatus.hidden = true;
       selectionStatus.textContent = '';
       selectionRow.hidden = false;
+      radiusGroup.hidden = false;
       breadcrumb.textContent = cluster.name;
       radiusInput.value = String(radius);
     }
@@ -766,6 +772,7 @@
       delete wrapper.dataset.radius;
       clearBtn.disabled = true;
       selectionRow.hidden = true;
+      radiusGroup.hidden = true;
       selectionStatus.hidden = true;
       selectionStatus.textContent = '';
       scale = 1;
@@ -782,6 +789,7 @@
       delete wrapper.dataset.radius;
       clearBtn.disabled = true;
       selectionRow.hidden = true;
+      radiusGroup.hidden = true;
       selectionStatus.textContent = 'Unknown location';
       selectionStatus.hidden = false;
       scale = 1;

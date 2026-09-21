@@ -32,14 +32,15 @@
   </div>
   <div id="map-selection-row" class="map-selection-row" hidden>
     <span id="map-breadcrumb" class="map-place"></span>
-    <label for="map-radius">Radius</label>
-    <input id="map-radius" type="number" min="1" step="1">
-    <span>km</span>
   </div>
   <p id="map-selection-status" class="map-selection-status" role="status" hidden></p>
   <div class="gallery-head">
-    <h2>All files</h2>
     <label class="view-toggle">View <select class="view-mode-select" onchange="setViewMode(this.value)"><option value="list">List</option><option value="tile">Tile</option></select></label>
+    <span id="map-radius-group" class="map-radius-group" hidden>
+      <label for="map-radius">Radius</label>
+      <input id="map-radius" type="number" min="1" step="1">
+      <span>km</span>
+    </span>
   </div>
   <div class="gallery" id="gallery"></div>
   <div class="more-wrap"><button id="gallery-more" onclick="showMoreGallery()"></button></div>
