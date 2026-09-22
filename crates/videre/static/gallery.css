@@ -83,7 +83,7 @@ th.preview-th{width:130px}
 .lb-fname span{word-break:break-all}
 /* The like toggle: bigger than the row icons, an outline heart that fills red
    when liked (Instagram-style). Overrides the shared button chrome. */
-.lb-like{background:none;border:none;padding:0;margin:0 0 4px;line-height:0;color:#f4f4f5;cursor:pointer}
+.lb-like{background:none;border:none;padding:0;margin:0 0 0 -5px;line-height:0;color:#f4f4f5;cursor:pointer}
 .lb-like:hover{background:none}
 .lb-like svg{width:26px;height:26px;fill:none;stroke:currentColor;stroke-width:2;transition:transform .1s ease}
 .lb-like:active svg{transform:scale(.85)}
