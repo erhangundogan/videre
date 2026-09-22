@@ -967,4 +967,90 @@ mod tests {
         let status = videre_api::face_learning_status(&conn).unwrap();
         assert_eq!(status.last_candidate.as_deref(), Some("promoted"));
     }
+
+    /// Every face column a learning run could conceivably touch.
+    fn face_snapshot(conn: &Connection) -> Vec<(i64, Option<i64>, Option<String>, i64, i64)> {
+        let mut statement = conn
+            .prepare(
+                "SELECT id, cluster_id, person_label, confirmed, is_primary
+                 FROM faces ORDER BY id",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    /// The central guarantee, pinned for each way a background run can end:
+    /// training that fails, a candidate the gates reject, and a candidate
+    /// that is promoted (which also refreshes questions). None of them may
+    /// change a face row; only explicit user mutations do.
+    #[tokio::test]
+    async fn no_background_outcome_changes_face_rows() {
+        type Trainer = fn(
+            &TrainingSnapshot,
+            &TrainingConfig,
+            &videre_core::face_learning::PromotionGates,
+        ) -> Result<TrainingRun, TrainingError>;
+        let outcomes: [(&str, Trainer, &str, Option<&str>); 3] = [
+            (
+                "failed",
+                |_, _, _| Err(TrainingError::NonConvergence),
+                "failed",
+                None,
+            ),
+            (
+                "rejected",
+                |_, _, _| Ok(rejected_run()),
+                "current",
+                Some("rejected"),
+            ),
+            (
+                "promoted",
+                |_, _, _| Ok(stub_run()),
+                "current",
+                Some("promoted"),
+            ),
+        ];
+        for (name, trainer, settled, candidate) in outcomes {
+            let conn = library();
+            make_generation_pending(&conn.lock().unwrap());
+            seed_active_profile_and_questions(&conn.lock().unwrap());
+            let before = face_snapshot(&conn.lock().unwrap());
+            let coordinator =
+                spawn_with(make_deps(conn.clone(), trainer), Duration::from_millis(10));
+            coordinator.notify();
+            for _ in 0..200 {
+                if learning_status(&conn.lock().unwrap()).2 == settled {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            let conn = conn.lock().unwrap();
+            assert_eq!(
+                learning_status(&conn).2,
+                settled,
+                "{name} run did not settle"
+            );
+            let status = videre_api::face_learning_status(&conn).unwrap();
+            if candidate.is_some() {
+                assert_eq!(status.last_candidate.as_deref(), candidate, "{name}");
+            }
+            assert_eq!(
+                face_snapshot(&conn),
+                before,
+                "a {name} run changed face rows"
+            );
+        }
+    }
 }
