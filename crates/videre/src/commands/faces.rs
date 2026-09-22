@@ -219,6 +219,20 @@ fn format_evaluation(report: &videre_ml::evaluation::BaselineEvaluation) -> Stri
     )
 }
 
+fn reset_confirmation_prompt(counts: &face_db::FaceResetCounts) -> String {
+    format!(
+        "videre faces --reset deletes {} face row(s) ({} labeled face(s) across {} people), \
+         all grouping, {} learning event(s), {} question(s), {} learned profile(s), and \
+         detection markers, then re-detects and regroups the library. Continue?",
+        counts.total_faces,
+        counts.labeled_faces,
+        counts.people,
+        counts.learning_events,
+        counts.questions,
+        counts.profiles,
+    )
+}
+
 pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
     // Must happen before any HEIC file could be converted (the semaphore is a
     // OnceLock: first use wins for the life of this process). Clamped to at
@@ -325,11 +339,14 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
             anyhow::bail!("faces has not run on this library; nothing to reset");
         }
         let (labeled, people) = videre_core::face_db::labeled_state_counts(&conn)?;
+        let learning = videre_core::face_db::face_reset_counts(&conn)?;
         if args.dry_run {
             eprintln!(
                 "videre faces --reset would delete {labeled} labeled face(s) across \
-                 {people} people, all grouping, and detection markers, then \
-                 re-detect and regroup the library; nothing was deleted"
+                 {people} people, all grouping, {} learning event(s), {} question(s), \
+                 {} learned profile(s), and detection markers, then \
+                 re-detect and regroup the library; nothing was deleted",
+                learning.learning_events, learning.questions, learning.profiles
             );
             return Ok(());
         }
@@ -341,11 +358,7 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
                      in a non-interactive session; rerun with --yes to accept"
                 );
             }
-            let ok = super::confirm(&format!(
-                "videre faces --reset deletes {labeled} labeled face(s) across \
-                 {people} people, all grouping, and detection markers, then \
-                 re-detects and regroups the library. Continue?"
-            ))?;
+            let ok = super::confirm(&reset_confirmation_prompt(&learning))?;
             if !ok {
                 anyhow::bail!("aborted; nothing was deleted");
             }
@@ -358,8 +371,10 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
         // --silent; the rebuild's own progress obeys --silent as usual.
         eprintln!(
             "videre faces: reset wiped {total} face row(s) ({labeled} labeled \
-             across {people} people), {scanned} detection marker(s), and all \
-             grouping; rebuilding from absolute beginning"
+             across {people} people), {scanned} detection marker(s), {} \
+             learning event(s), {} question(s), {} learned profile(s), and all \
+             grouping; rebuilding from absolute beginning",
+            learning.learning_events, learning.questions, learning.profiles
         );
     }
 
@@ -666,6 +681,23 @@ pub(crate) fn format_clustering_only_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_prompt_names_all_learning_state_it_deletes() {
+        let counts = videre_core::face_db::FaceResetCounts {
+            total_faces: 12,
+            labeled_faces: 3,
+            people: 2,
+            learning_events: 4,
+            questions: 5,
+            profiles: 6,
+        };
+        let prompt = reset_confirmation_prompt(&counts);
+        assert!(prompt.contains("3 labeled face(s) across 2 people"));
+        assert!(prompt.contains("4 learning event(s)"));
+        assert!(prompt.contains("5 question(s)"));
+        assert!(prompt.contains("6 learned profile(s)"));
+    }
 
     #[test]
     fn for_pipeline_faces_defaults() {

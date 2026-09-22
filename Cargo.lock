@@ -5323,10 +5323,12 @@ name = "videre-api"
 version = "0.37.0"
 dependencies = [
  "anyhow",
+ "half",
  "image",
  "kamadak-exif",
  "rusqlite",
  "serde",
+ "serde_json",
  "tempfile",
  "videre-core",
 ]

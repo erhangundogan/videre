@@ -370,8 +370,11 @@ let facesData = { people: [], clusters: [], singletons: [] };
         alert('Assign failed');
         return;
       }
+      showLearningToast(await r.json().catch(() => null));
       clearSelection();
       await loadFaces();
+      refreshLearning();
+      loadQuestion();
     }
 
     function showNewPersonInput(btn, faceIds) {
@@ -407,8 +410,132 @@ let facesData = { people: [], clusters: [], singletons: [] };
         alert('Create person failed');
         return;
       }
+      showLearningToast(await r.json().catch(() => null));
       await loadFaces();
+      refreshLearning();
+      loadQuestion();
     }
 
     applyLayout();
     loadFaces();
+
+    // ---------- face learning ----------
+    function escapeLearning(value) {
+      return String(value).replace(/[&<>"']/g, function(ch) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch];
+      });
+    }
+
+    function showLearningToast(ack) {
+      if (!ack || !Array.isArray(ack.event_ids) || !ack.event_ids.length) return;
+      const toast = document.getElementById('learning-toast');
+      if (!toast) return;
+      const count = ack.event_ids.length;
+      toast.textContent = 'Recorded ' + count + ' teaching example' + (count > 1 ? 's' : '')
+        + '. Future suggestions learn from this, nothing was relabeled.';
+      toast.hidden = false;
+      clearTimeout(showLearningToast.timer);
+      showLearningToast.timer = setTimeout(function() { toast.hidden = true; }, 4000);
+    }
+    window.showLearningToast = showLearningToast;
+
+    async function refreshLearning() {
+      const strip = document.getElementById('learning-strip');
+      if (!strip) return;
+      try {
+        const r = await fetch('/api/face-learning/status');
+        if (!r.ok) return;
+        const s = await r.json();
+        const labels = {
+          current: 'Learning: up to date',
+          stale: 'Learning: new feedback pending',
+          training: 'Learning: training',
+          failed: 'Learning: last run failed, will retry after new feedback'
+        };
+        // A current status alone cannot say whether the last run changed the
+        // profile in use, so the stored candidate outcome qualifies it.
+        const outcomes = {
+          promoted: ', new profile in use',
+          rejected: ', last candidate did not pass the quality gates; previous profile kept'
+        };
+        let text = labels[s.status] || ('Learning: ' + s.status);
+        if (s.status === 'current' && outcomes[s.last_candidate]) text += outcomes[s.last_candidate];
+        strip.dataset.learningStatus = s.status;
+        strip.dataset.learningCandidate = s.last_candidate || '';
+        document.getElementById('learning-status-text').textContent = text;
+        strip.hidden = false;
+      } catch (_) { /* status is advisory; never break the page over it */ }
+    }
+
+    function renderProof(evidence) {
+      const rows = (evidence.features || [])
+        .slice()
+        .sort(function(a, b) { return Math.abs(b.contribution) - Math.abs(a.contribution); });
+      const fmt = function(v) { return (v >= 0 ? '+' : '') + v.toFixed(3); };
+      const row = function(f) {
+        return '<div class="q-proof-row"><span>' + escapeLearning(f.name) + '</span><span>'
+          + fmt(f.contribution) + '</span></div>';
+      };
+      const top = rows.slice(0, 4).map(row).join('');
+      const rest = rows.slice(4);
+      const more = rest.length
+        ? '<details><summary>' + rest.length + ' more factors</summary>'
+          + rest.map(row).join('') + '</details>'
+        : '';
+      const confidence = Math.round((evidence.calibrated_confidence || 0) * 100);
+      return 'scored ' + confidence + '% confident'
+        + '<div class="q-proof-rows">' + top + more + '</div>';
+    }
+
+    async function loadQuestion() {
+      const card = document.getElementById('question-card');
+      if (!card) return;
+      let questions = [];
+      try {
+        const r = await fetch('/api/face-learning/questions?limit=1');
+        if (r.ok) questions = await r.json();
+      } catch (_) {}
+      if (!questions.length) { card.hidden = true; return; }
+      const q = questions[0];
+      document.getElementById('q-target').textContent = q.target_display || q.target_identity;
+      document.getElementById('q-face').src = '/api/faces/' + q.representative_face_id + '/image';
+      document.getElementById('q-proof').innerHTML = renderProof(q.evidence);
+      document.getElementById('q-msg').textContent = '';
+      card.dataset.questionId = q.id;
+      card.hidden = false;
+    }
+
+    async function answerQuestion(answer) {
+      const card = document.getElementById('question-card');
+      const msg = document.getElementById('q-msg');
+      const id = card.dataset.questionId;
+      if (!id) return;
+      try {
+        const r = await fetch('/api/face-learning/questions/' + id + '/answer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ answer: answer })
+        });
+        if (r.status === 409) {
+          msg.textContent = 'This changed meanwhile; showing the next question.';
+          loadQuestion();
+          return;
+        }
+        if (!r.ok) { msg.textContent = 'Could not record the answer.'; return; }
+        const outcome = await r.json();
+        msg.textContent = answer === 'skip' ? 'Skipped.' : 'Recorded. Future suggestions learn from this.';
+        refreshLearning();
+        if (answer !== 'skip') await loadFaces();
+        loadQuestion();
+      } catch (_) {
+        msg.textContent = 'Could not record the answer.';
+      }
+    }
+
+    ['yes', 'no', 'skip'].forEach(function(answer) {
+      const btn = document.getElementById('q-' + answer);
+      if (btn) btn.addEventListener('click', function() { answerQuestion(answer); });
+    });
+    refreshLearning();
+    loadQuestion();
+    setInterval(refreshLearning, 10000);

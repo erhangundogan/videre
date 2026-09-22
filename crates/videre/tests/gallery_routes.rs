@@ -138,6 +138,32 @@ impl Server {
         (status, body.to_string())
     }
 
+    /// Sends a request with a body and returns (status, body). One connection
+    /// per request, like `get`.
+    fn send(&self, method: &str, path: &str, body: &str) -> (u16, String) {
+        let mut stream = TcpStream::connect(("127.0.0.1", self.port))
+            .unwrap_or_else(|e| panic!("connect for {method} {path}: {e}"));
+        stream
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        write!(
+            stream,
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).unwrap();
+        let text = String::from_utf8_lossy(&raw).into_owned();
+        let status = text
+            .split_whitespace()
+            .nth(1)
+            .and_then(|c| c.parse().ok())
+            .unwrap_or_else(|| panic!("no status line for {method} {path}"));
+        let body = text.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
+        (status, body.to_string())
+    }
+
     /// Like `get`, but returns the raw body bytes and the Content-Type, for
     /// binary responses (a poster JPEG) that `get`'s lossy-UTF-8 body mangles.
     // Only the macOS-gated poster test needs raw bytes; unused off macOS.
@@ -1146,4 +1172,116 @@ fn browsing_the_gallery_touches_no_model_cache() {
         "the gallery downloaded model weights without anyone running a text \
          search: {found:?}"
     );
+}
+
+#[test]
+fn face_learning_resources_serve_from_a_fresh_library() {
+    let lib = fixture();
+    let server = Server::start(&lib);
+
+    assert!(
+        videre_core::db::table_exists(&lib.conn(), "face_learning_questions").unwrap(),
+        "gallery startup must prepare question storage before the worker runs"
+    );
+
+    let (status, body) = server.get("/api/face-learning/questions");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body.trim(), "[]", "{body}");
+
+    let (status, body) = server.get("/api/face-learning/status");
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"generation\":0"), "{body}");
+    assert!(body.contains("\"pending_questions\":0"), "{body}");
+
+    let (status, body) = server.get("/api/face-learning/events");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body.trim(), "[]", "{body}");
+
+    let (status, body) = server.get("/api/face-learning/events/424242");
+    assert_eq!(status, 404, "{body}");
+
+    let (status, body) = server.send(
+        "POST",
+        "/api/face-learning/questions/424242/answer",
+        "{\"answer\":\"yes\"}",
+    );
+    assert_eq!(status, 404, "{body}");
+
+    let (status, body) = server.send(
+        "POST",
+        "/api/face-learning/questions/424242/answer",
+        "{\"answer\":\"maybe\"}",
+    );
+    assert_eq!(status, 400, "{body}");
+}
+
+#[test]
+fn teaching_mutations_return_acknowledgements_and_advance_the_generation() {
+    let lib = fixture();
+    {
+        // One unassigned face with a real two-dimensional f16 embedding, so
+        // the teaching path can extract membership features for its event.
+        let conn = lib.init_db();
+        let mut embedding = Vec::new();
+        embedding.extend_from_slice(&half::f16::from_f32(1.0).to_le_bytes());
+        embedding.extend_from_slice(&half::f16::from_f32(0.0).to_le_bytes());
+        // The fixture face ships a placeholder zero embedding; the teaching
+        // path extracts real membership features, so both faces need valid,
+        // matching-dimension vectors.
+        conn.execute(
+            "UPDATE faces SET embedding = ?1, cluster_id = NULL",
+            rusqlite::params![embedding],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
+             VALUES ('abc123', '0,0,50,50', ?1, NULL, 0)",
+            rusqlite::params![embedding],
+        )
+        .unwrap();
+    }
+    let server = Server::start(&lib);
+
+    let (status, body) = server.send(
+        "PUT",
+        "/api/people/ozgur_demirtas/faces",
+        "{\"face_ids\":[2]}",
+    );
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"generation\":1"), "{body}");
+    assert!(body.contains("\"event_ids\":["), "{body}");
+    assert!(!body.contains("embedding"), "{body}");
+
+    // The background worker may have trained (and failed on tiny evidence)
+    // by the time we look; the generation is the contract here.
+    let (status, body) = server.get("/api/face-learning/status");
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"generation\":1"), "{body}");
+
+    let (status, body) = server.get("/api/face-learning/events");
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"action\":\"assign_face\""), "{body}");
+    // Provenance and scalar features only: no raw embedding payload.
+    assert!(!body.contains("\"embedding\":"), "{body}");
+    assert!(body.contains("\"target_identity\":"), "{body}");
+
+    let (status, body) = server.get("/api/face-learning/events/1");
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"faces\":"), "{body}");
+}
+
+#[test]
+fn labeling_pages_carry_the_learning_hooks() {
+    let lib = fixture();
+    let server = Server::start(&lib);
+
+    let (status, body) = server.get("/people");
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("data-learning-status"), "{body}");
+    assert!(body.contains("data-learning-question"), "{body}");
+    assert!(body.contains("learning-toast"), "{body}");
+
+    let (status, body) = server.get("/people/person/ozgur_demirtas");
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("data-learning-history"), "{body}");
 }

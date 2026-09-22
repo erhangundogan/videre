@@ -9,6 +9,26 @@
 </head>
 <body>
   {% include "nav.html" %}
+  <div id="learning-strip" data-learning-status="unknown" hidden>
+    <span class="learning-dot" aria-hidden="true"></span>
+    <span id="learning-status-text">Learning</span>
+  </div>
+  <section id="question-card" data-learning-question hidden aria-label="Identity question">
+    <div class="q-head">Is this <strong id="q-target"></strong>?</div>
+    <div class="q-body">
+      <img id="q-face" class="face-img q-face" alt="Face the question asks about">
+      <div class="q-side">
+        <div id="q-proof" class="q-proof"></div>
+        <div class="q-actions">
+          <button id="q-yes" class="primary">Yes</button>
+          <button id="q-no">No</button>
+          <button id="q-skip">Skip</button>
+        </div>
+        <p id="q-msg" role="status" class="q-msg"></p>
+      </div>
+    </div>
+  </section>
+  <div id="learning-toast" role="status" hidden></div>
   {# The header shows only on a labeling-only server, whose `/` is this page and
      has no nav strip. Under `videre gallery` this is the secondary `/people`
      section (nav = People), which drops the header like the other sections. #}

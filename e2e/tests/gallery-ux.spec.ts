@@ -64,6 +64,10 @@ test("focuses the person-name input when New Person is clicked", async ({ page, 
   });
   test.skip(!DatabaseSync, "node:sqlite is unavailable on this Node");
   const db = new DatabaseSync!(join(gallery.libraryRoot, ".videre", "hashes.db"));
+  // The running gallery server writes to this database too (background
+  // training, lazily created tables), so wait briefly instead of failing on
+  // a transient write lock.
+  db.exec("PRAGMA busy_timeout = 5000");
   db.prepare(
     "INSERT INTO faces (hash, bbox, embedding, cluster_id) VALUES ('h1', '0,0,50,50', X'0000', 7), ('h1', '60,0,50,50', X'0000', 7)"
   ).run();
@@ -75,4 +79,16 @@ test("focuses the person-name input when New Person is clicked", async ({ page, 
 
   await card.locator(".new-person-btn").click();
   await expect(page.locator(".np-input").first()).toBeFocused();
+});
+
+test("identity question controls stay hidden without a trained profile", async ({
+  page,
+  gallery,
+}) => {
+  await page.goto(`${gallery.baseURL}/people`);
+  const card = page.locator("#question-card");
+  await expect(card).toBeHidden();
+  await expect(page.locator("#q-yes")).toBeHidden();
+  await expect(page.locator("#q-no")).toBeHidden();
+  await expect(page.locator("#q-skip")).toBeHidden();
 });

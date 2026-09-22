@@ -150,7 +150,10 @@ const clusterId = window.CLUSTER_ID;
       if (!confirm(`Dissolve cluster ${clusterId}? Its ${facesData.length} face(s) will become unassigned singletons (not deleted).`)) return;
       const r = await fetch(`/api/clusters/${clusterId}`, { method: 'DELETE' });
       if (!r.ok) { document.getElementById('status').textContent = 'Error: dissolve failed'; return; }
-      document.getElementById('status').textContent = 'Cluster dissolved';
+      const ack = await r.json().catch(() => null);
+      const taught = ack && Array.isArray(ack.event_ids) && ack.event_ids.length;
+      document.getElementById('status').textContent = 'Cluster dissolved'
+        + (taught ? '; the negative example was recorded' : '');
       setTimeout(() => { window.location.href = peopleHome(); }, 500);
     }
 

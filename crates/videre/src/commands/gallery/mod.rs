@@ -10,6 +10,7 @@
 //! see `dedupe --html` and `search --html`.
 
 mod events;
+mod learning;
 mod rotate;
 mod server;
 

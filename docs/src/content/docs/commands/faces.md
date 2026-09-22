@@ -208,15 +208,17 @@ sharpness and leave it behind.
 
 `videre faces --reset` is the start-over button. It deletes every face row,
 every person you have named, the detection markers, and the decode-failure
-records, then immediately re-runs the full detection and grouping pipeline, so
+records. It also deletes face-learning events, identity questions, and learned
+profiles, then immediately re-runs the full detection and grouping pipeline, so
 the library ends up exactly as it would after a first-ever `videre faces`.
 
-Because it deletes your labels, it asks first, and the prompt says how much it
-would delete:
+Because it deletes your labels and learning history, it asks first. The prompt
+shows the counts of face rows, labeled faces, people, learning events, identity
+questions, and learned profiles that it would delete:
 
 ```bash
-videre faces --reset            # asks: "deletes 312 labeled face(s) across 9
-                                # people ... Continue? [y/N]"
+videre faces --reset            # asks: "deletes 400 face row(s) (312 labeled
+                                # face(s) across 9 people), ... Continue? [y/N]"
 videre faces --reset --yes      # skip the prompt (for scripts)
 ```
 
