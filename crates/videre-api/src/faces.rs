@@ -1726,12 +1726,13 @@ mod tests {
             // so the table has more than the two it was created with.
             "INSERT INTO file_hashes (hash, path) VALUES ('h6','/p/6.jpg'),('h7','/p/7.jpg'),
                 ('h8','/p/8.jpg'),('h9','/p/9.jpg'),('h10','/p/10.jpg');
+             INSERT INTO people (name, full_name) VALUES ('bob','Bob');
              INSERT INTO faces (id,hash,bbox,embedding,cluster_id,person_label,confirmed,is_primary) VALUES
                 (6,'h6','0,0,9,9',X'0000',9,NULL,0,0),
                 (7,'h7','0,0,9,9',X'0000',9,NULL,0,0),
                 (8,'h8','0,0,9,9',X'0000',9,NULL,0,0),
                 (9,'h9','0,0,9,9',X'0000',3,NULL,0,0),
-                (10,'h10','0,0,9,9',X'0000',NULL,'Bob',1,0);",
+                (10,'h10','0,0,9,9',X'0000',NULL,'bob',1,0);",
         )
         .unwrap();
 
@@ -2155,14 +2156,18 @@ mod identity_tests {
 
     #[test]
     fn person_detail_falls_back_when_there_is_no_people_row() {
-        // A label written before the table existed still has to render.
+        // A label written before the table existed still has to render. The
+        // orphan label is the pre-v2 shape, so its seed runs with enforcement
+        // lifted and restored.
         let conn = seed();
+        conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
         conn.execute(
             "INSERT INTO faces (id,hash,bbox,embedding,person_label,confirmed) \
              VALUES (9,'h9','0,0,9,9',X'0000','orphan',1)",
             [],
         )
         .unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
         let d = person_detail(&conn, "orphan").unwrap();
         assert_eq!(d.full_name, "orphan", "falls back to the identity");
     }
