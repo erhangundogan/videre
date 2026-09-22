@@ -230,11 +230,16 @@ mod tests {
         let first = rec("/a.jpg", "h1");
         write_records(std::slice::from_ref(&first), &db).unwrap();
         let conn = rusqlite::Connection::open(&db).unwrap();
+        // Cluster 17 is a deliberate foreign-key violation (location
+        // processing writes these ids after creating the clusters), so the
+        // corrupting UPDATE runs with enforcement lifted.
+        conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
         conn.execute(
             "UPDATE file_hashes SET location_name = 'Üsküdar', location_cluster_id = 17 WHERE path = '/a.jpg'",
             [],
         )
         .unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
         drop(conn);
 
         let mut rescanned = first;

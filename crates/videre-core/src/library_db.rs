@@ -194,7 +194,11 @@ fn add_missing_columns(
 /// columns it lacks.
 pub fn ensure_scan_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(&file_hashes_ddl_for("file_hashes", true))?;
-    add_missing_columns(conn, "file_hashes", FILE_HASHES_COLUMNS)
+    add_missing_columns(conn, "file_hashes", FILE_HASHES_COLUMNS)?;
+    // The declared location-cluster key needs its parent table to exist
+    // before any row is written, including through standalone scan writers
+    // that never run the full schema preparation.
+    crate::location_cluster::ensure_location_clusters_table(conn)
 }
 
 /// Verify the tables and columns a prepared library must have. Runs after
