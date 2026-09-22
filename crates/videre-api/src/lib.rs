@@ -13,8 +13,10 @@ mod types;
 
 pub use error::{Error, Result};
 pub use faces::{
-    assign, cluster_detail, delete_person, dissolve_cluster, faces_list, new_person, person_detail,
-    remove_face, search_person, set_full_name, set_primary,
+    assign, assign_with_learning, cluster_detail, delete_person, delete_person_with_learning,
+    dissolve_cluster, dissolve_cluster_with_learning, faces_list, new_person,
+    new_person_with_learning, person_detail, remove_face, remove_face_with_learning, search_person,
+    set_full_name, set_primary,
 };
 pub use images::{
     face_bytes_from_lookup, face_image_bytes, face_lookup, make_face_thumb, mime_for_ext,
@@ -24,6 +26,6 @@ pub use label::sanitize_person_label;
 pub use pipeline_status::{pipeline_status, PipelineRunStatus};
 pub use stats::{library_stats, LibraryStats};
 pub use types::{
-    ClusterData, ClusterDetail, ClusterFaceData, FacesData, PersonData, PersonDetail,
-    PersonFaceData, SingletonData,
+    ClusterData, ClusterDetail, ClusterFaceData, FacesData, LearningAcknowledgement, PersonData,
+    PersonDetail, PersonFaceData, SingletonData, TeachingContext,
 };
