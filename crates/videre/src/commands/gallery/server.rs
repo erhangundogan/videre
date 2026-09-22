@@ -902,6 +902,70 @@ mod events_tests {
             .unwrap();
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     }
+
+    #[tokio::test]
+    async fn events_pages_carry_the_right_globals_and_404_unknown_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        {
+            let conn = state.conn.lock().unwrap();
+            videre_core::face_db::create_faces_table(&conn).unwrap();
+            seed_events(&conn);
+        }
+        let app = Router::new()
+            .route("/events", get(handle_events))
+            .route("/events/{key}", get(handle_events_key))
+            .with_state(state);
+
+        // Overview: events view, no specific event.
+        let overview = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/events")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(overview.status(), StatusCode::OK);
+        let body = to_bytes(overview.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("var GVIEW=\"events\";"), "{body}");
+        assert!(body.contains("var GEVENT=null;"), "{body}");
+        // The Events nav link is highlighted.
+        assert!(body.contains("href=\"/events\" class=\"on\""));
+
+        // Leaf: the matching event's range travels in GEVENT.
+        let leaf = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/events/20210812T090000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(leaf.status(), StatusCode::OK);
+        let body = to_bytes(leaf.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("var GVIEW=\"events\";"), "{body}");
+        assert!(body.contains("\"key\":\"20210812T090000\""), "{body}");
+        assert!(body.contains("\"from\":\"2021-08-12 09:00:00\""), "{body}");
+
+        // Unknown key is a 404.
+        let missing = app
+            .oneshot(
+                Request::builder()
+                    .uri("/events/20000101T000000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
 }
 
 // ---- Faces labeling server ----
@@ -2350,6 +2414,72 @@ async fn handle_events_api(
     Ok(json_response(out))
 }
 
+fn render_live_events(state: &Arc<AppState>, event_json: &str) -> axum::response::Html<String> {
+    let conn = state.conn.lock().unwrap();
+    let stats = query_stats(&conn);
+    let faces_by_hash = videre_core::face_db::labeled_faces_by_hash(&conn).unwrap_or_default();
+    let db_path = conn.path().map(|p| p.to_string()).unwrap_or_default();
+    drop(conn);
+    let set = RenderSet {
+        stats,
+        items: Vec::new(),
+        groups: Vec::new(),
+        faces_by_hash,
+        nav: Some(Section::Events),
+        view: View::Events,
+        options: RenderOptions {
+            live: true,
+            heic: state.report_heic,
+            heic_original: state.report_heic_original,
+            embedded: None,
+            db_path,
+            date_filter_json: "null".to_string(),
+            event_json: event_json.to_string(),
+        },
+    };
+    axum::response::Html(render(&set))
+}
+
+/// `videre gallery`'s `/events`: the time-and-place session overview.
+async fn handle_events(State(state): State<Arc<AppState>>) -> axum::response::Html<String> {
+    render_live_events(&state, "null")
+}
+
+/// `videre gallery`'s `/events/{key}`: one event's photos.
+async fn handle_events_key(
+    axum::extract::Path(key): axum::extract::Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> Result<axum::response::Response, StatusCode> {
+    use axum::response::IntoResponse;
+    let event_json = {
+        let conn = state
+            .conn
+            .lock()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let rows = load_event_rows(&conn).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let event = super::events::segment(&rows)
+            .into_iter()
+            .find(|e| e.start.format("%Y%m%dT%H%M%S").to_string() == key)
+            .ok_or(StatusCode::NOT_FOUND)?;
+        let place = event.centroid.and_then(|(lat, lon)| {
+            videre_core::location::location_name_in(&state.context.library.cache, lat, lon)
+                .ok()
+                .flatten()
+        });
+        format!(
+            "{{\"key\":{},\"from\":{},\"to\":{},\"place\":{}}}",
+            json_str(&key),
+            json_str(&event.start.format("%Y-%m-%d %H:%M:%S").to_string()),
+            json_str(&event.end.format("%Y-%m-%d %H:%M:%S").to_string()),
+            place
+                .as_deref()
+                .map(json_str)
+                .unwrap_or_else(|| "null".to_string()),
+        )
+    };
+    Ok(render_live_events(&state, &event_json).into_response())
+}
+
 async fn handle_get_faces(
     State(state): State<Arc<AppState>>,
 ) -> Result<AxumJson<FacesData>, StatusCode> {
@@ -3132,7 +3262,8 @@ async fn serve_faces_async(
         .route("/date", get(handle_gallery_date))
         .route("/map/location/{name}", get(handle_map_location))
         .route("/map", get(handle_map))
-        .route("/events", get(handle_not_yet))
+        .route("/events/{key}", get(handle_events_key))
+        .route("/events", get(handle_events))
         .route("/smart", get(handle_not_yet));
 
     let app = router.with_state(state);

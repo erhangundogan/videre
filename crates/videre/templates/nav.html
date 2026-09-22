@@ -11,9 +11,9 @@
    labeling-only server has no `/date` or `/`. Every route linked here exists
    only under `videre gallery`, which routes all three together.
 
-   :warning: Reserved routes (`/events`, `/smart`) are deliberately
-   absent. They answer 404 "Not built yet", and a link to that is worse than no
-   link. Add each one here when it renders. #}
+   :warning: The reserved route `/smart` is deliberately absent. It answers
+   404 "Not built yet", and a link to that is worse than no link. Add it here
+   when it renders. #}
 {% if let Some(current) = nav %}<style>
 .secnav{display:flex;align-items:center;gap:2px;padding:10px 16px;background:#1a1a1f;border-bottom:1px solid #2a2a33;position:sticky;top:0;z-index:50}
 /* The brand link is excluded from these rules so it never gets the section
@@ -41,6 +41,7 @@
 <a href="/"{% if current.is_all() %} class="on"{% endif %}>Library</a>
 <a href="/duplicates"{% if current.is_duplicates() %} class="on"{% endif %}>Duplicates</a>
 <a href="/date"{% if current.is_date() %} class="on"{% endif %}>Date</a>
+<a href="/events"{% if current.is_events() %} class="on"{% endif %}>Events</a>
 <a href="/people"{% if current.is_people() %} class="on"{% endif %}>People</a>
 <a href="/map"{% if current.is_map() %} class="on"{% endif %}>Map</a>
 <form class="secnav-search" action="/" method="get" role="search">
