@@ -76,3 +76,15 @@ test("focuses the person-name input when New Person is clicked", async ({ page, 
   await card.locator(".new-person-btn").click();
   await expect(page.locator(".np-input").first()).toBeFocused();
 });
+
+test("identity question controls stay hidden without a trained profile", async ({
+  page,
+  gallery,
+}) => {
+  await page.goto(`${gallery.baseURL}/people`);
+  const card = page.locator("#question-card");
+  await expect(card).toBeHidden();
+  await expect(page.locator("#q-yes")).toBeHidden();
+  await expect(page.locator("#q-no")).toBeHidden();
+  await expect(page.locator("#q-skip")).toBeHidden();
+});

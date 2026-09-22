@@ -1,4 +1,34 @@
 const personName = decodeURIComponent(window.location.pathname.split('/').pop());
+
+    // Learning journal entries about this person, with expandable proof.
+    // Sources can be unavailable (learning disabled) or slow; never break
+    // the page over it.
+    (function loadLearningHistory() {
+      const section = document.getElementById('learning-history');
+      if (!section) return;
+      fetch('/api/face-learning/events?limit=200').then(function(r) {
+        if (!r.ok) return [];
+        return r.json();
+      }).then(function(events) {
+        const mine = (events || []).filter(function(ev) {
+          return ev.target_identity === personName;
+        });
+        if (!mine.length) return;
+        const rows = document.getElementById('learning-history-rows');
+        rows.innerHTML = mine.map(function(ev) {
+          const when = (ev.created_at || '').replace('T', ' ');
+          const factors = (ev.features && ev.features.values ? Object.keys(ev.features.values) : []).length;
+          return '<details class="learning-event" data-event-id="' + ev.id + '">'
+            + '<summary>#' + ev.id + ' ' + ev.action + ' (' + ev.outcome + ') &middot; '
+            + when + '</summary>'
+            + '<div class="learning-event-proof">membership evidence over ' + factors
+            + ' factors; support ' + (ev.support_count || 0)
+            + ' face(s); <a href="/api/face-learning/events/' + ev.id
+            + '" target="_blank" rel="noopener">full proof</a></div></details>';
+        }).join('');
+        section.hidden = false;
+      }).catch(function() { /* learning surface stays hidden */ });
+    })();
     // Set by the page before this script runs; see person.html.
     const FACES_UI_ENABLED = window.FACES_UI_ENABLED === true;
     const MAX_NAME_LEN = 60;

@@ -1262,3 +1262,19 @@ fn teaching_mutations_return_acknowledgements_and_advance_the_generation() {
     assert_eq!(status, 200, "{body}");
     assert!(body.contains("\"faces\":"), "{body}");
 }
+
+#[test]
+fn labeling_pages_carry_the_learning_hooks() {
+    let lib = fixture();
+    let server = Server::start(&lib);
+
+    let (status, body) = server.get("/people");
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("data-learning-status"), "{body}");
+    assert!(body.contains("data-learning-question"), "{body}");
+    assert!(body.contains("learning-toast"), "{body}");
+
+    let (status, body) = server.get("/people/person/ozgur_demirtas");
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("data-learning-history"), "{body}");
+}
