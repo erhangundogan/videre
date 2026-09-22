@@ -155,22 +155,35 @@ pub struct FaceResetCounts {
     pub profiles: usize,
 }
 
-/// Counts everything `reset_all` clears. Best-effort on libraries that never
-/// ran faces: missing tables count as zero.
+/// Counts everything `reset_all` clears. Missing optional tables count as
+/// zero, but a query error in an existing table must stop the reset.
 pub fn face_reset_counts(conn: &Connection) -> anyhow::Result<FaceResetCounts> {
-    let count = |sql: &str| -> usize {
-        conn.query_row(sql, [], |row| row.get::<_, i64>(0))
-            .unwrap_or(0) as usize
+    let count = |table: &str, sql: &str| -> anyhow::Result<usize> {
+        if !crate::db::table_exists(conn, table)? {
+            return Ok(0);
+        }
+        let value: i64 = conn.query_row(sql, [], |row| row.get(0))?;
+        Ok(value as usize)
     };
     Ok(FaceResetCounts {
-        total_faces: count("SELECT COUNT(*) FROM faces"),
+        total_faces: count("faces", "SELECT COUNT(*) FROM faces")?,
         labeled_faces: count(
+            "faces",
             "SELECT COUNT(*) FROM faces WHERE confirmed = 1 AND person_label IS NOT NULL",
-        ),
-        people: count("SELECT COUNT(*) FROM people"),
-        learning_events: count("SELECT COUNT(*) FROM face_learning_events"),
-        questions: count("SELECT COUNT(*) FROM face_learning_questions"),
-        profiles: count("SELECT COUNT(*) FROM face_learning_profiles"),
+        )?,
+        people: count("people", "SELECT COUNT(*) FROM people")?,
+        learning_events: count(
+            "face_learning_events",
+            "SELECT COUNT(*) FROM face_learning_events",
+        )?,
+        questions: count(
+            "face_learning_questions",
+            "SELECT COUNT(*) FROM face_learning_questions",
+        )?,
+        profiles: count(
+            "face_learning_profiles",
+            "SELECT COUNT(*) FROM face_learning_profiles",
+        )?,
     })
 }
 
@@ -785,6 +798,18 @@ mod tests {
             face_reset_counts(&conn).unwrap(),
             FaceResetCounts::default()
         );
+    }
+
+    #[test]
+    fn reset_counts_propagates_a_query_error_instead_of_reporting_zero() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert_eq!(
+            face_reset_counts(&conn).unwrap(),
+            FaceResetCounts::default()
+        );
+        conn.execute_batch("CREATE TABLE faces (id INTEGER PRIMARY KEY)")
+            .unwrap();
+        assert!(face_reset_counts(&conn).is_err());
     }
 
     #[test]
