@@ -325,11 +325,14 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
             anyhow::bail!("faces has not run on this library; nothing to reset");
         }
         let (labeled, people) = videre_core::face_db::labeled_state_counts(&conn)?;
+        let learning = videre_core::face_db::face_reset_counts(&conn)?;
         if args.dry_run {
             eprintln!(
                 "videre faces --reset would delete {labeled} labeled face(s) across \
-                 {people} people, all grouping, and detection markers, then \
-                 re-detect and regroup the library; nothing was deleted"
+                 {people} people, all grouping, {} learning event(s), {} question(s), \
+                 {} learned profile(s), and detection markers, then \
+                 re-detect and regroup the library; nothing was deleted",
+                learning.learning_events, learning.questions, learning.profiles
             );
             return Ok(());
         }
@@ -358,8 +361,10 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
         // --silent; the rebuild's own progress obeys --silent as usual.
         eprintln!(
             "videre faces: reset wiped {total} face row(s) ({labeled} labeled \
-             across {people} people), {scanned} detection marker(s), and all \
-             grouping; rebuilding from absolute beginning"
+             across {people} people), {scanned} detection marker(s), {} \
+             learning event(s), {} question(s), {} learned profile(s), and all \
+             grouping; rebuilding from absolute beginning",
+            learning.learning_events, learning.questions, learning.profiles
         );
     }
 

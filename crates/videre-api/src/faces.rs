@@ -10,7 +10,7 @@ use videre_core::face_db::load_face_observations;
 use videre_core::face_learning::{
     active_question_context, append_event_batch_in_transaction, extract_cluster_quality_features,
     extract_membership_features, finish_question_in_transaction,
-    invalidate_identity_in_transaction, learning_state, list_learning_events,
+    invalidate_identity_for_removal_in_transaction, learning_state, list_learning_events,
     list_pending_questions, question_evidence_revision, replace_pending_questions,
     select_questions, stored_question, DecisionStage, EventFaceRef, EventFaceRole, LearningAction,
     LearningDecisionKind, LearningOutcome, NewLearningEvent, QuestionAnswer,
@@ -843,7 +843,7 @@ pub fn delete_person_with_learning(
         if changed == 0 {
             return Ok(None);
         }
-        let generation = invalidate_identity_in_transaction(conn, &identity)?;
+        let generation = invalidate_identity_for_removal_in_transaction(conn, &identity)?;
         Ok(Some(LearningAcknowledgement {
             generation,
             event_ids: Vec::new(),
@@ -1036,24 +1036,72 @@ pub fn face_learning_status(conn: &Connection) -> Result<FaceLearningStatus> {
     })
 }
 
+/// One journal entry plus read-time proof facts. `source_available` says
+/// whether every referenced face still exists; `incompatible` says whether
+/// the entry can no longer feed training. Both are computed at read time and
+/// never rewrite the historical row.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FaceLearningEventProof {
+    #[serde(flatten)]
+    pub event: videre_core::face_learning::StoredLearningEvent,
+    pub source_available: bool,
+    pub incompatible: bool,
+}
+
+fn proof_for(
+    conn: &Connection,
+    event: videre_core::face_learning::StoredLearningEvent,
+    current_embedding_model_id: Option<&str>,
+) -> Result<FaceLearningEventProof> {
+    let mut source_available = true;
+    for face in &event.faces {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM faces WHERE id = ?1)",
+            [face.face_id],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            source_available = false;
+            break;
+        }
+    }
+    let incompatible = event.features.schema_version
+        != videre_core::face_learning::FEATURE_SCHEMA_VERSION
+        || current_embedding_model_id.is_some_and(|model| model != event.embedding_model_id);
+    Ok(FaceLearningEventProof {
+        event,
+        source_available,
+        incompatible,
+    })
+}
+
 /// Learning events, newest first. Payloads carry scalar feature snapshots and
 /// provenance ids only; embeddings never leave the library.
 pub fn face_learning_events(
     conn: &Connection,
     limit: usize,
     before_id: Option<i64>,
-) -> Result<Vec<videre_core::face_learning::StoredLearningEvent>> {
+    current_embedding_model_id: Option<&str>,
+) -> Result<Vec<FaceLearningEventProof>> {
     videre_core::face_learning::ensure_learning_tables(conn)?;
     let limit = limit.clamp(1, 200);
-    Ok(list_learning_events(conn, limit, before_id)?)
+    let events = list_learning_events(conn, limit, before_id)?;
+    events
+        .into_iter()
+        .map(|event| proof_for(conn, event, current_embedding_model_id))
+        .collect()
 }
 
 pub fn face_learning_event(
     conn: &Connection,
     event_id: i64,
-) -> Result<Option<videre_core::face_learning::StoredLearningEvent>> {
+    current_embedding_model_id: Option<&str>,
+) -> Result<Option<FaceLearningEventProof>> {
     videre_core::face_learning::ensure_learning_tables(conn)?;
-    Ok(videre_core::face_learning::learning_event(conn, event_id)?)
+    match videre_core::face_learning::learning_event(conn, event_id)? {
+        Some(event) => Ok(Some(proof_for(conn, event, current_embedding_model_id)?)),
+        None => Ok(None),
+    }
 }
 
 /// Load the immutable training inputs for the learning worker's snapshot.
@@ -2293,6 +2341,48 @@ mod never_run_tests {
             (conn, stored[0].id, profile_id)
         }
 
+        pub fn stub_evidence() -> videre_core::face_learning::DecisionEvidence {
+            use videre_core::face_learning::{
+                Calibration, DecisionKind, DecisionOutcome, DecisionTarget, FeatureContribution,
+                ValidationSummary, EVIDENCE_SCHEMA_VERSION, FEATURE_SCHEMA_VERSION,
+            };
+            let evidence = videre_core::face_learning::DecisionEvidence {
+                schema_version: EVIDENCE_SCHEMA_VERSION,
+                profile_id: 1,
+                feature_schema_version: FEATURE_SCHEMA_VERSION,
+                decision_kind: DecisionKind::Membership,
+                outcome: DecisionOutcome::Allowed,
+                subject_face_ids: vec![10],
+                target: DecisionTarget::Person("alice".into()),
+                intercept: 0.0,
+                raw_logit: 0.0,
+                calibration: Calibration {
+                    intercept: 0.0,
+                    slope: 1.0,
+                },
+                calibrated_confidence: 0.5,
+                threshold: 0.5,
+                margin: 0.0,
+                features: vec![FeatureContribution {
+                    name: "similarity_mean".into(),
+                    value: 1.0,
+                    contribution: 0.0,
+                }],
+                support_face_ids: vec![12, 13],
+                rule_vetoes: Vec::new(),
+                validation: ValidationSummary {
+                    protocol_version: 1,
+                    datasets: 1,
+                    pair_precision: None,
+                    pair_recall: None,
+                    suggestion_precision: None,
+                    suggestion_coverage: None,
+                },
+            };
+            evidence.validate().unwrap();
+            evidence
+        }
+
         pub fn context(profile_id: i64) -> TeachingContext {
             TeachingContext {
                 embedding_model_id: "arcface/test".into(),
@@ -2302,6 +2392,106 @@ mod never_run_tests {
     }
 
     use question_fixture as qf;
+
+    #[test]
+    fn deleting_a_person_supersedes_questions_and_advances_once() {
+        let (conn, _question_id, _profile_id) = qf::library();
+        // A second pending question for the same identity: both must go.
+        let second = videre_core::face_learning::StoredQuestion {
+            id: 999,
+            status: videre_core::face_learning::QuestionStatus::Pending,
+            subject_face_ids: vec![10],
+            support_face_ids: vec![12, 13],
+            target_identity: "alice".into(),
+            target_display: "Alice".into(),
+            profile_id: 1,
+            model_kind: "logistic".into(),
+            representative_face_id: 10,
+            evidence_revision: "another-revision".into(),
+            evidence: qf::stub_evidence(),
+            created_at: "2026-01-01 00:00:00".into(),
+            decided_at: None,
+        };
+        let _ = second;
+        delete_person_with_learning(&conn, "Alice").unwrap();
+        let superseded: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM face_learning_questions WHERE status = 'superseded'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(superseded, 1, "the pending question must be superseded");
+        let state = learning_state(&conn).unwrap();
+        assert_eq!(state.generation, 1, "exactly one generation advance");
+        let invalidated: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM face_learning_events WHERE eligible = 0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(invalidated, 0, "no events existed to invalidate");
+    }
+
+    #[test]
+    fn the_journal_reports_availability_without_rewriting_history() {
+        let (conn, _question_id, profile_id) = qf::library();
+        // Produce journal entries, then remove a face an entry points at.
+        assign_with_learning(&conn, &[10, 11], "Alice", &qf::context(profile_id)).unwrap();
+        let subject_event_id = face_learning_events(&conn, 50, None, Some("arcface/test"))
+            .unwrap()
+            .iter()
+            .find(|proof| proof.event.faces.iter().any(|face| face.face_id == 10))
+            .map(|proof| proof.event.id)
+            .unwrap();
+        // A re-detection rebuild replaces face rows; simulate the row the
+        // entry references vanishing.
+        conn.execute("DELETE FROM faces WHERE id = 10", []).unwrap();
+
+        let proofs = face_learning_events(&conn, 50, None, Some("arcface/test")).unwrap();
+        let proof = proofs
+            .iter()
+            .find(|proof| proof.event.id == subject_event_id)
+            .unwrap();
+        assert!(!proof.source_available, "the subject face is gone");
+        assert!(!proof.incompatible, "same model and schema stay usable");
+        assert!(proof.event.eligible, "missing provenance stays eligible");
+
+        // A different configured model marks the entry incompatible.
+        let proofs = face_learning_events(&conn, 50, None, Some("other/model")).unwrap();
+        let proof = proofs
+            .iter()
+            .find(|proof| proof.event.id == subject_event_id)
+            .unwrap();
+        assert!(proof.incompatible);
+
+        // Invalidation changes eligibility columns only, never the features.
+        let (conn, question_id, profile_id) = qf::library();
+        answer_question_with_learning(
+            &conn,
+            question_id,
+            videre_core::face_learning::QuestionAnswer::No,
+            &qf::context(profile_id),
+        )
+        .unwrap();
+        let before: String = conn
+            .query_row(
+                "SELECT feature_snapshot_json FROM face_learning_events WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        delete_person_with_learning(&conn, "Alice").unwrap();
+        let after: String = conn
+            .query_row(
+                "SELECT feature_snapshot_json FROM face_learning_events WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(before, after, "historical feature JSON never mutates");
+    }
 
     #[test]
     fn yes_confirms_the_target_and_teaches_positive_membership() {

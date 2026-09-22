@@ -12,6 +12,7 @@ mod stats;
 mod types;
 
 pub use error::{Error, Result};
+pub use faces::FaceLearningEventProof;
 pub use faces::{
     answer_question_with_learning, assign, assign_with_learning, cluster_detail, delete_person,
     delete_person_with_learning, dissolve_cluster, dissolve_cluster_with_learning,

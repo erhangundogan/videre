@@ -143,17 +143,71 @@ pub fn advance_recluster_watermark(conn: &Connection) -> anyhow::Result<()> {
 /// faces decode-failure entries, and the recluster watermark. The
 /// `videre faces --reset` escape hatch: after this, the next faces run
 /// starts from absolute beginning. The caller owns consent.
+/// What a face reset will delete, for the dry-run preview and the
+/// confirmation prompt. Learning state is named so consent covers it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct FaceResetCounts {
+    pub total_faces: usize,
+    pub labeled_faces: usize,
+    pub people: usize,
+    pub learning_events: usize,
+    pub questions: usize,
+    pub profiles: usize,
+}
+
+/// Counts everything `reset_all` clears. Best-effort on libraries that never
+/// ran faces: missing tables count as zero.
+pub fn face_reset_counts(conn: &Connection) -> anyhow::Result<FaceResetCounts> {
+    let count = |sql: &str| -> usize {
+        conn.query_row(sql, [], |row| row.get::<_, i64>(0))
+            .unwrap_or(0) as usize
+    };
+    Ok(FaceResetCounts {
+        total_faces: count("SELECT COUNT(*) FROM faces"),
+        labeled_faces: count(
+            "SELECT COUNT(*) FROM faces WHERE confirmed = 1 AND person_label IS NOT NULL",
+        ),
+        people: count("SELECT COUNT(*) FROM people"),
+        learning_events: count("SELECT COUNT(*) FROM face_learning_events"),
+        questions: count("SELECT COUNT(*) FROM face_learning_questions"),
+        profiles: count("SELECT COUNT(*) FROM face_learning_profiles"),
+    })
+}
+
 pub fn reset_all(conn: &Connection) -> anyhow::Result<()> {
     // Ensures every table the deletes name exists, even on a library that
     // never ran faces before.
     create_faces_table(conn)?;
     crate::decode_failures::ensure_table(conn)?;
+    crate::face_learning::ensure_learning_tables(conn)?;
+    crate::face_learning::ensure_profile_table(conn)?;
+    crate::face_learning::ensure_question_tables(conn)?;
     conn.execute_batch("BEGIN")?;
     let result = (|| -> anyhow::Result<()> {
         conn.execute("DELETE FROM faces", [])?;
         conn.execute("DELETE FROM people", [])?;
         conn.execute("DELETE FROM faces_scanned", [])?;
-        conn.execute("DELETE FROM face_learning_profiles", [])?;
+        // The learning tables carry immutability triggers, so a reset drops
+        // and recreates them instead of deleting rows; the result is the same
+        // clean slate inside the same transaction.
+        conn.execute_batch(
+            "DROP TABLE face_learning_event_faces;
+             DROP TABLE face_learning_events;
+             DROP TABLE face_learning_question_faces;
+             DROP TABLE face_learning_questions;
+             DROP TABLE face_learning_profiles;",
+        )?;
+        crate::face_learning::ensure_learning_tables(conn)?;
+        crate::face_learning::ensure_profile_table(conn)?;
+        crate::face_learning::ensure_question_tables(conn)?;
+        // The state table itself survives the drop; restore its single row to
+        // the absolute beginning.
+        conn.execute(
+            "UPDATE face_learning_state SET generation = 0, trained_generation = 0,
+             status = 'current', training_generation = NULL, last_profile_id = NULL,
+             last_error = NULL WHERE id = 1",
+            [],
+        )?;
         crate::decode_failures::clear_stage(conn, crate::decode_failures::STAGE_FACES)?;
         crate::library_state::set(conn, crate::library_state::FACE_RECLUSTER_WATERMARK, 0)?;
         Ok(())
@@ -668,6 +722,94 @@ mod tests {
             })
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn reset_counts_and_clears_every_learning_table() {
+        let conn = open();
+        conn.execute_batch(
+            "INSERT INTO faces (hash, bbox, embedding, cluster_id, confirmed, person_label)
+             VALUES ('h1', '0,0,50,50', X'3C00', NULL, 1, 'elena');
+             INSERT INTO people VALUES ('elena','Elena');
+             INSERT INTO faces_scanned (hash) VALUES ('h1');",
+        )
+        .unwrap();
+        crate::face_learning::ensure_learning_tables(&conn).unwrap();
+        crate::face_learning::ensure_profile_table(&conn).unwrap();
+        crate::face_learning::ensure_question_tables(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO face_learning_events (action_kind, decision_kind, outcome,
+                embedding_model_id, feature_schema_version, feature_snapshot_json, support_count)
+             VALUES ('assign_face','membership','positive','m/1',1,'{}',0);
+             INSERT INTO face_learning_event_faces (event_id, face_id, role, ordinal)
+             VALUES (1, 1, 'subject', 0);
+             INSERT INTO face_learning_profiles (
+                artifact_version, embedding_model_id, feature_schema_version, model_kind,
+                parameters, training_evidence_json, validation_report_json, stage, status)
+             VALUES (1,'m/1',1,'logistic',X'7B7D','{}','{}','suggestion','active');
+             INSERT INTO face_learning_questions (
+                status, target_identity, profile_id, model_kind, representative_face_id,
+                evidence_revision, evidence_json)
+             VALUES ('pending','elena',1,'logistic',1,'rev','{}');",
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE face_learning_state SET generation = 3, trained_generation = 2,
+             last_profile_id = 1",
+            [],
+        )
+        .unwrap();
+
+        let counts = face_reset_counts(&conn).unwrap();
+        assert_eq!(counts.total_faces, 1);
+        assert_eq!(counts.labeled_faces, 1);
+        assert_eq!(counts.people, 1);
+        assert_eq!(counts.learning_events, 1);
+        assert_eq!(counts.questions, 1);
+        assert_eq!(counts.profiles, 1);
+
+        reset_all(&conn).unwrap();
+        assert_eq!(
+            face_reset_counts(&conn).unwrap(),
+            FaceResetCounts::default()
+        );
+        let state = crate::face_learning::learning_state(&conn).unwrap();
+        assert_eq!(state.generation, 0);
+        assert_eq!(state.trained_generation, 0);
+        assert_eq!(state.status, crate::face_learning::LearningStatus::Current);
+        assert_eq!(state.last_profile_id, None);
+
+        // Second reset on empty learning state is a no-op, not an error.
+        reset_all(&conn).unwrap();
+        assert_eq!(
+            face_reset_counts(&conn).unwrap(),
+            FaceResetCounts::default()
+        );
+    }
+
+    #[test]
+    fn reset_is_all_or_nothing_under_an_aborting_trigger() {
+        let conn = open();
+        conn.execute_batch(
+            "INSERT INTO faces (hash, bbox, embedding, cluster_id, confirmed, person_label)
+             VALUES ('h1', '0,0,50,50', X'3C00', NULL, 1, 'elena');",
+        )
+        .unwrap();
+        crate::face_learning::ensure_learning_tables(&conn).unwrap();
+        crate::face_learning::ensure_profile_table(&conn).unwrap();
+        crate::face_learning::ensure_question_tables(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO face_learning_events (action_kind, decision_kind, outcome,
+                embedding_model_id, feature_schema_version, feature_snapshot_json, support_count)
+             VALUES ('assign_face','membership','positive','m/1',1,'{}',0);
+             CREATE TRIGGER abort_face_wipe BEFORE DELETE ON faces
+             BEGIN SELECT RAISE(ABORT, 'injected wipe failure'); END;",
+        )
+        .unwrap();
+        assert!(reset_all(&conn).is_err());
+        let counts = face_reset_counts(&conn).unwrap();
+        assert_eq!(counts.total_faces, 1, "faces survive the failed reset");
+        assert_eq!(counts.learning_events, 1, "evidence survives too");
     }
 
     #[test]
