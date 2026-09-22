@@ -46,6 +46,9 @@ use std::time::Duration;
 /// as an older supported library, validated then prepared.
 const SCHEMA_VERSION: i64 = 2;
 
+// Wired into `open_prepared` in the same PR; until that commit the module is
+// reachable only from tests.
+#[allow(dead_code)]
 mod foreign_keys;
 
 /// The first sixteen bytes of every SQLite database file. A library
@@ -135,7 +138,7 @@ static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 /// 2 declares the location-cluster relationship so SQLite rejects an unknown
 /// cluster reference instead of storing an orphan. `table` must be a trusted
 /// static name (only ever a literal here): it is interpolated, not bound.
-fn file_hashes_ddl_for(table: &str, if_not_exists: bool) -> String {
+pub(crate) fn file_hashes_ddl_for(table: &str, if_not_exists: bool) -> String {
     let columns: Vec<String> = FILE_HASHES_COLUMNS
         .iter()
         .map(|(name, decl)| format!("    {name:<20} {decl}"))
@@ -271,6 +274,32 @@ pub(crate) fn verify_foreign_keys(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// The version-1 fixture DDL used by the foreign-key migration tests: the
+/// pre-FK `file_hashes` and `faces` shapes.
+#[cfg(test)]
+pub(crate) fn legacy_v1_fixture_ddl() -> String {
+    "CREATE TABLE file_hashes (
+        path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
+        created_at TEXT, modified_at TEXT, ext TEXT, phash INTEGER,
+        exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER,
+        height INTEGER
+    );
+    CREATE TABLE faces (
+        id            INTEGER PRIMARY KEY,
+        hash          TEXT NOT NULL,
+        bbox          TEXT NOT NULL,
+        landmark      TEXT,
+        embedding     BLOB NOT NULL,
+        cluster_id    INTEGER,
+        person_label  TEXT,
+        confirmed     INTEGER DEFAULT 0,
+        is_primary    INTEGER DEFAULT 0,
+        det_score     REAL,
+        blur          REAL
+    );"
+    .to_owned()
+}
+
 /// Whether the schema is already complete, used to decide whether an open
 /// needs the upgrade path at all.
 fn schema_complete(conn: &Connection) -> Result<bool> {
@@ -291,7 +320,7 @@ fn prepare_schema(conn: &Connection) -> Result<()> {
 /// call it inside one outer transaction. Uses the schema-only faces helper
 /// (no label detach, no row migration); data fixes belong to the upgrade's
 /// repair step.
-fn prepare_schema_components(conn: &Connection) -> Result<()> {
+pub(crate) fn prepare_schema_components(conn: &Connection) -> Result<()> {
     ensure_scan_schema(conn)?;
     // people comes with the faces schema; faces_scanned stays with the face
     // writers that own it.

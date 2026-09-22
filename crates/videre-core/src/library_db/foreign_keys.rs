@@ -3,8 +3,6 @@
 //! commits only after verification succeeds, and the repair report is printed
 //! only after that commit, so rolled-back work is never claimed as repaired.
 //!
-//! The upgrade entry point (`upgrade_to_v2`) lives here too; until it is
-//! wired the report types are referenced only by tests.
 
 use anyhow::Context;
 use rusqlite::{Connection, OptionalExtension};
@@ -68,7 +66,6 @@ impl RepairReport {
 
 /// True when the library carries the learning question tables at all. A
 /// pre-learning library must not have them manufactured by the repair.
-#[allow(dead_code)] // called by upgrade_to_v2, wired in the same PR
 fn question_tables_present(conn: &Connection) -> rusqlite::Result<bool> {
     conn.query_row(
         "SELECT
@@ -84,7 +81,6 @@ fn question_tables_present(conn: &Connection) -> rusqlite::Result<bool> {
 /// Whether a table carries the immutability trigger that blocks the orphan
 /// cleanup. Only the event-provenance trigger is ever dropped, inside the
 /// upgrade's transaction, and recreated by `ensure_learning_tables`.
-#[allow(dead_code)] // called by upgrade_to_v2, wired in the same PR
 fn event_delete_trigger_name(conn: &Connection) -> rusqlite::Result<Option<String>> {
     let mut stmt = conn.prepare(
         "SELECT name FROM sqlite_master WHERE type = 'trigger'
@@ -97,7 +93,6 @@ fn event_delete_trigger_name(conn: &Connection) -> rusqlite::Result<Option<Strin
 /// be turned on without stranding a person's data. Assumes an open outer
 /// transaction (the upgrade owns the commit) and runs with enforcement off:
 /// the point is to clear the violations first.
-#[allow(dead_code)] // called by upgrade_to_v2, wired in the same PR
 pub fn repair_legacy_rows(conn: &Connection) -> anyhow::Result<RepairReport> {
     // Orphan person labels: clear the relationship, keep the face. Collected
     // first so the report names the exact stored text.
@@ -234,6 +229,128 @@ pub fn repair_legacy_rows(conn: &Connection) -> anyhow::Result<RepairReport> {
         learning_events_invalidated,
         questions_superseded: 0,
     })
+}
+
+/// The saved non-auto schema objects (indexes, triggers) that point at a
+/// table being rebuilt, restored after the new table takes the old name.
+#[derive(Debug)]
+struct SavedSchemaObject {
+    kind: String,
+    name: String,
+    sql: String,
+}
+
+fn save_objects_on(conn: &Connection, table: &str) -> anyhow::Result<Vec<SavedSchemaObject>> {
+    let mut stmt = conn.prepare(
+        "SELECT type, name, sql FROM sqlite_master
+         WHERE tbl_name = ?1 AND sql IS NOT NULL
+           AND type IN ('index', 'trigger')
+           AND name NOT LIKE 'sqlite_autoindex%'",
+    )?;
+    let rows = stmt
+        .query_map([table], |row| {
+            Ok(SavedSchemaObject {
+                kind: row.get(0)?,
+                name: row.get(1)?,
+                sql: row.get(2)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Rebuild one table into its canonical version-2 shape inside the upgrade
+/// transaction: stage a fresh table under a temporary name, copy every
+/// column by explicit name, drop the old table, rename the stage into place,
+/// then restore the saved indexes and triggers. Because nothing else
+/// references these two tables, no parent-rename dance is needed.
+fn rebuild_table(
+    conn: &Connection,
+    table: &str,
+    canonical_ddl: fn(&str, bool) -> String,
+    columns: &[&str],
+) -> anyhow::Result<()> {
+    let saved = save_objects_on(conn, table)?;
+    let stage = format!("{table}__v2_stage");
+    conn.execute_batch(&format!(
+        "DROP TABLE IF EXISTS {stage}; ALTER TABLE {table} RENAME TO {stage};"
+    ))
+    .with_context(|| format!("stage the old {table}"))?;
+    conn.execute_batch(&canonical_ddl(table, true))
+        .with_context(|| format!("create the v2 {table}"))?;
+    let column_list = columns.join(", ");
+    conn.execute_batch(&format!(
+        "INSERT INTO {table} ({column_list}) SELECT {column_list} FROM {stage};"
+    ))
+    .with_context(|| format!("copy rows into the v2 {table}"))?;
+    conn.execute_batch(&format!("DROP TABLE {stage};"))
+        .with_context(|| format!("drop the staged old {table}"))?;
+    for object in &saved {
+        conn.execute_batch(&object.sql)
+            .with_context(|| format!("restore {} {}", object.kind, object.name))?;
+    }
+    Ok(())
+}
+
+fn rebuild_file_hashes(conn: &Connection) -> anyhow::Result<()> {
+    let columns: Vec<&str> = crate::library_db::FILE_HASHES_COLUMNS
+        .iter()
+        .map(|(name, _)| *name)
+        .collect();
+    rebuild_table(
+        conn,
+        "file_hashes",
+        crate::library_db::file_hashes_ddl_for,
+        &columns,
+    )
+}
+
+fn rebuild_faces(conn: &Connection) -> anyhow::Result<()> {
+    // Copy whatever columns the legacy table actually had; the v2 DDL fills
+    // the rest with their defaults. Every v2 column also existed in every
+    // legacy shape (oriented arrived via ALTER, so a pre-oriented table
+    // simply has no values to copy).
+    let mut stmt = conn.prepare("PRAGMA table_info(faces)")?;
+    let legacy_columns: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+    let columns: Vec<&str> = legacy_columns.iter().map(|s| s.as_str()).collect();
+    rebuild_table(conn, "faces", crate::face_db::faces_ddl_for, &columns)
+}
+
+/// Upgrade a library database to schema version 2 in one transaction:
+/// prepare every required table, repair the known legacy parent-child
+/// breaks, rebuild `file_hashes` and `faces` into their canonical
+/// foreign-keyed shapes, verify, then stamp version 2 and commit. Any
+/// failure rolls the whole thing back and returns the error; the caller
+/// prints the report only after this returns Ok.
+pub fn upgrade_to_v2(conn: &Connection) -> anyhow::Result<RepairReport> {
+    let tx = conn.unchecked_transaction()?;
+    crate::library_db::prepare_schema_components(&tx)?;
+    let report = repair_legacy_rows(&tx)?;
+    rebuild_file_hashes(&tx)?;
+    rebuild_faces(&tx)?;
+    let violations: (String, i64, String, i64) = {
+        let mut stmt = tx.prepare("PRAGMA foreign_key_check")?;
+        let mut rows = stmt.query([])?;
+        match rows.next()? {
+            Some(row) => (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?),
+            None => Default::default(),
+        }
+    };
+    if !violations.0.is_empty() {
+        // The repair plus rebuild must have caught everything; a violation
+        // here means the library carries a shape this migration does not
+        // know, and committing it under enforced keys would be wrong.
+        anyhow::bail!(
+            "foreign-key violations remain after repair: {} rowid {} references {} (fk {}); the upgrade was rolled back",
+            violations.0, violations.1, violations.2, violations.3
+        );
+    }
+    tx.pragma_update(None, "user_version", 2)?;
+    tx.commit()?;
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -458,5 +575,224 @@ mod tests {
             !crate::db::table_exists(&conn, "face_learning_questions").unwrap(),
             "the repair must not create tables the library did not have"
         );
+    }
+}
+
+/// The legacy (version 1) `file_hashes` shape, used only by tests to build a
+/// fixture that predates foreign keys.
+#[cfg(test)]
+pub(crate) fn legacy_file_hashes_ddl() -> String {
+    "CREATE TABLE file_hashes (
+        path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
+        created_at TEXT, modified_at TEXT, ext TEXT, phash INTEGER,
+        exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER,
+        height INTEGER
+    );"
+    .to_owned()
+}
+
+#[cfg(test)]
+mod upgrade_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    /// A version-1 library: old no-FK DDL for the two main tables, a custom
+    /// index and a harmless custom trigger that a rebuild must preserve, one
+    /// legacy orphan (an unlabeled person reference is absent here; the
+    /// orphan-label path is covered by the repair tests), and a derived row
+    /// whose hash is absent from `file_hashes` (historical provenance).
+    fn legacy_v1_library() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        conn.execute_batch(&crate::library_db::legacy_v1_fixture_ddl())
+            .unwrap();
+        conn.execute_batch(
+            "INSERT INTO file_hashes (path, hash, ext) VALUES ('/p/a.jpg', 'aaaa', 'jpg'),
+                ('/p/b.jpg', 'bbbb', 'jpg');
+             INSERT INTO faces (id, hash, bbox, embedding, cluster_id, person_label, confirmed)
+             VALUES (1, 'aaaa', '0,0,50,50', X'0000', NULL, 'missing_person', 1);
+             CREATE INDEX idx_custom_hash ON file_hashes(hash);
+             CREATE TRIGGER trg_custom_faces AFTER INSERT ON faces
+             BEGIN SELECT 1; END;",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn user_version(conn: &Connection) -> i64 {
+        conn.query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn foreign_key_violations(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn upgrades_legacy_schema_atomically() {
+        let conn = legacy_v1_library();
+        let report = upgrade_to_v2(&conn).expect("the v1 upgrade must succeed");
+
+        assert_eq!(user_version(&conn), 2);
+        assert_eq!(foreign_key_violations(&conn), 0);
+
+        // All four declared parent-child relationships exist.
+        super::super::verify_foreign_keys(&conn).unwrap();
+
+        // Rows and their columns survive the rebuild.
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+        let oriented: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('faces') WHERE name = 'oriented'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(oriented, 1, "the faces rebuild carries the full column set");
+        let label: Option<String> = conn
+            .query_row("SELECT person_label FROM faces WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(label, None, "the orphan label is unassigned by the repair");
+
+        // Custom schema objects survive the rebuild.
+        let index: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index'
+                 AND name = 'idx_custom_hash'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(index, 1, "a user index on a rebuilt table must survive");
+        let trigger: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger'
+                 AND name = 'trg_custom_faces'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(trigger, 1, "a user trigger on a rebuilt table must survive");
+
+        // Required learning tables exist after the upgrade, and the report
+        // names the repaired orphan label.
+        for table in [
+            "face_learning_events",
+            "face_learning_event_faces",
+            "face_learning_questions",
+            "face_learning_question_faces",
+        ] {
+            assert!(crate::db::table_exists(&conn, table).unwrap(), "{table}");
+        }
+        assert!(report
+            .stderr_lines()
+            .iter()
+            .any(|l| l.contains("missing_person")));
+
+        // Idempotent: a second upgrade on the same connection changes nothing.
+        let before = stub_snapshot(&conn);
+        upgrade_to_v2(&conn).expect("second upgrade must succeed");
+        assert_eq!(stub_snapshot(&conn), before);
+    }
+
+    fn stub_snapshot(conn: &Connection) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("v{}\n", user_version(conn)));
+        let mut stmt = conn
+            .prepare("SELECT type, name FROM sqlite_master ORDER BY name")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .unwrap();
+        for row in rows {
+            let (t, n) = row.unwrap();
+            out.push_str(&format!("{t}:{n}\n"));
+        }
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
+            .unwrap();
+        out.push_str(&format!("files {n}\n"));
+        out
+    }
+
+    #[test]
+    fn a_library_without_learning_tables_gains_them_and_upgrades() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        conn.execute_batch(&crate::library_db::legacy_v1_fixture_ddl())
+            .unwrap();
+        conn.execute_batch(
+            "INSERT INTO file_hashes (path, hash, ext) VALUES ('/p/a.jpg', 'aaaa', 'jpg');",
+        )
+        .unwrap();
+        assert!(!crate::db::table_exists(&conn, "face_learning_events").unwrap());
+
+        upgrade_to_v2(&conn).expect("upgrade with no learning tables");
+
+        assert_eq!(user_version(&conn), 2);
+        for table in [
+            "face_learning_events",
+            "face_learning_event_faces",
+            "face_learning_questions",
+            "face_learning_question_faces",
+        ] {
+            assert!(crate::db::table_exists(&conn, table).unwrap(), "{table}");
+        }
+    }
+
+    #[test]
+    fn user_version_zero_upgrades_the_same_way() {
+        let conn = legacy_v1_library();
+        conn.pragma_update(None, "user_version", 0).unwrap();
+        upgrade_to_v2(&conn).expect("version 0 upgrade");
+        assert_eq!(user_version(&conn), 2);
+    }
+
+    #[test]
+    fn a_failed_upgrade_rolls_back_schema_rows_and_report() {
+        let conn = legacy_v1_library();
+        // Abort the orphan-label repair's UPDATE: the whole upgrade must roll
+        // back, leaving the v1 schema, rows, and custom objects intact.
+        conn.execute_batch(
+            "CREATE TRIGGER abort_orphan_repair BEFORE UPDATE ON faces
+             WHEN OLD.person_label IS NOT NULL
+             BEGIN SELECT RAISE(ABORT, 'injected repair failure'); END;",
+        )
+        .unwrap();
+
+        let result = upgrade_to_v2(&conn);
+        assert!(
+            result.is_err(),
+            "the injected failure must fail the upgrade"
+        );
+
+        assert_eq!(user_version(&conn), 1, "the version must not advance");
+        let ddl: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'file_hashes'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            !ddl.contains("FOREIGN KEY"),
+            "the old no-FK DDL must remain after a rollback: {ddl}"
+        );
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2, "rows survive the rollback");
+        // No report may be emitted for rolled-back work: the caller only sees
+        // an Err, and stderr_lines belong to a returned report. Assert via the
+        // returned type that nothing was produced.
+        assert!(result.err().unwrap().to_string().contains("injected"));
     }
 }
