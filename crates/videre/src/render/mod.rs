@@ -340,6 +340,65 @@ pub(crate) fn query_files_by_hash(
     Ok((rows, n))
 }
 
+/// Fetch every row named in `hashes`, in the given order, with no cap. Unlike
+/// `query_files_by_hash` (bounded at 100 for the in-page similarity feature),
+/// this backs the `/events` leaf, which must render a whole session however
+/// large. Rows are returned in `hashes` order so an event stays chronological.
+pub(crate) fn query_event_files(
+    conn: &Connection,
+    hashes: &[String],
+) -> rusqlite::Result<(Vec<(FileRow, i64)>, i64)> {
+    let wanted: Vec<&str> = hashes
+        .iter()
+        .map(|h| h.trim())
+        .filter(|h| !h.is_empty() && h.chars().all(|c| c.is_ascii_hexdigit()))
+        .collect();
+    if wanted.is_empty() {
+        return Ok((Vec::new(), 0));
+    }
+    let placeholders = std::iter::repeat_n("?", wanted.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT path, hash, size_bytes, COALESCE(ext,''), created_at, modified_at, exif_date, \
+                gps_lat, gps_lon, width, height, \
+                (SELECT COUNT(*) FROM file_hashes c WHERE c.hash = f.hash) AS copies \
+         FROM file_hashes AS f WHERE f.hash IN ({placeholders})"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut by_hash: std::collections::HashMap<String, (FileRow, i64)> = stmt
+        .query_map(rusqlite::params_from_iter(wanted.iter()), |r| {
+            Ok((
+                FileRow {
+                    path: r.get(0)?,
+                    hash: r.get(1)?,
+                    size_bytes: r.get(2)?,
+                    ext: r.get(3)?,
+                    created_at: r.get(4)?,
+                    modified_at: r.get(5)?,
+                    exif_date: r.get(6)?,
+                    gps_lat: r.get(7)?,
+                    gps_lon: r.get(8)?,
+                    width: r.get(9)?,
+                    height: r.get(10)?,
+                },
+                r.get::<_, i64>(11)?,
+            ))
+        })?
+        .map(|r| r.map(|entry| (entry.0.hash.clone(), entry)))
+        .collect::<rusqlite::Result<_>>()?;
+    // Preserve the caller's (chronological) order; a hash present more than
+    // once in the library still resolves to a single row here.
+    let mut rows = Vec::with_capacity(wanted.len());
+    for hash in &wanted {
+        if let Some(entry) = by_hash.remove(*hash) {
+            rows.push(entry);
+        }
+    }
+    let n = rows.len() as i64;
+    Ok((rows, n))
+}
+
 fn best_date(r: &FileRow) -> &str {
     if let Some(d) = r.exif_date.as_deref() {
         if !d.starts_with("0000") {
@@ -802,6 +861,7 @@ pub(crate) enum Section {
     All,
     Duplicates,
     Date,
+    Events,
     People,
     Map,
 }
@@ -821,6 +881,9 @@ impl Section {
     }
     pub(crate) fn is_map(&self) -> bool {
         *self == Section::Map
+    }
+    pub(crate) fn is_events(&self) -> bool {
+        *self == Section::Events
     }
 }
 
@@ -916,6 +979,7 @@ pub(crate) fn write_static_page(
             embedded: None,
             db_path,
             date_filter_json: "null".to_string(),
+            event_json: "null".to_string(),
         },
     };
     let html = render(&set);
@@ -932,6 +996,7 @@ pub(crate) fn write_static_page(
 pub(crate) enum View {
     All,
     Date,
+    Events,
     Duplicates,
 }
 
@@ -943,6 +1008,7 @@ pub(crate) struct RenderOptions {
     pub embedded: Option<usize>,
     pub db_path: String,
     pub date_filter_json: String,
+    pub event_json: String,
 }
 
 /// One set of files plus everything known about them, ready to render as a
@@ -971,6 +1037,7 @@ pub(crate) fn render(set: &RenderSet) -> String {
     let (all_files, keep_files): (Option<&[FileRow]>, Option<&[FileRow]>) = match set.view {
         View::All => (Some(&set.items), None),
         View::Date => (None, Some(&set.items)),
+        View::Events => (None, None),
         View::Duplicates => (None, None),
     };
     let embedded = set.options.embedded;
@@ -1007,6 +1074,8 @@ pub(crate) fn render(set: &RenderSet) -> String {
         live,
         has_embeddings,
         &set.options.date_filter_json,
+        set.view,
+        &set.options.event_json,
     );
 
     let page = GalleryPage {
@@ -1025,7 +1094,7 @@ pub(crate) fn render(set: &RenderSet) -> String {
         has_groups: !groups.is_empty(),
         duplicate_groups: stats.duplicate_groups,
         all_files_count: all_files.map(|f| f.len()),
-        has_keep_files: keep_files.is_some(),
+        has_keep_files: keep_files.is_some() || set.view == View::Events,
         nav,
         // Home (`/` = All) and standalone exports (no nav) keep the header; the
         // secondary sections drop it. See `GalleryPage::show_header`.
@@ -1049,24 +1118,31 @@ fn build_data_block(
     live: bool,
     has_embeddings: bool,
     date_filter_json: &str,
+    view_kind: View,
+    event_json: &str,
 ) -> String {
     let mut out = String::with_capacity(256 * 1024);
     // GVIEW tells the client which view to ask /api/files for when it fetches
     // rather than reading an inlined array. It is the route's own identity, so
     // the client never has to infer it from the URL.
-    let view = if keep_files.is_some() { "date" } else { "all" };
+    let view = match view_kind {
+        View::Date => "date",
+        View::Events => "events",
+        View::All | View::Duplicates => "all",
+    };
     // Video grid tiles are served as oriented poster frames only on a live macOS
     // server: poster extraction is QuickLook (macOS-only), and a static export
     // has no server to fetch them from. Elsewhere the client keeps the plain
     // `<video>` tile. See buildPreview in gallery.js.
     let video_posters = live && cfg!(target_os = "macos");
     out.push_str(&format!(
-        "<script>\nvar LIVE_SERVER={live};\nvar HAS_EMBEDDINGS={has_embeddings};\nvar VIDEO_POSTERS={video_posters};\nvar GVIEW={};\nvar PEOPLE_ROOT={};\nvar GDATE={};\nvar GLOC=null;\n</script>\n",
+        "<script>\nvar LIVE_SERVER={live};\nvar HAS_EMBEDDINGS={has_embeddings};\nvar VIDEO_POSTERS={video_posters};\nvar GVIEW={};\nvar PEOPLE_ROOT={};\nvar GDATE={};\nvar GEVENT={};\nvar GLOC=null;\n</script>\n",
         json_str(view),
         // `nav` is Some only under `videre gallery`, which is the one
         // configuration with a `/people`. See `people_root`.
         json_str(people_root(nav.is_some())),
         date_filter_json,
+        event_json,
     ));
     out.push_str("<script>\nvar GROUPS=[\n");
     for (i, group) in groups.iter().enumerate() {

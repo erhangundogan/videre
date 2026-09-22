@@ -73,10 +73,11 @@ people or location data yet.
 | `/date/2024`, `/date/2024/09`, `/date/2024/09/26` | The media of that year, month, or day, each with its item count |
 | `/map` | Location clusters plotted on a world map, with the full file grid below; click a cluster to see its photos |
 | `/map/location/berlin?radius=25` | An addressable location drill-down with a proximity radius in kilometers |
-| `/events` | Reserved, not built yet |
+| `/events` | Photos grouped into automatic time-and-place events; click one to see its photos |
+| `/events/20210810T143207-3f9a1c2e` | One event's photos, keyed by its start time and a short hash |
 | `/smart` | Reserved, not built yet |
 
-**Files**, **Duplicates**, **Date**, **People** and **Map** sit in a strip along
+**Files**, **Duplicates**, **Date**, **Events**, **People** and **Map** sit in a strip along
 the top of every page, so you switch between them without touching the address
 bar. The reserved routes are deliberately not in it; each one appears when it
 renders something. At the right of the strip is a **search** box: type a
@@ -106,6 +107,21 @@ library database, and once the basemap is present the view makes no outbound map
 or tile requests. On a machine without working WebGL the map falls back to a
 self-drawn plot with the same clusters, drill-down, and grid.
 
+The Events view groups your photos into sessions the way an outing feels: a run
+of shots with no long quiet stretch and no big move between them is one event. A
+gap of more than six hours starts a new event, and so does a jump of more than
+five kilometers between two located shots. Events are computed from the library
+each time you open the page, so there is nothing to build or keep up to date;
+each card shows the session's place name (when the photos carry GPS), its date
+range, and its file count. Click one to see just that session's photos.
+
+Events use the same date each file has everywhere else: its camera capture
+time, or its file modification time when there is none. Capture times are the
+camera's local clock. A modification time is used as the wall-clock time it
+was recorded with, without converting between time zones, so files whose
+modification times were recorded under different offsets are grouped by those
+nominal times rather than by absolute time.
+
 They link to each other in smaller ways too, which is the point of serving them
 together: a face in
 the gallery is clickable through to that person's page, and a photo's location
@@ -114,7 +130,7 @@ open from disk, because both need something running to answer.
 
 ## List and Tile views
 
-The **View** selector on the Files and Date tabs switches between **List**, the
+The **View** selector on the Files, Date, and Events tabs switches between **List**, the
 default view with file details, and **Tile**, an image-first view without
 captions. Tile arranges photos and videos into rows using their stored aspect
 ratios; files with no recorded dimensions use a square tile.

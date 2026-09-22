@@ -746,6 +746,64 @@ function buildDateInitialView(){
   else if(typeof GDATE==='object'&&GDATE&&GDATE.kind==='range')buildRangeGallery(GDATE);
   else buildYearView();
 }
+
+// Events reuse the date view's grid, breadcrumb and card styles. The server
+// segments the library into events; the client only draws them.
+function eventDateRange(from,to){
+  // from/to are "YYYY-MM-DD HH:MM:SS"; show a compact, human span.
+  var months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  var f=from.slice(0,10).split('-'), t=to.slice(0,10).split('-');
+  var fy=f[0], fm=+f[1], fd=+f[2], ty=t[0], tm=+t[1], td=+t[2];
+  if(from.slice(0,10)===to.slice(0,10)) return months[fm-1]+' '+fd+', '+fy;
+  if(fy===ty&&fm===tm) return months[fm-1]+' '+fd+'–'+td+', '+fy;
+  if(fy===ty) return months[fm-1]+' '+fd+' – '+months[tm-1]+' '+td+', '+fy;
+  return months[fm-1]+' '+fd+', '+fy+' – '+months[tm-1]+' '+td+', '+ty;
+}
+function eventCards(events){
+  return events.map(function(e){
+    var range=eventDateRange(e.start,e.end);
+    var label=e.place||range;
+    var sub=(e.place?escH(range)+' · ':'')+e.count+' file'+(e.count===1?'':'s');
+    return '<div class="date-card event-card" data-key="'+escA(e.key)+'">'+
+      '<a class="date-card-link" href="/events/'+escA(e.key)+'" aria-label="Open '+escA(label)+'"></a>'+
+      buildPreview(e.sample)+
+      '<div class="date-card-label">'+escH(label)+'</div>'+
+      '<div class="date-card-count">'+sub+'</div></div>';
+  }).join('');
+}
+function buildEventsOverview(){
+  document.getElementById('dateBreadcrumb').innerHTML='Events';
+  var narrowing=document.getElementById('dateNarrowing');
+  if(narrowing)narrowing.innerHTML='';
+  var grid=document.getElementById('dateGrid');
+  grid.innerHTML='<p class="muted">Loading…</p>';
+  fetch('/api/events').then(function(r){return r.json();})
+    .then(function(d){
+      var evs=d.events||[];
+      grid.innerHTML=evs.length?eventCards(evs):'<p class="muted">No events yet.</p>';
+    })
+    .catch(function(){ grid.innerHTML='<p class="muted">Could not load events.</p>'; });
+}
+function buildEventLeaf(ev){
+  var range=eventDateRange(ev.from,ev.to);
+  document.getElementById('dateBreadcrumb').innerHTML=
+    '<a href="/events">All Events</a> &gt; '+escH(ev.place||range);
+  var narrowing=document.getElementById('dateNarrowing');
+  if(narrowing)narrowing.innerHTML='';
+  var grid=document.getElementById('dateGrid');
+  grid.innerHTML='<p class="muted">Loading…</p>';
+  fetch('/api/events/'+encodeURIComponent(ev.key)+'/files')
+    .then(function(r){return r.json();})
+    .then(function(d){
+      showPeriodCount(d.total!=null?d.total:(d.files||[]).length);
+      renderDateFiles(d.files||[],'No files in this event.');
+    })
+    .catch(function(){ grid.innerHTML='<p class="muted">Could not load this event.</p>'; });
+}
+function buildEventsInitialView(){
+  if(typeof GEVENT==='object'&&GEVENT) buildEventLeaf(GEVENT);
+  else buildEventsOverview();
+}
 // Event delegation: toggle, lightbox, copy. One listener for all dynamic content
 document.addEventListener('click',function(e){
   var lb=e.target.closest('[data-lb-url]');
@@ -1149,4 +1207,5 @@ window.addEventListener('resize',function(){
 // the page has fully loaded.
 window.addEventListener('load',function(){ if(viewMode()==='tile') renderCurrentMode(); });
 render(true);
-if(document.getElementById('dateGrid')) buildDateInitialView();
+if(typeof GVIEW!=='undefined'&&GVIEW==='events') buildEventsInitialView();
+else if(document.getElementById('dateGrid')) buildDateInitialView();

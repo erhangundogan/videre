@@ -43,7 +43,8 @@ and cannot answer these HTTP requests after the command exits.
 | `GET /map` | Location cluster map with the full file grid |
 | `GET /map?near={lat},{lon}` | Map centred on the cluster nearest a coordinate pair (used by the lightbox place link) |
 | `GET /map/location/{name}` | One addressable location drill-down |
-| `GET /events` | Reserved |
+| `GET /events` | Automatic time-and-place event overview |
+| `GET /events/{key}` | One event's photos (`key` is its compact start time and a short hash) |
 | `GET /smart` | Reserved |
 
 Date route segments are zero-padded where applicable: `YYYY`, `YYYY/MM` and
@@ -66,8 +67,8 @@ curl "http://127.0.0.1:7878/date/2025/06/03"
 curl "http://127.0.0.1:7878/date?from=2016-05&to=2017"
 ```
 
-The reserved `/events` and `/smart` routes currently return a placeholder page
-with `404 Not Found`.
+The reserved `/smart` route currently returns a placeholder page with
+`404 Not Found`.
 
 Map location names use the same normalized, URL-safe identity rule as people.
 When more than one cluster has the same normalized name, the route selects the
@@ -260,6 +261,54 @@ curl "http://127.0.0.1:7878/api/dates?level=month&parent=2026"
     }
   ]
 }
+```
+
+### `GET /api/events`
+
+Returns the automatic event overview, newest first. An event is a run of
+photos with no gap longer than six hours and no jump greater than five
+kilometers between two located shots; both are computed from the library on
+each request, so there is nothing to precompute. `key` is the event's start
+time in a URL-safe compact form (`%Y%m%dT%H%M%S`), used as the drill-down
+address. `place` is the offline reverse-geocode of the event's GPS centroid,
+or `null` when no member carried GPS.
+
+```bash
+curl "http://127.0.0.1:7878/api/events"
+```
+
+```json
+{
+  "events": [
+    {
+      "key": "20210810T143207-3f9a1c2e",
+      "start": "2021-08-10 14:32:07",
+      "end": "2021-08-12 09:15:44",
+      "count": 83,
+      "place": "Bodrum, TR",
+      "sample": {
+        "path": "/Users/me/Photos/IMG_0001.jpg",
+        "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ext": "jpg",
+        "w": 4032,
+        "h": 3024
+      }
+    }
+  ]
+}
+```
+
+### `GET /api/events/{key}/files`
+
+Returns the files of one event, by its exact members, in the same
+`{total, offset, files}` shape as `GET /api/files`. `key` comes from `/api/events`:
+the event's compact start time, a hyphen, and the first eight characters of
+its first file's hash, so two events starting in the same second stay
+distinct. An unknown or stale key (the library or
+the thresholds changed since it was read) returns `404`.
+
+```bash
+curl "http://127.0.0.1:7878/api/events/20210810T143207-3f9a1c2e/files"
 ```
 
 ### `GET /api/search`
@@ -722,6 +771,8 @@ content-length: 0
 | `GET /api/files/{hash}/raw` | Serve bytes for one library file |
 | `POST /api/files/{hash}/rotate` | Rotate one photo 90 degrees clockwise (EXIF) |
 | `GET /api/dates` | Read date buckets |
+| `GET /api/events` | List automatic time-and-place events |
+| `GET /api/events/{key}/files` | Files of one event |
 | `GET /api/search` | Rank by text or by an existing file hash |
 | `GET /api/locations` | Resolve one coordinate pair to a place name |
 | `GET /api/location-clusters` | List location clusters for the Map view |
