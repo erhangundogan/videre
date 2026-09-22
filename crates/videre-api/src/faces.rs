@@ -852,10 +852,6 @@ pub fn delete_person_with_learning(
     })
 }
 
-/// Mark one face as the person's primary (their labeling-page thumbnail),
-/// clearing any previous primary in the same transaction so exactly one
-/// remains. The target update is guarded by person_label so it can't steal a
-/// face from another person.
 /// Answer one pending identity question. Yes confirms the subject cluster as
 /// the target person and teaches one positive membership; No teaches one
 /// negative membership without labeling; Skip only changes delivery state.
@@ -1217,6 +1213,10 @@ pub fn persist_trained_profile(
     })
 }
 
+/// Mark one face as the person's primary (their labeling-page thumbnail),
+/// clearing any previous primary in the same transaction so exactly one
+/// remains. The target update is guarded by person_label so it can't steal a
+/// face from another person.
 pub fn set_primary(conn: &Connection, face_id: i64, person_label: &str) -> Result<()> {
     let person_label =
         videre_core::person::normalize(person_label).unwrap_or_else(|| person_label.to_string());
@@ -2324,14 +2324,19 @@ mod never_run_tests {
         /// Faces 10 and 11 sit in cluster 1; faces 12 and 13 confirm "alice".
         /// Returns the connection and the pending question id asking about
         /// cluster 1 and alice.
+        /// Mirrors the planned foreign-key contract: enforcement on, and a face
+        /// label must name an existing person.
         pub fn library() -> (Connection, i64, i64) {
             let conn = Connection::open_in_memory().unwrap();
             conn.execute_batch(
-                "CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL,
+                "PRAGMA foreign_keys = ON;
+                 CREATE TABLE people (name TEXT PRIMARY KEY, full_name TEXT NOT NULL);
+                 CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL,
                  bbox TEXT NOT NULL, landmark TEXT, embedding BLOB NOT NULL,
-                 cluster_id INTEGER, person_label TEXT, confirmed INTEGER DEFAULT 0,
-                 is_primary INTEGER DEFAULT 0, det_score REAL, blur REAL, oriented INTEGER);
-                 CREATE TABLE people (name TEXT PRIMARY KEY, full_name TEXT NOT NULL);",
+                 cluster_id INTEGER,
+                 person_label TEXT REFERENCES people(name) ON DELETE RESTRICT ON UPDATE RESTRICT,
+                 confirmed INTEGER DEFAULT 0,
+                 is_primary INTEGER DEFAULT 0, det_score REAL, blur REAL, oriented INTEGER);",
             )
             .unwrap();
             videre_core::face_learning::ensure_learning_tables(&conn).unwrap();
@@ -2657,10 +2662,14 @@ mod never_run_tests {
             QuestionStatus::Superseded
         );
 
-        // Removed target person.
+        // Removed target person. With face labels referencing people, the
+        // row can only go once no face carries the label.
         let (conn, question_id, profile_id) = qf::library();
-        conn.execute("DELETE FROM people WHERE name = 'alice'", [])
-            .unwrap();
+        conn.execute_batch(
+            "UPDATE faces SET person_label = NULL, confirmed = 0 WHERE person_label = 'alice';
+             DELETE FROM people WHERE name = 'alice';",
+        )
+        .unwrap();
         assert!(matches!(
             answer_question_with_learning(
                 &conn,

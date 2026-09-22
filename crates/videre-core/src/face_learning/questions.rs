@@ -888,12 +888,18 @@ mod tests {
 
     fn library() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
+        // Foreign keys enforced, with labels referencing people, as the
+        // library schema will require; question children then check their
+        // parent question on every insert.
         conn.execute_batch(
-            "CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL,
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE people (name TEXT PRIMARY KEY, full_name TEXT NOT NULL);
+             CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL,
              bbox TEXT NOT NULL, landmark TEXT, embedding BLOB NOT NULL,
-             cluster_id INTEGER, person_label TEXT, confirmed INTEGER DEFAULT 0,
-             is_primary INTEGER DEFAULT 0, det_score REAL, blur REAL, oriented INTEGER);
-             CREATE TABLE people (name TEXT PRIMARY KEY, full_name TEXT NOT NULL);",
+             cluster_id INTEGER,
+             person_label TEXT REFERENCES people(name) ON DELETE RESTRICT ON UPDATE RESTRICT,
+             confirmed INTEGER DEFAULT 0,
+             is_primary INTEGER DEFAULT 0, det_score REAL, blur REAL, oriented INTEGER);",
         )
         .unwrap();
         super::super::ensure_learning_tables(&conn).unwrap();
@@ -1087,6 +1093,21 @@ mod tests {
             conn,
             &logistic_bundle_of(logistic_scorer_for(vec![("similarity_mean".into(), 2.0)])),
         )
+    }
+
+    #[test]
+    fn question_faces_require_an_existing_question() {
+        let conn = library();
+        ensure_question_tables(&conn).unwrap();
+        let orphan = conn.execute(
+            "INSERT INTO face_learning_question_faces (question_id, face_id, role, ordinal)
+             VALUES (999, 10, 'subject', 0)",
+            [],
+        );
+        assert!(
+            orphan.is_err(),
+            "a question face must reference an existing question"
+        );
     }
 
     #[test]
