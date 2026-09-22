@@ -819,9 +819,16 @@ pub fn evaluate_promotion(
     Ok(failures)
 }
 
-/// Only decodable logistic or additive artifacts may be stored, and the
-/// declared model kind must match the decoded bundle.
-fn decode_artifact(model_kind: &str, parameters: &[u8]) -> Result<(), ProfileError> {
+/// Only decodable logistic or additive artifacts may be stored, the declared
+/// model kind must match the decoded bundle, and the row's identity metadata
+/// must agree with what the artifact itself carries.
+fn decode_artifact(
+    artifact_version: u32,
+    embedding_model_id: &str,
+    feature_schema_version: u32,
+    model_kind: &str,
+    parameters: &[u8],
+) -> Result<(), ProfileError> {
     let bundle: ModelBundle = serde_json::from_slice(parameters).map_err(|error| {
         ProfileError::InvalidProfile(format!(
             "profile parameters are not a decodable model artifact: {error}"
@@ -831,6 +838,24 @@ fn decode_artifact(model_kind: &str, parameters: &[u8]) -> Result<(), ProfileErr
         return Err(ProfileError::InvalidProfile(format!(
             "profile model kind {model_kind} does not match the decoded {} artifact",
             bundle.model_kind()
+        )));
+    }
+    if bundle.artifact_version() != artifact_version {
+        return Err(ProfileError::InvalidProfile(format!(
+            "profile artifact version {artifact_version} does not match the decoded {} artifact",
+            bundle.artifact_version()
+        )));
+    }
+    if bundle.embedding_model_id() != embedding_model_id {
+        return Err(ProfileError::InvalidProfile(format!(
+            "profile embedding model {embedding_model_id} does not match the decoded {} artifact",
+            bundle.embedding_model_id()
+        )));
+    }
+    if bundle.feature_schema_version() != feature_schema_version {
+        return Err(ProfileError::InvalidProfile(format!(
+            "profile feature schema {feature_schema_version} does not match the decoded {} artifact",
+            bundle.feature_schema_version()
         )));
     }
     bundle
@@ -864,7 +889,13 @@ pub fn insert_candidate(conn: &Connection, profile: &NewProfile) -> Result<i64, 
             "candidate reports with invalid explanations are not stored".into(),
         ));
     }
-    decode_artifact(&profile.model_kind, &profile.parameters)?;
+    decode_artifact(
+        profile.artifact_version,
+        &profile.embedding_model_id,
+        profile.feature_schema_version,
+        &profile.model_kind,
+        &profile.parameters,
+    )?;
     let evidence = serde_json::to_string(&profile.training_evidence)?;
     let report = serde_json::to_string(&profile.validation_report)?;
     conn.execute(
@@ -1468,7 +1499,15 @@ mod tests {
         let active_id =
             insert_candidate(&conn, &candidate(ProfileStage::Shadow, report(0.70, 3))).unwrap();
         evaluate_and_promote(&conn, active_id, &gates()).unwrap();
-        let mut other_model = candidate(ProfileStage::Suggestion, report(0.72, 3));
+        let mut other_bundle = logistic_bundle();
+        match &mut other_bundle {
+            ModelBundle::Logistic {
+                embedding_model_id, ..
+            } => *embedding_model_id = "other/test-model".into(),
+            _ => unreachable!(),
+        }
+        let mut other_model =
+            candidate_for_bundle(ProfileStage::Suggestion, report(0.72, 3), &other_bundle);
         other_model.embedding_model_id = "other/test-model".into();
         let other_id = insert_candidate(&conn, &other_model).unwrap();
         assert!(matches!(
@@ -1673,6 +1712,45 @@ mod tests {
             stored_profile_count(&conn),
             0,
             "rejected artifacts must not be stored"
+        );
+    }
+
+    #[test]
+    fn insert_candidate_rejects_row_metadata_that_disagrees_with_the_artifact() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_profile_table(&conn).unwrap();
+
+        // The row names a different embedding model than the decoded bundle.
+        let mut wrong_model = candidate_for_bundle(
+            ProfileStage::Suggestion,
+            report(0.70, 3),
+            &logistic_bundle(),
+        );
+        wrong_model.embedding_model_id = "other/model".into();
+        assert!(matches!(
+            insert_candidate(&conn, &wrong_model),
+            Err(ProfileError::InvalidProfile(_))
+        ));
+
+        // The row claims a newer feature schema than the artifact carries;
+        // the report must be moved with it so metadata checks pass and the
+        // artifact comparison is what rejects the insert.
+        let mut wrong_schema = candidate_for_bundle(
+            ProfileStage::Suggestion,
+            report(0.70, 3),
+            &logistic_bundle(),
+        );
+        wrong_schema.feature_schema_version = 2;
+        wrong_schema.validation_report.feature_schema_version = 2;
+        assert!(matches!(
+            insert_candidate(&conn, &wrong_schema),
+            Err(ProfileError::InvalidProfile(_))
+        ));
+
+        assert_eq!(
+            stored_profile_count(&conn),
+            0,
+            "metadata mismatches must not be stored"
         );
     }
 
