@@ -58,9 +58,23 @@ pub fn decode_raw_with_orientation_reader<R: std::io::BufRead + std::io::Seek>(
 fn decode_decoder<D: ImageDecoder>(
     mut decoder: D,
 ) -> image::ImageResult<(image::DynamicImage, image::metadata::Orientation)> {
-    let orientation = decoder
+    let mut orientation = decoder
         .orientation()
         .unwrap_or(image::metadata::Orientation::NoTransforms);
+    // The `image` crate reads the EXIF Orientation only for JPEG, WebP and TIFF;
+    // its PNG decoder always reports NoTransforms even when the file carries an
+    // eXIf orientation (which is how the gallery's rotate button turns a PNG). So
+    // when the decoder claims no transform, fall back to the raw EXIF chunk it
+    // exposes and read the orientation from there. Only PNG needs this in
+    // practice; for the formats that already resolve it, `orientation` is set and
+    // this branch is skipped.
+    if matches!(orientation, image::metadata::Orientation::NoTransforms) {
+        if let Ok(Some(chunk)) = decoder.exif_metadata() {
+            if let Some(from_exif) = image::metadata::Orientation::from_exif_chunk(&chunk) {
+                orientation = from_exif;
+            }
+        }
+    }
     let img = image::DynamicImage::from_decoder(decoder)?;
     Ok((img, orientation))
 }

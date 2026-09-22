@@ -5290,6 +5290,7 @@ dependencies = [
  "candle-core",
  "chrono",
  "clap",
+ "crc32fast",
  "filetime",
  "fs2",
  "half",

@@ -100,8 +100,12 @@ pub fn rotate_landmark_cw(landmark: &str, display_h: f32) -> Option<String> {
 }
 
 /// Read the current Orientation tag, defaulting to 1 when the file carries
-/// none (or none can be parsed).
+/// none (or none can be parsed). PNG is read from its `eXIf` chunk, the only
+/// PNG orientation the gallery's decode honours (see [`rotate_png_cw_in_place`]).
 fn current_orientation(path: &Path) -> u16 {
+    if is_png(path) {
+        return png_exif_orientation(path);
+    }
     let Ok(metadata) = Metadata::new_from_path(path) else {
         return 1;
     };
@@ -122,6 +126,12 @@ pub fn rotate_cw_in_place(path: &Path, ext: &str) -> anyhow::Result<u16> {
     if !supports_exif_orientation(ext) {
         anyhow::bail!("rotation is not supported for .{ext} files");
     }
+    // PNG needs its own path: `little_exif` stores PNG EXIF in a text chunk that
+    // the `image` crate's decoder ignores, so a rotation written that way would
+    // never show. Write a standard `eXIf` chunk instead, which the decoder reads.
+    if ext.eq_ignore_ascii_case("png") {
+        return rotate_png_cw_in_place(path);
+    }
     let next = next_orientation_cw(current_orientation(path));
     let mut metadata = Metadata::new_from_path(path)
         .with_context(|| format!("reading EXIF from {}", path.display()))?;
@@ -129,6 +139,115 @@ pub fn rotate_cw_in_place(path: &Path, ext: &str) -> anyhow::Result<u16> {
     metadata
         .write_to_file(path)
         .with_context(|| format!("writing EXIF orientation to {}", path.display()))?;
+    Ok(next)
+}
+
+const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+
+fn is_png(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+}
+
+/// The EXIF Orientation carried by a PNG's `eXIf` chunk, or 1 if it has none.
+/// This is the only PNG orientation the `image` crate applies (it ignores the
+/// text-chunk EXIF some writers, including `little_exif`, emit).
+fn png_exif_orientation(path: &Path) -> u16 {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| png_orientation_from_bytes(&bytes))
+        .unwrap_or(1)
+}
+
+fn png_orientation_from_bytes(bytes: &[u8]) -> Option<u16> {
+    let mut i = PNG_SIGNATURE.len();
+    while i + 8 <= bytes.len() {
+        let len = u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]) as usize;
+        let kind = &bytes[i + 4..i + 8];
+        let body_start = i + 8;
+        let body_end = body_start.checked_add(len)?;
+        if body_end + 4 > bytes.len() {
+            break;
+        }
+        if kind == b"eXIf" {
+            return image::metadata::Orientation::from_exif_chunk(&bytes[body_start..body_end])
+                .map(|o| o.to_exif() as u16);
+        }
+        i = body_end + 4; // skip the chunk's CRC
+    }
+    None
+}
+
+/// A big-endian TIFF EXIF payload carrying a single Orientation entry, as the
+/// body of a PNG `eXIf` chunk. Starts with the `MM` byte-order magic, which is
+/// exactly what `Orientation::from_exif_chunk` expects.
+fn exif_tiff_orientation(orientation: u16) -> Vec<u8> {
+    let mut t = Vec::with_capacity(26);
+    t.extend_from_slice(b"MM");
+    t.extend_from_slice(&42u16.to_be_bytes());
+    t.extend_from_slice(&8u32.to_be_bytes()); // IFD0 offset
+    t.extend_from_slice(&1u16.to_be_bytes()); // one entry
+    t.extend_from_slice(&0x0112u16.to_be_bytes()); // Orientation tag
+    t.extend_from_slice(&3u16.to_be_bytes()); // SHORT
+    t.extend_from_slice(&1u32.to_be_bytes()); // count
+    t.extend_from_slice(&orientation.to_be_bytes());
+    t.extend_from_slice(&0u16.to_be_bytes()); // value padding to 4 bytes
+    t.extend_from_slice(&0u32.to_be_bytes()); // no next IFD
+    t
+}
+
+/// Serialise one PNG chunk (length, type, data, CRC-32 of type+data).
+fn png_chunk_bytes(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(12 + data.len());
+    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    out.extend_from_slice(kind);
+    out.extend_from_slice(data);
+    let mut hasher = crc32fast::Hasher::new();
+    hasher.update(kind);
+    hasher.update(data);
+    out.extend_from_slice(&hasher.finalize().to_be_bytes());
+    out
+}
+
+/// Rotate a PNG 90 degrees clockwise by bumping the Orientation in its `eXIf`
+/// chunk, in place: read the current value from any existing `eXIf` chunk,
+/// advance it, and rewrite the file with a fresh `eXIf` chunk right after IHDR
+/// (dropping the old one). Returns the new orientation.
+fn rotate_png_cw_in_place(path: &Path) -> anyhow::Result<u16> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    anyhow::ensure!(
+        bytes.len() >= 8 && bytes[0..8] == PNG_SIGNATURE,
+        "not a PNG file: {}",
+        path.display()
+    );
+    let next = next_orientation_cw(png_orientation_from_bytes(&bytes).unwrap_or(1));
+    let exif_chunk = png_chunk_bytes(b"eXIf", &exif_tiff_orientation(next));
+
+    let mut out = Vec::with_capacity(bytes.len() + exif_chunk.len());
+    out.extend_from_slice(&bytes[0..8]);
+    let mut inserted = false;
+    let mut i = 8;
+    while i + 8 <= bytes.len() {
+        let len = u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]) as usize;
+        let kind = [bytes[i + 4], bytes[i + 5], bytes[i + 6], bytes[i + 7]];
+        let chunk_end = i
+            .checked_add(12 + len)
+            .filter(|&e| e <= bytes.len())
+            .with_context(|| format!("truncated PNG chunk in {}", path.display()))?;
+        if &kind == b"eXIf" {
+            // Drop any existing orientation chunk; the fresh one replaces it.
+        } else {
+            out.extend_from_slice(&bytes[i..chunk_end]);
+            if &kind == b"IHDR" && !inserted {
+                out.extend_from_slice(&exif_chunk);
+                inserted = true;
+            }
+        }
+        i = chunk_end;
+    }
+    anyhow::ensure!(inserted, "PNG has no IHDR chunk: {}", path.display());
+    std::fs::write(path, &out).with_context(|| format!("writing {}", path.display()))?;
     Ok(next)
 }
 
@@ -213,6 +332,27 @@ mod tests {
         // An odd or empty list is refused.
         assert_eq!(rotate_landmark_cw("1,2,3", 100.0), None);
         assert_eq!(rotate_landmark_cw("", 100.0), None);
+    }
+
+    #[test]
+    fn png_rotation_writes_an_exif_chunk_the_decoder_applies() {
+        // A PNG carries no eXIf chunk to begin with.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.png");
+        image::DynamicImage::new_rgb8(4, 2).save(&path).unwrap();
+        assert_eq!(png_exif_orientation(&path), 1);
+
+        // One clockwise turn writes Orientation 6, which reads back and, crucially,
+        // is applied by the shared decode helper: the 4x2 landscape becomes 2x4.
+        assert_eq!(rotate_png_cw_in_place(&path).unwrap(), 6);
+        assert_eq!(png_exif_orientation(&path), 6);
+        let decoded = videre_core::image_decode::decode_oriented_file(&path).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (2, 4));
+
+        // A second turn advances 6 -> 3 and the file still decodes.
+        assert_eq!(rotate_png_cw_in_place(&path).unwrap(), 3);
+        assert_eq!(png_exif_orientation(&path), 3);
+        assert!(videre_core::image_decode::decode_oriented_file(&path).is_ok());
     }
 
     #[test]
