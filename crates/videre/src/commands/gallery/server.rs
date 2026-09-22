@@ -935,6 +935,7 @@ mod events_tests {
         assert!(body.contains("var GEVENT=null;"), "{body}");
         // The Events nav link is highlighted.
         assert!(body.contains("href=\"/events\" class=\"on\""));
+        assert!(!body.contains("id=\"gallery-more\""), "{body}");
 
         // Leaf: the matching event's range travels in GEVENT.
         let leaf = app
@@ -952,6 +953,9 @@ mod events_tests {
         let body = String::from_utf8(body.to_vec()).unwrap();
         assert!(body.contains("var GVIEW=\"events\";"), "{body}");
         assert!(body.contains("\"key\":\"20210812T090000-c\""), "{body}");
+        // Events are one-shot: the paged gallery's Show more button (whose
+        // pager would fetch /api/files) must not be on the page at all.
+        assert!(!body.contains("id=\"gallery-more\""), "{body}");
         assert!(body.contains("\"from\":\"2021-08-12 09:00:00\""), "{body}");
 
         // Unknown key is a 404.
