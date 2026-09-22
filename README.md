@@ -11,10 +11,16 @@
 A local-first tool for making sense of a folder full of photos and videos.
 
 - find and remove duplicates (identical *and* near-identical)
-- search your photos by describing them, like "sunset over water" or "my red car"
-- recognise faces and search by person
+- search your photos by describing them, like "sunset over water" or "my red car",
+  and narrow the results in the same query by person, place and radius, date
+  range, category, media type, rating, like or tag
+- recognise faces, group them automatically, and search by person, with a face
+  engine that learns from your corrections and asks short yes/no questions to
+  finish naming groups
 - import from Google Takeout, Apple Photos, or a Lightroom catalog
-- browse everything in a generated HTML gallery
+- browse it all in `videre gallery`, a local web UI with every file, duplicate
+  review, a date drill-down, face clusters and people, a map view, and automatic
+  time-and-place events
 - fix wrong file dates from the camera's own EXIF data
 - group photos by where they were taken
 
@@ -31,17 +37,20 @@ their cloud. videre works the other way round: it's a lens over a folder you
 already own. Point it at a directory and you get a single SQLite file describing
 what's there. Stop using it and your photos are exactly as they were.
 
-- **Nothing to keyword first.** Search works on photos you never tagged, by
-  description, by person, by place, or by example image.
+- **Ask for the photo you remember, the way you remember it.** "Elena on a
+  beach near Lisbon, summer 2023" is one query: a description, a person, a place
+  and a date range together, across photos you never tagged or sorted.
 - **Your photos come in from wherever they are stuck.** `videre import` pulls a
   Google Takeout export, an Apple Photos library, or a Lightroom catalog into an
   ordinary folder, originals rather than derivatives, dates put back.
-- **It never touches your photos.** Nothing is moved, renamed, copied, or
-  re-encoded. The one exception is `videre fix-dates`, which you run
-  deliberately, and which only corrects a file's date.
-- **Nothing leaves your machine.** No account, no upload, no telemetry. The one
-  exception is `videre search --location "Berlin"`, which looks a place name up
-  once and remembers it.
+- **It never touches your photos behind your back.** Nothing is moved,
+  renamed, copied, or re-encoded. The only changes to a file are ones you ask
+  for: `videre fix-dates` corrects a file's date, and rotating a photo in the
+  gallery updates its orientation tag.
+- **Nothing leaves your machine.** No account, no upload, no telemetry. The
+  search and face models and the offline map are downloaded once on first use;
+  after that the one network call is `videre search --location "Berlin"`, which looks a place
+  name up once and remembers it.
 - **Free, open, and permanent.** videre is open source under the permissive
   Apache 2.0 licence. It costs nothing, has no subscription or paywalled tier,
   and cannot be discontinued out from under you: read exactly what it does with
@@ -50,7 +59,14 @@ what's there. Stop using it and your photos are exactly as they were.
   *could* go and stops there. You decide, and you can look through the
   candidates in a browser first.
 - **Naming faces is bulk work, not a chore.** videre groups faces together
-  itself, so you name one group of 40 photos rather than tagging 40 photos.
+  itself, so you name one group of 40 photos rather than tagging 40 photos. The
+  gallery learns from each correction and asks "Is this Elena?" about groups it
+  has become confident about, so one click names the next group. A face you
+  named never moves on its own.
+- **A gallery when you want one, not a server you keep.** `videre gallery`
+  starts a local web UI for browsing, reviewing duplicates, naming people,
+  exploring the map and reliving events by time and place. Stop it with Ctrl-C
+  and nothing keeps running.
 - **An unplugged drive is not deleted photos.** Libraries spread over external
   drives are ordinary. `videre prune` only drops a row when the file is gone
   *and* its folder still exists, so cleaning up with a drive detached does not
@@ -133,7 +149,8 @@ More: [docs.videre.sh/start/quickstart](https://docs.videre.sh/start/quickstart/
 ## Commands
 
 `scan`, `import`, `dedupe`, `gallery`, `search`, `embed`, `faces`, `classify`,
-`locations`, `fix-dates`, `prune`, `watch`, `stats`, `config`, `mcp`.
+`locations`, `fix-dates`, `mark`, `tag`, `export`, `prune`, `pipeline`, `watch`,
+`status`, `stats`, `config`, `mcp`.
 
 Every command takes `--help`. Full reference with every flag:
 [docs.videre.sh/commands](https://docs.videre.sh/commands/)
