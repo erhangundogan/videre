@@ -1,12 +1,14 @@
 ---
 title: videre gallery
-description: Browse your whole library in a local web UI, with every file, the people in them, and a date drill-down.
+description: Browse your whole library in a local web UI, with every file, duplicate review, a date drill-down, people, a map, and automatic events.
 ---
 
 Starts a small web server on your own machine and opens your library in a
-browser. Nothing is uploaded, and your media files and library database are not
-modified. Gallery previews may populate the derived thumbnail cache while it
-reads the database `videre scan` built.
+browser. Nothing is uploaded. Browsing only reads the database `videre scan`
+built (previews may populate the derived thumbnail cache); the library changes
+only through what you do on the page: naming people, marking and liking photos,
+and face-learning answers are saved to the library database, and rotating a
+photo updates its orientation tag in the file itself.
 
 ```bash
 videre gallery                  # http://127.0.0.1:7878
@@ -77,16 +79,16 @@ people or location data yet.
 | `/events/20210810T143207-3f9a1c2e` | One event's photos, keyed by its start time and a short hash |
 | `/smart` | Reserved, not built yet |
 
-**Files**, **Duplicates**, **Date**, **Events**, **People** and **Map** sit in a strip along
+**Library**, **Duplicates**, **Date**, **Events**, **People** and **Map** sit in a strip along
 the top of every page, so you switch between them without touching the address
 bar. The reserved routes are deliberately not in it; each one appears when it
 renders something. At the right of the strip is a **search** box: type a
-natural-language query and it ranks the library semantically on the Files page,
+natural-language query and it ranks the library semantically on the Library page,
 the same ranking the **Similar** button uses. It appears only when the library
 has embeddings to rank against.
 
 The tall library header (the database path and the scanned-file counts) shows on
-the Files page and on a static export; the other sections drop it, since the strip
+the Library page and on a static export; the other sections drop it, since the strip
 already says where you are.
 
 The Map view begins with clusters grouped by continent. Zoom in to see each
@@ -130,13 +132,13 @@ open from disk, because both need something running to answer.
 
 ## List and Tile views
 
-The **View** selector on the Files, Date, and Events tabs switches between **List**, the
+The **View** selector on the Library, Date, and Events tabs switches between **List**, the
 default view with file details, and **Tile**, an image-first view without
 captions. Tile arranges photos and videos into rows using their stored aspect
 ratios; files with no recorded dimensions use a square tile.
 
 Your browser remembers the choice across both tabs and page reloads. Tile rows
-adapt when you resize the window or load more files on the Files tab. Click a
+adapt when you resize the window or load more files on the Library tab. Click a
 tile to open the same lightbox, with the same previous/next navigation.
 Thumbnails are served at 480px so tiles stay sharp on high-DPI displays.
 
@@ -172,9 +174,8 @@ Answering Yes names a cluster; No only teaches; Skip does neither.
 
 ## Gallery, or a file you can keep
 
-`gallery` is for looking around: it does not modify your media or library
-database, though it may cache derived previews. When you want to keep or send
-what a command just found, ask that command for it:
+`gallery` is for looking around and curating while it runs. When you want to
+keep or send what a command just found, ask that command for it:
 
 ```bash
 videre dedupe --html            # the duplicate groups, as a file
