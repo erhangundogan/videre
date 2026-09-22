@@ -46,6 +46,8 @@ use std::time::Duration;
 /// as an older supported library, validated then prepared.
 const SCHEMA_VERSION: i64 = 2;
 
+mod foreign_keys;
+
 /// The first sixteen bytes of every SQLite database file. A library
 /// candidate without them is not a SQLite file, whatever its name.
 const SQLITE_MAGIC: [u8; 16] = *b"SQLite format 3\0";

@@ -523,18 +523,30 @@ pub fn invalidate_identity_for_removal_in_transaction(
     let normalized = crate::person::normalize(identity).ok_or_else(|| {
         LearningEventError::InvalidEvent("identity to invalidate is empty".to_owned())
     })?;
+    invalidate_exact_identity_in_transaction(conn, &normalized)
+}
+
+/// The exact-key form of person-removal invalidation: invalidates eligible
+/// evidence and supersedes pending questions for the identity exactly as
+/// stored, with one generation advance when either changed. The repair
+/// migration uses this so legacy rows are matched by their stored text
+/// rather than a re-normalization that might not round-trip.
+pub fn invalidate_exact_identity_in_transaction(
+    conn: &Connection,
+    identity: &str,
+) -> Result<u64, LearningEventError> {
     super::ensure_question_tables(conn)?;
     let invalidated = conn.execute(
         "UPDATE face_learning_events
          SET eligible = 0, invalidation_reason = 'person_removed'
          WHERE target_identity = ?1 AND eligible = 1",
-        [&normalized],
+        [identity],
     )?;
     let superseded = conn.execute(
         "UPDATE face_learning_questions
          SET status = 'superseded', decided_at = datetime('now')
          WHERE target_identity = ?1 AND status = 'pending'",
-        [&normalized],
+        [identity],
     )?;
     if invalidated > 0 || superseded > 0 {
         conn.execute(
