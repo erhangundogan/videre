@@ -229,8 +229,7 @@ pub fn question_evidence_revision(
     threshold: f64,
     support_face_ids: &[i64],
 ) -> String {
-    let mut subject: BTreeSet<i64> = subject_face_ids.iter().copied().collect();
-    subject.insert(profile_id);
+    let subject: BTreeSet<i64> = subject_face_ids.iter().copied().collect();
     let canonical = format!(
         "v1|{profile_id}|{model_kind}|{:?}|{target_identity}|{}|{threshold:?}|{:?}",
         subject.iter().collect::<Vec<_>>(),
@@ -1259,6 +1258,11 @@ mod tests {
         };
         let base =
             question_evidence_revision(1, "logistic", &[1, 2], "alice", &features, 0.5, &[3]);
+        assert_ne!(
+            question_evidence_revision(1, "logistic", &[2], "alice", &features, 0.5, &[3]),
+            base,
+            "a subject face whose id matches the profile id must affect the revision"
+        );
         assert_eq!(
             base,
             question_evidence_revision(1, "logistic", &[2, 1], "alice", &features, 0.5, &[3]),

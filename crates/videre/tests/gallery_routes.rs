@@ -1177,14 +1177,19 @@ fn face_learning_resources_serve_from_a_fresh_library() {
     let lib = fixture();
     let server = Server::start(&lib);
 
-    let (status, body) = server.get("/api/face-learning/status");
-    assert_eq!(status, 200, "{body}");
-    assert!(body.contains("\"generation\":0"), "{body}");
-    assert!(body.contains("\"pending_questions\":0"), "{body}");
+    assert!(
+        videre_core::db::table_exists(&lib.conn(), "face_learning_questions").unwrap(),
+        "gallery startup must prepare question storage before the worker runs"
+    );
 
     let (status, body) = server.get("/api/face-learning/questions");
     assert_eq!(status, 200, "{body}");
     assert_eq!(body.trim(), "[]", "{body}");
+
+    let (status, body) = server.get("/api/face-learning/status");
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"generation\":0"), "{body}");
+    assert!(body.contains("\"pending_questions\":0"), "{body}");
 
     let (status, body) = server.get("/api/face-learning/events");
     assert_eq!(status, 200, "{body}");

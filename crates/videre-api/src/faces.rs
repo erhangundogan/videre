@@ -860,7 +860,8 @@ pub fn delete_person_with_learning(
 /// the target person and teaches one positive membership; No teaches one
 /// negative membership without labeling; Skip only changes delivery state.
 /// Every answer revalidates subject, target, active profile, and evidence
-/// revision inside the transaction; any drift is a Conflict with no write.
+/// revision inside the transaction. Drift supersedes the stale question and
+/// returns Conflict without writing a label or teaching event.
 pub fn answer_question_with_learning(
     conn: &Connection,
     question_id: i64,
@@ -870,18 +871,26 @@ pub fn answer_question_with_learning(
     if context.embedding_model_id.trim().is_empty() {
         return Err(Error::Invalid);
     }
-    immediate_transaction(conn, || {
+    let outcome = immediate_transaction(conn, || {
         let question = stored_question(conn, question_id)?;
         let question = match question {
             Some(question) if question.status == QuestionStatus::Pending => question,
             _ => return Err(Error::NotFound),
         };
-        let states = face_states(conn, &question.subject_face_ids)?;
+        let supersede = || {
+            finish_question_in_transaction(conn, question_id, QuestionStatus::Superseded)?;
+            Ok(None)
+        };
+        let states = match face_states(conn, &question.subject_face_ids) {
+            Ok(states) => states,
+            Err(Error::NotFound) => return supersede(),
+            Err(error) => return Err(error),
+        };
         if states
             .iter()
             .any(|state| state.confirmed || state.person_label.is_some())
         {
-            return Err(Error::Conflict);
+            return supersede();
         }
         // Every subject face must still sit in the cluster the question was
         // built from; a recluster that moved any of them invalidates the
@@ -890,40 +899,38 @@ pub fn answer_question_with_learning(
             .iter()
             .any(|state| state.cluster_id != Some(question.cluster_id))
         {
-            return Err(Error::Conflict);
+            return supersede();
         }
-        let display: String = conn
-            .query_row(
-                "SELECT full_name FROM people WHERE name = ?1",
-                [&question.target_identity],
-                |row| row.get(0),
-            )
-            .map_err(|error| match error {
-                rusqlite::Error::QueryReturnedNoRows => Error::Conflict,
-                other => other.into(),
-            })?;
+        let display: String = match conn.query_row(
+            "SELECT full_name FROM people WHERE name = ?1",
+            [&question.target_identity],
+            |row| row.get(0),
+        ) {
+            Ok(display) => display,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return supersede(),
+            Err(error) => return Err(error.into()),
+        };
         let active = active_question_context(conn)?;
         let Some(active) = active else {
-            return Err(Error::Conflict);
+            return supersede();
         };
         if active.profile_id != question.profile_id || active.model_kind != question.model_kind {
-            return Err(Error::Conflict);
+            return supersede();
         }
-        let representative: i64 = conn
-            .query_row(
-                "SELECT f.id FROM faces AS f
+        let representative: i64 = match conn.query_row(
+            "SELECT f.id FROM faces AS f
                  JOIN face_learning_question_faces AS qf
                    ON qf.face_id = f.id AND qf.question_id = ?1 AND qf.role = 'subject'
                  WHERE f.confirmed = 0 AND f.person_label IS NULL
                  ORDER BY f.is_primary DESC, f.det_score DESC, f.id ASC
                  LIMIT 1",
-                [question_id],
-                |row| row.get(0),
-            )
-            .map_err(|error| match error {
-                rusqlite::Error::QueryReturnedNoRows => Error::Conflict,
-                other => other.into(),
-            })?;
+            [question_id],
+            |row| row.get(0),
+        ) {
+            Ok(representative) => representative,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return supersede(),
+            Err(error) => return Err(error.into()),
+        };
         let support = person_support_ids(conn, &question.target_identity, &[])?;
         let subject_observation = load_face_observations(conn, &[representative])?;
         let support_observation = load_face_observations(conn, &support)?;
@@ -942,15 +949,15 @@ pub fn answer_question_with_learning(
             &support,
         );
         if revision != question.evidence_revision {
-            return Err(Error::Conflict);
+            return supersede();
         }
         match answer {
             QuestionAnswer::Skip => {
                 finish_question_in_transaction(conn, question_id, QuestionStatus::Skipped)?;
-                Ok(QuestionAnswerOutcome {
+                Ok(Some(QuestionAnswerOutcome {
                     status: "skipped".into(),
                     acknowledgement: None,
-                })
+                }))
             }
             QuestionAnswer::Yes => {
                 assign_in_transaction(
@@ -971,14 +978,14 @@ pub fn answer_question_with_learning(
                 )?;
                 let receipt = append_event_batch_in_transaction(conn, &[event])?;
                 finish_question_in_transaction(conn, question_id, QuestionStatus::Answered)?;
-                Ok(QuestionAnswerOutcome {
+                Ok(Some(QuestionAnswerOutcome {
                     status: "answered".into(),
                     acknowledgement: Some(LearningAcknowledgement {
                         generation: receipt.generation,
                         event_ids: receipt.event_ids,
                         message_key: "question_confirmed".into(),
                     }),
-                })
+                }))
             }
             QuestionAnswer::No => {
                 let event = membership_event(
@@ -993,17 +1000,18 @@ pub fn answer_question_with_learning(
                 )?;
                 let receipt = append_event_batch_in_transaction(conn, &[event])?;
                 finish_question_in_transaction(conn, question_id, QuestionStatus::Answered)?;
-                Ok(QuestionAnswerOutcome {
+                Ok(Some(QuestionAnswerOutcome {
                     status: "answered".into(),
                     acknowledgement: Some(LearningAcknowledgement {
                         generation: receipt.generation,
                         event_ids: receipt.event_ids,
                         message_key: "question_corrected".into(),
                     }),
-                })
+                }))
             }
         }
-    })
+    })?;
+    outcome.ok_or(Error::Conflict)
 }
 
 /// Pending identity questions for the gallery page, bounded and in priority
@@ -1021,6 +1029,7 @@ pub fn refresh_identity_questions(
     conn: &Connection,
     config: &QuestionSelectionConfig,
 ) -> Result<Vec<videre_core::face_learning::StoredQuestion>> {
+    videre_core::face_learning::ensure_question_tables(conn)?;
     let candidates = select_questions(conn, config)?;
     Ok(replace_pending_questions(conn, &candidates)?)
 }
@@ -2616,6 +2625,13 @@ mod never_run_tests {
             })
             .unwrap();
         assert_eq!(events, 0, "a conflict must not teach");
+        assert_eq!(
+            videre_core::face_learning::stored_question(&conn, question_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            QuestionStatus::Superseded
+        );
 
         // Removed target person.
         let (conn, question_id, profile_id) = qf::library();
@@ -2630,6 +2646,13 @@ mod never_run_tests {
             ),
             Err(Error::Conflict)
         ));
+        assert_eq!(
+            videre_core::face_learning::stored_question(&conn, question_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            QuestionStatus::Superseded
+        );
 
         // A different active profile.
         let (conn, question_id, profile_id) = qf::library();
@@ -2640,6 +2663,13 @@ mod never_run_tests {
             answer_question_with_learning(&conn, question_id, QuestionAnswer::No, &qf::context(99)),
             Err(Error::Conflict)
         ));
+        assert_eq!(
+            videre_core::face_learning::stored_question(&conn, question_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            QuestionStatus::Superseded
+        );
 
         // Support set changed: the evidence revision no longer matches.
         let (conn, question_id, profile_id) = qf::library();
@@ -2661,8 +2691,9 @@ mod never_run_tests {
             .unwrap();
         assert_eq!(
             question.status,
-            videre_core::face_learning::QuestionStatus::Pending
+            videre_core::face_learning::QuestionStatus::Superseded
         );
+        assert!(pending_identity_questions(&conn, 5).unwrap().is_empty());
     }
 
     fn insert_face_with_score(conn: &Connection, id: i64, cluster: Option<i64>, score: f64) {
@@ -2710,8 +2741,24 @@ mod never_run_tests {
             .unwrap();
         assert_eq!(
             question.status,
-            videre_core::face_learning::QuestionStatus::Pending
+            videre_core::face_learning::QuestionStatus::Superseded
         );
+        assert!(pending_identity_questions(&conn, 5).unwrap().is_empty());
+    }
+
+    #[test]
+    fn refresh_creates_question_tables_for_a_first_training_cycle() {
+        let (conn, _, _) = qf::library();
+        conn.execute_batch(
+            "DROP TABLE face_learning_question_faces;
+             DROP TABLE face_learning_questions;",
+        )
+        .unwrap();
+
+        let questions = refresh_identity_questions(&conn, &QuestionSelectionConfig::default())
+            .expect("a promoted profile should create the question tables");
+        assert_eq!(questions.len(), 1);
+        assert_eq!(pending_identity_questions(&conn, 5).unwrap().len(), 1);
     }
 
     #[test]

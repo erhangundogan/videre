@@ -546,9 +546,10 @@ curl -i -X POST "http://127.0.0.1:7878/api/face-learning/questions/4/answer" \
 ```
 
 Returns the new delivery state and, for `yes` and `no`, the learning
-acknowledgement. Answering a question whose subject, target, profile,
-or evidence changed meanwhile returns `409 Conflict` with no partial
-write; refetch the question and answer again.
+acknowledgement. Answering a question whose subject, target, profile, or evidence
+changed meanwhile returns `409 Conflict`. The outdated question is marked
+superseded and disappears from the pending queue; no label or teaching event is
+written. Fetch the pending questions again to see the next available question.
 
 ### `GET /api/face-learning/events`
 
