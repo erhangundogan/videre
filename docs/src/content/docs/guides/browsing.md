@@ -150,9 +150,11 @@ machine holding them. Embedding the images instead is not currently offered:
 
 ## Caveats
 
-**One server at a time.** `gallery` binds port 7878 by default, so a second
-invocation fails while the first is running. Give it `--port` to run two at
-once, against different libraries.
+**The default port can move.** `gallery` binds 7878 and, when that is taken,
+advances to the next free port (7879, 7880, ...), so two galleries for
+different libraries run side by side without assigning ports. Check the
+startup line for the address actually bound; an explicit `--port` is used
+exactly and fails when that port is busy.
 
 **Served image bytes come from an allowlist.** The endpoint only serves paths
 already recorded in the database, so it is not a general file server. It does

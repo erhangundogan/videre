@@ -574,10 +574,10 @@ a commit that does not look like a source change, on three rules: more than 30
 files staged, a path escaping the repository layout, or a file that is not
 source, config, docs, or a fixture.
 
-:warning: **It exists because 1,094 thumbnail images of personal photographs
-reached this public repository**, in two commits, on 2026-08-24. `git add -A`
+:warning: **It exists because certain amount of thumbnail images of personal
+photographs reached public repository** because of AI model. `git add -A`
 staged a cache a tool had written into the working tree, and `git commit -q`
-suppressed the "1094 files changed" line that would have shown it at once.
+suppressed the "n files changed" line that would have shown it at once.
 
 :warning: **Removing that data cost far more than preventing it would have.** A
 force-push does not undo it: `refs/pull/*/head` are read-only to repository
