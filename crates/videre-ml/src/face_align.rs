@@ -1,118 +1,13 @@
 use image::{DynamicImage, Rgb, RgbImage};
-
-/// Canonical ArcFace 112x112 template landmarks (x, y).
-const DST: [[f32; 2]; 5] = [
-    [38.2946, 51.6963],
-    [73.5318, 51.5014],
-    [56.0252, 71.7366],
-    [41.5493, 92.3655],
-    [70.7299, 92.2041],
-];
+use videre_core::face_learning::ARCFACE_LANDMARK_TEMPLATE as DST;
+pub use videre_core::face_learning::{
+    landmark_residual, landmark_similarity_transform as umeyama, parse_landmarks,
+};
 
 /// Warp src image so detected landmarks map to the 112x112 ArcFace template.
 pub fn align_face(img: &DynamicImage, landmarks: &[[f32; 2]; 5]) -> RgbImage {
     let m = umeyama(landmarks, &DST);
     warp_affine(img, m, 112, 112)
-}
-
-/// How far a detected 5-point landmark set is from being a face, in template
-/// pixels: the RMS residual after the best similarity fit onto `DST`.
-///
-/// :warning: **This is the question `--max-generic-sim` was reaching for and
-/// could not ask.** ArcFace never sees the photo, only the 112x112 crop warped
-/// so these five points land on the template. When the points are not really a
-/// face, the warp produces a mangled image and the embedding encodes the
-/// mangling rather than the person - so mangled faces resemble *each other* and
-/// collect into their own cluster, while a correctly aligned face of the same
-/// person sits somewhere else entirely.
-///
-/// Measured on a 92-face corpus with per-cluster ground truth: clusters the user
-/// confirmed correct had a median residual of 2.5-6.2, the two they confirmed
-/// wrong had 9.8 and 10.1, with one face at 33.0.
-///
-/// Unlike a cosine against the population mean, this is a property of one face.
-/// It does not move when the library's composition changes, which is why the
-/// threshold can transfer between libraries at all.
-pub fn landmark_residual(landmarks: &[[f32; 2]; 5]) -> f32 {
-    let m = umeyama(landmarks, &DST);
-    let mut sum = 0.0f32;
-    for (s, d) in landmarks.iter().zip(DST.iter()) {
-        let x = m[0][0] * s[0] + m[0][1] * s[1] + m[0][2];
-        let y = m[1][0] * s[0] + m[1][1] * s[1] + m[1][2];
-        sum += (x - d[0]).powi(2) + (y - d[1]).powi(2);
-    }
-    (sum / landmarks.len() as f32).sqrt()
-}
-
-/// Parse the stored `"x1,y1,...,x5,y5"` landmark string.
-pub fn parse_landmarks(s: &str) -> Option<[[f32; 2]; 5]> {
-    let n: Vec<f32> = s.split(',').filter_map(|v| v.trim().parse().ok()).collect();
-    if n.len() < 10 {
-        return None;
-    }
-    let mut lm = [[0.0f32; 2]; 5];
-    for (p, slot) in lm.iter_mut().enumerate() {
-        *slot = [n[p * 2], n[p * 2 + 1]];
-    }
-    Some(lm)
-}
-
-/// Umeyama 2D similarity transform.
-/// Returns 2x3 matrix M such that dst ≈ M * [src_x, src_y, 1]^T.
-pub fn umeyama(src: &[[f32; 2]; 5], dst: &[[f32; 2]; 5]) -> [[f32; 3]; 2] {
-    let n = src.len() as f32;
-
-    let (mu_sx, mu_sy) = src
-        .iter()
-        .fold((0.0f32, 0.0f32), |(ax, ay), p| (ax + p[0], ay + p[1]));
-    let (mu_dx, mu_dy) = dst
-        .iter()
-        .fold((0.0f32, 0.0f32), |(ax, ay), p| (ax + p[0], ay + p[1]));
-    let (mu_sx, mu_sy) = (mu_sx / n, mu_sy / n);
-    let (mu_dx, mu_dy) = (mu_dx / n, mu_dy / n);
-
-    let var_s: f32 = src
-        .iter()
-        .map(|p| (p[0] - mu_sx).powi(2) + (p[1] - mu_sy).powi(2))
-        .sum::<f32>()
-        / n;
-
-    let mut cov = [[0.0f32; 2]; 2];
-    for (s, d) in src.iter().zip(dst.iter()) {
-        let ds = [s[0] - mu_sx, s[1] - mu_sy];
-        let dd = [d[0] - mu_dx, d[1] - mu_dy];
-        cov[0][0] += dd[0] * ds[0];
-        cov[0][1] += dd[0] * ds[1];
-        cov[1][0] += dd[1] * ds[0];
-        cov[1][1] += dd[1] * ds[1];
-    }
-    cov[0][0] /= n;
-    cov[0][1] /= n;
-    cov[1][0] /= n;
-    cov[1][1] /= n;
-
-    let det = cov[0][0] * cov[1][1] - cov[0][1] * cov[1][0];
-    let s_sign = if det >= 0.0 { 1.0f32 } else { -1.0 };
-
-    // Closed-form 2D similarity via complex number: c = (trace + i*skew) / var_s
-    let trace_cov = cov[0][0] + cov[1][1];
-    let skew = cov[1][0] - cov[0][1];
-    let scale = if var_s > 1e-8 {
-        (trace_cov.powi(2) + skew.powi(2)).sqrt() * s_sign / var_s
-    } else {
-        1.0
-    };
-
-    let angle = skew.atan2(trace_cov);
-    let (sin_a, cos_a) = angle.sin_cos();
-
-    let tx = mu_dx - scale * (cos_a * mu_sx - sin_a * mu_sy);
-    let ty = mu_dy - scale * (sin_a * mu_sx + cos_a * mu_sy);
-
-    [
-        [scale * cos_a, -scale * sin_a, tx],
-        [scale * sin_a, scale * cos_a, ty],
-    ]
 }
 
 fn warp_affine(img: &DynamicImage, m: [[f32; 3]; 2], out_w: u32, out_h: u32) -> RgbImage {

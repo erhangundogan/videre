@@ -30,6 +30,18 @@ impl From<anyhow::Error> for Error {
     }
 }
 
+impl From<videre_core::face_learning::FeatureError> for Error {
+    fn from(e: videre_core::face_learning::FeatureError) -> Self {
+        Error::Other(e.to_string())
+    }
+}
+
+impl From<videre_core::face_learning::LearningEventError> for Error {
+    fn from(e: videre_core::face_learning::LearningEventError) -> Self {
+        Error::Other(e.to_string())
+    }
+}
+
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
