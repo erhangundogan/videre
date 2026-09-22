@@ -110,6 +110,7 @@ pub struct StoredQuestion {
     pub target_display: String,
     pub profile_id: i64,
     pub model_kind: String,
+    pub representative_face_id: i64,
     pub evidence_revision: String,
     pub evidence: DecisionEvidence,
     pub created_at: String,
@@ -190,6 +191,7 @@ pub fn ensure_question_tables(conn: &Connection) -> rusqlite::Result<()> {
             target_identity TEXT NOT NULL,
             profile_id INTEGER NOT NULL,
             model_kind TEXT NOT NULL,
+            representative_face_id INTEGER NOT NULL,
             evidence_revision TEXT NOT NULL,
             evidence_json TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -634,12 +636,13 @@ pub fn replace_pending_questions(
             conn.execute(
                 "INSERT INTO face_learning_questions (
                     status, target_identity, profile_id, model_kind,
-                    evidence_revision, evidence_json
-                 ) VALUES ('pending', ?1, ?2, ?3, ?4, ?5)",
+                    representative_face_id, evidence_revision, evidence_json
+                 ) VALUES ('pending', ?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     candidate.target_identity,
                     candidate.profile_id,
                     candidate.model_kind,
+                    candidate.representative_face_id,
                     candidate.evidence_revision,
                     evidence_json,
                 ],
@@ -716,6 +719,7 @@ pub fn stored_question(
         String,
         i64,
         String,
+        i64,
         String,
         String,
         String,
@@ -723,7 +727,8 @@ pub fn stored_question(
     )> = conn
         .query_row(
             "SELECT id, status, target_identity, profile_id, model_kind,
-                    evidence_revision, evidence_json, created_at, decided_at
+                    representative_face_id, evidence_revision, evidence_json,
+                    created_at, decided_at
              FROM face_learning_questions WHERE id = ?1",
             [question_id],
             |row| {
@@ -737,6 +742,7 @@ pub fn stored_question(
                     row.get(6)?,
                     row.get(7)?,
                     row.get(8)?,
+                    row.get(9)?,
                 ))
             },
         )
@@ -747,6 +753,7 @@ pub fn stored_question(
         target_identity,
         profile_id,
         model_kind,
+        representative_face_id,
         evidence_revision,
         evidence_json,
         created_at,
@@ -772,6 +779,7 @@ pub fn stored_question(
         target_display,
         profile_id,
         model_kind,
+        representative_face_id,
         evidence_revision,
         evidence: serde_json::from_str(&evidence_json)
             .map_err(|error| QuestionError::InvalidStoredValue(error.to_string()))?,

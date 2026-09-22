@@ -473,7 +473,10 @@ content-length: 0
 
 ### `PUT /api/people/{name}/faces`
 
-Replaces the set of faces assigned to a person.
+Replaces the set of faces assigned to a person. Teaching mutations return
+a learning acknowledgement: the generation the action produced and the
+ids of the durable evidence rows written for it. The background worker
+uses that generation to decide when to retrain.
 
 ```bash
 curl -i -X PUT "http://127.0.0.1:7878/api/people/ayse_yilmaz/faces" \
@@ -481,10 +484,81 @@ curl -i -X PUT "http://127.0.0.1:7878/api/people/ayse_yilmaz/faces" \
   -d '{"face_ids":[12,13,14]}'
 ```
 
-```http
-HTTP/1.1 200 OK
-content-length: 0
+```json
+{
+  "generation": 1,
+  "event_ids": [1, 2],
+  "message_key": "cluster_confirmed"
+}
 ```
+
+## Face learning
+
+The gallery trains interpretable scorers from teaching actions in the
+background and asks bounded Yes/No/Skip identity questions. The
+resources below expose that state. Payloads carry scalar features and
+provenance only; embeddings never leave the library.
+
+### `GET /api/face-learning/status`
+
+Returns the background training state and pending question count.
+
+```bash
+curl "http://127.0.0.1:7878/api/face-learning/status"
+```
+
+```json
+{
+  "generation": 3,
+  "trained_generation": 3,
+  "status": "current",
+  "last_profile_id": 1,
+  "last_error": null,
+  "pending_questions": 2
+}
+```
+
+`status` is one of `current`, `stale` (feedback has arrived since the
+last run), `training`, or `failed` (the last run failed; the active
+profile stays as it is and `last_error` says why).
+
+### `GET /api/face-learning/questions`
+
+Returns pending identity questions, most valuable first.
+
+```bash
+curl "http://127.0.0.1:7878/api/face-learning/questions?limit=5"
+```
+
+Each question carries the subject face ids, the target person, the
+validated decision evidence (per-feature contributions to the score),
+and an evidence revision. `Yes` confirms the subject cluster as the
+target person and teaches one positive example; `No` teaches one
+negative example without labeling anyone; `Skip` only marks the
+question skipped.
+
+### `POST /api/face-learning/questions/{id}/answer`
+
+```bash
+curl -i -X POST "http://127.0.0.1:7878/api/face-learning/questions/4/answer" \
+  -H "content-type: application/json" \
+  -d '{"answer":"yes"}'
+```
+
+Returns the new delivery state and, for `yes` and `no`, the learning
+acknowledgement. Answering a question whose subject, target, profile,
+or evidence changed meanwhile returns `409 Conflict` with no partial
+write; refetch the question and answer again.
+
+### `GET /api/face-learning/events`
+
+Returns the durable teaching journal, newest first, with scalar feature
+snapshots and provenance but no embeddings. Supports `limit` (1 to 200)
+and `before` for stable pagination by event id.
+
+### `GET /api/face-learning/events/{id}`
+
+Returns one journal entry, or `404` for an unknown id.
 
 ## Faces and clusters
 
@@ -661,4 +735,9 @@ content-length: 0
 | `GET /api/faces/{id}/original` | Serve the source file for one face |
 | `GET /api/clusters/{id}` | Read one cluster |
 | `DELETE /api/clusters/{id}` | Dissolve one cluster |
+| `GET /api/face-learning/status` | Report the background training state |
+| `GET /api/face-learning/questions` | List pending identity questions |
+| `POST /api/face-learning/questions/{id}/answer` | Answer one identity question |
+| `GET /api/face-learning/events` | List the teaching journal |
+| `GET /api/face-learning/events/{id}` | Read one journal entry |
 | `POST /api/quit` | Stop the gallery server |
