@@ -2346,14 +2346,20 @@ mod tests {
         assert_eq!(comparison.selected, CandidateKind::Additive);
 
         // A single regressing fold forces the simpler candidate even when the
-        // average gain still clears the margin.
-        let mut regressing = passing.clone();
-        let labeled = regressing.datasets[1].clustering.labeled_faces;
-        let metrics = regressing.datasets[1].suggestions.as_mut().unwrap();
-        metrics.correct = 0;
-        metrics.incorrect = labeled;
-        metrics.precision = Some(0.0);
-        let comparison = compare_candidate_reports(&failing, &regressing, &honest_margin).unwrap();
+        // average gain still clears the margin and additive passes every
+        // gate. The baseline stays gate-dirty overall but is strong on one
+        // fold; that fold outscores the candidate, which is what makes the
+        // candidate fold regress without failing any gate.
+        let mut strong_baseline = failing.clone();
+        let labeled = strong_baseline.datasets[1].clustering.labeled_faces;
+        let strong = strong_baseline.datasets[1].suggestions.as_mut().unwrap();
+        strong.correct = labeled;
+        strong.incorrect = 0;
+        strong.not_suggested = 0;
+        strong.precision = Some(1.0);
+        let comparison =
+            compare_candidate_reports(&strong_baseline, &passing, &honest_margin).unwrap();
+        assert!(comparison.additive_passes, "the candidate stays gate-clean");
         assert!(!comparison.folds_agree);
         assert!(
             comparison.additive_gain > honest_margin.min_additive_gain,
