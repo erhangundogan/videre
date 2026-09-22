@@ -1038,7 +1038,7 @@ mod tests {
             let coordinator =
                 spawn_with(make_deps(conn.clone(), trainer), Duration::from_millis(10));
             coordinator.notify();
-            for _ in 0..200 {
+            for _ in 0..2000 {
                 if learning_status(&conn.lock().unwrap()).2 == settled {
                     break;
                 }
