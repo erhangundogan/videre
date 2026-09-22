@@ -799,6 +799,67 @@ mod basemap_tests {
     }
 }
 
+#[cfg(test)]
+mod events_tests {
+    use super::location_cluster_tests::gallery_state;
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    fn seed_events(conn: &Connection) {
+        videre_core::library_db::ensure_scan_schema(conn).unwrap();
+        // Two Berlin sessions a day apart, plus one Istanbul shot minutes after
+        // the first Berlin shot (a location split within one time window).
+        conn.execute_batch(
+            "INSERT INTO file_hashes (path, hash, ext, exif_date, gps_lat, gps_lon, width, height) VALUES
+                ('/p/a.jpg','a','jpg','2021-08-10 10:00:00',52.52,13.40,4000,3000),
+                ('/p/b.jpg','b','jpg','2021-08-10 10:05:00',41.01,28.98,4000,3000),
+                ('/p/c.jpg','c','jpg','2021-08-12 09:00:00',52.52,13.40,4000,3000);",
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn api_events_groups_into_time_and_place_sessions_newest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        {
+            let conn = state.conn.lock().unwrap();
+            videre_core::face_db::create_faces_table(&conn).unwrap();
+            seed_events(&conn);
+        }
+        let app = Router::new()
+            .route("/api/events", get(handle_events_api))
+            .with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/events")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let events = json["events"].as_array().unwrap();
+        // Berlin(10:00) | Istanbul(10:05) | Berlin(Aug 12) = three events.
+        assert_eq!(events.len(), 3);
+        // Newest first.
+        assert_eq!(events[0]["start"], "2021-08-12 09:00:00");
+        assert_eq!(events[0]["count"], 1);
+        // The key is the URL-safe compact start.
+        assert_eq!(events[0]["key"], "20210812T090000");
+        // The offline reverse geocoder resolves the Berlin centroid to a place.
+        let place = events[0]["place"].as_str().unwrap();
+        assert!(place.ends_with(", DE"), "unexpected place: {place}");
+        assert_eq!(events[0]["sample"]["hash"], "c");
+    }
+}
+
 // ---- Faces labeling server ----
 
 /// Maps a `videre-api` facade error to the HTTP status code the axum
@@ -2106,6 +2167,107 @@ async fn handle_dates(
     Ok(json_response(out))
 }
 
+/// One ordered pass of every displayable, dated file, ready for segmentation.
+fn load_event_rows(conn: &Connection) -> rusqlite::Result<Vec<super::events::EventRow>> {
+    let keep = keep_set_sql();
+    let effective = videre_core::query::EFFECTIVE_DATE_SQL;
+    let sql = format!(
+        "SELECT hash, {effective} AS d, gps_lat, gps_lon, path, COALESCE(ext,''), width, height \
+         FROM {keep} AS f \
+         WHERE {effective} IS NOT NULL AND {effective} NOT LIKE '0000%' \
+         ORDER BY d ASC, hash ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let raw = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<f64>>(2)?,
+                r.get::<_, Option<f64>>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, Option<i32>>(6)?,
+                r.get::<_, Option<i32>>(7)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut rows = Vec::with_capacity(raw.len());
+    for (hash, d, lat, lon, path, ext, width, height) in raw {
+        let Some(when) = super::events::parse_effective(&d) else {
+            continue;
+        };
+        let gps = match (lat, lon) {
+            (Some(lat), Some(lon)) => Some((lat, lon)),
+            _ => None,
+        };
+        rows.push(super::events::EventRow {
+            hash,
+            when,
+            gps,
+            path,
+            ext,
+            width,
+            height,
+        });
+    }
+    Ok(rows)
+}
+
+/// `GET /api/events`: the event overview, newest first.
+async fn handle_events_api(
+    State(state): State<Arc<AppState>>,
+) -> Result<axum::response::Response, StatusCode> {
+    let events = {
+        let conn = state
+            .conn
+            .lock()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let rows = load_event_rows(&conn).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        super::events::segment(&rows)
+    };
+    let cache = &state.context.library.cache;
+    let mut out = String::from("{\"events\":[");
+    for (i, event) in events.iter().rev().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        let key = event.start.format("%Y%m%dT%H%M%S").to_string();
+        let place = event.centroid.and_then(|(lat, lon)| {
+            videre_core::location::location_name_in(cache, lat, lon)
+                .ok()
+                .flatten()
+        });
+        out.push_str(&format!(
+            "{{\"key\":{},\"start\":{},\"end\":{},\"count\":{},\"place\":{},\
+              \"sample\":{{\"path\":{},\"hash\":{},\"ext\":{},\"w\":{},\"h\":{}}}}}",
+            json_str(&key),
+            json_str(&event.start.format("%Y-%m-%d %H:%M:%S").to_string()),
+            json_str(&event.end.format("%Y-%m-%d %H:%M:%S").to_string()),
+            event.members.len(),
+            place
+                .as_deref()
+                .map(json_str)
+                .unwrap_or_else(|| "null".to_string()),
+            json_str(&event.sample.path),
+            json_str(&event.sample.hash),
+            json_str(&event.sample.ext),
+            event
+                .sample
+                .width
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+            event
+                .sample
+                .height
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+        ));
+    }
+    out.push_str("]}");
+    Ok(json_response(out))
+}
+
 async fn handle_get_faces(
     State(state): State<Arc<AppState>>,
 ) -> Result<AxumJson<FacesData>, StatusCode> {
@@ -2839,6 +3001,7 @@ async fn serve_faces_async(
         .route("/api/files/{hash}/raw", get(handle_raw_file))
         .route("/api/files/{hash}/rotate", post(handle_rotate_file))
         .route("/api/dates", get(handle_dates))
+        .route("/api/events", get(handle_events_api))
         .route("/api/search", get(handle_search))
         .route("/api/locations", get(handle_location))
         .route("/api/location-clusters", get(handle_location_clusters))
