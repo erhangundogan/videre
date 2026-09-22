@@ -66,6 +66,21 @@ pub fn stored_signatures(conn: &Connection) -> rusqlite::Result<HashMap<String, 
     rows.collect()
 }
 
+/// Turns foreign-key enforcement on and verifies it took effect, so videre's
+/// declared relationships are checked by SQLite and not merely documented.
+/// Must run outside a transaction: SQLite silently ignores the pragma inside
+/// one, and a caller that believed a mid-transaction enable had worked would
+/// write unverified rows. The bundled build happens to default this on, but
+/// videre owns the guarantee rather than inheriting it from a build flag.
+pub fn enable_foreign_keys(conn: &Connection) -> rusqlite::Result<()> {
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    let enabled: i64 = conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?;
+    if enabled != 1 {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    Ok(())
+}
+
 /// Opens a SQLite connection and switches it to WAL journal mode, allows
 /// one writer plus many concurrent readers without "database is locked"
 /// errors, which matters once videre watch (writing in the background) and a
@@ -75,6 +90,7 @@ pub fn stored_signatures(conn: &Connection) -> rusqlite::Result<HashMap<String, 
 /// every connection open, not just the first.
 pub fn open_wal(path: &Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
+    enable_foreign_keys(&conn)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     ensure_file_hashes_columns(&conn);
     crate::face_db::ensure_people_table(&conn);
@@ -216,6 +232,30 @@ mod tests {
     fn table_exists_false_for_missing_table() {
         let conn = Connection::open_in_memory().unwrap();
         assert!(!table_exists(&conn, "widgets").unwrap());
+    }
+
+    #[test]
+    fn open_wal_enforces_foreign_keys() {
+        let dir = tempdir().unwrap();
+        let conn = open_wal(&dir.path().join("library.db")).unwrap();
+        let enabled: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(enabled, 1);
+    }
+
+    // The bundled SQLite is compiled with foreign keys on by default, so the
+    // pragma check above passes even before `enable_foreign_keys` exists. The
+    // helper's real job is to make the guarantee explicit and verified on
+    // every owned connection instead of trusting a build flag, and to refuse
+    // the silent no-op a pragma set inside a transaction would be.
+    #[test]
+    fn enabling_inside_a_transaction_is_rejected() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF; BEGIN")
+            .unwrap();
+        assert!(enable_foreign_keys(&conn).is_err());
+        conn.execute_batch("ROLLBACK").unwrap();
     }
 
     #[test]
