@@ -523,7 +523,7 @@ fn a_reserved_route_returns_404_with_an_explanation() {
     let lib = fixture();
     let server = Server::start(&lib);
 
-    for path in ["/events", "/smart"] {
+    for path in ["/smart"] {
         let (status, body) = server.get(path);
         assert_eq!(status, 404, "{path} should report that it is not built yet");
         assert!(
@@ -928,13 +928,14 @@ fn every_gallery_view_links_to_the_others() {
     let lib = fixture();
     let server = Server::start(&lib);
 
-    for path in ["/", "/duplicates", "/date", "/people", "/map"] {
+    for path in ["/", "/duplicates", "/date", "/events", "/people", "/map"] {
         let (status, body) = server.get(path);
         assert_eq!(status, 200, "{path} did not render");
         for target in [
             "href=\"/\"",
             "href=\"/duplicates\"",
             "href=\"/date\"",
+            "href=\"/events\"",
             "href=\"/people\"",
             "href=\"/map\"",
         ] {
@@ -961,6 +962,7 @@ fn the_current_section_is_marked_on_each_view() {
         ("/", "<a href=\"/\" class=\"on\">"),
         ("/duplicates", "<a href=\"/duplicates\" class=\"on\">"),
         ("/date", "<a href=\"/date\" class=\"on\">"),
+        ("/events", "<a href=\"/events\" class=\"on\">"),
         ("/people", "<a href=\"/people\" class=\"on\">"),
         ("/map", "<a href=\"/map\" class=\"on\">"),
     ] {
@@ -1112,8 +1114,10 @@ fn browsing_the_gallery_touches_no_model_cache() {
     for path in [
         "/",
         "/date",
+        "/events",
         "/people",
         "/api/files?view=all&limit=10",
+        "/api/events",
         "/api/dates?level=year",
         // The ranked path too: an example already embedded needs no model, which
         // is the reason the stored-vector path exists rather than re-embedding.
