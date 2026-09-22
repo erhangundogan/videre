@@ -349,12 +349,17 @@ mod tests {
     /// training succeeds.
     fn library() -> Arc<Mutex<Connection>> {
         let conn = Connection::open_in_memory().unwrap();
+        // Foreign keys on, and labels referencing people, as the library
+        // schema will enforce.
         conn.execute_batch(
-            "CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL,
-             bbox TEXT NOT NULL, landmark TEXT, embedding BLOB NOT NULL,
-             cluster_id INTEGER, person_label TEXT, confirmed INTEGER DEFAULT 0,
-             is_primary INTEGER DEFAULT 0, det_score REAL, blur REAL, oriented INTEGER);
+            "PRAGMA foreign_keys = ON;
              CREATE TABLE people (name TEXT PRIMARY KEY, full_name TEXT NOT NULL);
+             CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL,
+             bbox TEXT NOT NULL, landmark TEXT, embedding BLOB NOT NULL,
+             cluster_id INTEGER,
+             person_label TEXT REFERENCES people(name) ON DELETE RESTRICT ON UPDATE RESTRICT,
+             confirmed INTEGER DEFAULT 0,
+             is_primary INTEGER DEFAULT 0, det_score REAL, blur REAL, oriented INTEGER);
              INSERT INTO people VALUES ('alice','Alice');",
         )
         .unwrap();

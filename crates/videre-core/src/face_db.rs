@@ -558,6 +558,9 @@ mod tests {
 
     fn open() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
+        // Enforced, so the learning tables' declared parent keys are checked
+        // by every reset and lifecycle test.
+        conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
         create_faces_table(&conn).unwrap();
         conn
     }
