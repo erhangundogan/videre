@@ -20,7 +20,6 @@ Private/local context may exist outside this repository, but it must not be quot
 - Never blanket-stage files. Use explicit paths only.
 - Never stage more than 30 files in one pass.
 - Never add generated caches, private media, thumbnails, home-directory files, secrets, or non-source files.
-- Treat ~/.videre and external media libraries as real user data, not test data.
 - Do not read or expose local secrets unless explicitly asked.
 
 ## Build And Test
