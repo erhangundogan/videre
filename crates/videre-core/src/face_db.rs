@@ -749,8 +749,8 @@ mod tests {
              VALUES (1,'m/1',1,'logistic',X'7B7D','{}','{}','suggestion','active');
              INSERT INTO face_learning_questions (
                 status, target_identity, profile_id, model_kind, representative_face_id,
-                evidence_revision, evidence_json)
-             VALUES ('pending','elena',1,'logistic',1,'rev','{}');",
+                cluster_id, evidence_revision, evidence_json)
+             VALUES ('pending','elena',1,'logistic',1,1,'rev','{}');",
         )
         .unwrap();
         conn.execute(

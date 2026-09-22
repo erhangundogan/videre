@@ -91,6 +91,9 @@ impl QuestionPriority {
 pub struct QuestionCandidate {
     pub subject_face_ids: Vec<i64>,
     pub representative_face_id: i64,
+    /// The machine cluster the subjects formed when the question was built;
+    /// answers revalidate it so moved faces are never labeled stale.
+    pub cluster_id: i64,
     pub target_identity: String,
     pub target_display: String,
     pub profile_id: i64,
@@ -111,6 +114,7 @@ pub struct StoredQuestion {
     pub profile_id: i64,
     pub model_kind: String,
     pub representative_face_id: i64,
+    pub cluster_id: i64,
     pub evidence_revision: String,
     pub evidence: DecisionEvidence,
     pub created_at: String,
@@ -192,6 +196,7 @@ pub fn ensure_question_tables(conn: &Connection) -> rusqlite::Result<()> {
             profile_id INTEGER NOT NULL,
             model_kind TEXT NOT NULL,
             representative_face_id INTEGER NOT NULL,
+            cluster_id INTEGER NOT NULL,
             evidence_revision TEXT NOT NULL,
             evidence_json TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -291,6 +296,7 @@ fn validate_config(config: &QuestionSelectionConfig) -> Result<(), QuestionError
 }
 
 struct SubjectCluster {
+    cluster_id: i64,
     face_ids: Vec<i64>,
     representative: i64,
     det_score: Option<f64>,
@@ -337,6 +343,7 @@ fn load_subject_clusters(
             continue;
         }
         clusters.push(SubjectCluster {
+            cluster_id,
             face_ids: members.into_iter().map(|(id, _, _, _)| id).collect(),
             representative,
             det_score,
@@ -582,6 +589,7 @@ pub fn select_questions(
             candidates.push(QuestionCandidate {
                 subject_face_ids: cluster.face_ids.clone(),
                 representative_face_id: cluster.representative,
+                cluster_id: cluster.cluster_id,
                 target_identity: person.identity.clone(),
                 target_display: person.display.clone(),
                 profile_id: active.id,
@@ -636,13 +644,14 @@ pub fn replace_pending_questions(
             conn.execute(
                 "INSERT INTO face_learning_questions (
                     status, target_identity, profile_id, model_kind,
-                    representative_face_id, evidence_revision, evidence_json
-                 ) VALUES ('pending', ?1, ?2, ?3, ?4, ?5, ?6)",
+                    representative_face_id, cluster_id, evidence_revision, evidence_json
+                 ) VALUES ('pending', ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     candidate.target_identity,
                     candidate.profile_id,
                     candidate.model_kind,
                     candidate.representative_face_id,
+                    candidate.cluster_id,
                     candidate.evidence_revision,
                     evidence_json,
                 ],
@@ -720,6 +729,7 @@ pub fn stored_question(
         i64,
         String,
         i64,
+        i64,
         String,
         String,
         String,
@@ -727,8 +737,8 @@ pub fn stored_question(
     )> = conn
         .query_row(
             "SELECT id, status, target_identity, profile_id, model_kind,
-                    representative_face_id, evidence_revision, evidence_json,
-                    created_at, decided_at
+                    representative_face_id, cluster_id, evidence_revision,
+                    evidence_json, created_at, decided_at
              FROM face_learning_questions WHERE id = ?1",
             [question_id],
             |row| {
@@ -743,6 +753,7 @@ pub fn stored_question(
                     row.get(7)?,
                     row.get(8)?,
                     row.get(9)?,
+                    row.get(10)?,
                 ))
             },
         )
@@ -754,6 +765,7 @@ pub fn stored_question(
         profile_id,
         model_kind,
         representative_face_id,
+        cluster_id,
         evidence_revision,
         evidence_json,
         created_at,
@@ -780,6 +792,7 @@ pub fn stored_question(
         profile_id,
         model_kind,
         representative_face_id,
+        cluster_id,
         evidence_revision,
         evidence: serde_json::from_str(&evidence_json)
             .map_err(|error| QuestionError::InvalidStoredValue(error.to_string()))?,
