@@ -102,7 +102,10 @@ pub enum TrainingError {
         positive_identities: usize,
         negative_identities: usize,
     },
-    ZeroVariance(String),
+    TooFewIdentities {
+        identities: usize,
+        folds: usize,
+    },
     NonConvergence,
 }
 
@@ -112,23 +115,45 @@ impl fmt::Display for TrainingError {
             Self::InvalidConfig(reason) => write!(f, "invalid training config: {reason}"),
             Self::InvalidInput(reason) => write!(f, "invalid training input: {reason}"),
             Self::InsufficientEvidence { decision_kind, positive_identities, negative_identities } => write!(f, "insufficient {decision_kind:?} evidence: {positive_identities} positive and {negative_identities} negative identities"),
-            Self::ZeroVariance(name) => write!(f, "training feature {name} has zero variance"),
+            Self::TooFewIdentities { identities, folds } => write!(f, "only {identities} labeled identities for {folds} cross-validation folds; label more people or lower the fold count"),
             Self::NonConvergence => write!(f, "logistic optimization did not converge"),
         }
     }
 }
 impl std::error::Error for TrainingError {}
 
+/// Total order over feature vectors: schema version first, then the maps'
+/// entries in key order with `total_cmp` on values, which also handles NaN.
+fn compare_feature_values(left: &FeatureVector, right: &FeatureVector) -> std::cmp::Ordering {
+    left.schema_version
+        .cmp(&right.schema_version)
+        .then_with(|| {
+            let mut left_values = left.values.iter();
+            let mut right_values = right.values.iter();
+            loop {
+                match (left_values.next(), right_values.next()) {
+                    (None, None) => return std::cmp::Ordering::Equal,
+                    (None, Some(_)) => return std::cmp::Ordering::Less,
+                    (Some(_), None) => return std::cmp::Ordering::Greater,
+                    (Some((left_name, left_value)), Some((right_name, right_value))) => {
+                        let order = left_name
+                            .cmp(right_name)
+                            .then(left_value.total_cmp(right_value));
+                        if order != std::cmp::Ordering::Equal {
+                            return order;
+                        }
+                    }
+                }
+            }
+        })
+}
+
 fn compare_examples(left: &WeightedExample, right: &WeightedExample) -> std::cmp::Ordering {
     left.identity_keys
         .cmp(&right.identity_keys)
         .then(left.positive.cmp(&right.positive))
         .then(left.event_id.cmp(&right.event_id))
-        .then_with(|| {
-            serde_json::to_vec(&left.features)
-                .unwrap_or_default()
-                .cmp(&serde_json::to_vec(&right.features).unwrap_or_default())
-        })
+        .then_with(|| compare_feature_values(&left.features, &right.features))
 }
 
 fn stable_identity_hash(seed: u64, identity: &str) -> u64 {
@@ -165,10 +190,10 @@ fn identity_held_out_splits(
         identities.extend(example.identity_keys.iter().cloned());
     }
     if identities.len() < fold_count {
-        return Err(TrainingError::InvalidInput(format!(
-            "{} identities cannot fill {fold_count} folds",
-            identities.len()
-        )));
+        return Err(TrainingError::TooFewIdentities {
+            identities: identities.len(),
+            folds: fold_count,
+        });
     }
     let mut identities: Vec<_> = identities.into_iter().collect();
     identities.sort_by_key(|identity| (stable_identity_hash(seed, identity), identity.clone()));
@@ -302,6 +327,8 @@ pub fn build_training_snapshot(
     let mut exclusions = Vec::new();
     let mut explicit_counts: BTreeMap<(LearningDecisionKind, String), usize> = BTreeMap::new();
     let mut events = events.to_vec();
+    // The byte-level tiebreak only orders events sharing an id; it decides
+    // which duplicate survives so input order cannot change the snapshot.
     events.sort_by(|left, right| {
         left.id.cmp(&right.id).then_with(|| {
             serde_json::to_vec(left)
@@ -617,21 +644,39 @@ fn select_threshold(scores: &[(f64, bool, f64)]) -> Result<(f64, f64, f64), Trai
             "threshold selection needs both classes".into(),
         ));
     }
-    let mut thresholds: Vec<_> = scores.iter().map(|(score, _, _)| *score).collect();
-    thresholds.sort_by(|left, right| right.total_cmp(left));
-    thresholds.dedup_by(|left, right| left.total_cmp(right).is_eq());
+    // One sweep over scores in descending order: walking down and grouping
+    // equal scores means the cumulative counts at each distinct score are
+    // exactly the counts the previous all-scores rescan produced, without the
+    // quadratic cost.
+    let mut ordered: Vec<(f64, bool, f64)> = scores.to_vec();
+    for (score, _, _) in &mut ordered {
+        if *score == 0.0 {
+            // Fold negative zero into positive zero so equal scores land in
+            // one threshold group.
+            *score = 0.0;
+        }
+    }
+    ordered.sort_by(|left, right| {
+        right
+            .0
+            .total_cmp(&left.0)
+            .then(left.1.cmp(&right.1))
+            .then(left.2.total_cmp(&right.2))
+    });
     let mut best: Option<(f64, f64, f64)> = None;
-    for threshold in thresholds {
-        let mut true_positive = 0.0;
-        let mut false_positive = 0.0;
-        for (score, positive, weight) in scores {
-            if *score >= threshold {
-                if *positive {
-                    true_positive += weight;
-                } else {
-                    false_positive += weight;
-                }
+    let mut true_positive = 0.0;
+    let mut false_positive = 0.0;
+    let mut index = 0;
+    while index < ordered.len() {
+        let threshold = ordered[index].0;
+        while index < ordered.len() && ordered[index].0 == threshold {
+            let (_, positive, weight) = ordered[index];
+            if positive {
+                true_positive += weight;
+            } else {
+                false_positive += weight;
             }
+            index += 1;
         }
         let predicted = true_positive + false_positive;
         if predicted == 0.0 {
@@ -840,13 +885,19 @@ fn fit_logistic(
                 .sqrt()
         })
         .collect();
-    if let Some((index, _)) = scales
+    // A feature that is constant across the training set carries no signal,
+    // and constant features are normal here: single-face derived pairs pin
+    // size, cohesion, spread, and missing-count features to one value, and a
+    // corpus with complete detector metadata pins the missing proportions.
+    // Keep such features in the model so scoring keeps taking the full
+    // schema: standardize by 1.0 and pin the weight to zero after the fit
+    // instead of refusing to train.
+    let degenerate: Vec<bool> = scales.iter().map(|scale| *scale <= 1e-12).collect();
+    let scales: Vec<_> = scales
         .iter()
         .enumerate()
-        .find(|(_, scale)| **scale <= 1e-12)
-    {
-        return Err(TrainingError::ZeroVariance(feature_names[index].clone()));
-    }
+        .map(|(index, scale)| if degenerate[index] { 1.0 } else { *scale })
+        .collect();
     let rows: Vec<Vec<f64>> = examples
         .iter()
         .map(|example| {
@@ -915,6 +966,14 @@ fn fit_logistic(
     if !converged {
         return Err(TrainingError::NonConvergence);
     }
+    // The standardized column of a constant feature is identically zero, so
+    // it receives no gradient; pin it anyway so the guarantee does not rely
+    // on the algebra of the solve.
+    for (index, degenerate) in degenerate.iter().enumerate() {
+        if *degenerate {
+            beta[index + 1] = 0.0;
+        }
+    }
     Ok(LogisticModel {
         feature_names,
         means,
@@ -930,7 +989,8 @@ fn fit_logistic(
 mod tests {
     use super::*;
     use crate::face_learning::{
-        EventFaceRef, InvalidationReason, LearningAction, StoredLearningEvent,
+        DecisionKind, DecisionTarget, EventFaceRef, InvalidationReason, LearningAction,
+        StoredLearningEvent, ValidationSummary, EVALUATION_PROTOCOL_VERSION,
     };
     use std::collections::BTreeMap;
 
@@ -995,6 +1055,24 @@ mod tests {
             blur: Some(500.0 + face_id as f64),
             det_score: Some(0.9),
             landmark_residual: Some(0.01),
+            photo_hash: hash.to_owned(),
+        }
+    }
+
+    /// Realistic metadata: sizes, blur (with gaps), confidence, and landmark
+    /// residuals all vary the way they do in a scanned library.
+    fn varied_observation(face_id: i64, embedding: [f32; 2], hash: &str) -> FaceObservation {
+        FaceObservation {
+            face_id,
+            embedding: embedding.to_vec(),
+            bbox_min_side: Some(80.0 + face_id as f64 * 7.0),
+            blur: if face_id % 2 == 0 {
+                Some(300.0 + face_id as f64 * 111.0)
+            } else {
+                None
+            },
+            det_score: Some(0.80 + face_id as f64 * 0.01),
+            landmark_residual: Some(0.005 + face_id as f64 * 0.003),
             photo_hash: hash.to_owned(),
         }
     }
@@ -1211,6 +1289,18 @@ mod tests {
             folds,
             identity_held_out_splits(&reversed, 4, config().seed).unwrap()
         );
+
+        let two_identities = DecisionDataset {
+            decision_kind: LearningDecisionKind::Membership,
+            examples: vec![example("a", true, 1.0, 0.0), example("b", false, -1.0, 0.0)],
+        };
+        assert!(matches!(
+            identity_held_out_splits(&two_identities, 4, config().seed),
+            Err(TrainingError::TooFewIdentities {
+                identities: 2,
+                folds: 4
+            })
+        ));
     }
 
     #[test]
@@ -1314,10 +1404,14 @@ mod tests {
         for example in &mut constant {
             example.features.values.insert("y".into(), 1.0);
         }
-        assert!(matches!(
-            fit_logistic(&constant, 1.0, 1.0, 100, 1e-8),
-            Err(TrainingError::ZeroVariance(name)) if name == "y"
-        ));
+        let pinned = fit_logistic(&constant, 1.0, 1.0, 100, 1e-8).unwrap();
+        let y = pinned
+            .feature_names
+            .iter()
+            .position(|name| name == "y")
+            .unwrap();
+        assert_eq!(pinned.weights[y], 0.0, "a constant feature must not vote");
+        assert_eq!(pinned.scales[y], 1.0);
 
         let mut non_finite = membership.examples.clone();
         non_finite[0].features.values.insert("x".into(), f64::NAN);
@@ -1366,7 +1460,7 @@ mod tests {
     }
 
     #[test]
-    fn deterministic_fit_and_zero_variance_guard() {
+    fn deterministic_fit_and_constant_feature_pin() {
         let examples = vec![
             example("a", false, -2.0, 0.0),
             example("b", false, -1.0, 1.0),
@@ -1381,8 +1475,236 @@ mod tests {
         for example in &mut constant {
             example.features.values.insert("y".into(), 1.0);
         }
-        assert!(
-            matches!(fit_logistic(&constant, 1.0, 1.0, 100, 1e-8), Err(TrainingError::ZeroVariance(name)) if name == "y")
+        let pinned = fit_logistic(&constant, 1.0, 1.0, 100, 1e-8).unwrap();
+        let y = pinned
+            .feature_names
+            .iter()
+            .position(|name| name == "y")
+            .unwrap();
+        assert_eq!(pinned.weights[y], 0.0);
+        assert_eq!(pinned.scales[y], 1.0);
+        assert!(pinned.weights[0] != 0.0, "the varying feature still votes");
+    }
+
+    #[test]
+    fn example_ordering_breaks_ties_by_feature_values() {
+        let first = example("a", true, 1.0, 2.0);
+        let mut second = example("a", true, 1.0, 3.0);
+        assert_eq!(
+            compare_examples(&first, &second),
+            std::cmp::Ordering::Less,
+            "same keys and label order by the first differing feature value"
         );
+        second.features.values.insert("x".into(), 0.5);
+        assert_eq!(
+            compare_examples(&first, &second),
+            std::cmp::Ordering::Greater
+        );
+        second.features.values.insert("x".into(), 1.0);
+        second.features.values.insert("y".into(), 2.0);
+        assert_eq!(compare_examples(&first, &second), std::cmp::Ordering::Equal);
+    }
+
+    #[test]
+    fn sweep_matches_brute_force_threshold_selection() {
+        let scores: Vec<(f64, bool, f64)> = vec![
+            (0.95, true, 1.0),
+            (0.95, false, 2.0),
+            (0.90, true, 1.0),
+            (0.80, false, 1.0),
+            (0.70, true, 3.0),
+            (0.60, false, 1.5),
+            (0.60, false, 0.5),
+            (0.40, true, 1.0),
+            (0.20, false, 1.0),
+            (0.10, true, 1.0),
+        ];
+        let (threshold, precision, recall) = select_threshold(&scores).unwrap();
+
+        let mut thresholds: Vec<_> = scores.iter().map(|(score, _, _)| *score).collect();
+        thresholds.sort_by(|left, right| right.total_cmp(left));
+        thresholds.dedup_by(|left, right| left.total_cmp(right).is_eq());
+        let positive_weight: f64 = scores
+            .iter()
+            .filter(|(_, positive, _)| *positive)
+            .map(|(_, _, weight)| weight)
+            .sum();
+        let mut reference: Option<(f64, f64, f64)> = None;
+        for candidate_threshold in thresholds {
+            let mut true_positive = 0.0;
+            let mut false_positive = 0.0;
+            for (score, positive, weight) in &scores {
+                if *score >= candidate_threshold {
+                    if *positive {
+                        true_positive += *weight;
+                    } else {
+                        false_positive += *weight;
+                    }
+                }
+            }
+            let predicted = true_positive + false_positive;
+            if predicted == 0.0 {
+                continue;
+            }
+            let candidate = (
+                candidate_threshold,
+                true_positive / predicted,
+                true_positive / positive_weight,
+            );
+            let replace = reference.as_ref().is_none_or(|current| {
+                candidate
+                    .1
+                    .total_cmp(&current.1)
+                    .then(candidate.2.total_cmp(&current.2))
+                    .then(candidate.0.total_cmp(&current.0))
+                    .is_gt()
+            });
+            if replace {
+                reference = Some(candidate);
+            }
+        }
+        let (expected_threshold, expected_precision, expected_recall) = reference.unwrap();
+        assert!((threshold - expected_threshold).abs() < 1e-12);
+        assert!((precision - expected_precision).abs() < 1e-12);
+        assert!((recall - expected_recall).abs() < 1e-12);
+    }
+
+    #[test]
+    fn labels_and_feedback_snapshot_trains_end_to_end() {
+        let observations = vec![
+            varied_observation(1, [1.0, 0.0], "h1"),
+            varied_observation(2, [0.98, 0.2], "h2"),
+            varied_observation(3, [0.0, 1.0], "h3"),
+            varied_observation(4, [0.2, 0.98], "h4"),
+            varied_observation(5, [-1.0, 0.0], "h5"),
+            varied_observation(6, [-0.98, 0.2], "h6"),
+            varied_observation(7, [0.0, -1.0], "h7"),
+            varied_observation(8, [0.2, -0.98], "h8"),
+        ];
+        let labels = vec![
+            LabeledFace::new(1, "alpha"),
+            LabeledFace::new(2, "alpha"),
+            LabeledFace::new(3, "beta"),
+            LabeledFace::new(4, "beta"),
+            LabeledFace::new(5, "gamma"),
+            LabeledFace::new(6, "gamma"),
+            LabeledFace::new(7, "delta"),
+            LabeledFace::new(8, "delta"),
+        ];
+        let cluster_features =
+            extract_cluster_quality_features(&observations[0..2], DecisionStage::Question).unwrap();
+        let events = vec![
+            stored_event(
+                1,
+                LearningAction::DissolveCluster,
+                LearningDecisionKind::ClusterQuality,
+                LearningOutcome::Negative,
+                None,
+                cluster_features.clone(),
+            ),
+            stored_event(
+                2,
+                LearningAction::DissolveCluster,
+                LearningDecisionKind::ClusterQuality,
+                LearningOutcome::Negative,
+                None,
+                cluster_features,
+            ),
+        ];
+        let config = TrainingConfig::default();
+        let snapshot =
+            build_training_snapshot(3, "arcface/model", &labels, &observations, &events, &config)
+                .unwrap();
+        let bundle = train_logistic_bundle(&snapshot, &config).unwrap();
+        bundle.validate().unwrap();
+
+        let pinned = |model: &LogisticModel, name: &str| {
+            let index = model
+                .feature_names
+                .iter()
+                .position(|key| key == name)
+                .unwrap();
+            (model.weights[index], model.scales[index])
+        };
+        // Derived single-face pairs pin size, cohesion, and missing-count
+        // features to one value; they must stay in the schema without voting.
+        assert_eq!(pinned(&bundle.membership.model, "subject_size"), (0.0, 1.0));
+        assert_eq!(pinned(&bundle.membership.model, "target_size"), (0.0, 1.0));
+        assert_eq!(
+            pinned(
+                &bundle.membership.model,
+                "detector_confidence_missing_proportion_subject"
+            ),
+            (0.0, 1.0)
+        );
+        assert!(
+            pinned(&bundle.membership.model, "similarity_mean").0 != 0.0,
+            "similarity must still carry the model"
+        );
+        assert_eq!(
+            pinned(&bundle.cluster_quality.model, "cluster_size"),
+            (0.0, 1.0)
+        );
+
+        let evidence = bundle
+            .membership
+            .score_with_evidence(
+                &snapshot.membership.examples[0].features,
+                1,
+                FEATURE_SCHEMA_VERSION,
+                DecisionKind::Membership,
+                vec![1],
+                DecisionTarget::Person("alpha".into()),
+                Vec::new(),
+                ValidationSummary {
+                    protocol_version: EVALUATION_PROTOCOL_VERSION,
+                    datasets: 1,
+                    pair_precision: Some(0.9),
+                    pair_recall: Some(0.9),
+                    suggestion_precision: None,
+                    suggestion_coverage: None,
+                },
+            )
+            .unwrap();
+        evidence.validate().unwrap();
+    }
+
+    #[test]
+    fn labels_without_cluster_feedback_reports_what_is_missing() {
+        // Derived cluster-quality examples are all positive, so teaching that
+        // scorer needs explicit negative corrections. A labels-only corpus
+        // must say exactly that instead of failing on an unrelated detail.
+        let observations = vec![
+            varied_observation(1, [1.0, 0.0], "h1"),
+            varied_observation(2, [0.98, 0.2], "h2"),
+            varied_observation(3, [0.0, 1.0], "h3"),
+            varied_observation(4, [0.2, 0.98], "h4"),
+            varied_observation(5, [-1.0, 0.0], "h5"),
+            varied_observation(6, [-0.98, 0.2], "h6"),
+            varied_observation(7, [0.0, -1.0], "h7"),
+            varied_observation(8, [0.2, -0.98], "h8"),
+        ];
+        let labels = vec![
+            LabeledFace::new(1, "alpha"),
+            LabeledFace::new(2, "alpha"),
+            LabeledFace::new(3, "beta"),
+            LabeledFace::new(4, "beta"),
+            LabeledFace::new(5, "gamma"),
+            LabeledFace::new(6, "gamma"),
+            LabeledFace::new(7, "delta"),
+            LabeledFace::new(8, "delta"),
+        ];
+        let config = TrainingConfig::default();
+        let snapshot =
+            build_training_snapshot(1, "arcface/model", &labels, &observations, &[], &config)
+                .unwrap();
+        assert!(matches!(
+            train_logistic_bundle(&snapshot, &config),
+            Err(TrainingError::InsufficientEvidence {
+                decision_kind: LearningDecisionKind::ClusterQuality,
+                positive_identities: 4,
+                negative_identities: 0,
+            })
+        ));
     }
 }
