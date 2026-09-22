@@ -13,9 +13,10 @@ mod types;
 
 pub use error::{Error, Result};
 pub use faces::{
-    assign, assign_with_learning, cluster_detail, delete_person, delete_person_with_learning,
-    dissolve_cluster, dissolve_cluster_with_learning, faces_list, new_person,
-    new_person_with_learning, person_detail, remove_face, remove_face_with_learning, search_person,
+    answer_question_with_learning, assign, assign_with_learning, cluster_detail, delete_person,
+    delete_person_with_learning, dissolve_cluster, dissolve_cluster_with_learning, faces_list,
+    new_person, new_person_with_learning, pending_identity_questions, person_detail,
+    refresh_identity_questions, remove_face, remove_face_with_learning, search_person,
     set_full_name, set_primary,
 };
 pub use images::{
@@ -27,5 +28,5 @@ pub use pipeline_status::{pipeline_status, PipelineRunStatus};
 pub use stats::{library_stats, LibraryStats};
 pub use types::{
     ClusterData, ClusterDetail, ClusterFaceData, FacesData, LearningAcknowledgement, PersonData,
-    PersonDetail, PersonFaceData, SingletonData, TeachingContext,
+    PersonDetail, PersonFaceData, QuestionAnswerOutcome, SingletonData, TeachingContext,
 };

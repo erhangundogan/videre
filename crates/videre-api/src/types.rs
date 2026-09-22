@@ -15,6 +15,14 @@ pub struct LearningAcknowledgement {
     pub message_key: String,
 }
 
+/// Result of answering one identity question: the new delivery state and, for
+/// Yes and No, the durable learning work the answer committed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct QuestionAnswerOutcome {
+    pub status: String,
+    pub acknowledgement: Option<LearningAcknowledgement>,
+}
+
 /// One labeled person: their confirmed faces plus a representative face id
 /// (the primary, or lowest id) used as the card thumbnail.
 #[derive(Serialize, Clone)]

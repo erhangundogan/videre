@@ -8,10 +8,12 @@ use rusqlite::Connection;
 use std::collections::{BTreeSet, HashMap};
 use videre_core::face_db::load_face_observations;
 use videre_core::face_learning::{
-    append_event_batch_in_transaction, extract_cluster_quality_features,
-    extract_membership_features, invalidate_identity_in_transaction, learning_state, DecisionStage,
-    EventFaceRef, EventFaceRole, LearningAction, LearningDecisionKind, LearningOutcome,
-    NewLearningEvent,
+    active_question_context, append_event_batch_in_transaction, extract_cluster_quality_features,
+    extract_membership_features, finish_question_in_transaction,
+    invalidate_identity_in_transaction, learning_state, list_pending_questions,
+    question_evidence_revision, replace_pending_questions, select_questions, stored_question,
+    DecisionStage, EventFaceRef, EventFaceRole, LearningAction, LearningDecisionKind,
+    LearningOutcome, NewLearningEvent, QuestionAnswer, QuestionSelectionConfig, QuestionStatus,
 };
 
 const MAX_MEMBERSHIP_EVENTS_PER_ACTION: usize = 8;
@@ -853,6 +855,166 @@ pub fn delete_person_with_learning(
 /// clearing any previous primary in the same transaction so exactly one
 /// remains. The target update is guarded by person_label so it can't steal a
 /// face from another person.
+/// Answer one pending identity question. Yes confirms the subject cluster as
+/// the target person and teaches one positive membership; No teaches one
+/// negative membership without labeling; Skip only changes delivery state.
+/// Every answer revalidates subject, target, active profile, and evidence
+/// revision inside the transaction; any drift is a Conflict with no write.
+pub fn answer_question_with_learning(
+    conn: &Connection,
+    question_id: i64,
+    answer: QuestionAnswer,
+    context: &TeachingContext,
+) -> Result<QuestionAnswerOutcome> {
+    if context.embedding_model_id.trim().is_empty() {
+        return Err(Error::Invalid);
+    }
+    immediate_transaction(conn, || {
+        let question = stored_question(conn, question_id)?;
+        let question = match question {
+            Some(question) if question.status == QuestionStatus::Pending => question,
+            _ => return Err(Error::NotFound),
+        };
+        let states = face_states(conn, &question.subject_face_ids)?;
+        if states
+            .iter()
+            .any(|state| state.confirmed || state.person_label.is_some())
+        {
+            return Err(Error::Conflict);
+        }
+        let display: String = conn
+            .query_row(
+                "SELECT full_name FROM people WHERE name = ?1",
+                [&question.target_identity],
+                |row| row.get(0),
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => Error::Conflict,
+                other => other.into(),
+            })?;
+        let active = active_question_context(conn)?;
+        let Some(active) = active else {
+            return Err(Error::Conflict);
+        };
+        if active.profile_id != question.profile_id || active.model_kind != question.model_kind {
+            return Err(Error::Conflict);
+        }
+        let representative: i64 = conn
+            .query_row(
+                "SELECT f.id FROM faces AS f
+                 JOIN face_learning_question_faces AS qf
+                   ON qf.face_id = f.id AND qf.question_id = ?1 AND qf.role = 'subject'
+                 WHERE f.confirmed = 0 AND f.person_label IS NULL
+                 ORDER BY f.is_primary DESC, f.det_score DESC, f.id ASC
+                 LIMIT 1",
+                [question_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => Error::Conflict,
+                other => other.into(),
+            })?;
+        let support = person_support_ids(conn, &question.target_identity, &[])?;
+        let subject_observation = load_face_observations(conn, &[representative])?;
+        let support_observation = load_face_observations(conn, &support)?;
+        let features = extract_membership_features(
+            &subject_observation,
+            &support_observation,
+            DecisionStage::Question,
+        )?;
+        let revision = question_evidence_revision(
+            question.profile_id,
+            question.model_kind.as_str(),
+            &question.subject_face_ids,
+            &question.target_identity,
+            &features,
+            active.membership_threshold,
+            &support,
+        );
+        if revision != question.evidence_revision {
+            return Err(Error::Conflict);
+        }
+        match answer {
+            QuestionAnswer::Skip => {
+                finish_question_in_transaction(conn, question_id, QuestionStatus::Skipped)?;
+                Ok(QuestionAnswerOutcome {
+                    status: "skipped".into(),
+                    acknowledgement: None,
+                })
+            }
+            QuestionAnswer::Yes => {
+                assign_in_transaction(
+                    conn,
+                    &question.subject_face_ids,
+                    &question.target_identity,
+                    &display,
+                )?;
+                let event = membership_event(
+                    conn,
+                    &[representative],
+                    &support,
+                    LearningAction::QuestionYes,
+                    LearningOutcome::Positive,
+                    Some(question.target_identity.clone()),
+                    context,
+                    DecisionStage::Question,
+                )?;
+                let receipt = append_event_batch_in_transaction(conn, &[event])?;
+                finish_question_in_transaction(conn, question_id, QuestionStatus::Answered)?;
+                Ok(QuestionAnswerOutcome {
+                    status: "answered".into(),
+                    acknowledgement: Some(LearningAcknowledgement {
+                        generation: receipt.generation,
+                        event_ids: receipt.event_ids,
+                        message_key: "question_confirmed".into(),
+                    }),
+                })
+            }
+            QuestionAnswer::No => {
+                let event = membership_event(
+                    conn,
+                    &[representative],
+                    &support,
+                    LearningAction::QuestionNo,
+                    LearningOutcome::Negative,
+                    Some(question.target_identity.clone()),
+                    context,
+                    DecisionStage::Question,
+                )?;
+                let receipt = append_event_batch_in_transaction(conn, &[event])?;
+                finish_question_in_transaction(conn, question_id, QuestionStatus::Answered)?;
+                Ok(QuestionAnswerOutcome {
+                    status: "answered".into(),
+                    acknowledgement: Some(LearningAcknowledgement {
+                        generation: receipt.generation,
+                        event_ids: receipt.event_ids,
+                        message_key: "question_corrected".into(),
+                    }),
+                })
+            }
+        }
+    })
+}
+
+/// Pending identity questions for the gallery page, bounded and in priority
+/// order. Selection never mutates anything.
+pub fn pending_identity_questions(
+    conn: &Connection,
+    limit: usize,
+) -> Result<Vec<videre_core::face_learning::StoredQuestion>> {
+    Ok(list_pending_questions(conn, limit)?)
+}
+
+/// Refresh the pending question page from the active profile. Runs outside
+/// request handling; safe to call whenever training promotes a profile.
+pub fn refresh_identity_questions(
+    conn: &Connection,
+    config: &QuestionSelectionConfig,
+) -> Result<Vec<videre_core::face_learning::StoredQuestion>> {
+    let candidates = select_questions(conn, config)?;
+    Ok(replace_pending_questions(conn, &candidates)?)
+}
+
 pub fn set_primary(conn: &Connection, face_id: i64, person_label: &str) -> Result<()> {
     let person_label =
         videre_core::person::normalize(person_label).unwrap_or_else(|| person_label.to_string());
@@ -1896,5 +2058,342 @@ mod never_run_tests {
         assert!(data.people.is_empty());
         assert!(data.clusters.is_empty());
         assert!(data.singletons.is_empty());
+    }
+
+    // ---- questions ----
+
+    mod question_fixture {
+        use super::*;
+        use videre_core::face_learning::{
+            ensure_question_tables, replace_pending_questions, select_questions, LogisticModel,
+            LogisticScorer, ModelBundle, QuestionSelectionConfig, MEMBERSHIP_FEATURE_NAMES,
+            MODEL_ARTIFACT_VERSION,
+        };
+
+        pub fn embedding_blob(x: f32, y: f32) -> Vec<u8> {
+            let mut bytes = Vec::with_capacity(4);
+            bytes.extend_from_slice(&half::f16::from_f32(x).to_le_bytes());
+            bytes.extend_from_slice(&half::f16::from_f32(y).to_le_bytes());
+            bytes
+        }
+
+        fn logistic_bundle() -> ModelBundle {
+            let names: Vec<String> = MEMBERSHIP_FEATURE_NAMES
+                .iter()
+                .map(|name| name.to_string())
+                .collect();
+            let means: Vec<f64> = names
+                .iter()
+                .map(|name| if name == "similarity_mean" { 1.0 } else { 0.0 })
+                .collect();
+            let scales: Vec<f64> = names
+                .iter()
+                .map(|name| if name == "similarity_mean" { 0.5 } else { 1.0 })
+                .collect();
+            let weights: Vec<f64> = names
+                .iter()
+                .map(|name| if name == "similarity_mean" { 2.0 } else { 0.0 })
+                .collect();
+            let scorer = LogisticScorer {
+                model: LogisticModel {
+                    feature_names: names,
+                    means,
+                    scales,
+                    intercept: 0.0,
+                    weights,
+                    l2: 1.0,
+                    positive_class_weight: 1.0,
+                },
+                calibration: videre_core::face_learning::CalibrationModel {
+                    intercept: 0.0,
+                    slope: 1.0,
+                },
+                threshold: 0.5,
+            };
+            ModelBundle::Logistic {
+                artifact_version: MODEL_ARTIFACT_VERSION,
+                embedding_model_id: "arcface/test".into(),
+                feature_schema_version: 1,
+                membership: scorer.clone(),
+                cluster_quality: scorer,
+            }
+        }
+
+        /// Faces 10 and 11 sit in cluster 1; faces 12 and 13 confirm "alice".
+        /// Returns the connection and the pending question id asking about
+        /// cluster 1 and alice.
+        pub fn library() -> (Connection, i64, i64) {
+            let conn = Connection::open_in_memory().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT NOT NULL,
+                 bbox TEXT NOT NULL, landmark TEXT, embedding BLOB NOT NULL,
+                 cluster_id INTEGER, person_label TEXT, confirmed INTEGER DEFAULT 0,
+                 is_primary INTEGER DEFAULT 0, det_score REAL, blur REAL, oriented INTEGER);
+                 CREATE TABLE people (name TEXT PRIMARY KEY, full_name TEXT NOT NULL);",
+            )
+            .unwrap();
+            videre_core::face_learning::ensure_learning_tables(&conn).unwrap();
+            videre_core::face_learning::ensure_profile_table(&conn).unwrap();
+            ensure_question_tables(&conn).unwrap();
+
+            for (id, cluster) in [(10, Some(1)), (11, Some(1)), (12, None), (13, None)] {
+                conn.execute(
+                    "INSERT INTO faces (id, hash, bbox, embedding, cluster_id, confirmed, det_score, blur)
+                     VALUES (?1, 'h' || ?1, '0,0,80,80', ?2, ?3, 0, 0.9, 600.0)",
+                    rusqlite::params![id, embedding_blob(1.0, 0.0), cluster],
+                )
+                .unwrap();
+            }
+            assign(&conn, &[12, 13], "Alice").unwrap();
+
+            let evidence =
+                serde_json::to_string(&videre_core::face_learning::TrainingEvidenceCounts {
+                    positive_pairs: 20,
+                    negative_pairs: 20,
+                    explicit_negative_pairs: 0,
+                })
+                .unwrap();
+            let report = serde_json::to_string(&videre_core::face_learning::ValidationReport {
+                protocol_version: 1,
+                evidence_schema_version: 1,
+                feature_schema_version: 1,
+                datasets: Vec::new(),
+            })
+            .unwrap();
+            conn.execute(
+                "INSERT INTO face_learning_profiles (
+                    artifact_version, embedding_model_id, feature_schema_version, model_kind,
+                    parameters, training_evidence_json, validation_report_json, stage, status
+                 ) VALUES (1, 'arcface/test', 1, 'logistic', ?1, ?2, ?3, 'suggestion', 'active')",
+                rusqlite::params![
+                    serde_json::to_vec(&logistic_bundle()).unwrap(),
+                    evidence,
+                    report
+                ],
+            )
+            .unwrap();
+            let profile_id = conn.last_insert_rowid();
+
+            let candidates = select_questions(&conn, &QuestionSelectionConfig::default()).unwrap();
+            assert_eq!(candidates.len(), 1, "fixture must produce one question");
+            let stored = replace_pending_questions(&conn, &candidates).unwrap();
+            assert_eq!(stored.len(), 1);
+            (conn, stored[0].id, profile_id)
+        }
+
+        pub fn context(profile_id: i64) -> TeachingContext {
+            TeachingContext {
+                embedding_model_id: "arcface/test".into(),
+                active_profile_id: Some(profile_id),
+            }
+        }
+    }
+
+    use question_fixture as qf;
+
+    #[test]
+    fn yes_confirms_the_target_and_teaches_positive_membership() {
+        let (conn, question_id, profile_id) = qf::library();
+        let outcome = answer_question_with_learning(
+            &conn,
+            question_id,
+            QuestionAnswer::Yes,
+            &qf::context(profile_id),
+        )
+        .unwrap();
+        assert_eq!(outcome.status, "answered");
+        let ack = outcome.acknowledgement.expect("yes must teach");
+        assert_eq!(ack.event_ids.len(), 1);
+        assert_eq!(ack.generation, 1);
+
+        let labeled: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM faces WHERE id IN (10, 11) AND person_label = 'alice'
+                 AND confirmed = 1 AND cluster_id IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(labeled, 2, "yes labels the whole subject cluster");
+
+        let event: (String, String, String) = conn
+            .query_row(
+                "SELECT action_kind, outcome, target_identity FROM face_learning_events",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(event.0, "question_yes");
+        assert_eq!(event.1, "positive");
+        assert_eq!(event.2, "alice");
+    }
+
+    #[test]
+    fn no_teaches_negative_without_labeling() {
+        let (conn, question_id, profile_id) = qf::library();
+        let outcome = answer_question_with_learning(
+            &conn,
+            question_id,
+            QuestionAnswer::No,
+            &qf::context(profile_id),
+        )
+        .unwrap();
+        assert_eq!(outcome.status, "answered");
+
+        let untouched: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM faces WHERE id IN (10, 11) AND confirmed = 0
+                 AND person_label IS NULL AND cluster_id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(untouched, 2, "no must not label");
+
+        let event: (String, String) = conn
+            .query_row(
+                "SELECT action_kind, outcome FROM face_learning_events",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(event.0, "question_no");
+        assert_eq!(event.1, "negative");
+    }
+
+    #[test]
+    fn skip_only_changes_delivery_state() {
+        let (conn, question_id, profile_id) = qf::library();
+        let outcome = answer_question_with_learning(
+            &conn,
+            question_id,
+            QuestionAnswer::Skip,
+            &qf::context(profile_id),
+        )
+        .unwrap();
+        assert_eq!(outcome.status, "skipped");
+        assert!(outcome.acknowledgement.is_none());
+
+        let events: i64 = conn
+            .query_row("SELECT count(*) FROM face_learning_events", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(events, 0, "skip produces no event");
+        let state = learning_state(&conn).unwrap();
+        assert_eq!(state.generation, 0, "skip does not advance generation");
+    }
+
+    #[test]
+    fn stale_answers_conflict_without_partial_writes() {
+        // Already-labeled subject.
+        let (conn, question_id, profile_id) = qf::library();
+        assign(&conn, &[10, 11], "Bob").unwrap();
+        assert!(matches!(
+            answer_question_with_learning(
+                &conn,
+                question_id,
+                QuestionAnswer::Yes,
+                &qf::context(profile_id)
+            ),
+            Err(Error::Conflict)
+        ));
+        let events: i64 = conn
+            .query_row("SELECT count(*) FROM face_learning_events", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(events, 0, "a conflict must not teach");
+
+        // Removed target person.
+        let (conn, question_id, profile_id) = qf::library();
+        conn.execute("DELETE FROM people WHERE name = 'alice'", [])
+            .unwrap();
+        assert!(matches!(
+            answer_question_with_learning(
+                &conn,
+                question_id,
+                QuestionAnswer::No,
+                &qf::context(profile_id)
+            ),
+            Err(Error::Conflict)
+        ));
+
+        // A different active profile.
+        let (conn, question_id, profile_id) = qf::library();
+        conn.execute("UPDATE face_learning_profiles SET status = 'retired'", [])
+            .unwrap();
+        let _ = profile_id;
+        assert!(matches!(
+            answer_question_with_learning(&conn, question_id, QuestionAnswer::No, &qf::context(99)),
+            Err(Error::Conflict)
+        ));
+
+        // Support set changed: the evidence revision no longer matches.
+        let (conn, question_id, profile_id) = qf::library();
+        assign(&conn, &[13], "Alice").unwrap();
+        remove_face(&conn, 12).unwrap();
+        insert_face_with_score(&conn, 14, None, 0.9);
+        assign(&conn, &[14], "Alice").unwrap();
+        assert!(matches!(
+            answer_question_with_learning(
+                &conn,
+                question_id,
+                QuestionAnswer::No,
+                &qf::context(profile_id)
+            ),
+            Err(Error::Conflict)
+        ));
+        let question = videre_core::face_learning::stored_question(&conn, question_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            question.status,
+            videre_core::face_learning::QuestionStatus::Pending
+        );
+    }
+
+    fn insert_face_with_score(conn: &Connection, id: i64, cluster: Option<i64>, score: f64) {
+        conn.execute(
+            "INSERT INTO faces (id, hash, bbox, embedding, cluster_id, confirmed, det_score, blur)
+             VALUES (?1, 'h' || ?1, '0,0,80,80', ?2, ?3, 0, ?4, 600.0)",
+            rusqlite::params![id, qf::embedding_blob(1.0, 0.0), cluster, score],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn yes_cannot_label_without_evidence() {
+        let (conn, question_id, profile_id) = qf::library();
+        conn.execute_batch(
+            "CREATE TRIGGER abort_question_events
+             BEFORE INSERT ON face_learning_events
+             BEGIN SELECT RAISE(ABORT, 'injected event failure'); END;",
+        )
+        .unwrap();
+        assert!(answer_question_with_learning(
+            &conn,
+            question_id,
+            QuestionAnswer::Yes,
+            &qf::context(profile_id)
+        )
+        .is_err());
+
+        let labeled: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM faces WHERE id IN (10, 11) AND confirmed = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(labeled, 0, "yes cannot label without its evidence row");
+
+        let question = videre_core::face_learning::stored_question(&conn, question_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            question.status,
+            videre_core::face_learning::QuestionStatus::Pending
+        );
     }
 }
