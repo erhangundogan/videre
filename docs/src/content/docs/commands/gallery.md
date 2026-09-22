@@ -35,19 +35,21 @@ arrow keys, step to the previous and next item. Stepping past the last loaded
 item pulls in the next page automatically and keeps going, so **Show more** is
 not needed to browse to the end. At the item's top-right corner sit up to three
 buttons: **Rotate** (photos only) turns the image 90 degrees clockwise by
-editing its EXIF orientation in place; **Fullscreen** blows the whole lightbox
-up to the screen, arrows and info panel included (the same button, or
-**Escape**, steps back); and **Close** (the &#215; at its right) dismisses it.
-The close button, **Escape**, or a click outside the item all close the
-lightbox.
+editing its EXIF orientation in place, and turns the photo's face boxes with it
+so face crops stay on their faces; **Fullscreen** blows the whole lightbox up to
+the screen, arrows and info panel included (the same button, or **Escape**,
+steps back); and **Close** (the &#215; at its right) dismisses it. The close
+button, **Escape**, or a click outside the item all close the lightbox.
 
-The preview shown is a downscaled render, so **click the photo** (or scroll over
-it) to zoom in and **drag** to pan: the full-resolution original is loaded on
-the first zoom, so you can inspect it up close. Click again to return to fit.
+The preview shown is a downscaled render, so **click the photo** to zoom in and
+**drag** to pan: the full-resolution original is loaded on the first zoom, so you
+can inspect it up close. Click again to return to fit. While zoomed, the
+**scroll wheel** pans the enlarged image; it does not zoom.
 
 In the info panel, the **date** links to that day's view and the **place** links
-to its map drill-down, so one click jumps from a photo to everything else taken
-then or there.
+to the map, which selects the location cluster nearest the photo (the place name
+is finer than any cluster, so the map resolves it by the photo's coordinates), so
+one click jumps from a photo to everything else taken then or there.
 
 An info panel sits directly under the media: the labeled people in the photo
 (each links to that person's page), the place name when the file has GPS, and
@@ -71,7 +73,14 @@ people or location data yet.
 **Files**, **Duplicates**, **Date**, **People** and **Map** sit in a strip along
 the top of every page, so you switch between them without touching the address
 bar. The reserved routes are deliberately not in it; each one appears when it
-renders something.
+renders something. At the right of the strip is a **search** box: type a
+natural-language query and it ranks the library semantically on the Files page,
+the same ranking the **Similar** button uses. It appears only when the library
+has embeddings to rank against.
+
+The tall library header (the database path and the scanned-file counts) shows on
+the Files page and on a static export; the other sections drop it, since the strip
+already says where you are.
 
 The Map view begins with clusters grouped by continent. Zoom in to see each
 location cluster, then click one to open an addressable drill-down. Route names

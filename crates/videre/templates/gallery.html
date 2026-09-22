@@ -15,7 +15,8 @@
   <button type="button" class="lb-nav lb-prev" id="lb-prev" aria-label="Previous" onclick="event.stopPropagation();lbStep(-1)" hidden>&#8249;</button>
   <div class="lb-stage" onclick="event.stopPropagation()">
     <div class="lb-controls">
-      <button type="button" class="lb-rotate" id="lb-rotate" aria-label="Rotate right" title="Rotate 90&#176; clockwise" onclick="rotateLb()" hidden>&#x21bb;</button>
+      <button type="button" class="lb-rotate" id="lb-rotate-ccw" aria-label="Rotate left" title="Rotate 90&#176; counter-clockwise" onclick="rotateLb('ccw')" hidden>&#x21ba;</button>
+      <button type="button" class="lb-rotate" id="lb-rotate" aria-label="Rotate right" title="Rotate 90&#176; clockwise" onclick="rotateLb('cw')" hidden>&#x21bb;</button>
       <button type="button" class="lb-fs" id="lb-fs" aria-label="Fullscreen" title="Fullscreen" onclick="toggleLbFullscreen()" hidden>&#x26F6;</button>
       <button type="button" class="lb-close" id="lb-close" aria-label="Close" title="Close" onclick="closeLb()">&times;</button>
     </div>
@@ -25,21 +26,21 @@
   </div>
   <button type="button" class="lb-nav lb-next" id="lb-next" aria-label="Next" onclick="event.stopPropagation();lbStep(1)" hidden>&#8250;</button>
 </div>
-<div class="header"><h1>videre</h1><p class="subtitle">{{ db|safe }} &mdash; {{ generated_at }}</p><div class="stats"><div class="stat"><span class="num">{{ total_files }}</span><span class="label">Files scanned</span></div>{% if has_groups %}<div class="stat warn"><span class="num">{{ duplicate_groups }}</span><span class="label">Duplicate groups</span></div><div class="stat warn"><span class="num">{{ duplicate_files }}</span><span class="label">Duplicate files</span></div><div class="stat warn"><span class="num">{{ wasted }}</span><span class="label">Wasted space</span></div>{% endif %}{% if let Some(n) = embedded %}<div class="stat"><span class="num">{{ n }}</span><span class="label">Embedded</span></div>{% endif %}</div></div>
+{% if show_header %}<div class="header"><p class="hmeta"><span class="hlabel">Library:</span> {{ library|safe }}</p><p class="hmeta"><span class="hlabel">Date:</span> {{ generated_at }}</p><p class="hmeta"><span class="hlabel">Files/Embedding Count:</span> {{ total_files }}/{% if let Some(n) = embedded %}{{ n }}{% else %}0{% endif %}</p></div>{% endif %}
 {% if has_groups %}<div class="toolbar"><button onclick="expandAll()">Expand all</button><button onclick="collapseAll()">Collapse all</button><label class="sort-label">Sort by<select id="sort-select" onchange="sortGroups(this.value)"><option value="waste">Wasted space</option><option value="date-asc">Date kept (oldest first)</option><option value="date-desc">Date kept (newest first)</option></select></label><span class="info" id="shown-info">{{ duplicate_groups }} groups</span></div>
 <div class="groups" id="groups-container"></div>
 <div class="more-wrap"><button id="more-btn" onclick="showMore()"></button></div>
-{% endif %}{% if let Some(n) = all_files_count %}<div class="results-panel" id="results" style="display:none"></div>
-<div class="gallery-head"><h2>All files</h2><label class="view-toggle">View <select class="view-mode-select" onchange="setViewMode(this.value)"><option value="list">List</option><option value="tile">Tile</option></select></label><span class="info" id="gallery-info">{{ n }} files</span></div>
+{% endif %}{% if all_files_count.is_some() %}<div class="results-panel" id="results" style="display:none"></div>
+<div class="gallery-head"><label class="view-toggle">View <select class="view-mode-select" onchange="setViewMode(this.value)"><option value="list">List</option><option value="tile">Tile</option></select></label></div>
 <div class="gallery" id="gallery"></div>
-<div class="more-wrap"><button id="gallery-more" onclick="showMoreGallery()"></button></div>
+<div class="more-wrap"><button id="gallery-more" class="primary" onclick="showMoreGallery()"></button></div>
 {% endif %}{% if no_duplicates %}<div class="empty-state">
 <h2>No duplicates</h2>
 <p>Every file in this library has a unique hash, so there is nothing to review here.</p>
 <p class="hint">Visually similar photos are a different question: <code>videre scan --similar</code> finds those, and they appear here once it has run.</p>
 </div>
 {% endif %}{% if has_keep_files %}<div class="date-view" id="dateView">
-<div class="date-head"><h2>Browse by date</h2><label class="view-toggle">View <select class="view-mode-select" onchange="setViewMode(this.value)"><option value="list">List</option><option value="tile">Tile</option></select></label></div>
+<div class="date-head"><label class="view-toggle">View <select class="view-mode-select" onchange="setViewMode(this.value)"><option value="list">List</option><option value="tile">Tile</option></select></label></div>
 <div class="date-breadcrumb" id="dateBreadcrumb"></div>
 <div class="date-grid date-narrowing" id="dateNarrowing"></div>
 <div class="date-grid" id="dateGrid"></div>

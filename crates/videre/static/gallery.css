@@ -1,7 +1,7 @@
 .sort-label{font-size:12px;color:#3f3f46;display:flex;align-items:center;gap:6px}
 .sort-label select{padding:4px 8px;border:1px solid #d4d4d8;border-radius:6px;font-size:12px;background:#fff;color:#3f3f46;cursor:pointer}
 .info{margin-left:auto;color:#a1a1aa;font-size:12px}
-.groups{padding:16px 32px;display:flex;flex-direction:column;gap:10px}
+.groups{padding:16px;display:flex;flex-direction:column;gap:10px}
 .group{background:#fff;border-radius:10px;border:1px solid #e4e4e7;overflow:hidden}
 .group-header{padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:10px;user-select:none}
 .group-header:hover{background:#fafafa}
@@ -81,6 +81,14 @@ th.preview-th{width:130px}
 .lb-row a.lb-link:hover{text-decoration:underline}
 .lb-fname{color:#fff}
 .lb-fname span{word-break:break-all}
+/* The like toggle: bigger than the row icons, an outline heart that fills red
+   when liked (Instagram-style). Overrides the shared button chrome. */
+.lb-like{background:none;border:none;padding:0;margin:0 0 0 -5px;line-height:0;color:#f4f4f5;cursor:pointer}
+.lb-like:hover{background:none}
+.lb-like svg{width:26px;height:26px;fill:none;stroke:currentColor;stroke-width:2;transition:transform .1s ease}
+.lb-like:active svg{transform:scale(.85)}
+.lb-like:hover svg{stroke:#fca5a5}
+.lb-like.liked svg{fill:#ef4444;stroke:#ef4444}
 .lb-people{flex:0 1 auto;min-width:0;display:flex;flex-wrap:wrap;gap:12px;justify-content:flex-end;align-content:flex-start}
 .lb-face{display:block;text-align:center;font-size:11px;color:#fff;text-decoration:none;cursor:pointer}
 .lb-face img{width:48px;height:48px;border-radius:50%;object-fit:cover;display:block;margin-bottom:4px}
@@ -91,29 +99,41 @@ th.preview-th{width:130px}
 @keyframes spin{to{transform:rotate(360deg)}}
 .more-wrap{text-align:center;padding:16px 0 32px}
 #more-btn{padding:8px 28px;font-size:13px;display:none}
-.results-panel{margin:16px 32px;padding:14px 16px;background:#fff;border:1px solid #e4e4e7;border-radius:10px;scroll-margin-top:56px}
+.results-panel{margin:16px;padding:14px 16px;background:#fff;border:1px solid #e4e4e7;border-radius:10px;scroll-margin-top:56px}
 .results-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}
 .results-head h2{font-size:14px}
 .results-strip{display:flex;gap:10px;overflow-x:auto;padding-bottom:6px}
 .rcard{flex:0 0 auto;width:132px;text-align:center;position:relative}
 .rcard .thumb{max-width:120px;max-height:120px}
 .rcard.query{border-right:2px solid #e4e4e7;padding-right:10px;margin-right:4px}
-.score{position:absolute;top:4px;left:8px;background:rgba(24,24,27,.75);color:#fff;font-size:10px;padding:1px 5px;border-radius:4px}
+.score{position:absolute;top:4px;left:8px;background:rgba(24,24,27,.75);color:#fff;font-size:10px;padding:1px 5px;border-radius:4px;z-index:1}
 .copies{position:absolute;top:4px;right:8px;background:#fbbf24;color:#18181b;font-size:10px;font-weight:700;padding:1px 5px;border-radius:4px}
 .rname{font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#52525b;margin-top:2px}
-.gallery-head{padding:20px 32px 4px;display:flex;align-items:baseline;gap:12px}
+.gallery-head{padding:20px 16px 4px;display:flex;align-items:baseline;gap:12px}
 .gallery-head h2{font-size:16px}
-.gallery{padding:12px 32px;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
-.card{background:#fff;border:1px solid #e4e4e7;border-radius:10px;padding:8px;text-align:center;position:relative}
+.gallery{padding:12px 16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+/* Flex column so the Similar button can be pinned to the card's bottom. Grid
+   stretches every card in a row to the same height, so the pinned buttons line
+   up across the row instead of floating under each thumbnail. */
+.card{background:#fff;border:1px solid #e4e4e7;border-radius:10px;padding:8px;text-align:center;position:relative;display:flex;flex-direction:column}
 .card .thumb{max-width:100%;max-height:130px}
 .card-meta{font-size:11px;color:#71717a;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .similar-btn{margin-top:6px;padding:2px 10px;font-size:11px}
-.date-view{padding:24px 32px}
-.date-breadcrumb{margin-bottom:16px;font-size:13px;color:#71717a}
+/* In the card grid the button is pinned to the card bottom (see .card); the
+   table and results strip keep the plain top margin above. */
+.card .similar-btn{margin-top:auto;align-self:center}
+/* margin-top:auto collapses to 0 in a card with no spare height, leaving the
+   button touching the filename. A bottom margin on the line above it keeps a
+   gap there regardless. */
+.card .card-meta:has(+ .similar-btn){margin-bottom:8px}
+.date-view{padding:20px 16px 24px}
+.date-breadcrumb{margin-top:12px;margin-bottom:16px;font-size:13px;color:#71717a}
 .date-breadcrumb a{color:#3f3f46;cursor:pointer;text-decoration:underline}
 .date-period-count{margin-left:10px;color:#71717a;white-space:nowrap}
 .date-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}
 .date-narrowing{margin-bottom:16px}
+/* Cleared (innerHTML='') they must not leave their margins as an empty gap. */
+.date-breadcrumb:empty,.date-narrowing:empty{margin:0}
 .date-card{background:#fff;border-radius:8px;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.08);padding:8px;position:relative}
 .date-card-link{position:absolute;inset:0;z-index:1;border-radius:8px}
 .date-card [data-lb-url]{position:relative;z-index:2}
@@ -124,8 +144,8 @@ th.preview-th{width:130px}
    video and photo buckets line up and the play badge stays on the image. */
 .date-card .vthumb{display:block;width:100%;max-width:120px;aspect-ratio:1;margin-left:auto;margin-right:auto}
 .date-card .vthumb img{width:100%;height:100%}
-.date-card .date-card-label{padding:6px 0 0;font-size:13px;font-weight:600}
-.date-card .date-card-count{padding:2px 0 0;font-size:11px;color:#71717a}
+.date-card .date-card-label{padding:6px 0 0;font-size:16px;font-weight:600;text-align:center}
+.date-card .date-card-count{padding:2px 0 0;font-size:11px;color:#71717a;text-align:center}
 img.heic-loading{display:block;width:100%;aspect-ratio:1;object-fit:cover;background:linear-gradient(90deg,#e4e4e7 25%,#f4f4f5 37%,#e4e4e7 63%);background-size:400% 100%;animation:heicShimmer 1.4s ease infinite}
 @keyframes heicShimmer{0%{background-position:100% 0}100%{background-position:0 0}}
 

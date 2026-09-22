@@ -39,6 +39,7 @@ and cannot answer these HTTP requests after the command exits.
 | `GET /people/cluster/{id}` | One face cluster |
 | `GET /people/person/{name}` | One person |
 | `GET /map` | Location cluster map with the full file grid |
+| `GET /map?near={lat},{lon}` | Map centred on the cluster nearest a coordinate pair (used by the lightbox place link) |
 | `GET /map/location/{name}` | One addressable location drill-down |
 | `GET /events` | Reserved |
 | `GET /smart` | Reserved |
@@ -72,6 +73,13 @@ largest cluster, then the lowest cluster id. The optional positive `radius`
 query is measured in kilometers; without it the route uses the cluster's stored
 radius. An unknown name still returns the working map page with HTTP 200 and an
 unknown-location state.
+
+`GET /map?near={lat},{lon}` takes a `"lat,lon"` pair instead of a name and
+resolves it to the cluster whose centroid is nearest by haversine distance,
+bootstrapping that cluster's drill-down. The lightbox place link uses it because
+a photo's reverse-geocoded place name is finer than any cluster name; the client
+then rewrites the address bar to the resolved `/map/location/{name}`. A library
+with no clusters resolves to the unselected map.
 
 ## Files
 
@@ -202,9 +210,11 @@ content-length: 1024
 
 Rotates one photo 90 degrees clockwise by bumping its EXIF `Orientation` tag in
 place - no pixels are re-encoded - and drops the file's cached previews so the
-grid and lightbox re-render upright. Supported for EXIF-bearing images (JPEG,
-PNG, TIFF, WebP); any other format (video, HEIC, and the like) returns `415
-Unsupported Media Type`. The response body carries the new orientation value.
+grid and lightbox re-render upright. The photo's display-canvas face boxes and
+landmarks are turned with it, so face crops stay on their faces and keep their
+people labels. Supported for EXIF-bearing images (JPEG, PNG, TIFF, WebP); any
+other format (video, HEIC, and the like) returns `415 Unsupported Media Type`.
+The response body carries the new orientation value.
 
 ```bash
 curl -X POST \

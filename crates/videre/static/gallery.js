@@ -35,7 +35,8 @@ function buildPreview(f){
     size: f.size,
     date: bestDateJs(f),
     ext: f.ext,
-    hash: f.hash
+    hash: f.hash,
+    liked: !!f.liked
   })));
   if(ext==='jpg'||ext==='jpeg'||ext==='png'||ext==='gif'||ext==='webp'||ext==='bmp'){
     // Grid/tile thumbnails are server-downscaled, not the full original:
@@ -192,6 +193,9 @@ const ICON_FILE='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 const ICON_DATE='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M8 2v4M16 2v4M3 10h18"/></svg>';
 const ICON_SIZE='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>';
 const ICON_PIN='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/></svg>';
+// Heart for the like toggle. One path; the CSS decides outline vs filled red by
+// the button's `liked` class (fill:none + stroke, or fill:red).
+const ICON_HEART='<svg viewBox="0 0 24 24" stroke-linejoin="round" stroke-linecap="round"><path d="M12 21C12 21 3 14.5 3 8.5 3 5.42 5.42 3 8.5 3c1.74 0 3.41 0.81 4.5 2.09C14.09 3.81 15.76 3 17.5 3 20.58 3 23 5.42 23 8.5 23 14.5 12 21 12 21Z" transform="translate(-1 0)"/></svg>';
 function renderMetaPanel(meta){
   const el = document.getElementById('lbMeta');
   // Shown under the media. The left column carries the file facts; a right
@@ -221,11 +225,13 @@ function renderMetaPanel(meta){
         const n = document.getElementById(locId);
         if(!n) return;
         if(d.name){
-          // On a live server the place links to its map drill-down; the route
-          // resolves the name to a cluster and selects its tag (or shows the
-          // honest unknown-location state when nothing matches).
+          // On a live server the place links to the map by the photo's own
+          // coordinates, not by this reverse-geocoded name: the name is finer
+          // ("Schöneberg, DE") than any cluster's ("Berlin"), so the server
+          // resolves the point to the nearest cluster and selects its tag. A
+          // static export has no server, so it stays plain text.
           n.innerHTML = LIVE_SERVER
-            ? '<a class="lb-link" href="/map/location/'+encodeURIComponent(d.name)+'">'+escH(d.name)+'</a>'
+            ? '<a class="lb-link" href="/map?near='+encodeURIComponent(meta.location.lat+','+meta.location.lon)+'">'+escH(d.name)+'</a>'
             : escH(d.name);
         } else {
           n.textContent = 'Unknown location';
@@ -233,8 +239,18 @@ function renderMetaPanel(meta){
       })
       .catch(() => { const n = document.getElementById(locId); if(n) n.textContent = 'Location unavailable'; });
   }
+  // The like toggle sits at the top-left of the metadata section, larger than
+  // the row icons. Only on a live server, where the PATCH can persist it; a
+  // static export has nothing to save to. Red when liked, outline otherwise.
+  let likeBtn = '';
+  if(typeof LIVE_SERVER!=='undefined' && LIVE_SERVER && meta.hash){
+    const on = !!meta.liked;
+    likeBtn = '<button type="button" class="lb-like'+(on?' liked':'')+'" '+
+      'data-hash="'+escA(meta.hash)+'" aria-pressed="'+on+'" '+
+      'aria-label="Like" title="Like" onclick="toggleLbLike(this)">'+ICON_HEART+'</button>';
+  }
   const hasPeople = !!(meta.faces && meta.faces.length);
-  let html = '<div class="lb-info">'+rows.join('')+'</div>';
+  let html = '<div class="lb-info">'+likeBtn+rows.join('')+'</div>';
   if(hasPeople){
     // A live page carries `id` and fetches the crop from the endpoint on open;
     // a static export carries `thumb` as a data URI. One renderer serves both.
@@ -247,6 +263,40 @@ function renderMetaPanel(meta){
     html += '<div class="lb-people">'+people+'</div>';
   }
   el.innerHTML = html;
+}
+// Toggle a photo's like from the lightbox, the same mark `videre mark --like`
+// sets. Optimistic: flip the heart immediately, revert if the PATCH fails, and
+// keep the open tiles' cached meta in step so reopening shows the new state.
+function toggleLbLike(btn){
+  var hash=btn.dataset.hash;
+  if(!hash)return;
+  var next=!btn.classList.contains('liked');
+  btn.classList.toggle('liked', next);
+  btn.setAttribute('aria-pressed', next);
+  syncLikedMeta(hash, next);
+  fetch('/api/files/'+encodeURIComponent(hash),{
+    method:'PATCH',
+    headers:{'content-type':'application/json'},
+    body:JSON.stringify({liked:next})
+  }).then(function(r){ if(!r.ok)throw new Error('like failed'); })
+    .catch(function(){
+      btn.classList.toggle('liked', !next);
+      btn.setAttribute('aria-pressed', !next);
+      syncLikedMeta(hash, !next);
+    });
+}
+// Write the liked flag back into the loaded rows and the tiles' data-lb-meta so
+// a later reopen of the same photo reflects it without a page reload.
+function syncLikedMeta(hash, liked){
+  if(typeof galleryFiles!=='undefined'){
+    galleryFiles.forEach(function(f){ if(f.hash===hash) f.liked=liked; });
+  }
+  document.querySelectorAll('[data-lb-meta]').forEach(function(el){
+    try{
+      var m=JSON.parse(el.dataset.lbMeta);
+      if(m && m.hash===hash){ m.liked=liked; el.dataset.lbMeta=JSON.stringify(m); }
+    }catch(e){}
+  });
 }
 var lbIndex=-1;      // index of the open item among the currently visible tiles
 var lbLoading=false; // guards the auto-paginate load so it fires once
@@ -267,8 +317,10 @@ function openLb(url,type,metaJson){
   // rest, so the button never appears where it cannot work.
   var ext=(meta&&meta.ext?String(meta.ext):'').toLowerCase();
   var canRotate = type!=='video' && ROTATABLE_EXTS.indexOf(ext)>=0;
-  var rotateBtn=document.getElementById('lb-rotate');
-  if(rotateBtn){ rotateBtn.hidden=!canRotate; rotateBtn.disabled=false; }
+  ['lb-rotate','lb-rotate-ccw'].forEach(function(id){
+    var b=document.getElementById(id);
+    if(b){ b.hidden=!canRotate; b.disabled=false; }
+  });
   lbCurrent = { hash: meta&&meta.hash, url: url };
   // A fresh image starts fit-to-screen at the preview resolution; the full-res
   // original is loaded lazily on the first zoom.
@@ -340,12 +392,13 @@ function refreshTilesFor(hash,token){
 // two rotations. On success the source EXIF is bumped and its caches dropped, so
 // re-requesting the preview with a fresh token renders it upright.
 var lbRotating=false;
-function rotateLb(){
+function rotateLb(dir){
   if(lbRotating||!lbCurrent||!lbCurrent.hash)return;
-  var btn=document.getElementById('lb-rotate');
+  dir = (dir==='ccw') ? 'ccw' : 'cw';
+  var btns=[document.getElementById('lb-rotate'),document.getElementById('lb-rotate-ccw')];
   lbRotating=true;
-  if(btn)btn.disabled=true;
-  fetch('/api/files/'+encodeURIComponent(lbCurrent.hash)+'/rotate',{method:'POST'})
+  btns.forEach(function(b){ if(b)b.disabled=true; });
+  fetch('/api/files/'+encodeURIComponent(lbCurrent.hash)+'/rotate?dir='+dir,{method:'POST'})
     .then(function(r){ if(!r.ok)throw new Error('rotate failed'); return r.json(); })
     .then(function(){
       var token='b='+Date.now();
@@ -353,7 +406,7 @@ function rotateLb(){
       refreshTilesFor(lbCurrent.hash,token);
     })
     .catch(function(){})
-    .then(function(){ lbRotating=false; if(btn)btn.disabled=false; });
+    .then(function(){ lbRotating=false; btns.forEach(function(b){ if(b)b.disabled=false; }); });
 }
 
 // ---- Lightbox zoom & pan --------------------------------------------------
@@ -527,6 +580,11 @@ function dateCrumb(label,prefix,action){
   if(LIVE_SERVER) return '<a href="'+escA(dateHref(prefix))+'">'+escH(label)+'</a>';
   return '<a onclick="'+action+'">'+escH(label)+'</a>';
 }
+// The topmost breadcrumb, back to the full year overview: the /date route on a
+// live server, or buildYearView() in a static export.
+function dateRootCrumb(){
+  return LIVE_SERVER ? '<a href="/date">All Dates</a>' : '<a onclick="buildYearView()">All Dates</a>';
+}
 
 function dateCards(buckets,actionFor){
   return buckets.map(function(b){
@@ -563,7 +621,7 @@ function groupInlined(len,parent){
 
 function buildYearView(){
   dateState={level:'year',year:null,month:null};
-  document.getElementById('dateBreadcrumb').innerHTML='';
+  document.getElementById('dateBreadcrumb').innerHTML='All Dates';
   var narrowing=document.getElementById('dateNarrowing');
   if(narrowing)narrowing.innerHTML='';
   var draw=function(b){
@@ -575,7 +633,7 @@ function buildYearView(){
 function buildMonthView(year){
   dateState={level:'month',year:year,month:null};
   document.getElementById('dateBreadcrumb').innerHTML=
-    dateCrumb(year,year,'buildYearView()');
+    dateRootCrumb()+' &gt; '+dateCrumb(year,year,'buildYearView()');
   var narrowing=document.getElementById('dateNarrowing');
   if(narrowing)narrowing.innerHTML='';
   var draw=function(b){
@@ -588,6 +646,7 @@ function buildMonthView(year){
 function buildDayView(month){
   dateState={level:'day',year:dateState.year||month.slice(0,4),month:month};
   document.getElementById('dateBreadcrumb').innerHTML=
+    dateRootCrumb()+' &gt; '+
     dateCrumb(dateState.year,dateState.year,'buildYearView()')+' &gt; '+
     dateCrumb(month,month,"buildMonthView('"+dateState.year+"')");
   var narrowing=document.getElementById('dateNarrowing');
@@ -601,6 +660,7 @@ function buildDayView(month){
 }
 function buildDayGallery(day){
   document.getElementById('dateBreadcrumb').innerHTML=
+    dateRootCrumb()+' &gt; '+
     dateCrumb(dateState.year,dateState.year,'buildYearView()')+' &gt; '+
     dateCrumb(dateState.month,dateState.month,"buildMonthView('"+dateState.year+"')")+' &gt; '+escH(day);
   var narrowing=document.getElementById('dateNarrowing');
@@ -636,15 +696,16 @@ function fetchDateFiles(params,emptyText){
 }
 function renderDateBreadcrumb(prefix){
   var parts=prefix.split('-');
+  var root=dateRootCrumb()+' &gt; ';
   if(parts.length===1){
-    document.getElementById('dateBreadcrumb').innerHTML=dateCrumb(parts[0],parts[0],'buildYearView()');
+    document.getElementById('dateBreadcrumb').innerHTML=root+dateCrumb(parts[0],parts[0],'buildYearView()');
   }else if(parts.length===2){
-    document.getElementById('dateBreadcrumb').innerHTML=
+    document.getElementById('dateBreadcrumb').innerHTML=root+
       dateCrumb(parts[0],parts[0],'buildYearView()')+' &gt; '+
       dateCrumb(prefix,prefix,"buildMonthView('"+parts[0]+"')");
   }else{
     var month=parts[0]+'-'+parts[1];
-    document.getElementById('dateBreadcrumb').innerHTML=
+    document.getElementById('dateBreadcrumb').innerHTML=root+
       dateCrumb(parts[0],parts[0],'buildYearView()')+' &gt; '+
       dateCrumb(month,month,"buildMonthView('"+parts[0]+"')")+' &gt; '+escH(prefix);
   }
@@ -672,7 +733,7 @@ function buildPrefixGallery(prefix){
   fetchDateFiles('date='+encodeURIComponent(prefix),'No files for '+prefix+'.');
 }
 function buildRangeGallery(range){
-  document.getElementById('dateBreadcrumb').innerHTML='Date range';
+  document.getElementById('dateBreadcrumb').innerHTML=dateRootCrumb()+' &gt; Date range';
   var narrowing=document.getElementById('dateNarrowing');
   if(narrowing)narrowing.innerHTML='';
   var params=[];
@@ -704,7 +765,7 @@ document.getElementById('lb').addEventListener('click',function(e){
   if(e.target===this)closeLb();
 });
 
-// Click to zoom (toggle), wheel to zoom toward the cursor, drag to pan. A click
+// Click to zoom (toggle 1:1), drag to pan, wheel to pan while zoomed. A click
 // is distinguished from a pan by the pointer barely moving, so dragging the
 // zoomed image never toggles it back to fit.
 (function(){
@@ -713,8 +774,14 @@ document.getElementById('lb').addEventListener('click',function(e){
   var down=false,moved=false,sx=0,sy=0,ox=0,oy=0,pid=null;
   img.addEventListener('wheel',function(e){
     if(img.style.display==='none')return;
+    // The wheel no longer zooms: zoom is reached only by clicking the image
+    // (toggle 1:1) or the fullscreen button. While zoomed the wheel pans over
+    // the enlarged image; while fit-to-screen it does nothing, but is still
+    // swallowed so the page behind the open lightbox does not scroll.
     e.preventDefault();
-    lbZoomAt(lbz.scale*(e.deltaY<0?1.2:1/1.2),e.clientX,e.clientY);
+    if(lbz.scale<=1)return;
+    lbz.x-=e.deltaX; lbz.y-=e.deltaY;
+    lbClampPan(); lbApply();
   },{passive:false});
   img.addEventListener('pointerdown',function(e){
     if(img.style.display==='none')return;
@@ -807,8 +874,11 @@ function tileHtml(f,box){
 function layoutTiles(container,files){
   var width=container.clientWidth||container.offsetWidth||0;
   if(!width){ requestAnimationFrame(function(){layoutTiles(container,files);}); return; }
+  // Match the list view's gutters (.gallery padding: 12px 16px): the layout
+  // offsets every box by this padding and folds top+bottom into the container
+  // height, so tile mode lines up with the list grid and the strip above it.
   var geo=justifiedLayout(files.map(tileRatio),{
-    containerWidth:width, containerPadding:0, boxSpacing:6, targetRowHeight:220
+    containerWidth:width, containerPadding:{top:12,right:16,bottom:12,left:16}, boxSpacing:6, targetRowHeight:220
   });
   var html='';
   for(var i=0;i<files.length;i++) html+=tileHtml(files[i],geo.boxes[i]);
@@ -992,6 +1062,63 @@ function clearResults(){
   panel.style.display='none';
   panel.innerHTML='';
 }
+// The nav search box submits to `/?q=`; the Files page reads it here and ranks
+// the library semantically through the same /api/search endpoint the Similar
+// button uses, rendering into the same #results strip. Only the Files page has
+// that panel, so a search from another section navigates here first.
+function runTextSearch(q){
+  var panel=document.getElementById('results');
+  if(!panel)return;
+  panel.style.display='block';
+  panel.innerHTML='<div class="results-head"><h2>Searching&hellip;</h2></div>';
+  fetch('/api/search?q='+encodeURIComponent(q)+'&limit=48')
+    .then(function(r){ if(!r.ok)throw 0; return r.json(); })
+    .then(function(d){ resolveTextResults(q,d.results||[]); })
+    .catch(function(){
+      panel.innerHTML='<div class="results-head"><h2>Search failed</h2>'+
+        '<button onclick="clearResults()">Clear</button></div>';
+    });
+}
+// Search returns a ranking of hashes; resolve the rows behind them by hash
+// (the same seam similarity uses) before drawing. See renderResults.
+function resolveTextResults(query,scored){
+  var missing=scored.map(function(s){return s.hash;}).filter(function(h){return !RESULT_ROWS[h];});
+  if(missing.length===0){ drawTextResults(query,scored); return; }
+  fetch('/api/files?hashes='+encodeURIComponent(missing.join(',')))
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      (d.files||[]).forEach(function(f){ RESULT_ROWS[f.hash]=f; });
+      drawTextResults(query,scored);
+    })
+    .catch(function(){ drawTextResults(query,scored); });
+}
+function drawTextResults(query,scored){
+  var panel=document.getElementById('results');
+  var html='<div class="results-head"><h2>Results for &ldquo;'+escH(query)+'&rdquo;</h2>'+
+    '<button onclick="clearResults()">Clear</button></div><div class="results-strip">';
+  for(var i=0;i<scored.length;i++)html+=resultCard(scored[i].hash,scored[i].score,false);
+  html+='</div>';
+  if(!scored.length)html='<div class="results-head"><h2>No matches for &ldquo;'+escH(query)+
+    '&rdquo;</h2><button onclick="clearResults()">Clear</button></div>';
+  panel.innerHTML=html;
+  panel.style.display='block';
+  panel.querySelectorAll('img').forEach(function(img){if(img.loading==='lazy')img.loading='eager';});
+  panel.scrollIntoView({behavior:'smooth',block:'start'});
+}
+// Wire the shared nav search box: prefill it from the URL, hide it where the
+// library has no embeddings to rank against, and run any `?q=` on the Files page.
+(function(){
+  if(typeof HAS_EMBEDDINGS!=='undefined'&&!HAS_EMBEDDINGS){
+    var form=document.querySelector('.secnav-search');
+    if(form)form.style.display='none';
+    return;
+  }
+  var q=new URLSearchParams(window.location.search).get('q');
+  if(!q)return;
+  var navInput=document.getElementById('nav-search');
+  if(navInput)navInput.value=q;
+  if(typeof LIVE_SERVER!=='undefined'&&LIVE_SERVER&&document.getElementById('results'))runTextSearch(q);
+})();
 if(typeof ALLFILES!=='undefined'){
   ALLFILES.forEach(function(f){
     (HASH_FILES[f.hash]=HASH_FILES[f.hash]||[]).push(f);

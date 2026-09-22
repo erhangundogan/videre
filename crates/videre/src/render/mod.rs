@@ -27,8 +27,6 @@ pub(crate) struct FileRow {
 pub(crate) struct Stats {
     total_files: i64,
     duplicate_groups: i64,
-    duplicate_files: i64,
-    wasted_bytes: i64,
 }
 
 pub(crate) enum FileDateFilter {
@@ -645,8 +643,6 @@ pub(crate) fn query_stats(conn: &Connection) -> Stats {
     Stats {
         total_files: s.total_files,
         duplicate_groups: s.duplicate_group_count,
-        duplicate_files: s.duplicate_file_count,
-        wasted_bytes: s.wasted_bytes,
     }
 }
 
@@ -842,20 +838,27 @@ struct GalleryPage<'a> {
     /// The `var GROUPS=[...]` script block. Built in Rust because it is
     /// serialisation, not markup; the template only decides where it goes.
     data: &'a str,
-    /// Pre-escaped by `esc`, so the template must not escape it again.
-    db: String,
+    /// The library root (the db path with its `/.videre/hashes.db` tail
+    /// removed), shown in the header. Pre-escaped by `esc`, so the template must
+    /// not escape it again.
+    library: String,
     generated_at: &'a str,
+    /// Total scanned files and how many carry embeddings, shown as the header's
+    /// "Files/Embedding Count" line on the home page.
     total_files: i64,
+    embedded: Option<usize>,
     has_groups: bool,
     duplicate_groups: i64,
-    duplicate_files: i64,
-    wasted: String,
-    embedded: Option<usize>,
     all_files_count: Option<usize>,
     has_keep_files: bool,
     /// The current section, or `None` on a page with nowhere to navigate to.
     /// Read by the included `nav.html`, which documents the rule.
     nav: Option<Section>,
+    /// Whether to render the tall library header. It belongs on the home page
+    /// (`/`, the All-files section) and on a standalone static export, and is
+    /// dropped on the secondary sections (`/duplicates`, `/date`) where the nav
+    /// strip already names where you are and the header only pushed content down.
+    show_header: bool,
     /// A duplicates page with no duplicates. Without this the page renders a
     /// header and nothing else, which reads as broken rather than as good news,
     /// and a library that has already been deduped is the common case.
@@ -1012,17 +1015,21 @@ pub(crate) fn render(set: &RenderSet) -> String {
         js: include_str!("../../static/gallery.js"),
         justified_js: include_str!("../../static/justified-layout.js"),
         data: &data,
-        db: esc(db_path),
+        // The header shows the library root, not the database file inside it.
+        library: esc(db_path
+            .strip_suffix("/.videre/hashes.db")
+            .unwrap_or(db_path)),
         generated_at: &now,
         total_files: stats.total_files,
+        embedded,
         has_groups: !groups.is_empty(),
         duplicate_groups: stats.duplicate_groups,
-        duplicate_files: stats.duplicate_files,
-        wasted: videre_core::disk::human_bytes(stats.wasted_bytes.max(0) as u64),
-        embedded,
         all_files_count: all_files.map(|f| f.len()),
         has_keep_files: keep_files.is_some(),
         nav,
+        // Home (`/` = All) and standalone exports (no nav) keep the header; the
+        // secondary sections drop it. See `GalleryPage::show_header`.
+        show_header: nav.is_none() || nav == Some(Section::All),
         no_duplicates: groups_view && groups.is_empty(),
     };
     page.render().expect("gallery template")

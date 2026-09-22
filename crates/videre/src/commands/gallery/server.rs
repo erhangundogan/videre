@@ -379,6 +379,78 @@ mod location_cluster_tests {
         }
     }
 
+    #[test]
+    fn nearest_map_location_picks_the_closest_centroid() {
+        let conn = Connection::open_in_memory().unwrap();
+        seed_map_locations(&conn);
+        // A point in Berlin resolves to a Berlin cluster, not İstanbul or NYC.
+        assert_eq!(
+            nearest_map_location(&conn, 52.50, 13.41)
+                .unwrap()
+                .unwrap()
+                .display_name,
+            "Berlin"
+        );
+        // A point near New York resolves to the (unnamed) NYC cluster.
+        assert_eq!(
+            nearest_map_location(&conn, 40.70, -74.00)
+                .unwrap()
+                .unwrap()
+                .id,
+            5
+        );
+    }
+
+    #[test]
+    fn parse_lat_lon_accepts_a_pair_and_rejects_junk() {
+        assert_eq!(parse_lat_lon("52.52,13.405"), Some((52.52, 13.405)));
+        assert_eq!(parse_lat_lon(" -33.9 , 18.4 "), Some((-33.9, 18.4)));
+        assert!(parse_lat_lon("91,0").is_none()); // latitude out of range
+        assert!(parse_lat_lon("0,181").is_none()); // longitude out of range
+        assert!(parse_lat_lon("nope").is_none());
+        assert!(parse_lat_lon("1").is_none());
+    }
+
+    #[tokio::test]
+    async fn map_near_query_bootstraps_the_nearest_cluster() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        seed_map_locations(&state.conn.lock().unwrap());
+        let app = Router::new()
+            .route("/map", get(handle_map))
+            .with_state(state);
+
+        // A photo's own coordinates resolve to the nearest cluster's route name
+        // and its default radius (cluster 4 at 52.51,13.40 is closest here), which
+        // the client then canonicalises to /map/location/<name>.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/map?near=52.50,13.41")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            body.contains("var GLOC={\"kind\":\"location\",\"name\":\"berlin\",\"radius\":30.0};"),
+            "near query did not resolve to the nearest Berlin cluster: {body}"
+        );
+
+        // A plain /map (no near) stays unselected.
+        let response = app
+            .oneshot(Request::builder().uri("/map").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("var GLOC=null;"), "{body}");
+    }
+
     #[tokio::test]
     async fn location_clusters_endpoint_returns_rows_ordered_and_shaped() {
         let dir = tempfile::tempdir().unwrap();
@@ -797,9 +869,6 @@ mod pages {
         pub basemap_style: &'static str,
         pub vendor_version: &'static str,
         pub globals: String,
-        pub db: String,
-        pub generated_at: String,
-        pub total_files: i64,
         pub nav: Option<super::Section>,
     }
 
@@ -1060,6 +1129,44 @@ fn resolve_map_location(
         .find(|location| location.route_name == wanted))
 }
 
+/// The location cluster nearest a point, by haversine distance to its centroid.
+///
+/// The lightbox forwards a photo to the map by its own coordinates, not by a
+/// place name: a photo's reverse-geocoded name (`Schöneberg, DE`) is finer than
+/// any cluster's name (`Berlin`), so matching names never resolves. Resolving to
+/// the nearest cluster here turns the photo's point into a cluster the map can
+/// actually select. `None` only when the library has no clusters at all.
+fn nearest_map_location(
+    conn: &Connection,
+    lat: f64,
+    lon: f64,
+) -> rusqlite::Result<Option<ResolvedMapLocation>> {
+    Ok(map_locations(conn)?.into_iter().min_by(|a, b| {
+        let da =
+            videre_core::location_cluster::haversine_km(lat, lon, a.centroid_lat, a.centroid_lon);
+        let db =
+            videre_core::location_cluster::haversine_km(lat, lon, b.centroid_lat, b.centroid_lon);
+        da.total_cmp(&db)
+    }))
+}
+
+/// Parse a `"lat,lon"` pair as the lightbox writes it into `/map?near=`. Rejects
+/// anything that is not two finite numbers in range.
+fn parse_lat_lon(value: &str) -> Option<(f64, f64)> {
+    let (lat, lon) = value.split_once(',')?;
+    let lat: f64 = lat.trim().parse().ok()?;
+    let lon: f64 = lon.trim().parse().ok()?;
+    if lat.is_finite()
+        && lon.is_finite()
+        && (-90.0..=90.0).contains(&lat)
+        && (-180.0..=180.0).contains(&lon)
+    {
+        Some((lat, lon))
+    } else {
+        None
+    }
+}
+
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum MapLocationBootstrap {
@@ -1074,22 +1181,13 @@ struct MapPageQuery {
 
 fn render_map(state: &AppState, location_json: &str) -> axum::response::Html<String> {
     use askama::Template;
-    use chrono::Utc;
 
-    let (db_path, total_files, has_embeddings) = {
+    // Compute HAS_EMBEDDINGS exactly as the `/` handler does, so the Similar
+    // button (and the nav search box) gate identically: an embedded library must
+    // offer them on the grid under the map too, not just on the files page.
+    let has_embeddings = {
         let conn = state.conn.lock().unwrap();
-        let total = conn
-            .query_row("SELECT COUNT(*) FROM file_hashes", [], |row| row.get(0))
-            .unwrap_or(0);
-        // Compute HAS_EMBEDDINGS exactly as the `/` handler does, so the Similar
-        // button gates identically: an embedded library must show it on the grid
-        // under the map too, not just on the files page.
-        let has_embeddings = query_embedded_count(&conn, &state.model_id).is_some_and(|n| n > 0);
-        (
-            conn.path().map(|path| path.to_string()).unwrap_or_default(),
-            total,
-            has_embeddings,
-        )
+        query_embedded_count(&conn, &state.model_id).is_some_and(|n| n > 0)
     };
     let globals = format!(
         "var LIVE_SERVER=true;\nvar HAS_EMBEDDINGS={};\nvar VIDEO_POSTERS={};\n\
@@ -1107,16 +1205,43 @@ fn render_map(state: &AppState, location_json: &str) -> axum::response::Html<Str
         basemap_style: pages::BASEMAP_STYLE,
         vendor_version: env!("CARGO_PKG_VERSION"),
         globals,
-        db: esc(&db_path),
-        generated_at: Utc::now().format("%Y-%m-%d %H:%M UTC").to_string(),
-        total_files,
         nav: Some(Section::Map),
     };
     axum::response::Html(page.render().expect("map template"))
 }
 
-async fn handle_map(State(state): State<Arc<AppState>>) -> axum::response::Html<String> {
-    render_map(&state, "null")
+#[derive(Deserialize)]
+struct MapHomeQuery {
+    /// A `"lat,lon"` pair the lightbox forwards from a photo. Resolved to the
+    /// nearest cluster server-side, so the client bootstraps as if that cluster
+    /// were selected and canonicalises the URL to `/map/location/<name>`.
+    near: Option<String>,
+}
+
+async fn handle_map(
+    Query(query): Query<MapHomeQuery>,
+    State(state): State<Arc<AppState>>,
+) -> axum::response::Html<String> {
+    let json = match query.near.as_deref().and_then(parse_lat_lon) {
+        Some((lat, lon)) => {
+            let resolved = {
+                match state.conn.lock() {
+                    Ok(conn) => nearest_map_location(&conn, lat, lon).ok().flatten(),
+                    Err(_) => None,
+                }
+            };
+            match resolved {
+                Some(location) => serde_json::to_string(&MapLocationBootstrap::Location {
+                    name: location.route_name,
+                    radius: location.radius_km,
+                })
+                .unwrap_or_else(|_| "null".to_string()),
+                None => "null".to_string(),
+            }
+        }
+        None => "null".to_string(),
+    };
+    render_map(&state, &json)
 }
 
 async fn handle_map_location(
@@ -1647,15 +1772,25 @@ fn invalidate_thumb_cache(cache: &videre_core::library::CachePaths, hash: &str) 
     }
 }
 
-/// `POST /api/files/{hash}/rotate`: rotate one photo 90 degrees clockwise by
-/// bumping its EXIF Orientation tag in place, then drop its cached previews so
-/// the grid and lightbox re-render upright. Refuses a format that carries no
-/// EXIF orientation (video, HEIC, and the like) with 415, matching the button
-/// the gallery only shows for supported images.
+#[derive(Deserialize)]
+struct RotateQuery {
+    /// `cw` (default) or `ccw`: which way to turn. The lightbox has a button for
+    /// each. Anything else is treated as `cw`.
+    dir: Option<String>,
+}
+
+/// `POST /api/files/{hash}/rotate`: rotate one photo 90 degrees (clockwise by
+/// default, counter-clockwise with `?dir=ccw`) by bumping its EXIF Orientation
+/// tag in place, then drop its cached previews so the grid and lightbox
+/// re-render. Refuses a format that carries no EXIF orientation (video, HEIC,
+/// and the like) with 415, matching the button the gallery only shows for
+/// supported images.
 async fn handle_rotate_file(
     axum::extract::Path(hash): axum::extract::Path<String>,
+    Query(query): Query<RotateQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
+    let ccw = query.dir.as_deref() == Some("ccw");
     let path = {
         let conn = match state.conn.lock() {
             Ok(conn) => conn,
@@ -1689,9 +1824,34 @@ async fn handle_rotate_file(
 
     let cache = state.context.library.cache.clone();
     let hash_for_task = hash.clone();
-    // EXIF read/write and the cache sweep are blocking file I/O.
+    let state_for_task = state.clone();
+    // EXIF read/write, the DB update and the cache sweep are blocking work.
     let result = tokio::task::spawn_blocking(move || {
-        let orientation = super::rotate::rotate_cw_in_place(std::path::Path::new(&path), &ext)?;
+        let source = std::path::Path::new(&path);
+        // The stored face bboxes/landmarks are in the display canvas as it
+        // decodes now; capture that canvas's dimensions before the turn so the
+        // geometry can be mapped onto the post-rotation canvas. Read them up
+        // front: the rotation bumps the EXIF the dimensions depend on.
+        let dims = super::rotate::current_display_dimensions(source);
+        let orientation = if ccw {
+            super::rotate::rotate_ccw_in_place(source, &ext)?
+        } else {
+            super::rotate::rotate_cw_in_place(source, &ext)?
+        };
+        // Turn the display-canvas face geometry with the photo, so a rotated
+        // photo's face crops stay on their faces and keep their people labels
+        // instead of cropping the pre-rotation region of the new canvas. Only
+        // display-canvas rows (oriented=1) are transformed; legacy raw-canvas
+        // rows still crop the correct region through their own orientation path.
+        if let Some((display_w, display_h)) = dims {
+            rotate_faces_geometry(
+                &state_for_task,
+                &hash_for_task,
+                ccw,
+                display_w as i32,
+                display_h as i32,
+            );
+        }
         invalidate_thumb_cache(&cache, &hash_for_task);
         Ok::<u16, anyhow::Error>(orientation)
     })
@@ -1704,6 +1864,70 @@ async fn handle_rotate_file(
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+/// Turn every display-canvas (`oriented = 1`) face row for `hash` 90 degrees to
+/// match one rotation of the photo: clockwise on a canvas of height `display_h`,
+/// or counter-clockwise on a canvas of width `display_w` when `ccw`. Best-effort:
+/// a row whose bbox or landmark will not parse is left untouched rather than
+/// corrupted, and a DB error is logged, since the rotation itself has already
+/// succeeded and the caller reports that.
+fn rotate_faces_geometry(state: &AppState, hash: &str, ccw: bool, display_w: i32, display_h: i32) {
+    let conn = match state.conn.lock() {
+        Ok(conn) => conn,
+        Err(_) => return,
+    };
+    let rows: Vec<(i64, String, Option<String>)> = {
+        let mut stmt = match conn.prepare(
+            "SELECT id, bbox, landmark FROM faces WHERE hash = ?1 AND COALESCE(oriented, 0) = 1",
+        ) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                eprintln!("videre gallery: reading faces for rotate {hash}: {e}");
+                return;
+            }
+        };
+        let mapped = stmt.query_map([hash], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
+        });
+        match mapped {
+            Ok(iter) => iter.filter_map(|r| r.ok()).collect(),
+            Err(e) => {
+                eprintln!("videre gallery: reading faces for rotate {hash}: {e}");
+                return;
+            }
+        }
+    };
+    for (id, bbox, landmark) in rows {
+        let new_bbox = if ccw {
+            super::rotate::rotate_bbox_ccw(&bbox, display_w)
+        } else {
+            super::rotate::rotate_bbox_cw(&bbox, display_h)
+        };
+        let Some(new_bbox) = new_bbox else {
+            continue;
+        };
+        // Keep the original landmark if it cannot be transformed, rather than
+        // nulling a column the crop does not use but clustering does.
+        let new_landmark = landmark.as_deref().map(|l| {
+            let turned = if ccw {
+                super::rotate::rotate_landmark_ccw(l, display_w as f32)
+            } else {
+                super::rotate::rotate_landmark_cw(l, display_h as f32)
+            };
+            turned.unwrap_or_else(|| l.to_string())
+        });
+        if let Err(e) = conn.execute(
+            "UPDATE faces SET bbox = ?1, landmark = ?2 WHERE id = ?3",
+            rusqlite::params![new_bbox, new_landmark, id],
+        ) {
+            eprintln!("videre gallery: updating face {id} geometry for rotate: {e}");
+        }
     }
 }
 

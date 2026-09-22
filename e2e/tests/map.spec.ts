@@ -118,7 +118,7 @@ test.describe("map clusters", () => {
     await page.locator("#map-clear").click();
 
     await expect(page).toHaveURL(`${gallery.baseURL}/map`);
-    await expect(page.locator("#map-selection-row")).toBeHidden();
+    await expect(page.locator("#map-breadcrumb")).toBeHidden();
     await expect(page.locator("#map-plot-wrap")).not.toHaveAttribute("data-radius", /.+/);
     await expect(page.locator("#gallery .card")).toHaveCount(3);
   });
@@ -128,7 +128,7 @@ test.describe("map clusters", () => {
     await page.keyboard.press("Escape");
 
     await expect(page).toHaveURL(`${gallery.baseURL}/map`);
-    await expect(page.locator("#map-selection-row")).toBeHidden();
+    await expect(page.locator("#map-breadcrumb")).toBeHidden();
     await expect(page.locator("#gallery .card")).toHaveCount(3);
   });
 
@@ -140,7 +140,7 @@ test.describe("map clusters", () => {
 
     await expect(page.locator("#lb")).not.toHaveClass(/on/);
     await expect(page).toHaveURL(/\/map\/location\/berlin\?radius=20$/);
-    await expect(page.locator("#map-selection-row")).toBeVisible();
+    await expect(page.locator("#map-breadcrumb")).toBeVisible();
     await expect(page.locator("#gallery .card")).toHaveCount(2);
   });
 
@@ -149,7 +149,7 @@ test.describe("map clusters", () => {
     for (let click = 0; click < 8; click++) await page.locator("#map-zoom-out").click();
 
     await expect(page).toHaveURL(`${gallery.baseURL}/map`);
-    await expect(page.locator("#map-selection-row")).toBeHidden();
+    await expect(page.locator("#map-breadcrumb")).toBeHidden();
     await expect(page.locator(".map-marker[data-tier='continent']")).toHaveCount(2);
     await expect(page.locator("#gallery .card")).toHaveCount(3);
   });
@@ -157,7 +157,7 @@ test.describe("map clusters", () => {
   test("unknown location keeps the map working without a selection", async ({ page, gallery }) => {
     const response = await page.goto(`${gallery.baseURL}/map/location/not-a-place`);
     expect(response?.status()).toBe(200);
-    await expect(page.locator("#map-selection-row")).toBeHidden();
+    await expect(page.locator("#map-breadcrumb")).toBeHidden();
     await expect(page.locator(".map-marker.active")).toHaveCount(0);
     await expect(page.locator("#gallery .card")).toHaveCount(3);
     await expect(page.locator("#map-selection-status")).toHaveText("Unknown location");
@@ -171,6 +171,32 @@ test.describe("map clusters", () => {
     await expect(page.locator("#gallery")).toHaveClass(/tile-mode/);
     await viewMode.selectOption("list");
     await expect(page.locator("#gallery")).not.toHaveClass(/tile-mode/);
+  });
+
+  test("the selected location and radius sit in the grid head, without a title", async ({ page, gallery }) => {
+    await page.goto(`${gallery.baseURL}/map/location/berlin?radius=20`);
+    const head = page.locator(".gallery-head");
+    await expect(head.locator("#map-breadcrumb")).toHaveText("Berlin");
+    await expect(head.locator("#map-radius-group")).toBeVisible();
+    await expect(head.locator("#map-radius")).toHaveValue("20");
+    // The "All files" title was dropped from the map head.
+    await expect(head).not.toContainText("All files");
+  });
+
+  test("the radius control is hidden until a location is selected", async ({ page, gallery }) => {
+    await page.goto(`${gallery.baseURL}/map`);
+    await expect(page.locator("#map-radius-group")).toBeHidden();
+    await expect(page.locator("#map-breadcrumb")).toBeHidden();
+  });
+
+  test("the lightbox place link resolves the nearest cluster by coordinates", async ({ page, gallery }) => {
+    // The lightbox forwards a photo to the map by its own coordinates; the
+    // server resolves them to the nearest cluster and the client canonicalises
+    // the URL to /map/location/<name>.
+    const response = await page.goto(`${gallery.baseURL}/map?near=52.52,13.405`);
+    expect(response?.status()).toBe(200);
+    await expect(page).toHaveURL(/\/map\/location\/berlin\?radius=20(?:\.0)?$/);
+    await expect(page.locator("#map-breadcrumb")).toHaveText("Berlin");
   });
 });
 
@@ -244,7 +270,7 @@ test("zooming out to the world clears a MapLibre selection", async ({ page, gall
     null,
     { timeout: 15_000 }
   );
-  await expect(page.locator("#map-selection-row")).toBeVisible();
+  await expect(page.locator("#map-breadcrumb")).toBeVisible();
 
   // Zooming back to the world tier drops the selection, matching the canvas
   // renderer. This is the regression the map's zoom handler now guards against.
@@ -256,7 +282,7 @@ test("zooming out to the world clears a MapLibre selection", async ({ page, gall
   }
 
   await expect(page).toHaveURL(`${gallery.baseURL}/map`);
-  await expect(page.locator("#map-selection-row")).toBeHidden();
+  await expect(page.locator("#map-breadcrumb")).toBeHidden();
   await expect(page.locator("#gallery .card")).toHaveCount(3);
 });
 

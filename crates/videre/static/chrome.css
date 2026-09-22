@@ -11,17 +11,25 @@
  */
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f4f4f5;color:#18181b;font-size:14px;line-height:1.5}
-.header{background:#18181b;color:#fff;padding:24px 32px}
-.header h1{font-size:20px;font-weight:700;margin-bottom:2px}
-.subtitle{color:#71717a;font-size:12px;font-family:monospace;margin-bottom:20px}
-.stats{display:flex;gap:16px;flex-wrap:wrap}
-.stat{background:#27272a;border-radius:8px;padding:12px 20px;min-width:130px}
-.num{font-size:22px;font-weight:700;display:block}
+/* Left padding matches the nav strip (`.secnav` uses 16px) so the header text
+   lines up under it. */
+.header{background:#18181b;color:#fff;padding:10px 16px}
+.header h1{font-size:16px;font-weight:700;margin-bottom:1px}
+.subtitle{color:#71717a;font-size:11px;font-family:monospace;margin-bottom:10px}
+/* The gallery header's Library/Date lines: small, the value in monospace, the
+   label muted. Replaces the old videre title + db subtitle + stats block. */
+.header .hmeta{font-size:12px;line-height:1.5;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#e4e4e7}
+.header .hlabel{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#a1a1aa;margin-right:4px}
+.stats{display:flex;gap:10px;flex-wrap:wrap}
+.stat{background:#27272a;border-radius:8px;padding:6px 14px;min-width:110px}
+.num{font-size:16px;font-weight:700;display:block}
 .label{font-size:11px;color:#a1a1aa;text-transform:uppercase;letter-spacing:.06em}
 .stat.warn .num{color:#fbbf24}
 .toolbar{padding:10px 32px;background:#fff;border-bottom:1px solid #e4e4e7;display:flex;gap:8px;align-items:center;position:sticky;top:0;z-index:10;box-shadow:0 1px 3px rgba(0,0,0,.06)}
 button{padding:5px 12px;border:1px solid #d4d4d8;background:#fff;border-radius:6px;cursor:pointer;font-size:12px;color:#3f3f46}
 button:hover{background:#f4f4f5;border-color:#a1a1aa}
+button.primary{background:#3b82f6;color:#fff;border-color:#3b82f6}
+button.primary:hover{background:#2563eb;border-color:#2563eb}
 /* A view that legitimately has nothing to show still has to say so. */
 .empty-state{max-width:640px;margin:64px auto;padding:32px;text-align:center;background:#fff;border:1px solid #e5e5ec;border-radius:12px}
 .empty-state h2{margin:0 0 12px;font-size:20px;color:#1a1a1f}

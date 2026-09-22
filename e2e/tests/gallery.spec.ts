@@ -19,7 +19,9 @@ test("renders and expands the duplicate-review route", async ({ page, gallery })
 test("loads the date drill-down route", async ({ page, gallery }) => {
   await page.goto(`${gallery.baseURL}/date`);
   await expect(page.locator(".secnav a[href='/date']")).toHaveClass(/on/);
-  await expect(page.getByRole("heading", { name: "Browse by date" })).toBeVisible();
+  // The year overview is rooted by an "All Dates" breadcrumb (there is no
+  // "Browse by date" title any more).
+  await expect(page.locator("#dateBreadcrumb")).toHaveText("All Dates");
   await expect(page.locator("#dateGrid .date-card").first()).toBeVisible();
 });
 
@@ -162,9 +164,20 @@ test("clicking the lightbox image zooms it and toggles back to fit", async ({ pa
   await expect(img).toBeVisible();
   await expect(img).toHaveCSS("transform", "none");
 
-  // A click zooms in: the stage enters its pan viewport and the image is scaled,
+  // Toggling zoom is a tap on the image (pointerdown+up with no drag). Driven by
+  // a pointer dispatch on the element itself so the 16x12 fixture image, which
+  // sits under the top-right controls, is exercised without a coordinate clash.
+  const tapImage = () =>
+    img.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      const opts = { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, bubbles: true, pointerId: 1 };
+      el.dispatchEvent(new PointerEvent("pointerdown", opts));
+      el.dispatchEvent(new PointerEvent("pointerup", opts));
+    });
+
+  // A tap zooms in: the stage enters its pan viewport and the image is scaled,
   // loading the full-resolution original for detail.
-  await img.click();
+  await tapImage();
   await expect(page.locator(".lb-stage")).toHaveClass(/zooming/);
   await expect(img).not.toHaveCSS("transform", "none");
   await expect(async () => {
@@ -172,8 +185,8 @@ test("clicking the lightbox image zooms it and toggles back to fit", async ({ pa
     expect(natural).toBeGreaterThan(0);
   }).toPass();
 
-  // A second click returns to fit.
-  await img.click();
+  // A second tap returns to fit.
+  await tapImage();
   await expect(page.locator(".lb-stage")).not.toHaveClass(/zooming/);
   await expect(img).toHaveCSS("transform", "none");
 });
@@ -181,12 +194,12 @@ test("clicking the lightbox image zooms it and toggles back to fit", async ({ pa
 test("rotate is offered for photos, rotates, and is hidden for video", async ({ page, gallery }) => {
   await page.goto(gallery.baseURL);
 
-  // A photo: three controls in order rotate, fullscreen, close.
+  // A photo: controls in order rotate-ccw, rotate-cw, fullscreen, close.
   await page.locator("#gallery [data-lb-type='image']").first().click();
   await expect(page.locator("#lb")).toHaveClass(/on/);
   await expect(page.locator("#lb-rotate")).toBeVisible();
   const ids = await page.locator(".lb-controls button").evaluateAll((els) => els.map((e) => e.id));
-  expect(ids).toEqual(["lb-rotate", "lb-fs", "lb-close"]);
+  expect(ids).toEqual(["lb-rotate-ccw", "lb-rotate", "lb-fs", "lb-close"]);
 
   // Rotating posts to the endpoint and re-fetches the preview (cache-busted).
   const rotateResponse = page.waitForResponse(
