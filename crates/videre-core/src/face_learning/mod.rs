@@ -1,3 +1,4 @@
+pub mod additive;
 pub mod events;
 pub mod evidence;
 pub mod features;
@@ -7,6 +8,7 @@ pub mod profile;
 pub mod sampling;
 pub mod training;
 
+pub use additive::*;
 pub use events::*;
 pub use evidence::*;
 pub use features::*;
