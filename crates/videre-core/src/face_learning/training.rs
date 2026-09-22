@@ -823,12 +823,13 @@ pub fn compare_candidate_reports(
     let additive_gain = total_gain / logistic.datasets.len() as f64;
     let logistic_passes = logistic_failures.is_empty();
     let additive_passes = additive_failures.is_empty();
-    // The margin and repeatability rules do not depend on the baseline's
-    // gate outcome: additive wins only when it passes every gate, improves
-    // every fold, and clears the configured margin. Otherwise the simpler
-    // logistic candidate is stored, gates and all.
+    // Additive must pass every gate. When the logistic baseline passes too,
+    // additive also has to improve every fold and clear the configured
+    // margin, so the simpler model wins ties. When the baseline fails its
+    // gates, a gate-clean additive wins outright: storing the failing
+    // baseline would guarantee a rejection and leave no profile at all.
     let repeatable_margin = folds_agree && additive_gain > gates.min_additive_gain;
-    let selected = if additive_passes && repeatable_margin {
+    let selected = if additive_passes && (!logistic_passes || repeatable_margin) {
         CandidateKind::Additive
     } else {
         CandidateKind::Logistic
@@ -2285,7 +2286,7 @@ mod tests {
     }
 
     #[test]
-    fn additive_needs_repeatable_margin_even_when_logistic_fails_its_gates() {
+    fn a_gate_clean_additive_replaces_a_failing_baseline_without_a_margin() {
         let snapshot = TrainingSnapshot {
             generation: 10,
             embedding_model_id: "arcface/model".into(),
@@ -2299,8 +2300,8 @@ mod tests {
         // Fold sizes differ per dataset (cluster folds hold two examples,
         // membership four), so mutations derive from each fold's count.
         // Logistic fails the Wilson gate; additive passes with a real but
-        // sub-margin gain. The margin rule does not depend on the baseline's
-        // gate outcome, so the simpler model still wins.
+        // sub-margin gain. Keeping the failing baseline would guarantee a
+        // rejection, so a gate-clean additive wins without the margin.
         let mut failing = run.logistic_validation.clone();
         for dataset in &mut failing.datasets {
             let labeled = dataset.clustering.labeled_faces;
@@ -2335,21 +2336,19 @@ mod tests {
             "fixture must keep the gain below the margin: {:?}",
             comparison
         );
-        assert_eq!(comparison.selected, CandidateKind::Logistic);
+        assert_eq!(comparison.selected, CandidateKind::Additive);
 
         // With a real margin and no fold regression, additive wins even
         // though the baseline fails its gates.
-        let mut honest_margin = weak_margin;
+        let mut honest_margin = weak_margin.clone();
         honest_margin.min_additive_gain = 0.3;
         let comparison = compare_candidate_reports(&failing, &passing, &honest_margin).unwrap();
         assert!(comparison.folds_agree);
         assert_eq!(comparison.selected, CandidateKind::Additive);
 
-        // A single regressing fold forces the simpler candidate even when the
-        // average gain still clears the margin and additive passes every
-        // gate. The baseline stays gate-dirty overall but is strong on one
-        // fold; that fold outscores the candidate, which is what makes the
-        // candidate fold regress without failing any gate.
+        // A regressing fold does not bring back a baseline that fails its
+        // gates either: it is strong on one fold but gate-dirty overall, and
+        // the candidate stays gate-clean, so the candidate wins.
         let mut strong_baseline = failing.clone();
         let labeled = strong_baseline.datasets[1].clustering.labeled_faces;
         let strong = strong_baseline.datasets[1].suggestions.as_mut().unwrap();
@@ -2366,6 +2365,13 @@ mod tests {
             "fixture must clear the margin despite the regression: {:?}",
             comparison
         );
+        assert!(!comparison.logistic_passes);
+        assert_eq!(comparison.selected, CandidateKind::Additive);
+
+        // When both pass, the margin and repeatability rules still decide:
+        // a sub-margin gain keeps the simpler model.
+        let comparison = compare_candidate_reports(&passing, &passing, &weak_margin).unwrap();
+        assert!(comparison.logistic_passes && comparison.additive_passes);
         assert_eq!(comparison.selected, CandidateKind::Logistic);
     }
 
