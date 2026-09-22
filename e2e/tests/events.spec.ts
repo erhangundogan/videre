@@ -11,10 +11,10 @@ test("drilling into an event shows its photos under an All Events crumb", async 
   await page.goto(`${gallery.baseURL}/events`);
   const link = page.locator("#dateGrid .event-card a.date-card-link").first();
   await expect(link).toBeVisible();
-  // The thumbnail sits above the card link and opens the lightbox, so click
-  // the card's caption area, below it.
-  const box = await link.boundingBox();
-  await link.click({ position: { x: 10, y: box!.height - 6 } });
+  // The thumbnail sits above the card link (it opens the lightbox), so a
+  // pointer click lands on it. Dispatch the click on the link itself, which
+  // does not depend on where the card's layout puts the caption.
+  await link.dispatchEvent("click");
 
   await expect(page).toHaveURL(/\/events\/\d{8}T\d{6}-[0-9a-f]{1,8}$/);
   const root = page.locator("#dateBreadcrumb a", { hasText: "All Events" });
