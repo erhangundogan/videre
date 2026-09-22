@@ -2799,6 +2799,124 @@ mod never_run_tests {
         assert_eq!(pending_identity_questions(&conn, 5).unwrap().len(), 1);
     }
 
+    /// A real initialized version-2 library: foreign keys verified on, the
+    /// canonical DDL in place. The public face paths must work unchanged and
+    /// orphan writes must fail.
+    #[test]
+    fn v2_library_enforces_keys_through_the_public_paths() {
+        use videre_core::face_learning::QuestionAnswer as Answer;
+        let root = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let ctx = videre_core::library::LibraryContext::new(root.path(), cache.path()).unwrap();
+        let conn = videre_core::library_db::initialize(&ctx).unwrap();
+        let keys_on: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(keys_on, 1, "an initialized library verifies enforcement");
+
+        // Seed two people with one confirmed face each, through the public
+        // assign path, after detectable faces exist as unassigned clusters.
+        conn.execute_batch(
+            "INSERT INTO faces (id, hash, bbox, embedding, cluster_id, confirmed, det_score, blur) VALUES
+                (1, 'k1', '0,0,9,9', X'0000', 7, 0, 0.9, 600.0),
+                (2, 'k2', '0,0,9,9', X'0000', 7, 0, 0.9, 600.0);
+             INSERT INTO people (name, full_name) VALUES ('alice', 'Alice'), ('bob', 'Bob');",
+        )
+        .unwrap();
+        assign(&conn, &[1], "Alice").unwrap();
+        assign(&conn, &[2], "Bob").unwrap();
+
+        // Orphan writes fail: a face labeled with an unknown person, and an
+        // event provenance row with no parent event.
+        assert!(conn
+            .execute(
+                "INSERT INTO faces (hash,bbox,embedding,person_label,confirmed)
+                 VALUES ('k9','0,0,9,9',X'0000','ghost',1)",
+                [],
+            )
+            .is_err());
+        assert!(conn
+            .execute(
+                "INSERT INTO face_learning_event_faces (event_id, face_id, role, ordinal)
+                 VALUES (999, 1, 'subject', 0)",
+                [],
+            )
+            .is_err());
+
+        // Parent-first inserts succeed.
+        conn.execute(
+            "INSERT INTO face_learning_events (id, action_kind, decision_kind, outcome,
+                embedding_model_id, feature_schema_version, target_identity,
+                feature_snapshot_json, support_count)
+             VALUES (1, 'assign_face', 'membership', 'positive', 'x/1', 1, 'alice', '{}', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO face_learning_event_faces (event_id, face_id, role, ordinal)
+             VALUES (1, 1, 'subject', 0)",
+            [],
+        )
+        .unwrap();
+
+        // Deleting a person invalidates their evidence; the face the user
+        // assigned becomes unassigned again.
+        delete_person_with_learning(&conn, "Alice").unwrap();
+        let state: (i64, Option<String>) = conn
+            .query_row(
+                "SELECT confirmed, person_label FROM faces WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(state, (0, None));
+
+        // A stale question is rejected by the answer path.
+        let question = videre_core::face_learning::select_questions(
+            &conn,
+            &videre_core::face_learning::QuestionSelectionConfig::default(),
+        )
+        .unwrap();
+        if !question.is_empty() {
+            let stored =
+                videre_core::face_learning::replace_pending_questions(&conn, &question).unwrap();
+            conn.execute(
+                "UPDATE face_learning_questions SET evidence_revision = 'stale' WHERE id = ?1",
+                rusqlite::params![stored[0].id],
+            )
+            .unwrap();
+            let context = TeachingContext {
+                embedding_model_id: "x/1".into(),
+                active_profile_id: None,
+            };
+            assert!(matches!(
+                answer_question_with_learning(&conn, stored[0].id, Answer::Yes, &context),
+                Err(Error::Conflict)
+            ));
+        }
+
+        // Reset clears every learning table and passes foreign_key_check.
+        videre_core::face_db::reset_all(&conn).unwrap();
+        for table in [
+            "face_learning_events",
+            "face_learning_event_faces",
+            "face_learning_questions",
+            "face_learning_question_faces",
+            "face_learning_profiles",
+        ] {
+            let n: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0, "{table} must be empty after reset");
+        }
+        let violations: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(violations, 0);
+    }
+
     #[test]
     fn yes_cannot_label_without_evidence() {
         let (conn, question_id, profile_id) = qf::library();
