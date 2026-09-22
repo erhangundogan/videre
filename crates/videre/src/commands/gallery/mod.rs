@@ -9,6 +9,7 @@
 //! Rendering a set a command just produced is the other half, and stays static:
 //! see `dedupe --html` and `search --html`.
 
+mod events;
 mod rotate;
 mod server;
 
