@@ -1283,3 +1283,101 @@ fn labeling_pages_carry_the_learning_hooks() {
     assert_eq!(status, 200, "{body}");
     assert!(body.contains("data-learning-history"), "{body}");
 }
+
+#[test]
+fn face_learning_boundary_only_user_mutations_change_faces() {
+    let lib = fixture();
+    {
+        // Two unassigned singletons with real embeddings, so the teaching
+        // action can extract features and the worker can train or fail.
+        let conn = lib.init_db();
+        let mut embedding = Vec::new();
+        embedding.extend_from_slice(&half::f16::from_f32(1.0).to_le_bytes());
+        embedding.extend_from_slice(&half::f16::from_f32(0.0).to_le_bytes());
+        for id in [2, 3] {
+            conn.execute(
+                "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed)
+                 VALUES (?1, 'abc123', '0,0,50,50', ?2, NULL, 0)",
+                rusqlite::params![id, embedding],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "UPDATE faces SET embedding = ?1, cluster_id = NULL",
+            rusqlite::params![embedding],
+        )
+        .unwrap();
+    }
+    let server = Server::start(&lib);
+
+    let face_rows =
+        |conn: &rusqlite::Connection| -> Vec<(i64, Option<i64>, Option<String>, i64, i64)> {
+            let mut statement = conn
+                .prepare(
+                    "SELECT id, cluster_id, person_label, confirmed, is_primary
+                      FROM faces ORDER BY id",
+                )
+                .unwrap();
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+    let before = {
+        let conn = lib.init_db();
+        face_rows(&conn)
+    };
+
+    // The user mutation: assign one singleton. Exactly that face changes.
+    let (status, body) = server.send(
+        "PUT",
+        "/api/people/ozgur_demirtas/faces",
+        "{\"face_ids\":[2]}",
+    );
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"generation\":1"), "{body}");
+
+    // Wait until the background worker settles (it may succeed or fail on
+    // this tiny evidence; either way it must not touch faces). A worker that
+    // never settles fails the test instead of letting it pass unobserved.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let (_, status_body) = server.get("/api/face-learning/status");
+        let settled = status_body.contains("\"status\":\"current\"")
+            || status_body.contains("\"status\":\"failed\"");
+        if settled {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the background worker never settled: {status_body}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    {
+        let conn = lib.init_db();
+        let after = face_rows(&conn);
+        assert_eq!(after.len(), before.len(), "no face rows added or deleted");
+        for (was, is) in before.iter().zip(&after) {
+            assert_eq!(was.0, is.0);
+            if was.0 == 2 {
+                // Only the explicitly named face may change.
+                assert_eq!(is.2.as_deref(), Some("ozgur_demirtas"));
+                assert_eq!(is.3, 1);
+                assert_eq!(is.1, None, "assigning detaches the machine cluster");
+            } else {
+                assert_eq!(was, is, "no other face row may move");
+            }
+        }
+    }
+}

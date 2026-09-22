@@ -133,6 +133,27 @@ Thumbnails are served at 480px so tiles stay sharp on high-DPI displays.
 | `--port <PORT>` | Port to listen on. Omitted: start at 7878 and advance to the next free port if taken. Given: use exactly that port (fails if busy); `0` lets the OS choose |
 | `--browse` | Open a browser once the server is listening |
 
+## Face learning
+
+The People page teaches the gallery: naming clusters, moving faces, and
+dissolving bad groups write durable teaching evidence where there is a
+comparison to record (an action with nothing to compare against records
+none), and a background worker turns that evidence into small interpretable
+scorers. Once a scorer passes the
+shipped gates, the People page asks bounded yes/no identity questions.
+Answering Yes names a cluster; No only teaches; Skip does neither.
+
+- Status is machine-readable at `GET /api/face-learning/status`; the page
+  shows it as up to date, feedback pending, training, or failed. When up to
+  date, it also says whether the last trained candidate was promoted to the
+  profile in use or rejected by the quality gates.
+- Every action's evidence stays inspectable (per person, and in the teaching
+  journal), and no raw embeddings ever appear in a payload.
+- Failed runs keep the previous profile. Promotion affects suggestions and
+  questions only; grouping itself still comes from the deterministic
+  pipeline until a future recluster integration. `videre faces --reset`
+  wipes all of it.
+
 ## Gallery, or a file you can keep
 
 `gallery` is for looking around: it does not modify your media or library
