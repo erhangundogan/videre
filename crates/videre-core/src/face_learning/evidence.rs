@@ -10,6 +10,8 @@ pub enum DecisionKind {
     PairScore,
     ClusterMerge,
     PersonSuggestion,
+    Membership,
+    ClusterQuality,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
