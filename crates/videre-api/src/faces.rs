@@ -883,6 +883,15 @@ pub fn answer_question_with_learning(
         {
             return Err(Error::Conflict);
         }
+        // Every subject face must still sit in the cluster the question was
+        // built from; a recluster that moved any of them invalidates the
+        // evidence and the question.
+        if states
+            .iter()
+            .any(|state| state.cluster_id != Some(question.cluster_id))
+        {
+            return Err(Error::Conflict);
+        }
         let display: String = conn
             .query_row(
                 "SELECT full_name FROM people WHERE name = ?1",
@@ -2407,6 +2416,7 @@ mod never_run_tests {
             profile_id: 1,
             model_kind: "logistic".into(),
             representative_face_id: 10,
+            cluster_id: 1,
             evidence_revision: "another-revision".into(),
             evidence: qf::stub_evidence(),
             created_at: "2026-01-01 00:00:00".into(),
@@ -2662,6 +2672,46 @@ mod never_run_tests {
             rusqlite::params![id, qf::embedding_blob(1.0, 0.0), cluster, score],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn faces_moved_out_of_the_question_cluster_conflict() {
+        let (conn, question_id, profile_id) = qf::library();
+        // A recluster reassigned one subject face after the question was
+        // built: the evidence no longer describes the displayed cluster.
+        conn.execute("UPDATE faces SET cluster_id = 9 WHERE id = 11", [])
+            .unwrap();
+        assert!(matches!(
+            answer_question_with_learning(
+                &conn,
+                question_id,
+                QuestionAnswer::Yes,
+                &qf::context(profile_id)
+            ),
+            Err(Error::Conflict)
+        ));
+
+        let labeled: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM faces WHERE id IN (10, 11) AND confirmed = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(labeled, 0, "a stale cluster must not label");
+        let events: i64 = conn
+            .query_row("SELECT count(*) FROM face_learning_events", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(events, 0);
+        let question = videre_core::face_learning::stored_question(&conn, question_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            question.status,
+            videre_core::face_learning::QuestionStatus::Pending
+        );
     }
 
     #[test]

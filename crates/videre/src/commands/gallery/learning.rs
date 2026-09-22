@@ -173,9 +173,28 @@ fn persist_training(
     let summary =
         videre_api::persist_trained_profile(conn, &deps.embedding_model_id, run, &deps.gates)
             .map_err(|e| e.to_string())?;
+    #[cfg(test)]
+    eprintln!(
+        "PERSIST persisted profile {} promoted {}",
+        summary.profile_id, summary.promoted
+    );
+    // The pending question page was built against the still-active profile,
+    // so it is refreshed only when this run actually promoted. Rebuilding it
+    // after a rejection would supersede those questions with identical ones
+    // and leave the page empty.
+    if summary.promoted {
+        #[cfg(test)]
+        eprintln!("PERSIST refreshing questions for generation {generation}");
+        videre_api::refresh_identity_questions(conn, &deps.questions)
+            .map_err(|e| format!("question refresh failed: {e}"))?;
+    }
+    // Marked trained only after the refresh succeeded, so a refresh failure
+    // leaves the state failed and the next notification retrains the
+    // generation instead of stranding stale questions behind a current
+    // status. A retry inserts a fresh candidate row; promotion history stays
+    // per row.
     mark_generation_trained(conn, generation, Some(summary.profile_id))
         .map_err(|e| e.to_string())?;
-    let _ = videre_api::refresh_identity_questions(conn, &deps.questions);
     Ok(summary.profile_id)
 }
 
@@ -323,6 +342,10 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
+    use videre_core::face_learning::{
+        CalibrationModel, LogisticModel, LogisticScorer, MEMBERSHIP_FEATURE_NAMES,
+    };
+
     fn embedding_blob() -> Vec<u8> {
         // f16 LE of (1.0, 0.0), the same shape the feature fixture uses.
         vec![0x00, 0x3C, 0x00, 0x00]
@@ -393,56 +416,73 @@ mod tests {
         .unwrap();
     }
 
-    fn stub_run() -> TrainingRun {
+    fn stub_report() -> videre_core::face_learning::ValidationReport {
         use videre_core::face_learning::{
-            CalibrationModel, CandidateComparison, CandidateKind, ClusteringMetrics,
-            DatasetValidation as Report, LogisticModel, LogisticScorer, SuggestionMetrics,
-            TrainingEvidenceCounts, ValidationReport, MODEL_ARTIFACT_VERSION,
+            ClusteringMetrics, DatasetValidation as Report, SuggestionMetrics, ValidationReport,
         };
-        fn report() -> ValidationReport {
-            let dataset = |key: &str| Report {
-                dataset_key: key.into(),
-                clustering: ClusteringMetrics {
-                    labeled_faces: 100,
-                    labeled_identities: 10,
-                    predicted_clusters: 10,
-                    true_positive_pairs: 720,
-                    false_positive_pairs: 0,
-                    false_negative_pairs: 280,
-                    pair_precision: Some(1.0),
-                    pair_recall: Some(0.72),
-                    pair_f1: Some(2.0 * 0.72 / 1.72),
-                    mixed_clusters: 1,
-                    fragmented_identities: 3,
-                    unassigned_labeled_faces: 10,
-                    unassigned_rate: 0.10,
-                },
-                suggestions: Some(SuggestionMetrics {
-                    correct: 100,
-                    incorrect: 0,
-                    not_suggested: 0,
-                    precision: Some(1.0),
-                    coverage: 1.0,
-                }),
-                hard_rule_violations: 0,
-                invalid_explanations: 0,
-                wall_time_ms: 100.0,
-                peak_memory_mib: 50.0,
-            };
-            ValidationReport {
-                protocol_version: 1,
-                evidence_schema_version: 1,
-                feature_schema_version: 1,
-                datasets: vec![dataset("library-a"), dataset("library-b")],
-            }
+        let dataset = |key: &str| Report {
+            dataset_key: key.into(),
+            clustering: ClusteringMetrics {
+                labeled_faces: 100,
+                labeled_identities: 10,
+                predicted_clusters: 10,
+                true_positive_pairs: 720,
+                false_positive_pairs: 0,
+                false_negative_pairs: 280,
+                pair_precision: Some(1.0),
+                pair_recall: Some(0.72),
+                pair_f1: Some(2.0 * 0.72 / 1.72),
+                mixed_clusters: 1,
+                fragmented_identities: 3,
+                unassigned_labeled_faces: 10,
+                unassigned_rate: 0.10,
+            },
+            suggestions: Some(SuggestionMetrics {
+                correct: 100,
+                incorrect: 0,
+                not_suggested: 0,
+                precision: Some(1.0),
+                coverage: 1.0,
+            }),
+            hard_rule_violations: 0,
+            invalid_explanations: 0,
+            wall_time_ms: 100.0,
+            peak_memory_mib: 50.0,
+        };
+        ValidationReport {
+            protocol_version: 1,
+            evidence_schema_version: 1,
+            feature_schema_version: 1,
+            datasets: vec![dataset("library-a"), dataset("library-b")],
         }
-        let scorer = LogisticScorer {
+    }
+
+    /// A scorer over the real membership schema, so question selection can
+    /// score real feature vectors against the promoted profile.
+    fn membership_scorer() -> LogisticScorer {
+        let names: Vec<String> = MEMBERSHIP_FEATURE_NAMES
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
+        let means: Vec<f64> = names
+            .iter()
+            .map(|name| if name == "similarity_mean" { 1.0 } else { 0.0 })
+            .collect();
+        let scales: Vec<f64> = names
+            .iter()
+            .map(|name| if name == "similarity_mean" { 0.5 } else { 1.0 })
+            .collect();
+        let weights: Vec<f64> = names
+            .iter()
+            .map(|name| if name == "similarity_mean" { 2.0 } else { 0.0 })
+            .collect();
+        LogisticScorer {
             model: LogisticModel {
-                feature_names: vec!["x".into()],
-                means: vec![0.0],
-                scales: vec![1.0],
+                feature_names: names,
+                means,
+                scales,
                 intercept: 0.0,
-                weights: vec![1.0],
+                weights,
                 l2: 1.0,
                 positive_class_weight: 1.0,
             },
@@ -451,7 +491,14 @@ mod tests {
                 slope: 1.0,
             },
             threshold: 0.5,
+        }
+    }
+
+    fn stub_run() -> TrainingRun {
+        use videre_core::face_learning::{
+            CandidateComparison, CandidateKind, TrainingEvidenceCounts, MODEL_ARTIFACT_VERSION,
         };
+        let scorer = membership_scorer();
         TrainingRun {
             selected: videre_core::face_learning::ModelBundle::Logistic {
                 artifact_version: MODEL_ARTIFACT_VERSION,
@@ -460,8 +507,8 @@ mod tests {
                 membership: scorer.clone(),
                 cluster_quality: scorer,
             },
-            logistic_validation: report(),
-            additive_validation: report(),
+            logistic_validation: stub_report(),
+            additive_validation: stub_report(),
             comparison: CandidateComparison {
                 selected: CandidateKind::Logistic,
                 logistic_passes: true,
@@ -476,6 +523,80 @@ mod tests {
                 explicit_negative_pairs: 0,
             },
         }
+    }
+
+    fn rejected_run() -> TrainingRun {
+        let mut run = stub_run();
+        run.logistic_validation.datasets.truncate(1);
+        run.additive_validation.datasets.truncate(1);
+        run.comparison.logistic_passes = false;
+        run
+    }
+
+    /// Promote a profile before the coordinator runs and capture its pending
+    /// question page, so tests can assert what later cycles do to it.
+    fn seed_active_profile_and_questions(conn: &Connection) -> i64 {
+        use videre_core::face_learning::{
+            replace_pending_questions, select_questions, ModelBundle, MODEL_ARTIFACT_VERSION,
+        };
+        let names: Vec<String> = MEMBERSHIP_FEATURE_NAMES
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
+        let means: Vec<f64> = names
+            .iter()
+            .map(|name| if name == "similarity_mean" { 1.0 } else { 0.0 })
+            .collect();
+        let scales: Vec<f64> = names
+            .iter()
+            .map(|name| if name == "similarity_mean" { 0.5 } else { 1.0 })
+            .collect();
+        let weights: Vec<f64> = names.iter().map(|_| 0.0).collect();
+        let scorer = LogisticScorer {
+            model: LogisticModel {
+                feature_names: names,
+                means,
+                scales,
+                intercept: 0.0,
+                weights,
+                l2: 1.0,
+                positive_class_weight: 1.0,
+            },
+            calibration: CalibrationModel {
+                intercept: 0.0,
+                slope: 1.0,
+            },
+            threshold: 0.5,
+        };
+        let parameters = serde_json::to_vec(&ModelBundle::Logistic {
+            artifact_version: MODEL_ARTIFACT_VERSION,
+            embedding_model_id: "arcface/test".into(),
+            feature_schema_version: 1,
+            membership: scorer.clone(),
+            cluster_quality: scorer,
+        })
+        .unwrap();
+        let evidence = serde_json::to_string(&videre_core::face_learning::TrainingEvidenceCounts {
+            positive_pairs: 20,
+            negative_pairs: 20,
+            explicit_negative_pairs: 0,
+        })
+        .unwrap();
+        let report = serde_json::to_string(&stub_report()).unwrap();
+        conn.execute(
+            "INSERT INTO face_learning_profiles (
+                artifact_version, embedding_model_id, feature_schema_version, model_kind,
+                parameters, training_evidence_json, validation_report_json, stage, status
+             ) VALUES (1, 'arcface/test', 1, 'logistic', ?1, ?2, ?3, 'suggestion', 'active')",
+            rusqlite::params![parameters, evidence, report],
+        )
+        .unwrap();
+        let profile_id = conn.last_insert_rowid();
+        let candidates = select_questions(conn, &QuestionSelectionConfig::default()).unwrap();
+        assert_eq!(candidates.len(), 1, "fixture must produce one question");
+        let stored = replace_pending_questions(conn, &candidates).unwrap();
+        assert_eq!(stored.len(), 1);
+        profile_id
     }
 
     fn learning_status(conn: &Connection) -> (u64, u64, String) {
@@ -699,5 +820,138 @@ mod tests {
             assert_eq!(learning_status(&conn).2, "current");
             assert_eq!(trained.load(AtomicOrdering::SeqCst), 1);
         }
+    }
+
+    #[tokio::test]
+    async fn a_rejected_candidate_keeps_the_active_profiles_questions() {
+        let conn = library();
+        make_generation_pending(&conn.lock().unwrap());
+        seed_active_profile_and_questions(&conn.lock().unwrap());
+        // The stub run here carries too few datasets for the shipped gates:
+        // training succeeds, promotion rejects.
+        let coordinator = spawn_with(
+            make_deps(conn.clone(), |_, _, _| Ok(rejected_run())),
+            Duration::from_millis(10),
+        );
+        coordinator.notify();
+        for _ in 0..200 {
+            {
+                let conn = conn.lock().unwrap();
+                if learning_status(&conn).2 == "current" {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let conn = conn.lock().unwrap();
+        assert_eq!(learning_status(&conn).2, "current");
+        let rejected: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM face_learning_profiles WHERE status = 'rejected'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rejected, 1, "the failing candidate is stored and rejected");
+        let pending: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM face_learning_questions WHERE status = 'pending'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            pending, 1,
+            "a rejection must not supersede the active profile's questions"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_question_refresh_fails_the_cycle_and_recovers() {
+        let conn = library();
+        make_generation_pending(&conn.lock().unwrap());
+        seed_active_profile_and_questions(&conn.lock().unwrap());
+        // Any supersede of a pending question aborts, so the refresh step of
+        // a promoted run fails.
+        conn.lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER abort_question_refresh
+                 BEFORE UPDATE OF status ON face_learning_questions
+                 WHEN NEW.status = 'superseded'
+                 BEGIN SELECT RAISE(ABORT, 'injected refresh failure'); END;",
+            )
+            .unwrap();
+        let trained = Arc::new(AtomicUsize::new(0));
+        let counter = trained.clone();
+        let coordinator = spawn_with(
+            make_deps(conn.clone(), move |_, _, _| {
+                counter.fetch_add(1, AtomicOrdering::SeqCst);
+                Ok(stub_run())
+            }),
+            Duration::from_millis(10),
+        );
+        coordinator.notify();
+        for _ in 0..200 {
+            {
+                let conn = conn.lock().unwrap();
+                if learning_status(&conn).2 == "failed" {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        {
+            let conn = conn.lock().unwrap();
+            let (generation, trained_generation, status) = learning_status(&conn);
+            assert_eq!(status, "failed", "the refresh failure must fail the cycle");
+            assert_ne!(generation, trained_generation, "nothing is marked trained");
+            let state = learning_state(&conn).unwrap();
+            assert!(
+                state
+                    .last_error
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("question refresh"),
+                "the error must name the refresh: {:?}",
+                state.last_error
+            );
+            let active: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM face_learning_profiles WHERE status = 'active'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(active, 1, "the promoted profile stays active");
+        }
+
+        // Removing the fault and notifying again retrains the generation.
+        conn.lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER abort_question_refresh;")
+            .unwrap();
+        coordinator.notify();
+        for _ in 0..200 {
+            {
+                let conn = conn.lock().unwrap();
+                if learning_status(&conn).2 == "current" {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let conn = conn.lock().unwrap();
+        let (generation, trained_generation, status) = learning_status(&conn);
+        assert_eq!(status, "current", "the retry recovers");
+        assert_eq!(generation, trained_generation);
+        let pending: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM face_learning_questions WHERE status = 'pending'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending, 1, "the promoted profile gets a fresh page");
     }
 }
