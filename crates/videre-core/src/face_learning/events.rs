@@ -1,4 +1,6 @@
-use super::{FeatureVector, FEATURE_SCHEMA_VERSION};
+use super::{
+    FeatureVector, CLUSTER_QUALITY_FEATURE_NAMES, FEATURE_SCHEMA_VERSION, MEMBERSHIP_FEATURE_NAMES,
+};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -341,6 +343,16 @@ fn validate_new_event(event: &NewLearningEvent) -> Result<(), LearningEventError
         .features
         .validate()
         .map_err(|error| LearningEventError::InvalidEvent(error.to_string()))?;
+    let feature_names: Vec<_> = event.features.values.keys().map(String::as_str).collect();
+    let expected_names = match event.decision_kind {
+        LearningDecisionKind::Membership => MEMBERSHIP_FEATURE_NAMES,
+        LearningDecisionKind::ClusterQuality => CLUSTER_QUALITY_FEATURE_NAMES,
+    };
+    if feature_names != expected_names {
+        return Err(LearningEventError::InvalidEvent(
+            "feature schema does not match decision kind".to_owned(),
+        ));
+    }
     if event
         .scorer_confidence
         .is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
@@ -382,6 +394,34 @@ fn validate_new_event(event: &NewLearningEvent) -> Result<(), LearningEventError
                 face.role, face.ordinal
             )));
         }
+    }
+    let subject_count = ordinals
+        .get(&EventFaceRole::Subject)
+        .map_or(0, BTreeSet::len);
+    let support_count = ordinals
+        .get(&EventFaceRole::TargetSupport)
+        .map_or(0, BTreeSet::len);
+    let cluster_count = ordinals
+        .get(&EventFaceRole::ClusterMember)
+        .map_or(0, BTreeSet::len);
+    let provenance_matches = match event.decision_kind {
+        LearningDecisionKind::Membership => {
+            subject_count > 0
+                && support_count > 0
+                && cluster_count == 0
+                && event.support_count as usize == support_count
+        }
+        LearningDecisionKind::ClusterQuality => {
+            subject_count == 0
+                && support_count == 0
+                && cluster_count >= 2
+                && event.support_count as usize == cluster_count
+        }
+    };
+    if !provenance_matches {
+        return Err(LearningEventError::InvalidEvent(
+            "provenance does not match decision kind or support count".to_owned(),
+        ));
     }
     for (role, values) in ordinals {
         if values.iter().copied().ne(0..values.len() as u32) {
@@ -874,7 +914,8 @@ pub fn mark_generation_trained(
 mod tests {
     use super::*;
     use crate::face_learning::{
-        extract_membership_features, DecisionStage, FaceObservation, FEATURE_SCHEMA_VERSION,
+        extract_cluster_quality_features, extract_membership_features, DecisionStage,
+        FaceObservation, FEATURE_SCHEMA_VERSION,
     };
     use rusqlite::{params, Connection};
 
@@ -937,29 +978,39 @@ mod tests {
         let mut new = event(LearningAction::AssignCluster);
         new.decision_kind = LearningDecisionKind::ClusterQuality;
         new.outcome = LearningOutcome::Negative;
+        new.features = extract_cluster_quality_features(
+            &[
+                observation(11, [1.0, 0.0]),
+                observation(12, [0.8, 0.6]),
+                observation(21, [0.6, 0.8]),
+                observation(22, [0.0, 1.0]),
+            ],
+            DecisionStage::GalleryCluster,
+        )
+        .unwrap();
         new.faces = vec![
             EventFaceRef {
                 face_id: 22,
-                role: EventFaceRole::TargetSupport,
-                ordinal: 1,
+                role: EventFaceRole::ClusterMember,
+                ordinal: 3,
             },
             EventFaceRef {
                 face_id: 11,
-                role: EventFaceRole::Subject,
+                role: EventFaceRole::ClusterMember,
                 ordinal: 0,
             },
             EventFaceRef {
                 face_id: 21,
-                role: EventFaceRole::TargetSupport,
-                ordinal: 0,
+                role: EventFaceRole::ClusterMember,
+                ordinal: 2,
             },
             EventFaceRef {
                 face_id: 12,
                 role: EventFaceRole::ClusterMember,
-                ordinal: 0,
+                ordinal: 1,
             },
         ];
-        new.support_count = 2;
+        new.support_count = 4;
 
         let receipt = append_committed(&conn, &[new.clone()]);
         assert_eq!(receipt.generation, 1);
@@ -985,23 +1036,23 @@ mod tests {
             vec![
                 EventFaceRef {
                     face_id: 11,
-                    role: EventFaceRole::Subject,
+                    role: EventFaceRole::ClusterMember,
                     ordinal: 0,
                 },
                 EventFaceRef {
                     face_id: 12,
                     role: EventFaceRole::ClusterMember,
-                    ordinal: 0,
+                    ordinal: 1,
                 },
                 EventFaceRef {
                     face_id: 21,
-                    role: EventFaceRole::TargetSupport,
-                    ordinal: 0,
+                    role: EventFaceRole::ClusterMember,
+                    ordinal: 2,
                 },
                 EventFaceRef {
                     face_id: 22,
-                    role: EventFaceRole::TargetSupport,
-                    ordinal: 1,
+                    role: EventFaceRole::ClusterMember,
+                    ordinal: 3,
                 },
             ]
         );
@@ -1024,6 +1075,30 @@ mod tests {
         assert_eq!(receipt.event_ids.len(), 2);
         assert_eq!(learning_state(&conn).unwrap().generation, 1);
         assert_eq!(learning_state(&conn).unwrap().status, LearningStatus::Stale);
+    }
+
+    #[test]
+    fn decision_features_roles_and_support_count_must_agree() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_learning_tables(&conn).unwrap();
+
+        let mut wrong_features = event(LearningAction::AssignFace);
+        wrong_features.decision_kind = LearningDecisionKind::ClusterQuality;
+        let mut wrong_count = event(LearningAction::AssignFace);
+        wrong_count.support_count = 2;
+        let mut wrong_roles = event(LearningAction::AssignFace);
+        wrong_roles.faces[0].role = EventFaceRole::ClusterMember;
+
+        for malformed in [wrong_features, wrong_count, wrong_roles] {
+            conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+            assert!(matches!(
+                append_event_batch_in_transaction(&conn, &[malformed]),
+                Err(LearningEventError::InvalidEvent(_))
+            ));
+            conn.execute_batch("ROLLBACK").unwrap();
+        }
+        assert!(list_learning_events(&conn, 10, None).unwrap().is_empty());
+        assert_eq!(learning_state(&conn).unwrap().generation, 0);
     }
 
     #[test]

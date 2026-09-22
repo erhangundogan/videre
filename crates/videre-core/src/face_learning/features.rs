@@ -436,6 +436,12 @@ pub fn extract_membership_features(
     if target.is_empty() {
         return Err(FeatureError::EmptyTarget);
     }
+    let mut subject = subject.to_vec();
+    let mut target = target.to_vec();
+    subject.sort_by_key(|face| face.face_id);
+    target.sort_by_key(|face| face.face_id);
+    let subject = subject.as_slice();
+    let target = target.as_slice();
     let dimension = validate_faces(&[subject, target])?;
     let similarities = cross_similarities(subject, target);
     let stats = distribution(similarities.clone());
@@ -498,6 +504,9 @@ pub fn extract_cluster_quality_features(
     if cluster.len() < 2 {
         return Err(FeatureError::TooFewClusterFaces);
     }
+    let mut cluster = cluster.to_vec();
+    cluster.sort_by_key(|face| face.face_id);
+    let cluster = cluster.as_slice();
     validate_faces(&[cluster])?;
     let similarities = pair_similarities(cluster);
     let stats = distribution(similarities.clone());
@@ -765,6 +774,45 @@ mod tests {
         let mut sorted = keys.clone();
         sorted.sort_unstable();
         assert_eq!(keys, sorted);
+    }
+
+    #[test]
+    fn adversarial_floating_point_reordering_is_byte_deterministic() {
+        let subject = vec![face(10, [1.0, 0.0], "subject")];
+        let mut target = vec![
+            face(1, [1.0, 0.0], "a"),
+            face(2, [0.8, 0.6], "b"),
+            face(3, [0.6, 0.8], "c"),
+        ];
+        target[0].blur = Some(1.0e16);
+        target[1].blur = Some(1.0);
+        target[2].blur = Some(1.0);
+        let membership =
+            extract_membership_features(&subject, &target, DecisionStage::GallerySingleton)
+                .unwrap()
+                .to_canonical_json()
+                .unwrap();
+        target.rotate_left(1);
+        assert_eq!(
+            membership,
+            extract_membership_features(&subject, &target, DecisionStage::GallerySingleton)
+                .unwrap()
+                .to_canonical_json()
+                .unwrap()
+        );
+
+        let cluster = extract_cluster_quality_features(&target, DecisionStage::GalleryCluster)
+            .unwrap()
+            .to_canonical_json()
+            .unwrap();
+        target.reverse();
+        assert_eq!(
+            cluster,
+            extract_cluster_quality_features(&target, DecisionStage::GalleryCluster)
+                .unwrap()
+                .to_canonical_json()
+                .unwrap()
+        );
     }
 
     #[test]

@@ -562,14 +562,15 @@ fn assign_teaching(
     let identity = videre_core::person::normalize(&display).ok_or(Error::Invalid)?;
     immediate_transaction(conn, || {
         let states = validate_teaching_subject(conn, face_ids)?;
+        let person_exists = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM people WHERE name = ?1)",
+            [&identity],
+            |row| row.get::<_, bool>(0),
+        )?;
+        let creating_person = creating_person && !person_exists;
         let support = if creating_person {
             Vec::new()
         } else {
-            let person_exists = conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM people WHERE name = ?1)",
-                [&identity],
-                |row| row.get::<_, bool>(0),
-            )?;
             if !person_exists {
                 return Err(Error::NotFound);
             }
@@ -659,7 +660,13 @@ pub fn remove_face_with_learning(
                 let identity = state.person_label.clone().ok_or(Error::Invalid)?;
                 let support = person_support_ids(conn, &identity, &[face_id])?;
                 if support.is_empty() {
-                    return Err(Error::Invalid);
+                    remove_face_in_transaction(conn, face_id)?;
+                    let generation = learning_state(conn)?.generation;
+                    return Ok(LearningAcknowledgement {
+                        generation,
+                        event_ids: Vec::new(),
+                        message_key: "face_removed_without_comparison".to_owned(),
+                    });
                 }
                 (
                     LearningAction::RemoveFaceFromPerson,
@@ -675,7 +682,13 @@ pub fn remove_face_with_learning(
                     .take(MAX_SUPPORT_FACES)
                     .collect();
                 if support.is_empty() {
-                    return Err(Error::Invalid);
+                    remove_face_in_transaction(conn, face_id)?;
+                    let generation = learning_state(conn)?.generation;
+                    return Ok(LearningAcknowledgement {
+                        generation,
+                        event_ids: Vec::new(),
+                        message_key: "face_removed_without_comparison".to_owned(),
+                    });
                 }
                 (
                     LearningAction::RemoveFaceFromCluster,
@@ -1134,6 +1147,48 @@ mod tests {
             assert_eq!(dissolve.decision_kind, LearningDecisionKind::ClusterQuality);
             assert_eq!(dissolve.outcome, LearningOutcome::Negative);
             assert_eq!(dissolve.faces.len(), 2);
+        }
+
+        #[test]
+        fn unsupported_last_face_removals_still_apply_without_fabricated_evidence() {
+            let conn = learning_seed();
+            remove_face_with_learning(&conn, 1, &context()).unwrap();
+            let last_person_face = remove_face_with_learning(&conn, 2, &context()).unwrap();
+            assert!(last_person_face.event_ids.is_empty());
+            assert_eq!(last_person_face.generation, 1);
+            let person_state: (Option<String>, i64) = conn
+                .query_row(
+                    "SELECT person_label, confirmed FROM faces WHERE id = 2",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(person_state, (None, 0));
+
+            remove_face_with_learning(&conn, 3, &context()).unwrap();
+            remove_face_with_learning(&conn, 4, &context()).unwrap();
+            let last_cluster_face = remove_face_with_learning(&conn, 5, &context()).unwrap();
+            assert!(last_cluster_face.event_ids.is_empty());
+            assert_eq!(last_cluster_face.generation, 3);
+            let cluster_id: Option<i64> = conn
+                .query_row("SELECT cluster_id FROM faces WHERE id = 5", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(cluster_id, None);
+        }
+
+        #[test]
+        fn new_person_collision_uses_existing_person_support() {
+            let conn = learning_seed();
+            let acknowledgement =
+                new_person_with_learning(&conn, &[6], "Alice", &context()).unwrap();
+            assert_eq!(acknowledgement.generation, 1);
+            assert_eq!(acknowledgement.event_ids.len(), 1);
+            let events = list_learning_events(&conn, 10, None).unwrap();
+            assert_eq!(events[0].action, LearningAction::AssignFace);
+            assert_eq!(events[0].target_identity.as_deref(), Some("alice"));
+            assert_eq!(events[0].support_count, 2);
         }
 
         #[test]
