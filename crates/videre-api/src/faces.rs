@@ -405,7 +405,10 @@ pub fn assign(conn: &Connection, face_ids: &[i64], person_label: &str) -> Result
 fn finish_unit_transaction(conn: &Connection, result: Result<()>) -> Result<()> {
     match result {
         Ok(()) => {
-            conn.execute_batch("COMMIT")?;
+            if let Err(error) = conn.execute_batch("COMMIT") {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error.into());
+            }
             Ok(())
         }
         Err(error) => {
@@ -524,10 +527,7 @@ fn assignment_events(
                 DecisionStage::GalleryCluster,
             )?);
         }
-    } else {
-        if existing_support.is_empty() {
-            return Err(Error::Invalid);
-        }
+    } else if !existing_support.is_empty() {
         for subject in ids.iter().copied().take(MAX_MEMBERSHIP_EVENTS_PER_ACTION) {
             events.push(membership_event(
                 conn,
@@ -1192,6 +1192,51 @@ mod tests {
         }
 
         #[test]
+        fn assigning_to_a_face_less_person_keeps_only_supported_evidence() {
+            let conn = learning_seed();
+            conn.execute(
+                "UPDATE faces
+                 SET person_label = NULL, confirmed = 0
+                 WHERE person_label = 'alice'",
+                [],
+            )
+            .unwrap();
+
+            let singleton = assign_with_learning(&conn, &[6], "Alice", &context()).unwrap();
+            assert!(singleton.event_ids.is_empty());
+            assert_eq!(singleton.generation, 0);
+            assert_eq!(singleton.message_key, "face_named_without_comparison");
+            let assigned: (Option<String>, i64) = conn
+                .query_row(
+                    "SELECT person_label, confirmed FROM faces WHERE id = 6",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(assigned, (Some("alice".to_owned()), 1));
+            assert!(list_learning_events(&conn, 10, None).unwrap().is_empty());
+
+            let conn = learning_seed();
+            conn.execute(
+                "UPDATE faces
+                 SET person_label = NULL, confirmed = 0
+                 WHERE person_label = 'alice'",
+                [],
+            )
+            .unwrap();
+            let cluster = new_person_with_learning(&conn, &[3, 4, 5], "Alice", &context()).unwrap();
+            assert_eq!(cluster.event_ids.len(), 1);
+            assert_eq!(cluster.generation, 1);
+            let events = list_learning_events(&conn, 10, None).unwrap();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].action, LearningAction::AssignCluster);
+            assert_eq!(
+                events[0].decision_kind,
+                LearningDecisionKind::ClusterQuality
+            );
+        }
+
+        #[test]
         fn event_insert_failure_rolls_back_the_visible_assignment_and_generation() {
             let conn = learning_seed();
             conn.execute_batch(
@@ -1282,6 +1327,21 @@ mod tests {
                 .unwrap()
                 .is_none());
             assert_eq!(learning_state(&conn).unwrap().generation, 2);
+        }
+
+        #[test]
+        fn deleting_a_person_without_learning_evidence_keeps_generation_current() {
+            let conn = learning_seed();
+            assert_eq!(learning_state(&conn).unwrap().generation, 0);
+
+            let acknowledgement = delete_person_with_learning(&conn, "alice")
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(acknowledgement.generation, 0);
+            assert!(acknowledgement.event_ids.is_empty());
+            assert_eq!(learning_state(&conn).unwrap().generation, 0);
+            assert!(list_learning_events(&conn, 10, None).unwrap().is_empty());
         }
     }
 
@@ -1548,6 +1608,48 @@ mod tests {
             bob, 0,
             "no person may be created when the assign rolls back"
         );
+    }
+
+    #[test]
+    fn assign_commit_failure_rolls_back_and_closes_the_transaction() {
+        let conn = seed();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE commit_guard_parent (id INTEGER PRIMARY KEY);
+             CREATE TABLE commit_guard_child (
+                 face_id INTEGER PRIMARY KEY,
+                 parent_id INTEGER NOT NULL,
+                 FOREIGN KEY(parent_id) REFERENCES commit_guard_parent(id)
+                     DEFERRABLE INITIALLY DEFERRED
+             );
+             CREATE TRIGGER fail_assign_commit
+             AFTER UPDATE ON faces
+             WHEN NEW.id = 3
+             BEGIN
+                 INSERT INTO commit_guard_child (face_id, parent_id)
+                 VALUES (NEW.id, 999);
+             END;",
+        )
+        .unwrap();
+
+        assert!(assign(&conn, &[3], "Bob").is_err());
+        assert!(conn.is_autocommit());
+        let state: (Option<String>, i64) = conn
+            .query_row(
+                "SELECT person_label, confirmed FROM faces WHERE id = 3",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(state, (None, 0));
+        let bob: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM people WHERE name = 'bob'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(bob, 0);
     }
 
     #[test]

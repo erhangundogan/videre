@@ -397,15 +397,7 @@ pub fn load_faces_for_clustering(
 /// Smaller side (min of width, height) of a `"x,y,w,h"` bbox string, or 0.0 if
 /// it does not parse into at least four numeric fields.
 fn bbox_min_side(bbox: &str) -> f32 {
-    let nums: Vec<f32> = bbox
-        .split(',')
-        .filter_map(|s| s.trim().parse().ok())
-        .collect();
-    if nums.len() >= 4 {
-        nums[2].min(nums[3])
-    } else {
-        0.0
-    }
+    bbox_min_side_option(bbox).unwrap_or(0.0)
 }
 
 fn bbox_min_side_option(bbox: &str) -> Option<f32> {

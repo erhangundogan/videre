@@ -338,6 +338,13 @@ fn cohesion(group: &[FaceObservation]) -> (f64, f64, f64) {
     }
     let pairs = pair_similarities(group);
     let stats = distribution(pairs);
+    (stats.mean, stats.spread, outlier_proportion(group))
+}
+
+fn outlier_proportion(group: &[FaceObservation]) -> f64 {
+    if group.len() < 2 {
+        return 0.0;
+    }
     let outliers = group
         .iter()
         .filter(|face| {
@@ -350,11 +357,7 @@ fn cohesion(group: &[FaceObservation]) -> (f64, f64, f64) {
             mean < 0.30
         })
         .count();
-    (
-        stats.mean,
-        stats.spread,
-        outliers as f64 / group.len() as f64,
-    )
+    outliers as f64 / group.len() as f64
 }
 
 fn reciprocal_rank_mean(subject: &[FaceObservation], target: &[FaceObservation]) -> f64 {
@@ -388,18 +391,33 @@ fn reciprocal_rank_mean(subject: &[FaceObservation], target: &[FaceObservation])
     sum / subject.len() as f64
 }
 
+type QualitySelector = fn(&FaceObservation) -> Option<f64>;
+
+fn face_size(face: &FaceObservation) -> Option<f64> {
+    face.bbox_min_side
+}
+
+fn blur(face: &FaceObservation) -> Option<f64> {
+    face.blur
+}
+
+fn detector_confidence(face: &FaceObservation) -> Option<f64> {
+    face.det_score
+}
+
+fn quality_landmark_residual(face: &FaceObservation) -> Option<f64> {
+    face.landmark_residual
+}
+
+const QUALITY_SELECTORS: [(&str, QualitySelector); 4] = [
+    ("face_size", face_size),
+    ("blur", blur),
+    ("detector_confidence", detector_confidence),
+    ("landmark_residual", quality_landmark_residual),
+];
+
 fn insert_quality(values: &mut BTreeMap<String, f64>, group: &[FaceObservation], suffix: &str) {
-    let selectors: [(&str, fn(&FaceObservation) -> Option<f64>); 4] = [
-        ("face_size", |face: &FaceObservation| face.bbox_min_side),
-        ("blur", |face: &FaceObservation| face.blur),
-        ("detector_confidence", |face: &FaceObservation| {
-            face.det_score
-        }),
-        ("landmark_residual", |face: &FaceObservation| {
-            face.landmark_residual
-        }),
-    ];
-    for (name, selector) in selectors {
+    for (name, selector) in QUALITY_SELECTORS {
         let present: Vec<_> = group.iter().filter_map(selector).collect();
         let mean = if present.is_empty() {
             0.0
@@ -510,7 +528,7 @@ pub fn extract_cluster_quality_features(
     validate_faces(&[cluster])?;
     let similarities = pair_similarities(cluster);
     let stats = distribution(similarities.clone());
-    let (_, _, outlier_proportion) = cohesion(cluster);
+    let outlier_proportion = outlier_proportion(cluster);
     let nearest_neighbor_mean = cluster
         .iter()
         .map(|face| {
@@ -573,17 +591,7 @@ pub fn extract_cluster_quality_features(
         "quality_missing_proportion".into(),
         missing_faces as f64 / cluster.len() as f64,
     );
-    let selectors: [(&str, fn(&FaceObservation) -> Option<f64>); 4] = [
-        ("face_size", |face: &FaceObservation| face.bbox_min_side),
-        ("blur", |face: &FaceObservation| face.blur),
-        ("detector_confidence", |face: &FaceObservation| {
-            face.det_score
-        }),
-        ("landmark_residual", |face: &FaceObservation| {
-            face.landmark_residual
-        }),
-    ];
-    for (name, selector) in selectors {
+    for (name, selector) in QUALITY_SELECTORS {
         let present: Vec<_> = cluster.iter().filter_map(selector).collect();
         values.insert(
             format!("{name}_missing_proportion"),

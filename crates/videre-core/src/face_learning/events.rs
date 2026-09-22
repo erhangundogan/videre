@@ -523,20 +523,22 @@ pub fn invalidate_identity_in_transaction(
     let identity = crate::person::normalize(identity).ok_or_else(|| {
         LearningEventError::InvalidEvent("identity to invalidate is empty".to_owned())
     })?;
-    conn.execute(
+    let changed = conn.execute(
         "UPDATE face_learning_events
          SET eligible = 0, invalidation_reason = 'person_removed'
          WHERE target_identity = ?1 AND eligible = 1",
         [&identity],
     )?;
-    conn.execute(
-        "UPDATE face_learning_state
-         SET generation = generation + 1,
-             status = CASE WHEN status = 'training' THEN 'training' ELSE 'stale' END,
-             last_error = CASE WHEN status = 'training' THEN last_error ELSE NULL END
-         WHERE id = 1",
-        [],
-    )?;
+    if changed > 0 {
+        conn.execute(
+            "UPDATE face_learning_state
+             SET generation = generation + 1,
+                 status = CASE WHEN status = 'training' THEN 'training' ELSE 'stale' END,
+                 last_error = CASE WHEN status = 'training' THEN last_error ELSE NULL END
+             WHERE id = 1",
+            [],
+        )?;
+    }
     nonnegative_u64(
         conn.query_row(
             "SELECT generation FROM face_learning_state WHERE id = 1",
