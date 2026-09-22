@@ -15,6 +15,37 @@ pub struct LearningAcknowledgement {
     pub message_key: String,
 }
 
+/// Learning status for the gallery background worker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FaceLearningStatus {
+    pub generation: u64,
+    pub trained_generation: u64,
+    pub status: String,
+    pub last_profile_id: Option<i64>,
+    /// What became of the last trained candidate: `promoted` or `rejected`,
+    /// or `None` before any candidate was stored. Lets a `current` status
+    /// say whether the last run changed the profile in use.
+    pub last_candidate: Option<String>,
+    pub last_error: Option<String>,
+    pub pending_questions: usize,
+}
+
+/// The stored outcome of one background training run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TrainedProfileSummary {
+    pub profile_id: i64,
+    pub model_kind: String,
+    pub promoted: bool,
+}
+
+/// Result of answering one identity question: the new delivery state and, for
+/// Yes and No, the durable learning work the answer committed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct QuestionAnswerOutcome {
+    pub status: String,
+    pub acknowledgement: Option<LearningAcknowledgement>,
+}
+
 /// One labeled person: their confirmed faces plus a representative face id
 /// (the primary, or lowest id) used as the card thumbnail.
 #[derive(Serialize, Clone)]

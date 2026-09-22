@@ -5,6 +5,7 @@ pub mod features;
 pub mod metrics;
 pub mod model;
 pub mod profile;
+pub mod questions;
 pub mod sampling;
 pub mod training;
 
@@ -15,5 +16,6 @@ pub use features::*;
 pub use metrics::*;
 pub use model::*;
 pub use profile::*;
+pub use questions::*;
 pub use sampling::*;
 pub use training::*;

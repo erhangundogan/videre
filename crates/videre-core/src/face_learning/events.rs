@@ -513,6 +513,49 @@ pub fn append_event_batch_in_transaction(
 /// Make all evidence tied to a removed identity ineligible and advance the
 /// learning generation once. The caller owns the surrounding transaction and
 /// calls this only when the visible person deletion changed face state.
+/// Person-removal lifecycle: invalidate the identity's eligible evidence and
+/// supersede its pending questions, advancing the generation exactly once
+/// when either changed. Assumes the caller's transaction.
+pub fn invalidate_identity_for_removal_in_transaction(
+    conn: &Connection,
+    identity: &str,
+) -> Result<u64, LearningEventError> {
+    let normalized = crate::person::normalize(identity).ok_or_else(|| {
+        LearningEventError::InvalidEvent("identity to invalidate is empty".to_owned())
+    })?;
+    super::ensure_question_tables(conn)?;
+    let invalidated = conn.execute(
+        "UPDATE face_learning_events
+         SET eligible = 0, invalidation_reason = 'person_removed'
+         WHERE target_identity = ?1 AND eligible = 1",
+        [&normalized],
+    )?;
+    let superseded = conn.execute(
+        "UPDATE face_learning_questions
+         SET status = 'superseded', decided_at = datetime('now')
+         WHERE target_identity = ?1 AND status = 'pending'",
+        [&normalized],
+    )?;
+    if invalidated > 0 || superseded > 0 {
+        conn.execute(
+            "UPDATE face_learning_state
+             SET generation = generation + 1,
+                 status = CASE WHEN status = 'training' THEN 'training' ELSE 'stale' END,
+                 last_error = CASE WHEN status = 'training' THEN last_error ELSE NULL END
+             WHERE id = 1",
+            [],
+        )?;
+    }
+    nonnegative_u64(
+        conn.query_row(
+            "SELECT generation FROM face_learning_state WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?,
+        "generation",
+    )
+}
+
 pub fn invalidate_identity_in_transaction(
     conn: &Connection,
     identity: &str,

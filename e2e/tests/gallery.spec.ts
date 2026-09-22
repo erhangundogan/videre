@@ -236,3 +236,16 @@ test("opens a scanned MP4 in the lightbox", async ({ page, gallery }) => {
   expect(response.status()).toBeLessThan(300);
   expect(response.headers()["content-type"]).toMatch(/^video\/mp4/);
 });
+
+test("face learning strip renders on the labeling route", async ({ page, gallery }) => {
+  await page.goto(`${gallery.baseURL}/people`);
+  const strip = page.locator("#learning-strip");
+  await expect(strip).toBeVisible();
+  await expect(strip).toHaveAttribute(
+    "data-learning-status",
+    /current|stale|training|failed/
+  );
+  // No profile has ever been trained in this library, so no question may
+  // promise itself into existence.
+  await expect(page.locator("#question-card")).toBeHidden();
+});
