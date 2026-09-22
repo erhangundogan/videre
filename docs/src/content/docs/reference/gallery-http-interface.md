@@ -67,8 +67,8 @@ curl "http://127.0.0.1:7878/date/2025/06/03"
 curl "http://127.0.0.1:7878/date?from=2016-05&to=2017"
 ```
 
-The reserved `/events` and `/smart` routes currently return a placeholder page
-with `404 Not Found`.
+The reserved `/smart` route currently returns a placeholder page with
+`404 Not Found`.
 
 Map location names use the same normalized, URL-safe identity rule as people.
 When more than one cluster has the same normalized name, the route selects the
