@@ -219,6 +219,20 @@ fn format_evaluation(report: &videre_ml::evaluation::BaselineEvaluation) -> Stri
     )
 }
 
+fn reset_confirmation_prompt(counts: &face_db::FaceResetCounts) -> String {
+    format!(
+        "videre faces --reset deletes {} face row(s) ({} labeled face(s) across {} people), \
+         all grouping, {} learning event(s), {} question(s), {} learned profile(s), and \
+         detection markers, then re-detects and regroups the library. Continue?",
+        counts.total_faces,
+        counts.labeled_faces,
+        counts.people,
+        counts.learning_events,
+        counts.questions,
+        counts.profiles,
+    )
+}
+
 pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
     // Must happen before any HEIC file could be converted (the semaphore is a
     // OnceLock: first use wins for the life of this process). Clamped to at
@@ -344,11 +358,7 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
                      in a non-interactive session; rerun with --yes to accept"
                 );
             }
-            let ok = super::confirm(&format!(
-                "videre faces --reset deletes {labeled} labeled face(s) across \
-                 {people} people, all grouping, and detection markers, then \
-                 re-detects and regroups the library. Continue?"
-            ))?;
+            let ok = super::confirm(&reset_confirmation_prompt(&learning))?;
             if !ok {
                 anyhow::bail!("aborted; nothing was deleted");
             }
@@ -671,6 +681,23 @@ pub(crate) fn format_clustering_only_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_prompt_names_all_learning_state_it_deletes() {
+        let counts = videre_core::face_db::FaceResetCounts {
+            total_faces: 12,
+            labeled_faces: 3,
+            people: 2,
+            learning_events: 4,
+            questions: 5,
+            profiles: 6,
+        };
+        let prompt = reset_confirmation_prompt(&counts);
+        assert!(prompt.contains("3 labeled face(s) across 2 people"));
+        assert!(prompt.contains("4 learning event(s)"));
+        assert!(prompt.contains("5 question(s)"));
+        assert!(prompt.contains("6 learned profile(s)"));
+    }
 
     #[test]
     fn for_pipeline_faces_defaults() {

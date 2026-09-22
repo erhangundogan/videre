@@ -2944,6 +2944,11 @@ async fn serve_faces_async(
         Ok(_) => {}
         Err(e) => eprintln!("warning: could not migrate person names: {e}"),
     }
+    if opts.serve_faces_ui {
+        // The first questions request can precede the status request or the
+        // worker's first promoted profile. Make that resource ready at startup.
+        videre_core::face_learning::ensure_question_tables(&conn)?;
+    }
     // Only --all needs vectors. A missing model database disables the
     // similarity search with a note rather than failing the whole report,
     // which works perfectly well without embeddings.

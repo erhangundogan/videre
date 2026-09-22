@@ -173,18 +173,11 @@ fn persist_training(
     let summary =
         videre_api::persist_trained_profile(conn, &deps.embedding_model_id, run, &deps.gates)
             .map_err(|e| e.to_string())?;
-    #[cfg(test)]
-    eprintln!(
-        "PERSIST persisted profile {} promoted {}",
-        summary.profile_id, summary.promoted
-    );
     // The pending question page was built against the still-active profile,
     // so it is refreshed only when this run actually promoted. Rebuilding it
     // after a rejection would supersede those questions with identical ones
     // and leave the page empty.
     if summary.promoted {
-        #[cfg(test)]
-        eprintln!("PERSIST refreshing questions for generation {generation}");
         videre_api::refresh_identity_questions(conn, &deps.questions)
             .map_err(|e| format!("question refresh failed: {e}"))?;
     }
@@ -876,6 +869,12 @@ mod tests {
             pending, 1,
             "a rejection must not supersede the active profile's questions"
         );
+        let status = videre_api::face_learning_status(&conn).unwrap();
+        assert_eq!(
+            status.last_candidate.as_deref(),
+            Some("rejected"),
+            "a rejection must be distinguishable from a promotion"
+        );
     }
 
     #[tokio::test]
@@ -965,5 +964,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(pending, 1, "the promoted profile gets a fresh page");
+        let status = videre_api::face_learning_status(&conn).unwrap();
+        assert_eq!(status.last_candidate.as_deref(), Some("promoted"));
     }
 }

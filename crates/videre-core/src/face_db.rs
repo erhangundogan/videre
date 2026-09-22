@@ -155,37 +155,35 @@ pub struct FaceResetCounts {
     pub profiles: usize,
 }
 
-/// Counts rows in a table the library may legitimately not have yet. Only a
-/// missing table counts as zero; any real query error propagates so the
-/// reset preview can never understate what a reset will erase.
-fn count_rows(conn: &Connection, table: &str, predicate: &str) -> anyhow::Result<usize> {
-    let exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-        [table],
-        |row| row.get(0),
-    )?;
-    if !exists {
-        return Ok(0);
-    }
-    let sql = if predicate.is_empty() {
-        format!("SELECT COUNT(*) FROM {table}")
-    } else {
-        format!("SELECT COUNT(*) FROM {table} WHERE {predicate}")
-    };
-    let rows: i64 = conn.query_row(&sql, [], |row| row.get(0))?;
-    Ok(usize::try_from(rows).unwrap_or(0))
-}
-
-/// Counts everything `reset_all` clears. Missing tables count as zero;
-/// query errors propagate instead of reading as zero.
+/// Counts everything `reset_all` clears. Missing optional tables count as
+/// zero, but a query error in an existing table must stop the reset.
 pub fn face_reset_counts(conn: &Connection) -> anyhow::Result<FaceResetCounts> {
+    let count = |table: &str, sql: &str| -> anyhow::Result<usize> {
+        if !crate::db::table_exists(conn, table)? {
+            return Ok(0);
+        }
+        let value: i64 = conn.query_row(sql, [], |row| row.get(0))?;
+        Ok(value as usize)
+    };
     Ok(FaceResetCounts {
-        total_faces: count_rows(conn, "faces", "")?,
-        labeled_faces: count_rows(conn, "faces", "confirmed = 1 AND person_label IS NOT NULL")?,
-        people: count_rows(conn, "people", "")?,
-        learning_events: count_rows(conn, "face_learning_events", "")?,
-        questions: count_rows(conn, "face_learning_questions", "")?,
-        profiles: count_rows(conn, "face_learning_profiles", "")?,
+        total_faces: count("faces", "SELECT COUNT(*) FROM faces")?,
+        labeled_faces: count(
+            "faces",
+            "SELECT COUNT(*) FROM faces WHERE confirmed = 1 AND person_label IS NOT NULL",
+        )?,
+        people: count("people", "SELECT COUNT(*) FROM people")?,
+        learning_events: count(
+            "face_learning_events",
+            "SELECT COUNT(*) FROM face_learning_events",
+        )?,
+        questions: count(
+            "face_learning_questions",
+            "SELECT COUNT(*) FROM face_learning_questions",
+        )?,
+        profiles: count(
+            "face_learning_profiles",
+            "SELECT COUNT(*) FROM face_learning_profiles",
+        )?,
     })
 }
 
@@ -740,13 +738,6 @@ mod tests {
     }
 
     #[test]
-    fn reset_counts_treat_missing_tables_as_empty_not_errors() {
-        let conn = Connection::open_in_memory().unwrap();
-        let counts = face_reset_counts(&conn).unwrap();
-        assert_eq!(counts, FaceResetCounts::default());
-    }
-
-    #[test]
     fn reset_counts_and_clears_every_learning_table() {
         let conn = open();
         conn.execute_batch(
@@ -807,6 +798,18 @@ mod tests {
             face_reset_counts(&conn).unwrap(),
             FaceResetCounts::default()
         );
+    }
+
+    #[test]
+    fn reset_counts_propagates_a_query_error_instead_of_reporting_zero() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert_eq!(
+            face_reset_counts(&conn).unwrap(),
+            FaceResetCounts::default()
+        );
+        conn.execute_batch("CREATE TABLE faces (id INTEGER PRIMARY KEY)")
+            .unwrap();
+        assert!(face_reset_counts(&conn).is_err());
     }
 
     #[test]
