@@ -157,7 +157,7 @@ pub fn rotate_landmark_ccw(landmark: &str, display_w: f32) -> Option<String> {
 
 /// Read the current Orientation tag, defaulting to 1 when the file carries
 /// none (or none can be parsed). PNG is read from its `eXIf` chunk, the only
-/// PNG orientation the gallery's decode honours (see [`rotate_png_cw_in_place`]).
+/// PNG orientation the gallery's decode honours (see [`write_png_orientation`]).
 fn current_orientation(path: &Path) -> u16 {
     if is_png(path) {
         return png_exif_orientation(path);
@@ -424,8 +424,16 @@ mod tests {
     #[test]
     fn ccw_is_the_inverse_of_cw() {
         for o in 1..=8u16 {
-            assert_eq!(next_orientation_ccw(next_orientation_cw(o)), o, "cw then ccw at {o}");
-            assert_eq!(next_orientation_cw(next_orientation_ccw(o)), o, "ccw then cw at {o}");
+            assert_eq!(
+                next_orientation_ccw(next_orientation_cw(o)),
+                o,
+                "cw then ccw at {o}"
+            );
+            assert_eq!(
+                next_orientation_cw(next_orientation_ccw(o)),
+                o,
+                "ccw then cw at {o}"
+            );
         }
         assert_eq!(next_orientation_ccw(0), 8);
     }
@@ -433,14 +441,20 @@ mod tests {
     #[test]
     fn bbox_and_landmark_turn_counter_clockwise() {
         // CCW on a 100-wide canvas: (x,y,w,h) -> (y, W-x-w, h, w).
-        assert_eq!(rotate_bbox_ccw("10,20,30,40", 100), Some("20,60,40,30".into()));
+        assert_eq!(
+            rotate_bbox_ccw("10,20,30,40", 100),
+            Some("20,60,40,30".into())
+        );
         // A CW turn then a CCW turn on the correctly-sized canvases restores it.
         let b0 = "10,20,30,40";
         let b1 = rotate_bbox_cw(b0, 100).unwrap(); // canvas 80x100 -> 100x80
         let b2 = rotate_bbox_ccw(&b1, 100).unwrap(); // undo on the 100x80 canvas
         assert_eq!(b2, b0);
         // Landmark: (x,y) -> (y, W-x).
-        assert_eq!(rotate_landmark_ccw("10,20,30,40", 100.0), Some("20,90,40,70".into()));
+        assert_eq!(
+            rotate_landmark_ccw("10,20,30,40", 100.0),
+            Some("20,90,40,70".into())
+        );
     }
 
     #[test]
