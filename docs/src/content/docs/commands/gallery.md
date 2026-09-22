@@ -11,10 +11,16 @@ reads the database `videre scan` built.
 ```bash
 videre gallery                  # http://127.0.0.1:7878
 videre gallery --browse         # ...and open it in your browser
-videre gallery --port 8080      # if 7878 is taken
+videre gallery --port 8080      # use exactly this port
 ```
 
 Stop it with `Ctrl-C`.
+
+Without `--port`, `videre gallery` starts at 7878 and, if that is taken,
+advances to the next free port (7879, then 7880, ...), printing the address it
+actually bound. So a second `videre gallery` for another library just works,
+no ports assigned by hand. An explicit `--port` is used exactly and fails if
+that port is busy; `--port 0` lets the operating system pick a free port.
 
 JPEG and other browser-raster previews are resized and cached on first use.
 Their embedded EXIF orientation is applied before resizing, so the grid and
@@ -124,7 +130,7 @@ Thumbnails are served at 480px so tiles stay sharp on high-DPI displays.
 |------|--------------|
 | `--library <DIR>` | Select a different library (default: the current directory) |
 | `--model <MODEL>` | Embedding model backing similarity search |
-| `--port <PORT>` | Port to listen on (default 7878) |
+| `--port <PORT>` | Port to listen on. Omitted: start at 7878 and advance to the next free port if taken. Given: use exactly that port (fails if busy); `0` lets the OS choose |
 | `--browse` | Open a browser once the server is listening |
 
 ## Gallery, or a file you can keep
