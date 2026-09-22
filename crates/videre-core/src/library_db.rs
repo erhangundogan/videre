@@ -411,7 +411,18 @@ fn inspect_db_file(ctx: &LibraryContext) -> Result<DbFile> {
 /// the kernel's own refusal to open a symlink's target; `NO_MUTEX` matches
 /// the default `rusqlite::Connection::open` uses, leaving threading to the
 /// caller.
+/// Open an existing database with foreign keys verified on. The signal-handler
+/// path uses this so its writes run under the same enforcement as every other
+/// library connection.
 pub(crate) fn open_without_create(path: &Path) -> rusqlite::Result<Connection> {
+    let conn = open_without_create_unconfigured(path)?;
+    crate::db::enable_foreign_keys(&conn)?;
+    Ok(conn)
+}
+
+/// Raw open for the versioned migration: no pragma configuration, because the
+/// upgrade deliberately runs with enforcement off while it clears violations.
+fn open_without_create_unconfigured(path: &Path) -> rusqlite::Result<Connection> {
     use rusqlite::OpenFlags;
     Connection::open_with_flags(
         path,
@@ -421,7 +432,8 @@ pub(crate) fn open_without_create(path: &Path) -> rusqlite::Result<Connection> {
     )
 }
 
-/// Open an existing database with the busy timeout every library open uses.
+/// Open an existing database with the busy timeout every library open uses,
+/// and with foreign keys verified on before the connection is returned.
 fn open_existing_conn(ctx: &LibraryContext) -> Result<Connection> {
     let conn = open_without_create(&ctx.paths.db)
         .with_context(|| format!("open {}", ctx.paths.db.display()))?;
@@ -441,6 +453,10 @@ fn open_existing_read_only_conn(ctx: &LibraryContext) -> Result<Connection> {
     .with_context(|| format!("open {} read-only", ctx.paths.db.display()))?;
     conn.busy_timeout(BUSY_TIMEOUT)
         .context("set the library database busy timeout")?;
+    // Enforcement is a per-connection switch and works on read-only handles;
+    // the pragma is never persisted, so nothing about the file changes.
+    crate::db::enable_foreign_keys(&conn)
+        .context("enable foreign keys on the read-only library connection")?;
     Ok(conn)
 }
 
@@ -557,11 +573,25 @@ fn open_prepared(ctx: &LibraryContext, conn: &Connection) -> Result<()> {
     validate_row_containment(ctx, conn)?;
     set_wal(conn)?;
     if version < SCHEMA_VERSION || !schema_complete(conn)? {
-        prepare_schema(conn)?;
-        conn.pragma_update(None, "user_version", SCHEMA_VERSION)
-            .context("record the library schema version")?;
+        // One transactional upgrade: repairs the known legacy rows, rebuilds
+        // `file_hashes` and `faces` into their foreign-keyed shapes, verifies,
+        // and stamps version 2. Nothing here reports a repair unless the
+        // upgrade committed.
+        let report = if user_version(conn)? < SCHEMA_VERSION || !schema_complete(conn)? {
+            Some(foreign_keys::upgrade_to_v2(conn)?)
+        } else {
+            None
+        };
+        if let Some(report) = report {
+            for line in report.stderr_lines() {
+                eprintln!("{line}");
+            }
+        }
     }
     verify_schema(conn)?;
+    verify_foreign_keys(conn)?;
+    crate::db::enable_foreign_keys(conn)
+        .context("enable foreign keys on the library connection")?;
     Ok(())
 }
 
@@ -1485,6 +1515,79 @@ mod tests {
             .query_row("SELECT count(*) FROM file_hashes", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    fn assert_keys_on(conn: &Connection) {
+        let enabled: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(enabled, 1);
+    }
+
+    #[test]
+    fn every_library_open_enforces_foreign_keys() {
+        let (_t, ctx) = library();
+
+        // Fresh initialize.
+        let conn = initialize(&ctx).unwrap();
+        assert_keys_on(&conn);
+        drop(conn);
+
+        // Current open_existing (fast path).
+        let conn = open_existing(&ctx).unwrap();
+        assert_keys_on(&conn);
+        drop(conn);
+
+        // Read-only open.
+        let conn = open_existing_read_only(&ctx).unwrap();
+        assert_keys_on(&conn);
+        drop(conn);
+
+        // The no-create open used by the signal-handler path.
+        let conn = open_without_create(&ctx.paths.db).unwrap();
+        assert_keys_on(&conn);
+    }
+
+    #[test]
+    fn opening_a_v1_library_upgrades_it_and_the_second_open_does_not_re_repair() {
+        let (_t, ctx) = library();
+        std::fs::create_dir_all(&ctx.paths.locks).unwrap();
+        {
+            let conn = rusqlite::Connection::open(&ctx.paths.db).unwrap();
+            conn.execute_batch(&legacy_v1_fixture_ddl()).unwrap();
+            conn.execute_batch("PRAGMA user_version = 1;").unwrap();
+            let path_a = ctx.paths.root.join("a.jpg");
+            let path = path_a.to_str().unwrap().to_owned();
+            conn.execute(
+                "INSERT INTO file_hashes (path, hash, ext) VALUES (?1, 'aaaa', 'jpg')",
+                rusqlite::params![path],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed)
+                 VALUES (1, 'aaaa', '0,0,50,50', X'0000', 'missing_person', 1)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let conn = open_existing(&ctx).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION, "the v1 library must be upgraded");
+        let label: Option<String> = conn
+            .query_row("SELECT person_label FROM faces", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(label, None, "the orphan label is unassigned");
+        // The repair report prints exactly once, on the upgrading open; this
+        // second open is a plain fast-path open and must be silent by
+        // construction (no repairs are pending), so only assert enforcement
+        // and version here.
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
     }
 
     #[test]
