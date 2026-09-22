@@ -523,14 +523,12 @@ fn a_reserved_route_returns_404_with_an_explanation() {
     let lib = fixture();
     let server = Server::start(&lib);
 
-    for path in ["/smart"] {
-        let (status, body) = server.get(path);
-        assert_eq!(status, 404, "{path} should report that it is not built yet");
-        assert!(
-            body.contains("Not built yet"),
-            "{path} 404s without saying it is reserved, so it reads as a missing route"
-        );
-    }
+    let (status, body) = server.get("/smart");
+    assert_eq!(status, 404, "/smart should report that it is not built yet");
+    assert!(
+        body.contains("Not built yet"),
+        "/smart 404s without saying it is reserved, so it reads as a missing route"
+    );
 }
 
 #[test]
