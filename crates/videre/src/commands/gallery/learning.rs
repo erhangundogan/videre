@@ -620,8 +620,11 @@ mod tests {
             Duration::from_millis(20),
         );
         coordinator.notify();
-        for _ in 0..200 {
-            if trained.load(AtomicOrdering::SeqCst) == 1 {
+        // Wait for the settled state, not for the trainer call: the
+        // generation is marked trained only after the trainer returns and
+        // the candidate is persisted, which a slow runner can observe apart.
+        for _ in 0..2000 {
+            if learning_status(&conn.lock().unwrap()).2 == "current" {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -693,7 +696,7 @@ mod tests {
             Duration::from_millis(20),
         );
         coordinator.notify();
-        for _ in 0..200 {
+        for _ in 0..2000 {
             {
                 let conn = conn.lock().unwrap();
                 if learning_status(&conn).2 == "failed" {
@@ -726,7 +729,7 @@ mod tests {
         }
 
         coordinator.notify();
-        for _ in 0..200 {
+        for _ in 0..2000 {
             {
                 let conn = conn.lock().unwrap();
                 if learning_status(&conn).2 == "current" {
@@ -768,7 +771,7 @@ mod tests {
         // Poll without blocking so the current-thread runtime can drive the
         // coordinator task.
         let mut started = false;
-        for _ in 0..200 {
+        for _ in 0..2000 {
             if started_rx.try_recv().is_ok() {
                 started = true;
                 break;
@@ -783,7 +786,7 @@ mod tests {
         );
         *release.lock().unwrap() = true;
         drop(probe);
-        for _ in 0..200 {
+        for _ in 0..2000 {
             let done = {
                 let conn = conn.lock().unwrap();
                 learning_status(&conn).2 == "current"
@@ -816,7 +819,7 @@ mod tests {
             }),
             Duration::from_millis(500),
         );
-        for _ in 0..200 {
+        for _ in 0..2000 {
             {
                 let conn = conn.lock().unwrap();
                 if learning_status(&conn).2 == "current" {
@@ -844,7 +847,7 @@ mod tests {
             Duration::from_millis(10),
         );
         coordinator.notify();
-        for _ in 0..200 {
+        for _ in 0..2000 {
             {
                 let conn = conn.lock().unwrap();
                 if learning_status(&conn).2 == "current" {
@@ -908,7 +911,7 @@ mod tests {
             Duration::from_millis(10),
         );
         coordinator.notify();
-        for _ in 0..200 {
+        for _ in 0..2000 {
             {
                 let conn = conn.lock().unwrap();
                 if learning_status(&conn).2 == "failed" {
@@ -948,7 +951,7 @@ mod tests {
             .execute_batch("DROP TRIGGER abort_question_refresh;")
             .unwrap();
         coordinator.notify();
-        for _ in 0..200 {
+        for _ in 0..2000 {
             {
                 let conn = conn.lock().unwrap();
                 if learning_status(&conn).2 == "current" {
