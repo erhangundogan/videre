@@ -16,6 +16,56 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.37.0] - 2026-09-22
+
+### Added
+
+- **Counter-clockwise rotate in the lightbox.** A second rotate button turns a
+  photo 90 degrees anticlockwise, beside the existing clockwise one.
+- **Like a photo from the lightbox.** A heart at the top-left of the info panel
+  toggles the same `liked` mark `videre mark --like` sets, filling red when
+  liked.
+- **Search box in the gallery navigation.** It ranks the library semantically
+  on the Files page, the same ranking the Similar button uses, and appears only
+  when the library has embeddings.
+
+### Fixed
+
+- **Rotating a photo turns its faces with it.** A photo's detected face boxes
+  and landmarks are rotated alongside the image, so face thumbnails stay on the
+  right faces and keep their people labels instead of cropping the wrong region.
+- **PNG rotation now takes effect.** PNG orientation is written as a standard
+  `eXIf` chunk that the decoder reads and applies; it was previously stored in a
+  text chunk the decoder ignored, so the rotation never showed.
+- **The lightbox place link reaches the map.** It now opens the map at the
+  location cluster nearest the photo's own coordinates, rather than failing with
+  an "unknown location" state because the photo's fine-grained place name never
+  matched a cluster.
+- **The lightbox scroll wheel no longer zooms.** Zoom is reached by clicking the
+  image or the fullscreen button; while zoomed, the wheel pans the enlarged
+  image.
+- The selected place name under the map is legible again (it was rendering in a
+  near-invisible colour on the light background).
+
+### Changed
+
+- **Gallery navigation.** The strip gains the videre wordmark (linking home),
+  renames "Files" to "Library", and carries the new search box, at a constant
+  height across every page.
+- **Home header.** Condensed to the library path, the generated time, and a
+  files/embeddings count, aligned to the navigation's left gutter, and dropped
+  on the secondary pages where the strip already names the view.
+- **Map view.** The selected location and its radius now sit next to the View
+  selector; the separate selection band and the "All files" title are gone, and
+  the map page no longer shows the tall header.
+- **Date view.** A top-level "All Dates" breadcrumb roots the drill-down,
+  card labels are centred, the "Browse by date" title is dropped, and spacing
+  around the breadcrumb is tidied.
+- **Gallery layout polish.** One consistent left gutter across the page, tile
+  view gutters matching the list, card Similar buttons pinned to the card
+  bottom, and a primary-styled "Show more" button.
+
+
 ## [0.36.0] - 2026-09-21
 
 ### Added
@@ -2064,7 +2114,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.36.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.37.0...HEAD
+[0.37.0]: https://github.com/erhangundogan/videre/compare/v0.36.0...v0.37.0
 [0.36.0]: https://github.com/erhangundogan/videre/compare/v0.35.0...v0.36.0
 [0.35.0]: https://github.com/erhangundogan/videre/compare/v0.34.0...v0.35.0
 [0.34.0]: https://github.com/erhangundogan/videre/compare/v0.33.0...v0.34.0
