@@ -63,6 +63,7 @@ pub fn ensure_people_table(conn: &Connection) {
 pub fn create_faces_table(conn: &Connection) -> rusqlite::Result<()> {
     ensure_people_table(conn);
     crate::face_learning::ensure_profile_table(conn)?;
+    crate::face_learning::ensure_learning_tables(conn)?;
     // Writers migrate; readers do not. `open_wal` only creates the empty table,
     // because `stats` and `search` open databases they must not write to - a
     // read-only mount or another process holding the writer lock would turn a
@@ -506,6 +507,27 @@ mod tests {
     fn create_table_idempotent() {
         let conn = open();
         create_faces_table(&conn).unwrap();
+    }
+
+    #[test]
+    fn face_writer_setup_creates_learning_events_and_state() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_faces_table(&conn).unwrap();
+        for table in [
+            "face_learning_events",
+            "face_learning_event_faces",
+            "face_learning_state",
+        ] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master
+                     WHERE type = 'table' AND name = ?1)",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(exists, "{table} was not created");
+        }
     }
 
     #[test]

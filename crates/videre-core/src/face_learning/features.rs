@@ -206,7 +206,7 @@ struct Distribution {
 fn distribution(mut values: Vec<f64>) -> Distribution {
     values.sort_by(f64::total_cmp);
     let len = values.len();
-    let median = if len % 2 == 0 {
+    let median = if len.is_multiple_of(2) {
         (values[len / 2 - 1] + values[len / 2]) / 2.0
     } else {
         values[len / 2]
@@ -834,21 +834,24 @@ mod tests {
     fn malformed_inputs_fail_closed_with_specific_errors() {
         let valid = face(1, [1.0, 0.0], "photo-a");
         assert_eq!(
-            extract_membership_features(&[], &[valid.clone()], DecisionStage::Question),
+            extract_membership_features(&[], std::slice::from_ref(&valid), DecisionStage::Question),
             Err(FeatureError::EmptySubject)
         );
         assert_eq!(
-            extract_membership_features(&[valid.clone()], &[], DecisionStage::Question),
+            extract_membership_features(std::slice::from_ref(&valid), &[], DecisionStage::Question),
             Err(FeatureError::EmptyTarget)
         );
         assert_eq!(
-            extract_cluster_quality_features(&[valid.clone()], DecisionStage::GalleryCluster),
+            extract_cluster_quality_features(
+                std::slice::from_ref(&valid),
+                DecisionStage::GalleryCluster,
+            ),
             Err(FeatureError::TooFewClusterFaces)
         );
         assert_eq!(
             extract_membership_features(
-                &[valid.clone()],
-                &[valid.clone()],
+                std::slice::from_ref(&valid),
+                std::slice::from_ref(&valid),
                 DecisionStage::Question
             ),
             Err(FeatureError::DuplicateFaceId(1))
