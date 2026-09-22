@@ -1,5 +1,5 @@
 use super::{
-    Calibration, DecisionEvidence, DecisionKind, DecisionOutcome, DecisionTarget,
+    AdditiveScorer, Calibration, DecisionEvidence, DecisionKind, DecisionOutcome, DecisionTarget,
     FeatureContribution, FeatureVector, ValidationSummary, EVIDENCE_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
@@ -41,12 +41,22 @@ pub struct LogisticScorer {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ModelBundle {
-    pub artifact_version: u32,
-    pub embedding_model_id: String,
-    pub feature_schema_version: u32,
-    pub membership: LogisticScorer,
-    pub cluster_quality: LogisticScorer,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ModelBundle {
+    Logistic {
+        artifact_version: u32,
+        embedding_model_id: String,
+        feature_schema_version: u32,
+        membership: LogisticScorer,
+        cluster_quality: LogisticScorer,
+    },
+    Additive {
+        artifact_version: u32,
+        embedding_model_id: String,
+        feature_schema_version: u32,
+        membership: AdditiveScorer,
+        cluster_quality: AdditiveScorer,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -246,19 +256,77 @@ impl LogisticScorer {
 }
 
 impl ModelBundle {
+    pub fn model_kind(&self) -> &'static str {
+        match self {
+            Self::Logistic { .. } => "logistic",
+            Self::Additive { .. } => "additive",
+        }
+    }
+
+    pub fn artifact_version(&self) -> u32 {
+        match self {
+            Self::Logistic {
+                artifact_version, ..
+            }
+            | Self::Additive {
+                artifact_version, ..
+            } => *artifact_version,
+        }
+    }
+
+    pub fn embedding_model_id(&self) -> &str {
+        match self {
+            Self::Logistic {
+                embedding_model_id, ..
+            }
+            | Self::Additive {
+                embedding_model_id, ..
+            } => embedding_model_id,
+        }
+    }
+
+    pub fn feature_schema_version(&self) -> u32 {
+        match self {
+            Self::Logistic {
+                feature_schema_version,
+                ..
+            }
+            | Self::Additive {
+                feature_schema_version,
+                ..
+            } => *feature_schema_version,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), ModelError> {
-        if self.artifact_version != MODEL_ARTIFACT_VERSION {
+        if self.artifact_version() != MODEL_ARTIFACT_VERSION {
             return Err(ModelError::InvalidModel(
                 "unsupported artifact version".to_owned(),
             ));
         }
-        if self.embedding_model_id.trim().is_empty() || self.feature_schema_version == 0 {
+        if self.embedding_model_id().trim().is_empty() || self.feature_schema_version() == 0 {
             return Err(ModelError::InvalidModel(
                 "model identity or feature schema is missing".to_owned(),
             ));
         }
-        self.membership.validate()?;
-        self.cluster_quality.validate()
+        match self {
+            Self::Logistic {
+                membership,
+                cluster_quality,
+                ..
+            } => {
+                membership.validate()?;
+                cluster_quality.validate()
+            }
+            Self::Additive {
+                membership,
+                cluster_quality,
+                ..
+            } => {
+                membership.validate()?;
+                cluster_quality.validate()
+            }
+        }
     }
 }
 

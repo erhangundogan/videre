@@ -1,9 +1,13 @@
 use super::{
-    extract_cluster_quality_features, extract_membership_features, sample_identity_balanced_pairs,
-    CalibrationModel, DecisionStage, FaceObservation, FeatureVector, LabeledFace,
+    additive_held_out_scores, evaluate_promotion, extract_cluster_quality_features,
+    extract_membership_features, sample_identity_balanced_pairs, train_additive_bundle,
+    AdditiveScorer, CalibrationModel, ClusteringMetrics, DatasetValidation, DecisionKind,
+    DecisionStage, DecisionTarget, FaceObservation, FeatureVector, LabeledFace,
     LearningDecisionKind, LearningOutcome, LogisticModel, LogisticScorer, ModelBundle, PairLabel,
-    PairSamplingConfig, StoredLearningEvent, CLUSTER_QUALITY_FEATURE_NAMES, FEATURE_SCHEMA_VERSION,
-    MEMBERSHIP_FEATURE_NAMES, MODEL_ARTIFACT_VERSION,
+    PairSamplingConfig, ProfileStage, PromotionGates, StoredLearningEvent, SuggestionMetrics,
+    TrainingEvidenceCounts, ValidationReport, ValidationSummary, CLUSTER_QUALITY_FEATURE_NAMES,
+    EVIDENCE_SCHEMA_VERSION, FEATURE_SCHEMA_VERSION, MEMBERSHIP_FEATURE_NAMES,
+    MODEL_ARTIFACT_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -49,11 +53,37 @@ pub struct TrainingSnapshot {
     pub exclusions: Vec<TrainingExclusion>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateKind {
+    Logistic,
+    Additive,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CandidateComparison {
+    pub selected: CandidateKind,
+    pub logistic_passes: bool,
+    pub additive_passes: bool,
+    pub additive_gain: f64,
+    pub folds_agree: bool,
+    pub additive_regressions: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TrainingRun {
+    pub selected: ModelBundle,
+    pub logistic_validation: ValidationReport,
+    pub additive_validation: ValidationReport,
+    pub comparison: CandidateComparison,
+    pub evidence_counts: TrainingEvidenceCounts,
+}
+
 #[derive(Clone, Debug, PartialEq)]
-struct HeldOutFold {
-    held_out_identities: Vec<String>,
-    training: Vec<WeightedExample>,
-    validation: Vec<WeightedExample>,
+pub(crate) struct HeldOutFold {
+    pub(crate) held_out_identities: Vec<String>,
+    pub(crate) training: Vec<WeightedExample>,
+    pub(crate) validation: Vec<WeightedExample>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -71,6 +101,11 @@ pub struct TrainingConfig {
     pub tolerance: f64,
     pub min_positive_identities: usize,
     pub min_negative_identities: usize,
+    pub additive_bins: usize,
+    pub additive_backfitting_iterations: usize,
+    pub additive_l2: f64,
+    pub additive_smoothing: f64,
+    pub additive_max_abs_effect: f64,
 }
 
 impl Default for TrainingConfig {
@@ -89,6 +124,11 @@ impl Default for TrainingConfig {
             tolerance: 1e-8,
             min_positive_identities: 2,
             min_negative_identities: 2,
+            additive_bins: 7,
+            additive_backfitting_iterations: 25,
+            additive_l2: 0.5,
+            additive_smoothing: 0.25,
+            additive_max_abs_effect: 4.0,
         }
     }
 }
@@ -148,7 +188,10 @@ fn compare_feature_values(left: &FeatureVector, right: &FeatureVector) -> std::c
         })
 }
 
-fn compare_examples(left: &WeightedExample, right: &WeightedExample) -> std::cmp::Ordering {
+pub(crate) fn compare_examples(
+    left: &WeightedExample,
+    right: &WeightedExample,
+) -> std::cmp::Ordering {
     left.identity_keys
         .cmp(&right.identity_keys)
         .then(left.positive.cmp(&right.positive))
@@ -170,7 +213,7 @@ fn stable_identity_hash(seed: u64, identity: &str) -> u64 {
     hash
 }
 
-fn identity_held_out_splits(
+pub(crate) fn identity_held_out_splits(
     dataset: &DecisionDataset,
     fold_count: usize,
     seed: u64,
@@ -436,6 +479,15 @@ fn validate_config(config: &TrainingConfig) -> Result<(), TrainingError> {
         || config.explicit_weight.min(config.explicit_weight_cap) <= 1.0
         || config.max_iterations == 0
         || config.max_iterations > MAX_TRAINING_ITERATIONS
+        || config.additive_bins < 2
+        || config.additive_backfitting_iterations == 0
+        || config.additive_backfitting_iterations > MAX_TRAINING_ITERATIONS
+        || !config.additive_l2.is_finite()
+        || config.additive_l2 < 0.0
+        || !config.additive_smoothing.is_finite()
+        || !(0.0..=1.0).contains(&config.additive_smoothing)
+        || !config.additive_max_abs_effect.is_finite()
+        || config.additive_max_abs_effect <= 0.0
         || config.tolerance <= 0.0
         || !config.tolerance.is_finite()
         || config.l2_grid.is_empty()
@@ -480,12 +532,382 @@ pub fn train_logistic_bundle(
             "training snapshot model, schema, or decision kinds are incompatible".into(),
         ));
     }
-    Ok(ModelBundle {
+    Ok(ModelBundle::Logistic {
         artifact_version: MODEL_ARTIFACT_VERSION,
         embedding_model_id: snapshot.embedding_model_id.clone(),
         feature_schema_version: snapshot.feature_schema_version,
         membership: train_scorer(&snapshot.membership, config)?,
         cluster_quality: train_scorer(&snapshot.cluster_quality, config)?,
+    })
+}
+
+#[derive(Clone, Copy)]
+enum CandidateScorerRef<'a> {
+    Logistic(&'a LogisticScorer),
+    Additive(&'a AdditiveScorer),
+}
+
+impl CandidateScorerRef<'_> {
+    fn calibration_and_threshold(&self) -> (&CalibrationModel, f64) {
+        match self {
+            Self::Logistic(scorer) => (&scorer.calibration, scorer.threshold),
+            Self::Additive(scorer) => (&scorer.calibration, scorer.threshold),
+        }
+    }
+
+    fn explanation_is_valid(
+        &self,
+        features: &FeatureVector,
+        decision_kind: DecisionKind,
+        ordinal: i64,
+        validation: ValidationSummary,
+    ) -> bool {
+        let result = match self {
+            Self::Logistic(scorer) => scorer.score_with_evidence(
+                features,
+                0,
+                FEATURE_SCHEMA_VERSION,
+                decision_kind,
+                vec![ordinal],
+                DecisionTarget::Face(ordinal),
+                Vec::new(),
+                validation,
+            ),
+            Self::Additive(scorer) => scorer.score_with_evidence(
+                features,
+                0,
+                FEATURE_SCHEMA_VERSION,
+                decision_kind,
+                vec![ordinal],
+                DecisionTarget::Face(ordinal),
+                Vec::new(),
+                validation,
+            ),
+        };
+        result.is_ok()
+    }
+}
+
+fn logistic_validation_scores(
+    dataset: &DecisionDataset,
+    scorer: &LogisticScorer,
+    config: &TrainingConfig,
+) -> Result<Vec<HeldOutScore>, TrainingError> {
+    let folds = identity_held_out_splits(dataset, config.folds, config.seed)?;
+    held_out_scores(
+        &folds,
+        scorer.model.l2,
+        scorer.model.positive_class_weight,
+        config.max_iterations,
+        config.tolerance,
+    )
+}
+
+fn explanation_failures(
+    scorer: CandidateScorerRef<'_>,
+    dataset: &DecisionDataset,
+    decision_kind: DecisionKind,
+    gates: &PromotionGates,
+    dataset_count: usize,
+) -> usize {
+    let mut examples = dataset.examples.clone();
+    examples.sort_by(compare_examples);
+    let validation = ValidationSummary {
+        protocol_version: gates.protocol_version,
+        datasets: dataset_count,
+        pair_precision: None,
+        pair_recall: None,
+        suggestion_precision: None,
+        suggestion_coverage: None,
+    };
+    examples
+        .iter()
+        .take(8)
+        .enumerate()
+        .filter(|(index, example)| {
+            !scorer.explanation_is_valid(
+                &example.features,
+                decision_kind.clone(),
+                *index as i64 + 1,
+                validation.clone(),
+            )
+        })
+        .count()
+}
+
+fn append_fold_validations(
+    datasets: &mut Vec<DatasetValidation>,
+    prefix: &str,
+    scores: &[HeldOutScore],
+    scorer: CandidateScorerRef<'_>,
+    invalid_explanations: usize,
+    fold_count: usize,
+) -> Result<(), TrainingError> {
+    let (calibration, threshold) = scorer.calibration_and_threshold();
+    for fold_index in 0..fold_count {
+        let fold: Vec<_> = scores
+            .iter()
+            .filter(|score| score.fold_index == fold_index)
+            .collect();
+        if fold.is_empty() {
+            return Err(TrainingError::InvalidInput(format!(
+                "{prefix} validation fold {fold_index} is empty"
+            )));
+        }
+        let mut correct = 0usize;
+        let mut incorrect = 0usize;
+        for score in &fold {
+            let confidence = sigmoid(calibration.intercept + calibration.slope * score.logit);
+            if confidence >= threshold {
+                if score.positive {
+                    correct += 1;
+                } else {
+                    incorrect += 1;
+                }
+            }
+        }
+        let suggested = correct + incorrect;
+        let total = fold.len();
+        let precision = (suggested != 0).then(|| correct as f64 / suggested as f64);
+        datasets.push(DatasetValidation {
+            dataset_key: format!("{prefix}-fold-{fold_index}"),
+            clustering: ClusteringMetrics {
+                labeled_faces: total,
+                labeled_identities: total,
+                predicted_clusters: total,
+                true_positive_pairs: 0,
+                false_positive_pairs: 0,
+                false_negative_pairs: 0,
+                pair_precision: None,
+                pair_recall: None,
+                pair_f1: None,
+                mixed_clusters: 0,
+                fragmented_identities: 0,
+                unassigned_labeled_faces: 0,
+                unassigned_rate: 0.0,
+            },
+            suggestions: Some(SuggestionMetrics {
+                correct,
+                incorrect,
+                not_suggested: total - suggested,
+                precision,
+                coverage: suggested as f64 / total as f64,
+            }),
+            hard_rule_violations: 0,
+            invalid_explanations,
+            wall_time_ms: 0.0,
+            peak_memory_mib: 0.0,
+        });
+    }
+    Ok(())
+}
+
+fn validation_report(
+    snapshot: &TrainingSnapshot,
+    bundle: &ModelBundle,
+    membership_scores: &[HeldOutScore],
+    cluster_scores: &[HeldOutScore],
+    gates: &PromotionGates,
+    fold_count: usize,
+) -> Result<ValidationReport, TrainingError> {
+    let (membership, cluster_quality) = match bundle {
+        ModelBundle::Logistic {
+            membership,
+            cluster_quality,
+            ..
+        } => (
+            CandidateScorerRef::Logistic(membership),
+            CandidateScorerRef::Logistic(cluster_quality),
+        ),
+        ModelBundle::Additive {
+            membership,
+            cluster_quality,
+            ..
+        } => (
+            CandidateScorerRef::Additive(membership),
+            CandidateScorerRef::Additive(cluster_quality),
+        ),
+    };
+    let dataset_count = fold_count * 2;
+    let membership_invalid = explanation_failures(
+        membership,
+        &snapshot.membership,
+        DecisionKind::Membership,
+        gates,
+        dataset_count,
+    );
+    let cluster_invalid = explanation_failures(
+        cluster_quality,
+        &snapshot.cluster_quality,
+        DecisionKind::ClusterQuality,
+        gates,
+        dataset_count,
+    );
+    let mut datasets = Vec::with_capacity(dataset_count);
+    append_fold_validations(
+        &mut datasets,
+        "cluster_quality",
+        cluster_scores,
+        cluster_quality,
+        cluster_invalid,
+        fold_count,
+    )?;
+    append_fold_validations(
+        &mut datasets,
+        "membership",
+        membership_scores,
+        membership,
+        membership_invalid,
+        fold_count,
+    )?;
+    datasets.sort_by(|left, right| left.dataset_key.cmp(&right.dataset_key));
+    Ok(ValidationReport {
+        protocol_version: gates.protocol_version,
+        evidence_schema_version: EVIDENCE_SCHEMA_VERSION,
+        feature_schema_version: snapshot.feature_schema_version,
+        datasets,
+    })
+}
+
+pub fn compare_candidate_reports(
+    logistic: &ValidationReport,
+    additive: &ValidationReport,
+    gates: &PromotionGates,
+) -> Result<CandidateComparison, TrainingError> {
+    let logistic_failures = evaluate_promotion(None, logistic, gates, ProfileStage::Suggestion)
+        .map_err(|error| TrainingError::InvalidInput(error.to_string()))?;
+    let additive_failures = evaluate_promotion(None, additive, gates, ProfileStage::Suggestion)
+        .map_err(|error| TrainingError::InvalidInput(error.to_string()))?;
+    if logistic.datasets.len() != additive.datasets.len() {
+        return Err(TrainingError::InvalidInput(
+            "candidate reports use different fold counts".into(),
+        ));
+    }
+    let mut total_gain = 0.0;
+    let mut folds_agree = true;
+    let mut regressions = Vec::new();
+    for (baseline, candidate) in logistic.datasets.iter().zip(&additive.datasets) {
+        let dataset_key = baseline.dataset_key.clone();
+        if baseline.dataset_key != candidate.dataset_key
+            || baseline.clustering.labeled_faces != candidate.clustering.labeled_faces
+        {
+            return Err(TrainingError::InvalidInput(
+                "candidate reports do not cover identical folds".into(),
+            ));
+        }
+        let baseline = baseline.suggestions.as_ref().ok_or_else(|| {
+            TrainingError::InvalidInput("logistic report lacks suggestion metrics".into())
+        })?;
+        let candidate = candidate.suggestions.as_ref().ok_or_else(|| {
+            TrainingError::InvalidInput("additive report lacks suggestion metrics".into())
+        })?;
+        let baseline_precision = baseline.precision.unwrap_or(0.0);
+        let candidate_precision = candidate.precision.unwrap_or(0.0);
+        let precision_gain = candidate_precision - baseline_precision;
+        let fold_gain = if precision_gain.abs() <= f64::EPSILON {
+            candidate.coverage - baseline.coverage
+        } else {
+            precision_gain
+        };
+        total_gain += fold_gain;
+        let fold_regressed = precision_gain < -f64::EPSILON
+            || (precision_gain.abs() <= f64::EPSILON
+                && candidate.coverage + f64::EPSILON < baseline.coverage);
+        if fold_regressed {
+            folds_agree = false;
+            regressions.push(dataset_key);
+        }
+    }
+    regressions.sort();
+    regressions.dedup();
+    let additive_gain = total_gain / logistic.datasets.len() as f64;
+    let logistic_passes = logistic_failures.is_empty();
+    let additive_passes = additive_failures.is_empty();
+    let selected = if additive_passes
+        && (!logistic_passes || (folds_agree && additive_gain > gates.min_additive_gain))
+    {
+        CandidateKind::Additive
+    } else {
+        CandidateKind::Logistic
+    };
+    Ok(CandidateComparison {
+        selected,
+        logistic_passes,
+        additive_passes,
+        additive_gain,
+        folds_agree,
+        additive_regressions: regressions,
+    })
+}
+
+pub fn train_and_select_candidate(
+    snapshot: &TrainingSnapshot,
+    config: &TrainingConfig,
+    gates: &PromotionGates,
+) -> Result<TrainingRun, TrainingError> {
+    let logistic = train_logistic_bundle(snapshot, config)?;
+    let additive = train_additive_bundle(snapshot, config)?;
+    let (
+        ModelBundle::Logistic {
+            membership: logistic_membership,
+            cluster_quality: logistic_cluster,
+            ..
+        },
+        ModelBundle::Additive { .. },
+    ) = (&logistic, &additive)
+    else {
+        return Err(TrainingError::InvalidInput(
+            "candidate trainers returned the wrong model kinds".into(),
+        ));
+    };
+    let logistic_membership_scores =
+        logistic_validation_scores(&snapshot.membership, logistic_membership, config)?;
+    let logistic_cluster_scores =
+        logistic_validation_scores(&snapshot.cluster_quality, logistic_cluster, config)?;
+    let additive_membership_scores = additive_held_out_scores(&snapshot.membership, config)?;
+    let additive_cluster_scores = additive_held_out_scores(&snapshot.cluster_quality, config)?;
+    let logistic_validation = validation_report(
+        snapshot,
+        &logistic,
+        &logistic_membership_scores,
+        &logistic_cluster_scores,
+        gates,
+        config.folds,
+    )?;
+    let additive_validation = validation_report(
+        snapshot,
+        &additive,
+        &additive_membership_scores,
+        &additive_cluster_scores,
+        gates,
+        config.folds,
+    )?;
+    let comparison = compare_candidate_reports(&logistic_validation, &additive_validation, gates)?;
+    let selected = match comparison.selected {
+        CandidateKind::Logistic => logistic,
+        CandidateKind::Additive => additive,
+    };
+    selected
+        .validate()
+        .map_err(|error| TrainingError::InvalidInput(error.to_string()))?;
+    let examples = snapshot
+        .membership
+        .examples
+        .iter()
+        .chain(&snapshot.cluster_quality.examples);
+    let evidence_counts = TrainingEvidenceCounts {
+        positive_pairs: examples.clone().filter(|example| example.positive).count(),
+        negative_pairs: examples.clone().filter(|example| !example.positive).count(),
+        explicit_negative_pairs: examples
+            .filter(|example| !example.positive && example.event_id.is_some())
+            .count(),
+    };
+    Ok(TrainingRun {
+        selected,
+        logistic_validation,
+        additive_validation,
+        comparison,
+        evidence_counts,
     })
 }
 
@@ -575,15 +997,16 @@ fn train_scorer(
 }
 
 #[derive(Clone, Debug)]
-struct HeldOutScore {
-    identity_keys: Vec<String>,
-    event_id: Option<i64>,
-    positive: bool,
-    weight: f64,
-    logit: f64,
+pub(crate) struct HeldOutScore {
+    pub(crate) fold_index: usize,
+    pub(crate) identity_keys: Vec<String>,
+    pub(crate) event_id: Option<i64>,
+    pub(crate) positive: bool,
+    pub(crate) weight: f64,
+    pub(crate) logit: f64,
 }
 
-fn held_out_scores(
+pub(crate) fn held_out_scores(
     folds: &[HeldOutFold],
     l2: f64,
     class_weight: f64,
@@ -591,13 +1014,14 @@ fn held_out_scores(
     tolerance: f64,
 ) -> Result<Vec<HeldOutScore>, TrainingError> {
     let mut scores = Vec::new();
-    for fold in folds {
+    for (fold_index, fold) in folds.iter().enumerate() {
         let model = fit_logistic(&fold.training, l2, class_weight, max_iterations, tolerance)?;
         for example in &fold.validation {
             let (logit, _) = model
                 .score(&example.features)
                 .map_err(|error| TrainingError::InvalidInput(error.to_string()))?;
             scores.push(HeldOutScore {
+                fold_index,
                 identity_keys: example.identity_keys.clone(),
                 event_id: example.event_id,
                 positive: example.positive,
@@ -621,7 +1045,9 @@ fn held_out_scores(
     Ok(scores)
 }
 
-fn select_threshold(scores: &[(f64, bool, f64)]) -> Result<(f64, f64, f64), TrainingError> {
+pub(crate) fn select_threshold(
+    scores: &[(f64, bool, f64)],
+) -> Result<(f64, f64, f64), TrainingError> {
     if scores.is_empty()
         || scores.iter().any(|(score, _, weight)| {
             !score.is_finite()
@@ -700,12 +1126,28 @@ fn select_threshold(scores: &[(f64, bool, f64)]) -> Result<(f64, f64, f64), Trai
     best.ok_or_else(|| TrainingError::InvalidInput("no usable threshold".into()))
 }
 
-fn fit_calibration(
+pub(crate) fn fit_calibration(
     scores: &[HeldOutScore],
     max_iterations: usize,
     tolerance: f64,
 ) -> Result<CalibrationModel, TrainingError> {
-    let mut parameters = [0.0, 1.0];
+    // The slope is constrained positive: when the held-out logits carry no
+    // monotonic signal, an unconstrained Newton step would drive it negative
+    // and turn a legitimate boundary case into a hard failure.
+    const MIN_SLOPE: f64 = 1e-6;
+    let total_weight: f64 = scores.iter().map(|score| score.weight).sum();
+    let positive_weight: f64 = scores
+        .iter()
+        .filter(|score| score.positive)
+        .map(|score| score.weight)
+        .sum();
+    if total_weight <= 0.0 || positive_weight <= 0.0 || positive_weight >= total_weight {
+        return Err(TrainingError::InvalidInput(
+            "calibration needs finite positive weight from both classes".into(),
+        ));
+    }
+    let prevalence = (positive_weight / total_weight).clamp(1e-9, 1.0 - 1e-9);
+    let mut parameters = [(prevalence / (1.0 - prevalence)).ln(), 1.0];
     let mut converged = false;
     for _ in 0..max_iterations {
         let mut gradient = [0.0, 0.0];
@@ -725,23 +1167,60 @@ fn fit_calibration(
         gradient[1] += 1e-3 * parameters[1];
         hessian[1][1] += 1e-3;
         hessian[0][0] += 1e-9;
-        let delta = solve(
-            hessian.into_iter().map(Vec::from).collect(),
-            gradient.to_vec(),
-        )
-        .ok_or(TrainingError::NonConvergence)?;
-        let max_delta = delta.iter().map(|value| value.abs()).fold(0.0, f64::max);
-        parameters[0] -= delta[0];
-        parameters[1] -= delta[1];
-        if parameters.iter().any(|value| !value.is_finite()) {
+        let delta = if parameters[1] <= MIN_SLOPE && gradient[1] >= 0.0 {
+            // At the boundary with uphill slope gradient, only the intercept
+            // may move; solving the full system would step outside the
+            // feasible half plane.
+            [gradient[0] / hessian[0][0], 0.0]
+        } else {
+            let solved = solve(
+                hessian.into_iter().map(Vec::from).collect(),
+                gradient.to_vec(),
+            )
+            .ok_or(TrainingError::NonConvergence)?;
+            [solved[0], solved[1]]
+        };
+        let objective = |candidate: [f64; 2]| {
+            scores
+                .iter()
+                .map(|score| {
+                    score.weight
+                        * logistic_loss(candidate[0] + candidate[1] * score.logit, score.positive)
+                })
+                .sum::<f64>()
+                + 0.5e-3 * candidate[1] * candidate[1]
+        };
+        let current_objective = objective(parameters);
+        let mut step = 1.0;
+        let mut candidate = parameters;
+        let mut accepted = false;
+        for _ in 0..24 {
+            candidate = [
+                parameters[0] - step * delta[0],
+                (parameters[1] - step * delta[1]).max(MIN_SLOPE),
+            ];
+            let candidate_objective = objective(candidate);
+            if candidate_objective.is_finite() && candidate_objective <= current_objective {
+                accepted = true;
+                break;
+            }
+            step *= 0.5;
+        }
+        if !accepted || candidate.iter().any(|value| !value.is_finite()) {
             return Err(TrainingError::NonConvergence);
         }
+        let max_delta = candidate
+            .iter()
+            .zip(parameters)
+            .map(|(candidate, current)| (candidate - current).abs())
+            .fold(0.0, f64::max);
+        parameters = candidate;
         if max_delta <= tolerance {
             converged = true;
             break;
         }
     }
-    if !converged || parameters[1] <= 0.0 {
+    if !converged || parameters[1] < MIN_SLOPE {
         return Err(TrainingError::NonConvergence);
     }
     Ok(CalibrationModel {
@@ -750,7 +1229,7 @@ fn fit_calibration(
     })
 }
 
-fn sigmoid(value: f64) -> f64 {
+pub(crate) fn sigmoid(value: f64) -> f64 {
     if value >= 0.0 {
         1.0 / (1.0 + (-value).exp())
     } else {
@@ -1615,8 +2094,16 @@ mod tests {
         let snapshot =
             build_training_snapshot(3, "arcface/model", &labels, &observations, &events, &config)
                 .unwrap();
-        let bundle = train_logistic_bundle(&snapshot, &config).unwrap();
-        bundle.validate().unwrap();
+        let ModelBundle::Logistic {
+            membership: logistic_membership,
+            cluster_quality: logistic_cluster,
+            ..
+        } = train_logistic_bundle(&snapshot, &config).unwrap()
+        else {
+            panic!("logistic training returned the wrong artifact kind")
+        };
+        logistic_membership.validate().unwrap();
+        logistic_cluster.validate().unwrap();
 
         let pinned = |model: &LogisticModel, name: &str| {
             let index = model
@@ -1628,26 +2115,28 @@ mod tests {
         };
         // Derived single-face pairs pin size, cohesion, and missing-count
         // features to one value; they must stay in the schema without voting.
-        assert_eq!(pinned(&bundle.membership.model, "subject_size"), (0.0, 1.0));
-        assert_eq!(pinned(&bundle.membership.model, "target_size"), (0.0, 1.0));
+        assert_eq!(
+            pinned(&logistic_membership.model, "subject_size"),
+            (0.0, 1.0)
+        );
+        assert_eq!(
+            pinned(&logistic_membership.model, "target_size"),
+            (0.0, 1.0)
+        );
         assert_eq!(
             pinned(
-                &bundle.membership.model,
+                &logistic_membership.model,
                 "detector_confidence_missing_proportion_subject"
             ),
             (0.0, 1.0)
         );
         assert!(
-            pinned(&bundle.membership.model, "similarity_mean").0 != 0.0,
+            pinned(&logistic_membership.model, "similarity_mean").0 != 0.0,
             "similarity must still carry the model"
         );
-        assert_eq!(
-            pinned(&bundle.cluster_quality.model, "cluster_size"),
-            (0.0, 1.0)
-        );
+        assert_eq!(pinned(&logistic_cluster.model, "cluster_size"), (0.0, 1.0));
 
-        let evidence = bundle
-            .membership
+        let evidence = logistic_membership
             .score_with_evidence(
                 &snapshot.membership.examples[0].features,
                 1,
@@ -1706,5 +2195,117 @@ mod tests {
                 negative_identities: 0,
             })
         ));
+    }
+
+    fn nonlinear_dataset(decision_kind: LearningDecisionKind) -> DecisionDataset {
+        let mut examples = Vec::new();
+        for index in 0usize..8 {
+            let identity = format!("curve-{index}");
+            examples.push(example(
+                &identity,
+                false,
+                -0.2 + index as f64 * 0.04,
+                index as f64 * 0.1,
+            ));
+            let sign = if index.is_multiple_of(2) { -1.0 } else { 1.0 };
+            examples.push(example(
+                &identity,
+                true,
+                sign * (2.5 + index as f64 * 0.05),
+                index as f64 * 0.1 + 0.02,
+            ));
+        }
+        DecisionDataset {
+            decision_kind,
+            examples,
+        }
+    }
+
+    fn selection_gates() -> PromotionGates {
+        PromotionGates {
+            protocol_version: 1,
+            evidence_schema_version: 1,
+            feature_schema_version: FEATURE_SCHEMA_VERSION,
+            min_datasets: 8,
+            max_hard_rule_violations: 0,
+            max_invalid_explanations: 0,
+            min_suggestion_precision: 0.0,
+            min_suggestion_precision_wilson_lower_bound: 0.0,
+            min_suggestion_coverage: 0.0,
+            max_wall_time_ms: 1_000.0,
+            max_peak_memory_mib: 1_000.0,
+            max_pair_precision_drop: 0.0,
+            max_pair_recall_drop: 0.0,
+            max_mixed_cluster_rate_increase: 0.0,
+            max_fragmented_identity_rate_increase: 0.0,
+            max_unassigned_rate_increase: 0.0,
+            min_pair_recall_gain: 0.0,
+            min_fragmented_identity_reduction: 0,
+            min_additive_gain: 0.05,
+        }
+    }
+
+    #[test]
+    fn nonlinear_gain_selects_additive_on_identical_held_out_folds() {
+        let snapshot = TrainingSnapshot {
+            generation: 8,
+            embedding_model_id: "arcface/model".into(),
+            feature_schema_version: FEATURE_SCHEMA_VERSION,
+            membership: nonlinear_dataset(LearningDecisionKind::Membership),
+            cluster_quality: nonlinear_dataset(LearningDecisionKind::ClusterQuality),
+            exclusions: Vec::new(),
+        };
+        train_additive_bundle(&snapshot, &config()).expect("additive nonlinear candidate");
+        let run = train_and_select_candidate(&snapshot, &config(), &selection_gates()).unwrap();
+        assert_eq!(
+            run.comparison.selected,
+            CandidateKind::Additive,
+            "{:?}",
+            run.comparison
+        );
+        assert!(run.comparison.additive_gain > selection_gates().min_additive_gain);
+        assert!(run.comparison.folds_agree);
+        assert_eq!(
+            run.logistic_validation
+                .datasets
+                .iter()
+                .map(|dataset| (&dataset.dataset_key, dataset.clustering.labeled_faces))
+                .collect::<Vec<_>>(),
+            run.additive_validation
+                .datasets
+                .iter()
+                .map(|dataset| (&dataset.dataset_key, dataset.clustering.labeled_faces))
+                .collect::<Vec<_>>()
+        );
+        assert!(run.evidence_counts.positive_pairs > 0);
+        assert!(run.evidence_counts.negative_pairs > 0);
+    }
+
+    #[test]
+    fn linear_ties_and_fold_disagreement_retain_logistic() {
+        let snapshot = TrainingSnapshot {
+            generation: 9,
+            embedding_model_id: "arcface/model".into(),
+            feature_schema_version: FEATURE_SCHEMA_VERSION,
+            membership: separable_dataset(LearningDecisionKind::Membership),
+            cluster_quality: separable_dataset(LearningDecisionKind::ClusterQuality),
+            exclusions: Vec::new(),
+        };
+        let run = train_and_select_candidate(&snapshot, &config(), &selection_gates()).unwrap();
+        assert_eq!(run.comparison.selected, CandidateKind::Logistic);
+
+        let mut disagrees = run.additive_validation.clone();
+        let labeled_faces = disagrees.datasets[0].clustering.labeled_faces;
+        let metrics = disagrees.datasets[0].suggestions.as_mut().unwrap();
+        metrics.correct = 0;
+        metrics.incorrect = 1;
+        metrics.not_suggested = labeled_faces - 1;
+        metrics.precision = Some(0.0);
+        metrics.coverage = 1.0 / labeled_faces as f64;
+        let comparison =
+            compare_candidate_reports(&run.logistic_validation, &disagrees, &selection_gates())
+                .unwrap();
+        assert_eq!(comparison.selected, CandidateKind::Logistic);
+        assert!(!comparison.folds_agree);
     }
 }

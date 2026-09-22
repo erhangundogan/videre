@@ -1,4 +1,4 @@
-use super::{ClusteringMetrics, SuggestionMetrics};
+use super::{ClusteringMetrics, ModelBundle, SuggestionMetrics};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -113,6 +113,7 @@ pub struct PromotionGates {
     pub max_unassigned_rate_increase: f64,
     pub min_pair_recall_gain: f64,
     pub min_fragmented_identity_reduction: usize,
+    pub min_additive_gain: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -262,6 +263,7 @@ fn validate_gates(gates: &PromotionGates) -> Result<(), ProfileError> {
             "max_unassigned_rate_increase",
         ),
         (gates.min_pair_recall_gain, "min_pair_recall_gain"),
+        (gates.min_additive_gain, "min_additive_gain"),
     ] {
         validate_probability(value, name)?;
     }
@@ -783,8 +785,32 @@ pub fn evaluate_promotion(
     Ok(failures)
 }
 
+/// Only decodable logistic or additive artifacts may be stored, and the
+/// declared model kind must match the decoded bundle.
+fn decode_artifact(model_kind: &str, parameters: &[u8]) -> Result<(), ProfileError> {
+    let bundle: ModelBundle = serde_json::from_slice(parameters).map_err(|error| {
+        ProfileError::InvalidProfile(format!(
+            "profile parameters are not a decodable model artifact: {error}"
+        ))
+    })?;
+    if bundle.model_kind() != model_kind {
+        return Err(ProfileError::InvalidProfile(format!(
+            "profile model kind {model_kind} does not match the decoded {} artifact",
+            bundle.model_kind()
+        )));
+    }
+    bundle
+        .validate()
+        .map_err(|error| ProfileError::InvalidProfile(error.to_string()))
+}
+
 pub fn insert_candidate(conn: &Connection, profile: &NewProfile) -> Result<i64, ProfileError> {
     ensure_profile_table(conn)?;
+    if profile.stage == ProfileStage::Grouping {
+        return Err(ProfileError::InvalidProfile(
+            "grouping profiles are outside this entry point".into(),
+        ));
+    }
     validate_profile_metadata(
         profile.artifact_version,
         &profile.embedding_model_id,
@@ -792,6 +818,19 @@ pub fn insert_candidate(conn: &Connection, profile: &NewProfile) -> Result<i64, 
         &profile.model_kind,
         &profile.validation_report,
     )?;
+    // A candidate that cannot explain its own validation evidence never
+    // reaches storage; promotion gates re-check explanations later.
+    if profile
+        .validation_report
+        .datasets
+        .iter()
+        .any(|dataset| dataset.invalid_explanations > 0)
+    {
+        return Err(ProfileError::InvalidProfile(
+            "candidate reports with invalid explanations are not stored".into(),
+        ));
+    }
+    decode_artifact(&profile.model_kind, &profile.parameters)?;
     let evidence = serde_json::to_string(&profile.training_evidence)?;
     let report = serde_json::to_string(&profile.validation_report)?;
     conn.execute(
@@ -959,7 +998,10 @@ pub fn evaluate_and_promote(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::face_learning::{ClusteringMetrics, SuggestionMetrics};
+    use crate::face_learning::{
+        AdditiveCurve, AdditiveModel, AdditiveScorer, CalibrationModel, ClusteringMetrics,
+        LogisticModel, LogisticScorer, ModelBundle, SuggestionMetrics, MODEL_ARTIFACT_VERSION,
+    };
     use rusqlite::Connection;
 
     fn clustering(recall: f64, fragmented: usize) -> ClusteringMetrics {
@@ -1039,16 +1081,78 @@ mod tests {
             max_unassigned_rate_increase: 0.0,
             min_pair_recall_gain: 0.01,
             min_fragmented_identity_reduction: 1,
+            min_additive_gain: 0.01,
         }
     }
 
-    fn candidate(stage: ProfileStage, report: ValidationReport) -> NewProfile {
+    fn logistic_scorer() -> LogisticScorer {
+        LogisticScorer {
+            model: LogisticModel {
+                feature_names: vec!["x".into()],
+                means: vec![0.0],
+                scales: vec![1.0],
+                intercept: 0.0,
+                weights: vec![1.0],
+                l2: 1.0,
+                positive_class_weight: 1.0,
+            },
+            calibration: CalibrationModel {
+                intercept: 0.0,
+                slope: 1.0,
+            },
+            threshold: 0.5,
+        }
+    }
+
+    fn logistic_bundle() -> ModelBundle {
+        ModelBundle::Logistic {
+            artifact_version: MODEL_ARTIFACT_VERSION,
+            embedding_model_id: "arcface-test".into(),
+            feature_schema_version: 1,
+            membership: logistic_scorer(),
+            cluster_quality: logistic_scorer(),
+        }
+    }
+
+    fn additive_bundle() -> ModelBundle {
+        let scorer = AdditiveScorer {
+            model: AdditiveModel {
+                intercept: 0.0,
+                curves: vec![AdditiveCurve {
+                    name: "x".into(),
+                    knots: vec![-1.0, 1.0],
+                    effects: vec![-0.5, 0.5],
+                }],
+                l2: 1.0,
+                smoothing: 0.25,
+                max_abs_effect: 1.0,
+            },
+            calibration: CalibrationModel {
+                intercept: 0.0,
+                slope: 1.0,
+            },
+            threshold: 0.5,
+        };
+        ModelBundle::Additive {
+            artifact_version: MODEL_ARTIFACT_VERSION,
+            embedding_model_id: "arcface-test".into(),
+            feature_schema_version: 1,
+            membership: scorer.clone(),
+            cluster_quality: scorer,
+        }
+    }
+
+    fn candidate_for_bundle(
+        stage: ProfileStage,
+        report: ValidationReport,
+        bundle: &ModelBundle,
+    ) -> NewProfile {
         NewProfile {
             artifact_version: 1,
             embedding_model_id: "arcface-test".into(),
             feature_schema_version: 1,
-            model_kind: "deterministic-test".into(),
-            parameters: vec![1, 2, 3],
+            model_kind: bundle.model_kind().into(),
+            parameters: serde_json::to_vec(bundle).unwrap(),
             training_evidence: TrainingEvidenceCounts {
                 positive_pairs: 20,
                 negative_pairs: 20,
@@ -1057,6 +1161,10 @@ mod tests {
             validation_report: report,
             stage,
         }
+    }
+
+    fn candidate(stage: ProfileStage, report: ValidationReport) -> NewProfile {
+        candidate_for_bundle(stage, report, &logistic_bundle())
     }
 
     fn failure_keys(failures: &[GateFailure]) -> Vec<(&str, &str)> {
@@ -1326,7 +1434,7 @@ mod tests {
         let active_id =
             insert_candidate(&conn, &candidate(ProfileStage::Shadow, report(0.70, 3))).unwrap();
         evaluate_and_promote(&conn, active_id, &gates()).unwrap();
-        let mut other_model = candidate(ProfileStage::Grouping, report(0.72, 3));
+        let mut other_model = candidate(ProfileStage::Suggestion, report(0.72, 3));
         other_model.embedding_model_id = "other/test-model".into();
         let other_id = insert_candidate(&conn, &other_model).unwrap();
         assert!(matches!(
@@ -1366,13 +1474,21 @@ mod tests {
         );
         assert_eq!(active_profile(&conn).unwrap().unwrap().id, active_id);
 
+        let mut weak = report(0.70, 3);
+        weak.datasets[0].suggestions = Some(SuggestionMetrics {
+            correct: 50,
+            incorrect: 50,
+            not_suggested: 0,
+            precision: Some(0.5),
+            coverage: 1.0,
+        });
         let failed_id =
-            insert_candidate(&conn, &candidate(ProfileStage::Grouping, report(0.70, 3))).unwrap();
+            insert_candidate(&conn, &candidate(ProfileStage::Suggestion, weak)).unwrap();
         let outcome = evaluate_and_promote(&conn, failed_id, &gates()).unwrap();
         let PromotionOutcome::Rejected(failures) = outcome else {
             panic!("candidate must be rejected")
         };
-        assert!(failure_keys(&failures).contains(&("", "quality_gain")));
+        assert!(failure_keys(&failures).contains(&("library-a", "suggestion_precision")));
         assert_eq!(active_profile(&conn).unwrap().unwrap().id, active_id);
         let failed_status: String = conn
             .query_row(
@@ -1384,7 +1500,7 @@ mod tests {
         assert_eq!(failed_status, "rejected");
 
         let passing_id =
-            insert_candidate(&conn, &candidate(ProfileStage::Grouping, report(0.72, 3))).unwrap();
+            insert_candidate(&conn, &candidate(ProfileStage::Suggestion, report(0.72, 3))).unwrap();
         assert_eq!(
             evaluate_and_promote(&conn, passing_id, &gates()).unwrap(),
             PromotionOutcome::Promoted
@@ -1409,7 +1525,7 @@ mod tests {
         evaluate_and_promote(&conn, active_id, &gates()).unwrap();
 
         let candidate_id =
-            insert_candidate(&conn, &candidate(ProfileStage::Grouping, report(0.72, 3))).unwrap();
+            insert_candidate(&conn, &candidate(ProfileStage::Suggestion, report(0.72, 3))).unwrap();
         conn.execute_batch(&format!(
             "CREATE TRIGGER abort_face_profile_activation
              BEFORE UPDATE OF status ON face_learning_profiles
@@ -1439,7 +1555,7 @@ mod tests {
             insert_candidate(&conn, &candidate(ProfileStage::Shadow, report(0.70, 3))).unwrap();
         evaluate_and_promote(&conn, active_id, &gates()).unwrap();
         let candidate_id =
-            insert_candidate(&conn, &candidate(ProfileStage::Grouping, report(0.72, 3))).unwrap();
+            insert_candidate(&conn, &candidate(ProfileStage::Suggestion, report(0.72, 3))).unwrap();
         conn.execute_batch(&format!(
             "CREATE TABLE profile_commit_parent (id INTEGER PRIMARY KEY);
              CREATE TABLE profile_commit_child (
@@ -1464,5 +1580,125 @@ mod tests {
             )
             .unwrap();
         assert_eq!(status, "candidate");
+    }
+
+    fn stored_profile_count(conn: &Connection) -> usize {
+        conn.query_row("SELECT count(*) FROM face_learning_profiles", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map(|count| count as usize)
+        .unwrap()
+    }
+
+    fn face_rows(conn: &Connection) -> Vec<(i64, String)> {
+        let mut statement = conn
+            .prepare("SELECT id, state FROM faces ORDER BY id")
+            .unwrap();
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn insert_candidate_rejects_artifacts_it_cannot_decode() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_profile_table(&conn).unwrap();
+
+        let mut garbage = candidate(ProfileStage::Suggestion, report(0.70, 3));
+        garbage.parameters = vec![1, 2, 3];
+        assert!(matches!(
+            insert_candidate(&conn, &garbage),
+            Err(ProfileError::InvalidProfile(_))
+        ));
+
+        let mut mislabeled = candidate_for_bundle(
+            ProfileStage::Suggestion,
+            report(0.70, 3),
+            &logistic_bundle(),
+        );
+        mislabeled.model_kind = "deterministic-test".into();
+        assert!(matches!(
+            insert_candidate(&conn, &mislabeled),
+            Err(ProfileError::InvalidProfile(_))
+        ));
+
+        let mut wrong_kind = candidate_for_bundle(
+            ProfileStage::Suggestion,
+            report(0.70, 3),
+            &additive_bundle(),
+        );
+        wrong_kind.model_kind = "logistic".into();
+        assert!(matches!(
+            insert_candidate(&conn, &wrong_kind),
+            Err(ProfileError::InvalidProfile(_))
+        ));
+
+        assert_eq!(
+            stored_profile_count(&conn),
+            0,
+            "rejected artifacts must not be stored"
+        );
+    }
+
+    #[test]
+    fn insert_candidate_rejects_grouping_and_unexplainable_candidates() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_profile_table(&conn).unwrap();
+
+        assert!(matches!(
+            insert_candidate(&conn, &candidate(ProfileStage::Grouping, report(0.70, 3))),
+            Err(ProfileError::InvalidProfile(_))
+        ));
+
+        let mut unexplainable = candidate(ProfileStage::Suggestion, report(0.70, 3));
+        unexplainable.validation_report.datasets[0].invalid_explanations = 1;
+        assert!(matches!(
+            insert_candidate(&conn, &unexplainable),
+            Err(ProfileError::InvalidProfile(_))
+        ));
+
+        assert_eq!(
+            stored_profile_count(&conn),
+            0,
+            "rejected candidates must not be stored"
+        );
+    }
+
+    #[test]
+    fn suggestion_promotion_never_touches_face_rows_or_the_active_profile_on_failure() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_profile_table(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE faces (id INTEGER PRIMARY KEY, state TEXT);
+             INSERT INTO faces(state) VALUES ('cluster-42');",
+        )
+        .unwrap();
+        let faces_before = face_rows(&conn);
+
+        let active_id =
+            insert_candidate(&conn, &candidate(ProfileStage::Suggestion, report(0.70, 3))).unwrap();
+        assert_eq!(
+            evaluate_and_promote(&conn, active_id, &gates()).unwrap(),
+            PromotionOutcome::Promoted
+        );
+
+        let mut weak = report(0.72, 3);
+        weak.datasets[0].suggestions = Some(SuggestionMetrics {
+            correct: 50,
+            incorrect: 50,
+            not_suggested: 0,
+            precision: Some(0.5),
+            coverage: 1.0,
+        });
+        let weak_id = insert_candidate(&conn, &candidate(ProfileStage::Suggestion, weak)).unwrap();
+        assert!(matches!(
+            evaluate_and_promote(&conn, weak_id, &gates()).unwrap(),
+            PromotionOutcome::Rejected(_)
+        ));
+
+        assert_eq!(active_profile(&conn).unwrap().unwrap().id, active_id);
+        assert_eq!(face_rows(&conn), faces_before);
     }
 }
