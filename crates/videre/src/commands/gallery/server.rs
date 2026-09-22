@@ -2970,7 +2970,10 @@ async fn serve_faces_async(
     // library), so the default port advances to the next free one rather than
     // failing; an explicit `--port` stays exact.
     let std_listener = bind_with_fallback(opts.port, opts.port_fallback).map_err(|e| {
-        if opts.port_fallback {
+        // With fallback on, an address-in-use error here means the scan ran
+        // out of ports at the top of the range; any other failure names the
+        // port that was actually requested.
+        if opts.port_fallback && e.kind() == std::io::ErrorKind::AddrInUse {
             format!("Cannot bind a port at or above {requested}: {e}")
         } else {
             format!("Cannot bind to {requested}: {e}")

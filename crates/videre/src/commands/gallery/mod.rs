@@ -21,8 +21,8 @@ pub struct GalleryArgs {
     #[arg(long, value_parser = super::parse_model_id)]
     model: Option<String>,
 
-    /// Port to listen on. Omitted, it starts at 7878 and advances to the next
-    /// free port if that is taken; given explicitly, that exact port is used.
+    /// Port to listen on. Without the flag: start at 7878 and advance to the
+    /// next free port when taken. With the flag: use exactly this port.
     #[arg(long)]
     port: Option<u16>,
 
