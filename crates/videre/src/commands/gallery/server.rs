@@ -1772,15 +1772,25 @@ fn invalidate_thumb_cache(cache: &videre_core::library::CachePaths, hash: &str) 
     }
 }
 
-/// `POST /api/files/{hash}/rotate`: rotate one photo 90 degrees clockwise by
-/// bumping its EXIF Orientation tag in place, then drop its cached previews so
-/// the grid and lightbox re-render upright. Refuses a format that carries no
-/// EXIF orientation (video, HEIC, and the like) with 415, matching the button
-/// the gallery only shows for supported images.
+#[derive(Deserialize)]
+struct RotateQuery {
+    /// `cw` (default) or `ccw`: which way to turn. The lightbox has a button for
+    /// each. Anything else is treated as `cw`.
+    dir: Option<String>,
+}
+
+/// `POST /api/files/{hash}/rotate`: rotate one photo 90 degrees (clockwise by
+/// default, counter-clockwise with `?dir=ccw`) by bumping its EXIF Orientation
+/// tag in place, then drop its cached previews so the grid and lightbox
+/// re-render. Refuses a format that carries no EXIF orientation (video, HEIC,
+/// and the like) with 415, matching the button the gallery only shows for
+/// supported images.
 async fn handle_rotate_file(
     axum::extract::Path(hash): axum::extract::Path<String>,
+    Query(query): Query<RotateQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
+    let ccw = query.dir.as_deref() == Some("ccw");
     let path = {
         let conn = match state.conn.lock() {
             Ok(conn) => conn,
@@ -1819,18 +1829,28 @@ async fn handle_rotate_file(
     let result = tokio::task::spawn_blocking(move || {
         let source = std::path::Path::new(&path);
         // The stored face bboxes/landmarks are in the display canvas as it
-        // decodes now; capture that canvas's height before the turn so the
-        // geometry can be mapped onto the post-rotation canvas. Read it up
-        // front: rotate_cw_in_place bumps the EXIF the height depends on.
-        let display_h = super::rotate::current_display_dimensions(source).map(|(_, h)| h);
-        let orientation = super::rotate::rotate_cw_in_place(source, &ext)?;
+        // decodes now; capture that canvas's dimensions before the turn so the
+        // geometry can be mapped onto the post-rotation canvas. Read them up
+        // front: the rotation bumps the EXIF the dimensions depend on.
+        let dims = super::rotate::current_display_dimensions(source);
+        let orientation = if ccw {
+            super::rotate::rotate_ccw_in_place(source, &ext)?
+        } else {
+            super::rotate::rotate_cw_in_place(source, &ext)?
+        };
         // Turn the display-canvas face geometry with the photo, so a rotated
         // photo's face crops stay on their faces and keep their people labels
         // instead of cropping the pre-rotation region of the new canvas. Only
         // display-canvas rows (oriented=1) are transformed; legacy raw-canvas
         // rows still crop the correct region through their own orientation path.
-        if let Some(display_h) = display_h {
-            rotate_faces_geometry(&state_for_task, &hash_for_task, display_h as i32);
+        if let Some((display_w, display_h)) = dims {
+            rotate_faces_geometry(
+                &state_for_task,
+                &hash_for_task,
+                ccw,
+                display_w as i32,
+                display_h as i32,
+            );
         }
         invalidate_thumb_cache(&cache, &hash_for_task);
         Ok::<u16, anyhow::Error>(orientation)
@@ -1847,12 +1867,13 @@ async fn handle_rotate_file(
     }
 }
 
-/// Turn every display-canvas (`oriented = 1`) face row for `hash` 90 degrees
-/// clockwise on a canvas of height `display_h`, matching one clockwise rotation
-/// of the photo. Best-effort: a row whose bbox or landmark will not parse is
-/// left untouched rather than corrupted, and a DB error is logged, since the
-/// rotation itself has already succeeded and the caller reports that.
-fn rotate_faces_geometry(state: &AppState, hash: &str, display_h: i32) {
+/// Turn every display-canvas (`oriented = 1`) face row for `hash` 90 degrees to
+/// match one rotation of the photo: clockwise on a canvas of height `display_h`,
+/// or counter-clockwise on a canvas of width `display_w` when `ccw`. Best-effort:
+/// a row whose bbox or landmark will not parse is left untouched rather than
+/// corrupted, and a DB error is logged, since the rotation itself has already
+/// succeeded and the caller reports that.
+fn rotate_faces_geometry(state: &AppState, hash: &str, ccw: bool, display_w: i32, display_h: i32) {
     let conn = match state.conn.lock() {
         Ok(conn) => conn,
         Err(_) => return,
@@ -1883,13 +1904,23 @@ fn rotate_faces_geometry(state: &AppState, hash: &str, display_h: i32) {
         }
     };
     for (id, bbox, landmark) in rows {
-        let Some(new_bbox) = super::rotate::rotate_bbox_cw(&bbox, display_h) else {
+        let new_bbox = if ccw {
+            super::rotate::rotate_bbox_ccw(&bbox, display_w)
+        } else {
+            super::rotate::rotate_bbox_cw(&bbox, display_h)
+        };
+        let Some(new_bbox) = new_bbox else {
             continue;
         };
         // Keep the original landmark if it cannot be transformed, rather than
         // nulling a column the crop does not use but clustering does.
         let new_landmark = landmark.as_deref().map(|l| {
-            super::rotate::rotate_landmark_cw(l, display_h as f32).unwrap_or_else(|| l.to_string())
+            let turned = if ccw {
+                super::rotate::rotate_landmark_ccw(l, display_w as f32)
+            } else {
+                super::rotate::rotate_landmark_cw(l, display_h as f32)
+            };
+            turned.unwrap_or_else(|| l.to_string())
         });
         if let Err(e) = conn.execute(
             "UPDATE faces SET bbox = ?1, landmark = ?2 WHERE id = ?3",

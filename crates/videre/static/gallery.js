@@ -269,8 +269,10 @@ function openLb(url,type,metaJson){
   // rest, so the button never appears where it cannot work.
   var ext=(meta&&meta.ext?String(meta.ext):'').toLowerCase();
   var canRotate = type!=='video' && ROTATABLE_EXTS.indexOf(ext)>=0;
-  var rotateBtn=document.getElementById('lb-rotate');
-  if(rotateBtn){ rotateBtn.hidden=!canRotate; rotateBtn.disabled=false; }
+  ['lb-rotate','lb-rotate-ccw'].forEach(function(id){
+    var b=document.getElementById(id);
+    if(b){ b.hidden=!canRotate; b.disabled=false; }
+  });
   lbCurrent = { hash: meta&&meta.hash, url: url };
   // A fresh image starts fit-to-screen at the preview resolution; the full-res
   // original is loaded lazily on the first zoom.
@@ -342,12 +344,13 @@ function refreshTilesFor(hash,token){
 // two rotations. On success the source EXIF is bumped and its caches dropped, so
 // re-requesting the preview with a fresh token renders it upright.
 var lbRotating=false;
-function rotateLb(){
+function rotateLb(dir){
   if(lbRotating||!lbCurrent||!lbCurrent.hash)return;
-  var btn=document.getElementById('lb-rotate');
+  dir = (dir==='ccw') ? 'ccw' : 'cw';
+  var btns=[document.getElementById('lb-rotate'),document.getElementById('lb-rotate-ccw')];
   lbRotating=true;
-  if(btn)btn.disabled=true;
-  fetch('/api/files/'+encodeURIComponent(lbCurrent.hash)+'/rotate',{method:'POST'})
+  btns.forEach(function(b){ if(b)b.disabled=true; });
+  fetch('/api/files/'+encodeURIComponent(lbCurrent.hash)+'/rotate?dir='+dir,{method:'POST'})
     .then(function(r){ if(!r.ok)throw new Error('rotate failed'); return r.json(); })
     .then(function(){
       var token='b='+Date.now();
@@ -355,7 +358,7 @@ function rotateLb(){
       refreshTilesFor(lbCurrent.hash,token);
     })
     .catch(function(){})
-    .then(function(){ lbRotating=false; if(btn)btn.disabled=false; });
+    .then(function(){ lbRotating=false; btns.forEach(function(b){ if(b)b.disabled=false; }); });
 }
 
 // ---- Lightbox zoom & pan --------------------------------------------------
