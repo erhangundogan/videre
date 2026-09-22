@@ -115,6 +115,13 @@ each time you open the page, so there is nothing to build or keep up to date;
 each card shows the session's place name (when the photos carry GPS), its date
 range, and its file count. Click one to see just that session's photos.
 
+Events use the same date each file has everywhere else: its camera capture
+time, or its file modification time when there is none. Capture times are the
+camera's local clock. A modification time is used as the wall-clock time it
+was recorded with, without converting between time zones, so files whose
+modification times were recorded under different offsets are grouped by those
+nominal times rather than by absolute time.
+
 They link to each other in smaller ways too, which is the point of serving them
 together: a face in
 the gallery is clickable through to that person's page, and a photo's location
