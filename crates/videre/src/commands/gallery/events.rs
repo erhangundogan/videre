@@ -46,8 +46,11 @@ pub(crate) struct Event {
 /// Parse the string `EFFECTIVE_DATE_SQL` yields: EXIF wall-clock, the RFC3339
 /// `modified_at` fallback (its wall-clock part), or a bare date.
 pub(crate) fn parse_effective(value: &str) -> Option<NaiveDateTime> {
-    if let Ok(dt) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
-        return Some(dt);
+    // Scan stores exif_date with a `T`; the space form is accepted too.
+    for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"] {
+        if let Ok(dt) = NaiveDateTime::parse_from_str(value, fmt) {
+            return Some(dt);
+        }
     }
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(value) {
         return Some(dt.naive_local());
@@ -182,6 +185,14 @@ mod tests {
             NaiveDate::from_ymd_opt(2021, 8, 10)
                 .unwrap()
                 .and_hms_opt(14, 32, 7)
+        );
+        // exif_date as scan stores it: ISO 8601 with a `T`, local wall-clock,
+        // no offset.
+        assert_eq!(
+            parse_effective("2021-08-10T19:34:03"),
+            NaiveDate::from_ymd_opt(2021, 8, 10)
+                .unwrap()
+                .and_hms_opt(19, 34, 3)
         );
         // modified_at is RFC3339 with an offset; the wall-clock part is kept.
         assert_eq!(

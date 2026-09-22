@@ -813,9 +813,9 @@ mod events_tests {
         // the first Berlin shot (a location split within one time window).
         conn.execute_batch(
             "INSERT INTO file_hashes (path, hash, size_bytes, ext, exif_date, gps_lat, gps_lon, width, height) VALUES
-                ('/p/a.jpg','a',100,'jpg','2021-08-10 10:00:00',52.52,13.40,4000,3000),
-                ('/p/b.jpg','b',100,'jpg','2021-08-10 10:05:00',41.01,28.98,4000,3000),
-                ('/p/c.jpg','c',100,'jpg','2021-08-12 09:00:00',52.52,13.40,4000,3000);",
+                ('/p/a.jpg','a',100,'jpg','2021-08-10T10:00:00',52.52,13.40,4000,3000),
+                ('/p/b.jpg','b',100,'jpg','2021-08-10T10:05:00',41.01,28.98,4000,3000),
+                ('/p/c.jpg','c',100,'jpg','2021-08-12T09:00:00',52.52,13.40,4000,3000);",
         )
         .unwrap();
     }
