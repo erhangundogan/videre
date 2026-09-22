@@ -816,3 +816,83 @@ fn recluster_merge_sim_can_reunite_two_subclusters() {
         "lowering the centroid threshold reunites the nearby subclusters"
     );
 }
+
+/// Grouping stays deterministic once the gallery has learned something.
+/// Dissolving a cluster through the teaching path records negative evidence
+/// about exactly those faces; a recluster must still regroup them the way a
+/// library that was never taught does. Learning must never act as a
+/// face-specific veto on grouping.
+#[test]
+fn recluster_ignores_learning_evidence_about_the_same_faces() {
+    // Two tight pairs, well apart: the grouping has a knowable answer.
+    let angles = [0.0, 3.0, 90.0, 93.0];
+    let tuning = ["--eps", "0.1", "--min-cluster-size", "2"];
+    let partition = |lib: &TestLibrary| -> Vec<Vec<i64>> {
+        let conn = lib.conn();
+        let mut statement = conn
+            .prepare(
+                "SELECT group_concat(id) FROM (SELECT id, cluster_id FROM faces
+                 WHERE cluster_id IS NOT NULL ORDER BY id)
+                 GROUP BY cluster_id ORDER BY min(id)",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|ids| {
+                ids.unwrap()
+                    .split(',')
+                    .map(|id| id.parse().unwrap())
+                    .collect()
+            })
+            .collect()
+    };
+
+    let control = TestLibrary::new();
+    drop(control.init_db());
+    seed_unlabeled_faces(&control, &angles);
+    recluster(&control, &tuning);
+    let expected = partition(&control);
+    assert_eq!(
+        expected,
+        vec![vec![1, 2], vec![3, 4]],
+        "fixture must form two pairs"
+    );
+
+    let taught = TestLibrary::new();
+    drop(taught.init_db());
+    seed_unlabeled_faces(&taught, &angles);
+    recluster(&taught, &tuning);
+    {
+        let conn = taught.conn();
+        let cluster: i64 = conn
+            .query_row("SELECT cluster_id FROM faces WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        videre_api::dissolve_cluster_with_learning(
+            &conn,
+            cluster,
+            &videre_api::TeachingContext {
+                embedding_model_id: "arcface/test".into(),
+                active_profile_id: None,
+            },
+        )
+        .unwrap();
+        let events: i64 = conn
+            .query_row("SELECT count(*) FROM face_learning_events", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(
+            events > 0,
+            "the dissolve must have recorded teaching evidence"
+        );
+    }
+    recluster(&taught, &tuning);
+    assert_eq!(
+        partition(&taught),
+        expected,
+        "learning evidence changed how recluster groups the same faces"
+    );
+}
