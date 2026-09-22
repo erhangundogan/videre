@@ -470,6 +470,43 @@ pub fn append_event_batch_in_transaction(
     })
 }
 
+/// Make all evidence tied to a removed identity ineligible and advance the
+/// learning generation once. The caller owns the surrounding transaction and
+/// calls this only when the visible person deletion changed face state.
+pub fn invalidate_identity_in_transaction(
+    conn: &Connection,
+    identity: &str,
+) -> Result<u64, LearningEventError> {
+    if conn.is_autocommit() {
+        return Err(LearningEventError::TransactionRequired);
+    }
+    let identity = crate::person::normalize(identity).ok_or_else(|| {
+        LearningEventError::InvalidEvent("identity to invalidate is empty".to_owned())
+    })?;
+    conn.execute(
+        "UPDATE face_learning_events
+         SET eligible = 0, invalidation_reason = 'person_removed'
+         WHERE target_identity = ?1 AND eligible = 1",
+        [&identity],
+    )?;
+    conn.execute(
+        "UPDATE face_learning_state
+         SET generation = generation + 1,
+             status = CASE WHEN status = 'training' THEN 'training' ELSE 'stale' END,
+             last_error = CASE WHEN status = 'training' THEN last_error ELSE NULL END
+         WHERE id = 1",
+        [],
+    )?;
+    nonnegative_u64(
+        conn.query_row(
+            "SELECT generation FROM face_learning_state WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?,
+        "generation",
+    )
+}
+
 struct RawLearningEvent {
     id: i64,
     action: String,

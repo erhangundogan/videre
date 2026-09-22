@@ -1,5 +1,20 @@
 use serde::Serialize;
 
+/// Versioned model context attached to evidence captured by a Gallery action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TeachingContext {
+    pub embedding_model_id: String,
+    pub active_profile_id: Option<i64>,
+}
+
+/// Durable learning work committed with a visible people mutation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LearningAcknowledgement {
+    pub generation: u64,
+    pub event_ids: Vec<i64>,
+    pub message_key: String,
+}
+
 /// One labeled person: their confirmed faces plus a representative face id
 /// (the primary, or lowest id) used as the card thumbnail.
 #[derive(Serialize, Clone)]
