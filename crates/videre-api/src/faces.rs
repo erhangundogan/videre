@@ -10,10 +10,11 @@ use videre_core::face_db::load_face_observations;
 use videre_core::face_learning::{
     active_question_context, append_event_batch_in_transaction, extract_cluster_quality_features,
     extract_membership_features, finish_question_in_transaction,
-    invalidate_identity_in_transaction, learning_state, list_pending_questions,
-    question_evidence_revision, replace_pending_questions, select_questions, stored_question,
-    DecisionStage, EventFaceRef, EventFaceRole, LearningAction, LearningDecisionKind,
-    LearningOutcome, NewLearningEvent, QuestionAnswer, QuestionSelectionConfig, QuestionStatus,
+    invalidate_identity_in_transaction, learning_state, list_learning_events,
+    list_pending_questions, question_evidence_revision, replace_pending_questions,
+    select_questions, stored_question, DecisionStage, EventFaceRef, EventFaceRole, LearningAction,
+    LearningDecisionKind, LearningOutcome, NewLearningEvent, QuestionAnswer,
+    QuestionSelectionConfig, QuestionStatus,
 };
 
 const MAX_MEMBERSHIP_EVENTS_PER_ACTION: usize = 8;
@@ -1013,6 +1014,117 @@ pub fn refresh_identity_questions(
 ) -> Result<Vec<videre_core::face_learning::StoredQuestion>> {
     let candidates = select_questions(conn, config)?;
     Ok(replace_pending_questions(conn, &candidates)?)
+}
+
+/// Learning state plus pending question volume for the status resource.
+pub fn face_learning_status(conn: &Connection) -> Result<FaceLearningStatus> {
+    videre_core::face_learning::ensure_learning_tables(conn)?;
+    videre_core::face_learning::ensure_question_tables(conn)?;
+    let state = videre_core::face_learning::learning_state(conn)?;
+    let pending_questions = conn.query_row(
+        "SELECT count(*) FROM face_learning_questions WHERE status = 'pending'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?;
+    Ok(FaceLearningStatus {
+        generation: state.generation,
+        trained_generation: state.trained_generation,
+        status: format!("{:?}", state.status).to_lowercase(),
+        last_profile_id: state.last_profile_id,
+        last_error: state.last_error,
+        pending_questions: pending_questions as usize,
+    })
+}
+
+/// Learning events, newest first. Payloads carry scalar feature snapshots and
+/// provenance ids only; embeddings never leave the library.
+pub fn face_learning_events(
+    conn: &Connection,
+    limit: usize,
+    before_id: Option<i64>,
+) -> Result<Vec<videre_core::face_learning::StoredLearningEvent>> {
+    videre_core::face_learning::ensure_learning_tables(conn)?;
+    let limit = limit.clamp(1, 200);
+    Ok(list_learning_events(conn, limit, before_id)?)
+}
+
+pub fn face_learning_event(
+    conn: &Connection,
+    event_id: i64,
+) -> Result<Option<videre_core::face_learning::StoredLearningEvent>> {
+    videre_core::face_learning::ensure_learning_tables(conn)?;
+    Ok(videre_core::face_learning::learning_event(conn, event_id)?)
+}
+
+/// Load the immutable training inputs for the learning worker's snapshot.
+pub fn load_training_snapshot(
+    conn: &Connection,
+    embedding_model_id: &str,
+    generation: u64,
+    config: &videre_core::face_learning::TrainingConfig,
+) -> std::result::Result<videre_core::face_learning::TrainingSnapshot, String> {
+    let labels =
+        videre_core::face_db::load_confirmed_face_labels(conn).map_err(|e| e.to_string())?;
+    let face_ids: Vec<i64> = {
+        let mut statement = conn
+            .prepare("SELECT id FROM faces ORDER BY id")
+            .map_err(|e| e.to_string())?;
+        let rows = statement
+            .query_map([], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .collect::<rusqlite::Result<Vec<i64>>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
+    let observations =
+        videre_core::face_db::load_face_observations(conn, &face_ids).map_err(|e| e.to_string())?;
+    let events = videre_core::face_learning::eligible_events_for_training(
+        conn,
+        embedding_model_id,
+        videre_core::face_learning::FEATURE_SCHEMA_VERSION,
+    )
+    .map_err(|e| e.to_string())?;
+    videre_core::face_learning::build_training_snapshot(
+        generation,
+        embedding_model_id,
+        &labels,
+        &observations,
+        &events,
+        config,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Persist a trained candidate: insert, promote through the shipped gates,
+/// and return the profile identity and verdict. The profile row keeps the
+/// promotion outcome either way.
+pub fn persist_trained_profile(
+    conn: &Connection,
+    embedding_model_id: &str,
+    run: &videre_core::face_learning::TrainingRun,
+    gates: &videre_core::face_learning::PromotionGates,
+) -> Result<TrainedProfileSummary> {
+    let validation = match run.comparison.selected {
+        videre_core::face_learning::CandidateKind::Logistic => &run.logistic_validation,
+        videre_core::face_learning::CandidateKind::Additive => &run.additive_validation,
+    };
+    let profile = videre_core::face_learning::NewProfile {
+        artifact_version: videre_core::face_learning::PROFILE_ARTIFACT_VERSION,
+        embedding_model_id: embedding_model_id.to_owned(),
+        feature_schema_version: videre_core::face_learning::FEATURE_SCHEMA_VERSION,
+        model_kind: run.selected.model_kind().to_owned(),
+        parameters: serde_json::to_vec(&run.selected).map_err(Error::from)?,
+        training_evidence: run.evidence_counts.clone(),
+        validation_report: validation.clone(),
+        stage: videre_core::face_learning::ProfileStage::Suggestion,
+    };
+    let profile_id = videre_core::face_learning::insert_candidate(conn, &profile)?;
+    let outcome = videre_core::face_learning::evaluate_and_promote(conn, profile_id, gates)?;
+    Ok(TrainedProfileSummary {
+        profile_id,
+        model_kind: profile.model_kind,
+        promoted: outcome == videre_core::face_learning::PromotionOutcome::Promoted,
+    })
 }
 
 pub fn set_primary(conn: &Connection, face_id: i64, person_label: &str) -> Result<()> {

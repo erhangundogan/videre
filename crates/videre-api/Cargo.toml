@@ -11,6 +11,7 @@ categories = ["multimedia::images"]
 [dependencies]
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 videre-core = { path = "../videre-core", version = "0.37.0" }
 image = { version = "0.25", default-features = false, features = [
     "jpeg",

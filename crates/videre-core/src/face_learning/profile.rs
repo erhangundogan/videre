@@ -93,6 +93,40 @@ pub struct ValidationReport {
     pub datasets: Vec<DatasetValidation>,
 }
 
+impl Default for PromotionGates {
+    fn default() -> Self {
+        Self::shipped()
+    }
+}
+
+impl PromotionGates {
+    /// The gates this protocol ships with. They match the frozen evaluation
+    /// protocol versions, and every profile must pass them at promotion time.
+    pub fn shipped() -> Self {
+        Self {
+            protocol_version: 1,
+            evidence_schema_version: super::evidence::EVIDENCE_SCHEMA_VERSION,
+            feature_schema_version: super::features::FEATURE_SCHEMA_VERSION,
+            min_datasets: 2,
+            max_hard_rule_violations: 0,
+            max_invalid_explanations: 0,
+            min_suggestion_precision: 0.85,
+            min_suggestion_precision_wilson_lower_bound: 0.70,
+            min_suggestion_coverage: 0.02,
+            max_wall_time_ms: 60_000.0,
+            max_peak_memory_mib: 2_048.0,
+            max_pair_precision_drop: 0.01,
+            max_pair_recall_drop: 0.01,
+            max_mixed_cluster_rate_increase: 0.0,
+            max_fragmented_identity_rate_increase: 0.0,
+            max_unassigned_rate_increase: 0.01,
+            min_pair_recall_gain: 0.0,
+            min_fragmented_identity_reduction: 0,
+            min_additive_gain: 0.02,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PromotionGates {
     pub protocol_version: u32,
