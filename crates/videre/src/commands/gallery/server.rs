@@ -903,6 +903,22 @@ mod events_tests {
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     }
 
+    #[test]
+    fn event_files_surface_a_row_error_instead_of_dropping_the_photo() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        let conn = state.conn.lock().unwrap();
+        seed_events(&conn);
+        // A size that cannot decode as an integer: the row must not vanish
+        // from the event silently.
+        conn.execute(
+            "UPDATE file_hashes SET size_bytes = 'x' WHERE hash = 'c'",
+            [],
+        )
+        .unwrap();
+        assert!(crate::render::query_event_files(&conn, &["c".to_string()]).is_err());
+    }
+
     #[tokio::test]
     async fn events_pages_carry_the_right_globals_and_404_unknown_keys() {
         let dir = tempfile::tempdir().unwrap();

@@ -385,9 +385,8 @@ pub(crate) fn query_event_files(
                 r.get::<_, i64>(11)?,
             ))
         })?
-        .filter_map(|r| r.ok())
-        .map(|entry| (entry.0.hash.clone(), entry))
-        .collect();
+        .map(|r| r.map(|entry| (entry.0.hash.clone(), entry)))
+        .collect::<rusqlite::Result<_>>()?;
     // Preserve the caller's (chronological) order; a hash present more than
     // once in the library still resolves to a single row here.
     let mut rows = Vec::with_capacity(wanted.len());
