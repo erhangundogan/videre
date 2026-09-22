@@ -1511,6 +1511,7 @@ fn render_live_with_date(
             embedded,
             db_path,
             date_filter_json: date_filter_json.to_string(),
+            event_json: "null".to_string(),
         },
     };
     axum::response::Html(render(&set))

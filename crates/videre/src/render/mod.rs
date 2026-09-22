@@ -802,6 +802,7 @@ pub(crate) enum Section {
     All,
     Duplicates,
     Date,
+    Events,
     People,
     Map,
 }
@@ -821,6 +822,9 @@ impl Section {
     }
     pub(crate) fn is_map(&self) -> bool {
         *self == Section::Map
+    }
+    pub(crate) fn is_events(&self) -> bool {
+        *self == Section::Events
     }
 }
 
@@ -916,6 +920,7 @@ pub(crate) fn write_static_page(
             embedded: None,
             db_path,
             date_filter_json: "null".to_string(),
+            event_json: "null".to_string(),
         },
     };
     let html = render(&set);
@@ -932,6 +937,7 @@ pub(crate) fn write_static_page(
 pub(crate) enum View {
     All,
     Date,
+    Events,
     Duplicates,
 }
 
@@ -943,6 +949,7 @@ pub(crate) struct RenderOptions {
     pub embedded: Option<usize>,
     pub db_path: String,
     pub date_filter_json: String,
+    pub event_json: String,
 }
 
 /// One set of files plus everything known about them, ready to render as a
@@ -971,6 +978,7 @@ pub(crate) fn render(set: &RenderSet) -> String {
     let (all_files, keep_files): (Option<&[FileRow]>, Option<&[FileRow]>) = match set.view {
         View::All => (Some(&set.items), None),
         View::Date => (None, Some(&set.items)),
+        View::Events => (None, None),
         View::Duplicates => (None, None),
     };
     let embedded = set.options.embedded;
@@ -1007,6 +1015,8 @@ pub(crate) fn render(set: &RenderSet) -> String {
         live,
         has_embeddings,
         &set.options.date_filter_json,
+        set.view,
+        &set.options.event_json,
     );
 
     let page = GalleryPage {
@@ -1025,7 +1035,7 @@ pub(crate) fn render(set: &RenderSet) -> String {
         has_groups: !groups.is_empty(),
         duplicate_groups: stats.duplicate_groups,
         all_files_count: all_files.map(|f| f.len()),
-        has_keep_files: keep_files.is_some(),
+        has_keep_files: keep_files.is_some() || set.view == View::Events,
         nav,
         // Home (`/` = All) and standalone exports (no nav) keep the header; the
         // secondary sections drop it. See `GalleryPage::show_header`.
@@ -1049,24 +1059,31 @@ fn build_data_block(
     live: bool,
     has_embeddings: bool,
     date_filter_json: &str,
+    view_kind: View,
+    event_json: &str,
 ) -> String {
     let mut out = String::with_capacity(256 * 1024);
     // GVIEW tells the client which view to ask /api/files for when it fetches
     // rather than reading an inlined array. It is the route's own identity, so
     // the client never has to infer it from the URL.
-    let view = if keep_files.is_some() { "date" } else { "all" };
+    let view = match view_kind {
+        View::Date => "date",
+        View::Events => "events",
+        View::All | View::Duplicates => "all",
+    };
     // Video grid tiles are served as oriented poster frames only on a live macOS
     // server: poster extraction is QuickLook (macOS-only), and a static export
     // has no server to fetch them from. Elsewhere the client keeps the plain
     // `<video>` tile. See buildPreview in gallery.js.
     let video_posters = live && cfg!(target_os = "macos");
     out.push_str(&format!(
-        "<script>\nvar LIVE_SERVER={live};\nvar HAS_EMBEDDINGS={has_embeddings};\nvar VIDEO_POSTERS={video_posters};\nvar GVIEW={};\nvar PEOPLE_ROOT={};\nvar GDATE={};\nvar GLOC=null;\n</script>\n",
+        "<script>\nvar LIVE_SERVER={live};\nvar HAS_EMBEDDINGS={has_embeddings};\nvar VIDEO_POSTERS={video_posters};\nvar GVIEW={};\nvar PEOPLE_ROOT={};\nvar GDATE={};\nvar GEVENT={};\nvar GLOC=null;\n</script>\n",
         json_str(view),
         // `nav` is Some only under `videre gallery`, which is the one
         // configuration with a `/people`. See `people_root`.
         json_str(people_root(nav.is_some())),
         date_filter_json,
+        event_json,
     ));
     out.push_str("<script>\nvar GROUPS=[\n");
     for (i, group) in groups.iter().enumerate() {
