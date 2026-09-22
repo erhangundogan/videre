@@ -14,7 +14,7 @@ description: Every videre subcommand, what it does, and where to read more.
 | [`videre faces`](/commands/faces/) | Detect and group faces |
 | [`videre classify`](/commands/classify/) | Tag photos as photo/screenshot/document/meme |
 | [`videre locations`](/commands/locations/) | Group photos by where they were taken |
-| [`videre gallery`](/commands/gallery/) | Browse the library in a local web UI: files, people, dates |
+| [`videre gallery`](/commands/gallery/) | Browse the library in a local web UI: files, duplicates, dates, people, map, events |
 | [`videre search`](/commands/search/) | Find photos by description, example image, person, category, or place |
 | [`videre pipeline`](/commands/pipeline/) | Bring the whole library current in one command (scan through locations) |
 | [`videre mark`](/commands/mark/) | Star rating, like, keep/reject, label your media files |

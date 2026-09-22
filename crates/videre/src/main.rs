@@ -37,7 +37,7 @@ struct Cli {
 enum Command {
     /// Report duplicate files from the database and print paths to remove
     Dedupe(commands::dedupe::DedupeArgs),
-    /// Browse the library in a local web UI: all files, people, dates
+    /// Browse the library in a local web UI: files, duplicates, dates, people, map, events
     Gallery(commands::gallery::GalleryArgs),
     /// Scan a directory, hash every image, and populate the database
     Scan(commands::scan::ScanArgs),

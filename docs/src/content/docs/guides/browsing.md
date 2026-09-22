@@ -1,6 +1,6 @@
 ---
 title: Browsing and labeling in a browser
-description: The three different interfaces videre dedupe --html produces, and which one you get.
+description: A static page you can keep, or the live gallery, and which one you get.
 ---
 
 `videre` can produce visual content based on the command.
@@ -10,7 +10,7 @@ can open static file directly via `open <filename>` command from terminal or
 via finder on MacOS or via Linux equivalent.
 - A local server that you need to navigate to provided URL (http://127.0.0.1:7878)
 to open. There you can view your media files, duplicates, files grouped by date,
-face clusters and you can label people you know.
+face clusters, a map and automatic events, and you can label people you know.
 
 | You want to | Command | What you get |
 |---|---|---|

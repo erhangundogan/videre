@@ -16,6 +16,40 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.38.0] - 2026-09-23
+
+### Added
+
+- **Events in the gallery.** A new Events section groups photos into sessions
+  automatically: a gap of more than six hours, or a move of more than five
+  kilometers between two located shots, starts a new event. Each card shows the
+  place name when the photos carry GPS, the date range and the file count; open
+  one to see just that session's photos. Events are computed when the page
+  opens, so there is nothing to build or keep up to date.
+- **The gallery learns from your face corrections (experimental).** Naming a
+  cluster, moving or removing a face, or dissolving a group on the People page
+  records local teaching evidence. In the background the gallery trains small,
+  interpretable scorers from it and, once one passes the quality gates, asks
+  yes/no questions such as "Is this Elena?": Yes names the cluster, No only
+  teaches, Skip does neither. A status strip shows whether learning is up to
+  date and whether the last candidate was promoted or rejected, and each
+  person's page lists the teaching behind them. Grouping itself is unchanged;
+  face rows only ever change through your own actions.
+- New gallery HTTP endpoints for events (`/api/events`,
+  `/api/events/{key}/files`) and face learning (`/api/face-learning/status`,
+  questions, answers and the teaching journal), documented in the gallery HTTP
+  interface reference.
+
+### Changed
+
+- **`videre gallery` finds a free port on its own.** Without `--port` it starts
+  at 7878 and advances to the next free port when one is taken, so a second
+  gallery for another library needs no port assigned by hand. An explicit
+  `--port` is used exactly and fails if that port is busy.
+- **`videre faces --reset` also clears face learning.** It deletes teaching
+  events, identity questions and learned profiles along with faces and people,
+  and its confirmation prompt now lists how many of each it would delete.
+
 ## [0.37.0] - 2026-09-22
 
 ### Added
@@ -2114,7 +2148,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.37.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.38.0...HEAD
+[0.38.0]: https://github.com/erhangundogan/videre/compare/v0.37.0...v0.38.0
 [0.37.0]: https://github.com/erhangundogan/videre/compare/v0.36.0...v0.37.0
 [0.36.0]: https://github.com/erhangundogan/videre/compare/v0.35.0...v0.36.0
 [0.35.0]: https://github.com/erhangundogan/videre/compare/v0.34.0...v0.35.0
