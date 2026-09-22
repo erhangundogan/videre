@@ -1044,11 +1044,35 @@ pub fn face_learning_status(conn: &Connection) -> Result<FaceLearningStatus> {
         [],
         |row| row.get::<_, i64>(0),
     )?;
+    // A retired profile was promoted and later replaced; it still counts as
+    // the run having promoted.
+    let last_candidate = match state.last_profile_id {
+        Some(id) => {
+            videre_core::face_learning::ensure_profile_table(conn)?;
+            conn.query_row(
+                "SELECT status FROM face_learning_profiles WHERE id = ?1",
+                [id],
+                |row| row.get::<_, String>(0),
+            )
+            .map(Some)
+            .or_else(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })?
+            .and_then(|status| match status.as_str() {
+                "active" | "retired" => Some("promoted".to_string()),
+                "rejected" => Some("rejected".to_string()),
+                _ => None,
+            })
+        }
+        None => None,
+    };
     Ok(FaceLearningStatus {
         generation: state.generation,
         trained_generation: state.trained_generation,
         status: format!("{:?}", state.status).to_lowercase(),
         last_profile_id: state.last_profile_id,
+        last_candidate,
         last_error: state.last_error,
         pending_questions: pending_questions as usize,
     })

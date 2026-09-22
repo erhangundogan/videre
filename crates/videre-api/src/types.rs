@@ -22,6 +22,10 @@ pub struct FaceLearningStatus {
     pub trained_generation: u64,
     pub status: String,
     pub last_profile_id: Option<i64>,
+    /// What became of the last trained candidate: `promoted` or `rejected`,
+    /// or `None` before any candidate was stored. Lets a `current` status
+    /// say whether the last run changed the profile in use.
+    pub last_candidate: Option<String>,
     pub last_error: Option<String>,
     pub pending_questions: usize,
 }

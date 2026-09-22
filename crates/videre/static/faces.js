@@ -452,8 +452,17 @@ let facesData = { people: [], clusters: [], singletons: [] };
           training: 'Learning: training',
           failed: 'Learning: last run failed, will retry after new feedback'
         };
+        // A current status alone cannot say whether the last run changed the
+        // profile in use, so the stored candidate outcome qualifies it.
+        const outcomes = {
+          promoted: ', new profile in use',
+          rejected: ', last candidate did not pass the quality gates; previous profile kept'
+        };
+        let text = labels[s.status] || ('Learning: ' + s.status);
+        if (s.status === 'current' && outcomes[s.last_candidate]) text += outcomes[s.last_candidate];
         strip.dataset.learningStatus = s.status;
-        document.getElementById('learning-status-text').textContent = labels[s.status] || ('Learning: ' + s.status);
+        strip.dataset.learningCandidate = s.last_candidate || '';
+        document.getElementById('learning-status-text').textContent = text;
         strip.hidden = false;
       } catch (_) { /* status is advisory; never break the page over it */ }
     }

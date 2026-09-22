@@ -513,6 +513,7 @@ curl "http://127.0.0.1:7878/api/face-learning/status"
   "trained_generation": 3,
   "status": "current",
   "last_profile_id": 1,
+  "last_candidate": "promoted",
   "last_error": null,
   "pending_questions": 2
 }
@@ -521,6 +522,11 @@ curl "http://127.0.0.1:7878/api/face-learning/status"
 `status` is one of `current`, `stale` (feedback has arrived since the
 last run), `training`, or `failed` (the last run failed; the active
 profile stays as it is and `last_error` says why).
+
+`last_candidate` says what became of the last trained candidate:
+`promoted` (it passed the quality gates and is the profile in use),
+`rejected` (it failed them and the previous profile stays), or `null`
+before any candidate was stored.
 
 ### `GET /api/face-learning/questions`
 
