@@ -340,6 +340,66 @@ pub(crate) fn query_files_by_hash(
     Ok((rows, n))
 }
 
+/// Fetch every row named in `hashes`, in the given order, with no cap. Unlike
+/// `query_files_by_hash` (bounded at 100 for the in-page similarity feature),
+/// this backs the `/events` leaf, which must render a whole session however
+/// large. Rows are returned in `hashes` order so an event stays chronological.
+pub(crate) fn query_event_files(
+    conn: &Connection,
+    hashes: &[String],
+) -> rusqlite::Result<(Vec<(FileRow, i64)>, i64)> {
+    let wanted: Vec<&str> = hashes
+        .iter()
+        .map(|h| h.trim())
+        .filter(|h| !h.is_empty() && h.chars().all(|c| c.is_ascii_hexdigit()))
+        .collect();
+    if wanted.is_empty() {
+        return Ok((Vec::new(), 0));
+    }
+    let placeholders = std::iter::repeat_n("?", wanted.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT path, hash, size_bytes, COALESCE(ext,''), created_at, modified_at, exif_date, \
+                gps_lat, gps_lon, width, height, \
+                (SELECT COUNT(*) FROM file_hashes c WHERE c.hash = f.hash) AS copies \
+         FROM file_hashes AS f WHERE f.hash IN ({placeholders})"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut by_hash: std::collections::HashMap<String, (FileRow, i64)> = stmt
+        .query_map(rusqlite::params_from_iter(wanted.iter()), |r| {
+            Ok((
+                FileRow {
+                    path: r.get(0)?,
+                    hash: r.get(1)?,
+                    size_bytes: r.get(2)?,
+                    ext: r.get(3)?,
+                    created_at: r.get(4)?,
+                    modified_at: r.get(5)?,
+                    exif_date: r.get(6)?,
+                    gps_lat: r.get(7)?,
+                    gps_lon: r.get(8)?,
+                    width: r.get(9)?,
+                    height: r.get(10)?,
+                },
+                r.get::<_, i64>(11)?,
+            ))
+        })?
+        .filter_map(|r| r.ok())
+        .map(|entry| (entry.0.hash.clone(), entry))
+        .collect();
+    // Preserve the caller's (chronological) order; a hash present more than
+    // once in the library still resolves to a single row here.
+    let mut rows = Vec::with_capacity(wanted.len());
+    for hash in &wanted {
+        if let Some(entry) = by_hash.remove(*hash) {
+            rows.push(entry);
+        }
+    }
+    let n = rows.len() as i64;
+    Ok((rows, n))
+}
+
 fn best_date(r: &FileRow) -> &str {
     if let Some(d) = r.exif_date.as_deref() {
         if !d.starts_with("0000") {
