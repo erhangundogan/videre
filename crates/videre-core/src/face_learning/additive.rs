@@ -475,6 +475,7 @@ pub fn train_additive_bundle(
     snapshot: &TrainingSnapshot,
     config: &TrainingConfig,
 ) -> Result<ModelBundle, TrainingError> {
+    super::validate_config(config)?;
     if snapshot.embedding_model_id.trim().is_empty()
         || snapshot.feature_schema_version != FEATURE_SCHEMA_VERSION
         || snapshot.membership.decision_kind != LearningDecisionKind::Membership

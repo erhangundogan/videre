@@ -465,7 +465,7 @@ pub fn build_training_snapshot(
     })
 }
 
-fn validate_config(config: &TrainingConfig) -> Result<(), TrainingError> {
+pub(crate) fn validate_config(config: &TrainingConfig) -> Result<(), TrainingError> {
     if config.folds < 2
         || config.max_derived_pairs_per_identity == 0
         || config.max_negative_pairs_per_identity_pair == 0
@@ -823,9 +823,12 @@ pub fn compare_candidate_reports(
     let additive_gain = total_gain / logistic.datasets.len() as f64;
     let logistic_passes = logistic_failures.is_empty();
     let additive_passes = additive_failures.is_empty();
-    let selected = if additive_passes
-        && (!logistic_passes || (folds_agree && additive_gain > gates.min_additive_gain))
-    {
+    // The margin and repeatability rules do not depend on the baseline's
+    // gate outcome: additive wins only when it passes every gate, improves
+    // every fold, and clears the configured margin. Otherwise the simpler
+    // logistic candidate is stored, gates and all.
+    let repeatable_margin = folds_agree && additive_gain > gates.min_additive_gain;
+    let selected = if additive_passes && repeatable_margin {
         CandidateKind::Additive
     } else {
         CandidateKind::Logistic
@@ -2279,6 +2282,103 @@ mod tests {
         );
         assert!(run.evidence_counts.positive_pairs > 0);
         assert!(run.evidence_counts.negative_pairs > 0);
+    }
+
+    #[test]
+    fn additive_needs_repeatable_margin_even_when_logistic_fails_its_gates() {
+        let snapshot = TrainingSnapshot {
+            generation: 10,
+            embedding_model_id: "arcface/model".into(),
+            feature_schema_version: FEATURE_SCHEMA_VERSION,
+            membership: separable_dataset(LearningDecisionKind::Membership),
+            cluster_quality: separable_dataset(LearningDecisionKind::ClusterQuality),
+            exclusions: Vec::new(),
+        };
+        let run = train_and_select_candidate(&snapshot, &config(), &selection_gates()).unwrap();
+
+        // Fold sizes differ per dataset (cluster folds hold two examples,
+        // membership four), so mutations derive from each fold's count.
+        // Logistic fails the Wilson gate; additive passes with a real but
+        // sub-margin gain. The margin rule does not depend on the baseline's
+        // gate outcome, so the simpler model still wins.
+        let mut failing = run.logistic_validation.clone();
+        for dataset in &mut failing.datasets {
+            let labeled = dataset.clustering.labeled_faces;
+            if let Some(metrics) = &mut dataset.suggestions {
+                metrics.correct = 1;
+                metrics.incorrect = labeled - 1;
+                metrics.not_suggested = 0;
+                metrics.precision = Some(1.0 / labeled as f64);
+                metrics.coverage = 1.0;
+            }
+        }
+        let mut passing = run.additive_validation.clone();
+        for dataset in &mut passing.datasets {
+            let labeled = dataset.clustering.labeled_faces;
+            if let Some(metrics) = &mut dataset.suggestions {
+                metrics.correct = labeled - 1;
+                metrics.incorrect = 1;
+                metrics.not_suggested = 0;
+                metrics.precision = Some((labeled - 1) as f64 / labeled as f64);
+                metrics.coverage = 1.0;
+            }
+        }
+        let mut weak_margin = selection_gates();
+        weak_margin.min_suggestion_precision = 0.5;
+        weak_margin.min_suggestion_precision_wilson_lower_bound = 0.25;
+        weak_margin.min_additive_gain = 0.6;
+        let comparison = compare_candidate_reports(&failing, &passing, &weak_margin).unwrap();
+        assert!(!comparison.logistic_passes);
+        assert!(comparison.additive_passes);
+        assert!(
+            comparison.additive_gain <= weak_margin.min_additive_gain,
+            "fixture must keep the gain below the margin: {:?}",
+            comparison
+        );
+        assert_eq!(comparison.selected, CandidateKind::Logistic);
+
+        // With a real margin and no fold regression, additive wins even
+        // though the baseline fails its gates.
+        let mut honest_margin = weak_margin;
+        honest_margin.min_additive_gain = 0.3;
+        let comparison = compare_candidate_reports(&failing, &passing, &honest_margin).unwrap();
+        assert!(comparison.folds_agree);
+        assert_eq!(comparison.selected, CandidateKind::Additive);
+
+        // A single regressing fold forces the simpler candidate even when the
+        // average gain still clears the margin.
+        let mut regressing = passing.clone();
+        let labeled = regressing.datasets[1].clustering.labeled_faces;
+        let metrics = regressing.datasets[1].suggestions.as_mut().unwrap();
+        metrics.correct = 0;
+        metrics.incorrect = labeled;
+        metrics.precision = Some(0.0);
+        let comparison = compare_candidate_reports(&failing, &regressing, &honest_margin).unwrap();
+        assert!(!comparison.folds_agree);
+        assert!(
+            comparison.additive_gain > honest_margin.min_additive_gain,
+            "fixture must clear the margin despite the regression: {:?}",
+            comparison
+        );
+        assert_eq!(comparison.selected, CandidateKind::Logistic);
+    }
+
+    #[test]
+    fn additive_training_rejects_malformed_config_instead_of_panicking() {
+        let snapshot = TrainingSnapshot {
+            generation: 11,
+            embedding_model_id: "arcface/model".into(),
+            feature_schema_version: FEATURE_SCHEMA_VERSION,
+            membership: separable_dataset(LearningDecisionKind::Membership),
+            cluster_quality: separable_dataset(LearningDecisionKind::ClusterQuality),
+            exclusions: Vec::new(),
+        };
+        let mut config = config();
+        config.additive_bins = 1;
+        assert!(matches!(
+            train_additive_bundle(&snapshot, &config),
+            Err(TrainingError::InvalidConfig(_))
+        ));
     }
 
     #[test]
