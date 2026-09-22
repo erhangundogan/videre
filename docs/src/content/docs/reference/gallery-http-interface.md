@@ -17,7 +17,9 @@ videre gallery --browse
 videre gallery --port 8080
 ```
 
-The examples below use `http://127.0.0.1:7878`, the default address.
+The examples below use `http://127.0.0.1:7878`, the default address. Without
+`--port` a busy 7878 advances to the next free port, so check the startup line
+before assuming `7878`; an explicit `--port` is used exactly.
 
 :::note
 Static HTML exports from commands such as `videre dedupe --html` and

@@ -21,9 +21,10 @@ pub struct GalleryArgs {
     #[arg(long, value_parser = super::parse_model_id)]
     model: Option<String>,
 
-    /// Port to listen on
-    #[arg(long, default_value_t = 7878)]
-    port: u16,
+    /// Port to listen on. Omitted, it starts at 7878 and advances to the next
+    /// free port if that is taken; given explicitly, that exact port is used.
+    #[arg(long)]
+    port: Option<u16>,
 
     /// Open the gallery in your browser once the server is listening
     #[arg(long)]
@@ -43,4 +44,26 @@ pub fn run(args: GalleryArgs, ctx: &CommandContext) -> anyhow::Result<()> {
         args.model.as_deref(),
     )?;
     server::serve_gallery(ctx, model_id, args.port, args.browse)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Wrap {
+        #[command(flatten)]
+        args: GalleryArgs,
+    }
+
+    #[test]
+    fn port_is_none_without_the_flag_and_some_with_it() {
+        // None drives the 7878-with-fallback default; Some pins an exact port.
+        assert_eq!(Wrap::parse_from(["gallery"]).args.port, None);
+        assert_eq!(
+            Wrap::parse_from(["gallery", "--port", "9000"]).args.port,
+            Some(9000)
+        );
+    }
 }

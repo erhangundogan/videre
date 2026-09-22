@@ -2770,7 +2770,81 @@ struct ServeOptions {
     /// The startup-bound library context, stored in `AppState` for search.
     context: Arc<crate::command_context::CommandContext>,
     port: u16,
+    /// True only when `port` is the default (no `--port` given): a taken port
+    /// then advances to the next free one. An explicit `--port` is exact.
+    port_fallback: bool,
     browse: bool,
+}
+
+/// The port `videre gallery` uses when `--port` is omitted.
+const DEFAULT_GALLERY_PORT: u16 = 7878;
+
+/// Bind `127.0.0.1:port`. When `allow_fallback` is set, a port already in use
+/// advances to the next one so a second gallery does not have to be told a free
+/// port by hand; without it the requested port is exact and a clash is an error
+/// (an explicit `--port` means that port and no other).
+///
+/// `port` 0 is left to the OS, which picks a free port itself, so there is
+/// nothing to scan. Any error other than "address in use" is returned as is,
+/// and the scan stops at 65535 rather than wrapping back to a privileged port.
+fn bind_with_fallback(port: u16, allow_fallback: bool) -> std::io::Result<std::net::TcpListener> {
+    if port == 0 {
+        return std::net::TcpListener::bind(("127.0.0.1", 0));
+    }
+    let mut port = port;
+    loop {
+        match std::net::TcpListener::bind(("127.0.0.1", port)) {
+            Ok(listener) => return Ok(listener),
+            Err(error) if allow_fallback && error.kind() == std::io::ErrorKind::AddrInUse => {
+                match port.checked_add(1) {
+                    Some(next) => port = next,
+                    None => return Err(error),
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+#[cfg(test)]
+mod bind_tests {
+    use super::bind_with_fallback;
+    use std::net::TcpListener;
+
+    #[test]
+    fn the_default_port_advances_past_an_occupied_one() {
+        // Hold a port for the duration, then ask the binder for it with
+        // fallback on (the no-`--port` default): it must skip to a higher one.
+        let occupied = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let taken = occupied.local_addr().unwrap().port();
+
+        let listener = bind_with_fallback(taken, true).unwrap();
+        assert!(
+            listener.local_addr().unwrap().port() > taken,
+            "a taken default port must advance to a higher free port"
+        );
+    }
+
+    #[test]
+    fn an_explicit_port_does_not_fall_back_and_errors_when_taken() {
+        // Fallback off is the explicit-`--port` case: a clash is an error, not
+        // a silent move to a different port.
+        let occupied = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let taken = occupied.local_addr().unwrap().port();
+
+        let error = bind_with_fallback(taken, false).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
+    }
+
+    #[test]
+    fn port_zero_lets_the_os_pick_a_free_port() {
+        let listener = bind_with_fallback(0, false).unwrap();
+        assert_ne!(
+            listener.local_addr().unwrap().port(),
+            0,
+            "port 0 must resolve to a concrete OS-chosen port"
+        );
+    }
 }
 
 async fn serve_faces_async(
@@ -2891,15 +2965,29 @@ async fn serve_faces_async(
     let app = router.with_state(state);
 
     let requested = format!("127.0.0.1:{}", opts.port);
-    let listener = tokio::net::TcpListener::bind(&requested)
-        .await
-        .map_err(|e| format!("Cannot bind to {requested}: {e}"))?;
+    // Bind synchronously so an occupied port can be skipped, then hand the
+    // socket to tokio. Running two galleries at once is normal (one per
+    // library), so the default port advances to the next free one rather than
+    // failing; an explicit `--port` stays exact.
+    let std_listener = bind_with_fallback(opts.port, opts.port_fallback).map_err(|e| {
+        if opts.port_fallback {
+            format!("Cannot bind a port at or above {requested}: {e}")
+        } else {
+            format!("Cannot bind to {requested}: {e}")
+        }
+    })?;
+    std_listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("Cannot prepare the gallery socket: {e}"))?;
+    let listener = tokio::net::TcpListener::from_std(std_listener)
+        .map_err(|e| format!("Cannot prepare the gallery socket: {e}"))?;
 
     // :warning: Report the address that was BOUND, not the one requested. With
     // `--port 0` the OS picks a free port, and printing the request meant the
     // server announced `http://127.0.0.1:0`, which is unreachable. Anyone using
     // 0 to avoid choosing a port then had no way to find the server, and
-    // `--browse` opened the same dead address.
+    // `--browse` opened the same dead address. Fallback makes this true a second
+    // way: the bound port is often not the one the flag named.
     let addr = listener
         .local_addr()
         .map(|a| a.to_string())
@@ -2934,10 +3022,17 @@ async fn serve_faces_async(
 pub(crate) fn serve_gallery(
     ctx: &crate::command_context::CommandContext,
     model_id: String,
-    port: u16,
+    port: Option<u16>,
     browse: bool,
 ) -> anyhow::Result<()> {
     let db = ctx.library.paths.db.clone();
+    // No `--port`: start at the default and let a busy port advance to the next
+    // free one, so a second `videre gallery` lands on 7879 by itself. An
+    // explicit `--port` is used exactly, taken or not.
+    let (port, port_fallback) = match port {
+        Some(port) => (port, false),
+        None => (DEFAULT_GALLERY_PORT, true),
+    };
     let opts = ServeOptions {
         serve_faces_ui: true,
         report_all: true,
@@ -2947,6 +3042,7 @@ pub(crate) fn serve_gallery(
         gallery: true,
         context: Arc::new(ctx.clone()),
         port,
+        port_fallback,
         browse,
     };
     serve_faces(&db, opts).map_err(|e| anyhow::anyhow!("{e}"))
