@@ -284,7 +284,7 @@ pub(crate) async fn handle_learning_answer(
 pub(crate) async fn handle_learning_events(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Result<Json<Vec<videre_core::face_learning::StoredLearningEvent>>, StatusCode> {
+) -> Result<Json<Vec<videre_api::FaceLearningEventProof>>, StatusCode> {
     let limit = params
         .get("limit")
         .and_then(|limit| limit.parse::<usize>().ok())
@@ -297,7 +297,7 @@ pub(crate) async fn handle_learning_events(
         .conn
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    videre_api::face_learning_events(&conn, limit, before)
+    videre_api::face_learning_events(&conn, limit, before, Some(&state.model_id))
         .map(Json)
         .map_err(api_status)
 }
@@ -306,12 +306,12 @@ pub(crate) async fn handle_learning_events(
 pub(crate) async fn handle_learning_event_detail(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<i64>,
-) -> Result<Json<videre_core::face_learning::StoredLearningEvent>, StatusCode> {
+) -> Result<Json<videre_api::FaceLearningEventProof>, StatusCode> {
     let conn = state
         .conn
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    match videre_api::face_learning_event(&conn, id) {
+    match videre_api::face_learning_event(&conn, id, Some(&state.model_id)) {
         Ok(Some(event)) => Ok(Json(event)),
         Ok(None) => Err(StatusCode::NOT_FOUND),
         Err(error) => Err(api_status(error)),
