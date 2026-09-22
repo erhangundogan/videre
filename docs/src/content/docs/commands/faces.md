@@ -248,10 +248,12 @@ safe.
 
 ## Teaching the gallery (experimental)
 
-Every labeling action in the gallery's People page writes durable, inspectable
-teaching evidence: naming a cluster, moving a face, removing a face, or
-dissolving a cluster each record what changed and the generic face-derived
-factors behind it. In the background, the gallery trains small interpretable
+Labeling actions in the gallery's People page write durable, inspectable
+teaching evidence when there is a comparison to record: naming a cluster,
+moving a face, removing a face, or dissolving a cluster each record what
+changed and the generic face-derived factors behind it. An action with
+nothing to compare against (naming the very first face of a new person, for
+example) records none. In the background, the gallery trains small interpretable
 scorers from that evidence and, once a scorer passes the shipped quality
 gates, asks bounded yes/no questions such as "Is this Elena?" on the People
 page. Answering Yes names that cluster; No only teaches; Skip does neither.

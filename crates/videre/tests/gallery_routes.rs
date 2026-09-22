@@ -1305,6 +1305,33 @@ fn face_learning_boundary_only_user_mutations_change_faces() {
     }
     let server = Server::start(&lib);
 
+    let face_rows =
+        |conn: &rusqlite::Connection| -> Vec<(i64, Option<i64>, Option<String>, i64, i64)> {
+            let mut statement = conn
+                .prepare(
+                    "SELECT id, cluster_id, person_label, confirmed, is_primary
+                      FROM faces ORDER BY id",
+                )
+                .unwrap();
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+    let before = {
+        let conn = lib.init_db();
+        face_rows(&conn)
+    };
+
     // The user mutation: assign one singleton. Exactly that face changes.
     let (status, body) = server.send(
         "PUT",
@@ -1315,38 +1342,37 @@ fn face_learning_boundary_only_user_mutations_change_faces() {
     assert!(body.contains("\"generation\":1"), "{body}");
 
     // Wait until the background worker settles (it may succeed or fail on
-    // this tiny evidence; either way it must not touch faces).
-    let deadline = Instant::now() + Duration::from_secs(15);
+    // this tiny evidence; either way it must not touch faces). A worker that
+    // never settles fails the test instead of letting it pass unobserved.
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let (_, status_body) = server.get("/api/face-learning/status");
         let settled = status_body.contains("\"status\":\"current\"")
             || status_body.contains("\"status\":\"failed\"");
-        if settled || Instant::now() > deadline {
+        if settled {
             break;
         }
+        assert!(
+            Instant::now() < deadline,
+            "the background worker never settled: {status_body}"
+        );
         std::thread::sleep(Duration::from_millis(100));
     }
 
     {
         let conn = lib.init_db();
-        let (assigned, total): (i64, i64) = conn
-            .query_row(
-                "SELECT SUM(confirmed = 1 AND person_label = 'ozgur_demirtas'),
-                        COUNT(*) FROM faces",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(assigned, 2, "only the user-named faces are labeled");
-        assert_eq!(total, 3, "the worker adds and deletes no face rows");
-        let profiles: i64 = conn
-            .query_row("SELECT COUNT(*) FROM face_learning_profiles", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        assert!(
-            profiles <= 1,
-            "at most one candidate exists and it never changes faces"
-        );
+        let after = face_rows(&conn);
+        assert_eq!(after.len(), before.len(), "no face rows added or deleted");
+        for (was, is) in before.iter().zip(&after) {
+            assert_eq!(was.0, is.0);
+            if was.0 == 2 {
+                // Only the explicitly named face may change.
+                assert_eq!(is.2.as_deref(), Some("ozgur_demirtas"));
+                assert_eq!(is.3, 1);
+                assert_eq!(is.1, None, "assigning detaches the machine cluster");
+            } else {
+                assert_eq!(was, is, "no other face row may move");
+            }
+        }
     }
 }

@@ -136,8 +136,10 @@ Thumbnails are served at 480px so tiles stay sharp on high-DPI displays.
 ## Face learning
 
 The People page teaches the gallery: naming clusters, moving faces, and
-dissolving bad groups write durable teaching evidence, and a background
-worker turns it into small interpretable scorers. Once a scorer passes the
+dissolving bad groups write durable teaching evidence where there is a
+comparison to record (an action with nothing to compare against records
+none), and a background worker turns that evidence into small interpretable
+scorers. Once a scorer passes the
 shipped gates, the People page asks bounded yes/no identity questions.
 Answering Yes names a cluster; No only teaches; Skip does neither.
 

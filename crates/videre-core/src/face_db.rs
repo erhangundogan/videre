@@ -155,22 +155,37 @@ pub struct FaceResetCounts {
     pub profiles: usize,
 }
 
-/// Counts everything `reset_all` clears. Best-effort on libraries that never
-/// ran faces: missing tables count as zero.
-pub fn face_reset_counts(conn: &Connection) -> anyhow::Result<FaceResetCounts> {
-    let count = |sql: &str| -> usize {
-        conn.query_row(sql, [], |row| row.get::<_, i64>(0))
-            .unwrap_or(0) as usize
+/// Counts rows in a table the library may legitimately not have yet. Only a
+/// missing table counts as zero; any real query error propagates so the
+/// reset preview can never understate what a reset will erase.
+fn count_rows(conn: &Connection, table: &str, predicate: &str) -> anyhow::Result<usize> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        [table],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        return Ok(0);
+    }
+    let sql = if predicate.is_empty() {
+        format!("SELECT COUNT(*) FROM {table}")
+    } else {
+        format!("SELECT COUNT(*) FROM {table} WHERE {predicate}")
     };
+    let rows: i64 = conn.query_row(&sql, [], |row| row.get(0))?;
+    Ok(usize::try_from(rows).unwrap_or(0))
+}
+
+/// Counts everything `reset_all` clears. Missing tables count as zero;
+/// query errors propagate instead of reading as zero.
+pub fn face_reset_counts(conn: &Connection) -> anyhow::Result<FaceResetCounts> {
     Ok(FaceResetCounts {
-        total_faces: count("SELECT COUNT(*) FROM faces"),
-        labeled_faces: count(
-            "SELECT COUNT(*) FROM faces WHERE confirmed = 1 AND person_label IS NOT NULL",
-        ),
-        people: count("SELECT COUNT(*) FROM people"),
-        learning_events: count("SELECT COUNT(*) FROM face_learning_events"),
-        questions: count("SELECT COUNT(*) FROM face_learning_questions"),
-        profiles: count("SELECT COUNT(*) FROM face_learning_profiles"),
+        total_faces: count_rows(conn, "faces", "")?,
+        labeled_faces: count_rows(conn, "faces", "confirmed = 1 AND person_label IS NOT NULL")?,
+        people: count_rows(conn, "people", "")?,
+        learning_events: count_rows(conn, "face_learning_events", "")?,
+        questions: count_rows(conn, "face_learning_questions", "")?,
+        profiles: count_rows(conn, "face_learning_profiles", "")?,
     })
 }
 
@@ -722,6 +737,13 @@ mod tests {
             })
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn reset_counts_treat_missing_tables_as_empty_not_errors() {
+        let conn = Connection::open_in_memory().unwrap();
+        let counts = face_reset_counts(&conn).unwrap();
+        assert_eq!(counts, FaceResetCounts::default());
     }
 
     #[test]
