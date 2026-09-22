@@ -74,7 +74,7 @@ people or location data yet.
 | `/map` | Location clusters plotted on a world map, with the full file grid below; click a cluster to see its photos |
 | `/map/location/berlin?radius=25` | An addressable location drill-down with a proximity radius in kilometers |
 | `/events` | Photos grouped into automatic time-and-place events; click one to see its photos |
-| `/events/20210810T143207` | One event's photos, keyed by its start time |
+| `/events/20210810T143207-3f9a1c2e` | One event's photos, keyed by its start time and a short hash |
 | `/smart` | Reserved, not built yet |
 
 **Files**, **Duplicates**, **Date**, **Events**, **People** and **Map** sit in a strip along

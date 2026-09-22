@@ -851,8 +851,8 @@ mod events_tests {
         // Newest first.
         assert_eq!(events[0]["start"], "2021-08-12 09:00:00");
         assert_eq!(events[0]["count"], 1);
-        // The key is the URL-safe compact start.
-        assert_eq!(events[0]["key"], "20210812T090000");
+        // The key is the compact start plus the first member's short hash.
+        assert_eq!(events[0]["key"], "20210812T090000-c");
         // The offline reverse geocoder resolves the Berlin centroid to a place.
         let place = events[0]["place"].as_str().unwrap();
         assert!(place.ends_with(", DE"), "unexpected place: {place}");
@@ -877,7 +877,7 @@ mod events_tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/events/20210812T090000/files")
+                    .uri("/api/events/20210812T090000-c/files")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -941,7 +941,7 @@ mod events_tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/events/20210812T090000")
+                    .uri("/events/20210812T090000-c")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -951,7 +951,7 @@ mod events_tests {
         let body = to_bytes(leaf.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
         assert!(body.contains("var GVIEW=\"events\";"), "{body}");
-        assert!(body.contains("\"key\":\"20210812T090000\""), "{body}");
+        assert!(body.contains("\"key\":\"20210812T090000-c\""), "{body}");
         assert!(body.contains("\"from\":\"2021-08-12 09:00:00\""), "{body}");
 
         // Unknown key is a 404.
@@ -1890,7 +1890,7 @@ async fn handle_events_files(
     let rows = load_event_rows(&conn).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let event = super::events::segment(&rows)
         .into_iter()
-        .find(|e| e.start.format("%Y%m%dT%H%M%S").to_string() == key)
+        .find(|e| e.key() == key)
         .ok_or(StatusCode::NOT_FOUND)?;
     let (files, total) =
         query_event_files(&conn, &event.members).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -2378,7 +2378,7 @@ async fn handle_events_api(
         if i > 0 {
             out.push(',');
         }
-        let key = event.start.format("%Y%m%dT%H%M%S").to_string();
+        let key = event.key();
         let place = event.centroid.and_then(|(lat, lon)| {
             videre_core::location::location_name_in(cache, lat, lon)
                 .ok()
@@ -2459,7 +2459,7 @@ async fn handle_events_key(
         let rows = load_event_rows(&conn).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         let event = super::events::segment(&rows)
             .into_iter()
-            .find(|e| e.start.format("%Y%m%dT%H%M%S").to_string() == key)
+            .find(|e| e.key() == key)
             .ok_or(StatusCode::NOT_FOUND)?;
         let place = event.centroid.and_then(|(lat, lon)| {
             videre_core::location::location_name_in(&state.context.library.cache, lat, lon)

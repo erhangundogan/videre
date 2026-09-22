@@ -44,7 +44,7 @@ and cannot answer these HTTP requests after the command exits.
 | `GET /map?near={lat},{lon}` | Map centred on the cluster nearest a coordinate pair (used by the lightbox place link) |
 | `GET /map/location/{name}` | One addressable location drill-down |
 | `GET /events` | Automatic time-and-place event overview |
-| `GET /events/{key}` | One event's photos (`key` is its compact start time) |
+| `GET /events/{key}` | One event's photos (`key` is its compact start time and a short hash) |
 | `GET /smart` | Reserved |
 
 Date route segments are zero-padded where applicable: `YYYY`, `YYYY/MM` and
@@ -281,7 +281,7 @@ curl "http://127.0.0.1:7878/api/events"
 {
   "events": [
     {
-      "key": "20210810T143207",
+      "key": "20210810T143207-3f9a1c2e",
       "start": "2021-08-10 14:32:07",
       "end": "2021-08-12 09:15:44",
       "count": 83,
@@ -301,12 +301,14 @@ curl "http://127.0.0.1:7878/api/events"
 ### `GET /api/events/{key}/files`
 
 Returns the files of one event, by its exact members, in the same
-`{total, offset, files}` shape as `GET /api/files`. `key` is the event's
-compact start time from `/api/events`. An unknown or stale key (the library or
+`{total, offset, files}` shape as `GET /api/files`. `key` comes from `/api/events`:
+the event's compact start time, a hyphen, and the first eight characters of
+its first file's hash, so two events starting in the same second stay
+distinct. An unknown or stale key (the library or
 the thresholds changed since it was read) returns `404`.
 
 ```bash
-curl "http://127.0.0.1:7878/api/events/20210810T143207/files"
+curl "http://127.0.0.1:7878/api/events/20210810T143207-3f9a1c2e/files"
 ```
 
 ### `GET /api/search`

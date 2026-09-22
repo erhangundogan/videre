@@ -16,7 +16,7 @@ test("drilling into an event shows its photos under an All Events crumb", async 
   const box = await link.boundingBox();
   await link.click({ position: { x: 10, y: box!.height - 6 } });
 
-  await expect(page).toHaveURL(/\/events\/\d{8}T\d{6}$/);
+  await expect(page).toHaveURL(/\/events\/\d{8}T\d{6}-[0-9a-f]{1,8}$/);
   const root = page.locator("#dateBreadcrumb a", { hasText: "All Events" });
   await expect(root).toHaveAttribute("href", "/events");
   await expect(page.locator("#dateGrid [data-lb-url]").first()).toBeVisible();

@@ -43,6 +43,21 @@ pub(crate) struct Event {
     pub members: Vec<String>,
 }
 
+impl Event {
+    /// The URL key: the compact start time plus the first member's short
+    /// hash. The time alone is not unique, since a location split can fall
+    /// between two shots taken in the same second (two cameras with synced
+    /// clocks), and both events must stay addressable.
+    pub(crate) fn key(&self) -> String {
+        let first: String = self
+            .members
+            .first()
+            .map(|hash| hash.chars().take(8).collect())
+            .unwrap_or_default();
+        format!("{}-{first}", self.start.format("%Y%m%dT%H%M%S"))
+    }
+}
+
 /// Parse the string `EFFECTIVE_DATE_SQL` yields: EXIF wall-clock, the RFC3339
 /// `modified_at` fallback (its wall-clock part), or a bare date.
 pub(crate) fn parse_effective(value: &str) -> Option<NaiveDateTime> {
@@ -164,6 +179,19 @@ mod tests {
 
     fn dt(s: &str) -> chrono::NaiveDateTime {
         parse_effective(s).unwrap()
+    }
+
+    #[test]
+    fn events_starting_in_the_same_second_get_distinct_keys() {
+        // Two cameras with synced clocks, far apart: a location split between
+        // rows that share a second. Both events must stay addressable.
+        let events = segment(&[
+            row("aaaa1111", "2021-08-10 14:32:07", Some((52.52, 13.40))),
+            row("bbbb2222", "2021-08-10 14:32:07", Some((41.01, 28.98))),
+        ]);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].key(), "20210810T143207-aaaa1111");
+        assert_eq!(events[1].key(), "20210810T143207-bbbb2222");
     }
 
     fn row(hash: &str, when: &str, gps: Option<(f64, f64)>) -> EventRow {
