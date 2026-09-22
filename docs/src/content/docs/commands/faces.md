@@ -207,9 +207,11 @@ sharpness and leave it behind.
 ## Reset
 
 `videre faces --reset` is the start-over button. It deletes every face row,
-every person you have named, the detection markers, and the decode-failure
-records, then immediately re-runs the full detection and grouping pipeline, so
-the library ends up exactly as it would after a first-ever `videre faces`.
+every person you have named, the detection markers, the decode-failure
+records, and all face-learning state (every teaching event, every pending
+question, and every learned profile), then immediately re-runs the full
+detection and grouping pipeline, so the library ends up exactly as it would
+after a first-ever `videre faces`.
 
 Because it deletes your labels, it asks first, and the prompt says how much it
 would delete:
@@ -243,6 +245,29 @@ it to 1) to turn the pass off.
 
 It runs after grouping and can never merge two groups, which is what keeps it
 safe.
+
+## Teaching the gallery (experimental)
+
+Every labeling action in the gallery's People page writes durable, inspectable
+teaching evidence: naming a cluster, moving a face, removing a face, or
+dissolving a cluster each record what changed and the generic face-derived
+factors behind it. In the background, the gallery trains small interpretable
+scorers from that evidence and, once a scorer passes the shipped quality
+gates, asks bounded yes/no questions such as "Is this Elena?" on the People
+page. Answering Yes names that cluster; No only teaches; Skip does neither.
+
+What this is and is not:
+
+- The scoring uses generic face measurements (similarities, sizes, quality),
+  never filenames, paths, locations, or dates. ArcFace itself stays frozen;
+  nothing about detection or grouping changes.
+- Teaching evidence is stored locally, is viewable per person on the People
+  page, and carries no images or embeddings when served; it is excluded from
+  exported learned profiles.
+- A failed training run keeps the previous profile. A passed gate promotes a
+  profile for suggestions and questions only; production grouping still comes
+  from the deterministic pipeline until a future recluster integration.
+- `videre faces --reset` deletes all of it along with your labels.
 
 ## Why grouping runs in two stages
 

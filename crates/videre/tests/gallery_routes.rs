@@ -1278,3 +1278,75 @@ fn labeling_pages_carry_the_learning_hooks() {
     assert_eq!(status, 200, "{body}");
     assert!(body.contains("data-learning-history"), "{body}");
 }
+
+#[test]
+fn face_learning_boundary_only_user_mutations_change_faces() {
+    let lib = fixture();
+    {
+        // Two unassigned singletons with real embeddings, so the teaching
+        // action can extract features and the worker can train or fail.
+        let conn = lib.init_db();
+        let mut embedding = Vec::new();
+        embedding.extend_from_slice(&half::f16::from_f32(1.0).to_le_bytes());
+        embedding.extend_from_slice(&half::f16::from_f32(0.0).to_le_bytes());
+        for id in [2, 3] {
+            conn.execute(
+                "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed)
+                 VALUES (?1, 'abc123', '0,0,50,50', ?2, NULL, 0)",
+                rusqlite::params![id, embedding],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "UPDATE faces SET embedding = ?1, cluster_id = NULL",
+            rusqlite::params![embedding],
+        )
+        .unwrap();
+    }
+    let server = Server::start(&lib);
+
+    // The user mutation: assign one singleton. Exactly that face changes.
+    let (status, body) = server.send(
+        "PUT",
+        "/api/people/ozgur_demirtas/faces",
+        "{\"face_ids\":[2]}",
+    );
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"generation\":1"), "{body}");
+
+    // Wait until the background worker settles (it may succeed or fail on
+    // this tiny evidence; either way it must not touch faces).
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let (_, status_body) = server.get("/api/face-learning/status");
+        let settled = status_body.contains("\"status\":\"current\"")
+            || status_body.contains("\"status\":\"failed\"");
+        if settled || Instant::now() > deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    {
+        let conn = lib.init_db();
+        let (assigned, total): (i64, i64) = conn
+            .query_row(
+                "SELECT SUM(confirmed = 1 AND person_label = 'ozgur_demirtas'),
+                        COUNT(*) FROM faces",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(assigned, 2, "only the user-named faces are labeled");
+        assert_eq!(total, 3, "the worker adds and deletes no face rows");
+        let profiles: i64 = conn
+            .query_row("SELECT COUNT(*) FROM face_learning_profiles", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(
+            profiles <= 1,
+            "at most one candidate exists and it never changes faces"
+        );
+    }
+}
