@@ -35,7 +35,8 @@ function buildPreview(f){
     size: f.size,
     date: bestDateJs(f),
     ext: f.ext,
-    hash: f.hash
+    hash: f.hash,
+    liked: !!f.liked
   })));
   if(ext==='jpg'||ext==='jpeg'||ext==='png'||ext==='gif'||ext==='webp'||ext==='bmp'){
     // Grid/tile thumbnails are server-downscaled, not the full original:
@@ -192,6 +193,9 @@ const ICON_FILE='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 const ICON_DATE='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M8 2v4M16 2v4M3 10h18"/></svg>';
 const ICON_SIZE='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>';
 const ICON_PIN='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/></svg>';
+// Heart for the like toggle. One path; the CSS decides outline vs filled red by
+// the button's `liked` class (fill:none + stroke, or fill:red).
+const ICON_HEART='<svg viewBox="0 0 24 24" stroke-linejoin="round" stroke-linecap="round"><path d="M12 21C12 21 3 14.5 3 8.5 3 5.42 5.42 3 8.5 3c1.74 0 3.41 0.81 4.5 2.09C14.09 3.81 15.76 3 17.5 3 20.58 3 23 5.42 23 8.5 23 14.5 12 21 12 21Z" transform="translate(-1 0)"/></svg>';
 function renderMetaPanel(meta){
   const el = document.getElementById('lbMeta');
   // Shown under the media. The left column carries the file facts; a right
@@ -235,8 +239,18 @@ function renderMetaPanel(meta){
       })
       .catch(() => { const n = document.getElementById(locId); if(n) n.textContent = 'Location unavailable'; });
   }
+  // The like toggle sits at the top-left of the metadata section, larger than
+  // the row icons. Only on a live server, where the PATCH can persist it; a
+  // static export has nothing to save to. Red when liked, outline otherwise.
+  let likeBtn = '';
+  if(typeof LIVE_SERVER!=='undefined' && LIVE_SERVER && meta.hash){
+    const on = !!meta.liked;
+    likeBtn = '<button type="button" class="lb-like'+(on?' liked':'')+'" '+
+      'data-hash="'+escA(meta.hash)+'" aria-pressed="'+on+'" '+
+      'aria-label="Like" title="Like" onclick="toggleLbLike(this)">'+ICON_HEART+'</button>';
+  }
   const hasPeople = !!(meta.faces && meta.faces.length);
-  let html = '<div class="lb-info">'+rows.join('')+'</div>';
+  let html = '<div class="lb-info">'+likeBtn+rows.join('')+'</div>';
   if(hasPeople){
     // A live page carries `id` and fetches the crop from the endpoint on open;
     // a static export carries `thumb` as a data URI. One renderer serves both.
@@ -249,6 +263,40 @@ function renderMetaPanel(meta){
     html += '<div class="lb-people">'+people+'</div>';
   }
   el.innerHTML = html;
+}
+// Toggle a photo's like from the lightbox, the same mark `videre mark --like`
+// sets. Optimistic: flip the heart immediately, revert if the PATCH fails, and
+// keep the open tiles' cached meta in step so reopening shows the new state.
+function toggleLbLike(btn){
+  var hash=btn.dataset.hash;
+  if(!hash)return;
+  var next=!btn.classList.contains('liked');
+  btn.classList.toggle('liked', next);
+  btn.setAttribute('aria-pressed', next);
+  syncLikedMeta(hash, next);
+  fetch('/api/files/'+encodeURIComponent(hash),{
+    method:'PATCH',
+    headers:{'content-type':'application/json'},
+    body:JSON.stringify({liked:next})
+  }).then(function(r){ if(!r.ok)throw new Error('like failed'); })
+    .catch(function(){
+      btn.classList.toggle('liked', !next);
+      btn.setAttribute('aria-pressed', !next);
+      syncLikedMeta(hash, !next);
+    });
+}
+// Write the liked flag back into the loaded rows and the tiles' data-lb-meta so
+// a later reopen of the same photo reflects it without a page reload.
+function syncLikedMeta(hash, liked){
+  if(typeof galleryFiles!=='undefined'){
+    galleryFiles.forEach(function(f){ if(f.hash===hash) f.liked=liked; });
+  }
+  document.querySelectorAll('[data-lb-meta]').forEach(function(el){
+    try{
+      var m=JSON.parse(el.dataset.lbMeta);
+      if(m && m.hash===hash){ m.liked=liked; el.dataset.lbMeta=JSON.stringify(m); }
+    }catch(e){}
+  });
 }
 var lbIndex=-1;      // index of the open item among the currently visible tiles
 var lbLoading=false; // guards the auto-paginate load so it fires once

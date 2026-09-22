@@ -81,6 +81,14 @@ th.preview-th{width:130px}
 .lb-row a.lb-link:hover{text-decoration:underline}
 .lb-fname{color:#fff}
 .lb-fname span{word-break:break-all}
+/* The like toggle: bigger than the row icons, an outline heart that fills red
+   when liked (Instagram-style). Overrides the shared button chrome. */
+.lb-like{background:none;border:none;padding:0;margin:0 0 4px;line-height:0;color:#f4f4f5;cursor:pointer}
+.lb-like:hover{background:none}
+.lb-like svg{width:26px;height:26px;fill:none;stroke:currentColor;stroke-width:2;transition:transform .1s ease}
+.lb-like:active svg{transform:scale(.85)}
+.lb-like:hover svg{stroke:#fca5a5}
+.lb-like.liked svg{fill:#ef4444;stroke:#ef4444}
 .lb-people{flex:0 1 auto;min-width:0;display:flex;flex-wrap:wrap;gap:12px;justify-content:flex-end;align-content:flex-start}
 .lb-face{display:block;text-align:center;font-size:11px;color:#fff;text-decoration:none;cursor:pointer}
 .lb-face img{width:48px;height:48px;border-radius:50%;object-fit:cover;display:block;margin-bottom:4px}
@@ -98,7 +106,7 @@ th.preview-th{width:130px}
 .rcard{flex:0 0 auto;width:132px;text-align:center;position:relative}
 .rcard .thumb{max-width:120px;max-height:120px}
 .rcard.query{border-right:2px solid #e4e4e7;padding-right:10px;margin-right:4px}
-.score{position:absolute;top:4px;left:8px;background:rgba(24,24,27,.75);color:#fff;font-size:10px;padding:1px 5px;border-radius:4px}
+.score{position:absolute;top:4px;left:8px;background:rgba(24,24,27,.75);color:#fff;font-size:10px;padding:1px 5px;border-radius:4px;z-index:1}
 .copies{position:absolute;top:4px;right:8px;background:#fbbf24;color:#18181b;font-size:10px;font-weight:700;padding:1px 5px;border-radius:4px}
 .rname{font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#52525b;margin-top:2px}
 .gallery-head{padding:20px 16px 4px;display:flex;align-items:baseline;gap:12px}

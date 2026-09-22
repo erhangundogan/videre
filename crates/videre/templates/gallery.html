@@ -33,7 +33,7 @@
 {% endif %}{% if all_files_count.is_some() %}<div class="results-panel" id="results" style="display:none"></div>
 <div class="gallery-head"><label class="view-toggle">View <select class="view-mode-select" onchange="setViewMode(this.value)"><option value="list">List</option><option value="tile">Tile</option></select></label></div>
 <div class="gallery" id="gallery"></div>
-<div class="more-wrap"><button id="gallery-more" onclick="showMoreGallery()"></button></div>
+<div class="more-wrap"><button id="gallery-more" class="primary" onclick="showMoreGallery()"></button></div>
 {% endif %}{% if no_duplicates %}<div class="empty-state">
 <h2>No duplicates</h2>
 <p>Every file in this library has a unique hash, so there is nothing to review here.</p>
