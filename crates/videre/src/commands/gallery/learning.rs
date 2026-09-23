@@ -8,6 +8,7 @@
 //! refresh the pending questions. A failed cycle preserves the prior active
 //! profile and marks the learning state failed for a later retry.
 
+use super::server::poisoned;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
@@ -231,10 +232,7 @@ async fn run_cycle(deps: &LearningDeps) {
 pub(crate) async fn handle_learning_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<videre_api::FaceLearningStatus>, StatusCode> {
-    let conn = state
-        .conn
-        .lock()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = state.conn.lock().map_err(poisoned)?;
     videre_api::face_learning_status(&conn)
         .map(Json)
         .map_err(api_status)
@@ -250,10 +248,7 @@ pub(crate) async fn handle_learning_questions(
         .and_then(|limit| limit.parse::<usize>().ok())
         .unwrap_or(8)
         .clamp(1, 50);
-    let conn = state
-        .conn
-        .lock()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = state.conn.lock().map_err(poisoned)?;
     videre_api::pending_identity_questions(&conn, limit)
         .map(Json)
         .map_err(api_status)
@@ -278,10 +273,7 @@ pub(crate) async fn handle_learning_answer(
         _ => return Err(StatusCode::BAD_REQUEST),
     };
     let outcome = {
-        let conn = state
-            .conn
-            .lock()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let conn = state.conn.lock().map_err(poisoned)?;
         let context = super::server::teaching_context(&conn, &state);
         videre_api::answer_question_with_learning(&conn, id, answer, &context)
             .map_err(api_status)?
@@ -305,10 +297,7 @@ pub(crate) async fn handle_learning_events(
     let before = params
         .get("before")
         .and_then(|before| before.parse::<i64>().ok());
-    let conn = state
-        .conn
-        .lock()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = state.conn.lock().map_err(poisoned)?;
     videre_api::face_learning_events(&conn, limit, before, Some(&state.model_id))
         .map(Json)
         .map_err(api_status)
@@ -319,10 +308,7 @@ pub(crate) async fn handle_learning_event_detail(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> Result<Json<videre_api::FaceLearningEventProof>, StatusCode> {
-    let conn = state
-        .conn
-        .lock()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = state.conn.lock().map_err(poisoned)?;
     match videre_api::face_learning_event(&conn, id, Some(&state.model_id)) {
         Ok(Some(event)) => Ok(Json(event)),
         Ok(None) => Err(StatusCode::NOT_FOUND),

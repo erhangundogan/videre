@@ -1086,10 +1086,25 @@ pub(super) fn api_status(e: videre_api::Error) -> StatusCode {
         videre_api::Error::NotFound => StatusCode::NOT_FOUND,
         videre_api::Error::Invalid => StatusCode::BAD_REQUEST,
         videre_api::Error::Conflict => StatusCode::CONFLICT,
-        videre_api::Error::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
         videre_api::Error::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
-        videre_api::Error::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        e @ (videre_api::Error::Db(_) | videre_api::Error::Other(_)) => internal(e),
     }
+}
+
+/// A poisoned connection lock: a handler panicked while holding it. The
+/// poison error carries the guard, which cannot cross threads, so only the
+/// fact is logged.
+pub(super) fn poisoned<T>(_: std::sync::PoisonError<T>) -> StatusCode {
+    internal(anyhow::anyhow!(
+        "the database connection lock is poisoned by an earlier panic"
+    ))
+}
+
+/// Every 500 goes through here, so a server-side failure is logged once
+/// instead of being discarded by `map_err(|_| ...)`.
+pub(super) fn internal<E: Into<anyhow::Error>>(e: E) -> StatusCode {
+    videre_core::error_log::report(tracing::Level::ERROR, &e.into(), None);
+    StatusCode::INTERNAL_SERVER_ERROR
 }
 
 /// The per-operation guard every blocking server operation runs first: verify
@@ -1445,11 +1460,8 @@ async fn handle_map_location(
     State(state): State<Arc<AppState>>,
 ) -> Result<axum::response::Html<String>, StatusCode> {
     let resolved = {
-        let conn = state
-            .conn
-            .lock()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        resolve_map_location(&conn, &name).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        let conn = state.conn.lock().map_err(poisoned)?;
+        resolve_map_location(&conn, &name).map_err(internal)?
     };
     let bootstrap = match resolved {
         // The radius only matters for a resolved location, so validate it here:
@@ -1471,7 +1483,7 @@ async fn handle_map_location(
             name: videre_core::person::normalize(&name).unwrap_or_default(),
         },
     };
-    let json = serde_json::to_string(&bootstrap).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let json = serde_json::to_string(&bootstrap).map_err(internal)?;
     Ok(render_map(&state, &json))
 }
 
@@ -1545,13 +1557,12 @@ async fn handle_search(
         )
     })
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .map_err(internal)?;
 
     let hits = match hits {
         Ok(h) => h,
         Err(e) => {
-            eprintln!("videre gallery: /api/search failed: {e}");
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            return Err(internal(anyhow::anyhow!("/api/search failed: {e}")));
         }
     };
 
@@ -1730,10 +1741,7 @@ async fn handle_location(
     // Reads the cache, geocodes into it and writes location_name back, so it
     // takes the same per-operation guard as the image routes.
     let _guard = guard_operation(&state)?;
-    let conn = state
-        .conn
-        .lock()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = state.conn.lock().map_err(poisoned)?;
     // `q.lat`/`q.lon` arrive rounded to 6 decimal places (the precision
     // `file_to_json_with_faces` bakes into `meta.location` client-side), but
     // `file_hashes.gps_lat`/`gps_lon` are stored at full EXIF precision, an
@@ -1749,7 +1757,7 @@ async fn handle_location(
             |r| r.get(0),
         )
         .optional()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(internal)?;
     if let Some(name) = cached {
         return Ok(AxumJson(LocationResponse { name: Some(name) }));
     }
@@ -1806,15 +1814,10 @@ async fn handle_files(
     let offset = q.offset.unwrap_or(0).max(0);
     let limit = q.limit.unwrap_or(200).clamp(1, MAX_LIMIT);
 
-    let conn = state
-        .conn
-        .lock()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = state.conn.lock().map_err(poisoned)?;
     let faces_by_hash = videre_core::face_db::labeled_faces_by_hash(&conn).unwrap_or_default();
     let (rows, total) = match q.hashes.as_deref() {
-        Some(h) if !h.is_empty() => {
-            query_files_by_hash(&conn, h).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        }
+        Some(h) if !h.is_empty() => query_files_by_hash(&conn, h).map_err(internal)?,
         _ => {
             let date_filter = if let Some(date) = q.date.as_deref().filter(|s| !s.is_empty()) {
                 validate_partial_date(date).ok_or(StatusCode::BAD_REQUEST)?;
@@ -1843,7 +1846,7 @@ async fn handle_files(
                 limit,
                 location.as_ref(),
             )
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .map_err(internal)?
         }
     };
 
@@ -1909,17 +1912,13 @@ async fn handle_events_files(
     axum::extract::Path(key): axum::extract::Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> Result<axum::response::Response, StatusCode> {
-    let conn = state
-        .conn
-        .lock()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let rows = load_event_rows(&conn).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = state.conn.lock().map_err(poisoned)?;
+    let rows = load_event_rows(&conn).map_err(internal)?;
     let event = super::events::segment(&rows)
         .into_iter()
         .find(|e| e.key() == key)
         .ok_or(StatusCode::NOT_FOUND)?;
-    let (files, total) =
-        query_event_files(&conn, &event.members).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (files, total) = query_event_files(&conn, &event.members).map_err(internal)?;
     let faces_by_hash = videre_core::face_db::labeled_faces_by_hash(&conn).unwrap_or_default();
     Ok(files_json_response(&conn, &files, total, 0, &faces_by_hash))
 }
@@ -1929,11 +1928,11 @@ async fn handle_events_files(
 async fn handle_location_clusters(State(state): State<Arc<AppState>>) -> Response {
     let conn = match state.conn.lock() {
         Ok(conn) => conn,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(e) => return poisoned(e).into_response(),
     };
     let rows = match map_locations(&conn) {
         Ok(rows) => rows,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(e) => return internal(e).into_response(),
     };
 
     let mut out = String::from("[");
@@ -2028,7 +2027,7 @@ async fn handle_rotate_file(
     let path = {
         let conn = match state.conn.lock() {
             Ok(conn) => conn,
-            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            Err(e) => return poisoned(e).into_response(),
         };
         match conn
             .query_row(
@@ -2040,7 +2039,7 @@ async fn handle_rotate_file(
         {
             Ok(Some(path)) => path,
             Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            Err(e) => return internal(e).into_response(),
         }
     };
     let ext = std::path::Path::new(&path)
@@ -2093,11 +2092,8 @@ async fn handle_rotate_file(
 
     match result {
         Ok(Ok(orientation)) => json_response(format!("{{\"orientation\":{orientation}}}")),
-        Ok(Err(e)) => {
-            eprintln!("videre gallery: rotate failed for {hash}: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Ok(Err(e)) => internal(anyhow::anyhow!("rotate failed for {hash}: {e}")).into_response(),
+        Err(e) => internal(e).into_response(),
     }
 }
 
@@ -2214,7 +2210,7 @@ async fn handle_basemap_tiles(
                 .await
             {
                 Ok(response) => response.map(Body::new),
-                Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+                Err(e) => internal(e).into_response(),
             }
         }
     }
@@ -2292,14 +2288,10 @@ async fn handle_dates(
     }
     sql.push_str(" GROUP BY k ORDER BY k DESC");
 
-    let conn = state
-        .conn
-        .lock()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let mut stmt = conn.prepare(&sql).map_err(|e| {
-        eprintln!("videre gallery: /api/dates query failed: {e}\n  {sql}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let conn = state.conn.lock().map_err(poisoned)?;
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| internal(anyhow::anyhow!("/api/dates query failed: {e}\n  {sql}")))?;
     // SQLite picks the bare columns from the row matching MIN(path), which is
     // what makes the representative deterministic rather than arbitrary.
     let rows = stmt
@@ -2314,7 +2306,7 @@ async fn handle_dates(
                 r.get::<_, Option<i32>>(6)?,
             ))
         })
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(internal)?
         .filter_map(|r| r.ok())
         .collect::<Vec<_>>();
     drop(stmt);
@@ -2391,11 +2383,8 @@ async fn handle_events_api(
     State(state): State<Arc<AppState>>,
 ) -> Result<axum::response::Response, StatusCode> {
     let events = {
-        let conn = state
-            .conn
-            .lock()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let rows = load_event_rows(&conn).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let conn = state.conn.lock().map_err(poisoned)?;
+        let rows = load_event_rows(&conn).map_err(internal)?;
         super::events::segment(&rows)
     };
     let cache = &state.context.library.cache;
@@ -2478,11 +2467,8 @@ async fn handle_events_key(
 ) -> Result<axum::response::Response, StatusCode> {
     use axum::response::IntoResponse;
     let event_json = {
-        let conn = state
-            .conn
-            .lock()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let rows = load_event_rows(&conn).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let conn = state.conn.lock().map_err(poisoned)?;
+        let rows = load_event_rows(&conn).map_err(internal)?;
         let event = super::events::segment(&rows)
             .into_iter()
             .find(|e| e.key() == key)
@@ -2509,10 +2495,7 @@ async fn handle_events_key(
 async fn handle_get_faces(
     State(state): State<Arc<AppState>>,
 ) -> Result<AxumJson<FacesData>, StatusCode> {
-    let conn = state
-        .conn
-        .lock()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = state.conn.lock().map_err(poisoned)?;
     videre_api::faces_list(&conn)
         .map(AxumJson)
         .map_err(api_status)
@@ -2524,10 +2507,7 @@ async fn handle_assign(
     AxumJson(req): AxumJson<AssignFacesBody>,
 ) -> Result<Json<videre_api::LearningAcknowledgement>, StatusCode> {
     let acknowledgement = {
-        let conn = state
-            .conn
-            .lock()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let conn = state.conn.lock().map_err(poisoned)?;
         let context = teaching_context(&conn, &state);
         // The route keeps its historical meaning: naming a cluster after a
         // person who does not exist yet creates that person.
@@ -2537,7 +2517,7 @@ async fn handle_assign(
                 [&name],
                 |row| row.get(0),
             )
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            .map_err(internal)?;
         let result = if exists {
             videre_api::assign_with_learning(&conn, &req.face_ids, &name, &context)
         } else {
@@ -2568,16 +2548,10 @@ async fn handle_set_mark(
     if !change.any() {
         return Ok(StatusCode::OK);
     }
-    let conn = state
-        .conn
-        .lock()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = state.conn.lock().map_err(poisoned)?;
     videre_core::marks::set(&conn, std::slice::from_ref(&hash), &change)
         .map(|_| StatusCode::OK)
-        .map_err(|e| {
-            eprintln!("videre gallery: /api/mark failed: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+        .map_err(|e| internal(anyhow::anyhow!("/api/mark failed: {e}")))
 }
 
 async fn handle_new_person(
@@ -2585,10 +2559,7 @@ async fn handle_new_person(
     AxumJson(req): AxumJson<NewPersonRequest>,
 ) -> Result<Json<videre_api::LearningAcknowledgement>, StatusCode> {
     let acknowledgement = {
-        let conn = state
-            .conn
-            .lock()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let conn = state.conn.lock().map_err(poisoned)?;
         videre_api::new_person_with_learning(
             &conn,
             &req.face_ids,
@@ -2618,10 +2589,7 @@ async fn handle_remove_face(
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> Result<Json<videre_api::LearningAcknowledgement>, StatusCode> {
     let acknowledgement = {
-        let conn = state
-            .conn
-            .lock()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let conn = state.conn.lock().map_err(poisoned)?;
         videre_api::remove_face_with_learning(&conn, id, &teaching_context(&conn, &state))
             .map_err(api_status)?
     };
@@ -2636,10 +2604,7 @@ async fn handle_delete_person(
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Result<Json<videre_api::LearningAcknowledgement>, StatusCode> {
     let acknowledgement = {
-        let conn = state
-            .conn
-            .lock()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let conn = state.conn.lock().map_err(poisoned)?;
         videre_api::delete_person_with_learning(&conn, &name)
             .map_err(api_status)?
             .unwrap_or_else(|| videre_api::LearningAcknowledgement {
@@ -2661,10 +2626,7 @@ async fn handle_set_full_name(
     axum::extract::Path(name): axum::extract::Path<String>,
     AxumJson(req): AxumJson<SetFullNameBody>,
 ) -> Result<StatusCode, StatusCode> {
-    let conn = state
-        .conn
-        .lock()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = state.conn.lock().map_err(poisoned)?;
     videre_api::set_full_name(&conn, &name, &req.full_name)
         .map(|_| StatusCode::OK)
         .map_err(api_status)
@@ -2675,10 +2637,7 @@ async fn handle_dissolve_cluster(
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> Result<Json<videre_api::LearningAcknowledgement>, StatusCode> {
     let acknowledgement = {
-        let conn = state
-            .conn
-            .lock()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let conn = state.conn.lock().map_err(poisoned)?;
         videre_api::dissolve_cluster_with_learning(&conn, id, &teaching_context(&conn, &state))
             .map_err(api_status)?
     };
@@ -2693,10 +2652,7 @@ async fn handle_set_primary(
     axum::extract::Path(id): axum::extract::Path<i64>,
     AxumJson(req): AxumJson<SetPrimaryBody>,
 ) -> Result<StatusCode, StatusCode> {
-    let conn = state
-        .conn
-        .lock()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = state.conn.lock().map_err(poisoned)?;
     videre_api::set_primary(&conn, id, &req.person_label)
         .map(|_| StatusCode::OK)
         .map_err(api_status)
@@ -2706,10 +2662,7 @@ async fn handle_search_person(
     State(state): State<Arc<AppState>>,
     Query(q): Query<PersonSearchQuery>,
 ) -> Result<AxumJson<Vec<String>>, StatusCode> {
-    let conn = state
-        .conn
-        .lock()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = state.conn.lock().map_err(poisoned)?;
     videre_api::search_person(&conn, &q.name)
         .map(AxumJson)
         .map_err(api_status)
@@ -2747,10 +2700,7 @@ async fn handle_cluster_api(
     axum::extract::Path(cluster_id): axum::extract::Path<i64>,
     State(state): State<Arc<AppState>>,
 ) -> Result<AxumJson<ClusterDetail>, StatusCode> {
-    let conn = state
-        .conn
-        .lock()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = state.conn.lock().map_err(poisoned)?;
     videre_api::cluster_detail(&conn, cluster_id)
         .map(AxumJson)
         .map_err(api_status)
@@ -2773,10 +2723,7 @@ async fn handle_person_api(
     axum::extract::Path(name): axum::extract::Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> Result<AxumJson<PersonDetail>, StatusCode> {
-    let conn = state
-        .conn
-        .lock()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let conn = state.conn.lock().map_err(poisoned)?;
     videre_api::person_detail(&conn, &name)
         .map(AxumJson)
         .map_err(api_status)
@@ -2798,17 +2745,14 @@ async fn handle_face_image(
         // excluded from the cache write.
         let _guard = guard_operation(&state)?;
         let lookup = {
-            let conn = state
-                .conn
-                .lock()
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let conn = state.conn.lock().map_err(poisoned)?;
             videre_api::face_lookup(&conn, face_id).map_err(|_| StatusCode::NOT_FOUND)?
         };
         videre_api::face_bytes_from_lookup(&lookup, face_id, &state.context.library.cache)
             .map_err(|_| StatusCode::NOT_FOUND)
     })
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+    .map_err(internal)??;
     Ok(([(axum::http::header::CONTENT_TYPE, "image/jpeg")], bytes))
 }
 
@@ -2942,17 +2886,14 @@ async fn handle_raw_file(
     request: Request<Body>,
 ) -> Result<Response, StatusCode> {
     let path = {
-        let conn = state
-            .conn
-            .lock()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let conn = state.conn.lock().map_err(poisoned)?;
         conn.query_row(
             "SELECT path FROM file_hashes WHERE hash = ?1 LIMIT 1",
             [&hash],
             |r| r.get::<_, String>(0),
         )
         .optional()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(internal)?
         .ok_or(StatusCode::NOT_FOUND)?
     };
     let ext = std::path::Path::new(&path)
@@ -2969,7 +2910,7 @@ async fn handle_raw_file(
         let response = tower_http::services::ServeFile::new(path)
             .try_call(request)
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            .map_err(internal)?;
         return Ok(response.map(Body::new));
     }
 
@@ -3023,10 +2964,7 @@ async fn handle_raw_file(
     // two-strike threshold is refused outright. The lock is taken and dropped
     // here, never held across the conversion below.
     if uses_quicklook {
-        let conn = state
-            .conn
-            .lock()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let conn = state.conn.lock().map_err(poisoned)?;
         let _ = videre_core::decode_failures::ensure_table(&conn);
         let failed = videre_core::decode_failures::failed_hashes(
             &conn,
@@ -3159,7 +3097,7 @@ async fn handle_raw_file(
         }
     })
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .map_err(internal)?;
 
     // Record a failed QuickLook conversion so it reaches the two-strike
     // threshold and stops being re-attempted; clear on success so a file that
@@ -3206,17 +3144,14 @@ async fn handle_original_image(
         tokio::task::spawn_blocking(move || -> Result<(&'static str, Vec<u8>), StatusCode> {
             let _guard = guard_operation(&state)?;
             let lookup = {
-                let conn = state
-                    .conn
-                    .lock()
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                let conn = state.conn.lock().map_err(poisoned)?;
                 videre_api::original_lookup(&conn, face_id).map_err(|_| StatusCode::NOT_FOUND)?
             };
             videre_api::original_bytes_from_lookup(&lookup, face_id, &state.context.library.cache)
                 .map_err(|_| StatusCode::NOT_FOUND)
         })
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+        .map_err(internal)??;
     Ok(([(axum::http::header::CONTENT_TYPE, content_type)], bytes))
 }
 

@@ -350,6 +350,16 @@ fn search_text_without_embeddings_is_tool_error_and_server_survives() {
     let resp2 = client.call_tool(7, "stats", json!({}));
     assert_eq!(resp2["result"]["structuredContent"]["schema_version"], 1);
     client.shutdown();
+
+    // The tool failure is also in the server's own log, once.
+    let log = std::fs::read_to_string(lib.context().paths.state.join("logs/mcp.log")).unwrap();
+    let errors: Vec<_> = log
+        .lines()
+        .filter_map(videre_core::error_log::parse_line)
+        .filter(|l| l.level == videre_core::error_log::LineLevel::Error)
+        .collect();
+    assert_eq!(errors.len(), 1, "{log}");
+    assert!(errors[0].message.contains("no embeddings"), "{log}");
 }
 
 #[test]
