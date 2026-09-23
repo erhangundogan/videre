@@ -380,6 +380,43 @@ mod tests {
     }
 
     #[test]
+    fn the_core_reader_reads_what_both_formats_write() {
+        for format in [LogFormat::Json, LogFormat::Text] {
+            let settings = LibraryConfig {
+                log_format: format,
+                ..LibraryConfig::default()
+            };
+            let dir = run_with(&settings, || {
+                let _stage = videre_core::error_log::enter_stage("scan");
+                let err = anyhow::anyhow!("read \"timed\" out")
+                    .context(videre_core::error_kind::ErrorKind::SourceUnavailable);
+                videre_core::error_log::report(
+                    Level::WARN,
+                    &err,
+                    Some("/Volumes/Arşiv/Çağla 2019.jpg"),
+                );
+            });
+            let text = read(dir.path(), "scan.log");
+            let line = videre_core::error_log::parse_line(text.lines().next().unwrap())
+                .unwrap_or_else(|| panic!("{format:?} line did not parse: {text}"));
+            assert_eq!(line.command.as_deref(), Some("scan"), "{format:?}");
+            assert_eq!(line.run.as_deref(), Some(RUN), "{format:?}");
+            assert_eq!(line.stage.as_deref(), Some("scan"), "{format:?}");
+            assert_eq!(
+                line.kind.as_deref(),
+                Some("source_unavailable"),
+                "{format:?}"
+            );
+            assert_eq!(
+                line.path.as_deref(),
+                Some("/Volumes/Arşiv/Çağla 2019.jpg"),
+                "{format:?}"
+            );
+            assert!(line.message.contains("read \"timed\" out"), "{format:?}");
+        }
+    }
+
+    #[test]
     fn rotation_keeps_at_most_keep_files() {
         let settings = LibraryConfig {
             log_max_size_mb: 1,
