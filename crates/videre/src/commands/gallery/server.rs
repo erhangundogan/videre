@@ -802,6 +802,71 @@ mod basemap_tests {
 }
 
 #[cfg(test)]
+mod similarity_startup_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    /// A real initialized library, exactly what serve_faces_async opens.
+    fn library() -> (
+        tempfile::TempDir,
+        tempfile::TempDir,
+        videre_core::library::LibraryContext,
+        Connection,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let ctx = videre_core::library::LibraryContext::new(root.path(), cache.path()).unwrap();
+        let conn = videre_core::library_db::initialize(&ctx).unwrap();
+        (root, cache, ctx, conn)
+    }
+
+    #[test]
+    fn a_missing_model_database_produces_the_note() {
+        let (_root, _cache, ctx, conn) = library();
+        let note = similarity_search_startup(&conn, &ctx, "google/nope-384")
+            .unwrap()
+            .expect("a missing model database must produce the note");
+
+        // One line, unwrapped, and the command copies cleanly with the model
+        // the gallery was started with.
+        assert!(!note.contains('\n'), "{note}");
+        assert!(!note.contains('('), "{note}");
+        assert!(note.contains("no embeddings found"), "{note}");
+        assert!(
+            note.contains("videre embed --model google/nope-384"),
+            "{note}"
+        );
+    }
+
+    #[test]
+    fn an_unopenable_model_database_reports_the_real_attach_error() {
+        let (_root, _cache, ctx, conn) = library();
+        // The database exists but is not a SQLite file, so the attach (not
+        // the existence check) is what fails.
+        let path = videre_core::embeddings_db::db_path_in(&ctx, "google/nope-384").unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"not a database at all").unwrap();
+
+        let reason = similarity_search_startup(&conn, &ctx, "google/nope-384")
+            .expect_err("a garbage model database must fail the attach");
+        assert!(reason.contains("not a database"), "{reason}");
+    }
+
+    #[test]
+    fn an_attached_model_database_stays_silent() {
+        let (_root, _cache, ctx, conn) = library();
+        // Create the model database through a throwaway connection: the main
+        // connection's `emb` alias must still be free for the startup attach.
+        {
+            let seed = Connection::open_in_memory().unwrap();
+            videre_core::embeddings_db::attach_in(&seed, &ctx, "google/nope-384", true).unwrap();
+        }
+
+        let note = similarity_search_startup(&conn, &ctx, "google/nope-384").unwrap();
+        assert_eq!(note, None, "a working model database says nothing");
+    }
+}
+#[cfg(test)]
 mod events_tests {
     use super::location_cluster_tests::gallery_state;
     use super::*;
@@ -3280,6 +3345,27 @@ mod bind_tests {
     }
 }
 
+/// Decide what gallery startup should say about similarity search. Returns
+/// the one-line note when the library has no model database for the selected
+/// model (search is disabled), `Ok(None)` when the database attached, and
+/// the real reason when an existing database could not be opened.
+fn similarity_search_startup(
+    conn: &Connection,
+    library: &videre_core::library::LibraryContext,
+    model_id: &str,
+) -> Result<Option<String>, String> {
+    let model_db =
+        videre_core::embeddings_db::db_path_in(library, model_id).map_err(|e| e.to_string())?;
+    if !model_db.exists() {
+        return Ok(Some(format!(
+            "note: similarity search disabled because no embeddings found; run: videre embed --model {model_id}"
+        )));
+    }
+    videre_core::embeddings_db::attach_for_read_in(conn, library, model_id)
+        .map(|_| None)
+        .map_err(|e| format!("{e:#}"))
+}
+
 async fn serve_faces_async(
     db: &Path,
     opts: ServeOptions,
@@ -3314,16 +3400,15 @@ async fn serve_faces_async(
         // worker's first promoted profile. Make that resource ready at startup.
         videre_core::face_learning::ensure_question_tables(&conn)?;
     }
-    // Only --all needs vectors. A missing model database disables the
-    // similarity search with a note rather than failing the whole report,
-    // which works perfectly well without embeddings.
+    // Only --all needs vectors. No model database for the selected model:
+    // similarity search is disabled with a one-line note. Anything else is a
+    // real failure opening an existing database, and the reason is what gets
+    // logged, never a re-embed suggestion.
     if opts.report_all {
-        if let Err(e) = videre_core::embeddings_db::attach_for_read_in(
-            &conn,
-            &opts.context.library,
-            &opts.model_id,
-        ) {
-            tracing::info!("note: similarity search disabled ({e})");
+        match similarity_search_startup(&conn, &opts.context.library, &opts.model_id) {
+            Ok(Some(note)) => tracing::info!("{note}"),
+            Ok(None) => {}
+            Err(reason) => tracing::warn!("similarity search unavailable: {reason}"),
         }
     }
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();

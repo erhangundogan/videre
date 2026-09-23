@@ -83,7 +83,7 @@ The default format is JSON Lines, one object per line, as written by the Rust
 `tracing` library:
 
 ```json
-{"timestamp":"2026-09-23T13:01:15.109720Z","level":"ERROR","fields":{"message":"no embeddings for google/siglip-base-patch16-224 in this library\n  run: videre embed","kind":"","remediation":"","path":"","stage":""},"target":"videre_core::error_log","spans":[{"command":"search","run":"20260923T130115Z-58217","name":"run"}]}
+{"timestamp":"2026-09-23T13:01:15.109720Z","level":"ERROR","fields":{"message":"no embeddings for google/siglip-base-patch16-224 in this library\n  available: (none)\n  run: videre embed --model google/siglip-base-patch16-224","kind":"","remediation":"","path":"","stage":""},"target":"videre_core::error_log","spans":[{"command":"search","run":"20260923T130115Z-58217","name":"run"}]}
 ```
 
 - `timestamp` is UTC.
@@ -110,7 +110,7 @@ With `log-format text`, each line is [logfmt](https://brandur.org/logfmt)
 instead, readable with `less` or `grep`:
 
 ```text
-ts=2026-09-23T13:01:15.151303Z level=error target=videre_core::error_log span=run message="no embeddings for google/siglip-base-patch16-224 in this library\n  run: videre embed" kind= remediation= path= stage= command=search run=20260923T130115Z-58220
+ts=2026-09-23T13:01:15.151303Z level=error target=videre_core::error_log span=run message="no embeddings for google/siglip-base-patch16-224 in this library\n  available: (none)\n  run: videre embed --model google/siglip-base-patch16-224" kind= remediation= path= stage= command=search run=20260923T130115Z-58220
 ```
 
 Changing the format affects only new lines; older lines in the same file stay

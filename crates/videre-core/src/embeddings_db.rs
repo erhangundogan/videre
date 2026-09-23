@@ -129,9 +129,8 @@ pub fn attach_in(
             };
             anyhow::bail!(
                 "no embeddings for {model_id} in this library\n  \
-                 expected: {}\n  available: {available}\n  \
-                 run: videre embed --model {model_id}",
-                path.display()
+                 available: {available}\n  \
+                 run: videre embed --model {model_id}"
             );
         }
         std::fs::create_dir_all(&ctx.paths.embeddings)
