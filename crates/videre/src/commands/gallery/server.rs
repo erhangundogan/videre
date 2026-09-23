@@ -2140,7 +2140,20 @@ fn rotate_faces_geometry(state: &AppState, hash: &str, ccw: bool, display_w: i32
             ))
         });
         match mapped {
-            Ok(iter) => iter.filter_map(|r| r.ok()).collect(),
+            // A row that cannot be read keeps its old geometry: say so, once
+            // per row, and carry on with the rest.
+            Ok(iter) => iter
+                .filter_map(|r| match r {
+                    Ok(row) => Some(row),
+                    Err(e) => {
+                        failed(
+                            format!("videre gallery: reading faces for rotate {hash}"),
+                            e.into(),
+                        );
+                        None
+                    }
+                })
+                .collect(),
             Err(e) => {
                 failed(
                     format!("videre gallery: reading faces for rotate {hash}"),
@@ -3810,5 +3823,56 @@ mod thumbnail_tests {
                 "{e} must not go through raster thumbnailing"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod rotate_geometry_tests {
+    use super::*;
+
+    #[test]
+    fn an_unreadable_face_row_is_logged_and_the_others_still_rotate() {
+        #[derive(Clone, Default)]
+        struct Buf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Buf {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let state = location_cluster_tests::gallery_state(temp.path());
+        {
+            let conn = state.conn.lock().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT, bbox TEXT,
+                     landmark TEXT, oriented INTEGER);
+                 INSERT INTO faces VALUES (1, 'çağla', '10,20,30,40', NULL, 1);
+                 INSERT INTO faces VALUES (2, 'çağla', X'00', NULL, 1);",
+            )
+            .unwrap();
+        }
+        let buf = Buf::default();
+        let w = buf.clone();
+        let sub = tracing_subscriber::fmt()
+            .with_writer(move || w.clone())
+            .finish();
+        tracing::subscriber::with_default(sub, || {
+            rotate_faces_geometry(&state, "çağla", false, 100, 80)
+        });
+
+        let logged = String::from_utf8_lossy(&buf.0.lock().unwrap()).to_string();
+        assert!(
+            logged.contains("ERROR") && logged.contains("reading faces for rotate"),
+            "{logged}"
+        );
+        let conn = state.conn.lock().unwrap();
+        let rotated: String = conn
+            .query_row("SELECT bbox FROM faces WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rotated, "20,10,40,30", "the readable face still turns");
     }
 }
