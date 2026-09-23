@@ -10,10 +10,11 @@ use rusqlite::{Connection, OptionalExtension};
 /// What the repair changed, in counts the caller can show a person. Labels
 /// and cluster ids are the stored values that were cleared.
 #[derive(Debug, Default, PartialEq)]
-#[allow(dead_code)] // wired to the upgrade and stderr printing in the same PR
 pub struct RepairReport {
     pub orphan_labels: Vec<(String, i64)>,
     pub orphan_clusters: Vec<(i64, i64)>,
+    pub orphan_event_ids: Vec<(i64, i64)>,
+    pub orphan_question_ids: Vec<(i64, i64)>,
     pub event_links_removed: usize,
     pub question_links_removed: usize,
     pub learning_events_invalidated: usize,
@@ -23,7 +24,6 @@ pub struct RepairReport {
 impl RepairReport {
     /// Deterministic stderr lines: labels and cluster ids in stored order,
     /// then the removed-row counts. Empty for a clean library.
-    #[allow(dead_code)] // same wiring as RepairReport above
     pub fn stderr_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
         for (label, count) in &self.orphan_labels {
@@ -36,16 +36,14 @@ impl RepairReport {
                 "cleared {count} file reference(s) to missing location cluster {cluster}"
             ));
         }
-        if self.event_links_removed > 0 {
+        for (event_id, count) in &self.orphan_event_ids {
             lines.push(format!(
-                "removed {} face-learning provenance row(s) whose event no longer exists",
-                self.event_links_removed
+                "removed {count} face-learning provenance row(s) whose event {event_id} no longer exists"
             ));
         }
-        if self.question_links_removed > 0 {
+        for (question_id, count) in &self.orphan_question_ids {
             lines.push(format!(
-                "removed {} question provenance row(s) whose question no longer exists",
-                self.question_links_removed
+                "removed {count} question provenance row(s) whose question {question_id} no longer exists"
             ));
         }
         if self.learning_events_invalidated > 0 {
@@ -64,6 +62,14 @@ impl RepairReport {
     }
 }
 
+fn orphan_parent_counts(conn: &Connection, sql: &str) -> rusqlite::Result<Vec<(i64, i64)>> {
+    let mut stmt = conn.prepare(sql)?;
+    let rows: Vec<(i64, i64)> = stmt
+        .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 /// True when the library carries the learning question tables at all. A
 /// pre-learning library must not have them manufactured by the repair.
 fn question_tables_present(conn: &Connection) -> rusqlite::Result<bool> {
@@ -78,13 +84,13 @@ fn question_tables_present(conn: &Connection) -> rusqlite::Result<bool> {
     )
 }
 
-/// Whether a table carries the immutability trigger that blocks the orphan
-/// cleanup. Only the event-provenance trigger is ever dropped, inside the
-/// upgrade's transaction, and recreated by `ensure_learning_tables`.
+/// Whether the event-provenance immutability trigger blocks orphan cleanup.
+/// Only this known trigger is dropped inside the upgrade transaction.
 fn event_delete_trigger_name(conn: &Connection) -> rusqlite::Result<Option<String>> {
     let mut stmt = conn.prepare(
         "SELECT name FROM sqlite_master WHERE type = 'trigger'
-         AND tbl_name = 'face_learning_event_faces' AND name LIKE '%immutable_delete%'",
+         AND tbl_name = 'face_learning_event_faces'
+         AND name = 'face_learning_event_faces_immutable_delete'",
     )?;
     stmt.query_row([], |row| row.get::<_, String>(0)).optional()
 }
@@ -121,7 +127,10 @@ pub fn repair_legacy_rows(conn: &Connection) -> anyhow::Result<RepairReport> {
 
     let mut event_links_removed = 0usize;
     let mut question_links_removed = 0usize;
+    let mut orphan_event_ids = Vec::new();
+    let mut orphan_question_ids = Vec::new();
     let mut learning_events_invalidated = 0usize;
+    let mut questions_superseded = 0usize;
     let orphan_clusters = {
         let mut stmt = conn.prepare(
             "SELECT location_cluster_id, COUNT(*) FROM file_hashes
@@ -148,12 +157,23 @@ pub fn repair_legacy_rows(conn: &Connection) -> anyhow::Result<RepairReport> {
     // Broken event provenance: drop the immutability trigger only as long as
     // the cleanup runs, then recreate it via ensure_learning_tables so the
     // table leaves this repair guarded again.
-    if let Some(trigger) = event_delete_trigger_name(conn)
-        .context("look up the event provenance trigger")?
-        .filter(|_| crate::db::table_exists(conn, "face_learning_event_faces").unwrap_or(false))
+    if crate::db::table_exists(conn, "face_learning_event_faces")
+        .context("check for event provenance table")?
     {
-        conn.execute_batch(&format!("DROP TRIGGER {trigger};"))
-            .context("drop the provenance immutability trigger")?;
+        orphan_event_ids = orphan_parent_counts(
+            conn,
+            "SELECT event_id, COUNT(*) FROM face_learning_event_faces
+             WHERE NOT EXISTS (SELECT 1 FROM face_learning_events
+                               WHERE face_learning_events.id = face_learning_event_faces.event_id)
+             GROUP BY event_id ORDER BY event_id",
+        )
+        .context("collect missing event ids")?;
+        if let Some(trigger) =
+            event_delete_trigger_name(conn).context("look up the event provenance trigger")?
+        {
+            conn.execute_batch(&format!("DROP TRIGGER {trigger};"))
+                .context("drop the provenance immutability trigger")?;
+        }
         let removed = conn
             .execute(
                 "DELETE FROM face_learning_event_faces
@@ -162,8 +182,6 @@ pub fn repair_legacy_rows(conn: &Connection) -> anyhow::Result<RepairReport> {
                 [],
             )
             .context("remove event provenance rows with no parent event")?;
-        #[cfg(test)]
-        eprintln!("repair: dropped trigger {trigger:?}, removed {removed} provenance rows");
         event_links_removed = removed;
         crate::face_learning::ensure_learning_tables(conn)
             .context("restore learning triggers after provenance cleanup")?;
@@ -173,6 +191,14 @@ pub fn repair_legacy_rows(conn: &Connection) -> anyhow::Result<RepairReport> {
     // tables mean the library predates questions entirely, so nothing is
     // created.
     if question_tables_present(conn).context("check for question tables")? {
+        orphan_question_ids = orphan_parent_counts(
+            conn,
+            "SELECT question_id, COUNT(*) FROM face_learning_question_faces
+             WHERE NOT EXISTS (SELECT 1 FROM face_learning_questions
+                               WHERE face_learning_questions.id = face_learning_question_faces.question_id)
+             GROUP BY question_id ORDER BY question_id",
+        )
+        .context("collect missing question ids")?;
         let removed = conn
             .execute(
                 "DELETE FROM face_learning_question_faces
@@ -185,13 +211,26 @@ pub fn repair_legacy_rows(conn: &Connection) -> anyhow::Result<RepairReport> {
     }
 
     // Faces were unassigned, so the affected people's evidence is invalidated
-    // by the exact stored label (never a re-normalization), and the gated
-    // recluster re-opens.
-    // Faces were unassigned, so the affected people's evidence is invalidated
     // by the exact stored label (never a re-normalization), the learning
     // generation is marked stale, and the gated recluster re-opens.
     if !orphan_labels.is_empty() {
+        let has_questions = crate::db::table_exists(conn, "face_learning_questions")
+            .context("check for pending-question table")?;
         for (label, _) in &orphan_labels {
+            learning_events_invalidated += conn.query_row(
+                "SELECT COUNT(*) FROM face_learning_events
+                 WHERE target_identity = ?1 AND eligible = 1",
+                [label],
+                |row| row.get::<_, i64>(0),
+            )? as usize;
+            if has_questions {
+                questions_superseded += conn.query_row(
+                    "SELECT COUNT(*) FROM face_learning_questions
+                     WHERE target_identity = ?1 AND status = 'pending'",
+                    [label],
+                    |row| row.get::<_, i64>(0),
+                )? as usize;
+            }
             crate::face_learning::invalidate_exact_identity_in_transaction(conn, label)
                 .map_err(|e| anyhow::anyhow!("invalidate evidence for '{label}': {e}"))?;
         }
@@ -206,17 +245,6 @@ pub fn repair_legacy_rows(conn: &Connection) -> anyhow::Result<RepairReport> {
             [],
         )
         .context("mark the learning generation stale")?;
-        // Everything carrying this reason inside the upgrade transaction was
-        // invalidated by the loop above (a pre-v2 library has none: nothing
-        // before this migration ever set it).
-        learning_events_invalidated = conn
-            .query_row(
-                "SELECT COUNT(*) FROM face_learning_events
-                 WHERE invalidation_reason = 'person_removed'",
-                [],
-                |r| r.get::<_, i64>(0),
-            )
-            .context("count invalidated events")? as usize;
         crate::library_state::set(conn, crate::library_state::FACE_RECLUSTER_WATERMARK, 0)
             .context("clear the face recluster watermark")?;
     }
@@ -224,10 +252,12 @@ pub fn repair_legacy_rows(conn: &Connection) -> anyhow::Result<RepairReport> {
     Ok(RepairReport {
         orphan_labels,
         orphan_clusters,
+        orphan_event_ids,
+        orphan_question_ids,
         event_links_removed,
         question_links_removed,
         learning_events_invalidated,
-        questions_superseded: 0,
+        questions_superseded,
     })
 }
 
@@ -259,32 +289,146 @@ fn save_objects_on(conn: &Connection, table: &str) -> anyhow::Result<Vec<SavedSc
     Ok(rows)
 }
 
+#[derive(Debug)]
+struct LegacyColumn {
+    name: String,
+    declared_type: String,
+    not_null: bool,
+    default_value: Option<String>,
+    primary_key: bool,
+    hidden: i64,
+}
+
+fn legacy_columns(conn: &Connection, table: &str) -> anyhow::Result<Vec<LegacyColumn>> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_xinfo({table})"))?;
+    let columns = stmt
+        .query_map([], |row| {
+            Ok(LegacyColumn {
+                name: row.get(1)?,
+                declared_type: row.get(2)?,
+                not_null: row.get::<_, i64>(3)? != 0,
+                default_value: row.get(4)?,
+                primary_key: row.get::<_, i64>(5)? != 0,
+                hidden: row.get(6)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(columns)
+}
+
+fn quoted_identifier(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+fn free_stage_name(conn: &Connection, table: &str) -> anyhow::Result<String> {
+    for suffix in 0..=1000 {
+        let candidate = if suffix == 0 {
+            format!("{table}__v2_stage")
+        } else {
+            format!("{table}__v2_stage_{suffix}")
+        };
+        let occupied: i64 = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = ?1)
+                    OR EXISTS(SELECT 1 FROM sqlite_temp_master WHERE name = ?1)",
+            [&candidate],
+            |row| row.get(0),
+        )?;
+        if occupied == 0 {
+            return Ok(candidate);
+        }
+    }
+    anyhow::bail!("no free staging name for {table}")
+}
+
 /// Rebuild one table into its canonical version-2 shape inside the upgrade
 /// transaction: stage a fresh table under a temporary name, copy every
 /// column by explicit name, drop the old table, rename the stage into place,
-/// then restore the saved indexes and triggers. Because nothing else
-/// references these two tables, no parent-rename dance is needed.
+/// then restore the saved indexes and triggers. No foreign key points to
+/// these tables; dependent views and other triggers retain the original name.
 fn rebuild_table(
     conn: &Connection,
     table: &str,
     canonical_ddl: fn(&str, bool) -> String,
-    columns: &[&str],
+    canonical_columns: &[(&str, &str)],
 ) -> anyhow::Result<()> {
     let saved = save_objects_on(conn, table)?;
-    let stage = format!("{table}__v2_stage");
+    let columns = legacy_columns(conn, table)?;
+    let stage = free_stage_name(conn, table)?;
+    let mut ddl = canonical_ddl(&stage, false);
+    let mut extra_declarations = Vec::new();
+    for column in &columns {
+        anyhow::ensure!(
+            column.hidden == 0,
+            "cannot rebuild {table} with generated column {}",
+            column.name
+        );
+        if canonical_columns
+            .iter()
+            .any(|(name, _)| *name == column.name)
+        {
+            continue;
+        }
+        anyhow::ensure!(
+            !column.primary_key,
+            "unexpected primary-key column {} on {table}",
+            column.name
+        );
+        anyhow::ensure!(
+            column
+                .declared_type
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, ' ' | '_' | '(' | ')' | ',')),
+            "unsupported declared type for {table}.{}",
+            column.name
+        );
+        let mut declaration = quoted_identifier(&column.name);
+        if !column.declared_type.is_empty() {
+            declaration.push(' ');
+            declaration.push_str(&column.declared_type);
+        }
+        if column.not_null {
+            declaration.push_str(" NOT NULL");
+        }
+        if let Some(default) = &column.default_value {
+            declaration.push_str(" DEFAULT ");
+            declaration.push_str(default);
+        }
+        extra_declarations.push(declaration);
+    }
+    if !extra_declarations.is_empty() {
+        let constraint = ddl
+            .find("FOREIGN KEY")
+            .context("canonical FK declaration missing")?;
+        ddl.insert_str(
+            constraint,
+            &format!("{},\n    ", extra_declarations.join(",\n    ")),
+        );
+    }
+    conn.execute_batch(&ddl)
+        .with_context(|| format!("create the v2 staging table for {table}"))?;
+    let column_list = columns
+        .iter()
+        .map(|column| quoted_identifier(&column.name))
+        .collect::<Vec<_>>()
+        .join(", ");
     conn.execute_batch(&format!(
-        "DROP TABLE IF EXISTS {stage}; ALTER TABLE {table} RENAME TO {stage};"
-    ))
-    .with_context(|| format!("stage the old {table}"))?;
-    conn.execute_batch(&canonical_ddl(table, true))
-        .with_context(|| format!("create the v2 {table}"))?;
-    let column_list = columns.join(", ");
-    conn.execute_batch(&format!(
-        "INSERT INTO {table} ({column_list}) SELECT {column_list} FROM {stage};"
+        "INSERT INTO {stage} ({column_list}) SELECT {column_list} FROM {table};"
     ))
     .with_context(|| format!("copy rows into the v2 {table}"))?;
-    conn.execute_batch(&format!("DROP TABLE {stage};"))
-        .with_context(|| format!("drop the staged old {table}"))?;
+    // Between DROP and RENAME, views and triggers that reference the old name
+    // are temporarily unresolved. SQLite's normal ALTER validation rejects
+    // that intermediate schema; legacy_alter_table permits the rename without
+    // retargeting those dependencies to the stage. Restore the prior setting
+    // even when the replacement fails (the outer transaction then rolls back).
+    let prior_legacy_alter: i64 =
+        conn.query_row("PRAGMA legacy_alter_table", [], |row| row.get(0))?;
+    conn.pragma_update(None, "legacy_alter_table", "ON")?;
+    let replace_result = conn.execute_batch(&format!(
+        "DROP TABLE {table}; ALTER TABLE {stage} RENAME TO {table};"
+    ));
+    let restore_result = conn.pragma_update(None, "legacy_alter_table", prior_legacy_alter);
+    replace_result.with_context(|| format!("replace the old {table} with its v2 table"))?;
+    restore_result.context("restore SQLite ALTER TABLE behavior")?;
     for object in &saved {
         conn.execute_batch(&object.sql)
             .with_context(|| format!("restore {} {}", object.kind, object.name))?;
@@ -293,30 +437,21 @@ fn rebuild_table(
 }
 
 fn rebuild_file_hashes(conn: &Connection) -> anyhow::Result<()> {
-    let columns: Vec<&str> = crate::library_db::FILE_HASHES_COLUMNS
-        .iter()
-        .map(|(name, _)| *name)
-        .collect();
     rebuild_table(
         conn,
         "file_hashes",
         crate::library_db::file_hashes_ddl_for,
-        &columns,
+        crate::library_db::FILE_HASHES_COLUMNS,
     )
 }
 
 fn rebuild_faces(conn: &Connection) -> anyhow::Result<()> {
-    // Copy whatever columns the legacy table actually had; the v2 DDL fills
-    // the rest with their defaults. Every v2 column also existed in every
-    // legacy shape (oriented arrived via ALTER, so a pre-oriented table
-    // simply has no values to copy).
-    let mut stmt = conn.prepare("PRAGMA table_info(faces)")?;
-    let legacy_columns: Vec<String> = stmt
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    drop(stmt);
-    let columns: Vec<&str> = legacy_columns.iter().map(|s| s.as_str()).collect();
-    rebuild_table(conn, "faces", crate::face_db::faces_ddl_for, &columns)
+    rebuild_table(
+        conn,
+        "faces",
+        crate::face_db::faces_ddl_for,
+        crate::library_db::FACES_COLUMNS,
+    )
 }
 
 /// Upgrade a library database to schema version 2 in one transaction:
@@ -348,6 +483,8 @@ pub fn upgrade_to_v2(conn: &Connection) -> anyhow::Result<RepairReport> {
             violations.0, violations.1, violations.2, violations.3
         );
     }
+    crate::library_db::verify_foreign_keys(&tx)
+        .context("verify declared foreign keys before stamping schema version 2")?;
     tx.pragma_update(None, "user_version", 2)?;
     tx.commit()?;
     Ok(report)
@@ -508,6 +645,116 @@ mod tests {
         assert!(lines.iter().any(|l| l.contains("999")), "{lines:?}");
         assert!(lines.iter().any(|l| l.contains("provenance")), "{lines:?}");
         assert!(lines.iter().any(|l| l.contains("question")), "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("face-learning provenance")
+                && l.contains("event 424242")
+                && l.contains("removed 1")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("question provenance")
+                && l.contains("question 424242")
+                && l.contains("removed 1")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn report_counts_only_evidence_changed_by_this_repair() {
+        let conn = legacy_fixture();
+        conn.execute_batch(
+            "INSERT INTO face_learning_events (id, action_kind, decision_kind, outcome,
+                embedding_model_id, feature_schema_version, target_identity,
+                feature_snapshot_json, support_count, eligible, invalidation_reason)
+             VALUES (3, 'assign_face', 'membership', 'positive', 'm/1', 1,
+                'someone_else', '{}', 0, 0, 'person_removed');
+             INSERT INTO face_learning_events (id, action_kind, decision_kind, outcome,
+                embedding_model_id, feature_schema_version, target_identity,
+                feature_snapshot_json, support_count)
+             VALUES (4, 'assign_face', 'membership', 'positive', 'm/1', 1,
+                'Özgür Sefik', '{}', 0);
+             INSERT INTO face_learning_questions (id, status, target_identity, profile_id,
+                model_kind, representative_face_id, cluster_id, evidence_revision, evidence_json)
+             VALUES (2, 'pending', 'Özgür Sefik', 1, 'logistic', 1, 1, 'rev', '{}');",
+        )
+        .unwrap();
+
+        conn.execute_batch("PRAGMA foreign_keys = OFF; BEGIN")
+            .unwrap();
+        let report = repair_legacy_rows(&conn).unwrap();
+        conn.execute_batch("COMMIT; PRAGMA foreign_keys = ON")
+            .unwrap();
+
+        assert_eq!(report.learning_events_invalidated, 1);
+        assert_eq!(report.questions_superseded, 1);
+        assert_eq!(
+            conn.query_row(
+                "SELECT status FROM face_learning_questions WHERE id = 2",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "superseded"
+        );
+    }
+
+    #[test]
+    fn repairs_orphan_event_links_even_when_immutability_trigger_is_missing() {
+        let conn = legacy_fixture();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             DROP TRIGGER face_learning_event_faces_immutable_delete;
+             BEGIN;",
+        )
+        .unwrap();
+        let report = repair_legacy_rows(&conn).unwrap();
+        conn.execute_batch("COMMIT; PRAGMA foreign_keys = ON")
+            .unwrap();
+
+        assert_eq!(report.event_links_removed, 1);
+        let violations: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(violations, 0);
+        let trigger: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger'
+                 AND name = 'face_learning_event_faces_immutable_delete'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(trigger, 1);
+    }
+
+    #[test]
+    fn report_groups_broken_provenance_by_missing_parent_id() {
+        let conn = legacy_fixture();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             INSERT INTO face_learning_event_faces (event_id, face_id, role, ordinal)
+             VALUES (424243, 5, 'subject', 0), (424243, 6, 'support', 0);
+             INSERT INTO face_learning_question_faces (question_id, face_id, role, ordinal)
+             VALUES (424243, 5, 'subject', 0), (424243, 6, 'support', 0);
+             BEGIN;",
+        )
+        .unwrap();
+        let report = repair_legacy_rows(&conn).unwrap();
+        conn.execute_batch("COMMIT").unwrap();
+
+        assert_eq!(report.orphan_event_ids, vec![(424242, 1), (424243, 2)]);
+        assert_eq!(report.orphan_question_ids, vec![(424242, 1), (424243, 2)]);
+        assert_eq!(report.event_links_removed, 3);
+        assert_eq!(report.question_links_removed, 3);
+        let lines = report.stderr_lines();
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("removed 2") && line.contains("event 424243")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("removed 2") && line.contains("question 424243")));
     }
 
     #[test]
@@ -576,19 +823,26 @@ mod tests {
             "the repair must not create tables the library did not have"
         );
     }
-}
 
-/// The legacy (version 1) `file_hashes` shape, used only by tests to build a
-/// fixture that predates foreign keys.
-#[cfg(test)]
-pub(crate) fn legacy_file_hashes_ddl() -> String {
-    "CREATE TABLE file_hashes (
-        path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
-        created_at TEXT, modified_at TEXT, ext TEXT, phash INTEGER,
-        exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER,
-        height INTEGER
-    );"
-    .to_owned()
+    #[test]
+    fn orphan_label_repair_skips_absent_question_tables() {
+        let conn = prepared();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             DROP TABLE face_learning_question_faces;
+             DROP TABLE face_learning_questions;
+             INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
+             VALUES ('orphan', '0,0,1,1', X'00', 'lost_label', 1);
+             BEGIN;",
+        )
+        .unwrap();
+        let report = repair_legacy_rows(&conn).unwrap();
+        conn.execute_batch("COMMIT").unwrap();
+
+        assert_eq!(report.orphan_labels, vec![("lost_label".to_owned(), 1)]);
+        assert_eq!(report.questions_superseded, 0);
+        assert!(!crate::db::table_exists(&conn, "face_learning_questions").unwrap());
+    }
 }
 
 #[cfg(test)]
@@ -701,6 +955,108 @@ mod upgrade_tests {
         let before = stub_snapshot(&conn);
         upgrade_to_v2(&conn).expect("second upgrade must succeed");
         assert_eq!(stub_snapshot(&conn), before);
+    }
+
+    #[test]
+    fn upgrade_preserves_views_of_rebuilt_tables() {
+        let conn = legacy_v1_library();
+        conn.execute_batch(
+            "CREATE VIEW visible_faces AS SELECT id, person_label FROM faces;
+             CREATE VIEW visible_files AS SELECT path, hash FROM file_hashes;
+             CREATE TABLE custom_probe (id INTEGER);
+             CREATE TABLE audit_log (file_count INTEGER);
+             CREATE TRIGGER probe_files AFTER INSERT ON custom_probe
+             BEGIN INSERT INTO audit_log (file_count) SELECT COUNT(*) FROM file_hashes; END;",
+        )
+        .unwrap();
+
+        upgrade_to_v2(&conn).unwrap();
+        let faces: i64 = conn
+            .query_row("SELECT COUNT(*) FROM visible_faces", [], |r| r.get(0))
+            .unwrap();
+        let files: i64 = conn
+            .query_row("SELECT COUNT(*) FROM visible_files", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(faces, 1);
+        assert_eq!(files, 2);
+        conn.execute("INSERT INTO custom_probe (id) VALUES (1)", [])
+            .unwrap();
+        let trigger_count: i64 = conn
+            .query_row("SELECT file_count FROM audit_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            trigger_count, 2,
+            "cross-table triggers keep the original table name"
+        );
+    }
+
+    #[test]
+    fn upgrade_preserves_extra_legacy_columns_and_values() {
+        let conn = legacy_v1_library();
+        conn.execute_batch(
+            "ALTER TABLE file_hashes ADD COLUMN custom_rating INTEGER DEFAULT 0;
+             UPDATE file_hashes SET custom_rating = 7 WHERE hash = 'aaaa';
+             ALTER TABLE faces ADD COLUMN source_note TEXT;
+             UPDATE faces SET source_note = 'old import' WHERE id = 1;",
+        )
+        .unwrap();
+
+        upgrade_to_v2(&conn).unwrap();
+        let rating: i64 = conn
+            .query_row(
+                "SELECT custom_rating FROM file_hashes WHERE hash = 'aaaa'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let note: String = conn
+            .query_row("SELECT source_note FROM faces WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(rating, 7);
+        assert_eq!(note, "old import");
+    }
+
+    #[test]
+    fn upgrade_never_drops_a_preexisting_stage_named_table() {
+        let conn = legacy_v1_library();
+        conn.execute_batch(
+            "CREATE TABLE faces__v2_stage (note TEXT NOT NULL);
+             INSERT INTO faces__v2_stage (note) VALUES ('keep me');",
+        )
+        .unwrap();
+
+        upgrade_to_v2(&conn).unwrap();
+        let note: String = conn
+            .query_row("SELECT note FROM faces__v2_stage", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(note, "keep me");
+    }
+
+    #[test]
+    fn noncanonical_learning_key_rolls_back_before_version_stamp() {
+        let conn = legacy_v1_library();
+        crate::library_db::prepare_schema_components(&conn).unwrap();
+        conn.execute_batch(
+            "DROP TABLE face_learning_event_faces;
+             CREATE TABLE face_learning_event_faces (
+                 event_id INTEGER NOT NULL REFERENCES face_learning_events(id) ON DELETE CASCADE,
+                 face_id INTEGER NOT NULL,
+                 role TEXT NOT NULL,
+                 ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+                 PRIMARY KEY(event_id, role, ordinal),
+                 UNIQUE(event_id, face_id)
+             );",
+        )
+        .unwrap();
+
+        assert!(upgrade_to_v2(&conn).is_err());
+        assert_eq!(
+            user_version(&conn),
+            1,
+            "an invalid key must not be stamped v2"
+        );
     }
 
     fn stub_snapshot(conn: &Connection) -> String {

@@ -48,10 +48,8 @@ pub fn ensure_people_table(conn: &Connection) {
     // an identity" in the database rather than in whichever code path remembers
     // to check.
     //
-    // No foreign key from `faces`: SQLite leaves `PRAGMA foreign_keys` off and
-    // videre never sets it, so a `REFERENCES` clause here would be
-    // documentation rather than a constraint, and code written to trust it
-    // would be wrong. Tracked separately.
+    // The version-2 faces table references this primary key, and videre
+    // enables foreign-key enforcement on every connection it owns.
     let _ = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS people (
             name       TEXT PRIMARY KEY,

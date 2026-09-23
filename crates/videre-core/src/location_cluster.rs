@@ -321,9 +321,6 @@ pub fn recompute_all(
     // Children first: under enforced foreign keys a parent delete with
     // referencing rows would fail, so the references are cleared before the
     // clusters are removed.
-    // Children first: under enforced foreign keys a parent delete with
-    // referencing rows would fail, so the references are cleared before the
-    // clusters are removed.
     tx.execute(
         "UPDATE file_hashes SET location_cluster_id = NULL WHERE location_cluster_id IS NOT NULL",
         [],

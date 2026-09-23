@@ -46,9 +46,6 @@ use std::time::Duration;
 /// as an older supported library, validated then prepared.
 const SCHEMA_VERSION: i64 = 2;
 
-// Wired into `open_prepared` in the same PR; until that commit the module is
-// reachable only from tests.
-#[allow(dead_code)]
 mod foreign_keys;
 
 /// The first sixteen bytes of every SQLite database file. A library
@@ -235,29 +232,39 @@ fn verify_schema(conn: &Connection) -> Result<()> {
 /// valid schema. Separate from `verify_schema` because a legacy database only
 /// satisfies these checks once the versioned rebuild has run; the
 /// pre-rebuild preparation is verified by `verify_schema` alone.
-// Wired by the versioned upgrade (Task 4); carried here so the v2 contract
-// lives beside verify_schema.
-#[allow(dead_code)]
 pub(crate) fn verify_foreign_keys(conn: &Connection) -> Result<()> {
-    for (child, from, parent, to) in [
-        ("faces", "person_label", "people", "name"),
+    for (child, from, parent, to, on_update, on_delete) in [
+        (
+            "faces",
+            "person_label",
+            "people",
+            "name",
+            "RESTRICT",
+            "RESTRICT",
+        ),
         (
             "file_hashes",
             "location_cluster_id",
             "location_clusters",
             "id",
+            "RESTRICT",
+            "RESTRICT",
         ),
         (
             "face_learning_event_faces",
             "event_id",
             "face_learning_events",
             "id",
+            "NO ACTION",
+            "NO ACTION",
         ),
         (
             "face_learning_question_faces",
             "question_id",
             "face_learning_questions",
             "id",
+            "NO ACTION",
+            "NO ACTION",
         ),
     ] {
         let sql = format!("PRAGMA foreign_key_list({child})");
@@ -268,11 +275,19 @@ pub(crate) fn verify_foreign_keys(conn: &Connection) -> Result<()> {
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        if !declared.contains(&(from.to_owned(), parent.to_owned(), to.to_owned())) {
-            bail!("missing foreign key on {child}.{from}");
+        if !declared.contains(&(
+            from.to_owned(),
+            parent.to_owned(),
+            to.to_owned(),
+            on_update.to_owned(),
+            on_delete.to_owned(),
+        )) {
+            bail!("missing required foreign key on {child}.{from} with {on_update} updates and {on_delete} deletes");
         }
     }
     Ok(())
@@ -307,7 +322,7 @@ pub(crate) fn legacy_v1_fixture_ddl() -> String {
 /// Whether the schema is already complete, used to decide whether an open
 /// needs the upgrade path at all.
 fn schema_complete(conn: &Connection) -> Result<bool> {
-    Ok(verify_schema(conn).is_ok())
+    Ok(verify_schema(conn).is_ok() && verify_foreign_keys(conn).is_ok())
 }
 
 /// Prepare the complete supported schema on `conn`: the scan table plus the
@@ -424,22 +439,29 @@ pub(crate) fn open_without_create(path: &Path) -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
-/// Raw open for the versioned migration: no pragma configuration, because the
-/// upgrade deliberately runs with enforcement off while it clears violations.
+/// Private open for the versioned migration: explicitly disable enforcement
+/// before it clears violations, regardless of SQLite's compiled default.
 fn open_without_create_unconfigured(path: &Path) -> rusqlite::Result<Connection> {
     use rusqlite::OpenFlags;
-    Connection::open_with_flags(
+    let conn = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_WRITE
             | OpenFlags::SQLITE_OPEN_NO_MUTEX
             | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )
+    )?;
+    conn.pragma_update(None, "foreign_keys", "OFF")?;
+    let enabled: i64 = conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?;
+    if enabled != 0 {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    Ok(conn)
 }
 
-/// Open an existing database with the busy timeout every library open uses,
-/// and with foreign keys verified on before the connection is returned.
+/// Open an existing database with the busy timeout every library open uses.
+/// This private connection remains unconfigured until inspection decides
+/// whether a legacy repair must run; every public return enables keys first.
 fn open_existing_conn(ctx: &LibraryContext) -> Result<Connection> {
-    let conn = open_without_create(&ctx.paths.db)
+    let conn = open_without_create_unconfigured(&ctx.paths.db)
         .with_context(|| format!("open {}", ctx.paths.db.display()))?;
     conn.busy_timeout(BUSY_TIMEOUT)
         .context("set the library database busy timeout")?;
@@ -581,15 +603,9 @@ fn open_prepared(ctx: &LibraryContext, conn: &Connection) -> Result<()> {
         // `file_hashes` and `faces` into their foreign-keyed shapes, verifies,
         // and stamps version 2. Nothing here reports a repair unless the
         // upgrade committed.
-        let report = if user_version(conn)? < SCHEMA_VERSION || !schema_complete(conn)? {
-            Some(foreign_keys::upgrade_to_v2(conn)?)
-        } else {
-            None
-        };
-        if let Some(report) = report {
-            for line in report.stderr_lines() {
-                eprintln!("{line}");
-            }
+        let report = foreign_keys::upgrade_to_v2(conn)?;
+        for line in report.stderr_lines() {
+            eprintln!("{line}");
         }
     }
     verify_schema(conn)?;
@@ -819,6 +835,8 @@ pub fn open_existing(ctx: &LibraryContext) -> Result<Connection> {
     validate_row_containment(ctx, &conn)?;
     if version == SCHEMA_VERSION && schema_complete(&conn)? {
         set_wal(&conn)?;
+        crate::db::enable_foreign_keys(&conn)
+            .context("enable foreign keys on the library connection")?;
         return Ok(conn);
     }
     // Phase two: the upgrade writes, so shared activity gives way to
@@ -891,6 +909,80 @@ pub fn open_existing_read_only(ctx: &LibraryContext) -> Result<Connection> {
 #[cfg(test)]
 mod tests {
     use crate::db::enable_foreign_keys;
+
+    #[test]
+    fn migration_open_starts_unconfigured_but_normal_open_enforces_keys() {
+        let (_t, ctx) = library();
+        drop(initialize(&ctx).unwrap());
+
+        let migration = open_existing_conn(&ctx).unwrap();
+        let during_upgrade: i64 = migration
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(during_upgrade, 0);
+        drop(migration);
+
+        let normal = open_existing(&ctx).unwrap();
+        let after_open: i64 = normal
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after_open, 1);
+    }
+
+    #[test]
+    fn complete_schema_requires_declared_foreign_keys_not_only_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        prepare_schema(&conn).unwrap();
+        conn.execute_batch(
+            "DROP TABLE faces;
+             CREATE TABLE faces (
+                 id INTEGER PRIMARY KEY,
+                 hash TEXT NOT NULL,
+                 bbox TEXT NOT NULL,
+                 embedding BLOB NOT NULL
+             );",
+        )
+        .unwrap();
+        add_missing_columns(&conn, "faces", FACES_COLUMNS).unwrap();
+
+        assert!(verify_schema(&conn).is_ok(), "the columns are intact");
+        assert!(
+            verify_foreign_keys(&conn).is_err(),
+            "the person key is absent"
+        );
+        assert!(!schema_complete(&conn).unwrap());
+    }
+
+    #[test]
+    fn complete_schema_rejects_cascading_person_and_location_keys() {
+        let conn = Connection::open_in_memory().unwrap();
+        prepare_schema(&conn).unwrap();
+        conn.execute_batch("DROP TABLE faces").unwrap();
+        let cascading_faces = crate::face_db::faces_ddl_for("faces", false).replace(
+            "ON DELETE RESTRICT ON UPDATE RESTRICT",
+            "ON DELETE CASCADE ON UPDATE CASCADE",
+        );
+        conn.execute_batch(&cascading_faces).unwrap();
+        assert!(verify_schema(&conn).is_ok());
+        assert!(
+            !schema_complete(&conn).unwrap(),
+            "person deletes must not cascade"
+        );
+
+        conn.execute_batch("DROP TABLE faces").unwrap();
+        conn.execute_batch(&crate::face_db::faces_ddl_for("faces", false))
+            .unwrap();
+        conn.execute_batch("DROP TABLE file_hashes").unwrap();
+        let cascading_files = file_hashes_ddl_for("file_hashes", false).replace(
+            "ON DELETE RESTRICT ON UPDATE RESTRICT",
+            "ON DELETE CASCADE ON UPDATE CASCADE",
+        );
+        conn.execute_batch(&cascading_files).unwrap();
+        assert!(
+            !schema_complete(&conn).unwrap(),
+            "location deletes must not cascade"
+        );
+    }
 
     #[test]
     fn fresh_schema_rejects_orphan_references() {
