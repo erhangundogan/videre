@@ -5303,7 +5303,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "videre"
-version = "0.39.0"
+version = "0.40.0"
 dependencies = [
  "anyhow",
  "askama",
@@ -5346,7 +5346,7 @@ dependencies = [
 
 [[package]]
 name = "videre-api"
-version = "0.39.0"
+version = "0.40.0"
 dependencies = [
  "anyhow",
  "half",
@@ -5362,7 +5362,7 @@ dependencies = [
 
 [[package]]
 name = "videre-core"
-version = "0.39.0"
+version = "0.40.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -5389,7 +5389,7 @@ dependencies = [
 
 [[package]]
 name = "videre-ml"
-version = "0.39.0"
+version = "0.40.0"
 dependencies = [
  "anyhow",
  "candle-core",

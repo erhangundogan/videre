@@ -16,6 +16,55 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.40.0] - 2026-09-23
+
+### Added
+
+- **Per-command log files.** Every command now records its errors and warnings
+  in `<library>/.videre/logs/<command>.log`, so a failure that scrolled past
+  under `watch` or `pipeline` can be read afterwards. Each run writes one `run
+  started` line, then its failures: a skipped file names the file, a failed
+  `pipeline` or `watch` stage names the stage, and failed `gallery` requests
+  and `mcp` tool calls are recorded too. Files are owner-only (`0600`), written
+  in the background so a slow or disconnected drive never stalls a command, and
+  never created in a library that has not been initialized.
+- **Error kinds.** When videre knows why something failed, the log line carries
+  a `kind` and a remediation: `source_unavailable`, `permission_denied`,
+  `decode_failed`, `quicklook_unavailable`, `model_unavailable`,
+  `library_busy`, `library_schema` or `database`.
+- **Five log settings**, set per library with `videre config set`:
+  `log-level` (`error`, `warn` (default), `info`, `debug`), `log-format`
+  (`json` (default) or `text`, which is logfmt), `log-max-size-mb` (default
+  10), `log-keep` (default 5) and `log-max-age-days` (default 30). At `info` or
+  `debug` a separate `<command>.trace.log` holds the detail, so it can never
+  push an error out of the primary file. `debug` records lock decisions, stage
+  durations, files skipped after repeated decode failures and thumbnail cache
+  hits and misses. The settings affect the files only; the terminal is
+  unchanged.
+- **`videre status` shows recent problems**: for each command whose latest run
+  logged errors or warnings, the counts (errors split by `pipeline` and `watch`
+  stage) and the last error with its kind. `--json` carries it under
+  `report.logs`. A new guide, *Logging and error handling*, documents all of
+  this.
+
+### Changed
+
+- **`videre status --check` also fails when a command's latest run logged an
+  error**, which catches failures that leave the pipeline record at `success`,
+  such as a stage failing inside `watch`. Warnings such as skipped files never
+  fail it.
+- **Some terminal messages read slightly differently.** `Warning:` and `Error:`
+  prefixes are now lowercase `warning:` and `error:`; a skipped file reads
+  `warning: skipping <path>: ...`; a failed stage reads `error: videre watch:
+  scan stage: ...`. Scripts matching the old capitalized prefixes need updating.
+- **A failure reported as a JSON document with `--json` is no longer repeated on
+  stderr**, so stdout and stderr stay clean for tooling. It is still logged.
+
+### Upgrading
+
+- Nothing to do. The database is unchanged, and log files start with the first
+  command run after upgrading.
+
 ## [0.39.0] - 2026-09-23
 
 ### Changed
@@ -2188,7 +2237,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.39.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.40.0...HEAD
+[0.40.0]: https://github.com/erhangundogan/videre/compare/v0.39.0...v0.40.0
 [0.39.0]: https://github.com/erhangundogan/videre/compare/v0.38.0...v0.39.0
 [0.38.0]: https://github.com/erhangundogan/videre/compare/v0.37.0...v0.38.0
 [0.37.0]: https://github.com/erhangundogan/videre/compare/v0.36.0...v0.37.0
