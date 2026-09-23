@@ -5,6 +5,7 @@ pub mod decode_failures;
 pub mod disk;
 pub mod embeddings;
 pub mod embeddings_db;
+pub mod error_kind;
 pub mod face_cluster;
 pub mod face_db;
 pub mod face_learning;
