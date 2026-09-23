@@ -1,5 +1,4 @@
 use crate::command_context::CommandContext;
-use std::process;
 use videre::types::{ErrorJson, StatusJson, SCHEMA_VERSION};
 use videre_core::status_report::StatusReport;
 
@@ -24,13 +23,13 @@ pub fn run(args: StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
             Ok(doc) => {
                 println!("{}", serde_json::to_string(&doc)?);
                 if args.check && doc.report.has_problem() {
-                    process::exit(1);
+                    return Err(crate::exit::Exit::code(1).into());
                 }
                 Ok(())
             }
             Err(e) => {
                 println!("{}", serde_json::to_string(&ErrorJson::from_err(&e))?);
-                process::exit(1);
+                Err(crate::exit::Exit::shown(e).into())
             }
         }
     } else {
@@ -154,7 +153,7 @@ fn run_text(args: &StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     }
 
     if args.check && report.has_problem() {
-        process::exit(1);
+        return Err(crate::exit::Exit::code(1).into());
     }
     Ok(())
 }

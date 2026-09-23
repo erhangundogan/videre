@@ -57,6 +57,10 @@ notify = "8"
 notify-debouncer-full = "0.7"
 little_exif = "0.6.23"
 crc32fast = "1.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "json", "registry"] }
+tracing-logfmt = "0.3"
+file-rotate = "0.8"
 
 [dev-dependencies]
 tempfile = "3"

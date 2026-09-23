@@ -9,6 +9,11 @@ const CONFIG_KEYS: &[&str] = &[
     "xmp",
     "export-xmp-on-watch",
     "watch-debounce-ms",
+    "log-level",
+    "log-format",
+    "log-max-size-mb",
+    "log-keep",
+    "log-max-age-days",
 ];
 
 #[derive(clap::Args)]
@@ -52,14 +57,34 @@ fn config_key(key: &str) -> ConfigKey {
         "xmp" => ConfigKey::Xmp,
         "export-xmp-on-watch" => ConfigKey::ExportXmpOnWatch,
         "watch-debounce-ms" => ConfigKey::WatchDebounceMs,
+        "log-level" => ConfigKey::LogLevel,
+        "log-format" => ConfigKey::LogFormat,
+        "log-max-size-mb" => ConfigKey::LogMaxSizeMb,
+        "log-keep" => ConfigKey::LogKeep,
+        "log-max-age-days" => ConfigKey::LogMaxAgeDays,
         _ => unreachable!("clap restricts keys to CONFIG_KEYS"),
     }
 }
 
+/// Parse a whole-number CLI value; `unit` names what the number counts.
+fn whole_number(key: &str, value: &str, unit: &str) -> Result<toml::Value> {
+    let n: u64 = value
+        .parse()
+        .map_err(|_| anyhow::anyhow!("{key} must be a whole number of {unit}, got {value:?}"))?;
+    let n = i64::try_from(n).with_context(|| format!("{key} is too large"))?;
+    Ok(toml::Value::Integer(n))
+}
+
 fn config_value(key: &str, value: String) -> Result<(ConfigKey, toml::Value)> {
+    let name = key;
     let key = config_key(key);
     let value = match key {
-        ConfigKey::Model | ConfigKey::Xmp => toml::Value::String(value),
+        ConfigKey::Model | ConfigKey::Xmp | ConfigKey::LogLevel | ConfigKey::LogFormat => {
+            toml::Value::String(value)
+        }
+        ConfigKey::LogMaxSizeMb => whole_number(name, &value, "megabytes")?,
+        ConfigKey::LogKeep => whole_number(name, &value, "files")?,
+        ConfigKey::LogMaxAgeDays => whole_number(name, &value, "days")?,
         ConfigKey::ReadRate => {
             let mb_s: u64 = value.parse().map_err(|_| {
                 anyhow::anyhow!("read-rate must be a whole number of MB/s, got {value:?}")
@@ -127,6 +152,11 @@ fn show(ctx: &CommandContext) -> Result<()> {
             videre_core::library_config::WATCH_DEBOUNCE_MS_DEFAULT
         ),
     }
+    println!("log-level:     {}", config.log_level.as_str());
+    println!("log-format:    {}", config.log_format.as_str());
+    println!("log-max-size-mb: {} MB", config.log_max_size_mb);
+    println!("log-keep:      {}", config.log_keep);
+    println!("log-max-age-days: {} days", config.log_max_age_days);
     Ok(())
 }
 

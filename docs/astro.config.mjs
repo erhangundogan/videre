@@ -116,6 +116,7 @@ export default defineConfig({
 						{ label: 'Compositional searches', slug: 'guides/compositional-search' },
 						{ label: 'Scoping a run', slug: 'guides/scoping-a-run' },
 						{ label: 'Long-running jobs', slug: 'guides/long-running-jobs' },
+						{ label: 'Logging and error handling', slug: 'guides/logging-and-errors' },
 						{ label: 'Keeping libraries separate', slug: 'guides/multiple-libraries' },
 						{ label: 'Using several search models', slug: 'guides/multiple-models' },
 						{ label: 'Caches and disk use', slug: 'guides/caches' },

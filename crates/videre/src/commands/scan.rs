@@ -1,7 +1,6 @@
 use crate::command_context::CommandContext;
 use rayon::prelude::*;
 use rusqlite::Connection;
-use std::process;
 use videre::{
     hasher, scanner, sqlite_output,
     types::{ErrorJson, ScanJson, ScanOutputJson, SCHEMA_VERSION},
@@ -53,6 +52,11 @@ impl ScanArgs {
         };
         <P as clap::Parser>::parse_from(argv).a
     }
+
+    /// Whether failures are reported as a JSON document on stdout.
+    pub(crate) fn json(&self) -> bool {
+        self.json
+    }
 }
 
 pub fn run(args: ScanArgs, ctx: &CommandContext) -> anyhow::Result<()> {
@@ -69,17 +73,19 @@ pub fn run(args: ScanArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     }
 }
 
-pub fn report_startup_error(args: ScanArgs, error: anyhow::Error) -> anyhow::Result<()> {
-    if args.json {
+pub fn report_startup_error(json: bool, error: anyhow::Error) -> anyhow::Result<()> {
+    if json {
         report_json_error(error)
     } else {
         Err(error)
     }
 }
 
+/// `--json` carries its failure on stdout as one error document; the error is
+/// still logged, but not printed to stderr a second time.
 fn report_json_error(error: anyhow::Error) -> anyhow::Result<()> {
     println!("{}", serde_json::to_string(&ErrorJson::from_err(&error))?);
-    process::exit(1);
+    Err(crate::exit::Exit::shown(error).into())
 }
 
 fn run_inner(args: &ScanArgs, ctx: &CommandContext) -> anyhow::Result<ScanJson> {

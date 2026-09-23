@@ -1,5 +1,4 @@
 use crate::command_context::CommandContext;
-use std::process;
 use videre::types::ErrorJson;
 
 #[derive(clap::Args)]
@@ -72,7 +71,7 @@ pub fn run(args: DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
             }
             Err(e) => {
                 println!("{}", serde_json::to_string(&ErrorJson::from_err(&e))?);
-                process::exit(1);
+                Err(crate::exit::Exit::shown(e).into())
             }
         }
     } else {
@@ -110,45 +109,21 @@ fn write_html(
 }
 
 fn run_text(args: DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
-    let conn = match videre_core::library_db::open_existing(&ctx.library) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Error: {e:#}");
-            process::exit(1);
-        }
-    };
-    let activity = match videre_core::library_locks::try_activity(
+    let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    let activity = videre_core::library_locks::try_activity(
         &ctx.library,
         videre_core::library_locks::ActivityMode::Shared,
-    ) {
-        Ok(g) => g,
-        Err(e) => {
-            eprintln!("Error: {e:#}");
-            process::exit(1);
-        }
-    };
-    let guard = match videre_core::library_locks::try_command(&ctx.library, "dedupe") {
-        Ok(g) => g,
-        Err(e) => {
-            eprintln!("Error: {e:#}");
-            process::exit(1);
-        }
-    };
+    )?;
+    let guard = videre_core::library_locks::try_command(&ctx.library, "dedupe")?;
 
     let moved =
-        match videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "dedupe", || {
+        videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "dedupe", || {
             if args.remove {
                 run_remove(&args, ctx, &conn)
             } else {
                 run_dedupe_text(&args, &conn).map(|_| 0usize)
             }
-        }) {
-            Ok(moved) => moved,
-            Err(e) => {
-                eprintln!("Error: {e:#}");
-                process::exit(1);
-            }
-        };
+        })?;
 
     // `--remove` trashed duplicate copies, and their database rows now
     // describe files that no longer exist: run the same cleanup `videre
@@ -175,10 +150,7 @@ fn run_text(args: DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     }
 
     if let Some(arg) = args.html.as_ref() {
-        if let Err(e) = write_html(ctx, &conn, arg.as_deref()) {
-            eprintln!("Error: {e:#}");
-            process::exit(1);
-        }
+        write_html(ctx, &conn, arg.as_deref())?;
     }
     Ok(())
 }

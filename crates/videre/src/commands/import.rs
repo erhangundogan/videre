@@ -102,7 +102,7 @@ pub fn run(args: ImportArgs, ctx: &CommandContext) -> anyhow::Result<()> {
         match import_one(&root, provider, &args, ctx)? {
             Some(summary) => summaries.push(summary),
             // Location failed. Already reported in full; nothing to summarise.
-            None => std::process::exit(1),
+            None => return Err(crate::exit::Exit::code(1).into()),
         }
     }
 
@@ -112,7 +112,7 @@ pub fn run(args: ImportArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     }
 
     if summaries.iter().any(|s| s.errors > 0) {
-        std::process::exit(1);
+        return Err(crate::exit::Exit::code(1).into());
     }
     Ok(())
 }

@@ -3,6 +3,8 @@ use std::ffi::{OsStr, OsString};
 
 mod command_context;
 mod commands;
+mod exit;
+mod logging;
 mod removal;
 mod render;
 mod xmp;
@@ -146,52 +148,113 @@ fn main() {
         }
     };
     let Cli { library, command } = cli;
-    let result = match command {
-        Command::Scan(args) => match command_context::CommandContext::capture(library) {
-            Ok(ctx) => commands::scan::run(args, &ctx),
-            Err(error) => commands::scan::report_startup_error(args, error),
-        },
-        Command::Config(args) => command_context::CommandContext::capture(library)
-            .and_then(|ctx| commands::config::run(args, &ctx)),
-        Command::Dedupe(args) => command_context::CommandContext::capture(library)
-            .and_then(|ctx| commands::dedupe::run(args, &ctx)),
-        Command::Gallery(args) => command_context::CommandContext::capture(library)
-            .and_then(|ctx| commands::gallery::run(args, &ctx)),
-        Command::FixDates(args) => command_context::CommandContext::capture(library)
-            .and_then(|ctx| commands::fix_dates::run(args, &ctx)),
-        Command::Import(args) => command_context::CommandContext::capture(library)
-            .and_then(|ctx| commands::import::run(args, &ctx)),
-        Command::Prune(args) => command_context::CommandContext::capture(library)
-            .and_then(|ctx| commands::prune::run(args, &ctx)),
-        Command::Locations(args) => command_context::CommandContext::capture(library)
-            .and_then(|ctx| commands::locations::run(args, &ctx)),
-        Command::Embed(args) => command_context::CommandContext::capture(library)
-            .and_then(|ctx| commands::embed::run(args, &ctx)),
-        Command::Search(args) => command_context::CommandContext::capture(library)
-            .and_then(|ctx| commands::search::run(args, &ctx)),
-        Command::Faces(args) => command_context::CommandContext::capture(library)
-            .and_then(|ctx| commands::faces::run(args, &ctx)),
-        Command::Classify(args) => command_context::CommandContext::capture(library)
-            .and_then(|ctx| commands::classify::run(args, &ctx)),
-        Command::Watch(args) => command_context::CommandContext::capture(library)
-            .and_then(|ctx| commands::watch::run(args, &ctx)),
-        Command::Pipeline(args) => command_context::CommandContext::capture(library)
-            .and_then(|ctx| commands::pipeline::run(args, &ctx)),
-        Command::Mcp(args) => command_context::CommandContext::capture(library)
-            .and_then(|ctx| commands::mcp::run(args, &ctx)),
-        Command::Stats(args) => command_context::CommandContext::capture(library)
-            .and_then(|ctx| commands::stats::run(args, &ctx)),
-        Command::Status(args) => command_context::CommandContext::capture(library)
-            .and_then(|ctx| commands::status::run(args, &ctx)),
-        Command::Mark(args) => command_context::CommandContext::capture(library)
-            .and_then(|ctx| commands::mark::run(args, &ctx)),
-        Command::Export(args) => command_context::CommandContext::capture(library)
-            .and_then(|ctx| commands::export::run(args, &ctx)),
-        Command::Tag(args) => command_context::CommandContext::capture(library)
-            .and_then(|ctx| commands::tag::run(args, &ctx)),
+    let code = match command {
+        Command::Scan(args) => {
+            let json = args.json();
+            with_ctx_or(
+                library,
+                "scan",
+                move |e| commands::scan::report_startup_error(json, e),
+                |ctx| commands::scan::run(args, ctx),
+            )
+        }
+        Command::Config(args) => {
+            with_ctx(library, "config", |ctx| commands::config::run(args, ctx))
+        }
+        Command::Dedupe(args) => {
+            with_ctx(library, "dedupe", |ctx| commands::dedupe::run(args, ctx))
+        }
+        Command::Gallery(args) => {
+            with_ctx(library, "gallery", |ctx| commands::gallery::run(args, ctx))
+        }
+        Command::FixDates(args) => with_ctx(library, "fix-dates", |ctx| {
+            commands::fix_dates::run(args, ctx)
+        }),
+        Command::Import(args) => {
+            with_ctx(library, "import", |ctx| commands::import::run(args, ctx))
+        }
+        Command::Prune(args) => with_ctx(library, "prune", |ctx| commands::prune::run(args, ctx)),
+        Command::Locations(args) => with_ctx(library, "locations", |ctx| {
+            commands::locations::run(args, ctx)
+        }),
+        Command::Embed(args) => with_ctx(library, "embed", |ctx| commands::embed::run(args, ctx)),
+        Command::Search(args) => {
+            with_ctx(library, "search", |ctx| commands::search::run(args, ctx))
+        }
+        Command::Faces(args) => with_ctx(library, "faces", |ctx| commands::faces::run(args, ctx)),
+        Command::Classify(args) => with_ctx(library, "classify", |ctx| {
+            commands::classify::run(args, ctx)
+        }),
+        Command::Watch(args) => with_ctx(library, "watch", |ctx| commands::watch::run(args, ctx)),
+        Command::Pipeline(args) => with_ctx(library, "pipeline", |ctx| {
+            commands::pipeline::run(args, ctx)
+        }),
+        Command::Mcp(args) => with_ctx(library, "mcp", |ctx| commands::mcp::run(args, ctx)),
+        Command::Stats(args) => with_ctx(library, "stats", |ctx| commands::stats::run(args, ctx)),
+        Command::Status(args) => {
+            with_ctx(library, "status", |ctx| commands::status::run(args, ctx))
+        }
+        Command::Mark(args) => with_ctx(library, "mark", |ctx| commands::mark::run(args, ctx)),
+        Command::Export(args) => {
+            with_ctx(library, "export", |ctx| commands::export::run(args, ctx))
+        }
+        Command::Tag(args) => with_ctx(library, "tag", |ctx| commands::tag::run(args, ctx)),
     };
-    if let Err(e) = result {
-        eprintln!("error: {e:#}");
-        std::process::exit(1);
+    // The only process exit in the binary: everything a command held,
+    // buffered log writers included, has been dropped by now.
+    std::process::exit(code);
+}
+
+/// Capture the invocation's library, run one command in it, and turn the
+/// result into an exit code. `command` is the subcommand's name as typed.
+fn with_ctx(
+    library: Option<std::path::PathBuf>,
+    command: &'static str,
+    run: impl FnOnce(&command_context::CommandContext) -> anyhow::Result<()>,
+) -> i32 {
+    with_ctx_or(library, command, Err, run)
+}
+
+/// `with_ctx` with a handler for a library that cannot be captured, for the
+/// one command (`scan --json`) that reports even that failure as JSON.
+fn with_ctx_or(
+    library: Option<std::path::PathBuf>,
+    command: &'static str,
+    on_capture_error: impl FnOnce(anyhow::Error) -> anyhow::Result<()>,
+    run: impl FnOnce(&command_context::CommandContext) -> anyhow::Result<()>,
+) -> i32 {
+    match command_context::CommandContext::capture(library) {
+        Ok(ctx) => {
+            // Held until the result is reported, so the final error is in the
+            // log before the writers flush on drop.
+            let _log = logging::install(&ctx.library, command);
+            finish(run(&ctx))
+        }
+        Err(e) => {
+            logging::install_terminal_only();
+            finish(on_capture_error(e))
+        }
+    }
+}
+
+/// Report a command's outcome once, through the logging layers (the terminal
+/// shows `error: ...` exactly as before), and return its exit code.
+fn finish(result: anyhow::Result<()>) -> i32 {
+    let Err(e) = result else { return 0 };
+    match e.downcast::<exit::Exit>() {
+        Ok(exit) => {
+            match &exit.error {
+                Some(error) if exit.shown => {
+                    videre_core::error_log::report_file_only(&format!("{error:#}"))
+                }
+                Some(error) => videre_core::error_log::report(tracing::Level::ERROR, error, None),
+                None => {}
+            }
+            exit.code
+        }
+        Err(e) => {
+            videre_core::error_log::report(tracing::Level::ERROR, &e, None);
+            1
+        }
     }
 }
