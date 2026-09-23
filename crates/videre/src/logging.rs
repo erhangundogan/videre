@@ -60,10 +60,34 @@ impl Write for Writer {
     }
 }
 
+/// Write and flush failures in a writer thread (a disk that filled, an I/O
+/// error), counted with the first cause, so shutdown can say lines are
+/// missing instead of losing them silently.
+#[derive(Default)]
+struct Failures {
+    count: std::sync::atomic::AtomicUsize,
+    first: std::sync::Mutex<Option<String>>,
+}
+
+impl Failures {
+    fn record(&self, e: &std::io::Error) {
+        if self
+            .count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            == 0
+        {
+            if let Ok(mut first) = self.first.lock() {
+                *first = Some(e.to_string());
+            }
+        }
+    }
+}
+
 /// The guard's side of a background log writer.
 struct Worker {
     tx: std::sync::mpsc::SyncSender<Msg>,
     dropped: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    failures: std::sync::Arc<Failures>,
 }
 
 impl Worker {
@@ -95,6 +119,16 @@ impl Worker {
     fn dropped(&self) -> usize {
         self.dropped.load(std::sync::atomic::Ordering::Relaxed)
     }
+
+    /// How many writes or flushes failed, and the first failure's cause.
+    fn failures(&self) -> (usize, Option<String>) {
+        let count = self
+            .failures
+            .count
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let first = self.failures.first.lock().ok().and_then(|f| f.clone());
+        (count, first)
+    }
 }
 
 /// Start a writer thread for `out`, queueing at most `capacity` lines.
@@ -104,21 +138,29 @@ fn spawn_writer<W: Write + Send + 'static>(
     capacity: usize,
 ) -> Option<(Writer, Worker)> {
     let (tx, rx) = std::sync::mpsc::sync_channel::<Msg>(capacity);
+    let failures = std::sync::Arc::new(Failures::default());
+    let seen = failures.clone();
     std::thread::Builder::new()
         .name("videre-log".into())
         .spawn(move || {
             for msg in rx {
                 match msg {
                     Msg::Line(line) => {
-                        let _ = out.write_all(&line);
+                        if let Err(e) = out.write_all(&line) {
+                            seen.record(&e);
+                        }
                     }
                     Msg::Flush(ack) => {
-                        let _ = out.flush();
+                        if let Err(e) = out.flush() {
+                            seen.record(&e);
+                        }
                         let _ = ack.send(());
                     }
                 }
             }
-            let _ = out.flush();
+            if let Err(e) = out.flush() {
+                seen.record(&e);
+            }
         })
         .ok()?;
     let dropped = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -127,7 +169,11 @@ fn spawn_writer<W: Write + Send + 'static>(
             tx: tx.clone(),
             dropped: dropped.clone(),
         },
-        Worker { tx, dropped },
+        Worker {
+            tx,
+            dropped,
+            failures,
+        },
     ))
 }
 
@@ -152,6 +198,13 @@ impl Drop for LogGuard {
             eprintln!(
                 "warning: {dropped} log line(s) could not be written in time and were dropped"
             );
+        }
+        for worker in &self.workers {
+            if let (count @ 1.., Some(first)) = worker.failures() {
+                eprintln!(
+                    "warning: {count} log write(s) failed and their lines are missing ({first})"
+                );
+            }
         }
         if unfinished {
             eprintln!("warning: the log file did not finish writing in time; its last lines may be missing");
@@ -505,6 +558,33 @@ mod tests {
             started.elapsed() < FLUSH_BUDGET + std::time::Duration::from_millis(200),
             "took {:?}",
             started.elapsed()
+        );
+    }
+
+    #[test]
+    fn write_and_flush_failures_are_counted_with_their_first_cause() {
+        /// A disk that filled up after startup.
+        struct Full;
+        impl Write for Full {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("No space left on device"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::other("No space left on device"))
+            }
+        }
+        let (mut writer, worker) = spawn_writer(Full, 16).unwrap();
+        writer.write_all(b"first\n").unwrap();
+        writer.write_all(b"second\n").unwrap();
+        worker.flush_by(std::time::Instant::now() + FLUSH_BUDGET);
+        let (count, first) = worker.failures();
+        assert_eq!(count, 3, "two writes and the flush failed");
+        assert!(
+            first
+                .as_deref()
+                .unwrap_or_default()
+                .contains("No space left"),
+            "{first:?}"
         );
     }
 
