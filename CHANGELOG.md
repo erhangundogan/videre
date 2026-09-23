@@ -16,6 +16,46 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.39.0] - 2026-09-23
+
+### Changed
+
+- **The library database now enforces its relationships.** Foreign keys are
+  switched on for every database connection videre opens. A face's person label
+  must name an existing person, a file's location cluster must exist, and
+  face-learning detail rows must belong to an existing event or question. A write
+  that would break one of these now fails at the statement that made it, instead
+  of leaving a dangling reference behind.
+
+### Upgrading
+
+- **Existing libraries upgrade automatically; nothing needs regenerating.** The
+  first normal command (`videre stats`, `scan`, `gallery` and so on) upgrades the
+  database in place, in a single transaction. If anything unexpected goes wrong,
+  the upgrade rolls back and leaves the database exactly as it was.
+- **Valid data is kept in full**: files, faces with their embeddings and ids,
+  people, tags, marks, classifications, location data, face-learning history,
+  and any custom columns, indexes, triggers and views. Embedding databases are
+  not touched.
+- **Only references that were already broken are repaired**, and each repair is
+  printed once on stderr (stdout stays clean, so `--json` output remains valid):
+  - A face labelled with a person who no longer exists becomes unassigned. The
+    face and its embedding stay; relabel it if you want it back. Face-learning
+    evidence for that label is invalidated, and pending questions about it are
+    superseded.
+  - A file pointing at a location cluster that no longer exists has only that
+    link cleared; its coordinates and place name stay. Run `videre locations` to
+    rebuild clusters.
+  - Face-learning detail rows whose parent event or question is missing are
+    removed, since they mean nothing without it.
+
+  A healthy library loses nothing.
+- **A read-only open does not upgrade.** A command that opens the library
+  read-only refuses an old database until a normal command has upgraded it.
+- **There is no way back to an older videre.** Once upgraded, the database
+  carries schema version 2, and older videre releases refuse to open it.
+
+
 ## [0.38.0] - 2026-09-23
 
 ### Added
@@ -2148,7 +2188,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.38.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.39.0...HEAD
+[0.39.0]: https://github.com/erhangundogan/videre/compare/v0.38.0...v0.39.0
 [0.38.0]: https://github.com/erhangundogan/videre/compare/v0.37.0...v0.38.0
 [0.37.0]: https://github.com/erhangundogan/videre/compare/v0.36.0...v0.37.0
 [0.36.0]: https://github.com/erhangundogan/videre/compare/v0.35.0...v0.36.0
