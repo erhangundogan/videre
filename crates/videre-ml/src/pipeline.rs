@@ -949,6 +949,13 @@ mod tests {
         )
         .unwrap();
         for (id, angle, labeled, label) in faces {
+            if let Some(label) = label {
+                conn.execute(
+                    "INSERT OR IGNORE INTO people (name, full_name) VALUES (?1, ?1)",
+                    [label],
+                )
+                .unwrap();
+            }
             let emb = deg(*angle);
             let blob: Vec<u8> = emb.iter().flat_map(|v| v.to_le_bytes()).collect();
             let _ = blob; // suppress unused if emb is consumed below

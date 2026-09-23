@@ -57,7 +57,8 @@ fn make_dated_db(lib: &TestLibrary) {
     )
     .unwrap();
     conn.execute_batch(
-        "INSERT INTO faces (hash, bbox, embedding, person_label, confirmed) VALUES
+        "INSERT INTO people (name, full_name) VALUES ('alice', 'Alice');
+         INSERT INTO faces (hash, bbox, embedding, person_label, confirmed) VALUES
            ('d1', '0,0,50,50', X'0000', 'alice', 1),
            ('d3', '0,0,50,50', X'0000', 'alice', 1);",
     )

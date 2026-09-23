@@ -21,7 +21,8 @@ fn make_library() -> TestLibrary {
         .unwrap();
     }
     conn.execute_batch(
-        "INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
+        "INSERT INTO people (name, full_name) VALUES ('alice', 'Alice'), ('bob', 'Bob');
+         INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
            VALUES ('hash1', '0,0,50,50', X'0000', 'alice', 1),
                   ('hash2', '0,0,50,50', X'0000', 'alice', 1),
                   ('hash3', '0,0,50,50', X'0000', 'bob', 1);",
@@ -81,9 +82,11 @@ fn person_search_unconfirmed_not_returned() {
         [path.to_string_lossy().as_ref()],
     )
     .unwrap();
+    conn.execute_batch("INSERT INTO people (name, full_name) VALUES ('carol', 'Carol');")
+        .unwrap();
     conn.execute(
         "INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
-           VALUES ('hash4', '0,0,50,50', X'0000', 'Carol', 0)",
+           VALUES ('hash4', '0,0,50,50', X'0000', 'carol', 0)",
         [],
     )
     .unwrap();

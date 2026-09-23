@@ -32,17 +32,19 @@ CREATE TABLE file_hashes (
     gps_lat     REAL,
     gps_lon     REAL,
     width       INTEGER,
-    height      INTEGER
+    height      INTEGER,
+    duration_secs REAL,
+    codec       TEXT,
+    location_name TEXT,
+    location_cluster_id INTEGER,
+    xmp_sidecar_mtime TEXT,
+    FOREIGN KEY (location_cluster_id) REFERENCES location_clusters(id)
+        ON DELETE RESTRICT ON UPDATE RESTRICT
 );
 ```
 
-Plus two columns added by later versions, through a migration that runs
-automatically when the database is opened:
-
-```sql
-ALTER TABLE file_hashes ADD COLUMN location_name TEXT;
-ALTER TABLE file_hashes ADD COLUMN location_cluster_id INTEGER;
-```
+Older libraries gained some of these columns through automatic upgrades; this
+is the current table shape.
 
 | Column | Notes |
 |---|---|
@@ -85,7 +87,9 @@ CREATE TABLE faces (
     is_primary    INTEGER DEFAULT 0,
     det_score     REAL,
     blur          REAL,
-    oriented      INTEGER
+    oriented      INTEGER,
+    FOREIGN KEY (person_label) REFERENCES people(name)
+        ON DELETE RESTRICT ON UPDATE RESTRICT
 );
 ```
 
