@@ -182,8 +182,12 @@ fn print_recent_problems(logs: &[videre_core::error_log::CommandLogSummary]) {
             format!(" ({})", stages.join(", "))
         };
         println!(
-            "  {:10} {} error(s){}, {} warning(s)",
-            l.command, l.errors, stages, l.warnings
+            "  {:10} run {}: {} error(s){}, {} warning(s)",
+            l.command,
+            local_time(&l.started),
+            l.errors,
+            stages,
+            l.warnings
         );
         if let Some(last) = &l.last_error {
             let kind = last
@@ -195,6 +199,18 @@ fn print_recent_problems(logs: &[videre_core::error_log::CommandLogSummary]) {
             println!("             last: {kind}{first_line}");
         }
     }
+}
+
+/// A log timestamp (UTC) in local time to the minute, or as written when it
+/// does not parse.
+fn local_time(ts: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(ts)
+        .map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|_| ts.to_owned())
 }
 
 fn print_watch(watch: &videre_core::status_report::WatchLiveness) {

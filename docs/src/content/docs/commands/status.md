@@ -84,12 +84,13 @@ read from the per-command logs in `.videre/logs/`:
 
 ```
 Recent problems (latest run of each command, see .videre/logs/):
-  watch      2 error(s) (scan 2), 14 warning(s)
+  watch      run 2026-09-23 14:05: 2 error(s) (scan 2), 14 warning(s)
              last: source_unavailable: videre watch: scan stage: could not read /Volumes/Photos/2019 after 5s
-  embed      0 error(s), 3 warning(s)
+  embed      run 2026-09-22 09:12: 0 error(s), 3 warning(s)
 ```
 
-Only the latest run counts, so a clean run clears the entry. For `watch` and
+Each entry shows when that run started, in local time. Only the latest run
+counts, so a clean run clears the entry. For `watch` and
 `pipeline`, the errors are broken down by the stage that raised them. Warnings
 are usually skipped files; errors are failures. The section is absent when
 every latest run was clean. `--json` carries the same data under `report.logs`.

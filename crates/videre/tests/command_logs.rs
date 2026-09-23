@@ -153,6 +153,10 @@ fn status_shows_the_latest_run_and_a_clean_run_clears_it() {
     assert!(text.contains("watch"), "{text}");
     assert!(text.contains("1 error(s) (scan 1), 1 warning(s)"), "{text}");
     assert!(
+        text.contains("run 2026-09-23"),
+        "the run's time tells an old failure from a current one: {text}"
+    );
+    assert!(
         text.contains("last: source_unavailable: videre watch: scan stage: /Volumes/Arşiv/Çağla.jpg timed out"),
         "{text}"
     );
