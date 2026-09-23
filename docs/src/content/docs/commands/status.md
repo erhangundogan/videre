@@ -10,7 +10,7 @@ alive?" It does no work and changes nothing.
 ```bash
 videre status                          # the whole picture, human-readable
 videre status --json                   # one JSON object, for scripts and agents
-videre status --check                  # exit non-zero only when a run failed or crashed
+videre status --check                  # exit non-zero only when a run failed, crashed or logged an error
 videre --library ~/Photos status       # select a different library
 ```
 
@@ -77,6 +77,26 @@ completed. A watcher that died hours ago shows as `not running` with a stale
 last-cycle time, which is the signal something went wrong: without a watcher,
 the library silently stops staying current.
 
+## Recent problems
+
+When the latest run of a command logged errors or warnings, `status` lists it,
+read from the per-command logs in `.videre/logs/`:
+
+```
+Recent problems (latest run of each command, see .videre/logs/):
+  watch      run 2026-09-23 14:05: 2 error(s) (scan 2), 14 warning(s)
+             last: source_unavailable: videre watch: scan stage: could not read /Volumes/Photos/2019 after 5s
+  embed      run 2026-09-22 09:12: 0 error(s), 3 warning(s)
+```
+
+Each entry shows when that run started, in local time. Only the latest run
+counts, so a clean run clears the entry. For `watch` and
+`pipeline`, the errors are broken down by the stage that raised them. Warnings
+are usually skipped files; errors are failures. The section is absent when
+every latest run was clean. `--json` carries the same data under `report.logs`.
+See [Logging and error handling](/guides/logging-and-errors/) for reading the
+full logs.
+
 ## Next actions
 
 For every stage with outstanding work: the command to run and how many items
@@ -96,9 +116,11 @@ duration can be measured, long-running optional stages are marked
 ## `--check` for unattended runs
 
 `--check` adds an exit code without changing any output: non-zero when a
-tracked command's last run `failed` or `crashed`. Staleness never fails
-`--check`, so a library mid-setup is healthy. Use it where cron or launchd can
-act on the exit code:
+tracked command's last run `failed` or `crashed`, or when the latest run of any
+command logged an error (a stage that failed inside `watch`, for example, even
+though watch itself kept running). Warnings, such as skipped files, and
+staleness never fail `--check`, so a library mid-setup is healthy. Use it where
+cron or launchd can act on the exit code:
 
 ```bash
 # crontab: nightly refresh, alert only on real failures
