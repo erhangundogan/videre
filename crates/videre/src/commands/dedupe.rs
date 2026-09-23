@@ -109,33 +109,21 @@ fn write_html(
 }
 
 fn run_text(args: DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
-    let conn = match videre_core::library_db::open_existing(&ctx.library) {
-        Ok(c) => c,
-        Err(e) => return Err(e),
-    };
-    let activity = match videre_core::library_locks::try_activity(
+    let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    let activity = videre_core::library_locks::try_activity(
         &ctx.library,
         videre_core::library_locks::ActivityMode::Shared,
-    ) {
-        Ok(g) => g,
-        Err(e) => return Err(e),
-    };
-    let guard = match videre_core::library_locks::try_command(&ctx.library, "dedupe") {
-        Ok(g) => g,
-        Err(e) => return Err(e),
-    };
+    )?;
+    let guard = videre_core::library_locks::try_command(&ctx.library, "dedupe")?;
 
     let moved =
-        match videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "dedupe", || {
+        videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "dedupe", || {
             if args.remove {
                 run_remove(&args, ctx, &conn)
             } else {
                 run_dedupe_text(&args, &conn).map(|_| 0usize)
             }
-        }) {
-            Ok(moved) => moved,
-            Err(e) => return Err(e),
-        };
+        })?;
 
     // `--remove` trashed duplicate copies, and their database rows now
     // describe files that no longer exist: run the same cleanup `videre
