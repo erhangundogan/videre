@@ -33,9 +33,12 @@ chrono = "0.4"
 ureq = { version = "3", features = ["json"] }
 matrixmultiply = "0.3"
 tempfile = "3"
+tracing = "0.1"
 
 [dev-dependencies]
 libc = "0.2"
+filetime = "0.2"
+tracing-subscriber = { version = "0.3", features = ["fmt", "json", "registry"] }
 
 [lints]
 workspace = true

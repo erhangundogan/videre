@@ -5341,6 +5341,7 @@ dependencies = [
  "blake3",
  "chrono",
  "ctrlc",
+ "filetime",
  "fs2",
  "half",
  "image",
@@ -5354,6 +5355,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toml",
+ "tracing",
+ "tracing-subscriber",
  "ureq",
 ]
 
