@@ -82,6 +82,12 @@ fn abort_on_repeated_errors(
     );
 }
 
+/// One per-row failure: logged at error with its path, so it reaches the
+/// primary log and `status --check`, even though prune carries on.
+fn report_failure(err: anyhow::Error, what: String, path: &str) {
+    videre_core::error_log::report(tracing::Level::ERROR, &err.context(what), Some(path));
+}
+
 /// Whether a row's stored `modified_at` needs replacing with the file's current
 /// timestamp.
 ///
@@ -209,11 +215,15 @@ pub(crate) fn run_prune(
                     }
                 }
                 Err(e) => {
-                    tracing::info!("Error reading mtime for {path}: {e}");
-                    errors += 1;
                     if first_error.is_none() {
                         first_error = Some(format!("reading mtime for {path}: {e}"));
                     }
+                    report_failure(
+                        videre_core::error_kind::from_io(e),
+                        format!("reading mtime for {path}"),
+                        path,
+                    );
+                    errors += 1;
                     consecutive += 1;
                     if consecutive >= MAX_CONSECUTIVE_ERRORS {
                         abort_on_repeated_errors(consecutive, errors, total, &first_error);
@@ -257,11 +267,11 @@ pub(crate) fn run_prune(
                         "DELETE FROM file_hashes WHERE path = ?1",
                         rusqlite::params![path],
                     ) {
-                        tracing::info!("Error removing {path}: {e}");
-                        errors += 1;
                         if first_error.is_none() {
                             first_error = Some(format!("removing {path}: {e}"));
                         }
+                        report_failure(anyhow::Error::new(e), format!("removing {path}"), path);
+                        errors += 1;
                         consecutive += 1;
                         if consecutive >= MAX_CONSECUTIVE_ERRORS {
                             abort_on_repeated_errors(consecutive, errors, total, &first_error);
@@ -278,11 +288,11 @@ pub(crate) fn run_prune(
                         "UPDATE file_hashes SET modified_at = ?1 WHERE path = ?2",
                         rusqlite::params![mtime, path],
                     ) {
-                        tracing::info!("Error syncing {path}: {e}");
-                        errors += 1;
                         if first_error.is_none() {
                             first_error = Some(format!("syncing {path}: {e}"));
                         }
+                        report_failure(anyhow::Error::new(e), format!("syncing {path}"), path);
+                        errors += 1;
                         consecutive += 1;
                         if consecutive >= MAX_CONSECUTIVE_ERRORS {
                             abort_on_repeated_errors(consecutive, errors, total, &first_error);
@@ -403,10 +413,21 @@ pub(crate) fn run_prune(
             }
             // Short-circuit keeps a dry run from ever calling remove_file: the
             // count rises either way, but the delete happens only for real.
-            if args.dry_run || std::fs::remove_file(entry.path()).is_ok() {
+            if args.dry_run {
                 cache_orphans += 1;
-            } else {
-                errors += 1;
+                continue;
+            }
+            match std::fs::remove_file(entry.path()) {
+                Ok(()) => cache_orphans += 1,
+                Err(e) => {
+                    let path = entry.path().display().to_string();
+                    report_failure(
+                        videre_core::error_kind::from_io(e),
+                        format!("removing cached thumbnail {path}"),
+                        &path,
+                    );
+                    errors += 1;
+                }
             }
         }
     }

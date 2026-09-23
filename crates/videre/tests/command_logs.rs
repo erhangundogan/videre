@@ -290,3 +290,60 @@ fn log_settings_are_set_and_shown_through_config() {
     assert!(out.contains("log-keep:      5"), "{out}");
     assert!(out.contains("log-max-age-days: 30 days"), "{out}");
 }
+
+#[test]
+fn a_partially_failing_prune_logs_its_failure_where_status_finds_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let lib = TestLibrary::new();
+    lib.scan();
+    // An orphaned thumbnail in a cache directory that refuses deletion: the
+    // sweep counts it as a failure while the rest of the prune succeeds.
+    let thumbs = lib.context().cache.thumbnails;
+    std::fs::create_dir_all(&thumbs).unwrap();
+    let orphan = thumbs.join(format!("{}_240.jpg", "ab".repeat(32)));
+    std::fs::write(&orphan, b"x").unwrap();
+    std::fs::set_permissions(&thumbs, std::fs::Permissions::from_mode(0o555)).unwrap();
+    // As root the directory mode is not enforced, and there is nothing to test.
+    if std::fs::write(thumbs.join("probe"), b"x").is_ok() {
+        std::fs::set_permissions(&thumbs, std::fs::Permissions::from_mode(0o755)).unwrap();
+        return;
+    }
+    let out = lib.cmd().arg("prune").output().unwrap();
+    std::fs::set_permissions(&thumbs, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!out.status.success(), "a prune with errors exits non-zero");
+
+    let errors: Vec<_> = parsed_lines(&logs(&lib).join("prune.log"))
+        .into_iter()
+        .filter(|l| l.level == videre_core::error_log::LineLevel::Error)
+        .collect();
+    assert!(
+        errors
+            .iter()
+            .any(|l| l.path.as_deref() == Some(orphan.to_str().unwrap())),
+        "{errors:?}"
+    );
+    let status = lib.cmd().args(["status", "--check"]).output().unwrap();
+    assert!(!status.status.success(), "status --check finds the failure");
+}
+
+#[test]
+fn silent_hides_progress_but_never_a_warning() {
+    let lib = TestLibrary::new();
+    // Logs start once the library exists; its very first scan creates it.
+    lib.scan();
+    let out = lib
+        .cmd()
+        .args(["scan", "--silent", "--xmp", "newest"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("warning: --xmp newest is not yet implemented"),
+        "{stderr}"
+    );
+    assert!(parsed_lines(&logs(&lib).join("scan.log"))
+        .iter()
+        .any(|l| l.level == videre_core::error_log::LineLevel::Warn
+            && l.message.contains("--xmp newest")));
+}

@@ -531,9 +531,7 @@ fn import_face_regions(
     to_process: &[(String, String)],
 ) -> Result<usize> {
     let prec = args.xmp.resolve_from(&ctx.library.settings)?;
-    if matches!(prec, videre_core::marks::XmpPrecedence::Newest) && !args.silent {
-        tracing::warn!("--xmp newest is not yet implemented; treating as db");
-    }
+    crate::xmp::warn_if_newest(prec);
     let mut imported = 0usize;
     for (path, hash) in to_process {
         let data = crate::xmp::read::read_data_in(&ctx.library, std::path::Path::new(path));

@@ -1008,14 +1008,11 @@ fn run_heic_stage(
             }
         }
     }
-    if !args.silent && (converted > 0 || failed > 0) {
-        if failed > 0 {
-            tracing::warn!(
-                "videre watch: heic stage cached {converted} thumbnail(s), {failed} failed"
-            );
-        } else {
-            tracing::info!("videre watch: heic stage cached {converted} thumbnail(s)");
-        }
+    // Failures are a warning even under --silent; the plain count is progress.
+    if failed > 0 {
+        tracing::warn!("videre watch: heic stage cached {converted} thumbnail(s), {failed} failed");
+    } else if !args.silent && converted > 0 {
+        tracing::info!("videre watch: heic stage cached {converted} thumbnail(s)");
     }
     Ok(())
 }
