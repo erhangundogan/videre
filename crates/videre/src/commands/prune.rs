@@ -463,7 +463,8 @@ pub(crate) fn run_prune(
     // is exactly the silence this guard exists to end: the count is how a user
     // learns their drive was not mounted.
     if unreachable > 0 {
-        tracing::info!("{unreachable} row(s) skipped as unreachable{}", {
+        // A warning: rows were kept unprocessed, and the primary log must say so.
+        tracing::warn!("{unreachable} row(s) skipped as unreachable{}", {
             let mut it = unreachable_dirs.iter();
             let shown: Vec<&String> = it.by_ref().take(MAX_REPORTED_DIRS).collect();
             let rest = unreachable_dirs.len().saturating_sub(shown.len());

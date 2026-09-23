@@ -438,7 +438,8 @@ fn drain_pending(
         return;
     }
     if ctx.library.ensure_root_identity().is_err() {
-        tracing::info!("videre watch: library root changed; dropping batch");
+        // An error: the batch's changes are dropped, not deferred.
+        tracing::error!("videre watch: library root changed; dropping batch");
         pending.clear();
         return;
     }

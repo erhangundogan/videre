@@ -347,3 +347,27 @@ fn silent_hides_progress_but_never_a_warning() {
         .any(|l| l.level == videre_core::error_log::LineLevel::Warn
             && l.message.contains("--xmp newest")));
 }
+
+#[test]
+fn prune_keeps_a_warning_for_rows_it_skipped_as_unreachable() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("ai-generated-couple.jpg", "İstanbul/Çağla_2019.jpg");
+    lib.scan();
+    // The whole directory is gone, the shape of an unmounted drive: prune
+    // keeps the rows and says so, and that must survive in the log.
+    std::fs::remove_dir_all(lib.root.join("İstanbul")).unwrap();
+    let out = lib.cmd().args(["prune", "--silent"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        parsed_lines(&logs(&lib).join("prune.log"))
+            .iter()
+            .any(|l| l.level == videre_core::error_log::LineLevel::Warn
+                && l.message.contains("skipped as unreachable")),
+        "{}",
+        std::fs::read_to_string(logs(&lib).join("prune.log")).unwrap_or_default()
+    );
+}

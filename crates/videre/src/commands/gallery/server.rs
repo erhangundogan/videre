@@ -2104,9 +2104,20 @@ async fn handle_rotate_file(
 /// corrupted, and a DB error is logged, since the rotation itself has already
 /// succeeded and the caller reports that.
 fn rotate_faces_geometry(state: &AppState, hash: &str, ccw: bool, display_w: i32, display_h: i32) {
+    // The file itself was rotated already, so a failure here leaves face
+    // boxes stale: logged at error, where the primary log keeps it.
+    let failed = |what: String, e: anyhow::Error| {
+        videre_core::error_log::report(tracing::Level::ERROR, &e.context(what), None)
+    };
     let conn = match state.conn.lock() {
         Ok(conn) => conn,
-        Err(_) => return,
+        Err(_) => {
+            failed(
+                format!("videre gallery: rotating face geometry for {hash}"),
+                anyhow::anyhow!("the database connection lock is poisoned by an earlier panic"),
+            );
+            return;
+        }
     };
     let rows: Vec<(i64, String, Option<String>)> = {
         let mut stmt = match conn.prepare(
@@ -2114,7 +2125,10 @@ fn rotate_faces_geometry(state: &AppState, hash: &str, ccw: bool, display_w: i32
         ) {
             Ok(stmt) => stmt,
             Err(e) => {
-                tracing::info!("videre gallery: reading faces for rotate {hash}: {e}");
+                failed(
+                    format!("videre gallery: reading faces for rotate {hash}"),
+                    e.into(),
+                );
                 return;
             }
         };
@@ -2128,7 +2142,10 @@ fn rotate_faces_geometry(state: &AppState, hash: &str, ccw: bool, display_w: i32
         match mapped {
             Ok(iter) => iter.filter_map(|r| r.ok()).collect(),
             Err(e) => {
-                tracing::info!("videre gallery: reading faces for rotate {hash}: {e}");
+                failed(
+                    format!("videre gallery: reading faces for rotate {hash}"),
+                    e.into(),
+                );
                 return;
             }
         }
@@ -2156,7 +2173,10 @@ fn rotate_faces_geometry(state: &AppState, hash: &str, ccw: bool, display_w: i32
             "UPDATE faces SET bbox = ?1, landmark = ?2 WHERE id = ?3",
             rusqlite::params![new_bbox, new_landmark, id],
         ) {
-            tracing::info!("videre gallery: updating face {id} geometry for rotate: {e}");
+            failed(
+                format!("videre gallery: updating face {id} geometry for rotate"),
+                e.into(),
+            );
         }
     }
 }
