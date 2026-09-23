@@ -156,13 +156,16 @@ where
 {
     match io_timeout::run_with_timeout(budget, f) {
         Ok(Ok(value)) => Ok(value),
-        Ok(Err(e)) => Err(anyhow::Error::new(e).context(format!("{} {}", op, path.display()))),
-        Err(io_timeout::TimedOut) => bail!(
+        Ok(Err(e)) => {
+            Err(crate::error_kind::from_io(e).context(format!("{} {}", op, path.display())))
+        }
+        Err(io_timeout::TimedOut) => Err(anyhow::anyhow!(
             "could not {} {} after {}s (the drive did not respond - is it connected?)",
             op,
             path.display(),
             budget.as_secs()
-        ),
+        )
+        .context(crate::error_kind::ErrorKind::SourceUnavailable)),
     }
 }
 

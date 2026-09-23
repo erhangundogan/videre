@@ -223,7 +223,10 @@ fn run_face_pipeline_impl(
         });
     }
 
-    let (det_path, rec_path) = face_models::buffalo_l_paths()?;
+    let (det_path, rec_path) = anyhow::Context::context(
+        face_models::buffalo_l_paths(),
+        videre_core::error_kind::ErrorKind::ModelUnavailable,
+    )?;
     let progress = videre_core::progress::Progress::new(to_process.len() as u64, silent);
 
     let worker_count = workers.max(1);

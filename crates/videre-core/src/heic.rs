@@ -87,7 +87,16 @@ pub const QUICKLOOK_UNAVAILABLE: &str =
 /// each HEIC/video silently fail to decode, with nothing saying why.
 pub fn warn_quicklook_unavailable_once() {
     static WARNED: std::sync::Once = std::sync::Once::new();
-    WARNED.call_once(|| eprintln!("warning: {QUICKLOOK_UNAVAILABLE}"));
+    WARNED.call_once(|| {
+        crate::error_log::report(tracing::Level::WARN, &quicklook_unavailable(), None)
+    });
+}
+
+/// The QuickLook-unavailable warning, carrying its kind so the log records
+/// why HEIC and video files were skipped on this platform.
+fn quicklook_unavailable() -> anyhow::Error {
+    anyhow::anyhow!(QUICKLOOK_UNAVAILABLE)
+        .context(crate::error_kind::ErrorKind::QuicklookUnavailable)
 }
 
 /// `max_size` caps `qlmanage -s`'s longest-side render size. `qlmanage -s`
@@ -156,6 +165,16 @@ pub fn heic_via_quicklook(path: &str, tag: &str, max_size: Option<u32>) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_quicklook_warning_carries_its_kind_and_the_full_explanation() {
+        let err = quicklook_unavailable();
+        assert_eq!(
+            crate::error_kind::ErrorKind::in_chain(&err),
+            Some(crate::error_kind::ErrorKind::QuicklookUnavailable)
+        );
+        assert!(format!("{err:#}").contains("qlmanage"));
+    }
 
     #[test]
     fn resolve_qlmanage_concurrency_uses_override_when_present() {

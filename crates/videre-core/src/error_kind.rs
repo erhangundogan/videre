@@ -69,9 +69,15 @@ impl ErrorKind {
         }
     }
 
-    /// The first kind attached anywhere in `err`'s context chain.
+    /// The kind attached anywhere in `err`'s context chain. Failing that, a
+    /// SQLite error anywhere in the chain is the database kind: classified by
+    /// type once, here, rather than tagged at every query.
     pub fn in_chain(err: &anyhow::Error) -> Option<ErrorKind> {
-        err.downcast_ref::<ErrorKind>().copied()
+        err.downcast_ref::<ErrorKind>().copied().or_else(|| {
+            err.chain()
+                .any(|e| e.is::<rusqlite::Error>())
+                .then_some(ErrorKind::Database)
+        })
     }
 }
 
@@ -92,6 +98,23 @@ impl std::fmt::Display for ErrorKind {
 }
 
 impl std::error::Error for ErrorKind {}
+
+/// An I/O error as an `anyhow` error, carrying the kind its cause implies:
+/// a timed-out read means the drive stopped answering, a refusal means
+/// permissions. Other causes carry no kind. The one place I/O failures are
+/// classified, so every reader of the library volume agrees.
+pub fn from_io(e: std::io::Error) -> anyhow::Error {
+    let kind = match e.kind() {
+        std::io::ErrorKind::TimedOut => Some(ErrorKind::SourceUnavailable),
+        std::io::ErrorKind::PermissionDenied => Some(ErrorKind::PermissionDenied),
+        _ => None,
+    };
+    let err = anyhow::Error::new(e);
+    match kind {
+        Some(kind) => err.context(kind),
+        None => err,
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -121,6 +144,33 @@ mod tests {
             ErrorKind::in_chain(&err),
             Some(ErrorKind::SourceUnavailable)
         );
+    }
+
+    #[test]
+    fn io_errors_carry_the_kind_their_cause_implies() {
+        use std::io::{Error, ErrorKind as Io};
+        let timed_out = from_io(Error::new(Io::TimedOut, "read timed out"));
+        assert_eq!(
+            ErrorKind::in_chain(&timed_out),
+            Some(ErrorKind::SourceUnavailable)
+        );
+        let denied = from_io(Error::new(Io::PermissionDenied, "denied"));
+        assert_eq!(
+            ErrorKind::in_chain(&denied),
+            Some(ErrorKind::PermissionDenied)
+        );
+        let other = from_io(Error::new(Io::InvalidData, "bad bytes"));
+        assert_eq!(ErrorKind::in_chain(&other), None);
+        assert!(format!("{other:#}").contains("bad bytes"));
+    }
+
+    #[test]
+    fn a_database_error_without_an_explicit_kind_is_the_database_kind() {
+        let err = anyhow::Error::new(rusqlite::Error::InvalidQuery).context("load rows");
+        assert_eq!(ErrorKind::in_chain(&err), Some(ErrorKind::Database));
+        let explicit =
+            anyhow::Error::new(rusqlite::Error::InvalidQuery).context(ErrorKind::LibraryBusy);
+        assert_eq!(ErrorKind::in_chain(&explicit), Some(ErrorKind::LibraryBusy));
     }
 
     #[test]
