@@ -111,7 +111,7 @@ When videre knows why something failed, the line carries a `kind` and a
 
 | `kind` | Meaning | What to do |
 |---|---|---|
-| `source_unavailable` | A file or the library could not be read from its drive in time | Reconnect the drive holding the library, then run the command again |
+| `source_unavailable` | A file is missing, or it or the library could not be read from its drive (a timeout or a device error) | Reconnect the drive holding the library, then run the command again |
 | `permission_denied` | The operating system refused access | Grant read access to the file or folder |
 | `decode_failed` | The file could not be decoded as an image or video frame | The file is unreadable or unsupported; videre skips it after two attempts |
 | `quicklook_unavailable` | HEIC and video need macOS QuickLook | These files are skipped on this platform |
