@@ -5335,7 +5335,6 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
- "tracing-appender",
  "tracing-logfmt",
  "tracing-subscriber",
  "trash",

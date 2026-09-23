@@ -18,37 +18,143 @@ use videre_core::error_log::{
 use videre_core::library_config::{LibraryConfig, LogFormat, LogLevel};
 
 type Boxed = Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync>;
-type Writer = tracing_appender::non_blocking::NonBlocking;
+/// Lines the log channel holds before new ones are dropped.
+const QUEUE_LINES: usize = 128_000;
 
-/// Keeps the file writers alive; dropping it flushes them (each flush is
-/// bounded by `tracing-appender`, about a second) and reports dropped lines.
+/// The most the exit flush may wait for the writers, in total.
+const FLUSH_BUDGET: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// A message to a log writer thread.
+enum Msg {
+    Line(Vec<u8>),
+    /// Flush, then acknowledge.
+    Flush(std::sync::mpsc::SyncSender<()>),
+}
+
+/// The layer's side of a background log writer: hands each formatted line to
+/// the writer thread without ever blocking, and counts the lines it had to
+/// drop because the queue was full (a stuck or very slow drive).
+///
+/// videre runs its own small writer rather than `tracing-appender`'s
+/// non-blocking one because that one's shutdown prints to stdout when its
+/// queue is full, which would corrupt `--json` and MCP output.
+#[derive(Clone)]
+struct Writer {
+    tx: std::sync::mpsc::SyncSender<Msg>,
+    dropped: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Write for Writer {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if let Err(std::sync::mpsc::TrySendError::Full(_)) =
+            self.tx.try_send(Msg::Line(buf.to_vec()))
+        {
+            self.dropped
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The guard's side of a background log writer.
+struct Worker {
+    tx: std::sync::mpsc::SyncSender<Msg>,
+    dropped: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Worker {
+    /// Flush everything queued, waiting at most until `deadline`. `false`
+    /// means the writer did not finish in time (a stuck drive); the thread is
+    /// then left to process exit. Never prints.
+    fn flush_by(&self, deadline: std::time::Instant) -> bool {
+        use std::sync::mpsc::TrySendError;
+        let (ack_tx, ack_rx) = std::sync::mpsc::sync_channel(1);
+        let mut msg = Msg::Flush(ack_tx);
+        loop {
+            match self.tx.try_send(msg) {
+                Ok(()) => break,
+                Err(TrySendError::Disconnected(_)) => return true,
+                Err(TrySendError::Full(back)) => {
+                    if std::time::Instant::now() >= deadline {
+                        return false;
+                    }
+                    msg = back;
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
+        }
+        ack_rx
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            .is_ok()
+    }
+
+    fn dropped(&self) -> usize {
+        self.dropped.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// Start a writer thread for `out`, queueing at most `capacity` lines.
+/// `None` when the thread cannot be started, which disables that file.
+fn spawn_writer<W: Write + Send + 'static>(
+    mut out: W,
+    capacity: usize,
+) -> Option<(Writer, Worker)> {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Msg>(capacity);
+    std::thread::Builder::new()
+        .name("videre-log".into())
+        .spawn(move || {
+            for msg in rx {
+                match msg {
+                    Msg::Line(line) => {
+                        let _ = out.write_all(&line);
+                    }
+                    Msg::Flush(ack) => {
+                        let _ = out.flush();
+                        let _ = ack.send(());
+                    }
+                }
+            }
+            let _ = out.flush();
+        })
+        .ok()?;
+    let dropped = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    Some((
+        Writer {
+            tx: tx.clone(),
+            dropped: dropped.clone(),
+        },
+        Worker { tx, dropped },
+    ))
+}
+
+/// Keeps the file writers alive; dropping it flushes them within
+/// `FLUSH_BUDGET` in total and reports on stderr what could not be written.
+/// It never waits longer and never prints to stdout, whatever state a stuck
+/// drive left the queue in.
 pub struct LogGuard {
-    workers: Vec<tracing_appender::non_blocking::WorkerGuard>,
-    counters: Vec<tracing_appender::non_blocking::ErrorCounter>,
+    workers: Vec<Worker>,
     pub run_span: tracing::Span,
 }
 
 impl Drop for LogGuard {
     fn drop(&mut self) {
-        let dropped: usize = self.counters.iter().map(|c| c.dropped_lines()).sum();
-        if dropped > 0 {
-            // Lines were dropped because the channel filled: the writer is
-            // stuck (a dead drive). tracing-appender's WorkerGuard would wait
-            // on that full channel and then print a notice to stdout, which
-            // corrupts --json and MCP output. There is nothing to flush that
-            // could land anyway, so the workers are abandoned; process exit
-            // reclaims their threads.
-            for worker in self.workers.drain(..) {
-                std::mem::forget(worker);
-            }
-        } else {
-            // Each WorkerGuard flushes its writer as it drops.
-            self.workers.clear();
+        let deadline = std::time::Instant::now() + FLUSH_BUDGET;
+        let mut unfinished = false;
+        for worker in &self.workers {
+            unfinished |= !worker.flush_by(deadline);
         }
+        let dropped: usize = self.workers.iter().map(Worker::dropped).sum();
         if dropped > 0 {
             eprintln!(
                 "warning: {dropped} log line(s) could not be written in time and were dropped"
             );
+        }
+        if unfinished {
+            eprintln!("warning: the log file did not finish writing in time; its last lines may be missing");
         }
     }
 }
@@ -79,10 +185,7 @@ fn to_level(level: LogLevel) -> Level {
 
 /// A size-rotating, non-blocking writer for one file, or `None` when the
 /// file cannot be used, which disables that file and never the command.
-fn file_writer(
-    path: &Path,
-    settings: &LibraryConfig,
-) -> Option<(Writer, tracing_appender::non_blocking::WorkerGuard)> {
+fn file_writer(path: &Path, settings: &LibraryConfig) -> Option<(Writer, Worker)> {
     if let Err(e) = videre_core::error_log::check_log_file(path) {
         eprintln!("warning: file logging disabled: {e:#}");
         return None;
@@ -116,12 +219,7 @@ fn file_writer(
         );
         return None;
     };
-    Some(
-        tracing_appender::non_blocking::NonBlockingBuilder::default()
-            .lossy(true)
-            .thread_name("videre-log")
-            .finish(rotate),
-    )
+    spawn_writer(rotate, QUEUE_LINES)
 }
 
 fn file_layer(format: LogFormat, writer: Writer, max: Level) -> Boxed {
@@ -136,13 +234,13 @@ fn file_layer(format: LogFormat, writer: Writer, max: Level) -> Boxed {
             .json()
             .with_span_list(true)
             .with_current_span(false)
-            .with_writer(writer)
+            .with_writer(move || writer.clone())
             .with_filter(keep)
             .boxed(),
         LogFormat::Text => tracing_logfmt::builder()
             .with_span_path(false)
             .layer()
-            .with_writer(writer)
+            .with_writer(move || writer.clone())
             .with_filter(keep)
             .boxed(),
     }
@@ -229,20 +327,17 @@ pub fn build(
 ) -> (tracing::Dispatch, LogGuard) {
     let mut layers: Vec<Boxed> = vec![terminal_layer()];
     let mut workers = Vec::new();
-    let mut counters = Vec::new();
     if let Some(dir) = dir {
         videre_core::error_log::sweep_expired(dir, command, settings);
         // The primary file always keeps errors and warnings, whatever the
         // level: it is the record status reads, and a chatty level must never
         // rotate them out of retention, nor a quiet one leave them out.
         if let Some((w, g)) = file_writer(&dir.join(primary_log_name(command)), settings) {
-            counters.push(w.error_counter());
             workers.push(g);
             layers.push(file_layer(settings.log_format, w, Level::WARN));
         }
         if settings.log_level >= LogLevel::Info {
             if let Some((w, g)) = file_writer(&dir.join(trace_log_name(command)), settings) {
-                counters.push(w.error_counter());
                 workers.push(g);
                 layers.push(file_layer(
                     settings.log_format,
@@ -258,14 +353,7 @@ pub fn build(
         &dispatch,
         || tracing::info_span!("run", command = %command, run = %run),
     );
-    (
-        dispatch,
-        LogGuard {
-            workers,
-            counters,
-            run_span,
-        },
-    )
+    (dispatch, LogGuard { workers, run_span })
 }
 
 static GLOBAL_GUARD: std::sync::Mutex<Option<LogGuard>> = std::sync::Mutex::new(None);
@@ -364,45 +452,80 @@ mod tests {
         assert_eq!(line["spans"][0]["run"], RUN);
     }
 
+    /// A drive that stopped answering: the first write never returns.
+    struct Stuck;
+
+    impl Write for Stuck {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            loop {
+                std::thread::park();
+            }
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
     #[test]
-    fn a_stalled_writer_is_abandoned_at_exit_instead_of_timing_out_onto_stdout() {
-        /// A drive that stopped answering: the first write never returns.
-        struct Stuck;
-        impl Write for Stuck {
-            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
-                loop {
-                    std::thread::park();
-                }
+    fn an_exactly_full_queue_with_nothing_dropped_still_shuts_down_in_time() {
+        // Capacity one: the worker takes the first line and sticks in its
+        // write, the second fills the queue, nothing is dropped. This is the
+        // state in which tracing-appender's guard printed to stdout.
+        let (mut writer, worker) = spawn_writer(Stuck, 1).unwrap();
+        writer.write_all(b"first\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        writer.write_all(b"second\n").unwrap();
+        assert_eq!(worker.dropped(), 0, "the queue is full, not overflowing");
+
+        let started = std::time::Instant::now();
+        let flushed = worker.flush_by(started + std::time::Duration::from_millis(200));
+        assert!(!flushed, "a stuck writer cannot finish");
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(400),
+            "took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_stalled_writer_never_holds_up_exit_beyond_the_budget() {
+        let (mut writer, worker) = spawn_writer(Stuck, 1).unwrap();
+        for _ in 0..5 {
+            writer.write_all(b"line\n").unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(worker.dropped() > 0, "the queue overflowed");
+        let guard = LogGuard {
+            workers: vec![worker],
+            run_span: tracing::Span::none(),
+        };
+        let started = std::time::Instant::now();
+        drop(guard);
+        assert!(
+            started.elapsed() < FLUSH_BUDGET + std::time::Duration::from_millis(200),
+            "took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_healthy_writer_is_flushed_at_exit() {
+        #[derive(Clone, Default)]
+        struct Buf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl Write for Buf {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
             }
             fn flush(&mut self) -> std::io::Result<()> {
                 Ok(())
             }
         }
-        let (writer, worker) = tracing_appender::non_blocking::NonBlockingBuilder::default()
-            .lossy(true)
-            .buffered_lines_limit(1)
-            .finish(Stuck);
-        let counter = writer.error_counter();
-        let mut w = writer.clone();
-        for _ in 0..5 {
-            let _ = w.write_all(b"line\n");
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert!(counter.dropped_lines() > 0, "the channel filled up");
-        let guard = LogGuard {
-            workers: vec![worker],
-            counters: vec![counter],
-            run_span: tracing::Span::none(),
-        };
-        // tracing-appender's own drop waits 100 ms on a full channel and then
-        // prints to stdout, which would corrupt --json and MCP output.
-        let started = std::time::Instant::now();
-        drop(guard);
-        assert!(
-            started.elapsed() < std::time::Duration::from_millis(50),
-            "took {:?}",
-            started.elapsed()
-        );
+        let buf = Buf::default();
+        let (mut writer, worker) = spawn_writer(buf.clone(), 16).unwrap();
+        writer.write_all("Ç\n".as_bytes()).unwrap();
+        assert!(worker.flush_by(std::time::Instant::now() + FLUSH_BUDGET));
+        assert_eq!(buf.0.lock().unwrap().as_slice(), "Ç\n".as_bytes());
     }
 
     #[test]
