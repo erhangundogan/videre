@@ -277,7 +277,9 @@ fn acquire_lock_file(path: &Path, exclusive: bool, busy: String, what: &str) -> 
     } else {
         FileExt::try_lock_shared(&file)
     };
-    taken.map_err(|_| anyhow::anyhow!("{busy}"))?;
+    taken.map_err(|_| {
+        anyhow::anyhow!("{busy}").context(crate::error_kind::ErrorKind::LibraryBusy)
+    })?;
     Ok(file)
 }
 
@@ -390,6 +392,18 @@ mod tests {
         let ctx = LibraryContext::new(&root, &temp.path().join("cache")).unwrap();
         std::fs::create_dir_all(&ctx.paths.locks).unwrap();
         (temp, ctx)
+    }
+
+    #[test]
+    fn a_refused_lock_carries_the_library_busy_kind() {
+        use crate::error_kind::ErrorKind;
+        let (_t, ctx) = locked_library();
+        let _scan = try_command(&ctx, "scan").unwrap();
+        let err = try_command(&ctx, "scan").unwrap_err();
+        assert_eq!(ErrorKind::in_chain(&err), Some(ErrorKind::LibraryBusy));
+        let _exclusive = try_activity(&ctx, ActivityMode::Exclusive).unwrap();
+        let err = try_activity(&ctx, ActivityMode::Shared).unwrap_err();
+        assert_eq!(ErrorKind::in_chain(&err), Some(ErrorKind::LibraryBusy));
     }
 
     #[test]
