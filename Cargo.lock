@@ -1325,6 +1325,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "file-rotate"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e8e2fa049328a1f3295991407a88585805d126dfaadf74b9fe8c194c730aafc"
+dependencies = [
+ "chrono",
+ "flate2",
+]
+
+[[package]]
 name = "filetime"
 version = "0.2.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5014,6 +5024,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-logfmt"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a250055a3518b5efba928a18ffac8d32d42ea607a9affff4532144cd5b2e378e"
+dependencies = [
+ "time",
+ "tracing",
+ "tracing-core",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "tracing-serde"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5291,6 +5313,7 @@ dependencies = [
  "chrono",
  "clap",
  "crc32fast",
+ "file-rotate",
  "filetime",
  "fs2",
  "half",
@@ -5311,6 +5334,10 @@ dependencies = [
  "toml",
  "tower",
  "tower-http",
+ "tracing",
+ "tracing-appender",
+ "tracing-logfmt",
+ "tracing-subscriber",
  "trash",
  "videre-api",
  "videre-core",

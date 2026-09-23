@@ -4,6 +4,7 @@ use std::ffi::{OsStr, OsString};
 mod command_context;
 mod commands;
 mod exit;
+mod logging;
 mod removal;
 mod render;
 mod xmp;
@@ -222,21 +223,38 @@ fn with_ctx_or(
     on_capture_error: impl FnOnce(anyhow::Error) -> anyhow::Result<()>,
     run: impl FnOnce(&command_context::CommandContext) -> anyhow::Result<()>,
 ) -> i32 {
-    let _ = command;
-    let result = match command_context::CommandContext::capture(library) {
-        Ok(ctx) => run(&ctx),
-        Err(e) => on_capture_error(e),
-    };
-    finish(result)
-}
-
-/// Present a command's outcome and return its exit code.
-fn finish(result: anyhow::Result<()>) -> i32 {
-    let outcome = exit::classify(&result);
-    if outcome.print {
-        if let Some(msg) = &outcome.log {
-            eprintln!("error: {msg}");
+    match command_context::CommandContext::capture(library) {
+        Ok(ctx) => {
+            // Held until the result is reported, so the final error is in the
+            // log before the writers flush on drop.
+            let _log = logging::install(&ctx.library, command);
+            finish(run(&ctx))
+        }
+        Err(e) => {
+            logging::install_terminal_only();
+            finish(on_capture_error(e))
         }
     }
-    outcome.code
+}
+
+/// Report a command's outcome once, through the logging layers (the terminal
+/// shows `error: ...` exactly as before), and return its exit code.
+fn finish(result: anyhow::Result<()>) -> i32 {
+    let Err(e) = result else { return 0 };
+    match e.downcast::<exit::Exit>() {
+        Ok(exit) => {
+            match &exit.error {
+                Some(error) if exit.shown => {
+                    videre_core::error_log::report_file_only(&format!("{error:#}"))
+                }
+                Some(error) => videre_core::error_log::report(tracing::Level::ERROR, error, None),
+                None => {}
+            }
+            exit.code
+        }
+        Err(e) => {
+            videre_core::error_log::report(tracing::Level::ERROR, &e, None);
+            1
+        }
+    }
 }

@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// worker threads (e.g. from inside a `.par_iter()` closure) with no
 /// external `Arc`/`Mutex` wrapping needed at the call site.
 pub struct Progress {
+    id: u64,
     total: u64,
     done: AtomicU64,
     mode: Mode,
@@ -39,6 +40,25 @@ enum Mode {
 
 const LOG_INTERVAL: u64 = 25;
 
+/// The bar currently on screen, with the id of the `Progress` that owns it,
+/// so terminal output from elsewhere can hide it for the moment it writes.
+static ACTIVE_BAR: std::sync::Mutex<Option<(u64, ProgressBar)>> = std::sync::Mutex::new(None);
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Run `f` with any active progress bar hidden, so a line written to the
+/// terminal (by the logging layer) never tears the bar. A no-op when no bar
+/// is showing.
+pub fn with_bars_suspended<R>(f: impl FnOnce() -> R) -> R {
+    let bar = ACTIVE_BAR
+        .lock()
+        .ok()
+        .and_then(|b| b.as_ref().map(|(_, bar)| bar.clone()));
+    match bar {
+        Some(bar) => bar.suspend(f),
+        None => f(),
+    }
+}
+
 impl Progress {
     /// Creates a progress reporter for `total` items. When stderr is a TTY,
     /// renders an in-place bar. When it isn't, falls back to one plain-text
@@ -57,7 +77,14 @@ impl Progress {
         } else {
             Mode::Plain
         };
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        if let Mode::Bar(bar) = &mode {
+            if let Ok(mut active) = ACTIVE_BAR.lock() {
+                *active = Some((id, bar.clone()));
+            }
+        }
         Progress {
+            id,
             total,
             done: AtomicU64::new(0),
             mode,
@@ -68,10 +95,9 @@ impl Progress {
     /// `new`, counting something other than images. Affects only the
     /// non-TTY text line; the bar renders a percentage either way.
     pub fn new_counting(total: u64, silent: bool, noun: &'static str) -> Self {
-        Progress {
-            noun,
-            ..Progress::new(total, silent)
-        }
+        let mut progress = Progress::new(total, silent);
+        progress.noun = noun;
+        progress
     }
 
     /// Advance by one item. Safe to call concurrently from multiple threads
@@ -119,8 +145,19 @@ impl Progress {
     /// rather than being overwritten. Does not print anything itself, the
     /// caller assembles and prints its own summary line(s).
     pub fn finish(self) {
-        if let Mode::Bar(bar) = self.mode {
+        if let Mode::Bar(bar) = &self.mode {
             bar.finish_and_clear();
+        }
+    }
+}
+
+impl Drop for Progress {
+    /// Unregister this bar, unless a newer one has taken its place.
+    fn drop(&mut self) {
+        if let Ok(mut active) = ACTIVE_BAR.lock() {
+            if active.as_ref().is_some_and(|(id, _)| *id == self.id) {
+                *active = None;
+            }
         }
     }
 }

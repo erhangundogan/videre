@@ -84,6 +84,42 @@ pub fn check_log_file(path: &Path) -> Result<()> {
     .with_context(|| format!("open {}", path.display()))
 }
 
+/// Delete rotated files of `command` older than `log_max_age_days`. Only
+/// names `<command>.log.N` and `<command>.trace.log.N` directly in `dir` are
+/// touched, never through a link, and never the active files. Best effort:
+/// call it only after [`logs_dir_for_writing`] proved the volume answers.
+pub fn sweep_expired(dir: &Path, command: &str, settings: &crate::library_config::LibraryConfig) {
+    let Some(cutoff) = std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(
+        settings.log_max_age_days.saturating_mul(86_400),
+    )) else {
+        return;
+    };
+    let prefixes = [
+        format!("{}.", primary_log_name(command)),
+        format!("{}.", trace_log_name(command)),
+    ];
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let rotated = prefixes.iter().any(|p| {
+            name.strip_prefix(p.as_str())
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        });
+        if !rotated {
+            continue;
+        }
+        let Ok(meta) = entry.path().symlink_metadata() else {
+            continue;
+        };
+        if meta.file_type().is_file() && meta.modified().is_ok_and(|m| m < cutoff) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 static STAGE: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
 
 /// The stage `pipeline` or `watch` is running; the previous stage comes back
@@ -157,6 +193,45 @@ mod tests {
             std::fs::create_dir(&ctx.paths.state).unwrap();
         }
         (t, ctx)
+    }
+
+    #[test]
+    fn sweep_deletes_only_expired_rotations_of_this_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(40 * 86_400);
+        let old = filetime::FileTime::from_system_time(old);
+        for name in [
+            "scan.log.1",
+            "scan.trace.log.3",
+            "scan.log",
+            "notes.txt",
+            "faces.log.1",
+            "scan.log.bak",
+        ] {
+            let p = dir.path().join(name);
+            std::fs::write(&p, "x").unwrap();
+            filetime::set_file_mtime(&p, old).unwrap();
+        }
+        std::fs::write(dir.path().join("scan.log.2"), "fresh").unwrap();
+
+        let settings = crate::library_config::LibraryConfig::default();
+        sweep_expired(dir.path(), "scan", &settings);
+
+        let mut left: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            [
+                "faces.log.1",
+                "notes.txt",
+                "scan.log",
+                "scan.log.2",
+                "scan.log.bak"
+            ]
+        );
     }
 
     #[test]

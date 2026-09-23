@@ -11,7 +11,7 @@ pub struct Exit {
     /// The failure behind the exit, when there is one; it is logged.
     pub error: Option<anyhow::Error>,
     /// The failure was already presented to the user (for example as JSON on
-    /// stdout), so `main` must not print it to stderr again.
+    /// stdout), so it is logged but not printed to stderr again.
     pub shown: bool,
 }
 
@@ -47,68 +47,3 @@ impl fmt::Display for Exit {
 }
 
 impl std::error::Error for Exit {}
-
-/// What `main` does with a command's result.
-#[derive(Debug, PartialEq)]
-pub struct Outcome {
-    pub code: i32,
-    /// The error text to log, if any.
-    pub log: Option<String>,
-    /// Whether the error is also printed to stderr.
-    pub print: bool,
-}
-
-pub fn classify(result: &anyhow::Result<()>) -> Outcome {
-    match result {
-        Ok(()) => Outcome {
-            code: 0,
-            log: None,
-            print: false,
-        },
-        Err(e) => match e.downcast_ref::<Exit>() {
-            Some(exit) => Outcome {
-                code: exit.code,
-                log: exit.error.as_ref().map(|e| format!("{e:#}")),
-                print: exit.error.is_some() && !exit.shown,
-            },
-            None => Outcome {
-                code: 1,
-                log: Some(format!("{e:#}")),
-                print: true,
-            },
-        },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn classify_maps_each_shape_to_its_code_and_logging() {
-        assert_eq!(
-            classify(&Ok(())),
-            Outcome {
-                code: 0,
-                log: None,
-                print: false
-            }
-        );
-        let plain = Err(anyhow::anyhow!("boom"));
-        let o = classify(&plain);
-        assert_eq!((o.code, o.print, o.log.is_some()), (1, true, true));
-        let signal: anyhow::Result<()> = Err(Exit::code(2).into());
-        assert_eq!(
-            classify(&signal),
-            Outcome {
-                code: 2,
-                log: None,
-                print: false
-            }
-        );
-        let shown: anyhow::Result<()> =
-            Err(Exit::shown(anyhow::anyhow!("json already printed")).into());
-        let o = classify(&shown);
-        assert_eq!((o.code, o.print, o.log.is_some()), (1, false, true));
-    }
-}
