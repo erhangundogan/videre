@@ -82,12 +82,12 @@ pub fn make_face_thumb(
     ) {
         Ok(Ok(img)) => img,
         Ok(Err(e)) => {
-            eprintln!("warning: face thumbnail unavailable for {path}: {e}; skipping");
+            tracing::warn!("face thumbnail unavailable for {path}: {e}; skipping");
             return None;
         }
         Err(_) => {
-            eprintln!(
-                "warning: timed out reading {path} for face thumbnail \
+            tracing::warn!(
+                "timed out reading {path} for face thumbnail \
                  (file may be unreachable - is its drive connected?); skipping"
             );
             return None;
@@ -315,7 +315,7 @@ pub fn original_bytes_from_lookup(
         Ok(("image/jpeg", buf))
     } else {
         let bytes = read_with_timeout(file_path).map_err(|e| {
-            eprintln!("warning: original image unavailable for {file_path}: {e}; skipping");
+            tracing::warn!("original image unavailable for {file_path}: {e}; skipping");
             Error::NotFound
         })?;
         Ok((mime_for_ext(&ext), bytes))

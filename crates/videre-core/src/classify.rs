@@ -18,7 +18,7 @@ pub fn ensure_classifications_table(conn: &Connection) -> Result<()> {
             .prepare("SELECT model_id FROM classifications LIMIT 0")
             .is_ok();
         if !has_model_id {
-            eprintln!(
+            tracing::info!(
                 "note: the classifications table predates multi-model support and has been \
                  reset. Re-run 'videre classify' to rebuild it (minutes, no image decoding)."
             );

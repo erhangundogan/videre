@@ -147,7 +147,7 @@ pub(crate) fn query_files_page(
     offset: i64,
     limit: i64,
     location: Option<&LocationFilter>,
-) -> rusqlite::Result<(Vec<(FileRow, i64)>, i64)> {
+) -> anyhow::Result<(Vec<(FileRow, i64)>, i64)> {
     // `view=date` shows one row per hash, the same KEEP set `/date` renders.
     // Choosing it in SQL rather than in Rust is what makes it pageable.
     let (from, total_from) = if view == "date" {
@@ -214,16 +214,14 @@ pub(crate) fn query_files_page(
         format!(" WHERE {}", clauses.join(" AND "))
     };
 
+    let count_sql = format!("SELECT COUNT(*) FROM {total_from} AS t{}", where_sql);
     let total: i64 = conn
-        .query_row(
-            &format!("SELECT COUNT(*) FROM {total_from} AS t{}", where_sql),
-            rusqlite::params_from_iter(params.iter()),
-            |r| r.get(0),
-        )
-        .unwrap_or_else(|e| {
-            eprintln!("videre gallery: /api/files count failed: {e}");
-            -1
-        });
+        .query_row(&count_sql, rusqlite::params_from_iter(params.iter()), |r| {
+            r.get(0)
+        })
+        .map_err(|e| {
+            anyhow::Error::new(e).context(format!("/api/files count failed\n  {count_sql}"))
+        })?;
 
     // `copies` is how many files share this hash. The client derived it by
     // scanning the whole array, which is the only reason it needed the whole
@@ -238,13 +236,10 @@ pub(crate) fn query_files_page(
     // `(vec![], total)` here once hid malformed SQL behind a gallery that looked
     // like a library with nothing in it, which is the same shape as every other
     // fault in this file's history: nothing errored, so nothing was reported.
-    let mut stmt = match conn.prepare(&sql) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("videre gallery: /api/files query failed: {e}\n  {sql}");
-            return Err(rusqlite::Error::InvalidQuery);
-        }
-    };
+    // The error carries the SQL; the handler's boundary logs it, once.
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| anyhow::Error::new(e).context(format!("/api/files query failed\n  {sql}")))?;
     let mut bound = params.clone();
     bound.push(limit.into());
     bound.push(offset.into());
@@ -985,7 +980,7 @@ pub(crate) fn write_static_page(
     let html = render(&set);
     std::fs::write(output, &html)
         .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", output.display()))?;
-    eprintln!("Wrote {} ({} KB)", output.display(), html.len() / 1024);
+    tracing::info!("Wrote {} ({} KB)", output.display(), html.len() / 1024);
     Ok(())
 }
 
@@ -1250,6 +1245,43 @@ mod tests {
 
     fn hashes(rows: &[(FileRow, i64)]) -> Vec<&str> {
         rows.iter().map(|(row, _)| row.hash.as_str()).collect()
+    }
+
+    #[test]
+    fn a_failed_page_query_returns_its_sql_and_logs_nothing_itself() {
+        #[derive(Clone, Default)]
+        struct Buf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Buf {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let buf = Buf::default();
+        let w = buf.clone();
+        let sub = tracing_subscriber::fmt()
+            .with_writer(move || w.clone())
+            .finish();
+        // No tables at all: the page query cannot prepare.
+        let conn = Connection::open_in_memory().unwrap();
+        let err = tracing::subscriber::with_default(sub, || {
+            match query_files_page(&conn, "all", None, 0, 10, None) {
+                Ok(_) => panic!("a page query with no tables must fail"),
+                Err(e) => e,
+            }
+        });
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("SELECT") && text.contains("no such table"),
+            "the error keeps the SQL and its cause: {text}"
+        );
+        assert!(
+            !String::from_utf8_lossy(&buf.0.lock().unwrap()).contains("query failed"),
+            "the handler's boundary logs it, once"
+        );
     }
 
     #[test]

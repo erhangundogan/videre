@@ -598,7 +598,7 @@ pub fn cluster_with_quality_gate(
     // other visible output in between (this was previously silent end-to-end,
     // which looked identical to a hang once the face count grew large).
     if !silent {
-        eprintln!("Clustering {} face(s) (eps={eps:.2})...", quality.len());
+        tracing::info!("Clustering {} face(s) (eps={eps:.2})...", quality.len());
     }
     let mut assignments = videre_core::face_cluster::cluster_faces(
         &quality,
@@ -669,7 +669,7 @@ fn attach_leftovers(
         }
     }
     if !silent && attached > 0 {
-        eprintln!("Attached {attached} leftover face(s) to their nearest cluster");
+        tracing::info!("Attached {attached} leftover face(s) to their nearest cluster");
     }
 }
 

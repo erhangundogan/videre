@@ -338,7 +338,7 @@ pub fn recompute_all(
     // library that is thousands of full-table updates and minutes, during which
     // the command otherwise prints nothing and reads as a hang.
     if !quiet {
-        eprintln!(
+        tracing::info!(
             "Clustering {} distinct coordinate(s) at radius {}km...",
             coords.len(),
             radius_km
@@ -347,7 +347,7 @@ pub fn recompute_all(
         // byte allocation.
         let gb = (coords.len() as f64).powi(2) * 8.0 / 1_073_741_824.0;
         if gb >= 1.0 {
-            eprintln!("Building the distance matrix (~{gb:.1}GB, this is the slow part)");
+            tracing::info!("Building the distance matrix (~{gb:.1}GB, this is the slow part)");
         }
     }
 
@@ -358,7 +358,7 @@ pub fn recompute_all(
     matrix.finish();
 
     if !quiet {
-        eprintln!(
+        tracing::info!(
             "{} cluster(s); naming them and assigning photos",
             member_groups.len()
         );

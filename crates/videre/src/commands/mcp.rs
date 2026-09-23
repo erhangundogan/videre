@@ -41,12 +41,12 @@ pub fn run(args: McpArgs, ctx: &crate::command_context::CommandContext) -> Resul
         match videre_core::embeddings_db::attach_for_read_in(&probe, &ctx.library, &model_id) {
             Ok(()) => true,
             Err(e) => {
-                eprintln!("videre mcp: search unavailable ({e})");
+                tracing::warn!("videre mcp: search unavailable ({e})");
                 false
             }
         }
     };
-    eprintln!(
+    tracing::info!(
         "videre mcp: serving {} (model {model_id}{})",
         db.display(),
         if embeddings_ready {

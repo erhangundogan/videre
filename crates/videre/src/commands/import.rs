@@ -125,8 +125,8 @@ fn import_one(
     ctx: &CommandContext,
 ) -> anyhow::Result<Option<Summary>> {
     if !args.silent {
-        eprintln!("Importing from {}", root.display());
-        eprintln!("  {}", provider.display);
+        tracing::info!("Importing from {}", root.display());
+        tracing::info!("  {}", provider.display);
     }
 
     let opts = LocateOptions {
@@ -174,11 +174,11 @@ fn import_one(
     };
 
     if !args.silent {
-        eprintln!("Located {} file(s) via {via}.", files.len());
+        tracing::info!("Located {} file(s) via {via}.", files.len());
     }
 
     if args.dry_run && !args.silent {
-        eprintln!("Dry run: no files will be modified.");
+        tracing::info!("Dry run: no files will be modified.");
     }
 
     if provider.id == "apple-photos" && !apple_preflight(root, &files, args)? {
@@ -203,7 +203,7 @@ fn import_one(
         )
     };
     if !args.yes && !args.dry_run && !confirm(&question)? {
-        eprintln!("Aborted; no files modified.");
+        tracing::info!("Aborted; no files modified.");
         summary.aborted = true;
         return Ok(Some(summary));
     }
@@ -213,9 +213,9 @@ fn import_one(
     if !args.silent {
         // Every located root, since a Lightroom catalog routinely has several
         // and the useful output there is "these are your folders".
-        eprintln!("Next:");
+        tracing::info!("Next:");
         for r in &roots {
-            eprintln!("  videre scan {}", r.display());
+            tracing::info!("  videre scan {}", r.display());
         }
     }
 
@@ -233,23 +233,23 @@ fn lightroom_roots(root: &Path, args: &ImportArgs) -> Option<Vec<PathBuf>> {
     let catalog = match import_lightroom::find_catalog(root) {
         Some(c) => c,
         None => {
-            eprintln!("Could not find a .lrcat catalog at {}.", root.display());
+            tracing::error!("Could not find a .lrcat catalog at {}.", root.display());
             return None;
         }
     };
     let roots = match import_lightroom::read_root_folders(&catalog) {
         Ok(roots) => roots,
         Err(e) => {
-            eprintln!("Could not read the catalog: {e}");
+            tracing::error!("Could not read the catalog: {e}");
             return None;
         }
     };
 
     let classified = import_lightroom::classify(roots);
     if !args.silent {
-        eprintln!("Catalog references {} root folder(s):", classified.len());
+        tracing::info!("Catalog references {} root folder(s):", classified.len());
         for r in &classified {
-            eprintln!(
+            tracing::info!(
                 "  {:<50} {}",
                 r.path.display(),
                 if r.online { "online" } else { "OFFLINE" }
@@ -258,7 +258,7 @@ fn lightroom_roots(root: &Path, args: &ImportArgs) -> Option<Vec<PathBuf>> {
         if classified.iter().any(|r| !r.online) {
             // Offline is a normal state of a Lightroom catalog, not an error
             // and not a missing file.
-            eprintln!(
+            tracing::info!(
                 "Using online folders only. Reconnect the others and re-run to include them."
             );
         }
@@ -281,7 +281,7 @@ fn apple_preflight(root: &Path, files: &[PathBuf], args: &ImportArgs) -> anyhow:
     // Nothing to prepare for, so the checklist would be noise on top of a
     // message that already says the run cannot happen.
     if shape.files == 0 {
-        eprintln!("{}", import_apple::empty_originals_warning());
+        tracing::info!("{}", import_apple::empty_originals_warning());
         return Ok(false);
     }
 
@@ -293,11 +293,11 @@ fn apple_preflight(root: &Path, files: &[PathBuf], args: &ImportArgs) -> anyhow:
         // Reported instead of the optimised warning, not as well as it: a
         // referenced library is a better explanation of tiny originals than
         // iCloud optimisation, and two warnings for one symptom is noise.
-        eprintln!("{}", import_apple::referenced_warning(&shape));
+        tracing::info!("{}", import_apple::referenced_warning(&shape));
     } else if shape.looks_optimised() {
-        eprintln!("{}", import_apple::optimised_warning(&shape));
+        tracing::info!("{}", import_apple::optimised_warning(&shape));
         if !args.allow_partial && !args.yes && !args.dry_run && !confirm("Continue anyway?")? {
-            eprintln!("Aborted; no files modified.");
+            tracing::info!("Aborted; no files modified.");
             return Ok(false);
         }
     }
@@ -330,7 +330,7 @@ fn recover_takeout_dates(
             Err(e) => {
                 // A malformed sidecar leaves its file untouched and the run
                 // continues; a missing date is a normal outcome, not a failure.
-                eprintln!("warning: {}: {e}", m.sidecar.display());
+                tracing::warn!("{}: {e}", m.sidecar.display());
                 continue;
             }
         };
@@ -349,7 +349,7 @@ fn recover_takeout_dates(
 
     if !args.silent {
         report_takeout_survey(summary, survey.folders);
-        eprintln!(
+        tracing::info!(
             "  {} would have their date corrected ({already_correct} already agree)",
             pending.len()
         );
@@ -381,7 +381,7 @@ fn apply_dates(
                         continue;
                     }
                 }
-                eprintln!("Error: {}: {e:#}", file.display());
+                tracing::error!("{}: {e:#}", file.display());
                 summary.errors += 1;
                 continue;
             }
@@ -437,11 +437,11 @@ fn self_rooted_export(
 /// than an error.
 fn report_nothing_importable(path: &Path) {
     let media = videre::scanner::scan(path).len();
-    eprintln!("Nothing importable found under {}.", path.display());
+    tracing::info!("Nothing importable found under {}.", path.display());
     if media > 0 {
-        eprintln!("  {media} media file(s) are there, in ordinary folders.");
+        tracing::info!("  {media} media file(s) are there, in ordinary folders.");
     }
-    eprintln!(
+    tracing::info!(
         "  Nothing to import: run 'videre scan {}' to use them directly.",
         path.display()
     );
@@ -456,55 +456,59 @@ fn report_takeout_survey(s: &Summary, folders: usize) {
     } else {
         0.0
     };
-    eprintln!("  {} media file(s) in {folders} folder(s)", s.files);
-    eprintln!("  {} matched a sidecar ({pct:.1}%)", s.matched);
-    eprintln!("  {} unmatched, left untouched", s.unmatched);
-    eprintln!("  {} ambiguous, left untouched", s.ambiguous);
+    tracing::info!("  {} media file(s) in {folders} folder(s)", s.files);
+    tracing::info!("  {} matched a sidecar ({pct:.1}%)", s.matched);
+    tracing::info!("  {} unmatched, left untouched", s.unmatched);
+    tracing::info!("  {} ambiguous, left untouched", s.ambiguous);
 }
 
 fn report_not_found(root: &Path, provider: &ProviderDescriptor, tried: &[String]) {
-    eprintln!("Could not locate the files in this library.");
+    tracing::error!("Could not locate the files in this library.");
     for line in tried {
-        eprintln!("  Tried {line}");
+        tracing::info!("  Tried {line}");
     }
-    eprintln!();
+    tracing::info!("");
     if provider.layouts.is_empty() {
         // Lightroom and anything else with no folder layout: there is nothing
         // below the catalog rung, so say why rather than implying a guess is
         // still possible.
-        eprintln!(
+        tracing::info!(
             "  {} stores photos in folders you chose, so videre cannot guess",
             provider.display
         );
-        eprintln!("  where they are.");
-        eprintln!();
+        tracing::info!("  where they are.");
+        tracing::info!("");
     }
     if videre_core::import_location::access_is_denied(root) {
         // The folders are almost certainly there; the OS is hiding them.
-        eprintln!("  videre is not allowed to read this folder, so it cannot see what is");
-        eprintln!("  inside it. This is a permissions problem, not a missing library.");
-        eprintln!();
+        tracing::info!("  videre is not allowed to read this folder, so it cannot see what is");
+        tracing::info!("  inside it. This is a permissions problem, not a missing library.");
+        tracing::info!("");
         if cfg!(target_os = "macos") {
-            eprintln!("  macOS protects a Photos library. Grant access to the program you run");
-            eprintln!("  videre from (Terminal, iTerm, your editor):");
-            eprintln!();
-            eprintln!("    System Settings -> Privacy & Security -> Full Disk Access");
-            eprintln!();
-            eprintln!("  Add it, switch it on, then quit and reopen it. The setting only takes");
-            eprintln!("  effect in a newly started program.");
-            eprintln!();
+            tracing::info!(
+                "  macOS protects a Photos library. Grant access to the program you run"
+            );
+            tracing::info!("  videre from (Terminal, iTerm, your editor):");
+            tracing::info!("");
+            tracing::info!("    System Settings -> Privacy & Security -> Full Disk Access");
+            tracing::info!("");
+            tracing::info!(
+                "  Add it, switch it on, then quit and reopen it. The setting only takes"
+            );
+            tracing::info!("  effect in a newly started program.");
+            tracing::info!("");
         }
     } else {
-        eprintln!("  This usually means the application changed its structure in a version");
-        eprintln!("  newer than this build of videre knows about.");
-        eprintln!();
+        tracing::info!("  This usually means the application changed its structure in a version");
+        tracing::info!("  newer than this build of videre knows about.");
+        tracing::info!("");
     }
-    eprintln!("  If you know where the photos are, point videre at them directly:");
-    eprintln!(
+    tracing::info!("  If you know where the photos are, point videre at them directly:");
+    tracing::info!(
         "    videre import {} --originals <path/to/photos>",
         root.display()
     );
-    eprintln!("    videre scan <path/to/photos>       # or use them as an ordinary folder");
+    tracing::info!("    videre scan <path/to/photos>       # or use them as an ordinary folder");
 }
 
 /// `videre import` with no path: glob the known locations and ask.
@@ -517,18 +521,18 @@ fn choose_from_the_usual_places(
 ) -> anyhow::Result<Option<Vec<(PathBuf, &'static ProviderDescriptor)>>> {
     let found = import_providers::discover_in(&[search_root.to_path_buf()]);
     if found.is_empty() {
-        eprintln!("Nothing importable found in the usual places.");
-        eprintln!("  If your library is somewhere else, point videre at it:");
-        eprintln!("    videre import <path>");
-        eprintln!("  For an ordinary folder of photos there is nothing to import:");
-        eprintln!("    videre scan <path>");
+        tracing::info!("Nothing importable found in the usual places.");
+        tracing::info!("  If your library is somewhere else, point videre at it:");
+        tracing::info!("    videre import <path>");
+        tracing::info!("  For an ordinary folder of photos there is nothing to import:");
+        tracing::info!("    videre scan <path>");
         return Ok(None);
     }
 
-    eprintln!("Found {} librar(ies):", found.len());
+    tracing::info!("Found {} librar(ies):", found.len());
     for (i, c) in found.iter().enumerate() {
-        eprintln!("\n  {}. {}", i + 1, c.path.display());
-        eprintln!("     {}", c.provider.display);
+        tracing::info!("\n  {}. {}", i + 1, c.path.display());
+        tracing::info!("     {}", c.provider.display);
     }
 
     let answer = prompt(&format!(
@@ -551,7 +555,7 @@ fn choose_from_the_usual_places(
             Ok(Some(vec![(c.path.clone(), c.provider)]))
         }
         _ => {
-            eprintln!("Aborted; nothing imported.");
+            tracing::info!("Aborted; nothing imported.");
             Ok(None)
         }
     }

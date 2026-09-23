@@ -277,7 +277,11 @@ fn acquire_lock_file(path: &Path, exclusive: bool, busy: String, what: &str) -> 
     } else {
         FileExt::try_lock_shared(&file)
     };
-    taken.map_err(|e| lock_refusal(e, busy, what))?;
+    if let Err(e) = taken {
+        tracing::debug!(lock = %path.display(), exclusive, "lock refused: {e}");
+        return Err(lock_refusal(e, busy, what));
+    }
+    tracing::debug!(lock = %path.display(), exclusive, "lock acquired");
     Ok(file)
 }
 

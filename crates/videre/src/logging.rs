@@ -450,6 +450,15 @@ pub fn install(ctx: &videre_core::library::LibraryContext, command: &str) -> Ins
     }
     videre_core::shutdown::set_flush_hook(flush_installed);
     mark_run_start();
+    let s = &ctx.settings;
+    tracing::debug!(
+        level = s.log_level.as_str(),
+        format = s.log_format.as_str(),
+        max_size_mb = s.log_max_size_mb,
+        keep = s.log_keep,
+        max_age_days = s.log_max_age_days,
+        "log settings"
+    );
     Installed {
         entered: Some(entered),
     }

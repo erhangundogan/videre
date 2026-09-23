@@ -74,7 +74,9 @@ pub fn face_thumb_path_in(
 }
 
 pub fn thumb_exists_in(cache: &crate::library::CachePaths, hash: &str, size: u32) -> bool {
-    thumb_path_in(cache, hash, size).is_file()
+    let hit = thumb_path_in(cache, hash, size).is_file();
+    tracing::debug!(hash, size, hit, "thumbnail cache lookup");
+    hit
 }
 
 /// Scratch path for an original conversion in the selected library's cache,

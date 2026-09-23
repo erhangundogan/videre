@@ -121,7 +121,7 @@ impl Progress {
             Mode::Bar(bar) => bar.set_position(after),
             Mode::Plain => {
                 if after / LOG_INTERVAL != before / LOG_INTERVAL || after == self.total {
-                    eprintln!("{}/{} {} processed", after, self.total, self.noun);
+                    tracing::info!("{}/{} {} processed", after, self.total, self.noun);
                 }
             }
             Mode::Silent => {}

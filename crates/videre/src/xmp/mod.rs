@@ -14,6 +14,15 @@ use videre_core::marks::{self, XmpPrecedence};
 
 /// The shared `--xmp <db|file|newest>` flag for scan, watch and import. Resolves
 /// to a precedence: the flag if given, else the config default, else `db`.
+/// `--xmp newest` is accepted but not implemented yet. A warning, so it is
+/// shown and logged under `--silent` too: silent hides progress, never a
+/// degraded result.
+pub(crate) fn warn_if_newest(prec: videre_core::marks::XmpPrecedence) {
+    if matches!(prec, videre_core::marks::XmpPrecedence::Newest) {
+        tracing::warn!("--xmp newest is not yet implemented; treating as db");
+    }
+}
+
 #[derive(clap::Args, Default)]
 pub struct XmpArg {
     /// How ratings/labels already in files interact with the database: db (the
@@ -130,9 +139,7 @@ pub fn reconcile_xmp_in(
     changed: &std::collections::HashSet<String>,
     silent: bool,
 ) -> Result<()> {
-    if matches!(prec, XmpPrecedence::Newest) && !silent {
-        eprintln!("Warning: --xmp newest is not yet implemented; treating as db");
-    }
+    warn_if_newest(prec);
     if !videre_core::db::table_exists(conn, "file_hashes")? {
         return Ok(());
     }
@@ -170,7 +177,7 @@ pub fn reconcile_xmp_in(
         .filter(|w| w.action != ReconcileAction::Skip)
         .count();
     if !silent && todo > 0 {
-        eprintln!("Reading metadata for {todo} file(s)");
+        tracing::info!("Reading metadata for {todo} file(s)");
     }
     let progress = videre_core::progress::Progress::new_counting(todo as u64, silent, "files");
     for w in &work {

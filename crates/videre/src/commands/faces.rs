@@ -341,12 +341,14 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
         let (labeled, people) = videre_core::face_db::labeled_state_counts(&conn)?;
         let learning = videre_core::face_db::face_reset_counts(&conn)?;
         if args.dry_run {
-            eprintln!(
+            tracing::info!(
                 "videre faces --reset would delete {labeled} labeled face(s) across \
                  {people} people, all grouping, {} learning event(s), {} question(s), \
                  {} learned profile(s), and detection markers, then \
                  re-detect and regroup the library; nothing was deleted",
-                learning.learning_events, learning.questions, learning.profiles
+                learning.learning_events,
+                learning.questions,
+                learning.profiles
             );
             return Ok(());
         }
@@ -369,12 +371,14 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
         videre_core::face_db::reset_all(&conn)?;
         // The receipt for a consented destructive action prints even under
         // --silent; the rebuild's own progress obeys --silent as usual.
-        eprintln!(
+        tracing::info!(
             "videre faces: reset wiped {total} face row(s) ({labeled} labeled \
              across {people} people), {scanned} detection marker(s), {} \
              learning event(s), {} question(s), {} learned profile(s), and all \
              grouping; rebuilding from absolute beginning",
-            learning.learning_events, learning.questions, learning.profiles
+            learning.learning_events,
+            learning.questions,
+            learning.profiles
         );
     }
 
@@ -416,7 +420,7 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
         videre_core::work::Work::Some(p) => (p.items, false),
         videre_core::work::Work::Nothing(msg) => {
             if !args.silent && !args.recluster {
-                eprintln!("{msg}");
+                tracing::info!("{msg}");
             }
             // Fall through with nothing to detect rather than returning:
             // clustering still has to run. `already_reported` stops the branch
@@ -450,7 +454,7 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
 
     if args.recluster || to_process.is_empty() {
         if !args.silent && to_process.is_empty() && !args.recluster && !already_reported {
-            eprintln!("All hashes already processed.");
+            tracing::info!("All hashes already processed.");
         }
         // Skip detection; jump straight to clustering
         if !args.dry_run {
@@ -471,7 +475,7 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
             // standalone command just did.
             videre_core::face_db::advance_recluster_watermark(&conn)?;
             if !args.silent {
-                eprintln!("{}", format_clustering_only_summary(clustering, args.eps));
+                tracing::info!("{}", format_clustering_only_summary(clustering, args.eps));
             }
         }
         return Ok(());
@@ -484,7 +488,7 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
         if let Err(e) =
             videre_core::pipeline_runs::install_sigint_handler_in(ctx.library.clone(), "faces")
         {
-            eprintln!("Warning: could not install interrupt handler: {e:#}");
+            tracing::warn!("could not install interrupt handler: {e:#}");
         }
     }
     // A dry run writes nothing, and "nothing" includes the pipeline bookkeeping:
@@ -508,7 +512,7 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
         import_face_regions(&args, ctx, &conn, &to_process)?
     };
     if imported > 0 && !args.silent {
-        eprintln!("Imported {imported} face name(s) from XMP");
+        tracing::info!("Imported {imported} face name(s) from XMP");
     }
 
     if outcome.write_errors > 0 || outcome.detect_errors > 0 {
@@ -527,9 +531,7 @@ fn import_face_regions(
     to_process: &[(String, String)],
 ) -> Result<usize> {
     let prec = args.xmp.resolve_from(&ctx.library.settings)?;
-    if matches!(prec, videre_core::marks::XmpPrecedence::Newest) && !args.silent {
-        eprintln!("Warning: --xmp newest is not yet implemented; treating as db");
-    }
+    crate::xmp::warn_if_newest(prec);
     let mut imported = 0usize;
     for (path, hash) in to_process {
         let data = crate::xmp::read::read_data_in(&ctx.library, std::path::Path::new(path));
@@ -607,20 +609,20 @@ fn run_detection_and_clustering(
     }
 
     if !args.silent {
-        eprintln!(
+        tracing::info!(
             "{}",
             format_summary(&result, clustering, args.eps, started.elapsed())
         );
         if args.limit.is_some() && !args.dry_run {
             let remaining = face_db::scanned_hashes(conn)?.len();
-            eprintln!(
+            tracing::info!(
                 "partial run (--limit): {remaining} image(s) scanned so far; rerun to continue, then 'videre faces --recluster' to cluster"
             );
         }
     }
 
     if args.profile {
-        eprintln!("{}", format_profile_report(&profile_stats));
+        tracing::info!("{}", format_profile_report(&profile_stats));
     }
 
     Ok(FacesOutcome {

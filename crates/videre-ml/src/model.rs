@@ -92,13 +92,13 @@ pub const MAX_SAFE_BATCH: usize = 96;
 /// embeddings table is closer to an error than to progress output.
 pub fn clamp_batch(requested: usize, max: Option<usize>) -> usize {
     if requested == 0 {
-        eprintln!("warning: --batch 0 is not valid; using 1");
+        tracing::warn!("--batch 0 is not valid; using 1");
         return 1;
     }
     match max {
         Some(max) if requested > max => {
-            eprintln!(
-                "warning: --batch {requested} exceeds the safe maximum of {max}; using {max} instead. \
+            tracing::warn!(
+                "--batch {requested} exceeds the safe maximum of {max}; using {max} instead. \
                  Larger batches silently produce incorrect embeddings on this inference path (no error \
                  is raised, so this cap is the only thing preventing a corrupt embeddings table)."
             );
@@ -146,7 +146,7 @@ fn configured_dtype() -> DType {
         Ok("f16") => DType::F16,
         Ok("f32") | Err(_) => DType::F32,
         Ok(other) => {
-            eprintln!("warning: unknown VIDERE_EMBED_DTYPE={other:?}; using f32");
+            tracing::warn!("unknown VIDERE_EMBED_DTYPE={other:?}; using f32");
             DType::F32
         }
     }
@@ -169,12 +169,12 @@ impl Embedder {
     fn fetch_and_build(device: Device, model_id: &str) -> Result<Self> {
         let client = hf_hub::HFClientSync::new().context("init HF Hub client")?;
         if model_id != MODEL_ID {
-            eprintln!("Using model {model_id} at {}px.", image_size_for(model_id));
+            tracing::info!("Using model {model_id} at {}px.", image_size_for(model_id));
         }
         let (owner, name) = model_id.split_once('/').expect("model id is owner/name");
         let repo = client.model(owner, name);
 
-        eprintln!("Loading model {model_id} (downloads to hf-hub cache on first run)...");
+        tracing::info!("Loading model {model_id} (downloads to hf-hub cache on first run)...");
 
         // Config
         let config_path = repo
@@ -206,13 +206,13 @@ impl Embedder {
             .filter_map(|p| std::fs::metadata(p).ok())
             .map(|m| m.len())
             .sum();
-        eprintln!(
+        tracing::info!(
             "Loading weights ({:.1} GB; cold first read can take minutes, longer at background priority)...",
             total_bytes as f64 / 1e9
         );
         let dtype = configured_dtype();
         if dtype != DType::F32 {
-            eprintln!("Using {dtype:?} inference precision (VIDERE_EMBED_DTYPE).");
+            tracing::info!("Using {dtype:?} inference precision (VIDERE_EMBED_DTYPE).");
         }
         let vb = unsafe {
             VarBuilder::from_mmaped_safetensors(&weight_paths, dtype, &device)

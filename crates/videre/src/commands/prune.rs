@@ -70,14 +70,22 @@ fn abort_on_repeated_errors(
     checked: usize,
     first: &Option<String>,
 ) {
-    eprintln!(
+    // One event, so the log keeps the whole explanation together.
+    let first = first
+        .as_ref()
+        .map(|e| format!("\n  first error: {e}"))
+        .unwrap_or_default();
+    tracing::error!(
         "aborted after {consecutive} consecutive errors ({total_errors} total), \
-         {checked} row(s) checked"
+         {checked} row(s) checked{first}\n  the volume may be failing; earlier changes are \
+         already committed and prune is idempotent, so re-run once the cause is fixed"
     );
-    if let Some(e) = first {
-        eprintln!("  first error: {e}");
-    }
-    eprintln!("  the volume may be failing; earlier changes are already committed and prune is idempotent, so re-run once the cause is fixed");
+}
+
+/// One per-row failure: logged at error with its path, so it reaches the
+/// primary log and `status --check`, even though prune carries on.
+fn report_failure(err: anyhow::Error, what: String, path: &str) {
+    videre_core::error_log::report(tracing::Level::ERROR, &err.context(what), Some(path));
 }
 
 /// Whether a row's stored `modified_at` needs replacing with the file's current
@@ -99,7 +107,7 @@ fn needs_sync(stored: Option<&str>, current: &str) -> bool {
 
 pub fn run(args: PruneArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     if args.dry_run && !args.silent {
-        eprintln!("Dry run: no changes will be made to the database.");
+        tracing::info!("Dry run: no changes will be made to the database.");
     }
 
     // Prune takes the library's exclusive activity lease: it removes rows and
@@ -207,11 +215,15 @@ pub(crate) fn run_prune(
                     }
                 }
                 Err(e) => {
-                    eprintln!("Error reading mtime for {path}: {e}");
-                    errors += 1;
                     if first_error.is_none() {
                         first_error = Some(format!("reading mtime for {path}: {e}"));
                     }
+                    report_failure(
+                        videre_core::error_kind::from_io(e),
+                        format!("reading mtime for {path}"),
+                        path,
+                    );
+                    errors += 1;
                     consecutive += 1;
                     if consecutive >= MAX_CONSECUTIVE_ERRORS {
                         abort_on_repeated_errors(consecutive, errors, total, &first_error);
@@ -230,12 +242,12 @@ pub(crate) fn run_prune(
         .filter(|(_, f)| matches!(f, Fate::Remove))
         .count();
     if !args.force && super::is_bulk_delete(to_remove, total) {
-        eprintln!(
+        tracing::warn!(
             "refusing to remove {to_remove} of {total} row(s) ({:.0}% of the library): \
              that is more likely a mounting accident than deleted photos.",
             (to_remove as f64 / total as f64) * 100.0
         );
-        eprintln!("  nothing was changed; re-run with --force if this is intended");
+        tracing::info!("  nothing was changed; re-run with --force if this is intended");
         return Ok(errors);
     }
 
@@ -255,11 +267,11 @@ pub(crate) fn run_prune(
                         "DELETE FROM file_hashes WHERE path = ?1",
                         rusqlite::params![path],
                     ) {
-                        eprintln!("Error removing {path}: {e}");
-                        errors += 1;
                         if first_error.is_none() {
                             first_error = Some(format!("removing {path}: {e}"));
                         }
+                        report_failure(anyhow::Error::new(e), format!("removing {path}"), path);
+                        errors += 1;
                         consecutive += 1;
                         if consecutive >= MAX_CONSECUTIVE_ERRORS {
                             abort_on_repeated_errors(consecutive, errors, total, &first_error);
@@ -276,11 +288,11 @@ pub(crate) fn run_prune(
                         "UPDATE file_hashes SET modified_at = ?1 WHERE path = ?2",
                         rusqlite::params![mtime, path],
                     ) {
-                        eprintln!("Error syncing {path}: {e}");
-                        errors += 1;
                         if first_error.is_none() {
                             first_error = Some(format!("syncing {path}: {e}"));
                         }
+                        report_failure(anyhow::Error::new(e), format!("syncing {path}"), path);
+                        errors += 1;
                         consecutive += 1;
                         if consecutive >= MAX_CONSECUTIVE_ERRORS {
                             abort_on_repeated_errors(consecutive, errors, total, &first_error);
@@ -336,7 +348,7 @@ pub(crate) fn run_prune(
         };
         let _ = videre_core::embeddings_db::detach(conn);
         if !args.silent && removed > 0 {
-            eprintln!("removed {removed} orphan embedding(s) ({model_id})");
+            tracing::info!("removed {removed} orphan embedding(s) ({model_id})");
         }
         orphans += removed;
     }
@@ -366,7 +378,7 @@ pub(crate) fn run_prune(
         } else {
             "removed"
         };
-        eprintln!("{tag} {marks_orphans} orphan mark(s)");
+        tracing::info!("{tag} {marks_orphans} orphan mark(s)");
     }
 
     // Remove orphan thumbnail-cache files: any videre_core::thumb_cache entry
@@ -401,10 +413,21 @@ pub(crate) fn run_prune(
             }
             // Short-circuit keeps a dry run from ever calling remove_file: the
             // count rises either way, but the delete happens only for real.
-            if args.dry_run || std::fs::remove_file(entry.path()).is_ok() {
+            if args.dry_run {
                 cache_orphans += 1;
-            } else {
-                errors += 1;
+                continue;
+            }
+            match std::fs::remove_file(entry.path()) {
+                Ok(()) => cache_orphans += 1,
+                Err(e) => {
+                    let path = entry.path().display().to_string();
+                    report_failure(
+                        videre_core::error_kind::from_io(e),
+                        format!("removing cached thumbnail {path}"),
+                        &path,
+                    );
+                    errors += 1;
+                }
             }
         }
     }
@@ -431,7 +454,7 @@ pub(crate) fn run_prune(
         } else {
             String::new()
         };
-        eprintln!(
+        tracing::info!(
             "{total} row(s) checked: {removed} {action} removed, {synced} {action} synced, {errors} error(s){orphan_note}{cache_note}."
         );
     }
@@ -440,7 +463,8 @@ pub(crate) fn run_prune(
     // is exactly the silence this guard exists to end: the count is how a user
     // learns their drive was not mounted.
     if unreachable > 0 {
-        eprintln!("{unreachable} row(s) skipped as unreachable{}", {
+        // A warning: rows were kept unprocessed, and the primary log must say so.
+        tracing::warn!("{unreachable} row(s) skipped as unreachable{}", {
             let mut it = unreachable_dirs.iter();
             let shown: Vec<&String> = it.by_ref().take(MAX_REPORTED_DIRS).collect();
             let rest = unreachable_dirs.len().saturating_sub(shown.len());
@@ -464,7 +488,7 @@ pub(crate) fn run_prune(
                     .join(", ")
             )
         });
-        eprintln!("  run with --prune-unreachable to remove them anyway");
+        tracing::info!("  run with --prune-unreachable to remove them anyway");
     }
 
     Ok(errors)

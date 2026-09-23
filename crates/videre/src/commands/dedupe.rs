@@ -142,9 +142,9 @@ fn run_text(args: DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
             |conn| super::prune::run_prune(&prune_args, &ctx.library, conn),
         ) {
             Ok(0) => {}
-            Ok(errors) => eprintln!("Warning: prune finished with {errors} error(s)."),
+            Ok(errors) => tracing::warn!("prune finished with {errors} error(s)."),
             Err(e) => {
-                eprintln!("Warning: automatic prune failed: {e:#}; run 'videre prune' to clean up.")
+                tracing::warn!("automatic prune failed: {e:#}; run 'videre prune' to clean up.")
             }
         }
     }
@@ -190,7 +190,7 @@ fn run_remove(
 
     if losers.is_empty() {
         if !args.silent {
-            eprintln!("No exact duplicates to remove.");
+            tracing::info!("No exact duplicates to remove.");
         }
         return Ok(0);
     }
@@ -207,21 +207,21 @@ fn run_remove(
     // Bulk-deletion guard, shared with prune: an implausibly large share of the
     // library is more likely a wrong selection or a mounting accident.
     if !args.force && super::is_bulk_delete(losers.len(), total) {
-        eprintln!(
+        tracing::warn!(
             "refusing to remove {} of {} file(s) ({:.0}% of the library): \
              that is more likely a mistake than real duplicates.",
             losers.len(),
             total,
             (losers.len() as f64 / total.max(1) as f64) * 100.0
         );
-        eprintln!("  nothing was removed; re-run with --force if this is intended");
+        tracing::warn!("  nothing was removed; re-run with --force if this is intended");
         return Ok(0);
     }
 
     if args.dry_run {
         print_losers_delimited(&groups, args.print0);
         if !args.silent {
-            eprintln!("{} file(s) would be moved to the trash.", losers.len());
+            tracing::info!("{} file(s) would be moved to the trash.", losers.len());
         }
         return Ok(0);
     }
@@ -232,7 +232,7 @@ fn run_remove(
             losers.len()
         ))?
     {
-        eprintln!("Aborted; nothing was removed.");
+        tracing::info!("Aborted; nothing was removed.");
         return Ok(0);
     }
 
@@ -241,7 +241,7 @@ fn run_remove(
     let skipped = results.len() - moved;
     for (path, r) in &results {
         if let Err(e) = r {
-            eprintln!("Warning: could not trash {path:?}: {e}");
+            tracing::warn!("could not trash {path:?}: {e}");
         }
     }
     if moved == 0 && skipped > 0 {
@@ -251,9 +251,9 @@ fn run_remove(
     }
     if !args.silent {
         if skipped > 0 {
-            eprintln!("Moved {moved} file(s) to the trash ({skipped} skipped).");
+            tracing::info!("Moved {moved} file(s) to the trash ({skipped} skipped).");
         } else {
-            eprintln!("Moved {moved} file(s) to the trash.");
+            tracing::info!("Moved {moved} file(s) to the trash.");
         }
     }
     Ok(moved)
@@ -267,9 +267,9 @@ fn run_dedupe_text(args: &DedupeArgs, conn: &rusqlite::Connection) -> anyhow::Re
     let groups = videre::output::find_duplicate_groups(&records);
     if !args.silent {
         if groups.is_empty() {
-            eprintln!("No exact duplicates found.");
+            tracing::info!("No exact duplicates found.");
         } else {
-            eprintln!(
+            tracing::info!(
                 "{} duplicate group(s), {} file(s) to remove.",
                 groups.len(),
                 groups.iter().map(|g| g.files.len() - 1).sum::<usize>()
@@ -281,7 +281,7 @@ fn run_dedupe_text(args: &DedupeArgs, conn: &rusqlite::Connection) -> anyhow::Re
     if args.similar {
         let similar = videre::output::find_similar_groups(&records, 10);
         if !args.silent && !similar.is_empty() {
-            eprintln!(
+            tracing::info!(
                 "{} visually similar group(s) found: review with videre dedupe --html before deleting.",
                 similar.len()
             );

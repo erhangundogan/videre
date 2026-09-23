@@ -101,7 +101,7 @@ fn run_inner(args: &ScanArgs, ctx: &CommandContext) -> anyhow::Result<ScanJson> 
     if let Err(error) =
         videre_core::pipeline_runs::install_sigint_handler_in(ctx.library.clone(), "scan")
     {
-        eprintln!("Warning: could not install interrupt handler: {error:#}");
+        tracing::warn!("could not install interrupt handler: {error:#}");
     }
 
     let (records, skipped) =
@@ -120,12 +120,12 @@ fn run_inner(args: &ScanArgs, ctx: &CommandContext) -> anyhow::Result<ScanJson> 
         })?;
 
     if args.retry_incomplete && !args.silent {
-        eprintln!(
+        tracing::info!(
             "note: --retry-incomplete is deprecated and has no effect; scan is incremental by default."
         );
     }
     if !args.silent {
-        eprintln!(
+        tracing::info!(
             "{}",
             format_write_summary(
                 records.len(),
@@ -187,7 +187,7 @@ fn gather_records(
 
     let records = if args.similar {
         if !args.silent {
-            eprintln!("Computing perceptual hashes for {} file(s)", records.len());
+            tracing::info!("Computing perceptual hashes for {} file(s)", records.len());
         }
         apply_phashes(ctx, records, args.silent)
     } else {

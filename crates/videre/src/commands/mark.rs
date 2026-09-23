@@ -77,7 +77,7 @@ pub fn run(args: MarkArgs, ctx: &CommandContext) -> Result<()> {
     let hashes = resolve_targets(&args, ctx, &conn)?;
     let total: i64 = conn.query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))?;
     if !args.silent {
-        eprintln!("Marking {} of {} file(s)", hashes.len(), total);
+        tracing::info!("Marking {} of {} file(s)", hashes.len(), total);
     }
     if !args.dry_run {
         marks::set(&conn, &hashes, &change)?;

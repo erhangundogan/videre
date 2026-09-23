@@ -47,7 +47,7 @@ pub fn run(args: FixDatesArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     )?;
 
     if args.dry_run && !args.silent {
-        eprintln!("Dry run: no files will be modified.");
+        tracing::info!("Dry run: no files will be modified.");
     }
 
     let guard = videre_core::library_locks::try_command(&ctx.library, "fix-dates")?;
@@ -92,7 +92,7 @@ fn run_fix_dates(
             "This will set the modified time on {total} file(s) from their exif_date. Continue?"
         ))?;
         if !proceed {
-            eprintln!("Aborted; no files modified.");
+            tracing::info!("Aborted; no files modified.");
             return Ok(0);
         }
     }
@@ -112,9 +112,9 @@ fn run_fix_dates(
             let ndt_ok =
                 chrono::NaiveDateTime::parse_from_str(exif_date, "%Y-%m-%dT%H:%M:%S").is_ok();
             if ndt_ok {
-                eprintln!("Error: {path}: ambiguous local time for {exif_date}");
+                tracing::error!("{path}: ambiguous local time for {exif_date}");
             } else {
-                eprintln!("Error: {path}: bad exif_date {exif_date:?}");
+                tracing::error!("{path}: bad exif_date {exif_date:?}");
             }
             errors += 1;
             continue;
@@ -130,7 +130,7 @@ fn run_fix_dates(
             match videre_core::library_io::open_media(&ctx.library, std::path::Path::new(path)) {
                 Ok(file) => {
                     if let Err(e) = filetime::set_file_handle_times(&file, None, Some(ft)) {
-                        eprintln!("Error: {path}: {e}");
+                        tracing::error!("{path}: {e}");
                         errors += 1;
                         continue;
                     }
@@ -156,7 +156,7 @@ fn run_fix_dates(
                             continue;
                         }
                     }
-                    eprintln!("Error: {path}: {e:#}");
+                    tracing::error!("{path}: {e:#}");
                     errors += 1;
                     continue;
                 }
@@ -180,7 +180,7 @@ fn run_fix_dates(
         } else {
             String::new()
         };
-        eprintln!(
+        tracing::info!(
             "{} file(s) with exif_date, {} {}, {} error(s){}.",
             total,
             changed,

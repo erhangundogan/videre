@@ -31,7 +31,7 @@ pub fn run(
         for p in paths {
             let path = std::path::PathBuf::from(p?);
             if args.dry_run {
-                eprintln!(
+                tracing::info!(
                     "would write {}",
                     crate::xmp::write::sidecar_path(&path).display()
                 );
@@ -41,7 +41,7 @@ pub fn run(
         }
     }
     if !args.silent && !args.dry_run {
-        eprintln!("Wrote {written} sidecar(s)");
+        tracing::info!("Wrote {written} sidecar(s)");
     }
     Ok(())
 }

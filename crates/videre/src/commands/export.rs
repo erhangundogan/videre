@@ -97,12 +97,12 @@ fn export_jsonl_snapshot(
     let written = super::export_jsonl::write_snapshot(ctx, conn, &selection, args.dry_run)?;
     if !args.silent {
         if args.dry_run {
-            eprintln!(
+            tracing::info!(
                 "would write {written} record(s) to {}",
                 ctx.library.paths.jsonl.display()
             );
         } else {
-            eprintln!(
+            tracing::info!(
                 "Wrote {written} record(s) to {}",
                 ctx.library.paths.jsonl.display()
             );
@@ -142,7 +142,7 @@ fn export_selection(
     let total: i64 = conn.query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))?;
     let written = write_sidecars_for(conn, &hashes, args.dry_run, Some(&ctx.library))?;
     if !args.silent && !args.dry_run {
-        eprintln!(
+        tracing::info!(
             "Wrote {written} sidecar(s) for {} of {} file(s)",
             hashes.len(),
             total
@@ -230,7 +230,7 @@ fn write_sidecars_for(
         for p in paths {
             let path = PathBuf::from(p?);
             if dry_run {
-                eprintln!(
+                tracing::info!(
                     "would write {}",
                     crate::xmp::write::sidecar_path(&path).display()
                 );

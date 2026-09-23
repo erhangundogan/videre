@@ -196,6 +196,45 @@ fn status_shows_the_latest_run_and_a_clean_run_clears_it() {
 }
 
 #[test]
+fn debug_level_records_decisions_in_the_trace_file_only() {
+    let lib = TestLibrary::new();
+    lib.scan();
+    let set = lib
+        .cmd()
+        .args(["config", "set", "log-level", "debug"])
+        .status()
+        .unwrap();
+    assert!(set.success());
+    let out = lib.cmd().args(["stats", "--json"]).output().unwrap();
+    assert!(out.status.success());
+    let _: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains("lock"),
+        "debug never reaches the terminal"
+    );
+
+    let trace = parsed_lines(&logs(&lib).join("stats.trace.log"));
+    assert!(
+        trace
+            .iter()
+            .any(|l| l.level == videre_core::error_log::LineLevel::Debug
+                && l.message.contains("log settings")),
+        "{trace:?}"
+    );
+    assert!(
+        trace
+            .iter()
+            .any(|l| l.level == videre_core::error_log::LineLevel::Debug
+                && l.message.contains("lock")),
+        "{trace:?}"
+    );
+    let primary = parsed_lines(&logs(&lib).join("stats.log"));
+    assert!(primary
+        .iter()
+        .all(|l| l.level != videre_core::error_log::LineLevel::Debug));
+}
+
+#[test]
 fn reading_an_uninitialized_library_creates_nothing() {
     let lib = TestLibrary::new();
     let _ = lib.cmd().arg("stats").output().unwrap();
@@ -250,4 +289,85 @@ fn log_settings_are_set_and_shown_through_config() {
     assert!(out.contains("log-max-size-mb: 10 MB"), "{out}");
     assert!(out.contains("log-keep:      5"), "{out}");
     assert!(out.contains("log-max-age-days: 30 days"), "{out}");
+}
+
+#[test]
+fn a_partially_failing_prune_logs_its_failure_where_status_finds_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let lib = TestLibrary::new();
+    lib.scan();
+    // An orphaned thumbnail in a cache directory that refuses deletion: the
+    // sweep counts it as a failure while the rest of the prune succeeds.
+    let thumbs = lib.context().cache.thumbnails;
+    std::fs::create_dir_all(&thumbs).unwrap();
+    let orphan = thumbs.join(format!("{}_240.jpg", "ab".repeat(32)));
+    std::fs::write(&orphan, b"x").unwrap();
+    std::fs::set_permissions(&thumbs, std::fs::Permissions::from_mode(0o555)).unwrap();
+    // As root the directory mode is not enforced, and there is nothing to test.
+    if std::fs::write(thumbs.join("probe"), b"x").is_ok() {
+        std::fs::set_permissions(&thumbs, std::fs::Permissions::from_mode(0o755)).unwrap();
+        return;
+    }
+    let out = lib.cmd().arg("prune").output().unwrap();
+    std::fs::set_permissions(&thumbs, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!out.status.success(), "a prune with errors exits non-zero");
+
+    let errors: Vec<_> = parsed_lines(&logs(&lib).join("prune.log"))
+        .into_iter()
+        .filter(|l| l.level == videre_core::error_log::LineLevel::Error)
+        .collect();
+    assert!(
+        errors
+            .iter()
+            .any(|l| l.path.as_deref() == Some(orphan.to_str().unwrap())),
+        "{errors:?}"
+    );
+    let status = lib.cmd().args(["status", "--check"]).output().unwrap();
+    assert!(!status.status.success(), "status --check finds the failure");
+}
+
+#[test]
+fn silent_hides_progress_but_never_a_warning() {
+    let lib = TestLibrary::new();
+    // Logs start once the library exists; its very first scan creates it.
+    lib.scan();
+    let out = lib
+        .cmd()
+        .args(["scan", "--silent", "--xmp", "newest"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("warning: --xmp newest is not yet implemented"),
+        "{stderr}"
+    );
+    assert!(parsed_lines(&logs(&lib).join("scan.log"))
+        .iter()
+        .any(|l| l.level == videre_core::error_log::LineLevel::Warn
+            && l.message.contains("--xmp newest")));
+}
+
+#[test]
+fn prune_keeps_a_warning_for_rows_it_skipped_as_unreachable() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("ai-generated-couple.jpg", "İstanbul/Çağla_2019.jpg");
+    lib.scan();
+    // The whole directory is gone, the shape of an unmounted drive: prune
+    // keeps the rows and says so, and that must survive in the log.
+    std::fs::remove_dir_all(lib.root.join("İstanbul")).unwrap();
+    let out = lib.cmd().args(["prune", "--silent"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        parsed_lines(&logs(&lib).join("prune.log"))
+            .iter()
+            .any(|l| l.level == videre_core::error_log::LineLevel::Warn
+                && l.message.contains("skipped as unreachable")),
+        "{}",
+        std::fs::read_to_string(logs(&lib).join("prune.log")).unwrap_or_default()
+    );
 }

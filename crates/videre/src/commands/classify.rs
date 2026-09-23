@@ -173,7 +173,7 @@ fn run_classify(
         classify_core::insert_classifications(conn, model_id, &rows)?;
 
         if !args.silent {
-            eprintln!("{}", format_summary(rows.len(), started.elapsed()));
+            tracing::info!("{}", format_summary(rows.len(), started.elapsed()));
         }
         Ok(())
     })?;

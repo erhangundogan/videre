@@ -2104,9 +2104,20 @@ async fn handle_rotate_file(
 /// corrupted, and a DB error is logged, since the rotation itself has already
 /// succeeded and the caller reports that.
 fn rotate_faces_geometry(state: &AppState, hash: &str, ccw: bool, display_w: i32, display_h: i32) {
+    // The file itself was rotated already, so a failure here leaves face
+    // boxes stale: logged at error, where the primary log keeps it.
+    let failed = |what: String, e: anyhow::Error| {
+        videre_core::error_log::report(tracing::Level::ERROR, &e.context(what), None)
+    };
     let conn = match state.conn.lock() {
         Ok(conn) => conn,
-        Err(_) => return,
+        Err(_) => {
+            failed(
+                format!("videre gallery: rotating face geometry for {hash}"),
+                anyhow::anyhow!("the database connection lock is poisoned by an earlier panic"),
+            );
+            return;
+        }
     };
     let rows: Vec<(i64, String, Option<String>)> = {
         let mut stmt = match conn.prepare(
@@ -2114,7 +2125,10 @@ fn rotate_faces_geometry(state: &AppState, hash: &str, ccw: bool, display_w: i32
         ) {
             Ok(stmt) => stmt,
             Err(e) => {
-                eprintln!("videre gallery: reading faces for rotate {hash}: {e}");
+                failed(
+                    format!("videre gallery: reading faces for rotate {hash}"),
+                    e.into(),
+                );
                 return;
             }
         };
@@ -2126,9 +2140,25 @@ fn rotate_faces_geometry(state: &AppState, hash: &str, ccw: bool, display_w: i32
             ))
         });
         match mapped {
-            Ok(iter) => iter.filter_map(|r| r.ok()).collect(),
+            // A row that cannot be read keeps its old geometry: say so, once
+            // per row, and carry on with the rest.
+            Ok(iter) => iter
+                .filter_map(|r| match r {
+                    Ok(row) => Some(row),
+                    Err(e) => {
+                        failed(
+                            format!("videre gallery: reading faces for rotate {hash}"),
+                            e.into(),
+                        );
+                        None
+                    }
+                })
+                .collect(),
             Err(e) => {
-                eprintln!("videre gallery: reading faces for rotate {hash}: {e}");
+                failed(
+                    format!("videre gallery: reading faces for rotate {hash}"),
+                    e.into(),
+                );
                 return;
             }
         }
@@ -2156,7 +2186,10 @@ fn rotate_faces_geometry(state: &AppState, hash: &str, ccw: bool, display_w: i32
             "UPDATE faces SET bbox = ?1, landmark = ?2 WHERE id = ?3",
             rusqlite::params![new_bbox, new_landmark, id],
         ) {
-            eprintln!("videre gallery: updating face {id} geometry for rotate: {e}");
+            failed(
+                format!("videre gallery: updating face {id} geometry for rotate"),
+                e.into(),
+            );
         }
     }
 }
@@ -2243,7 +2276,7 @@ async fn handle_basemap_ensure(State(state): State<Arc<AppState>>) -> Response {
         let flag = state.basemap_downloading.clone();
         tokio::task::spawn_blocking(move || {
             if let Err(e) = videre_core::basemap::ensure_downloaded(&geo, &state_dir, |_, _| {}) {
-                eprintln!("videre gallery: basemap download failed: {e}");
+                tracing::error!("videre gallery: basemap download failed: {e}");
             }
             flag.store(false, Ordering::SeqCst);
         });
@@ -3067,12 +3100,12 @@ async fn handle_raw_file(
             ) {
                 Ok(Ok(bytes)) => bytes,
                 Ok(Err(e)) => {
-                    eprintln!("warning: raw file unavailable for {path}: {e}; skipping");
+                    tracing::warn!("raw file unavailable for {path}: {e}; skipping");
                     return None;
                 }
                 Err(_) => {
-                    eprintln!(
-                        "warning: timed out reading {path} \
+                    tracing::warn!(
+                        "timed out reading {path} \
                          (file may be unreachable - is its drive connected?); skipping"
                     );
                     return None;
@@ -3269,10 +3302,12 @@ async fn serve_faces_async(
     // case-insensitive behaviour.
     match videre_core::face_db::migrate_person_labels(&conn) {
         Ok((people, merged)) if merged > 0 => {
-            eprintln!("Merged {merged} name(s) differing only in spelling; {people} people now");
+            tracing::info!(
+                "Merged {merged} name(s) differing only in spelling; {people} people now"
+            );
         }
         Ok(_) => {}
-        Err(e) => eprintln!("warning: could not migrate person names: {e}"),
+        Err(e) => tracing::warn!("could not migrate person names: {e}"),
     }
     if opts.serve_faces_ui {
         // The first questions request can precede the status request or the
@@ -3288,7 +3323,7 @@ async fn serve_faces_async(
             &opts.context.library,
             &opts.model_id,
         ) {
-            eprintln!("note: similarity search disabled ({e})");
+            tracing::info!("note: similarity search disabled ({e})");
         }
     }
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -3441,9 +3476,9 @@ async fn serve_faces_async(
     let addr = addr.as_str();
 
     if opts.gallery {
-        eprintln!("videre gallery: http://{addr}");
+        tracing::info!("videre gallery: http://{addr}");
     } else {
-        eprintln!("Faces labeling server: http://{addr}");
+        tracing::info!("Faces labeling server: http://{addr}");
     }
     if opts.browse {
         // After the listener binds, or the browser races it and lands on a
@@ -3788,5 +3823,56 @@ mod thumbnail_tests {
                 "{e} must not go through raster thumbnailing"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod rotate_geometry_tests {
+    use super::*;
+
+    #[test]
+    fn an_unreadable_face_row_is_logged_and_the_others_still_rotate() {
+        #[derive(Clone, Default)]
+        struct Buf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Buf {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let state = location_cluster_tests::gallery_state(temp.path());
+        {
+            let conn = state.conn.lock().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT, bbox TEXT,
+                     landmark TEXT, oriented INTEGER);
+                 INSERT INTO faces VALUES (1, 'çağla', '10,20,30,40', NULL, 1);
+                 INSERT INTO faces VALUES (2, 'çağla', X'00', NULL, 1);",
+            )
+            .unwrap();
+        }
+        let buf = Buf::default();
+        let w = buf.clone();
+        let sub = tracing_subscriber::fmt()
+            .with_writer(move || w.clone())
+            .finish();
+        tracing::subscriber::with_default(sub, || {
+            rotate_faces_geometry(&state, "çağla", false, 100, 80)
+        });
+
+        let logged = String::from_utf8_lossy(&buf.0.lock().unwrap()).to_string();
+        assert!(
+            logged.contains("ERROR") && logged.contains("reading faces for rotate"),
+            "{logged}"
+        );
+        let conn = state.conn.lock().unwrap();
+        let rotated: String = conn
+            .query_row("SELECT bbox FROM faces WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rotated, "20,10,40,30", "the readable face still turns");
     }
 }

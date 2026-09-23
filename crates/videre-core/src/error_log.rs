@@ -134,7 +134,9 @@ static STAGE: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(Non
 /// The stage `pipeline` or `watch` is running; the previous stage comes back
 /// when it is dropped.
 pub struct StageGuard {
+    name: &'static str,
     previous: Option<&'static str>,
+    started: std::time::Instant,
     _span: tracing::span::EnteredSpan,
 }
 
@@ -145,13 +147,17 @@ pub struct StageGuard {
 pub fn enter_stage(name: &'static str) -> StageGuard {
     let previous = STAGE.lock().map(|mut s| s.replace(name)).unwrap_or(None);
     StageGuard {
+        name,
         previous,
+        started: std::time::Instant::now(),
         _span: tracing::info_span!("stage", stage = name).entered(),
     }
 }
 
 impl Drop for StageGuard {
     fn drop(&mut self) {
+        let elapsed_ms = self.started.elapsed().as_millis() as u64;
+        tracing::debug!(stage = self.name, elapsed_ms, "stage finished");
         if let Ok(mut s) = STAGE.lock() {
             *s = self.previous;
         }

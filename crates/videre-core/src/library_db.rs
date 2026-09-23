@@ -612,7 +612,9 @@ fn open_prepared(ctx: &LibraryContext, conn: &Connection) -> Result<()> {
         // upgrade committed.
         let report = foreign_keys::upgrade_to_v2(conn)?;
         for line in report.stderr_lines() {
-            eprintln!("{line}");
+            // A warning: the upgrade changed data, so the record must survive
+            // in the primary log at the default level.
+            tracing::warn!("{line}");
         }
     }
     verify_schema(conn)?;

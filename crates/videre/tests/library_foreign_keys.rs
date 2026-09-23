@@ -44,6 +44,16 @@ fn library_upgrade_reports_repairs_once_without_polluting_json() {
         "{stderr}"
     );
     assert!(!String::from_utf8_lossy(&first.stdout).contains("İsıl Legacy"));
+    // The repair changed data, so it is kept in the command's primary log at
+    // the default level, not only shown once on the terminal.
+    let log = std::fs::read_to_string(lib.context().paths.state.join("logs/stats.log")).unwrap();
+    assert!(
+        log.lines()
+            .filter_map(videre_core::error_log::parse_line)
+            .any(|l| l.level == videre_core::error_log::LineLevel::Warn
+                && l.message.contains("İsıl Legacy")),
+        "{log}"
+    );
 
     let second = lib.cmd().args(["stats", "--json"]).output().unwrap();
     assert!(second.status.success());
