@@ -13,6 +13,7 @@ directory at its root:
   hashes.jsonl   # only after `videre export --jsonl`
   locks/         # marks which command is currently running
   embeddings/    # per-model search data
+  logs/          # per-command error logs, see Logging and error handling
 ```
 
 Nothing is created until you actually write something. Commands that only read

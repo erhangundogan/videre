@@ -567,6 +567,27 @@ fix are not healed by upgrading: re-detect (`faces --reprocess`), re-embed
 (`embed --reprocess`), re-classify (`classify --reprocess`); see the
 troubleshooting docs for the recovery recipes.
 
+### Logging goes through one tracing subscriber; errors are logged once
+
+`main` installs a `tracing` subscriber (`crates/videre/src/logging.rs`) once
+the command and library are known: a terminal layer that prints what videre
+always printed, plus `.videre/logs/<command>.log` (errors and warnings,
+always) and `<command>.trace.log` (only at `log_level` info or debug). Library
+crates only emit events. Only targets starting with `videre` reach any layer.
+
+A failure is logged once, at the highest boundary that still knows what
+failed, through `videre_core::error_log::report`. Lower levels never log an
+error they also return; they add `.context(...)` and, where the cause is
+known, a `videre_core::error_kind::ErrorKind`. `log_level` affects the files
+only, never the terminal.
+
+:warning: **Never call `std::process::exit` in the binary** outside the last
+line of `main`. It skips destructors, and the log writers flush on drop, so a
+direct exit loses the final lines. Return `exit::Exit` instead: `Exit::code`
+for a deliberate status, `Exit::shown` for a failure already printed as JSON.
+The SIGINT handler exits from core, so it calls `videre_core::shutdown::flush`
+first.
+
 ## The commit guard
 
 `hooks/pre-commit`, installed with `git config core.hooksPath hooks`. It refuses
@@ -712,6 +733,7 @@ above.
 - `watch --prune` cannot override the guards -> `commands::prune::PruneArgs::for_watch_stage`
 - `videre locations` is a global recompute -> `commands::locations`
 - Undecodable files are skipped after two strikes -> `videre_core::decode_failures`
+- Errors logged once, at boundaries; per-command log layout and reader -> `videre_core::error_log`, `videre_core::error_kind`, `crates/videre/src/logging.rs`
 - Offline map basemap: one shared PMTiles archive per machine, downloaded once
   behind a cross-process flock; the map grid never gates on MapLibre's load
   (a WebGL probe can pass where the context still cannot render) -> `videre_core::basemap`, `commands::gallery::server` (`handle_basemap_*`), `static/map.js`
