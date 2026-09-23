@@ -679,7 +679,7 @@ fn collect_hits(
     rows.truncate(args.top_k);
     if total_matches > rows.len() && !args.json {
         // stderr, so a piped stdout stays exactly the list of paths.
-        eprintln!(
+        tracing::info!(
             "showing {} of {} matches; pass -k {} to see them all",
             rows.len(),
             total_matches,
@@ -695,11 +695,12 @@ fn collect_hits(
         // In --json mode the empty result is conveyed as count 0; keep stdout
         // the only channel so a clean agent invocation emits nothing on stderr.
         match query.kind {
-            "person" => eprintln!("No confirmed photos found for person: {}", query.value),
-            "category" => eprintln!("No files found classified as: {}", query.value),
-            "location" => eprintln!(
+            "person" => tracing::info!("No confirmed photos found for person: {}", query.value),
+            "category" => tracing::info!("No files found classified as: {}", query.value),
+            "location" => tracing::info!(
                 "No photos found within {}km of: {}",
-                args.radius, query.value
+                args.radius,
+                query.value
             ),
             _ => {}
         }

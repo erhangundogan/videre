@@ -238,7 +238,7 @@ fn run_embed(
         progress.finish();
 
         if !args.silent {
-            eprintln!("{}", format_summary(done, failed, started.elapsed()));
+            tracing::info!("{}", format_summary(done, failed, started.elapsed()));
         }
         Ok(())
     })?;

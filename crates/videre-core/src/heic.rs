@@ -146,8 +146,8 @@ pub fn heic_via_quicklook(path: &str, tag: &str, max_size: Option<u32>) -> Optio
         .ok()?;
     let outcome = wait_with_timeout(&mut child, QLMANAGE_TIMEOUT);
     if outcome == WaitOutcome::TimedOut {
-        eprintln!(
-            "warning: qlmanage timed out after {}s converting {path} (file may be unreachable - is its drive disconnected?); skipping",
+        tracing::warn!(
+            "qlmanage timed out after {}s converting {path} (file may be unreachable - is its drive disconnected?); skipping",
             QLMANAGE_TIMEOUT.as_secs()
         );
     }

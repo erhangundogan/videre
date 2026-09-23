@@ -2114,7 +2114,7 @@ fn rotate_faces_geometry(state: &AppState, hash: &str, ccw: bool, display_w: i32
         ) {
             Ok(stmt) => stmt,
             Err(e) => {
-                eprintln!("videre gallery: reading faces for rotate {hash}: {e}");
+                tracing::info!("videre gallery: reading faces for rotate {hash}: {e}");
                 return;
             }
         };
@@ -2128,7 +2128,7 @@ fn rotate_faces_geometry(state: &AppState, hash: &str, ccw: bool, display_w: i32
         match mapped {
             Ok(iter) => iter.filter_map(|r| r.ok()).collect(),
             Err(e) => {
-                eprintln!("videre gallery: reading faces for rotate {hash}: {e}");
+                tracing::info!("videre gallery: reading faces for rotate {hash}: {e}");
                 return;
             }
         }
@@ -2156,7 +2156,7 @@ fn rotate_faces_geometry(state: &AppState, hash: &str, ccw: bool, display_w: i32
             "UPDATE faces SET bbox = ?1, landmark = ?2 WHERE id = ?3",
             rusqlite::params![new_bbox, new_landmark, id],
         ) {
-            eprintln!("videre gallery: updating face {id} geometry for rotate: {e}");
+            tracing::info!("videre gallery: updating face {id} geometry for rotate: {e}");
         }
     }
 }
@@ -2243,7 +2243,7 @@ async fn handle_basemap_ensure(State(state): State<Arc<AppState>>) -> Response {
         let flag = state.basemap_downloading.clone();
         tokio::task::spawn_blocking(move || {
             if let Err(e) = videre_core::basemap::ensure_downloaded(&geo, &state_dir, |_, _| {}) {
-                eprintln!("videre gallery: basemap download failed: {e}");
+                tracing::error!("videre gallery: basemap download failed: {e}");
             }
             flag.store(false, Ordering::SeqCst);
         });
@@ -3067,12 +3067,12 @@ async fn handle_raw_file(
             ) {
                 Ok(Ok(bytes)) => bytes,
                 Ok(Err(e)) => {
-                    eprintln!("warning: raw file unavailable for {path}: {e}; skipping");
+                    tracing::warn!("raw file unavailable for {path}: {e}; skipping");
                     return None;
                 }
                 Err(_) => {
-                    eprintln!(
-                        "warning: timed out reading {path} \
+                    tracing::warn!(
+                        "timed out reading {path} \
                          (file may be unreachable - is its drive connected?); skipping"
                     );
                     return None;
@@ -3269,10 +3269,12 @@ async fn serve_faces_async(
     // case-insensitive behaviour.
     match videre_core::face_db::migrate_person_labels(&conn) {
         Ok((people, merged)) if merged > 0 => {
-            eprintln!("Merged {merged} name(s) differing only in spelling; {people} people now");
+            tracing::info!(
+                "Merged {merged} name(s) differing only in spelling; {people} people now"
+            );
         }
         Ok(_) => {}
-        Err(e) => eprintln!("warning: could not migrate person names: {e}"),
+        Err(e) => tracing::warn!("could not migrate person names: {e}"),
     }
     if opts.serve_faces_ui {
         // The first questions request can precede the status request or the
@@ -3288,7 +3290,7 @@ async fn serve_faces_async(
             &opts.context.library,
             &opts.model_id,
         ) {
-            eprintln!("note: similarity search disabled ({e})");
+            tracing::info!("note: similarity search disabled ({e})");
         }
     }
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -3441,9 +3443,9 @@ async fn serve_faces_async(
     let addr = addr.as_str();
 
     if opts.gallery {
-        eprintln!("videre gallery: http://{addr}");
+        tracing::info!("videre gallery: http://{addr}");
     } else {
-        eprintln!("Faces labeling server: http://{addr}");
+        tracing::info!("Faces labeling server: http://{addr}");
     }
     if opts.browse {
         // After the listener binds, or the browser races it and lands on a

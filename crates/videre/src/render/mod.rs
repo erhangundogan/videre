@@ -221,7 +221,7 @@ pub(crate) fn query_files_page(
             |r| r.get(0),
         )
         .unwrap_or_else(|e| {
-            eprintln!("videre gallery: /api/files count failed: {e}");
+            tracing::error!("videre gallery: /api/files count failed: {e}");
             -1
         });
 
@@ -241,7 +241,7 @@ pub(crate) fn query_files_page(
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("videre gallery: /api/files query failed: {e}\n  {sql}");
+            tracing::error!("videre gallery: /api/files query failed: {e}\n  {sql}");
             return Err(rusqlite::Error::InvalidQuery);
         }
     };
@@ -985,7 +985,7 @@ pub(crate) fn write_static_page(
     let html = render(&set);
     std::fs::write(output, &html)
         .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", output.display()))?;
-    eprintln!("Wrote {} ({} KB)", output.display(), html.len() / 1024);
+    tracing::info!("Wrote {} ({} KB)", output.display(), html.len() / 1024);
     Ok(())
 }
 

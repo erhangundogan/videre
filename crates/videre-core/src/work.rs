@@ -158,7 +158,7 @@ fn narrow_resolved<T>(
         // Said before the work, not after. A command that quietly processes a
         // fraction of the library is the truncation bug of 0.14.1 with a much
         // longer feedback loop.
-        eprintln!(
+        tracing::info!(
             "{} {} of {} pending item(s) ({})",
             words.gerund,
             items.len(),
@@ -193,7 +193,7 @@ pub fn with_work<T, R>(
     match work {
         Work::Nothing(msg) => {
             if !silent {
-                eprintln!("{msg}");
+                tracing::info!("{msg}");
             }
             Ok(None)
         }

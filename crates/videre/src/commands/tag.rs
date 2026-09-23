@@ -92,7 +92,7 @@ pub fn run(args: TagArgs, ctx: &CommandContext) -> Result<()> {
     };
     let total: i64 = conn.query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))?;
     if !args.silent {
-        eprintln!("Tagging {} of {} file(s)", hashes.len(), total);
+        tracing::info!("Tagging {} of {} file(s)", hashes.len(), total);
     }
     // Remove first, then add, so a value in both ends up present.
     if !remove.is_empty() {

@@ -612,7 +612,7 @@ fn open_prepared(ctx: &LibraryContext, conn: &Connection) -> Result<()> {
         // upgrade committed.
         let report = foreign_keys::upgrade_to_v2(conn)?;
         for line in report.stderr_lines() {
-            eprintln!("{line}");
+            tracing::info!("{line}");
         }
     }
     verify_schema(conn)?;

@@ -131,7 +131,7 @@ pub fn reconcile_xmp_in(
     silent: bool,
 ) -> Result<()> {
     if matches!(prec, XmpPrecedence::Newest) && !silent {
-        eprintln!("Warning: --xmp newest is not yet implemented; treating as db");
+        tracing::warn!("--xmp newest is not yet implemented; treating as db");
     }
     if !videre_core::db::table_exists(conn, "file_hashes")? {
         return Ok(());
@@ -170,7 +170,7 @@ pub fn reconcile_xmp_in(
         .filter(|w| w.action != ReconcileAction::Skip)
         .count();
     if !silent && todo > 0 {
-        eprintln!("Reading metadata for {todo} file(s)");
+        tracing::info!("Reading metadata for {todo} file(s)");
     }
     let progress = videre_core::progress::Progress::new_counting(todo as u64, silent, "files");
     for w in &work {

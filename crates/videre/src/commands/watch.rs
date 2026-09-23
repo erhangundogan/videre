@@ -88,7 +88,7 @@ pub fn run(mut args: WatchArgs, ctx: &CommandContext) -> Result<()> {
     match event_loop(&args, ctx) {
         Ok(()) => Ok(()),
         Err(e) => {
-            eprintln!(
+            tracing::warn!(
                 "videre watch: live events unavailable ({e:#}); rescanning every \
                  {FALLBACK_RESCAN_SECS}s. On Linux, raising fs.inotify.max_user_watches \
                  may restore live watching."
@@ -316,7 +316,7 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
         .watch(&ctx.library.paths.root, RecursiveMode::Recursive)
         .map_err(|e| anyhow::anyhow!("watch registration: {e}"))?;
     if !args.silent {
-        eprintln!(
+        tracing::info!(
             "videre watch: watching live (debounce {}ms)",
             debounce.as_millis()
         );
@@ -335,7 +335,7 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
     // while the scan ran retries them on the backoff, not on the hourly
     // maintenance pass.
     if !args.silent {
-        eprintln!("videre watch: startup scan");
+        tracing::info!("videre watch: startup scan");
     }
     // An incomplete startup reconcile (a stage was busy, the scan lock was
     // taken) is a debt: the loop retries it on the backoff exactly like a
@@ -438,7 +438,7 @@ fn drain_pending(
         return;
     }
     if ctx.library.ensure_root_identity().is_err() {
-        eprintln!("videre watch: library root changed; dropping batch");
+        tracing::info!("videre watch: library root changed; dropping batch");
         pending.clear();
         return;
     }
@@ -555,7 +555,9 @@ fn tracked_stage(
         Ok(guard) => guard,
         Err(_) => {
             if !silent {
-                eprintln!("videre watch: {command} stage busy (the library is in use); will retry");
+                tracing::info!(
+                    "videre watch: {command} stage busy (the library is in use); will retry"
+                );
             }
             return Ok(StageOutcome::Busy);
         }
@@ -567,7 +569,7 @@ fn tracked_stage(
         }
         Err(_) => {
             if !silent {
-                eprintln!(
+                tracing::info!(
                     "videre watch: {command} stage busy (a {lock} run is active); will retry"
                 );
             }
@@ -703,7 +705,7 @@ fn run_export_stage(
 ) -> Result<()> {
     let n = super::export::export_all_in(conn, ctx)?;
     if !args.silent {
-        eprintln!("videre watch: export stage wrote {n} sidecar(s)");
+        tracing::info!("videre watch: export stage wrote {n} sidecar(s)");
     }
     Ok(())
 }
@@ -728,7 +730,7 @@ fn run_prune_stage(
         || {
             let errors = super::prune::run_prune(&prune_args, &ctx.library, conn)?;
             if !args.silent && errors > 0 {
-                eprintln!("videre watch: prune stage finished with {errors} error(s)");
+                tracing::info!("videre watch: prune stage finished with {errors} error(s)");
             }
             Ok(())
         },
@@ -822,7 +824,7 @@ fn run_faces_stage(
                     workers,
                 )?;
                 if !args.silent {
-                    eprintln!(
+                    tracing::info!(
                         "videre watch: faces stage processed {} new hash(es), {} face(s)",
                         to_process.len(),
                         result.total_faces
@@ -866,7 +868,7 @@ fn run_recluster_stage(
         Ok(guard) => guard,
         Err(_) => {
             if !args.silent {
-                eprintln!("videre watch: face recluster stage busy; will retry");
+                tracing::info!("videre watch: face recluster stage busy; will retry");
             }
             return Ok(StageOutcome::Busy);
         }
@@ -884,7 +886,7 @@ fn run_recluster_stage(
             let watermark = videre_core::face_db::recluster_watermark(conn)?;
             if max_id <= watermark {
                 if !args.silent {
-                    eprintln!("videre watch: face recluster up to date");
+                    tracing::info!("videre watch: face recluster up to date");
                 }
                 return Ok(());
             }
@@ -902,7 +904,7 @@ fn run_recluster_stage(
             )?;
             videre_core::face_db::advance_recluster_watermark(conn)?;
             if !args.silent {
-                eprintln!(
+                tracing::info!(
                     "videre watch: {}",
                     format_clustering_only_summary(clustering, 0.6)
                 );
@@ -1008,9 +1010,11 @@ fn run_heic_stage(
     }
     if !args.silent && (converted > 0 || failed > 0) {
         if failed > 0 {
-            eprintln!("videre watch: heic stage cached {converted} thumbnail(s), {failed} failed");
+            tracing::warn!(
+                "videre watch: heic stage cached {converted} thumbnail(s), {failed} failed"
+            );
         } else {
-            eprintln!("videre watch: heic stage cached {converted} thumbnail(s)");
+            tracing::info!("videre watch: heic stage cached {converted} thumbnail(s)");
         }
     }
     Ok(())
@@ -1046,7 +1050,7 @@ fn run_location_stage(
         Ok(guard) => guard,
         Err(_) => {
             if !args.silent {
-                eprintln!("videre watch: location stage busy; will retry");
+                tracing::info!("videre watch: location stage busy; will retry");
             }
             return Ok(StageOutcome::Busy);
         }
@@ -1083,7 +1087,7 @@ fn run_location_stage(
                 }
             }
             if !args.silent && resolved > 0 {
-                eprintln!("videre watch: location stage resolved {resolved} coordinate(s)");
+                tracing::info!("videre watch: location stage resolved {resolved} coordinate(s)");
             }
             Ok(())
         },
@@ -1125,7 +1129,7 @@ fn run_locations_recluster_stage(
             if let Some(r) = stored_radius {
                 if (r - radius).abs() > f64::EPSILON {
                     if !args.silent {
-                        eprintln!(
+                        tracing::info!(
                             "videre watch: locations: manual radius {r}km in effect; \
                              the watcher leaves it alone"
                         );
@@ -1135,14 +1139,14 @@ fn run_locations_recluster_stage(
             }
             if stored_fp.as_deref() == Some(live.as_str()) {
                 if !args.silent {
-                    eprintln!("videre watch: locations up to date");
+                    tracing::info!("videre watch: locations up to date");
                 }
                 return Ok(());
             }
             // recompute_all records the fresh fingerprint and radius itself.
             location_cluster::recompute_all(conn, &ctx.library.cache, radius, args.silent)?;
             if !args.silent {
-                eprintln!("videre watch: location clusters rebuilt");
+                tracing::info!("videre watch: location clusters rebuilt");
             }
             Ok(())
         },
@@ -1206,7 +1210,7 @@ fn run_scan_stage(
                 base.into_iter().filter(|p| selection.accepts(p)).collect()
             };
             if !selection.is_empty() && !args.silent {
-                eprintln!(
+                tracing::info!(
                     "videre watch: scan stage considering {} of {} file(s) ({})",
                     paths.len(),
                     walked,
@@ -1239,7 +1243,7 @@ fn run_scan_stage(
                 records.iter().map(|r| r.path.clone()).collect();
             crate::xmp::reconcile_xmp_in(conn, &ctx.library, prec, &changed, args.silent)?;
             if !args.silent {
-                eprintln!("videre watch: scan stage wrote {} record(s)", records.len());
+                tracing::info!("videre watch: scan stage wrote {} record(s)", records.len());
             }
             Ok(())
         },
