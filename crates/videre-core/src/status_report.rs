@@ -301,16 +301,21 @@ pub struct StatusReport {
     pub costs: Vec<(&'static str, CostEstimate)>,
     /// The embedding model the coverage numbers were measured against.
     pub embed_model: String,
+    /// The latest run of each command, as its log records it.
+    pub logs: Vec<crate::error_log::CommandLogSummary>,
 }
 
 impl StatusReport {
-    /// True only when a pipeline run actually failed or crashed. Staleness
-    /// is informational and never a failure: a library mid-setup is healthy
-    /// (spec decision D5).
+    /// True only when a pipeline run actually failed or crashed, or the
+    /// latest run of some command logged an error. The latter catches runs
+    /// whose per-item failures leave the pipeline row at `success`. Warnings
+    /// and staleness are informational and never a failure: a library
+    /// mid-setup is healthy.
     pub fn has_problem(&self) -> bool {
         self.pipelines
             .iter()
             .any(|p| matches!(p.status.as_deref(), Some("failed") | Some("crashed")))
+            || self.logs.iter().any(|l| l.errors > 0)
     }
 }
 
@@ -324,6 +329,11 @@ pub fn compute_status_in(
     let coverage = coverage_in(conn, &embed_model, &embed_model)?;
     let pipelines = crate::pipeline_runs::read_all_in(conn, ctx)?;
     let watch = watch_liveness_in(conn, ctx)?;
+    // A log that cannot be read never breaks status: it reports what it can.
+    let logs = crate::error_log::latest_runs(ctx).unwrap_or_else(|e| {
+        tracing::debug!("could not read the command logs: {e:#}");
+        Vec::new()
+    });
     let costs = coverage
         .iter()
         .filter(|c| c.outstanding > 0)
@@ -344,6 +354,7 @@ pub fn compute_status_in(
         watch,
         costs,
         embed_model,
+        logs,
     })
 }
 

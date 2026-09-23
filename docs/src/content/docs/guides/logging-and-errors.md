@@ -45,6 +45,11 @@ What is recorded:
 - **A failed request in `videre gallery`** (anything that returned a server
   error) and **a failed tool call in `videre mcp`**.
 
+You rarely need to open the files first:
+[`videre status`](/commands/status/) shows the latest run of every command that
+logged errors or warnings, with its last error, and `videre status --check`
+exits non-zero when a latest run logged an error.
+
 ## Choosing what is kept
 
 ```bash

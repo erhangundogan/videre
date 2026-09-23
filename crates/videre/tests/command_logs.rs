@@ -122,6 +122,76 @@ fn a_later_clean_run_supersedes_an_earlier_failure() {
 }
 
 #[test]
+fn status_shows_the_latest_run_and_a_clean_run_clears_it() {
+    let lib = TestLibrary::new();
+    lib.scan();
+    let dir = logs(&lib);
+    std::fs::create_dir_all(&dir).unwrap();
+    let line = |run: &str, level: &str, msg: &str| {
+        format!(
+            r#"{{"timestamp":"2026-09-23T11:05:01Z","level":"{level}","fields":{{"message":"{msg}","kind":"source_unavailable","stage":"scan"}},"spans":[{{"command":"watch","run":"{run}","name":"run"}}]}}"#
+        )
+    };
+    std::fs::write(
+        dir.join("watch.log"),
+        [
+            line(
+                "R1",
+                "ERROR",
+                "videre watch: scan stage: /Volumes/Arşiv/Çağla.jpg timed out",
+            ),
+            line("R1", "WARN", "skipping /Volumes/Arşiv/b.jpg"),
+        ]
+        .join("\n")
+            + "\n",
+    )
+    .unwrap();
+
+    let out = lib.cmd().args(["status", "--check"]).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Recent problems"), "{text}");
+    assert!(text.contains("watch"), "{text}");
+    assert!(text.contains("1 error(s) (scan 1), 1 warning(s)"), "{text}");
+    assert!(
+        text.contains("last: source_unavailable: videre watch: scan stage: /Volumes/Arşiv/Çağla.jpg timed out"),
+        "{text}"
+    );
+    assert!(
+        !out.status.success(),
+        "a latest run with errors is a problem"
+    );
+
+    let json = lib.cmd().args(["status", "--json"]).output().unwrap();
+    let doc: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let watch = doc["report"]["logs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["command"] == "watch")
+        .unwrap_or_else(|| panic!("no watch entry: {doc}"));
+    assert_eq!(watch["errors"], 1);
+    assert_eq!(watch["warnings"], 1);
+
+    // A genuinely clean later run of the same command clears it: one real
+    // watch cycle (the test-only bounded mode) with nothing to report.
+    let clean = lib
+        .cmd()
+        .args(["watch", "--silent", "--scan"])
+        .env("VIDERE_WATCH_ONCE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        clean.status.success(),
+        "{}",
+        String::from_utf8_lossy(&clean.stderr)
+    );
+    let out = lib.cmd().args(["status", "--check"]).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{text}");
+    assert!(!text.contains("Recent problems"), "{text}");
+}
+
+#[test]
 fn reading_an_uninitialized_library_creates_nothing() {
     let lib = TestLibrary::new();
     let _ = lib.cmd().arg("stats").output().unwrap();

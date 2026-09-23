@@ -10,9 +10,10 @@ pub struct StatusArgs {
 
     /// Exit non-zero if any tracked command's last run is "failed" or
     /// "crashed" (a running row whose lock is no longer held by a live
-    /// process). Staleness is deliberately never a failure: a library that
-    /// has not embedded anything yet is mid-setup, not broken. Output is
-    /// unchanged either way.
+    /// process), or the latest run of any command logged an error.
+    /// Warnings and staleness are deliberately never a failure: a library
+    /// that has not embedded anything yet is mid-setup, not broken. Output
+    /// is unchanged either way.
     #[arg(long)]
     check: bool,
 }
@@ -119,6 +120,7 @@ fn run_text(args: &StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
 
     println!();
     print_watch(&report.watch);
+    print_recent_problems(&report.logs);
 
     println!();
     println!("Next actions:");
@@ -156,6 +158,43 @@ fn run_text(args: &StatusArgs, ctx: &CommandContext) -> anyhow::Result<()> {
         return Err(crate::exit::Exit::code(1).into());
     }
     Ok(())
+}
+
+/// The latest run of each command that logged errors or warnings, with the
+/// last error. Nothing is printed when every latest run was clean.
+fn print_recent_problems(logs: &[videre_core::error_log::CommandLogSummary]) {
+    let problems: Vec<_> = logs.iter().filter(|l| l.errors + l.warnings > 0).collect();
+    if problems.is_empty() {
+        return;
+    }
+    println!();
+    println!("Recent problems (latest run of each command, see .videre/logs/):");
+    for l in problems {
+        let stages: Vec<String> = l
+            .by_stage
+            .iter()
+            .filter(|(_, (errors, _))| *errors > 0)
+            .map(|(stage, (errors, _))| format!("{stage} {errors}"))
+            .collect();
+        let stages = if stages.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", stages.join(", "))
+        };
+        println!(
+            "  {:10} {} error(s){}, {} warning(s)",
+            l.command, l.errors, stages, l.warnings
+        );
+        if let Some(last) = &l.last_error {
+            let kind = last
+                .kind
+                .as_deref()
+                .map(|k| format!("{k}: "))
+                .unwrap_or_default();
+            let first_line = last.message.lines().next().unwrap_or_default();
+            println!("             last: {kind}{first_line}");
+        }
+    }
 }
 
 fn print_watch(watch: &videre_core::status_report::WatchLiveness) {
