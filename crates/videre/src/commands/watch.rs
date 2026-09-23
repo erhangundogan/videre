@@ -642,10 +642,11 @@ fn reconcile(args: &WatchArgs, ctx: &CommandContext) -> Result<ReconcileOutcome>
         {
             complete = false;
         }
-        if args.heic {
-            // A HEIC cache failure costs previews only; the location, prune
-            // and export stages still run, as they do for an event batch.
-            stage("heic", "heic stage", || run_heic_stage(args, ctx, &conn));
+        // A HEIC cache failure costs previews only, so the location, prune and
+        // export stages still run; but the cycle is incomplete, so the caller
+        // owes a retry instead of treating the work as done.
+        if args.heic && stage("heic", "heic stage", || run_heic_stage(args, ctx, &conn)).is_none() {
+            complete = false;
         }
         if args.location {
             if stage("locations", "location stage", || {
