@@ -162,6 +162,68 @@ impl fmt::Display for TrainingError {
 }
 impl std::error::Error for TrainingError {}
 
+impl TrainingError {
+    /// For a run that stopped only because the feedback is too thin, what
+    /// the People page should ask for, in words shown as is. `None` for a
+    /// real failure.
+    pub fn feedback_needed(&self, config: &TrainingConfig) -> Option<String> {
+        fn more(count: usize, one: &str, many: &str) -> String {
+            format!("{count} more {}", if count == 1 { one } else { many })
+        }
+        match self {
+            Self::InsufficientEvidence {
+                decision_kind,
+                positive_identities,
+                negative_identities,
+            } => {
+                let positives = config
+                    .min_positive_identities
+                    .saturating_sub(*positive_identities);
+                let named = |count: usize| {
+                    format!(
+                        "name {} with at least two faces",
+                        more(count, "person", "people")
+                    )
+                };
+                match decision_kind {
+                    // Only a dissolved cluster says "these faces are not one
+                    // person"; confirmed labels are all positive.
+                    LearningDecisionKind::ClusterQuality => {
+                        let negatives = config
+                            .min_negative_identities
+                            .saturating_sub(*negative_identities);
+                        let mut asks = Vec::new();
+                        if positives > 0 {
+                            asks.push(named(positives));
+                        }
+                        if negatives > 0 {
+                            asks.push(format!(
+                                "dissolve {}",
+                                more(negatives, "wrong cluster", "wrong clusters")
+                            ));
+                        }
+                        Some(asks.join(" and ")).filter(|ask| !ask.is_empty())
+                    }
+                    // A "different people" pair comes from any two named
+                    // people, so the people already named count toward it,
+                    // and naming more people is the one ask for both sides.
+                    LearningDecisionKind::Membership => {
+                        let negatives = config
+                            .min_negative_identities
+                            .saturating_sub((*negative_identities).max(*positive_identities));
+                        Some(named(positives.max(negatives).max(1)))
+                    }
+                }
+            }
+            Self::TooFewIdentities { identities, folds } => Some(format!(
+                "name {}",
+                more(folds.saturating_sub(*identities).max(1), "person", "people")
+            )),
+            _ => None,
+        }
+    }
+}
+
 /// Total order over feature vectors: schema version first, then the maps'
 /// entries in key order with `total_cmp` on values, which also handles NaN.
 fn compare_feature_values(left: &FeatureVector, right: &FeatureVector) -> std::cmp::Ordering {
@@ -1827,6 +1889,49 @@ mod tests {
             "calibration must be fitted from held-out logits"
         );
         assert!((0.0..=1.0).contains(&scorer.threshold));
+    }
+
+    #[test]
+    fn too_little_evidence_names_the_feedback_that_would_help() {
+        let asked = |decision_kind, positive_identities, negative_identities| {
+            TrainingError::InsufficientEvidence {
+                decision_kind,
+                positive_identities,
+                negative_identities,
+            }
+            .feedback_needed(&config())
+        };
+        assert_eq!(
+            asked(LearningDecisionKind::ClusterQuality, 14, 0).as_deref(),
+            Some("dissolve 2 more wrong clusters")
+        );
+        assert_eq!(
+            asked(LearningDecisionKind::ClusterQuality, 1, 1).as_deref(),
+            Some("name 1 more person with at least two faces and dissolve 1 more wrong cluster")
+        );
+        assert_eq!(
+            asked(LearningDecisionKind::Membership, 1, 0).as_deref(),
+            Some("name 1 more person with at least two faces"),
+            "the person already named pairs with the next one"
+        );
+        assert_eq!(
+            asked(LearningDecisionKind::Membership, 0, 0).as_deref(),
+            Some("name 2 more people with at least two faces")
+        );
+        assert_eq!(
+            TrainingError::TooFewIdentities {
+                identities: 1,
+                folds: 3
+            }
+            .feedback_needed(&config())
+            .as_deref(),
+            Some("name 2 more people")
+        );
+        assert_eq!(
+            TrainingError::NonConvergence.feedback_needed(&config()),
+            None,
+            "a real failure is not a request for feedback"
+        );
     }
 
     #[test]

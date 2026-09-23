@@ -160,6 +160,9 @@ pub enum LearningStatus {
     Stale,
     Training,
     Failed,
+    /// The last run found too little feedback to train on. Not a failure:
+    /// the generation counts as evaluated, and the next feedback retries.
+    Waiting,
 }
 
 impl LearningStatus {
@@ -169,6 +172,7 @@ impl LearningStatus {
             "stale" => Ok(Self::Stale),
             "training" => Ok(Self::Training),
             "failed" => Ok(Self::Failed),
+            "waiting" => Ok(Self::Waiting),
             other => Err(LearningEventError::InvalidStoredValue(format!(
                 "unknown learning status {other}"
             ))),
@@ -945,6 +949,40 @@ pub fn mark_training_failed(
     raw_learning_state(conn)
 }
 
+/// Record that `generation` could not be trained because the feedback so far
+/// is too thin, with `needed` saying what would change that. Unlike a failure
+/// the generation is marked evaluated, so a restart does not retrain it; the
+/// next feedback advances the generation and makes the state stale again.
+pub fn mark_training_waiting(
+    conn: &Connection,
+    generation: u64,
+    needed: &str,
+) -> Result<LearningState, LearningEventError> {
+    if needed.trim().is_empty() {
+        return Err(LearningEventError::StateConflict(
+            "the feedback needed is empty".to_owned(),
+        ));
+    }
+    let generation = i64::try_from(generation).map_err(|_| {
+        LearningEventError::StateConflict("training generation is out of range".to_owned())
+    })?;
+    let changed = conn.execute(
+        "UPDATE face_learning_state
+         SET trained_generation = ?1,
+             status = CASE WHEN generation = ?1 THEN 'waiting' ELSE 'stale' END,
+             training_generation = NULL,
+             last_error = CASE WHEN generation = ?1 THEN ?2 ELSE NULL END
+         WHERE id = 1 AND status = 'training' AND training_generation = ?1",
+        params![generation, needed],
+    )?;
+    if changed != 1 {
+        return Err(LearningEventError::StateConflict(format!(
+            "generation {generation} is not training"
+        )));
+    }
+    raw_learning_state(conn)
+}
+
 pub fn mark_generation_trained(
     conn: &Connection,
     generation: u64,
@@ -1320,6 +1358,45 @@ mod tests {
         assert_eq!(current.status, LearningStatus::Current);
         assert_eq!(current.trained_generation, 2);
         assert_eq!(current.last_profile_id, Some(43));
+    }
+
+    #[test]
+    fn waiting_marks_the_generation_evaluated_and_new_feedback_retries() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_learning_tables(&conn).unwrap();
+        append_committed(&conn, &[event(LearningAction::AssignFace)]);
+        mark_training_started(&conn).unwrap();
+        assert!(mark_training_waiting(&conn, 1, " ").is_err());
+        let waiting = mark_training_waiting(&conn, 1, "dissolve 2 more wrong clusters").unwrap();
+        assert_eq!(waiting.status, LearningStatus::Waiting);
+        assert_eq!(waiting.trained_generation, 1);
+        assert_eq!(waiting.training_generation, None);
+        assert_eq!(
+            waiting.last_error.as_deref(),
+            Some("dissolve 2 more wrong clusters")
+        );
+        assert!(
+            mark_training_started(&conn).is_err(),
+            "nothing new to train until feedback arrives"
+        );
+        assert!(mark_training_waiting(&conn, 1, "again").is_err());
+
+        append_committed(&conn, &[event(LearningAction::DissolveCluster)]);
+        let stale = learning_state(&conn).unwrap();
+        assert_eq!(stale.status, LearningStatus::Stale);
+        assert_eq!(stale.last_error, None);
+        assert_eq!(
+            mark_training_started(&conn).unwrap().training_generation,
+            Some(2)
+        );
+
+        // Feedback during the run: the evaluated generation is behind, so
+        // the state is stale, not waiting, and carries no stale ask.
+        append_committed(&conn, &[event(LearningAction::AssignFace)]);
+        let behind = mark_training_waiting(&conn, 2, "dissolve 1 more wrong cluster").unwrap();
+        assert_eq!(behind.status, LearningStatus::Stale);
+        assert_eq!(behind.trained_generation, 2);
+        assert_eq!(behind.last_error, None);
     }
 
     #[test]

@@ -1063,13 +1063,17 @@ pub fn face_learning_status(conn: &Connection) -> Result<FaceLearningStatus> {
         }
         None => None,
     };
+    let waiting = state.status == videre_core::face_learning::LearningStatus::Waiting;
     Ok(FaceLearningStatus {
         generation: state.generation,
         trained_generation: state.trained_generation,
         status: format!("{:?}", state.status).to_lowercase(),
         last_profile_id: state.last_profile_id,
         last_candidate,
-        last_error: state.last_error,
+        // A waiting state stores what it needs in the same column a failure
+        // stores its error in; the API names the two apart.
+        last_error: state.last_error.clone().filter(|_| !waiting),
+        feedback_needed: state.last_error.filter(|_| waiting),
         pending_questions: pending_questions as usize,
     })
 }

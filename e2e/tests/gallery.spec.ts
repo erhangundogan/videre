@@ -243,9 +243,31 @@ test("face learning strip renders on the labeling route", async ({ page, gallery
   await expect(strip).toBeVisible();
   await expect(strip).toHaveAttribute(
     "data-learning-status",
-    /current|stale|training|failed/
+    /current|stale|training|failed|waiting/
   );
   // No profile has ever been trained in this library, so no question may
   // promise itself into existence.
   await expect(page.locator("#question-card")).toBeHidden();
+});
+
+test("face learning strip says what feedback it is waiting for", async ({ page, gallery }) => {
+  await page.route("**/api/face-learning/status", (route) =>
+    route.fulfill({
+      json: {
+        generation: 6,
+        trained_generation: 6,
+        status: "waiting",
+        last_profile_id: null,
+        last_candidate: null,
+        last_error: null,
+        feedback_needed: "dissolve 2 more wrong clusters",
+        pending_questions: 0,
+      },
+    })
+  );
+  await page.goto(`${gallery.baseURL}/people`);
+  await expect(page.locator("#learning-strip")).toHaveAttribute("data-learning-status", "waiting");
+  await expect(page.locator("#learning-status-text")).toHaveText(
+    "Learning: waiting for more feedback: dissolve 2 more wrong clusters"
+  );
 });

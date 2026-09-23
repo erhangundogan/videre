@@ -162,9 +162,14 @@ shipped gates, the People page asks bounded yes/no identity questions.
 Answering Yes names a cluster; No only teaches; Skip does neither.
 
 - Status is machine-readable at `GET /api/face-learning/status`; the page
-  shows it as up to date, feedback pending, training, or failed. When up to
-  date, it also says whether the last trained candidate was promoted to the
-  profile in use or rejected by the quality gates.
+  shows it as up to date, feedback pending, training, waiting for more
+  feedback, or failed. When up to date, it also says whether the last trained
+  candidate was promoted to the profile in use or rejected by the quality
+  gates.
+- Training needs both kinds of feedback: faces that belong together (naming
+  people) and groups that are wrong (dissolving a cluster). Until there is
+  enough of each, the page shows what it is waiting for, such as *dissolve 2
+  more wrong clusters*, rather than a failure.
 - Every action's evidence stays inspectable (per person, and in the teaching
   journal), and no raw embeddings ever appear in a payload.
 - Failed runs keep the previous profile. Promotion affects suggestions and

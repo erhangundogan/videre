@@ -564,13 +564,21 @@ curl "http://127.0.0.1:7878/api/face-learning/status"
   "last_profile_id": 1,
   "last_candidate": "promoted",
   "last_error": null,
+  "feedback_needed": null,
   "pending_questions": 2
 }
 ```
 
 `status` is one of `current`, `stale` (feedback has arrived since the
-last run), `training`, or `failed` (the last run failed; the active
-profile stays as it is and `last_error` says why).
+last run), `training`, `waiting`, or `failed` (the last run failed; the
+active profile stays as it is and `last_error` says why).
+
+`waiting` means the last run found too little feedback to train on, which
+is normal in a young library and not an error. `feedback_needed` says what
+would change that, for example `dissolve 2 more wrong clusters`: naming
+people only ever says which faces belong together, so the gallery also needs
+a few dissolved clusters before it can learn what a wrong group looks like.
+The next teaching action trains again.
 
 `last_candidate` says what became of the last trained candidate:
 `promoted` (it passed the quality gates and is the profile in use),

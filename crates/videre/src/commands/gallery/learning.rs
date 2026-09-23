@@ -6,7 +6,9 @@
 //! loads the immutable training snapshot under the connection lock, releases
 //! the lock for the CPU-bound fit, then relocks to persist, promote, and
 //! refresh the pending questions. A failed cycle preserves the prior active
-//! profile and marks the learning state failed for a later retry.
+//! profile and marks the learning state failed for a later retry. A cycle
+//! that finds too little feedback to train on is not a failure: it marks the
+//! state waiting, with what the People page should ask for.
 
 use super::server::poisoned;
 use axum::extract::State;
@@ -18,8 +20,8 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use videre_core::face_learning::{
     ensure_learning_tables, learning_state, mark_generation_trained, mark_training_failed,
-    mark_training_started, QuestionSelectionConfig, TrainingConfig, TrainingError, TrainingRun,
-    TrainingSnapshot,
+    mark_training_started, mark_training_waiting, QuestionSelectionConfig, TrainingConfig,
+    TrainingError, TrainingRun, TrainingSnapshot,
 };
 
 use super::server::{api_status, AppState};
@@ -145,9 +147,8 @@ fn prepare_training(conn: &Connection, deps: &LearningDeps) -> Result<Option<Pre
         let _ = mark_training_failed(conn, state.generation, &error.to_string());
     })?;
     let generation = state.generation;
-    let snapshot = load_snapshot(conn, deps, generation).map_err(|error| {
-        let _ = mark_training_failed(conn, generation, &error);
-    })?;
+    let snapshot = load_snapshot(conn, deps, generation)
+        .map_err(|error| record_failure(conn, generation, &error))?;
     Ok(Some(PreparedCycle {
         generation,
         snapshot,
@@ -214,18 +215,29 @@ async fn run_cycle(deps: &LearningDeps) {
     let conn = deps.conn.lock().expect("learning connection poisoned");
     match trained {
         Ok(Ok(run)) => match persist_training(&conn, deps, generation, &run) {
-            Ok(_profile_id) => {}
-            Err(error) => {
-                let _ = mark_training_failed(&conn, generation, &error);
+            Ok(profile_id) => {
+                tracing::debug!(generation, profile_id, "face learning: trained");
             }
+            Err(error) => record_failure(&conn, generation, &error),
         },
-        Ok(Err(error)) => {
-            let _ = mark_training_failed(&conn, generation, &error.to_string());
-        }
-        Err(join_error) => {
-            let _ = mark_training_failed(&conn, generation, &join_error.to_string());
-        }
+        Ok(Err(error)) => match error.feedback_needed(&deps.config) {
+            // Too little feedback yet is the normal state of a young library,
+            // not a failure: the page asks for what is missing.
+            Some(needed) => {
+                tracing::debug!(generation, %error, "face learning: waiting for feedback: {needed}");
+                let _ = mark_training_waiting(&conn, generation, &needed);
+            }
+            None => record_failure(&conn, generation, &error.to_string()),
+        },
+        Err(join_error) => record_failure(&conn, generation, &join_error.to_string()),
     }
+}
+
+/// A training run that really failed: kept in the state for the page, and
+/// logged, since the previous profile silently stays in use.
+fn record_failure(conn: &Connection, generation: u64, error: &str) {
+    tracing::warn!("face learning: training generation {generation} failed: {error}");
+    let _ = mark_training_failed(conn, generation, error);
 }
 
 /// GET /api/face-learning/status
@@ -734,6 +746,90 @@ mod tests {
             )
             .unwrap();
         assert_eq!(active, 1);
+    }
+
+    async fn wait_for_status(conn: &Arc<Mutex<Connection>>, wanted: &str) {
+        for _ in 0..2000 {
+            if learning_status(&conn.lock().unwrap()).2 == wanted {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn too_little_feedback_waits_instead_of_failing() {
+        let conn = library();
+        make_generation_pending(&conn.lock().unwrap());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let trainer = move |_: &TrainingSnapshot,
+                            _: &TrainingConfig,
+                            _: &videre_core::face_learning::PromotionGates| {
+            if counter.fetch_add(1, AtomicOrdering::SeqCst) == 0 {
+                // Only confirmed labels so far: no dissolved cluster yet.
+                Err(TrainingError::InsufficientEvidence {
+                    decision_kind: videre_core::face_learning::LearningDecisionKind::ClusterQuality,
+                    positive_identities: 14,
+                    negative_identities: 0,
+                })
+            } else {
+                Ok(stub_run())
+            }
+        };
+        let trainer = Arc::new(trainer);
+        let first = trainer.clone();
+        let coordinator = spawn_with(
+            make_deps(conn.clone(), move |s, c, g| first(s, c, g)),
+            Duration::from_millis(20),
+        );
+        coordinator.notify();
+        wait_for_status(&conn, "waiting").await;
+        {
+            let conn = conn.lock().unwrap();
+            let (generation, trained_generation, status) = learning_status(&conn);
+            assert_eq!(status, "waiting", "missing feedback is not a failure");
+            assert_eq!(
+                trained_generation, generation,
+                "the generation was fully evaluated, so a restart must not retrain it"
+            );
+            let reported = videre_api::face_learning_status(&conn).unwrap();
+            assert_eq!(reported.status, "waiting");
+            assert_eq!(
+                reported.feedback_needed.as_deref(),
+                Some("dissolve 2 more wrong clusters")
+            );
+            assert_eq!(reported.last_error, None);
+        }
+        coordinator.shutdown();
+
+        // A restarted server finds nothing to train.
+        let second = trainer.clone();
+        let restarted = spawn_with(
+            make_deps(conn.clone(), move |s, c, g| second(s, c, g)),
+            Duration::from_millis(20),
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
+
+        // New feedback trains again.
+        conn.lock()
+            .unwrap()
+            .execute(
+                "UPDATE face_learning_state SET generation = 2, status = 'stale', last_error = NULL",
+                [],
+            )
+            .unwrap();
+        restarted.notify();
+        wait_for_status(&conn, "current").await;
+        let conn = conn.lock().unwrap();
+        assert_eq!(learning_status(&conn), (2, 2, "current".to_string()));
+        assert_eq!(
+            videre_api::face_learning_status(&conn)
+                .unwrap()
+                .feedback_needed,
+            None
+        );
     }
 
     #[tokio::test]
