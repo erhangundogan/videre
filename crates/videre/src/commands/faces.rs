@@ -512,7 +512,7 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
     }
 
     if outcome.write_errors > 0 || outcome.detect_errors > 0 {
-        std::process::exit(1);
+        return Err(crate::exit::Exit::code(1).into());
     }
     Ok(())
 }

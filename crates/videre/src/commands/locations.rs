@@ -85,7 +85,7 @@ pub fn run(args: LocationsArgs, ctx: &CommandContext) -> Result<()> {
             }
             Err(e) => {
                 println!("{}", serde_json::to_string(&ErrorJson::from_err(&e))?);
-                std::process::exit(1);
+                Err(crate::exit::Exit::shown(e).into())
             }
         }
     } else if args.geojson {

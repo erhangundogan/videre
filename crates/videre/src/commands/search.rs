@@ -200,9 +200,9 @@ pub fn run(args: SearchArgs, ctx: &CommandContext) -> Result<()> {
             }
             Err(e) => {
                 // stdout must always carry exactly one valid JSON object; the
-                // error goes here (not stderr) and we exit before main's eprintln.
+                // error goes here, and main logs it without repeating it on stderr.
                 println!("{}", serde_json::to_string(&ErrorJson::from_err(&e))?);
-                std::process::exit(1);
+                Err(crate::exit::Exit::shown(e).into())
             }
         }
     } else {

@@ -57,7 +57,7 @@ pub fn run(args: FixDatesArgs, ctx: &CommandContext) -> anyhow::Result<()> {
         })?;
 
     if errors > 0 {
-        std::process::exit(1);
+        return Err(crate::exit::Exit::code(1).into());
     }
 
     Ok(())

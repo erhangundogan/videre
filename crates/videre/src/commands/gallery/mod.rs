@@ -38,8 +38,7 @@ pub struct GalleryArgs {
 // place so C8 only flips the dispatch arm.
 pub fn run(args: GalleryArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     if !ctx.library.paths.db.exists() {
-        eprintln!("Error: {:?} does not exist", ctx.library.paths.db);
-        std::process::exit(1);
+        anyhow::bail!("{:?} does not exist", ctx.library.paths.db);
     }
     // The server's long-lived connection is opened by the generic WAL
     // helper; run the versioned library preparation under its own upgrade

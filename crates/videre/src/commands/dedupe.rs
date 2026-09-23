@@ -1,5 +1,4 @@
 use crate::command_context::CommandContext;
-use std::process;
 use videre::types::ErrorJson;
 
 #[derive(clap::Args)]
@@ -72,7 +71,7 @@ pub fn run(args: DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
             }
             Err(e) => {
                 println!("{}", serde_json::to_string(&ErrorJson::from_err(&e))?);
-                process::exit(1);
+                Err(crate::exit::Exit::shown(e).into())
             }
         }
     } else {
@@ -112,27 +111,18 @@ fn write_html(
 fn run_text(args: DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     let conn = match videre_core::library_db::open_existing(&ctx.library) {
         Ok(c) => c,
-        Err(e) => {
-            eprintln!("Error: {e:#}");
-            process::exit(1);
-        }
+        Err(e) => return Err(e),
     };
     let activity = match videre_core::library_locks::try_activity(
         &ctx.library,
         videre_core::library_locks::ActivityMode::Shared,
     ) {
         Ok(g) => g,
-        Err(e) => {
-            eprintln!("Error: {e:#}");
-            process::exit(1);
-        }
+        Err(e) => return Err(e),
     };
     let guard = match videre_core::library_locks::try_command(&ctx.library, "dedupe") {
         Ok(g) => g,
-        Err(e) => {
-            eprintln!("Error: {e:#}");
-            process::exit(1);
-        }
+        Err(e) => return Err(e),
     };
 
     let moved =
@@ -144,10 +134,7 @@ fn run_text(args: DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
             }
         }) {
             Ok(moved) => moved,
-            Err(e) => {
-                eprintln!("Error: {e:#}");
-                process::exit(1);
-            }
+            Err(e) => return Err(e),
         };
 
     // `--remove` trashed duplicate copies, and their database rows now
@@ -175,10 +162,7 @@ fn run_text(args: DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     }
 
     if let Some(arg) = args.html.as_ref() {
-        if let Err(e) = write_html(ctx, &conn, arg.as_deref()) {
-            eprintln!("Error: {e:#}");
-            process::exit(1);
-        }
+        write_html(ctx, &conn, arg.as_deref())?;
     }
     Ok(())
 }

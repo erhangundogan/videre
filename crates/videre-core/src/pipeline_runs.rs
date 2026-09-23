@@ -371,6 +371,7 @@ pub fn install_sigint_handler_in(
                 let _ = finish_run(&conn, command, "interrupted", duration_ms, None);
             }
         }
+        crate::shutdown::flush();
         std::process::exit(130);
     })
     .context("installing SIGINT handler")?;

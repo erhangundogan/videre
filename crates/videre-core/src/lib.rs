@@ -39,6 +39,7 @@ pub mod progress;
 pub mod query;
 pub mod selection;
 pub mod semaphore;
+pub mod shutdown;
 pub mod status_report;
 pub mod tags;
 pub mod thumb_cache;
