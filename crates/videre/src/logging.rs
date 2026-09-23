@@ -12,7 +12,9 @@ use std::io::Write;
 use std::path::Path;
 use tracing::Level;
 use tracing_subscriber::{filter, fmt, layer::SubscriberExt, Layer};
-use videre_core::error_log::{primary_log_name, trace_log_name, FILE_ONLY_TARGET};
+use videre_core::error_log::{
+    primary_log_name, trace_log_name, FILE_ONLY_TARGET, RUN_MARKER_TARGET,
+};
 use videre_core::library_config::{LibraryConfig, LogFormat, LogLevel};
 
 type Boxed = Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync>;
@@ -111,10 +113,11 @@ fn file_writer(
 }
 
 fn file_layer(format: LogFormat, writer: Writer, max: Level) -> Boxed {
-    // Spans always pass so their fields (command, run, stage) reach the file;
-    // events pass at or above `max`.
+    // Spans always pass so their fields (command, run, stage) reach the file,
+    // and so does the run's start marker; other events pass at or above `max`.
     let keep = filter::filter_fn(move |meta| {
-        videre_only(meta) && (meta.is_span() || *meta.level() <= max)
+        videre_only(meta)
+            && (meta.is_span() || meta.target() == RUN_MARKER_TARGET || *meta.level() <= max)
     });
     match format {
         LogFormat::Json => fmt::layer()
@@ -198,6 +201,7 @@ fn terminal_layer() -> Boxed {
         .with_filter(filter::filter_fn(|meta| {
             videre_only(meta)
                 && meta.target() != FILE_ONLY_TARGET
+                && meta.target() != RUN_MARKER_TARGET
                 && (meta.is_span() || *meta.level() <= Level::INFO)
         }))
         .boxed()
@@ -216,13 +220,13 @@ pub fn build(
     let mut counters = Vec::new();
     if let Some(dir) = dir {
         videre_core::error_log::sweep_expired(dir, command, settings);
-        // The primary file is errors and warnings whatever the level; a
-        // chatty level must never rotate them out of retention.
-        let primary_max = to_level(settings.log_level.min(LogLevel::Warn));
+        // The primary file always keeps errors and warnings, whatever the
+        // level: it is the record status reads, and a chatty level must never
+        // rotate them out of retention, nor a quiet one leave them out.
         if let Some((w, g)) = file_writer(&dir.join(primary_log_name(command)), settings) {
             counters.push(w.error_counter());
             workers.push(g);
-            layers.push(file_layer(settings.log_format, w, primary_max));
+            layers.push(file_layer(settings.log_format, w, Level::WARN));
         }
         if settings.log_level >= LogLevel::Info {
             if let Some((w, g)) = file_writer(&dir.join(trace_log_name(command)), settings) {
@@ -292,9 +296,16 @@ pub fn install(ctx: &videre_core::library::LibraryContext, command: &str) -> Ins
         *slot = Some(guard);
     }
     videre_core::shutdown::set_flush_hook(flush_installed);
+    mark_run_start();
     Installed {
         entered: Some(entered),
     }
+}
+
+/// The one primary-log line every run writes, inside its run span, so a clean
+/// run supersedes an older failed one when the latest run is read back.
+fn mark_run_start() {
+    tracing::info!(target: "videre::run", "run started");
 }
 
 /// Before a library exists there is nowhere to write a file: terminal only.
@@ -339,6 +350,26 @@ mod tests {
             serde_json::from_str(primary.lines().next().unwrap()).unwrap();
         assert_eq!(line["spans"][0]["command"], "scan");
         assert_eq!(line["spans"][0]["run"], RUN);
+    }
+
+    #[test]
+    fn error_level_still_keeps_warnings_in_the_primary_file() {
+        let settings = LibraryConfig {
+            log_level: LogLevel::Error,
+            ..LibraryConfig::default()
+        };
+        let dir = run_with(&settings, || tracing::warn!("skipping: unreadable"));
+        assert!(read(dir.path(), "scan.log").contains("skipping: unreadable"));
+        assert!(!dir.path().join("scan.trace.log").exists());
+    }
+
+    #[test]
+    fn a_clean_run_leaves_a_start_marker_in_the_primary_file() {
+        let dir = run_with(&LibraryConfig::default(), mark_run_start);
+        let text = read(dir.path(), "scan.log");
+        let line = videre_core::error_log::parse_line(text.lines().next().unwrap()).unwrap();
+        assert_eq!(line.level, videre_core::error_log::LineLevel::Info);
+        assert_eq!(line.run.as_deref(), Some(RUN));
     }
 
     #[test]

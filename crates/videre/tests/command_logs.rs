@@ -54,6 +54,31 @@ fn a_json_error_on_stdout_is_logged_but_not_repeated_on_stderr() {
 }
 
 #[test]
+fn a_later_clean_run_supersedes_an_earlier_failure() {
+    let lib = TestLibrary::new();
+    lib.scan();
+    let failed = lib
+        .cmd()
+        .args(["config", "set", "log-format", "xml"])
+        .output()
+        .unwrap();
+    assert!(!failed.status.success());
+    let runs = videre_core::error_log::latest_runs(&lib.context()).unwrap();
+    let config = runs.iter().find(|r| r.command == "config").unwrap();
+    assert_eq!(config.errors, 1);
+
+    let clean = lib.cmd().arg("config").output().unwrap();
+    assert!(clean.status.success());
+    let runs = videre_core::error_log::latest_runs(&lib.context()).unwrap();
+    let config = runs.iter().find(|r| r.command == "config").unwrap();
+    assert_eq!(
+        (config.errors, config.warnings),
+        (0, 0),
+        "the clean run is the latest one: {config:?}"
+    );
+}
+
+#[test]
 fn reading_an_uninitialized_library_creates_nothing() {
     let lib = TestLibrary::new();
     let _ = lib.cmd().arg("stats").output().unwrap();

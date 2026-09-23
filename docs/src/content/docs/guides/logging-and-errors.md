@@ -18,9 +18,12 @@ answer "what went wrong" afterwards.
   scan.log.1          # an older, rotated file
 ```
 
-Each file belongs to the command you ran, and is created the first time that
-command runs in the library; an empty file means nothing went wrong.
-`<command>.log` always holds that command's errors and warnings.
+Each file belongs to the command you ran. Every run writes one `run started`
+line to it, then its errors and warnings: a run with nothing but that line went
+cleanly, and it supersedes an older failed run when
+[`videre status`](/commands/status/) reads the latest one.
+`<command>.log` always holds that command's errors and warnings, whatever
+`log-level` says.
 `<command>.trace.log` exists only when you raise
 `log-level` to `info` or `debug`, and holds every line at that level, errors
 included, so the detail around a failure stays in one place. Detailed logging
@@ -42,7 +45,9 @@ videre config set log-max-age-days 7  # delete rotated files older than this (de
 ```
 
 The settings belong to the library, in its `.videre/config.toml`. They control
-the files only: what the terminal shows never changes.
+the files only: what the terminal shows never changes. `log-level` decides the
+trace file: `info` and `debug` create it, while `error` and `warn` leave only
+the primary file, which always keeps both errors and warnings.
 
 When a file reaches `log-max-size-mb` it is renamed to `.1` (the previous `.1`
 becomes `.2`, and so on) and a new file starts. At most `log-keep` rotated files

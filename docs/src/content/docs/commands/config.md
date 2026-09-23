@@ -78,7 +78,7 @@ are responsible for initializing a library database.
 | `xmp` | `xmp_precedence` | `db`, `file`, or `newest` |
 | `export-xmp-on-watch` | `export_xmp_on_watch` | `true` or `false` |
 | `watch-debounce-ms` | `watch_debounce_ms` | A positive whole number of milliseconds |
-| `log-level` | `log_level` | `error`, `warn` (default), `info`, or `debug` |
+| `log-level` | `log_level` | `error`, `warn` (default), `info`, or `debug`; `info` and `debug` add a trace file |
 | `log-format` | `log_format` | `json` (default) or `text` |
 | `log-max-size-mb` | `log_max_size_mb` | A positive whole number of megabytes (default 10) |
 | `log-keep` | `log_keep` | A whole number of rotated files, 0 or more (default 5) |

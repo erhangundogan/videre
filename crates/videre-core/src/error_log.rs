@@ -20,6 +20,11 @@ pub const LOGS_DIR: &str = "logs";
 /// stdout, as a JSON error document); the terminal layer filters it out.
 pub const FILE_ONLY_TARGET: &str = "videre::file_only";
 
+/// The target of the one line every run writes to its primary log when it
+/// starts. Without it a clean run leaves no line, and an older failed run
+/// would still read as the latest one. The terminal filters it out.
+pub const RUN_MARKER_TARGET: &str = "videre::run";
+
 /// `<command>.log`: errors and warnings, always.
 pub fn primary_log_name(command: &str) -> String {
     format!("{command}.log")
@@ -66,20 +71,24 @@ pub fn logs_dir_for_writing(ctx: &LibraryContext) -> Result<Option<PathBuf>> {
     Ok(Some(dir))
 }
 
-/// Refuse a redirected log file and prove it can be opened for append,
-/// creating it owner-only (it holds paths to personal media). A failure here
-/// disables file logging for the run; it never fails the command.
+/// Refuse a redirected log file and prove it can be opened for append, owner
+/// only (it holds paths to personal media): a new file is created `0600` and
+/// an existing one is tightened to it before anything is appended. A failure
+/// here disables file logging for the run; it never fails the command.
 pub fn check_log_file(path: &Path) -> Result<()> {
     crate::library_locks::reject_redirect(path, "the log file")?;
     let owned = path.to_path_buf();
     bounded_op(path, "open", STAT_TIMEOUT, move || {
-        use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new()
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .mode(0o600)
-            .open(&owned)
-            .map(|_| ())
+            .open(&owned)?;
+        if file.metadata()?.permissions().mode() & 0o777 != 0o600 {
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(())
     })
     .with_context(|| format!("open {}", path.display()))
 }
@@ -689,6 +698,34 @@ mod tests {
         std::fs::create_dir(&elsewhere).unwrap();
         std::os::unix::fs::symlink(&elsewhere, ctx.paths.state.join(LOGS_DIR)).unwrap();
         assert!(logs_dir_for_writing(&ctx).is_err());
+    }
+
+    #[test]
+    fn an_existing_log_file_is_tightened_to_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_t, ctx) = library(true);
+        let dir = logs_dir_for_writing(&ctx).unwrap().unwrap();
+        let file = dir.join(primary_log_name("scan"));
+        std::fs::write(&file, "").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        check_log_file(&file).unwrap();
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn a_later_clean_run_is_the_latest_run() {
+        let (_t, ctx) = library(true);
+        let dir = logs_dir_for_writing(&ctx).unwrap().unwrap();
+        let failed = r#"{"timestamp":"t1","level":"ERROR","fields":{"message":"boom"},"spans":[{"name":"run","command":"scan","run":"R1"}]}"#;
+        let marker = r#"{"timestamp":"t2","level":"INFO","fields":{"message":"run started"},"target":"videre::run","spans":[{"name":"run","command":"scan","run":"R2"}]}"#;
+        std::fs::write(dir.join("scan.log"), format!("{failed}\n{marker}\n")).unwrap();
+        let runs = latest_runs(&ctx).unwrap();
+        assert_eq!(runs[0].run, "R2");
+        assert_eq!((runs[0].errors, runs[0].warnings), (0, 0));
+        assert!(runs[0].last_error.is_none());
     }
 
     #[test]
