@@ -98,7 +98,15 @@ pub fn failed_hashes(
     let rows = stmt.query_map(rusqlite::params![stage, min_count], |r| {
         r.get::<_, String>(0)
     })?;
-    rows.collect()
+    let failed: HashSet<String> = rows.collect::<rusqlite::Result<_>>()?;
+    if !failed.is_empty() {
+        tracing::debug!(
+            stage,
+            skipped = failed.len(),
+            "skipping file(s) that failed to decode {min_count} or more times"
+        );
+    }
+    Ok(failed)
 }
 
 /// The current failure count for `(hash, stage)`, or 0 if there is no row.

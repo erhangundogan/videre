@@ -65,6 +65,13 @@ the files only: what the terminal shows never changes. `log-level` decides the
 trace file: `info` and `debug` create it, while `error` and `warn` leave only
 the primary file, which always keeps both errors and warnings.
 
+`info` adds everything a command prints while it works (progress summaries,
+"Loading model", "wrote N record(s)") to the trace file. `debug` adds the
+decisions that are otherwise invisible: the log settings in force, every lock
+taken or refused, how long each `pipeline` and `watch` stage took, files
+skipped after repeated decode failures, and thumbnail cache hits and misses.
+Use it when reporting a problem; it grows quickly.
+
 When a file reaches `log-max-size-mb` it is renamed to `.1` (the previous `.1`
 becomes `.2`, and so on) and a new file starts. At most `log-keep` rotated files
 are kept, and rotated files older than `log-max-age-days` are deleted the next

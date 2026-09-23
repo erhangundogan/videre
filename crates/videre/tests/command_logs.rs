@@ -196,6 +196,45 @@ fn status_shows_the_latest_run_and_a_clean_run_clears_it() {
 }
 
 #[test]
+fn debug_level_records_decisions_in_the_trace_file_only() {
+    let lib = TestLibrary::new();
+    lib.scan();
+    let set = lib
+        .cmd()
+        .args(["config", "set", "log-level", "debug"])
+        .status()
+        .unwrap();
+    assert!(set.success());
+    let out = lib.cmd().args(["stats", "--json"]).output().unwrap();
+    assert!(out.status.success());
+    let _: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains("lock"),
+        "debug never reaches the terminal"
+    );
+
+    let trace = parsed_lines(&logs(&lib).join("stats.trace.log"));
+    assert!(
+        trace
+            .iter()
+            .any(|l| l.level == videre_core::error_log::LineLevel::Debug
+                && l.message.contains("log settings")),
+        "{trace:?}"
+    );
+    assert!(
+        trace
+            .iter()
+            .any(|l| l.level == videre_core::error_log::LineLevel::Debug
+                && l.message.contains("lock")),
+        "{trace:?}"
+    );
+    let primary = parsed_lines(&logs(&lib).join("stats.log"));
+    assert!(primary
+        .iter()
+        .all(|l| l.level != videre_core::error_log::LineLevel::Debug));
+}
+
+#[test]
 fn reading_an_uninitialized_library_creates_nothing() {
     let lib = TestLibrary::new();
     let _ = lib.cmd().arg("stats").output().unwrap();
