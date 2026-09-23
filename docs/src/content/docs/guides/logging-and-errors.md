@@ -29,10 +29,21 @@ cleanly, and it supersedes an older failed run when
 included, so the detail around a failure stays in one place. Detailed logging
 can therefore never push an error out of the primary file.
 
-A command's failure is recorded once, with the same text the terminal shows
-after `error:`. When a command reports its failure as a JSON document on stdout
-(`--json`), the failure is still logged but not repeated on stderr, so the JSON
-output stays clean.
+What is recorded:
+
+- **A command's failure**, once, with the same text the terminal shows after
+  `error:`. When a command reports its failure as a JSON document on stdout
+  (`--json`), the failure is still logged but not repeated on stderr, so the
+  JSON output stays clean.
+- **Every file that was skipped**, as a warning naming the file in
+  `fields.path`: an unreadable file during `scan`, an image `embed` or `faces`
+  could not decode.
+- **A failed stage of `pipeline` or `watch`**, which carries on to the next
+  stage. It is recorded in the file of the command you ran, with the stage in
+  `fields.stage`: a scan failure inside `videre watch` is a line in
+  `watch.log` with `"stage":"scan"`, never a line in `scan.log`.
+- **A failed request in `videre gallery`** (anything that returned a server
+  error) and **a failed tool call in `videre mcp`**.
 
 ## Choosing what is kept
 
@@ -92,6 +103,30 @@ ts=2026-09-23T13:01:15.151303Z level=error target=videre_core::error_log span=ru
 
 Changing the format affects only new lines; older lines in the same file stay
 readable.
+
+## Error kinds
+
+When videre knows why something failed, the line carries a `kind` and a
+`remediation`. The kinds are few on purpose; most failures are environmental.
+
+| `kind` | Meaning | What to do |
+|---|---|---|
+| `source_unavailable` | A file or the library could not be read from its drive in time | Reconnect the drive holding the library, then run the command again |
+| `permission_denied` | The operating system refused access | Grant read access to the file or folder |
+| `decode_failed` | The file could not be decoded as an image or video frame | The file is unreadable or unsupported; videre skips it after two attempts |
+| `quicklook_unavailable` | HEIC and video need macOS QuickLook | These files are skipped on this platform |
+| `model_unavailable` | A search or face model could not be downloaded or loaded | Check network access for the first run, or the Hugging Face cache location |
+| `library_busy` | Another videre command holds the library or this command's lock | Retry when it finishes; `watch` retries by itself |
+| `library_schema` | The database needs an upgrade, or was written by a newer videre | Follow the message: run a writer command such as `videre scan`, or upgrade videre |
+| `database` | SQLite reported an error | The message says which operation failed |
+
+A failure without a known cause has an empty `kind`; its message is still the
+full error.
+
+```bash
+# the failures that have a known cause, grouped
+jq -r 'select(.fields.kind != "") | .fields.kind' .videre/logs/watch.log | sort | uniq -c
+```
 
 ## Privacy
 

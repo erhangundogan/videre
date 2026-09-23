@@ -471,23 +471,21 @@ fn drain_pending(
             return;
         }
         videre_core::location::ensure_location_column(&conn);
-        if args.faces {
-            if stage("faces", "faces stage", || run_faces_stage(args, ctx, &conn))
+        if args.faces
+            && stage("faces", "faces stage", || run_faces_stage(args, ctx, &conn))
                 != Some(StageOutcome::Ran)
-            {
-                complete = false;
-            }
+        {
+            complete = false;
         }
         if args.heic {
             stage("heic", "heic stage", || run_heic_stage(args, ctx, &conn));
         }
-        if args.location {
-            if stage("locations", "location stage", || {
+        if args.location
+            && stage("locations", "location stage", || {
                 run_location_stage(args, ctx, &conn)
             }) != Some(StageOutcome::Ran)
-            {
-                complete = false;
-            }
+        {
+            complete = false;
         }
     }
     if complete {
@@ -638,12 +636,11 @@ fn reconcile(args: &WatchArgs, ctx: &CommandContext) -> Result<ReconcileOutcome>
     if args.faces || args.heic || args.location || args.prune || args.export_xmp {
         face_db::create_faces_table(&conn)?;
         videre_core::location::ensure_location_column(&conn);
-        if args.faces {
-            if stage("faces", "faces stage", || run_faces_stage(args, ctx, &conn))
+        if args.faces
+            && stage("faces", "faces stage", || run_faces_stage(args, ctx, &conn))
                 != Some(StageOutcome::Ran)
-            {
-                complete = false;
-            }
+        {
+            complete = false;
         }
         if args.heic {
             // A HEIC cache failure costs previews only; the location, prune
@@ -665,20 +662,18 @@ fn reconcile(args: &WatchArgs, ctx: &CommandContext) -> Result<ReconcileOutcome>
                 complete = false;
             }
         }
-        if args.faces {
-            if stage("faces", "face recluster stage", || {
+        if args.faces
+            && stage("faces", "face recluster stage", || {
                 run_recluster_stage(args, ctx, &conn)
             }) != Some(StageOutcome::Ran)
-            {
-                complete = false;
-            }
+        {
+            complete = false;
         }
-        if args.prune {
-            if stage("prune", "prune stage", || run_prune_stage(args, ctx, &conn))
+        if args.prune
+            && stage("prune", "prune stage", || run_prune_stage(args, ctx, &conn))
                 != Some(StageOutcome::Ran)
-            {
-                complete = false;
-            }
+        {
+            complete = false;
         }
         if args.export_xmp {
             stage("export", "export stage", || {
