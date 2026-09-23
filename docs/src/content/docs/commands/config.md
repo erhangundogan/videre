@@ -14,6 +14,7 @@ videre config set read-rate 10
 videre config set xmp file
 videre config set export-xmp-on-watch true
 videre config set watch-debounce-ms 500
+videre config set log-level debug
 videre config unset model
 ```
 
@@ -38,6 +39,11 @@ read-rate:     20 MB/s (default)
 xmp:           db
 export-xmp-on-watch: off
 watch-debounce-ms: 1500 ms (default)
+log-level:     warn
+log-format:    json
+log-max-size-mb: 10 MB
+log-keep:      5
+log-max-age-days: 30 days
 ```
 
 | Line | Meaning |
@@ -53,6 +59,11 @@ watch-debounce-ms: 1500 ms (default)
 | `xmp` | Effective XMP precedence for ingest |
 | `export-xmp-on-watch` | Whether watch exports XMP each cycle |
 | `watch-debounce-ms` | How long watch lets file changes settle before processing |
+| `log-level` | What the per-command log files record |
+| `log-format` | How log lines are written |
+| `log-max-size-mb` | Size at which a log file rotates |
+| `log-keep` | Rotated log files kept per log file |
+| `log-max-age-days` | Age after which a rotated log file is deleted |
 
 Showing config creates nothing. Setting a value may create
 `.videre/config.toml`, but it does not create the database. `scan` and `watch`
@@ -67,6 +78,11 @@ are responsible for initializing a library database.
 | `xmp` | `xmp_precedence` | `db`, `file`, or `newest` |
 | `export-xmp-on-watch` | `export_xmp_on_watch` | `true` or `false` |
 | `watch-debounce-ms` | `watch_debounce_ms` | A positive whole number of milliseconds |
+| `log-level` | `log_level` | `error`, `warn` (default), `info`, or `debug` |
+| `log-format` | `log_format` | `json` (default) or `text` |
+| `log-max-size-mb` | `log_max_size_mb` | A positive whole number of megabytes (default 10) |
+| `log-keep` | `log_keep` | A whole number of rotated files, 0 or more (default 5) |
+| `log-max-age-days` | `log_max_age_days` | A positive whole number of days (default 30) |
 
 Storage cannot be redirected. `db` and `jsonl` are fixed declarations and
 must remain `hashes.db` and `hashes.jsonl`. The removed global `path` and `db`
@@ -90,6 +106,11 @@ Setting or unsetting one key preserves the others and any unknown tables.
 changes settle before processing them as one batch. Lower it for the fastest
 reaction to a single file; raise it on a chatty importer or a slow mount so
 more of a burst lands in one batch.
+
+The `log-*` keys control the per-command log files under `.videre/logs/`.
+They never change what the terminal shows. See
+[Logging and error handling](/guides/logging-and-errors/) for what each level
+records and how to read the files.
 
 ## Selection and precedence
 

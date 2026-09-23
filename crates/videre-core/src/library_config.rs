@@ -24,6 +24,70 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// when `watch_debounce_ms` is absent.
 pub const WATCH_DEBOUNCE_MS_DEFAULT: u64 = 1500;
 
+/// Built-in size, in megabytes, at which a log file rotates.
+pub const LOG_MAX_SIZE_MB_DEFAULT: u64 = 10;
+/// Built-in number of rotated log files kept per log file.
+pub const LOG_KEEP_DEFAULT: u64 = 5;
+/// Built-in age, in days, after which a rotated log file is deleted.
+pub const LOG_MAX_AGE_DAYS_DEFAULT: u64 = 30;
+
+/// The threshold for what the per-command log files record. Ordered from
+/// least to most verbose; the terminal is not affected by it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum LogLevel {
+    Error,
+    #[default]
+    Warn,
+    Info,
+    Debug,
+}
+
+impl LogLevel {
+    pub fn parse(s: &str) -> Result<Self> {
+        match s {
+            "error" => Ok(Self::Error),
+            "warn" => Ok(Self::Warn),
+            "info" => Ok(Self::Info),
+            "debug" => Ok(Self::Debug),
+            other => bail!("log_level must be one of error, warn, info, debug, got {other:?}"),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warn => "warn",
+            Self::Info => "info",
+            Self::Debug => "debug",
+        }
+    }
+}
+
+/// How log lines are written: JSON Lines, or logfmt text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LogFormat {
+    #[default]
+    Json,
+    Text,
+}
+
+impl LogFormat {
+    pub fn parse(s: &str) -> Result<Self> {
+        match s {
+            "json" => Ok(Self::Json),
+            "text" => Ok(Self::Text),
+            other => bail!("log_format must be json or text, got {other:?}"),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Text => "text",
+        }
+    }
+}
+
 /// Settings governing how one library is processed.
 ///
 /// Absent settings mean the built-in default, mirroring the global config's
@@ -47,6 +111,16 @@ pub struct LibraryConfig {
     /// Debounce window for watch's event coalescing, in ms; `None` means the
     /// built-in default (`WATCH_DEBOUNCE_MS_DEFAULT`).
     pub watch_debounce_ms: Option<u64>,
+    /// What the per-command log files record.
+    pub log_level: LogLevel,
+    /// How log lines are written.
+    pub log_format: LogFormat,
+    /// Size in megabytes at which a log file rotates.
+    pub log_max_size_mb: u64,
+    /// Rotated files kept per log file.
+    pub log_keep: u64,
+    /// Age in days after which a rotated log file is deleted.
+    pub log_max_age_days: u64,
 }
 
 impl Default for LibraryConfig {
@@ -60,6 +134,11 @@ impl Default for LibraryConfig {
             export_xmp_on_watch: false,
             min_read_rate_mb_s: None,
             watch_debounce_ms: None,
+            log_level: LogLevel::default(),
+            log_format: LogFormat::default(),
+            log_max_size_mb: LOG_MAX_SIZE_MB_DEFAULT,
+            log_keep: LOG_KEEP_DEFAULT,
+            log_max_age_days: LOG_MAX_AGE_DAYS_DEFAULT,
         }
     }
 }
@@ -81,6 +160,16 @@ pub enum ConfigKey {
     ExportXmpOnWatch,
     /// `watch_debounce_ms`, a positive integer or absent.
     WatchDebounceMs,
+    /// `log_level`, one of `error`, `warn`, `info`, `debug`.
+    LogLevel,
+    /// `log_format`, `json` or `text`.
+    LogFormat,
+    /// `log_max_size_mb`, an integer of at least 1.
+    LogMaxSizeMb,
+    /// `log_keep`, an integer of at least 0.
+    LogKeep,
+    /// `log_max_age_days`, an integer of at least 1.
+    LogMaxAgeDays,
 }
 
 impl ConfigKey {
@@ -92,6 +181,11 @@ impl ConfigKey {
             ConfigKey::Xmp => "xmp_precedence",
             ConfigKey::ExportXmpOnWatch => "export_xmp_on_watch",
             ConfigKey::WatchDebounceMs => "watch_debounce_ms",
+            ConfigKey::LogLevel => "log_level",
+            ConfigKey::LogFormat => "log_format",
+            ConfigKey::LogMaxSizeMb => "log_max_size_mb",
+            ConfigKey::LogKeep => "log_keep",
+            ConfigKey::LogMaxAgeDays => "log_max_age_days",
         }
     }
 }
@@ -165,46 +259,43 @@ fn bool_setting(table: &toml::Table, file: &Path, key: &str, default: bool) -> R
     }
 }
 
-/// Read `min_read_rate_mb_s`: absent, or a positive integer. Zero is
-/// rejected rather than clamped: as a read rate it means an unbounded
-/// timeout, which is the hang the timeout exists to prevent, and silently
-/// substituting a different number would hide a typo (the same rule the
-/// global config's `positive_int_key` states).
-fn read_rate_setting(table: &toml::Table, file: &Path) -> Result<Option<u64>> {
-    const KEY: &str = "min_read_rate_mb_s";
-    match table.get(KEY) {
+/// Read an integer setting that must be at least `min`. `Ok(None)` means
+/// absent, so each caller decides what absence means (a built-in default,
+/// or "not set"). A value below `min` is rejected rather than clamped:
+/// silently substituting a different number would hide a typo.
+fn int_setting(table: &toml::Table, file: &Path, key: &str, min: i64) -> Result<Option<u64>> {
+    match table.get(key) {
         None => Ok(None),
-        Some(toml::Value::Integer(n)) if *n > 0 => Ok(Some(*n as u64)),
+        Some(toml::Value::Integer(n)) if *n >= min => Ok(Some(*n as u64)),
+        Some(toml::Value::Integer(n)) if min == 1 => bail!(
+            "malformed config {}: {key} must be greater than 0, got {n}",
+            file.display()
+        ),
         Some(toml::Value::Integer(n)) => bail!(
-            "malformed config {}: {KEY} must be greater than 0, got {n}",
+            "malformed config {}: {key} must be at least {min}, got {n}",
             file.display()
         ),
         Some(other) => bail!(
-            "malformed config {}: {KEY} must be an integer, got {}",
+            "malformed config {}: {key} must be an integer, got {}",
             file.display(),
             other.type_str()
         ),
     }
 }
 
+/// Read `min_read_rate_mb_s`: absent, or a positive integer. Zero is
+/// rejected rather than clamped: as a read rate it means an unbounded
+/// timeout, which is the hang the timeout exists to prevent (the same rule
+/// the global config's `positive_int_key` states).
+fn read_rate_setting(table: &toml::Table, file: &Path) -> Result<Option<u64>> {
+    int_setting(table, file, "min_read_rate_mb_s", 1)
+}
+
 /// Read `watch_debounce_ms`: absent, or a positive integer. Zero is rejected
 /// rather than clamped: a zero debounce window would fire a stage run per
 /// raw event, which is the storm coalescing exists to prevent.
 fn debounce_setting(table: &toml::Table, file: &Path) -> Result<Option<u64>> {
-    const KEY: &str = "watch_debounce_ms";
-    match table.get(KEY) {
-        None => Ok(None),
-        Some(toml::Value::Integer(n)) if *n > 0 => Ok(Some(*n as u64)),
-        Some(toml::Value::Integer(n)) => bail!(
-            "malformed config {}: {KEY} must be greater than 0, got {n}",
-            file.display()
-        ),
-        Some(other) => bail!(
-            "malformed config {}: {KEY} must be an integer, got {}",
-            file.display(),
-            other.type_str()
-        ),
-    }
+    int_setting(table, file, "watch_debounce_ms", 1)
 }
 
 /// Refuse one way a local config could try to move the library's storage:
@@ -261,6 +352,25 @@ fn config_from_table(table: &toml::Table, file: &Path) -> Result<LibraryConfig> 
         export_xmp_on_watch: bool_setting(table, file, "export_xmp_on_watch", false)?,
         min_read_rate_mb_s: read_rate_setting(table, file)?,
         watch_debounce_ms: debounce_setting(table, file)?,
+        log_level: LogLevel::parse(&string_setting(
+            table,
+            file,
+            "log_level",
+            LogLevel::default().as_str(),
+        )?)
+        .with_context(|| format!("malformed config {}", file.display()))?,
+        log_format: LogFormat::parse(&string_setting(
+            table,
+            file,
+            "log_format",
+            LogFormat::default().as_str(),
+        )?)
+        .with_context(|| format!("malformed config {}", file.display()))?,
+        log_max_size_mb: int_setting(table, file, "log_max_size_mb", 1)?
+            .unwrap_or(LOG_MAX_SIZE_MB_DEFAULT),
+        log_keep: int_setting(table, file, "log_keep", 0)?.unwrap_or(LOG_KEEP_DEFAULT),
+        log_max_age_days: int_setting(table, file, "log_max_age_days", 1)?
+            .unwrap_or(LOG_MAX_AGE_DAYS_DEFAULT),
     })
 }
 
@@ -308,6 +418,26 @@ fn validate_value(key: ConfigKey, value: &toml::Value) -> Result<()> {
         (ConfigKey::Xmp, toml::Value::String(s)) => XmpPrecedence::parse(s).map(|_| ()),
         (ConfigKey::ExportXmpOnWatch, toml::Value::Boolean(_)) => Ok(()),
         (ConfigKey::WatchDebounceMs, toml::Value::Integer(n)) if *n > 0 => Ok(()),
+        (ConfigKey::LogLevel, toml::Value::String(s)) => LogLevel::parse(s).map(|_| ()),
+        (ConfigKey::LogFormat, toml::Value::String(s)) => LogFormat::parse(s).map(|_| ()),
+        (ConfigKey::LogMaxSizeMb | ConfigKey::LogMaxAgeDays, toml::Value::Integer(n))
+            if *n >= 1 =>
+        {
+            Ok(())
+        }
+        (ConfigKey::LogKeep, toml::Value::Integer(n)) if *n >= 0 => Ok(()),
+        (k @ (ConfigKey::LogMaxSizeMb | ConfigKey::LogMaxAgeDays), toml::Value::Integer(n)) => {
+            bail!("{} must be at least 1, got {n}", k.name())
+        }
+        (ConfigKey::LogKeep, toml::Value::Integer(n)) => {
+            bail!("log_keep must be at least 0, got {n}")
+        }
+        (k @ (ConfigKey::LogLevel | ConfigKey::LogFormat), other) => {
+            bail!("{} must be a string, got {}", k.name(), other.type_str())
+        }
+        (k @ (ConfigKey::LogMaxSizeMb | ConfigKey::LogKeep | ConfigKey::LogMaxAgeDays), other) => {
+            bail!("{} must be an integer, got {}", k.name(), other.type_str())
+        }
         (ConfigKey::ReadRate, toml::Value::Integer(n)) => {
             bail!("min_read_rate_mb_s must be greater than 0, got {n}")
         }
@@ -519,6 +649,60 @@ mod tests {
             std::fs::write(&ctx.paths.config, body).unwrap();
         }
         (temp, ctx)
+    }
+
+    #[test]
+    fn log_settings_default_and_round_trip() {
+        let (_t, ctx) = library_with_config("");
+        let defaults = LibraryConfig::default();
+        assert_eq!(defaults.log_level, LogLevel::Warn);
+        assert_eq!(defaults.log_format, LogFormat::Json);
+        assert_eq!(
+            (
+                defaults.log_max_size_mb,
+                defaults.log_keep,
+                defaults.log_max_age_days
+            ),
+            (10, 5, 30)
+        );
+
+        edit(
+            &ctx,
+            ConfigKey::LogLevel,
+            Some(toml::Value::String("debug".into())),
+        )
+        .unwrap();
+        edit(
+            &ctx,
+            ConfigKey::LogFormat,
+            Some(toml::Value::String("text".into())),
+        )
+        .unwrap();
+        edit(&ctx, ConfigKey::LogKeep, Some(toml::Value::Integer(0))).unwrap();
+        let loaded = load(&ctx.paths).unwrap();
+        assert_eq!(loaded.log_level, LogLevel::Debug);
+        assert_eq!(loaded.log_format, LogFormat::Text);
+        assert_eq!(loaded.log_keep, 0);
+    }
+
+    #[test]
+    fn invalid_log_settings_are_refused_by_edit_and_load() {
+        let (_t, ctx) = library_with_config("");
+        for (key, value) in [
+            (ConfigKey::LogLevel, toml::Value::String("verbose".into())),
+            (ConfigKey::LogFormat, toml::Value::String("xml".into())),
+            (ConfigKey::LogMaxSizeMb, toml::Value::Integer(0)),
+            (ConfigKey::LogMaxAgeDays, toml::Value::Integer(0)),
+            (ConfigKey::LogKeep, toml::Value::Integer(-1)),
+            (ConfigKey::LogKeep, toml::Value::String("5".into())),
+        ] {
+            assert!(edit(&ctx, key, Some(value)).is_err(), "{key:?}");
+        }
+        let (_t2, ctx2) = library_with_config("log_level = \"loud\"\n");
+        assert!(
+            load(&ctx2.paths).is_err(),
+            "a hand-edited typo must surface"
+        );
     }
 
     #[test]
