@@ -388,7 +388,7 @@ mod tests {
             };
             let dir = run_with(&settings, || {
                 let _stage = videre_core::error_log::enter_stage("scan");
-                let err = anyhow::anyhow!("read \"timed\" out")
+                let err = anyhow::anyhow!("read \"timed\" out\n  run: videre scan")
                     .context(videre_core::error_kind::ErrorKind::SourceUnavailable);
                 videre_core::error_log::report(
                     Level::WARN,
@@ -412,7 +412,12 @@ mod tests {
                 Some("/Volumes/Arşiv/Çağla 2019.jpg"),
                 "{format:?}"
             );
-            assert!(line.message.contains("read \"timed\" out"), "{format:?}");
+            assert!(
+                line.message
+                    .contains("read \"timed\" out\n  run: videre scan"),
+                "{format:?}: {:?}",
+                line.message
+            );
         }
     }
 

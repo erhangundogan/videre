@@ -298,7 +298,12 @@ fn logfmt_pairs(line: &str) -> Option<std::collections::HashMap<String, String>>
             chars.next();
             loop {
                 match chars.next()? {
-                    '\\' => value.push(chars.next()?),
+                    '\\' => value.push(match chars.next()? {
+                        'n' => '\n',
+                        't' => '\t',
+                        'r' => '\r',
+                        c => c,
+                    }),
                     '"' => break,
                     c => value.push(c),
                 }
@@ -530,6 +535,14 @@ mod tests {
         assert_eq!(parsed.stage.as_deref(), Some("scan"));
         assert_eq!(parsed.path.as_deref(), Some("/Volumes/Arşiv/a b.jpg"));
         assert_eq!(parsed.message, "hash failed: \"read\" timed out");
+    }
+
+    #[test]
+    fn logfmt_escaped_newlines_come_back_as_newlines() {
+        let line =
+            r#"ts=t level=error message="no embeddings\n  run: videre embed" command=search run=R"#;
+        let parsed = parse_line(line).unwrap();
+        assert_eq!(parsed.message, "no embeddings\n  run: videre embed");
     }
 
     #[test]
