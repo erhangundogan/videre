@@ -29,8 +29,8 @@ function seedClusters(libraryRoot: string): void {
   expect(second).toBeTruthy();
   expect(video).toBeTruthy();
   db.exec(
-    "DELETE FROM location_clusters;" +
     "UPDATE file_hashes SET location_cluster_id = NULL, gps_lat = NULL, gps_lon = NULL;" +
+    "DELETE FROM location_clusters;" +
     "INSERT INTO location_clusters " +
       "(id, centroid_lat, centroid_lon, name, photo_count, radius_km, created_at) VALUES " +
       "(1, 52.52, 13.405, 'Berlin', 1, 20.0, CURRENT_TIMESTAMP), " +
@@ -288,7 +288,7 @@ test("zooming out to the world clears a MapLibre selection", async ({ page, gall
 
 test("a library that never clustered shows the empty state with a working grid", async ({ page, gallery }) => {
   const db = openDatabase(gallery.libraryRoot);
-  db.exec("DELETE FROM location_clusters; UPDATE file_hashes SET location_cluster_id = NULL;");
+  db.exec("UPDATE file_hashes SET location_cluster_id = NULL; DELETE FROM location_clusters;");
   db.close();
 
   await page.addInitScript(() => {
