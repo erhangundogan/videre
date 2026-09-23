@@ -48,10 +48,8 @@ pub fn ensure_people_table(conn: &Connection) {
     // an identity" in the database rather than in whichever code path remembers
     // to check.
     //
-    // No foreign key from `faces`: SQLite leaves `PRAGMA foreign_keys` off and
-    // videre never sets it, so a `REFERENCES` clause here would be
-    // documentation rather than a constraint, and code written to trust it
-    // would be wrong. Tracked separately.
+    // The version-2 faces table references this primary key, and videre
+    // enables foreign-key enforcement on every connection it owns.
     let _ = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS people (
             name       TEXT PRIMARY KEY,
@@ -60,8 +58,56 @@ pub fn ensure_people_table(conn: &Connection) {
     );
 }
 
-pub fn create_faces_table(conn: &Connection) -> rusqlite::Result<()> {
+/// The canonical `faces` DDL for a trusted static table name. Version 2
+/// declares the person relationship so SQLite rejects an unknown
+/// `person_label` instead of storing an orphan. The schema upgrade that
+/// introduces this shape repairs legacy rows first; until then an existing
+/// table keeps its old shape and this only creates fresh tables.
+pub fn faces_ddl_for(table: &str, if_not_exists: bool) -> String {
+    let exists = if if_not_exists { "IF NOT EXISTS " } else { "" };
+    format!(
+        "CREATE TABLE {exists}{table} (
+            id            INTEGER PRIMARY KEY,
+            hash          TEXT NOT NULL,
+            bbox          TEXT NOT NULL,
+            landmark      TEXT,
+            embedding     BLOB NOT NULL,
+            cluster_id    INTEGER,
+            person_label  TEXT,
+            confirmed     INTEGER DEFAULT 0,
+            is_primary    INTEGER DEFAULT 0,
+            det_score     REAL,
+            blur          REAL,
+            oriented      INTEGER,
+            FOREIGN KEY (person_label) REFERENCES people(name)
+                ON DELETE RESTRICT ON UPDATE RESTRICT
+        );"
+    )
+}
+
+/// Create or migrate the faces and people tables without touching any data:
+/// no person-label migration, no cluster detach, no row repairs. Safe inside
+/// an outer transaction, which the versioned schema upgrade requires; the
+/// data migrations belong to the callers that own data.
+pub fn ensure_faces_schema(conn: &Connection) -> rusqlite::Result<()> {
     ensure_people_table(conn);
+    conn.execute_batch(&faces_ddl_for("faces", true))?;
+    // Migration for existing tables without is_primary column; ignored if already exists.
+    let _ = conn.execute_batch("ALTER TABLE faces ADD COLUMN is_primary INTEGER DEFAULT 0");
+    // Same shape: existing libraries gain the columns as NULL, which reads as
+    // "not recorded" rather than "bad", so nothing is retro-excluded.
+    let _ = conn.execute_batch("ALTER TABLE faces ADD COLUMN det_score REAL");
+    let _ = conn.execute_batch("ALTER TABLE faces ADD COLUMN blur REAL");
+    // Canvas marker: NULL = detected on the raw sensor canvas (before the
+    // orientation fix), 1 = detected on the display canvas. Readers branch on
+    // this when cropping (face thumbnails); NULL must never read as
+    // "display canvas".
+    let _ = conn.execute_batch("ALTER TABLE faces ADD COLUMN oriented INTEGER");
+    Ok(())
+}
+
+pub fn create_faces_table(conn: &Connection) -> rusqlite::Result<()> {
+    ensure_faces_schema(conn)?;
     crate::face_learning::ensure_profile_table(conn)?;
     crate::face_learning::ensure_learning_tables(conn)?;
     // Writers migrate; readers do not. `open_wal` only creates the empty table,
@@ -81,44 +127,20 @@ pub fn create_faces_table(conn: &Connection) -> rusqlite::Result<()> {
          WHERE confirmed = 1 AND person_label IS NOT NULL AND cluster_id IS NOT NULL",
         [],
     );
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS faces (
-            id            INTEGER PRIMARY KEY,
-            hash          TEXT NOT NULL,
-            bbox          TEXT NOT NULL,
-            landmark      TEXT,
-            embedding     BLOB NOT NULL,
-            cluster_id    INTEGER,
-            person_label  TEXT,
-            confirmed     INTEGER DEFAULT 0,
-            is_primary    INTEGER DEFAULT 0,
-            det_score     REAL,
-            blur          REAL
-        );",
-    )?;
-    // Migration for existing tables without is_primary column; ignored if already exists.
-    let _ = conn.execute_batch("ALTER TABLE faces ADD COLUMN is_primary INTEGER DEFAULT 0");
-    // Same shape: existing libraries gain the columns as NULL, which reads as
-    // "not recorded" rather than "bad", so nothing is retro-excluded.
-    let _ = conn.execute_batch("ALTER TABLE faces ADD COLUMN det_score REAL");
-    let _ = conn.execute_batch("ALTER TABLE faces ADD COLUMN blur REAL");
-    // Canvas marker: NULL = detected on the raw sensor canvas (before the
-    // orientation fix), 1 = detected on the display canvas. Readers branch on
-    // this when cropping (face thumbnails); NULL must never read as
-    // "display canvas".
-    let _ = conn.execute_batch("ALTER TABLE faces ADD COLUMN oriented INTEGER");
+    create_faces_scanned_table(conn)
+}
 
-    // Records every hash whose faces have been scanned, INCLUDING images where
-    // zero faces were detected (which leave no `faces` row). This is what makes
-    // `videre faces` resumable: the skip set is "already scanned", not merely
-    // "has a face", so a no-face image is never re-detected on a later run.
+/// Records every hash whose faces have been scanned, INCLUDING images where
+/// zero faces were detected (which leave no `faces` row). This is what makes
+/// `videre faces` resumable: the skip set is "already scanned", not merely
+/// "has a face", so a no-face image is never re-detected on a later run.
+pub fn create_faces_scanned_table(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS faces_scanned (
             hash        TEXT PRIMARY KEY,
             scanned_at  TEXT DEFAULT (datetime('now'))
         );",
-    )?;
-    Ok(())
+    )
 }
 
 /// The highest `faces.id` covered by the last completed global recluster,
@@ -565,6 +587,29 @@ mod tests {
         conn
     }
 
+    /// Seeds a labeled face without a people row: the pre-v2 legacy shape.
+    /// Enforcement is lifted for the seed and restored, so the test body runs
+    /// enforced.
+    fn seed_legacy_label(conn: &Connection, hash: &str, label: &str, confirmed: i64) {
+        conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+        conn.execute(
+            "INSERT INTO faces (hash, bbox, embedding, cluster_id, confirmed, person_label)
+             VALUES (?1, '0,0,50,50', X'0000', 0, ?2, ?3)",
+            rusqlite::params![hash, confirmed, label],
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
+    }
+
+    /// The people parent a v2 labeled face requires.
+    fn seed_person(conn: &Connection, name: &str) {
+        conn.execute(
+            "INSERT INTO people (name, full_name) VALUES (?1, ?1)",
+            rusqlite::params![name],
+        )
+        .unwrap();
+    }
+
     #[test]
     fn create_table_idempotent() {
         let conn = open();
@@ -595,12 +640,8 @@ mod tests {
     #[test]
     fn the_detach_migration_clears_tombstones_and_keeps_labels() {
         let conn = open();
-        conn.execute(
-            "INSERT INTO faces (hash, bbox, embedding, cluster_id, confirmed, person_label)
-             VALUES ('h1', '0,0,50,50', X'0000', 0, 1, 'elena')",
-            [],
-        )
-        .unwrap();
+        // Legacy shape: a labeled face still carrying a machine cluster id.
+        seed_legacy_label(&conn, "h1", "elena", 1);
         conn.execute(
             "INSERT INTO faces (hash, bbox, embedding, cluster_id)
              VALUES ('h2', '0,0,50,50', X'0000', 0)",
@@ -633,12 +674,9 @@ mod tests {
     #[test]
     fn the_detach_migration_is_idempotent() {
         let conn = open();
-        conn.execute(
-            "INSERT INTO faces (hash, bbox, embedding, cluster_id, confirmed, person_label)
-             VALUES ('h1', '0,0,50,50', X'0000', 7, 1, 'elena')",
-            [],
-        )
-        .unwrap();
+        seed_legacy_label(&conn, "h1", "elena", 1);
+        conn.execute("UPDATE faces SET cluster_id = 7 WHERE hash = 'h1'", [])
+            .unwrap();
         create_faces_table(&conn).unwrap();
         create_faces_table(&conn).unwrap();
         let cid: Option<i64> = conn
@@ -680,6 +718,7 @@ mod tests {
     #[test]
     fn reset_all_returns_face_state_to_absolute_beginning() {
         let conn = open();
+        seed_person(&conn, "elena");
         conn.execute(
             "INSERT INTO faces (hash, bbox, embedding, cluster_id, confirmed, person_label)
              VALUES ('h1', '0,0,50,50', X'0000', 0, 1, 'elena')",
@@ -689,11 +728,6 @@ mod tests {
         conn.execute(
             "INSERT INTO faces (hash, bbox, embedding, cluster_id)
              VALUES ('h2', '0,0,50,50', X'0000', 1)",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO people (name, full_name) VALUES ('elena', 'Elena')",
             [],
         )
         .unwrap();
@@ -744,9 +778,9 @@ mod tests {
     fn reset_counts_and_clears_every_learning_table() {
         let conn = open();
         conn.execute_batch(
-            "INSERT INTO faces (hash, bbox, embedding, cluster_id, confirmed, person_label)
+            "INSERT INTO people VALUES ('elena','Elena');
+             INSERT INTO faces (hash, bbox, embedding, cluster_id, confirmed, person_label)
              VALUES ('h1', '0,0,50,50', X'3C00', NULL, 1, 'elena');
-             INSERT INTO people VALUES ('elena','Elena');
              INSERT INTO faces_scanned (hash) VALUES ('h1');",
         )
         .unwrap();
@@ -818,6 +852,7 @@ mod tests {
     #[test]
     fn reset_is_all_or_nothing_under_an_aborting_trigger() {
         let conn = open();
+        seed_person(&conn, "elena");
         conn.execute_batch(
             "INSERT INTO faces (hash, bbox, embedding, cluster_id, confirmed, person_label)
              VALUES ('h1', '0,0,50,50', X'3C00', NULL, 1, 'elena');",
@@ -844,20 +879,13 @@ mod tests {
     fn labeled_state_counts_reports_what_the_reset_prompt_names() {
         let conn = open();
         assert_eq!(labeled_state_counts(&conn).unwrap(), (0, 0));
+        // h2 carries a label with no people row: the pre-v2 legacy shape the
+        // reset prompt must still count honestly.
+        seed_legacy_label(&conn, "h2", "erhan", 1);
+        seed_person(&conn, "elena");
         conn.execute(
             "INSERT INTO faces (hash, bbox, embedding, confirmed, person_label)
              VALUES ('h1', '0,0,50,50', X'0000', 1, 'elena')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO faces (hash, bbox, embedding, confirmed, person_label)
-             VALUES ('h2', '0,0,50,50', X'0000', 1, 'erhan')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO people (name, full_name) VALUES ('elena', 'Elena')",
             [],
         )
         .unwrap();
@@ -1102,6 +1130,11 @@ mod tests {
     #[test]
     fn load_confirmed_face_labels_returns_only_ordered_truth_without_mutation() {
         let conn = open();
+        seed_person(&conn, "zoe");
+        seed_person(&conn, "İpek");
+        // Face 4 is unconfirmed but still carries the stored label string
+        // "unconfirmed", which the enforced key requires a parent for.
+        seed_person(&conn, "unconfirmed");
         for (id, confirmed, label, cluster_id) in [
             (4, 0, Some("unconfirmed"), Some(40)),
             (3, 1, None, Some(30)),
@@ -1224,12 +1257,13 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         create_faces_table(&conn).unwrap();
         conn.execute_batch(
-            "INSERT INTO faces (hash, bbox, embedding, person_label, confirmed) \
-             VALUES ('h1', '0,0,10,10', X'0000', 'Alice', 1); \
+            "INSERT INTO people VALUES ('alice','Alice'), ('bob','Bob');
+             INSERT INTO faces (hash, bbox, embedding, person_label, confirmed) \
+             VALUES ('h1', '0,0,10,10', X'0000', 'alice', 1); \
              INSERT INTO faces (hash, bbox, embedding, person_label, confirmed) \
              VALUES ('h1', '20,20,10,10', X'0000', NULL, 0); \
              INSERT INTO faces (hash, bbox, embedding, person_label, confirmed) \
-             VALUES ('h2', '0,0,10,10', X'0000', 'Bob', 1);",
+             VALUES ('h2', '0,0,10,10', X'0000', 'bob', 1);",
         )
         .unwrap();
 
@@ -1338,13 +1372,19 @@ mod migration_tests {
         c
     }
 
+    // The fixture recreates the LEGACY library shape: labeled faces whose
+    // person rows do not exist yet (the migration is what creates them).
+    // Enforcement is lifted only for that seed and turned back on before the
+    // migration runs, so the migration itself is exercised under enforcement.
     fn label(c: &Connection, id: i64, label: &str) {
+        c.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
         c.execute(
             "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
              VALUES (?1, ?2, '0,0,9,9', X'0000', ?3, 1)",
             rusqlite::params![id, format!("h{id}"), label],
         )
         .unwrap();
+        c.execute_batch("PRAGMA foreign_keys = ON").unwrap();
     }
 
     #[test]
@@ -1445,6 +1485,17 @@ mod migration_tests {
 mod people_table_tests {
     use super::*;
 
+    fn label_legacy(c: &Connection, id: i64, label: &str) {
+        c.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+        c.execute(
+            "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
+             VALUES (?1, ?2, '0,0,9,9', X'0000', ?3, 1)",
+            rusqlite::params![id, format!("h{id}"), label],
+        )
+        .unwrap();
+        c.execute_batch("PRAGMA foreign_keys = ON").unwrap();
+    }
+
     #[test]
     fn ensure_people_table_is_idempotent_and_keeps_rows() {
         // It runs on every open, so a second call must not disturb what is
@@ -1488,12 +1539,7 @@ mod people_table_tests {
         let c = Connection::open_in_memory().unwrap();
         create_faces_table(&c).unwrap();
         for (id, label) in [(1, "alice"), (2, "Alice")] {
-            c.execute(
-                "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
-                 VALUES (?1, ?2, '0,0,9,9', X'0000', ?3, 1)",
-                rusqlite::params![id, format!("h{id}"), label],
-            )
-            .unwrap();
+            label_legacy(&c, id, label);
         }
         let (people, merged) = migrate_person_labels(&c).unwrap();
         assert_eq!((people, merged), (1, 1));
@@ -1511,12 +1557,7 @@ mod people_table_tests {
         let c = Connection::open_in_memory().unwrap();
         create_faces_table(&c).unwrap();
         for (id, label) in [(1, "Şefik"), (2, "Şefik"), (3, "Sefik")] {
-            c.execute(
-                "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
-                 VALUES (?1, ?2, '0,0,9,9', X'0000', ?3, 1)",
-                rusqlite::params![id, format!("h{id}"), label],
-            )
-            .unwrap();
+            label_legacy(&c, id, label);
         }
         let (people, merged) = migrate_person_labels(&c).unwrap();
         assert_eq!((people, merged), (1, 1));
@@ -1536,12 +1577,7 @@ mod people_table_tests {
         let c = Connection::open_in_memory().unwrap();
         create_faces_table(&c).unwrap();
         for (id, label) in [(1, "Işıl Özyeğin"), (2, "Ahmet Arı"), (3, "erhan")] {
-            c.execute(
-                "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed) \
-                 VALUES (?1, ?2, '0,0,9,9', X'0000', ?3, 1)",
-                rusqlite::params![id, format!("h{id}"), label],
-            )
-            .unwrap();
+            label_legacy(&c, id, label);
         }
         migrate_person_labels(&c).unwrap();
         let orphans: i64 = c
@@ -1563,6 +1599,10 @@ mod overlay_label_tests {
     fn db() -> Connection {
         let c = Connection::open_in_memory().unwrap();
         create_faces_table(&c).unwrap();
+        // `no_row_yet` pins that overlays read the stored label rather than
+        // the join, so it deliberately has no people row: seed that one face
+        // with enforcement lifted, the way a pre-v2 library looked.
+        c.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
         c.execute_batch(
             "INSERT INTO people (name, full_name) VALUES ('ozgur_demirtas','Özgür Demirtaş');
              INSERT INTO faces (id,hash,bbox,embedding,person_label,confirmed) VALUES
@@ -1571,6 +1611,7 @@ mod overlay_label_tests {
                (3,'h3','10,10,60,60',X'0000','ozgur_demirtas',0);",
         )
         .unwrap();
+        c.execute_batch("PRAGMA foreign_keys = ON").unwrap();
         c
     }
 

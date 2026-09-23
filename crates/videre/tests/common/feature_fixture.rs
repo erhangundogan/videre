@@ -223,17 +223,17 @@ fn seed_library_a(a: &TestLibrary, shared: &str, exif: &str) {
     )
     .unwrap();
     conn.execute(
-        "UPDATE file_hashes SET exif_date='2025-05-15 10:00:00',
-             gps_lat=41.0082, gps_lon=28.9784, width=4000, height=3000,
-             location_name='İstanbul, TR', location_cluster_id=1 WHERE hash=?1",
-        [exif],
-    )
-    .unwrap();
-    conn.execute(
         "INSERT INTO location_clusters
              (id, centroid_lat, centroid_lon, name, photo_count, radius_km, created_at)
          VALUES (1, 41.0082, 28.9784, 'İstanbul, TR', 1, 0.5, '2025-06-01 00:00:00')",
         [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE file_hashes SET exif_date='2025-05-15 10:00:00',
+             gps_lat=41.0082, gps_lon=28.9784, width=4000, height=3000,
+             location_name='İstanbul, TR', location_cluster_id=1 WHERE hash=?1",
+        [exif],
     )
     .unwrap();
 

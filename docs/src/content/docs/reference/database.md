@@ -32,17 +32,19 @@ CREATE TABLE file_hashes (
     gps_lat     REAL,
     gps_lon     REAL,
     width       INTEGER,
-    height      INTEGER
+    height      INTEGER,
+    duration_secs REAL,
+    codec       TEXT,
+    location_name TEXT,
+    location_cluster_id INTEGER,
+    xmp_sidecar_mtime TEXT,
+    FOREIGN KEY (location_cluster_id) REFERENCES location_clusters(id)
+        ON DELETE RESTRICT ON UPDATE RESTRICT
 );
 ```
 
-Plus two columns added by later versions, through a migration that runs
-automatically when the database is opened:
-
-```sql
-ALTER TABLE file_hashes ADD COLUMN location_name TEXT;
-ALTER TABLE file_hashes ADD COLUMN location_cluster_id INTEGER;
-```
+Older libraries gained some of these columns through automatic upgrades; this
+is the current table shape.
 
 | Column | Notes |
 |---|---|
@@ -85,7 +87,9 @@ CREATE TABLE faces (
     is_primary    INTEGER DEFAULT 0,
     det_score     REAL,
     blur          REAL,
-    oriented      INTEGER
+    oriented      INTEGER,
+    FOREIGN KEY (person_label) REFERENCES people(name)
+        ON DELETE RESTRICT ON UPDATE RESTRICT
 );
 ```
 
@@ -326,6 +330,44 @@ SELECT COUNT(*) FROM file_hashes WHERE mime = 'application/octet-stream';
 ```
 :::
 
+## Enforced relationships
+
+videre turns `PRAGMA foreign_keys = ON` on every connection it opens itself,
+so these four relationships are checked by SQLite, not just by the
+application:
+
+- `faces.person_label` references `people(name)`
+- `file_hashes.location_cluster_id` references `location_clusters(id)`
+- `face_learning_event_faces.event_id` references `face_learning_events(id)`
+- `face_learning_question_faces.question_id` references `face_learning_questions(id)`
+
+Deleting a parent that rows still reference fails with a constraint error
+rather than silently orphaning children. When you delete a person, videre
+unassigns their faces and invalidates their teaching evidence first; when the
+location clusters are recomputed, the file references are cleared before the
+old clusters are removed.
+
+Libraries created before this enforcement existed carry rows that would
+violate these keys. The first time a videre command opens such a library it
+runs a one-time upgrade: it unassigns faces whose person no longer exists,
+clears references to missing location clusters, removes broken provenance
+rows, rebuilds `file_hashes` and `faces` with the keys declared, and stamps
+schema version 2. The repair prints what it did to stderr, once, and only
+after it committed. An old library opened read-only is never upgraded or
+modified.
+
+Two relationships are deliberately **not** foreign keys, because their
+parents are not the rows a child belongs to:
+
+- `file_hashes.hash` is not a key into anything: many derived rows
+  (embeddings, decode failures, classification results) key on the hash, and
+  one hash can appear on several paths. Deleting one `file_hashes` row must
+  not cascade into the others.
+- `face_learning_event_faces.face_id` and the question equivalent are
+  historical provenance: they record which faces an action was about, and a
+  face row being replaced by a later scan must never invalidate that history
+  or block the write.
+
 ## Writing to it yourself
 
 videre opens every connection in WAL mode, so one writer and many readers
@@ -336,7 +378,10 @@ Reading is entirely safe. If you write, note that videre assumes `hash` is a
 real BLAKE3 of the file at `path`, and [`videre prune`](/commands/prune/)
 deletes embeddings and cached thumbnails whose hash no longer appears in
 `file_hashes`. Deleting rows by hand therefore discards the derived work for
-those photos too.
+those photos too. With foreign keys enforced, a `DELETE` of a person that
+faces still reference, or of a location cluster that files still point at,
+fails with a foreign-key constraint error: unassign or clear the children
+first, the way videre's own writers do.
 
 ## Video columns
 

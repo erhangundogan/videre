@@ -41,6 +41,10 @@ pub fn run(args: GalleryArgs, ctx: &CommandContext) -> anyhow::Result<()> {
         eprintln!("Error: {:?} does not exist", ctx.library.paths.db);
         std::process::exit(1);
     }
+    // The server's long-lived connection is opened by the generic WAL
+    // helper; run the versioned library preparation under its own upgrade
+    // locks before that connection can serve reads or write labels.
+    drop(videre_core::library_db::open_existing(&ctx.library)?);
     let model_id = videre_core::embeddings::resolve_model_id_from(
         &ctx.library.settings,
         args.model.as_deref(),

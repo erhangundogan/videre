@@ -318,11 +318,14 @@ pub fn recompute_all(
         rows
     };
 
-    tx.execute("DELETE FROM location_clusters", [])?;
+    // Children first: under enforced foreign keys a parent delete with
+    // referencing rows would fail, so the references are cleared before the
+    // clusters are removed.
     tx.execute(
         "UPDATE file_hashes SET location_cluster_id = NULL WHERE location_cluster_id IS NOT NULL",
         [],
     )?;
+    tx.execute("DELETE FROM location_clusters", [])?;
 
     if coords.is_empty() {
         tx.commit()?;
@@ -752,5 +755,47 @@ mod tests {
             [],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn recompute_clears_foreign_key_children_first() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
+        ensure_location_clusters_table(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (
+                path TEXT PRIMARY KEY, hash TEXT NOT NULL, gps_lat REAL, gps_lon REAL,
+                location_cluster_id INTEGER REFERENCES location_clusters(id)
+                    ON DELETE RESTRICT ON UPDATE RESTRICT
+            );
+            INSERT INTO location_clusters (id, centroid_lat, centroid_lon, name, photo_count, radius_km, created_at)
+            VALUES (1, 52.52, 13.40, 'berlin', 1, 25.0, datetime('now'));
+            INSERT INTO file_hashes (path, hash, gps_lat, gps_lon, location_cluster_id)
+            VALUES ('/p/x.jpg', 'x', 52.51, 13.39, 1);",
+        )
+        .unwrap();
+
+        let cache = temp_cache();
+        recompute_all(&conn, &cache, 15.0, true)
+            .expect("recompute must clear child references before deleting the parent clusters");
+
+        let clusters: i64 = conn
+            .query_row("SELECT COUNT(*) FROM location_clusters", [], |r| r.get(0))
+            .unwrap();
+        let refs: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_hashes WHERE location_cluster_id IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(clusters, 1, "the located shot regains a fresh cluster");
+        assert_eq!(refs, 1, "its reference points at the fresh cluster");
+        let violations: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(violations, 0);
     }
 }

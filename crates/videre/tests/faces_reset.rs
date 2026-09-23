@@ -83,13 +83,13 @@ fn seeded() -> TestLibrary {
     )
     .unwrap();
     conn.execute(
-        "INSERT INTO faces (hash, bbox, embedding, confirmed, person_label)
-         VALUES ('abc123', '0,0,50,50', X'0000', 1, 'elena')",
+        "INSERT INTO people (name, full_name) VALUES ('elena', 'Elena')",
         [],
     )
     .unwrap();
     conn.execute(
-        "INSERT INTO people (name, full_name) VALUES ('elena', 'Elena')",
+        "INSERT INTO faces (hash, bbox, embedding, confirmed, person_label)
+         VALUES ('abc123', '0,0,50,50', X'0000', 1, 'elena')",
         [],
     )
     .unwrap();
@@ -388,6 +388,11 @@ fn reset_reaches_libraries_with_rows_but_no_markers() {
     )
     .unwrap();
     conn.execute(
+        "INSERT INTO people (name, full_name) VALUES ('elena', 'Elena')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
         "INSERT INTO faces (hash, bbox, embedding, confirmed, person_label)
          VALUES ('abc123', '0,0,50,50', X'0000', 1, 'elena')",
         [],
@@ -460,14 +465,14 @@ fn reset_with_yes_clears_every_face_state_without_needing_models() {
     let lib = TestLibrary::new();
     let conn = lib.init_db();
     conn.execute(
-        "INSERT INTO faces
-         (hash, bbox, embedding, cluster_id, confirmed, person_label, is_primary)
-         VALUES ('orphan', '0,0,50,50', X'0000', 7, 1, 'elena', 1)",
+        "INSERT INTO people (name, full_name) VALUES ('elena', 'Elena')",
         [],
     )
     .unwrap();
     conn.execute(
-        "INSERT INTO people (name, full_name) VALUES ('elena', 'Elena')",
+        "INSERT INTO faces
+         (hash, bbox, embedding, cluster_id, confirmed, person_label, is_primary)
+         VALUES ('orphan', '0,0,50,50', X'0000', 7, 1, 'elena', 1)",
         [],
     )
     .unwrap();

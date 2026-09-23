@@ -77,11 +77,23 @@ pub const PAGE_SIZE: i64 = 16384;
 /// only takes effect on an empty database and must be set before
 /// `journal_mode = WAL` and before any table exists. Setting it later is
 /// silently ignored and needs a full VACUUM to apply.
+/// Opens one videre-owned model database with foreign keys verified on. Both
+/// the create path and the read paths go through here so every standalone
+/// model connection enforces the same rules as the main library.
+fn open_model_db(path: &Path) -> Result<Connection> {
+    let conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
+    crate::db::enable_foreign_keys(&conn)
+        .with_context(|| format!("enable foreign keys on {}", path.display()))?;
+    Ok(conn)
+}
+
 fn init_model_db(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
-    let conn = Connection::open(path).with_context(|| format!("create {}", path.display()))?;
+    // The page-size pragma must run before WAL or table creation, so it stays
+    // here rather than in the shared opener.
+    let conn = open_model_db(path)?;
     conn.pragma_update(None, "page_size", PAGE_SIZE)
         .context("set page_size")?;
     conn.pragma_update(None, "journal_mode", "WAL")
@@ -201,7 +213,7 @@ pub fn counts_by_model_in(
         let size_bytes = std::fs::metadata(&path)
             .with_context(|| format!("inspect {}", path.display()))?
             .len() as i64;
-        let conn = Connection::open(&path).with_context(|| format!("open {}", path.display()))?;
+        let conn = open_model_db(&path)?;
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM embeddings", [], |row| row.get(0))
             .unwrap_or(0);
@@ -360,6 +372,16 @@ mod tests {
         assert!(format!("{error:#}").contains("no embeddings for owner/missing"));
         assert!(!expected.exists());
         assert!(!ctx.paths.embeddings.exists());
+    }
+
+    #[test]
+    fn standalone_model_open_enforces_foreign_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = open_model_db(&dir.path().join("model.db")).unwrap();
+        let enabled: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(enabled, 1);
     }
 
     /// Gives one test its own directory under the shared per-binary

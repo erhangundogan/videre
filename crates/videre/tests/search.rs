@@ -53,7 +53,8 @@ fn people_library() -> TestLibrary {
     let lib = dates_library();
     lib.conn()
         .execute_batch(
-            "INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
+            "INSERT INTO people (name, full_name) VALUES ('alice', 'Alice');
+             INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
              VALUES ('h1','[]',x'00','alice',1), ('h2','[]',x'00','alice',1);",
         )
         .unwrap();
@@ -246,6 +247,11 @@ fn composition_library() -> TestLibrary {
         .unwrap();
     }
 
+    conn.execute(
+        "INSERT INTO people (name, full_name) VALUES ('alice', 'Alice')",
+        [],
+    )
+    .unwrap();
     for hash in [
         "target", "marks", "date", "category", "gps", "path", "video",
     ] {
@@ -256,6 +262,11 @@ fn composition_library() -> TestLibrary {
         )
         .unwrap();
     }
+    conn.execute(
+        "INSERT INTO people (name, full_name) VALUES ('bob', 'Bob')",
+        [],
+    )
+    .unwrap();
     conn.execute(
         "INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
          VALUES ('person', '0,0,50,50', X'0000', 'bob', 1)",

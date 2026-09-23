@@ -196,6 +196,16 @@ mod tests {
         label: Option<&str>,
         cluster_id: Option<i64>,
     ) {
+        // A labeled face needs its people parent under enforced foreign
+        // keys; unlabeled faces insert without one.
+        if let Some(name) = label {
+            conn.execute(
+                "INSERT INTO people (name, full_name) VALUES (?1, ?1)
+                 ON CONFLICT(name) DO NOTHING",
+                params![name],
+            )
+            .unwrap();
+        }
         conn.execute(
             "INSERT INTO faces (
                 id, hash, bbox, embedding, cluster_id, person_label, confirmed, blur

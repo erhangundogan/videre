@@ -38,9 +38,9 @@ fn fixture() -> TestLibrary {
     )
     .unwrap();
     conn.execute_batch(
-        "INSERT INTO faces (hash, bbox, embedding, cluster_id, person_label, confirmed)
-           VALUES ('abc123', '0,0,50,50', X'0000', 1, 'ozgur_demirtas', 1);
-         INSERT INTO people (name, full_name) VALUES ('ozgur_demirtas', 'Özgür');",
+        "INSERT INTO people (name, full_name) VALUES ('ozgur_demirtas', 'Özgür');
+         INSERT INTO faces (hash, bbox, embedding, cluster_id, person_label, confirmed)
+           VALUES ('abc123', '0,0,50,50', X'0000', 1, 'ozgur_demirtas', 1);",
     )
     .unwrap();
     lib
@@ -354,7 +354,12 @@ fn a_sized_video_request_returns_an_oriented_poster_jpeg() {
     // video mime type - the latent bug this fix also closes.) macOS-gated:
     // poster extraction is QuickLook.
     let lib = TestLibrary::new();
-    let dst = lib.copy_fixture("red_1s.mp4", "clip.mp4");
+    // Match the canonical root stored by LibraryContext on macOS, where
+    // tempfile may return /var while the filesystem resolves to /private/var.
+    let dst = lib
+        .copy_fixture("red_1s.mp4", "clip.mp4")
+        .canonicalize()
+        .unwrap();
     lib.init_db()
         .execute(
             "INSERT INTO file_hashes (path, hash, ext, size_bytes) VALUES (?1, 'vid1', 'mp4', 1000)",

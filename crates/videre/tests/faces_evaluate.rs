@@ -15,6 +15,15 @@ fn embedding_at(angle: f32) -> Vec<u8> {
 fn seed_faces(labels: &[(f32, Option<&str>)]) -> TestLibrary {
     let library = TestLibrary::new();
     let conn = library.init_db();
+    for (_, label) in labels {
+        if let Some(label) = label {
+            conn.execute(
+                "INSERT OR IGNORE INTO people (name, full_name) VALUES (?1, ?1)",
+                [label],
+            )
+            .unwrap();
+        }
+    }
     for (index, (angle, label)) in labels.iter().enumerate() {
         let id = index as i64 + 1;
         conn.execute(
