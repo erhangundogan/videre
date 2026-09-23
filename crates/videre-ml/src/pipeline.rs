@@ -280,16 +280,14 @@ fn run_face_pipeline_impl(
                             let load_start = std::time::Instant::now();
                             let img = match load_image(path, hash, cache) {
                                 Ok(i) => i,
-                                Err(msg) => {
-                                    progress.skip(
-                                        path,
-                                        anyhow::anyhow!("{msg}").context(
-                                            videre_core::error_kind::ErrorKind::DecodeFailed,
-                                        ),
-                                    );
+                                Err(e) => {
+                                    let error = format!("{e:#}");
+                                    // The kind was attached where the cause
+                                    // was known (drive, permission, decode).
+                                    progress.skip(path, e);
                                     let _ = tx.send(WorkerMsg::DecodeError {
                                         hash: hash.clone(),
-                                        error: msg.to_string(),
+                                        error,
                                     });
                                     progress.tick();
                                     continue;
@@ -772,7 +770,8 @@ fn load_image(
     #[cfg_attr(not(target_os = "macos"), allow(unused_variables))] cache: Option<
         &videre_core::library::CachePaths,
     >,
-) -> Result<image::DynamicImage, String> {
+) -> anyhow::Result<image::DynamicImage> {
+    use videre_core::error_kind::{from_image, ErrorKind};
     if path.to_lowercase().ends_with(".heic") {
         #[cfg(target_os = "macos")]
         {
@@ -803,16 +802,18 @@ fn load_image(
                     // fresh decode rather than failing outright.
                 }
             }
+            // QuickLook does not say why it failed, so no kind is claimed.
             return videre_core::heic::heic_via_quicklook(path, "faces", None).ok_or_else(|| {
-                format!(
+                anyhow::anyhow!(
                     "could not read/convert HEIC file {path} (missing, timed out, or unreadable - is its drive connected?)"
                 )
             });
         }
         #[cfg(not(target_os = "macos"))]
-        return Err(format!(
+        return Err(anyhow::anyhow!(
             "HEIC decoding is only supported on macOS: {path} (hash {hash})"
-        ));
+        )
+        .context(ErrorKind::QuicklookUnavailable));
     }
     let timeout_path = std::path::PathBuf::from(path);
     videre_core::io_timeout::run_with_timeout(videre_core::io_timeout::DEFAULT_IO_TIMEOUT, move || {
@@ -821,12 +822,13 @@ fn load_image(
         videre_core::image_decode::decode_oriented_file(&timeout_path)
     })
     .map_err(|_| {
-        format!(
+        anyhow::anyhow!(
             "timed out reading {path} after {}s (file may be unreachable - is its drive connected?)",
             videre_core::io_timeout::DEFAULT_IO_TIMEOUT.as_secs()
         )
+        .context(ErrorKind::SourceUnavailable)
     })?
-    .map_err(|e| format!("could not read {path}: {e}"))
+    .map_err(|e| from_image(e).context(format!("could not read {path}")))
 }
 
 #[cfg(test)]
@@ -914,8 +916,25 @@ mod tests {
         let err =
             load_image("/no/such/path/does-not-exist.jpg", "irrelevant-hash", None).unwrap_err();
         assert!(
-            err.contains("/no/such/path/does-not-exist.jpg"),
-            "error should name the path: {err}"
+            format!("{err:#}").contains("/no/such/path/does-not-exist.jpg"),
+            "error should name the path: {err:#}"
+        );
+        assert_eq!(
+            videre_core::error_kind::ErrorKind::in_chain(&err),
+            Some(videre_core::error_kind::ErrorKind::SourceUnavailable),
+            "a missing file is not a decode failure"
+        );
+    }
+
+    #[test]
+    fn load_image_corrupt_file_is_a_decode_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Çağla_bozuk.jpg");
+        std::fs::write(&path, b"\xff\xd8 not really a jpeg").unwrap();
+        let err = load_image(path.to_str().unwrap(), "h", None).unwrap_err();
+        assert_eq!(
+            videre_core::error_kind::ErrorKind::in_chain(&err),
+            Some(videre_core::error_kind::ErrorKind::DecodeFailed)
         );
     }
 

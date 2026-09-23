@@ -32,8 +32,11 @@ pub fn image_to_tensor(path: &Path, size: usize, device: &Device) -> Result<Tens
                 path.display(),
                 videre_core::io_timeout::DEFAULT_IO_TIMEOUT.as_secs()
             )
+            .context(videre_core::error_kind::ErrorKind::SourceUnavailable)
         })?
-        .map_err(|e| anyhow::anyhow!("decode {}: {e}", path.display()))?
+        .map_err(|e| {
+            videre_core::error_kind::from_image(e).context(format!("decode {}", path.display()))
+        })?
     };
 
     let img = img
@@ -177,7 +180,24 @@ mod tests {
     #[test]
     fn preprocess_missing_file_is_err_not_panic() {
         let r = image_to_tensor(std::path::Path::new("/nonexistent.jpg"), 384, &Device::Cpu);
-        assert!(r.is_err());
+        let err = r.unwrap_err();
+        assert_eq!(
+            videre_core::error_kind::ErrorKind::in_chain(&err),
+            Some(videre_core::error_kind::ErrorKind::SourceUnavailable),
+            "a missing file is not a decode failure"
+        );
+    }
+
+    #[test]
+    fn preprocess_corrupt_file_is_a_decode_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Çağla_bozuk.jpg");
+        std::fs::write(&path, b"\xff\xd8 not really a jpeg").unwrap();
+        let err = image_to_tensor(&path, 384, &Device::Cpu).unwrap_err();
+        assert_eq!(
+            videre_core::error_kind::ErrorKind::in_chain(&err),
+            Some(videre_core::error_kind::ErrorKind::DecodeFailed)
+        );
     }
 
     #[test]

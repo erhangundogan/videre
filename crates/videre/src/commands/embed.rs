@@ -187,10 +187,8 @@ fn run_embed(
                         Ok(t) => Ok((p.hash.clone(), t)),
                         Err(e) => {
                             let reason = format!("{e:#}");
-                            progress.skip(
-                                &p.path,
-                                e.context(videre_core::error_kind::ErrorKind::DecodeFailed),
-                            );
+                            // The kind was attached where the cause was known.
+                            progress.skip(&p.path, e);
                             Err((p.hash.clone(), reason))
                         }
                     }
