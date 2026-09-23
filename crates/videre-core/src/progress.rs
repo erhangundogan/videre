@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// npm style) when stderr is a terminal, or periodic plain-text lines when
 /// it isn't (piped to a file, CI log), so a long run never looks hung in a
 /// log file, without per-item spam either way. `silent` suppresses the bar
-/// and periodic lines entirely, but NOT error output (see `println`) or the
+/// and periodic lines entirely, but NOT skipped items (see `skip`) or the
 /// caller's own decision about whether to print a final summary.
 ///
 /// Does not track elapsed time itself: callers that need it (e.g.
@@ -34,7 +34,7 @@ enum Mode {
     Bar(ProgressBar),
     /// Non-TTY fallback: print one line every LOG_INTERVAL ticks.
     Plain,
-    /// --silent: no bar, no periodic lines. Errors still print (see println).
+    /// --silent: no bar, no periodic lines. Skipped items still print (see skip).
     Silent,
 }
 
@@ -128,17 +128,16 @@ impl Progress {
         }
     }
 
-    /// Print a line that survives an active progress bar without corrupting
-    /// its rendering. Always prints, regardless of `silent`, matches the
-    /// existing unconditional behavior of per-image error messages
-    /// (`detect failed ...`, `embed_batch failed ...`, `write failed ...`),
-    /// which must stay visible even under --silent since they indicate data
-    /// loss, not routine progress.
-    pub fn println(&self, msg: &str) {
-        match &self.mode {
-            Mode::Bar(bar) => bar.println(msg),
-            Mode::Plain | Mode::Silent => eprintln!("{msg}"),
-        }
+    /// Record one item that was not processed, as a warning naming it. Shown
+    /// and logged regardless of `silent`: a skipped file is data that was not
+    /// processed, not routine progress. The terminal line is written with the
+    /// bar hidden (see `with_bars_suspended`), so it never tears the bar.
+    pub fn skip(&self, subject: &str, err: anyhow::Error) {
+        crate::error_log::report(
+            tracing::Level::WARN,
+            &err.context(format!("skipping {subject}")),
+            Some(subject),
+        );
     }
 
     /// Clears the bar (if any) so the final summary prints cleanly below it
@@ -176,12 +175,40 @@ mod tests {
     }
 
     #[test]
-    fn silent_mode_println_still_prints() {
-        // println() must not panic in silent mode; it always writes to
-        // stderr regardless of `silent` (verified by not panicking here;
-        // capturing stderr output itself is not practical in a unit test).
-        let p = Progress::new(5, true);
-        p.println("an error message");
+    fn a_skip_is_a_warning_with_the_subject_as_its_path_even_when_silent() {
+        #[derive(Clone, Default)]
+        struct Buf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Buf {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let buf = Buf::default();
+        let w = buf.clone();
+        let sub = tracing_subscriber::fmt()
+            .json()
+            .with_writer(move || w.clone())
+            .finish();
+        tracing::subscriber::with_default(sub, || {
+            let p = Progress::new(5, true);
+            p.skip(
+                "/Fotoğraflar/Çağla.heic",
+                anyhow::anyhow!("decode failed")
+                    .context(crate::error_kind::ErrorKind::DecodeFailed),
+            );
+        });
+        let line: serde_json::Value = serde_json::from_slice(&buf.0.lock().unwrap()).unwrap();
+        assert_eq!(line["level"], "WARN");
+        assert_eq!(line["fields"]["path"], "/Fotoğraflar/Çağla.heic");
+        assert_eq!(
+            line["fields"]["message"],
+            "skipping /Fotoğraflar/Çağla.heic: the file could not be decoded: decode failed"
+        );
+        assert_eq!(line["fields"]["kind"], "decode_failed");
     }
 
     #[test]

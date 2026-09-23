@@ -334,6 +334,7 @@ pub fn run(args: PipelineArgs, ctx: &CommandContext) -> anyhow::Result<()> {
         }
 
         let started = Instant::now();
+        let _stage = videre_core::error_log::enter_stage(stage.key());
         match run_stage(*stage, ctx, stage_silent) {
             Ok(()) => outcomes.push(Outcome {
                 stage: *stage,
@@ -343,7 +344,12 @@ pub fn run(args: PipelineArgs, ctx: &CommandContext) -> anyhow::Result<()> {
                 duration_ms: Some(started.elapsed().as_millis() as u64),
             }),
             Err(e) => {
-                eprintln!("videre pipeline: {} stage error: {e:#}", stage.key());
+                // Logged here, once, inside the stage: the run goes on.
+                videre_core::error_log::report(
+                    tracing::Level::ERROR,
+                    &e.context(format!("videre pipeline: {} stage", stage.key())),
+                    None,
+                );
                 outcomes.push(Outcome {
                     stage: *stage,
                     ran: true,

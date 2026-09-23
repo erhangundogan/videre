@@ -97,6 +97,8 @@ fn json_result(doc: &impl Serialize) -> Result<CallToolResult, McpError> {
 /// Runtime failure: a tool-level error (isError: true) carrying the anyhow
 /// chain, exactly the message text the CLI would print. The server stays up.
 fn tool_error(e: &anyhow::Error) -> CallToolResult {
+    // Logged once, here; stdout is the protocol stream and never sees it.
+    videre_core::error_log::report(tracing::Level::ERROR, e, None);
     CallToolResult::error(vec![ContentBlock::text(format!("{e:#}"))])
 }
 

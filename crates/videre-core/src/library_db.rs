@@ -587,13 +587,20 @@ fn validate_row_containment(ctx: &LibraryContext, conn: &Connection) -> Result<(
 /// appropriate locks: refuse future versions, refuse foreign databases and
 /// foreign rows (all read-only checks, so a refusal leaves the file
 /// untouched), then prepare and mark the schema when it is still incomplete.
+/// The refusal for a database written by a newer videre, shared by every
+/// open path so the wording and its kind cannot drift apart.
+fn newer_schema(ctx: &LibraryContext, version: i64) -> anyhow::Error {
+    anyhow::anyhow!(
+        "the library at {} was written by a newer videre (schema version {version}, this build understands up to {SCHEMA_VERSION}); upgrade videre to open it",
+        ctx.paths.root.display()
+    )
+    .context(crate::error_kind::ErrorKind::LibrarySchema)
+}
+
 fn open_prepared(ctx: &LibraryContext, conn: &Connection) -> Result<()> {
     let version = user_version(conn)?;
     if version > SCHEMA_VERSION {
-        bail!(
-            "the library at {} was written by a newer videre (schema version {version}, this build understands up to {SCHEMA_VERSION}); upgrade videre to open it",
-            ctx.paths.root.display()
-        );
+        return Err(newer_schema(ctx, version));
     }
     require_supported_library(conn, &ctx.paths.db)?;
     validate_row_containment(ctx, conn)?;
@@ -826,10 +833,7 @@ pub fn open_existing(ctx: &LibraryContext) -> Result<Connection> {
     let conn = open_existing_conn(ctx)?;
     let version = user_version(&conn)?;
     if version > SCHEMA_VERSION {
-        bail!(
-            "the library at {} was written by a newer videre (schema version {version}, this build understands up to {SCHEMA_VERSION}); upgrade videre to open it",
-            ctx.paths.root.display()
-        );
+        return Err(newer_schema(ctx, version));
     }
     require_supported_library(&conn, &ctx.paths.db)?;
     validate_row_containment(ctx, &conn)?;
@@ -889,18 +893,16 @@ pub fn open_existing_read_only(ctx: &LibraryContext) -> Result<Connection> {
     let conn = open_existing_read_only_conn(ctx)?;
     let version = user_version(&conn)?;
     if version > SCHEMA_VERSION {
-        bail!(
-            "the library at {} was written by a newer videre (schema version {version}, this build understands up to {SCHEMA_VERSION}); upgrade videre to open it",
-            ctx.paths.root.display()
-        );
+        return Err(newer_schema(ctx, version));
     }
     require_supported_library(&conn, &ctx.paths.db)?;
     validate_row_containment(ctx, &conn)?;
     if version < SCHEMA_VERSION || !schema_complete(&conn)? {
-        bail!(
+        return Err(anyhow::anyhow!(
             "the library at {} requires an upgrade before it can be opened read-only; run a normal writer command such as `videre scan`, then retry",
             ctx.paths.root.display()
-        );
+        )
+        .context(crate::error_kind::ErrorKind::LibrarySchema));
     }
     verify_schema(&conn)?;
     Ok(conn)
@@ -1142,9 +1144,32 @@ mod tests {
         let error = open_existing_read_only(&ctx).unwrap_err();
 
         assert!(format!("{error:#}").contains("requires an upgrade"));
+        assert_eq!(
+            crate::error_kind::ErrorKind::in_chain(&error),
+            Some(crate::error_kind::ErrorKind::LibrarySchema)
+        );
         assert_eq!(std::fs::read(&ctx.paths.db).unwrap(), before);
         let conn = open_without_create(&ctx.paths.db).unwrap();
         assert_eq!(user_version(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_library_from_a_newer_videre_is_refused_with_the_schema_kind() {
+        let (_temp, ctx) = library();
+        let conn = initialize(&ctx).unwrap();
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+            .unwrap();
+        drop(conn);
+        for error in [
+            open_existing(&ctx).unwrap_err(),
+            open_existing_read_only(&ctx).unwrap_err(),
+        ] {
+            assert!(format!("{error:#}").contains("newer videre"), "{error:#}");
+            assert_eq!(
+                crate::error_kind::ErrorKind::in_chain(&error),
+                Some(crate::error_kind::ErrorKind::LibrarySchema)
+            );
+        }
     }
 
     #[test]

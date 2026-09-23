@@ -69,9 +69,15 @@ impl ErrorKind {
         }
     }
 
-    /// The first kind attached anywhere in `err`'s context chain.
+    /// The kind attached anywhere in `err`'s context chain. Failing that, a
+    /// SQLite error anywhere in the chain is the database kind: classified by
+    /// type once, here, rather than tagged at every query.
     pub fn in_chain(err: &anyhow::Error) -> Option<ErrorKind> {
-        err.downcast_ref::<ErrorKind>().copied()
+        err.downcast_ref::<ErrorKind>().copied().or_else(|| {
+            err.chain()
+                .any(|e| e.is::<rusqlite::Error>())
+                .then_some(ErrorKind::Database)
+        })
     }
 }
 
@@ -92,6 +98,40 @@ impl std::fmt::Display for ErrorKind {
 }
 
 impl std::error::Error for ErrorKind {}
+
+/// An I/O error as an `anyhow` error, carrying the kind its cause implies:
+/// a timed-out read, a missing file or a device error (`EIO`) means the
+/// source is unavailable, a refusal means permissions. Other causes carry no
+/// kind. The wrapped error stays the root cause, so `NotFound` checks on the
+/// chain still work. The one place I/O failures are
+/// classified, so every reader of the library volume agrees.
+pub fn from_io(e: std::io::Error) -> anyhow::Error {
+    /// `EIO`, the same number on macOS and Linux: the device failed the read.
+    const EIO: i32 = 5;
+    let kind = match e.kind() {
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::NotFound => {
+            Some(ErrorKind::SourceUnavailable)
+        }
+        std::io::ErrorKind::PermissionDenied => Some(ErrorKind::PermissionDenied),
+        _ if e.raw_os_error() == Some(EIO) => Some(ErrorKind::SourceUnavailable),
+        _ => None,
+    };
+    let err = anyhow::Error::new(e);
+    match kind {
+        Some(kind) => err.context(kind),
+        None => err,
+    }
+}
+
+/// An image decode error, classified at its cause: an I/O failure reading
+/// the file is whatever [`from_io`] says (a drive, a permission), and only a
+/// failure to understand the bytes is `decode_failed`.
+pub fn from_image(e: image::ImageError) -> anyhow::Error {
+    match e {
+        image::ImageError::IoError(io) => from_io(io),
+        other => anyhow::Error::new(other).context(ErrorKind::DecodeFailed),
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -121,6 +161,64 @@ mod tests {
             ErrorKind::in_chain(&err),
             Some(ErrorKind::SourceUnavailable)
         );
+    }
+
+    #[test]
+    fn io_errors_carry_the_kind_their_cause_implies() {
+        use std::io::{Error, ErrorKind as Io};
+        let timed_out = from_io(Error::new(Io::TimedOut, "read timed out"));
+        assert_eq!(
+            ErrorKind::in_chain(&timed_out),
+            Some(ErrorKind::SourceUnavailable)
+        );
+        let denied = from_io(Error::new(Io::PermissionDenied, "denied"));
+        assert_eq!(
+            ErrorKind::in_chain(&denied),
+            Some(ErrorKind::PermissionDenied)
+        );
+        let other = from_io(Error::new(Io::InvalidData, "bad bytes"));
+        assert_eq!(ErrorKind::in_chain(&other), None);
+        assert!(format!("{other:#}").contains("bad bytes"));
+        let missing = from_io(Error::new(Io::NotFound, "gone"));
+        assert_eq!(
+            ErrorKind::in_chain(&missing),
+            Some(ErrorKind::SourceUnavailable)
+        );
+        let eio = from_io(Error::from_raw_os_error(5));
+        assert_eq!(
+            ErrorKind::in_chain(&eio),
+            Some(ErrorKind::SourceUnavailable)
+        );
+    }
+
+    #[test]
+    fn image_errors_are_classified_by_their_cause() {
+        let io = image::ImageError::IoError(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "denied",
+        ));
+        assert_eq!(
+            ErrorKind::in_chain(&from_image(io)),
+            Some(ErrorKind::PermissionDenied)
+        );
+        let bad =
+            image::ImageError::Unsupported(image::error::UnsupportedError::from_format_and_kind(
+                image::error::ImageFormatHint::Unknown,
+                image::error::UnsupportedErrorKind::Format(image::error::ImageFormatHint::Unknown),
+            ));
+        assert_eq!(
+            ErrorKind::in_chain(&from_image(bad)),
+            Some(ErrorKind::DecodeFailed)
+        );
+    }
+
+    #[test]
+    fn a_database_error_without_an_explicit_kind_is_the_database_kind() {
+        let err = anyhow::Error::new(rusqlite::Error::InvalidQuery).context("load rows");
+        assert_eq!(ErrorKind::in_chain(&err), Some(ErrorKind::Database));
+        let explicit =
+            anyhow::Error::new(rusqlite::Error::InvalidQuery).context(ErrorKind::LibraryBusy);
+        assert_eq!(ErrorKind::in_chain(&explicit), Some(ErrorKind::LibraryBusy));
     }
 
     #[test]

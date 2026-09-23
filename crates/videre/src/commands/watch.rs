@@ -94,7 +94,7 @@ pub fn run(mut args: WatchArgs, ctx: &CommandContext) -> Result<()> {
                  may restore live watching."
             );
             if let Err(e) = reconcile(&args, ctx) {
-                eprintln!("videre watch: startup scan error: {e}");
+                failed("startup scan", e);
             }
             // Test-only bounded exit still honors the degraded arm's startup
             // pass, so the once-hook never hangs on the fallback loop.
@@ -113,7 +113,7 @@ fn degraded_rescan_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
     loop {
         std::thread::sleep(Duration::from_secs(FALLBACK_RESCAN_SECS));
         if let Err(e) = reconcile(args, ctx) {
-            eprintln!("videre watch: rescan error: {e}");
+            failed("rescan", e);
         }
     }
 }
@@ -345,7 +345,7 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
         match reconcile(args, ctx) {
             Ok(outcome) => Some(outcome),
             Err(e) => {
-                eprintln!("videre watch: startup scan error: {e}");
+                failed("startup scan", e);
                 None
             }
         },
@@ -373,10 +373,7 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
                     // anything pending; an incomplete one (a stage was busy,
                     // the scan errored) seeds what it hashed and keeps the
                     // batch for the backoff.
-                    let outcome = reconcile(args, ctx).map_err(|e| {
-                        eprintln!("videre watch: rescan error: {e}");
-                        e
-                    });
+                    let outcome = reconcile(args, ctx).map_err(|e| failed("rescan", e));
                     rescan_owed = !apply_rescan_outcome(&mut pending, outcome.ok());
                     last_maintenance = Instant::now();
                     continue;
@@ -388,13 +385,10 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
             }
             Ok(Err(errs)) => {
                 for e in errs {
-                    eprintln!("videre watch: event error: {e}");
+                    failed("event", e);
                 }
                 // An event error may mean missed changes: reconcile to be safe.
-                let outcome = reconcile(args, ctx).map_err(|e| {
-                    eprintln!("videre watch: rescan error: {e}");
-                    e
-                });
+                let outcome = reconcile(args, ctx).map_err(|e| failed("rescan", e));
                 rescan_owed = !apply_rescan_outcome(&mut pending, outcome.ok());
                 last_maintenance = Instant::now();
             }
@@ -404,10 +398,7 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
                     // the scan lock was taken): attempt it again on the
                     // backoff. A complete attempt clears the debt, and the
                     // attempt itself counts as watch activity.
-                    let outcome = reconcile(args, ctx).map_err(|e| {
-                        eprintln!("videre watch: rescan error: {e}");
-                        e
-                    });
+                    let outcome = reconcile(args, ctx).map_err(|e| failed("rescan", e));
                     rescan_owed = !apply_rescan_outcome(&mut pending, outcome.ok());
                     last_maintenance = Instant::now();
                 } else if last_maintenance.elapsed() >= maintenance {
@@ -415,10 +406,7 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
                     // reconcile (a stage was busy, the scan lock was taken)
                     // becomes a debt retried on the backoff, not an hour of
                     // silence. A complete one supersedes any waiting batch.
-                    let outcome = reconcile(args, ctx).map_err(|e| {
-                        eprintln!("videre watch: maintenance error: {e}");
-                        e
-                    });
+                    let outcome = reconcile(args, ctx).map_err(|e| failed("maintenance", e));
                     rescan_owed = !apply_rescan_outcome(&mut pending, outcome.ok());
                     last_maintenance = Instant::now();
                 }
@@ -457,7 +445,7 @@ fn drain_pending(
     let conn = match videre_core::library_db::open_existing(&ctx.library) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("videre watch: open error: {e}");
+            failed("open", e);
             return;
         }
     };
@@ -469,45 +457,35 @@ fn drain_pending(
     // the silent drop the pending set exists to prevent.
     let mut complete = true;
     if args.scan {
-        match run_scan_stage(args, ctx, &conn, Some(&batch), &mut Vec::new()) {
-            Ok(StageOutcome::Ran) => {}
-            Ok(StageOutcome::Busy) => return, // keep pending; retry on the next backoff
-            Err(e) => {
-                eprintln!("videre watch: scan stage error: {e}");
-                complete = false;
-            }
+        match stage("scan", "scan stage", || {
+            run_scan_stage(args, ctx, &conn, Some(&batch), &mut Vec::new())
+        }) {
+            Some(StageOutcome::Ran) => {}
+            Some(StageOutcome::Busy) => return, // keep pending; retry on the next backoff
+            None => complete = false,
         }
     }
     if args.faces || args.heic || args.location {
         if let Err(e) = face_db::create_faces_table(&conn) {
-            eprintln!("videre watch: faces table error: {e}");
+            failed("faces table", e);
             return;
         }
         videre_core::location::ensure_location_column(&conn);
-        if args.faces {
-            match run_faces_stage(args, ctx, &conn) {
-                Ok(StageOutcome::Ran) => {}
-                Ok(StageOutcome::Busy) => complete = false,
-                Err(e) => {
-                    eprintln!("videre watch: faces stage error: {e}");
-                    complete = false;
-                }
-            }
+        if args.faces
+            && stage("faces", "faces stage", || run_faces_stage(args, ctx, &conn))
+                != Some(StageOutcome::Ran)
+        {
+            complete = false;
         }
         if args.heic {
-            if let Err(e) = run_heic_stage(args, ctx, &conn) {
-                eprintln!("videre watch: heic stage error: {e}");
-            }
+            stage("heic", "heic stage", || run_heic_stage(args, ctx, &conn));
         }
-        if args.location {
-            match run_location_stage(args, ctx, &conn) {
-                Ok(StageOutcome::Ran) => {}
-                Ok(StageOutcome::Busy) => complete = false,
-                Err(e) => {
-                    eprintln!("videre watch: location stage error: {e}");
-                    complete = false;
-                }
-            }
+        if args.location
+            && stage("locations", "location stage", || {
+                run_location_stage(args, ctx, &conn)
+            }) != Some(StageOutcome::Ran)
+        {
+            complete = false;
         }
     }
     if complete {
@@ -515,7 +493,7 @@ fn drain_pending(
     }
     // A drained batch is watch activity the same way a cycle completion is.
     if let Err(e) = videre_core::pipeline_runs::record_heartbeat_in(&conn, &ctx.library, "watch") {
-        eprintln!("videre watch: could not record the batch heartbeat: {e}");
+        failed("could not record the batch heartbeat", e);
     }
 }
 
@@ -526,6 +504,35 @@ fn drain_pending(
 pub(crate) enum StageOutcome {
     Ran,
     Busy,
+}
+
+/// Run one watch stage with its name recorded on everything it logs. A
+/// failure is logged here, once, as `videre watch: <label>`, and the cycle
+/// carries on: `None` tells the caller the stage did not finish. `name` is
+/// the command the stage stands in for (`scan`, `faces`, `locations`, ...);
+/// `label` keeps the wording watch has always used for that stage.
+fn stage<T>(name: &'static str, label: &str, f: impl FnOnce() -> Result<T>) -> Option<T> {
+    let _stage = videre_core::error_log::enter_stage(name);
+    match f() {
+        Ok(v) => Some(v),
+        Err(e) => {
+            videre_core::error_log::report(
+                tracing::Level::ERROR,
+                &e.context(format!("videre watch: {label}")),
+                None,
+            );
+            None
+        }
+    }
+}
+
+/// Log one of watch's own failures (not a stage's): the watcher survives it.
+fn failed(what: &str, e: impl Into<anyhow::Error>) {
+    videre_core::error_log::report(
+        tracing::Level::ERROR,
+        &e.into().context(format!("videre watch: {what}")),
+        None,
+    );
 }
 
 /// Run a tracked stage under the library's activity lease and a command lock,
@@ -619,74 +626,60 @@ fn reconcile(args: &WatchArgs, ctx: &CommandContext) -> Result<ReconcileOutcome>
         // carry on to the stages below, but report the cycle as incomplete so
         // the caller keeps any waiting batch alive. A busy scan lock is the
         // same debt: the walk never ran, so nothing was re-found.
-        match run_scan_stage(args, ctx, &conn, None, &mut hashed) {
-            Ok(StageOutcome::Ran) => {}
-            Ok(StageOutcome::Busy) => complete = false,
-            Err(e) => {
-                eprintln!("videre watch: scan stage error: {e}");
-                complete = false;
-            }
+        if stage("scan", "scan stage", || {
+            run_scan_stage(args, ctx, &conn, None, &mut hashed)
+        }) != Some(StageOutcome::Ran)
+        {
+            complete = false;
         }
     }
     if args.faces || args.heic || args.location || args.prune || args.export_xmp {
         face_db::create_faces_table(&conn)?;
         videre_core::location::ensure_location_column(&conn);
-        if args.faces {
-            match run_faces_stage(args, ctx, &conn) {
-                Ok(StageOutcome::Ran) => {}
-                Ok(StageOutcome::Busy) => complete = false,
-                Err(e) => {
-                    eprintln!("videre watch: faces stage error: {e}");
-                    complete = false;
-                }
-            }
+        if args.faces
+            && stage("faces", "faces stage", || run_faces_stage(args, ctx, &conn))
+                != Some(StageOutcome::Ran)
+        {
+            complete = false;
         }
-        if args.heic {
-            run_heic_stage(args, ctx, &conn)?;
+        // A HEIC cache failure costs previews only, so the location, prune and
+        // export stages still run; but the cycle is incomplete, so the caller
+        // owes a retry instead of treating the work as done.
+        if args.heic && stage("heic", "heic stage", || run_heic_stage(args, ctx, &conn)).is_none() {
+            complete = false;
         }
         if args.location {
-            match run_location_stage(args, ctx, &conn) {
-                Ok(StageOutcome::Ran) => {}
-                Ok(StageOutcome::Busy) => complete = false,
-                Err(e) => {
-                    eprintln!("videre watch: location stage error: {e}");
-                    complete = false;
-                }
+            if stage("locations", "location stage", || {
+                run_location_stage(args, ctx, &conn)
+            }) != Some(StageOutcome::Ran)
+            {
+                complete = false;
             }
             // Names first, then regroup: re-cluster when the GPS data changed.
-            match run_locations_recluster_stage(args, ctx, &conn) {
-                Ok(StageOutcome::Ran) => {}
-                Ok(StageOutcome::Busy) => complete = false,
-                Err(e) => {
-                    eprintln!("videre watch: locations recluster stage error: {e}");
-                    complete = false;
-                }
+            if stage("locations", "locations recluster stage", || {
+                run_locations_recluster_stage(args, ctx, &conn)
+            }) != Some(StageOutcome::Ran)
+            {
+                complete = false;
             }
         }
-        if args.faces {
-            match run_recluster_stage(args, ctx, &conn) {
-                Ok(StageOutcome::Ran) => {}
-                Ok(StageOutcome::Busy) => complete = false,
-                Err(e) => {
-                    eprintln!("videre watch: face recluster stage error: {e}");
-                    complete = false;
-                }
-            }
+        if args.faces
+            && stage("faces", "face recluster stage", || {
+                run_recluster_stage(args, ctx, &conn)
+            }) != Some(StageOutcome::Ran)
+        {
+            complete = false;
         }
-        if args.prune {
-            match run_prune_stage(args, ctx, &conn) {
-                Ok(StageOutcome::Ran) => {}
-                Ok(StageOutcome::Busy) => complete = false,
-                Err(e) => {
-                    eprintln!("videre watch: prune stage error: {e}");
-                    complete = false;
-                }
-            }
+        if args.prune
+            && stage("prune", "prune stage", || run_prune_stage(args, ctx, &conn))
+                != Some(StageOutcome::Ran)
+        {
+            complete = false;
         }
         if args.export_xmp {
-            if let Err(e) = run_export_stage(args, ctx, &conn) {
-                eprintln!("videre watch: export stage error: {e}");
-            }
+            stage("export", "export stage", || {
+                run_export_stage(args, ctx, &conn)
+            });
         }
     }
 
@@ -694,7 +687,7 @@ fn reconcile(args: &WatchArgs, ctx: &CommandContext) -> Result<ReconcileOutcome>
     // able to say "watch: running (last cycle 2m ago)". Best-effort: a
     // bookkeeping failure must not kill an otherwise healthy watcher.
     if let Err(e) = videre_core::pipeline_runs::record_heartbeat_in(&conn, &ctx.library, "watch") {
-        eprintln!("videre watch: could not record the cycle heartbeat: {e}");
+        failed("could not record the cycle heartbeat", e);
     }
     Ok(ReconcileOutcome { hashed, complete })
 }

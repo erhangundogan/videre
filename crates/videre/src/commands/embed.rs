@@ -186,8 +186,10 @@ fn run_embed(
                     ) {
                         Ok(t) => Ok((p.hash.clone(), t)),
                         Err(e) => {
-                            progress.println(&format!("skip {}: {e:#}", p.path));
-                            Err((p.hash.clone(), format!("{e:#}")))
+                            let reason = format!("{e:#}");
+                            // The kind was attached where the cause was known.
+                            progress.skip(&p.path, e);
+                            Err((p.hash.clone(), reason))
                         }
                     }
                 })

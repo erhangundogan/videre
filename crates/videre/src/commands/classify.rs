@@ -152,7 +152,7 @@ fn run_classify(
         let mut rows: Vec<(String, &str, f32)> = Vec::with_capacity(hashes.len());
         for hash in &hashes {
             let Some(blob) = all_embeddings.get(hash) else {
-                progress.println(&format!("skipping {hash}: embedding vanished mid-run"));
+                progress.skip(hash, anyhow::anyhow!("embedding vanished mid-run"));
                 progress.tick();
                 continue;
             };

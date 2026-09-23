@@ -53,6 +53,49 @@ fn a_json_error_on_stdout_is_logged_but_not_repeated_on_stderr() {
     assert_eq!(line["level"], "ERROR");
 }
 
+fn parsed_lines(path: &std::path::Path) -> Vec<videre_core::error_log::LogLine> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(videre_core::error_log::parse_line)
+        .collect()
+}
+
+#[test]
+fn a_pipeline_stage_failure_is_logged_in_pipeline_log_with_its_stage() {
+    let lib = TestLibrary::new();
+    lib.scan();
+    // Holding scan's command lock makes the pipeline's scan stage fail the
+    // same way every time, without models.
+    let held = videre_core::library_locks::try_command(&lib.context(), "scan").unwrap();
+    let out = lib
+        .cmd()
+        .args([
+            "pipeline",
+            "--yes",
+            "--json",
+            "--skip",
+            "faces,embed,classify,locations",
+        ])
+        .output()
+        .unwrap();
+    drop(held);
+    let _ = out;
+    let lines = parsed_lines(&logs(&lib).join("pipeline.log"));
+    let failure = lines
+        .iter()
+        .find(|l| l.level == videre_core::error_log::LineLevel::Error)
+        .unwrap_or_else(|| panic!("no error in pipeline.log: {lines:?}"));
+    assert_eq!(failure.command.as_deref(), Some("pipeline"));
+    assert_eq!(failure.stage.as_deref(), Some("scan"));
+    assert_eq!(failure.kind.as_deref(), Some("library_busy"));
+    let scan_log = std::fs::read_to_string(logs(&lib).join("scan.log")).unwrap_or_default();
+    assert!(
+        !scan_log.contains("busy") && !scan_log.contains("in use"),
+        "the failure belongs to pipeline.log only: {scan_log}"
+    );
+}
+
 #[test]
 fn a_later_clean_run_supersedes_an_earlier_failure() {
     let lib = TestLibrary::new();

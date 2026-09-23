@@ -159,6 +159,14 @@ impl Embedder {
     /// `videre_core::embeddings::resolve_model_id`, so the weights loaded here
     /// always match the database the caller will read or write.
     pub fn load(device: Device, model_id: &str) -> Result<Self> {
+        // Any failure here (no network on first run, a broken cache, bad
+        // weights) means the model is unavailable, which is the one kind the
+        // log needs to say what to do.
+        Self::fetch_and_build(device, model_id)
+            .context(videre_core::error_kind::ErrorKind::ModelUnavailable)
+    }
+
+    fn fetch_and_build(device: Device, model_id: &str) -> Result<Self> {
         let client = hf_hub::HFClientSync::new().context("init HF Hub client")?;
         if model_id != MODEL_ID {
             eprintln!("Using model {model_id} at {}px.", image_size_for(model_id));

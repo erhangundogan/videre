@@ -277,8 +277,21 @@ fn acquire_lock_file(path: &Path, exclusive: bool, busy: String, what: &str) -> 
     } else {
         FileExt::try_lock_shared(&file)
     };
-    taken.map_err(|_| anyhow::anyhow!("{busy}"))?;
+    taken.map_err(|e| lock_refusal(e, busy, what))?;
     Ok(file)
+}
+
+/// Why a lock could not be taken. Only contention (another holder) is
+/// `library_busy`, with the busy message; any other failure keeps its real
+/// cause, classified like every other I/O error.
+fn lock_refusal(e: std::io::Error, busy: String, what: &str) -> anyhow::Error {
+    let contended = e.kind() == std::io::ErrorKind::WouldBlock
+        || e.raw_os_error() == fs2::lock_contended_error().raw_os_error();
+    if contended {
+        anyhow::anyhow!("{busy}").context(crate::error_kind::ErrorKind::LibraryBusy)
+    } else {
+        crate::error_kind::from_io(e).context(format!("lock {what}"))
+    }
 }
 
 /// Take the library's activity lock: shared by readers, exclusive for
@@ -390,6 +403,38 @@ mod tests {
         let ctx = LibraryContext::new(&root, &temp.path().join("cache")).unwrap();
         std::fs::create_dir_all(&ctx.paths.locks).unwrap();
         (temp, ctx)
+    }
+
+    #[test]
+    fn a_refused_lock_carries_the_library_busy_kind() {
+        use crate::error_kind::ErrorKind;
+        let (_t, ctx) = locked_library();
+        let _scan = try_command(&ctx, "scan").unwrap();
+        let err = try_command(&ctx, "scan").unwrap_err();
+        assert_eq!(ErrorKind::in_chain(&err), Some(ErrorKind::LibraryBusy));
+        let _exclusive = try_activity(&ctx, ActivityMode::Exclusive).unwrap();
+        let err = try_activity(&ctx, ActivityMode::Shared).unwrap_err();
+        assert_eq!(ErrorKind::in_chain(&err), Some(ErrorKind::LibraryBusy));
+    }
+
+    #[test]
+    fn only_contention_is_library_busy_and_other_lock_errors_keep_their_cause() {
+        use crate::error_kind::ErrorKind;
+        let busy = "library /Fotoğraflar is in use".to_string();
+        let contended = lock_refusal(fs2::lock_contended_error(), busy.clone(), "the lock");
+        assert_eq!(
+            ErrorKind::in_chain(&contended),
+            Some(ErrorKind::LibraryBusy)
+        );
+        assert!(format!("{contended:#}").contains("is in use"));
+
+        let io = lock_refusal(std::io::Error::from_raw_os_error(5), busy, "the lock");
+        assert_eq!(
+            ErrorKind::in_chain(&io),
+            Some(ErrorKind::SourceUnavailable),
+            "an I/O failure while locking is not contention: {io:#}"
+        );
+        assert!(!format!("{io:#}").contains("is in use"), "{io:#}");
     }
 
     #[test]
