@@ -5404,6 +5404,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokenizers 0.20.4",
+ "tracing",
  "videre-core",
 ]
 

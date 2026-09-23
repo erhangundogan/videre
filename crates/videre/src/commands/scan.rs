@@ -171,9 +171,7 @@ fn gather_records(
         .par_iter()
         .filter_map(|path| {
             let result = hasher::hash_file_in(&ctx.library, path)
-                .map_err(|error| {
-                    progress.println(&format!("Warning: skipping {:?}: {error}", path));
-                })
+                .map_err(|error| progress.skip(&path.display().to_string(), error.into()))
                 .ok();
             progress.tick();
             result

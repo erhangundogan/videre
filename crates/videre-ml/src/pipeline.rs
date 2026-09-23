@@ -278,7 +278,12 @@ fn run_face_pipeline_impl(
                             let img = match load_image(path, hash, cache) {
                                 Ok(i) => i,
                                 Err(msg) => {
-                                    progress.println(&format!("skipping {path}: {msg}"));
+                                    progress.skip(
+                                        path,
+                                        anyhow::anyhow!("{msg}").context(
+                                            videre_core::error_kind::ErrorKind::DecodeFailed,
+                                        ),
+                                    );
                                     let _ = tx.send(WorkerMsg::DecodeError {
                                         hash: hash.clone(),
                                         error: msg.to_string(),
@@ -305,7 +310,7 @@ fn run_face_pipeline_impl(
                             let detections = match detector.detect(&img) {
                                 Ok(d) => d,
                                 Err(e) => {
-                                    progress.println(&format!("detect failed {path}: {e}"));
+                                    progress.skip(path, anyhow::anyhow!("detect failed: {e}"));
                                     let _ = tx.send(WorkerMsg::ImageError);
                                     progress.tick();
                                     continue;
@@ -352,7 +357,11 @@ fn run_face_pipeline_impl(
                         let all_embeddings = match embedder.embed_batch(&chunk_crops) {
                             Ok(e) => e,
                             Err(e) => {
-                                progress.println(&format!("embed_batch failed: {e}"));
+                                videre_core::error_log::report(
+                                    tracing::Level::ERROR,
+                                    &anyhow::anyhow!("embed_batch failed: {e}"),
+                                    None,
+                                );
                                 let _ = tx.send(WorkerMsg::EmbedBatchError {
                                     n: chunk_entries.len(),
                                 });
@@ -445,7 +454,11 @@ fn run_face_pipeline_impl(
                                 );
                             }
                             Err(e) => {
-                                progress.println(&format!("write failed {hash}: {e}"));
+                                videre_core::error_log::report(
+                                    tracing::Level::ERROR,
+                                    &anyhow::anyhow!("write failed {hash}: {e}"),
+                                    None,
+                                );
                                 result.write_errors += 1;
                             }
                         }
