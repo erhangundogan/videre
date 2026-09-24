@@ -32,7 +32,7 @@ function seedTripsWithDatabaseSync(root: string): void {
   db.close();
 }
 
-test("Events explains empty travel evidence, then shows one exact Budapest trip", async ({ page, gallery }) => {
+test("Events explains empty travel evidence, then shows one exact Budapest trip", async ({ page, isolatedGallery: gallery }) => {
   await page.goto(`${gallery.baseURL}/events`);
   await expect(page.locator(".secnav a[href='/events']")).toHaveClass(/on/);
   await expect(page.locator("#dateBreadcrumb")).toHaveText("Events");
