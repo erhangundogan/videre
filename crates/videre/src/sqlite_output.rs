@@ -1,5 +1,5 @@
 use crate::types::FileRecord;
-use rusqlite::{params, Result};
+use rusqlite::{params, OptionalExtension, Result};
 use std::path::{Path, PathBuf};
 
 pub fn write_records(records: &[FileRecord], db_path: &Path) -> Result<()> {
@@ -31,8 +31,11 @@ pub fn write_records_in(
 fn write_records_to(conn: &rusqlite::Connection, records: &[FileRecord]) -> Result<()> {
     videre_core::library_db::ensure_scan_schema(conn)?;
     let tx = conn.unchecked_transaction()?;
+    // Paths whose content changed since the last scan, with the old hash.
+    let mut changed: Vec<(&str, String)> = Vec::new();
 
     {
+        let mut previous = tx.prepare("SELECT hash FROM file_hashes WHERE path = ?1")?;
         let mut stmt = tx.prepare(
             "INSERT INTO file_hashes
                 (path, hash, size_bytes, created_at, modified_at, ext, mime,
@@ -58,6 +61,7 @@ fn write_records_to(conn: &rusqlite::Connection, records: &[FileRecord]) -> Resu
         )?;
 
         for r in records {
+            let old: Option<String> = previous.query_row([&r.path], |row| row.get(0)).optional()?;
             stmt.execute(params![
                 r.path,
                 r.hash,
@@ -75,10 +79,29 @@ fn write_records_to(conn: &rusqlite::Connection, records: &[FileRecord]) -> Resu
                 r.duration_secs,
                 r.codec,
             ])?;
+            if let Some(old) = old.filter(|old| *old != r.hash) {
+                changed.push((r.path.as_str(), old));
+            }
+        }
+    }
+
+    // A face belongs to the content it was detected on. Content no file has
+    // any more takes its faces with it; the new content is detected again.
+    let mut relabel: Vec<(&str, usize)> = Vec::new();
+    for (path, old) in &changed {
+        let dropped =
+            videre_core::face_db::drop_unreferenced_faces(&tx, Some(std::slice::from_ref(old)))?;
+        if dropped.labeled > 0 {
+            relabel.push((path, dropped.labeled));
         }
     }
 
     tx.commit()?;
+    for (path, labeled) in relabel {
+        tracing::warn!(
+            "{path} changed; its {labeled} labeled face(s) will be detected again and need naming"
+        );
+    }
     Ok(())
 }
 
