@@ -18,16 +18,30 @@ version number and are released together.
 
 ## [0.41.0] - 2026-09-24
 
+### Breaking changes
+
+- **The library database structure changed, and existing libraries must be
+  rebuilt.** The schema version goes from 2 to 3: `file_hashes.hash` now holds
+  the content key described below instead of a hash of the whole file, and
+  `file_hashes` gains a `meta_hash` column. Every other table that refers to a
+  file by its hash (faces, named people, marks, tags, embeddings) holds keys
+  from the old scheme, which match nothing a new scan produces.
+- **Libraries built by 0.40.0 or earlier are refused, and there is no
+  migration.** Every command stops with a `library_schema` error that names
+  the library's `.videre` folder. Remove that folder and run `videre scan` to
+  build the library again. Removing it also discards faces, named people,
+  marks, tags and embeddings; recreate them with `faces`, `gallery`, `embed`
+  and `classify`.
+- **Versions cannot share a library.** 0.40.0 refuses a library built by
+  0.41.0 just as 0.41.0 refuses an older one, so upgrade every machine and
+  process that opens a library (a `watch`, a `gallery`, an MCP client) at the
+  same time.
+- **Hashes in scripts and exports change.** A `hash` saved from `--json`,
+  JSONL output or the gallery's URLs before this release no longer names the
+  same file.
+
 ### Changed
 
-- **Libraries built by 0.40.0 or earlier are refused and must be rebuilt.**
-  videre now identifies files differently (below), so an existing library's
-  stored identities match nothing a new scan produces. Every command stops
-  with a `library_schema` error that names the library's `.videre` folder;
-  remove that folder and run `videre scan` to build it again. That removal
-  also discards faces, named people, marks, tags and embeddings, which have to
-  be recreated with `faces`, `gallery`, `embed` and `classify`. There is no
-  migration, and 0.40.0 cannot open a library built by this version either.
 - **A file's identity ignores its metadata.** The content hash is now BLAKE3
   over the image or media data with EXIF, XMP, comments and similar blocks
   left out, for JPEG, PNG, WebP, GIF, BMP, TIFF and DNG, HEIC, MOV and MP4.
