@@ -37,6 +37,21 @@ files are (un)tagged to those that already carry it. The two never collide
 because they use different flags: `videre tag --add printed --tag beach` adds
 `printed` only to files already tagged `beach`.
 
+## Removing tags
+
+`--remove` takes the tag by name and removes it from every file in the
+selection; files that do not carry it are left alone.
+
+```bash
+videre tag --remove beach --path ~/Photos/2024/blurry   # from one folder
+videre tag --remove beach                               # from the whole library
+videre tag --remove "to print" --remove draft           # several at once
+```
+
+To rename a tag everywhere, scope the addition to files that carry the old one:
+`videre tag --tag beach --remove beach --add seaside`. There is no flag that
+removes every tag from a file at once; name each tag with `--remove`.
+
 ## Finding photos by tag
 
 `--tag` is a filter on [`videre search`](/commands/search/), composing with
