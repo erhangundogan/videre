@@ -460,6 +460,7 @@ fn prune_removes_faces_whose_photo_is_gone_and_dry_run_only_counts() {
             "INSERT OR IGNORE INTO people (name, full_name) VALUES ('çağla', 'Çağla');
              INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
                VALUES ('hphantom', '0,0,9,9', X'0000', 'çağla', 1),
+                      ('hphantom', '5,5,9,9', X'0000', NULL, 0),
                       ('haaa', '0,0,9,9', X'0000', NULL, 0);",
         )
         .unwrap();
@@ -474,7 +475,7 @@ fn prune_removes_faces_whose_photo_is_gone_and_dry_run_only_counts() {
 
     let dry = lib.cmd().args(["prune", "--dry-run"]).output().unwrap();
     assert!(dry.status.success());
-    assert_eq!(faces("hphantom"), 1, "a dry run changes nothing");
+    assert_eq!(faces("hphantom"), 2, "a dry run changes nothing");
 
     let out = lib.cmd().arg("prune").output().unwrap();
     assert!(
@@ -483,11 +484,28 @@ fn prune_removes_faces_whose_photo_is_gone_and_dry_run_only_counts() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(!row_exists(&lib, &phantom));
-    assert_eq!(faces("hphantom"), 0);
+    assert_eq!(
+        faces("hphantom"),
+        1,
+        "a name is kept: it comes back if the photo does"
+    );
     assert_eq!(faces("haaa"), 1, "a live photo keeps its faces");
     let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("removed 1 orphan face(s)"), "{stderr}");
     assert!(
-        stderr.contains("removed 1 orphan face(s) (1 labeled)"),
+        stderr.contains("kept 1 named face(s) whose photo is gone"),
         "{stderr}"
     );
+
+    let out = lib
+        .cmd()
+        .args(["prune", "--drop-named-faces"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(faces("hphantom"), 0, "asked for, the named face goes too");
 }

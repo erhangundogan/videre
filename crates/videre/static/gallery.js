@@ -414,7 +414,10 @@ function rehashPhoto(oldHash,newHash,path){
     if(!mine(m))return;
     m.hash=newHash;
     el.dataset.lbMeta=JSON.stringify(m);
-    var item=el.closest('.card, .tile')||el;
+    // The item around the preview, in every view that shows one: gallery
+    // cards and tiles, search result cards, duplicate table rows, and the
+    // date and event group cards.
+    var item=el.closest('.card, .tile, .rcard, tr, .date-card')||el;
     [item].concat(Array.prototype.slice.call(item.querySelectorAll('*'))).forEach(function(n){
       if(n.dataset.lbUrl) n.dataset.lbUrl=swap(n.dataset.lbUrl);
       if(n.dataset.hash===oldHash) n.dataset.hash=newHash;

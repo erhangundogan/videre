@@ -1551,3 +1551,58 @@ fn rotating_into_content_that_already_has_faces_does_not_merge_them() {
         "the turned content keeps its own faces; the old content, now on no path, takes its faces with it"
     );
 }
+
+#[test]
+fn rotate_waits_for_exclusive_maintenance() {
+    let (lib, old, _) = scanned_photo_with_a_labeled_face(&["Arşiv/çağla.jpg"]);
+    let server = Server::start(&lib);
+    let file = lib.root.join("Arşiv/çağla.jpg");
+    let before = std::fs::read(&file).unwrap();
+    {
+        // A prune or faces --reset in another process holds this.
+        let _maintenance = videre_core::library_locks::try_activity(
+            &lib.context(),
+            videre_core::library_locks::ActivityMode::Exclusive,
+        )
+        .unwrap();
+        let (status, body) = server.send("POST", &format!("/api/files/{old}/rotate"), "");
+        assert_eq!(status, 503, "{body}");
+        assert_eq!(
+            std::fs::read(&file).unwrap(),
+            before,
+            "the file is untouched"
+        );
+    }
+    let (status, body) = server.send("POST", &format!("/api/files/{old}/rotate"), "");
+    assert_eq!(status, 200, "{body}");
+}
+
+#[test]
+fn rotating_keeps_a_perceptual_hash_the_row_had() {
+    let (lib, old, _) = scanned_photo_with_a_labeled_face(&["Arşiv/çağla.jpg"]);
+    lib.conn()
+        .execute("UPDATE file_hashes SET phash = 12345", [])
+        .unwrap();
+    let server = Server::start(&lib);
+    let (status, body) = server.send("POST", &format!("/api/files/{old}/rotate"), "");
+    assert_eq!(status, 200, "{body}");
+    let (phash, modified_at, size): (Option<i64>, String, i64) = lib
+        .conn()
+        .query_row(
+            "SELECT phash, modified_at, size_bytes FROM file_hashes",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert!(
+        phash.is_some(),
+        "similar-image search still finds the photo"
+    );
+    // The row describes the file as written, so an incremental scan skips it.
+    let meta = std::fs::metadata(lib.root.join("Arşiv/çağla.jpg")).unwrap();
+    assert_eq!(size as u64, meta.len());
+    assert_eq!(
+        modified_at,
+        videre_core::db::mtime_iso(meta.modified().unwrap())
+    );
+}

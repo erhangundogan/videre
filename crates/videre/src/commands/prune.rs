@@ -26,6 +26,12 @@ pub struct PruneArgs {
     /// gone" and "yes, delete tens of thousands of rows" are different claims.
     #[arg(long)]
     pub(crate) force: bool,
+
+    /// Also remove named faces whose photo is gone. By default they are kept:
+    /// a name is yours to give, and if the photo comes back (a folder moved
+    /// out and back, a drive that dropped files) its faces come back named.
+    #[arg(long)]
+    pub(crate) drop_named_faces: bool,
 }
 
 impl PruneArgs {
@@ -42,6 +48,7 @@ impl PruneArgs {
             // by hand.
             prune_unreachable: false,
             force: false,
+            drop_named_faces: false,
         }
     }
 }
@@ -384,24 +391,34 @@ pub(crate) fn run_prune(
     // Remove orphan faces: faces of content no path has any more. Same
     // shared-hash rule as above. They cannot be shown (their thumbnails have
     // no file to crop from), and a changed photo's faces are detected again.
-    // Dry-run counts pre-existing orphans only, for the same reason.
-    let face_orphans = if args.dry_run {
-        videre_core::face_db::unreferenced_face_counts(conn)
+    // Named ones are kept unless asked: a name is user data, and it
+    // re-attaches if the content comes back. Dry-run counts pre-existing
+    // orphans only, for the same reason.
+    let keep_named = !args.drop_named_faces;
+    let orphans_found = videre_core::face_db::unreferenced_face_counts(conn).unwrap_or_default();
+    let removed_faces = if args.dry_run {
+        orphans_found.faces - if keep_named { orphans_found.labeled } else { 0 }
     } else {
-        videre_core::face_db::drop_unreferenced_faces(conn, None)
-    }
-    .unwrap_or_default();
-    if !args.silent && face_orphans.faces > 0 {
-        let tag = if args.dry_run {
-            "[dry-run] would remove"
+        videre_core::face_db::drop_unreferenced_faces(conn, None, keep_named)
+            .unwrap_or_default()
+            .faces
+    };
+    if !args.silent {
+        let (removed, kept) = if args.dry_run {
+            ("[dry-run] would remove", "[dry-run] would keep")
         } else {
-            "removed"
+            ("removed", "kept")
         };
-        tracing::info!(
-            "{tag} {} orphan face(s) ({} labeled)",
-            face_orphans.faces,
-            face_orphans.labeled
-        );
+        if removed_faces > 0 {
+            tracing::info!("{removed} {removed_faces} orphan face(s)");
+        }
+        if keep_named && orphans_found.labeled > 0 {
+            tracing::info!(
+                "{kept} {} named face(s) whose photo is gone; they come back with it, \
+                 or remove them with --drop-named-faces",
+                orphans_found.labeled
+            );
+        }
     }
 
     // Remove orphan thumbnail-cache files: any videre_core::thumb_cache entry

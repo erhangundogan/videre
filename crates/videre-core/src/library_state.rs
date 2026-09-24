@@ -11,6 +11,11 @@ use rusqlite::OptionalExtension;
 /// face recluster (see `face_db::advance_recluster_watermark`).
 pub const FACE_RECLUSTER_WATERMARK: &str = "face_recluster_watermark";
 
+/// The highest `faces.id` ever handed out. `faces.id` has no AUTOINCREMENT,
+/// so SQLite would reuse a deleted top id, and learning events and questions
+/// still name deleted faces by id; new faces are numbered above this instead.
+pub const FACE_ID_HIGH_WATER: &str = "face_id_high_water";
+
 fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS library_state (
@@ -34,6 +39,28 @@ pub fn get(conn: &Connection, key: &str) -> Result<Option<i64>> {
 }
 
 /// Store `value` under `key`, creating the table on first use.
+/// The stored value, for callers inside a rusqlite-typed transaction.
+pub fn value(conn: &Connection, key: &str) -> rusqlite::Result<Option<i64>> {
+    ensure_table(conn)?;
+    conn.query_row(
+        "SELECT value FROM library_state WHERE key = ?1",
+        [key],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
+/// Raise the stored value to at least `value`; never lowers it.
+pub fn raise_to(conn: &Connection, key: &str, value: i64) -> rusqlite::Result<()> {
+    ensure_table(conn)?;
+    conn.execute(
+        "INSERT INTO library_state (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = MAX(value, excluded.value)",
+        rusqlite::params![key, value],
+    )?;
+    Ok(())
+}
+
 pub fn set(conn: &Connection, key: &str, value: i64) -> Result<()> {
     ensure_table(conn)?;
     conn.execute(

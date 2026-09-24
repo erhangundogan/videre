@@ -2030,6 +2030,13 @@ async fn handle_rotate_file(
     Query(query): Query<RotateQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
+    // Rotate rewrites a file and its rows, so it takes the same activity lease
+    // as every other library operation: never inside exclusive maintenance
+    // (prune, faces --reset), and never against a root replaced under us.
+    let guard = match guard_operation(&state) {
+        Ok(guard) => guard,
+        Err(status) => return status.into_response(),
+    };
     let ccw = query.dir.as_deref() == Some("ccw");
     let path = {
         let conn = match state.conn.lock() {
@@ -2068,6 +2075,7 @@ async fn handle_rotate_file(
     let state_for_task = state.clone();
     // EXIF read/write, the DB update and the cache sweep are blocking work.
     let result = tokio::task::spawn_blocking(move || {
+        let _guard = guard;
         let source = std::path::Path::new(&path);
         // A copy at another path has this content and these faces too; turning
         // or moving them would break that copy, so they stay with it.
@@ -2083,24 +2091,27 @@ async fn handle_rotate_file(
         // geometry can be mapped onto the post-rotation canvas. Read them up
         // front: the rotation bumps the EXIF the dimensions depend on.
         let dims = super::rotate::current_display_dimensions(source);
-        let orientation = if ccw {
-            super::rotate::rotate_ccw_in_place(source, &ext)?
-        } else {
-            super::rotate::rotate_cw_in_place(source, &ext)?
-        };
-        // The rotated file is new content: record it now, faces and all, so
-        // the page and a later scan agree on it. A failure is the request's
-        // failure; the next scan then records the file and its faces are
-        // detected again.
+        let original = videre::hasher::hash_file_in(&state_for_task.context.library, source)?;
+        let bytes = std::fs::read(source)?;
+        // Turned in memory first, so the new content hash is known and
+        // recorded before the file changes on disk.
+        let (turned, orientation) = super::rotate::rotated_bytes(&bytes, &ext, ccw)?;
         let recorded = record_rotated(
             &state_for_task,
             &path,
             &hash_for_task,
             shared,
             dims.map(|(w, h)| (ccw, w as i32, h as i32)),
+            original,
+            &turned,
         );
         invalidate_thumb_cache(&cache, &hash_for_task);
-        let hash = anyhow::Context::with_context(recorded, || format!("recording rotated {path}"))?;
+        let (hash, dropped) =
+            anyhow::Context::with_context(recorded, || format!("rotating {path}"))?;
+        // Committed: now it is true that these names must be given again.
+        for names in dropped {
+            names.warn();
+        }
         Ok::<(u16, String, String), anyhow::Error>((orientation, hash, path))
     })
     .await;
@@ -2117,24 +2128,45 @@ async fn handle_rotate_file(
     }
 }
 
-/// Record a rotated file's new content hash. Its faces move with it (ids and
-/// labels stay) and their geometry turns with the photo, unless another path
-/// shares the old content or the new content already has faces of its own.
-/// The row goes through scan's own writer, so a later scan finds nothing
-/// changed, and every change commits together or not at all.
+/// Record a rotated file's new content, then write it. Its faces move with
+/// it (ids and labels stay) and their geometry turns with the photo, unless
+/// another path shares the old content or the new content already has faces
+/// of its own. The row goes through scan's own writer.
+///
+/// Everything happens in one savepoint, in an order that closes the race with
+/// a `watch` rescan: the row is written first, so this connection holds the
+/// write lock before the file changes; a rescan racing the file write waits,
+/// then finds the new hash already recorded and drops nothing. If the file
+/// write fails, the database rolls back with it.
 fn record_rotated(
     state: &AppState,
     path: &str,
     old: &str,
     shared: bool,
     turn: Option<(bool, i32, i32)>,
-) -> anyhow::Result<String> {
-    let record = videre::hasher::hash_file_in(&state.context.library, std::path::Path::new(path))?;
+    original: videre::types::FileRecord,
+    turned: &[u8],
+) -> anyhow::Result<(String, Vec<videre::sqlite_output::DroppedNames>)> {
+    let library = &state.context.library;
+    let source = std::path::Path::new(path);
     let conn = state
         .conn
         .lock()
         .map_err(|_| anyhow::anyhow!("the database connection lock is poisoned"))?;
-    videre_core::db::in_savepoint(&conn, || -> anyhow::Result<()> {
+    let had_phash: bool = conn
+        .query_row(
+            "SELECT phash IS NOT NULL FROM file_hashes WHERE path = ?1",
+            [path],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(false);
+    let mut record = original;
+    record.path = path.to_string();
+    record.hash = blake3::hash(turned).to_hex().to_string();
+    record.size_bytes = turned.len() as u64;
+    record.phash = None;
+    let dropped = videre_core::db::in_savepoint(&conn, || -> anyhow::Result<_> {
         let moved = if shared {
             0
         } else {
@@ -2148,14 +2180,33 @@ fn record_rotated(
         if let (true, Some((ccw, display_w, display_h))) = (moved > 0, turn) {
             rotate_faces_geometry(&conn, &record.hash, ccw, display_w, display_h);
         }
-        videre::sqlite_output::write_records_in(
+        let dropped = videre::sqlite_output::write_records_in_nested(
             &conn,
-            &state.context.library,
+            library,
             std::slice::from_ref(&record),
         )?;
-        Ok(())
+        anyhow::Context::with_context(std::fs::write(source, turned), || {
+            format!("writing {path}")
+        })?;
+        // Describe the file as written, so an incremental scan skips it, and
+        // keep a perceptual hash the row had, recomputed for the new pixels.
+        let meta = std::fs::metadata(source)?;
+        let phash = had_phash
+            .then(|| videre::hasher::compute_dhash_in(library, source, record.mime.as_deref()))
+            .flatten()
+            .map(|p| p as i64);
+        conn.execute(
+            "UPDATE file_hashes SET size_bytes = ?1, modified_at = ?2, phash = ?3 WHERE path = ?4",
+            rusqlite::params![
+                meta.len() as i64,
+                meta.modified().ok().map(videre_core::db::mtime_iso),
+                phash,
+                path
+            ],
+        )?;
+        Ok(dropped)
     })?;
-    Ok(record.hash)
+    Ok((record.hash, dropped))
 }
 
 /// Turn every display-canvas (`oriented = 1`) face row for `hash` 90 degrees to

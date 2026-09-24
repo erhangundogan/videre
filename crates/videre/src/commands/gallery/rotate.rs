@@ -9,6 +9,7 @@
 
 use anyhow::Context;
 use little_exif::exif_tag::ExifTag;
+use little_exif::filetype::FileExtension;
 use little_exif::metadata::Metadata;
 use std::path::Path;
 
@@ -157,7 +158,7 @@ pub fn rotate_landmark_ccw(landmark: &str, display_w: f32) -> Option<String> {
 
 /// Read the current Orientation tag, defaulting to 1 when the file carries
 /// none (or none can be parsed). PNG is read from its `eXIf` chunk, the only
-/// PNG orientation the gallery's decode honours (see [`write_png_orientation`]).
+/// PNG orientation the gallery's decode honours (see [`png_with_orientation`]).
 fn current_orientation(path: &Path) -> u16 {
     if is_png(path) {
         return png_exif_orientation(path);
@@ -165,6 +166,56 @@ fn current_orientation(path: &Path) -> u16 {
     let Ok(metadata) = Metadata::new_from_path(path) else {
         return 1;
     };
+    orientation_of(&metadata)
+}
+
+/// A file's bytes after one 90-degree turn (counter-clockwise when `ccw`),
+/// and the new Orientation, without touching the file. The gallery records
+/// the new content hash before the file changes on disk, so a rescan racing
+/// the write finds the new hash already there.
+pub fn rotated_bytes(bytes: &[u8], ext: &str, ccw: bool) -> anyhow::Result<(Vec<u8>, u16)> {
+    turned_bytes(
+        bytes,
+        ext,
+        if ccw {
+            next_orientation_ccw
+        } else {
+            next_orientation_cw
+        },
+    )
+}
+
+fn turned_bytes(bytes: &[u8], ext: &str, next: fn(u16) -> u16) -> anyhow::Result<(Vec<u8>, u16)> {
+    if !supports_exif_orientation(ext) {
+        anyhow::bail!("rotation is not supported for .{ext} files");
+    }
+    // PNG needs its own path: `little_exif` stores PNG EXIF in a text chunk that
+    // the `image` crate's decoder ignores, so a rotation written that way would
+    // never show. Write a standard `eXIf` chunk instead, which the decoder reads.
+    if ext.eq_ignore_ascii_case("png") {
+        let next = next(png_orientation_from_bytes(bytes).unwrap_or(1));
+        return Ok((png_with_orientation(bytes, next)?, next));
+    }
+    let file_type = if ext.eq_ignore_ascii_case("webp") {
+        FileExtension::WEBP
+    } else if ext.eq_ignore_ascii_case("tif") || ext.eq_ignore_ascii_case("tiff") {
+        FileExtension::TIFF
+    } else {
+        FileExtension::JPEG
+    };
+    let mut metadata =
+        Metadata::new_from_vec(&bytes.to_vec(), file_type).context("reading EXIF")?;
+    let next = next(orientation_of(&metadata));
+    metadata.set_tag(ExifTag::Orientation(vec![next]));
+    let mut turned = bytes.to_vec();
+    metadata
+        .write_to_vec(&mut turned, file_type)
+        .context("writing EXIF orientation")?;
+    Ok((turned, next))
+}
+
+/// The Orientation tag carried by `metadata`, or 1 when there is none.
+fn orientation_of(metadata: &Metadata) -> u16 {
     for tag in metadata.get_tag(&ExifTag::Orientation(Vec::new())) {
         if let ExifTag::Orientation(values) = tag {
             if let Some(&value) = values.first() {
@@ -173,41 +224,6 @@ fn current_orientation(path: &Path) -> u16 {
         }
     }
     1
-}
-
-/// Rotate the file 90 degrees clockwise by writing the next Orientation value
-/// into its EXIF, in place. Returns the new orientation. Refuses a format that
-/// does not carry EXIF orientation.
-pub fn rotate_cw_in_place(path: &Path, ext: &str) -> anyhow::Result<u16> {
-    rotate_in_place(path, ext, next_orientation_cw)
-}
-
-/// Like [`rotate_cw_in_place`] but 90 degrees counter-clockwise.
-pub fn rotate_ccw_in_place(path: &Path, ext: &str) -> anyhow::Result<u16> {
-    rotate_in_place(path, ext, next_orientation_ccw)
-}
-
-/// Advance the file's stored Orientation by `next` (the CW or CCW step) and
-/// write it back in place, returning the new value.
-fn rotate_in_place(path: &Path, ext: &str, next: fn(u16) -> u16) -> anyhow::Result<u16> {
-    if !supports_exif_orientation(ext) {
-        anyhow::bail!("rotation is not supported for .{ext} files");
-    }
-    let next = next(current_orientation(path));
-    // PNG needs its own path: `little_exif` stores PNG EXIF in a text chunk that
-    // the `image` crate's decoder ignores, so a rotation written that way would
-    // never show. Write a standard `eXIf` chunk instead, which the decoder reads.
-    if ext.eq_ignore_ascii_case("png") {
-        write_png_orientation(path, next)?;
-    } else {
-        let mut metadata = Metadata::new_from_path(path)
-            .with_context(|| format!("reading EXIF from {}", path.display()))?;
-        metadata.set_tag(ExifTag::Orientation(vec![next]));
-        metadata
-            .write_to_file(path)
-            .with_context(|| format!("writing EXIF orientation to {}", path.display()))?;
-    }
-    Ok(next)
 }
 
 const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
@@ -278,14 +294,12 @@ fn png_chunk_bytes(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Write `orientation` into a PNG's `eXIf` chunk, in place: rewrite the file
-/// with a fresh `eXIf` chunk right after IHDR, dropping any existing one.
-fn write_png_orientation(path: &Path, orientation: u16) -> anyhow::Result<()> {
-    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+/// A PNG's bytes with `orientation` in its `eXIf` chunk: a fresh chunk right
+/// after IHDR, dropping any existing one.
+fn png_with_orientation(bytes: &[u8], orientation: u16) -> anyhow::Result<Vec<u8>> {
     anyhow::ensure!(
         bytes.len() >= 8 && bytes[0..8] == PNG_SIGNATURE,
-        "not a PNG file: {}",
-        path.display()
+        "not a PNG file"
     );
     let exif_chunk = png_chunk_bytes(b"eXIf", &exif_tiff_orientation(orientation));
 
@@ -299,7 +313,7 @@ fn write_png_orientation(path: &Path, orientation: u16) -> anyhow::Result<()> {
         let chunk_end = i
             .checked_add(12 + len)
             .filter(|&e| e <= bytes.len())
-            .with_context(|| format!("truncated PNG chunk in {}", path.display()))?;
+            .context("truncated PNG chunk")?;
         if &kind == b"eXIf" {
             // Drop any existing orientation chunk; the fresh one replaces it.
         } else {
@@ -311,14 +325,29 @@ fn write_png_orientation(path: &Path, orientation: u16) -> anyhow::Result<()> {
         }
         i = chunk_end;
     }
-    anyhow::ensure!(inserted, "PNG has no IHDR chunk: {}", path.display());
-    std::fs::write(path, &out).with_context(|| format!("writing {}", path.display()))?;
-    Ok(())
+    anyhow::ensure!(inserted, "PNG has no IHDR chunk");
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Turn a file on disk the way the gallery does, for tests that read the
+    /// result back through the decoder.
+    fn rotate_in_place(path: &Path, ext: &str, ccw: bool) -> anyhow::Result<u16> {
+        let (turned, orientation) = rotated_bytes(&std::fs::read(path)?, ext, ccw)?;
+        std::fs::write(path, turned)?;
+        Ok(orientation)
+    }
+
+    fn rotate_cw_in_place(path: &Path, ext: &str) -> anyhow::Result<u16> {
+        rotate_in_place(path, ext, false)
+    }
+
+    fn rotate_ccw_in_place(path: &Path, ext: &str) -> anyhow::Result<u16> {
+        rotate_in_place(path, ext, true)
+    }
 
     #[test]
     fn cw_cycles_through_both_orientation_groups() {

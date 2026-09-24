@@ -218,6 +218,10 @@ landmarks are turned with it, so face crops stay on their faces and keep their
 people labels. Supported for EXIF-bearing images (JPEG, PNG, TIFF, WebP); any
 other format (video, HEIC, and the like) returns `415 Unsupported Media Type`.
 
+While another videre command holds the library for exclusive maintenance
+(`prune`, `faces --reset`), the request returns `503` and the file is not
+touched.
+
 Identical copies share a hash, so pass `path` to say which file to turn; it
 must be a path the library records with that hash, or the request returns
 `404`. Without it, one of the copies is turned.

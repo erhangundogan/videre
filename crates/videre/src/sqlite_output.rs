@@ -11,7 +11,10 @@ pub fn write_records(records: &[FileRecord], db_path: &Path) -> Result<()> {
     // inspects PRAGMA table_info and adds only the columns that are missing.
     videre_core::library_db::ensure_scan_schema(&conn)?;
 
-    write_records_to(&conn, records)
+    for dropped in write_records_to(&conn, records)? {
+        dropped.warn();
+    }
+    Ok(())
 }
 
 pub fn write_records_in(
@@ -19,20 +22,54 @@ pub fn write_records_in(
     ctx: &videre_core::library::LibraryContext,
     records: &[FileRecord],
 ) -> anyhow::Result<()> {
+    for dropped in write_records_in_nested(conn, ctx, records)? {
+        dropped.warn();
+    }
+    Ok(())
+}
+
+/// A file whose content changed and whose named faces went with the old
+/// content, to be told to the user once the change is committed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DroppedNames {
+    pub path: String,
+    pub labeled: usize,
+}
+
+impl DroppedNames {
+    pub fn warn(&self) {
+        tracing::warn!(
+            "{} changed; its {} labeled face(s) will be detected again and need naming",
+            self.path,
+            self.labeled
+        );
+    }
+}
+
+/// [`write_records_in`] for a caller running it inside its own savepoint:
+/// nothing is reported, because the caller's commit may still fail. The
+/// caller reports the returned drops after it commits.
+pub fn write_records_in_nested(
+    conn: &rusqlite::Connection,
+    ctx: &videre_core::library::LibraryContext,
+    records: &[FileRecord],
+) -> anyhow::Result<Vec<DroppedNames>> {
     let paths: Vec<PathBuf> = records
         .iter()
         .map(|record| PathBuf::from(&record.path))
         .collect();
     videre_core::library_guard::validate_paths(ctx, &paths)?;
-    write_records_to(conn, records)?;
-    Ok(())
+    Ok(write_records_to(conn, records)?)
 }
 
-fn write_records_to(conn: &rusqlite::Connection, records: &[FileRecord]) -> Result<()> {
+fn write_records_to(
+    conn: &rusqlite::Connection,
+    records: &[FileRecord],
+) -> Result<Vec<DroppedNames>> {
     videre_core::library_db::ensure_scan_schema(conn)?;
     // A savepoint rather than a transaction, so the gallery's rotate can run
     // this inside its own: the face move and this row commit together.
-    let relabel = videre_core::db::in_savepoint(conn, || {
+    videre_core::db::in_savepoint(conn, || {
         let tx = conn;
         // Paths whose content changed since the last scan, with the old hash.
         let mut changed: Vec<(&str, String)> = Vec::new();
@@ -91,22 +128,22 @@ fn write_records_to(conn: &rusqlite::Connection, records: &[FileRecord]) -> Resu
 
         // A face belongs to the content it was detected on. Content no file has
         // any more takes its faces with it; the new content is detected again.
-        let mut relabel: Vec<(&str, usize)> = Vec::new();
+        let mut relabel = Vec::new();
         for (path, old) in &changed {
-            let dropped =
-                videre_core::face_db::drop_unreferenced_faces(tx, Some(std::slice::from_ref(old)))?;
+            let dropped = videre_core::face_db::drop_unreferenced_faces(
+                tx,
+                Some(std::slice::from_ref(old)),
+                false,
+            )?;
             if dropped.labeled > 0 {
-                relabel.push((path, dropped.labeled));
+                relabel.push(DroppedNames {
+                    path: path.to_string(),
+                    labeled: dropped.labeled,
+                });
             }
         }
-        Ok::<_, rusqlite::Error>(relabel)
-    })?;
-    for (path, labeled) in relabel {
-        tracing::warn!(
-            "{path} changed; its {labeled} labeled face(s) will be detected again and need naming"
-        );
-    }
-    Ok(())
+        Ok(relabel)
+    })
 }
 
 /// Read every file_hashes row back as FileRecords (the inverse of write_records;
@@ -183,6 +220,32 @@ mod tests {
             duration_secs: None,
             codec: None,
         }
+    }
+
+    #[test]
+    fn a_changed_file_hands_its_dropped_names_to_the_caller() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("t.db");
+        write_records(&[rec("/Arşiv/çağla.jpg", "h1")], &db).unwrap();
+        let conn = videre_core::db::open_wal(&db).unwrap();
+        videre_core::face_db::create_faces_table(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO people (name, full_name) VALUES ('çağla', 'Çağla');
+             INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
+               VALUES ('h1', '0,0,9,9', X'0000', 'çağla', 1);",
+        )
+        .unwrap();
+
+        // Returned, not logged: a caller inside its own savepoint reports
+        // them only once its commit has succeeded.
+        let dropped = write_records_to(&conn, &[rec("/Arşiv/çağla.jpg", "h2")]).unwrap();
+        assert_eq!(
+            dropped,
+            vec![DroppedNames {
+                path: "/Arşiv/çağla.jpg".into(),
+                labeled: 1
+            }]
+        );
     }
 
     #[test]
