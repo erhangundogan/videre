@@ -30,6 +30,30 @@ At least one is required (otherwise there is nothing to do).
 decision (cull this), `like` is a **positive** favourite. There is no "dislike",
 because it would just duplicate `reject`.
 
+## Removing marks
+
+Each mark is cleared by its own setter, on the same selection flags or pipe as
+setting it:
+
+```bash
+videre mark --path ~/Photos/2024/blurry --rating 0      # remove the rating
+videre mark --category screenshot --pick none           # remove the pick
+videre mark --label none --path ~/Photos/Scans          # remove the colour label
+videre mark --no-like --person "Ayşe"                   # remove the like
+videre search --pick reject | videre mark --pick none   # clear every reject
+```
+
+Flags combine, so `--rating 0 --pick none --label none --no-like` clears all
+four marks in one run. With no selection and no pipe, the change applies to
+every file, so scope it first or check with `--dry-run`.
+
+:::note[`--rating 0` means unrated, not zero stars]
+Ratings run from 1 to 5, and `0` removes the rating rather than storing zero
+stars. This follows XMP, where `xmp:Rating` 0 means unrated, so Lightroom and
+digiKam read an exported photo the same way. To say a photo is bad, use
+`--pick reject`.
+:::
+
 ## Choosing what to mark
 
 Targets come from either the selection flags or a pipe:
