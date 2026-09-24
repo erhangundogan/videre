@@ -822,14 +822,37 @@ mod tests {
             &webp_of(&[(b"VP8L", b"imagf")]),
             Format::Webp,
         );
+        // An extended WebP whose existing EXIF is rewritten.
+        let mut flags = [0u8; 10];
+        flags[0] = 0x08;
+        assert_split(
+            &webp_of(&[
+                (b"VP8X", &flags),
+                (b"VP8L", b"image"),
+                (b"EXIF", b"Exif\0\0date=2011"),
+            ]),
+            &webp_of(&[
+                (b"VP8X", &flags),
+                (b"VP8L", b"image"),
+                (b"EXIF", b"Exif\0\0date=2024, edited"),
+            ]),
+            &webp_of(&[
+                (b"VP8X", &flags),
+                (b"VP8L", b"imagf"),
+                (b"EXIF", b"Exif\0\0date=2011"),
+            ]),
+            Format::Webp,
+        );
     }
 
-    fn gif_with(comment: &[u8], image: Option<&[u8]>) -> Vec<u8> {
+    fn gif_with(comment: Option<&[u8]>, image: Option<&[u8]>) -> Vec<u8> {
         let mut v = b"GIF89a".to_vec();
         v.extend([1, 0, 1, 0, 0, 0, 0]); // 1x1, no global table
-        v.extend([0x21, 0xFE, comment.len() as u8]);
-        v.extend(comment);
-        v.push(0);
+        if let Some(comment) = comment {
+            v.extend([0x21, 0xFE, comment.len() as u8]);
+            v.extend(comment);
+            v.push(0);
+        }
         if let Some(image) = image {
             v.extend([0x2C, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, image.len() as u8]);
             v.extend(image);
@@ -842,9 +865,16 @@ mod tests {
     #[test]
     fn gif_comments_are_metadata() {
         assert_split(
-            &gif_with(b"Arsiv", Some(b"ab")),
-            &gif_with(b"Arsiv 2011", Some(b"ab")),
-            &gif_with(b"Arsiv", Some(b"ac")),
+            &gif_with(Some(b"Arsiv"), Some(b"ab")),
+            &gif_with(Some(b"Arsiv 2011"), Some(b"ab")),
+            &gif_with(Some(b"Arsiv"), Some(b"ac")),
+            Format::Gif,
+        );
+        // A GIF with no comment gains one.
+        assert_split(
+            &gif_with(None, Some(b"ab")),
+            &gif_with(Some(b"Arsiv"), Some(b"ab")),
+            &gif_with(None, Some(b"ac")),
             Format::Gif,
         );
     }
@@ -1019,6 +1049,13 @@ mod tests {
             &heic_of(&[(b"hvc1", b"imagf"), (b"Exif", b"Exif date=2011")]),
             Format::Heic,
         );
+        // A HEIC with no EXIF gains its first EXIF item.
+        assert_split(
+            &heic_of(&[(b"hvc1", b"image")]),
+            &heic_of(&[(b"hvc1", b"image"), (b"Exif", b"Exif orientation=6")]),
+            &heic_of(&[(b"hvc1", b"imagf")]),
+            Format::Heic,
+        );
     }
 
     #[test]
@@ -1043,7 +1080,7 @@ mod tests {
             ]),
             Format::Webp,
         );
-        assert_whole_file(&gif_with(b"Arsiv", None), Format::Gif);
+        assert_whole_file(&gif_with(Some(b"Arsiv"), None), Format::Gif);
         assert_whole_file(&tiff_with(b"Arsiv 2011 ", None, true), Format::Tiff);
         assert_whole_file(&movie_with(b"udta date=2011", None), Format::Movie);
         assert_whole_file(&heic_of(&[(b"Exif", b"Exif date=2011")]), Format::Heic);
