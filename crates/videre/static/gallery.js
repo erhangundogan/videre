@@ -449,6 +449,8 @@ function rotateLb(dir){
     .then(function(r){
       // 503: another videre command (prune, faces --reset) holds the library.
       if(r.status===503)throw new Error('The library is busy with another videre command; try the rotation again in a moment.');
+      // 409: refused for a reason the user can act on, given in the body.
+      if(r.status===409)return r.text().then(function(t){ throw new Error(t); });
       if(!r.ok)throw new Error('Rotating the photo failed; it was left as it was.');
       return r.json();
     })

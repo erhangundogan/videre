@@ -40,6 +40,22 @@ fn seed_faces(labels: &[(f32, Option<&str>)]) -> TestLibrary {
             ],
         )
         .unwrap();
+        // The face's photo, so evaluation counts it: faces whose photo is
+        // gone are left out of grouping.
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash) VALUES (?1, ?2)",
+            rusqlite::params![
+                library
+                    .root
+                    .canonicalize()
+                    .unwrap()
+                    .join(format!("private-{id}.jpg"))
+                    .to_string_lossy()
+                    .into_owned(),
+                format!("private-hash-{id}")
+            ],
+        )
+        .unwrap();
     }
     drop(conn);
     library

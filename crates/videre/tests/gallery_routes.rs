@@ -1561,6 +1561,58 @@ fn rotating_into_content_that_already_has_faces_does_not_merge_them() {
 }
 
 #[test]
+fn rotate_refuses_a_file_that_changed_since_its_scan() {
+    let (lib, old, face_id) = scanned_photo_with_a_labeled_face(&["Arşiv/çağla.jpg"]);
+    let server = Server::start(&lib);
+    let file = lib.root.join("Arşiv/çağla.jpg");
+    // Another app changed it; watch has not rescanned yet.
+    let mut bytes = std::fs::read(&file).unwrap();
+    bytes.extend_from_slice(b"edited elsewhere");
+    std::fs::write(&file, &bytes).unwrap();
+
+    let (status, body) = server.send("POST", &format!("/api/files/{old}/rotate"), "");
+    assert_eq!(status, 409, "{body}");
+    assert!(body.contains("changed"), "{body}");
+    assert_eq!(
+        std::fs::read(&file).unwrap(),
+        bytes,
+        "the file is untouched"
+    );
+    let hash: String = lib
+        .conn()
+        .query_row("SELECT hash FROM faces WHERE id = ?1", [face_id], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(hash, old, "the faces are untouched");
+}
+
+#[cfg(unix)]
+#[test]
+fn rotate_refuses_a_symlinked_photo() {
+    let (lib, _, _) = scanned_photo_with_a_labeled_face(&["Arşiv/çağla.jpg"]);
+    let archive = tempfile::tempdir().unwrap();
+    let target = archive.path().join("original.jpg");
+    std::fs::rename(lib.root.join("Arşiv/çağla.jpg"), &target).unwrap();
+    std::os::unix::fs::symlink(&target, lib.root.join("Arşiv/çağla.jpg")).unwrap();
+    let server = Server::start(&lib);
+    let old: String = lib
+        .conn()
+        .query_row("SELECT hash FROM file_hashes", [], |r| r.get(0))
+        .unwrap();
+
+    let (status, body) = server.send("POST", &format!("/api/files/{old}/rotate"), "");
+    assert!(status == 409 || status == 404, "{status} {body}");
+    assert!(
+        std::fs::symlink_metadata(lib.root.join("Arşiv/çağla.jpg"))
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the link is left as it was"
+    );
+}
+
+#[test]
 fn rotate_waits_for_exclusive_maintenance() {
     let (lib, old, _) = scanned_photo_with_a_labeled_face(&["Arşiv/çağla.jpg"]);
     let server = Server::start(&lib);

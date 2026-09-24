@@ -222,6 +222,11 @@ While another videre command holds the library for exclusive maintenance
 (`prune`, `faces --reset`), the request returns `503` and the file is not
 touched.
 
+It returns `409` with the reason, and leaves the file alone, when the file
+changed on disk since it was last scanned (rotate it again once `scan` or
+`watch` has picked the change up), or when it is a symbolic link or has other
+hard links, which the swap would replace or split.
+
 Identical copies share a hash, so pass `path` to say which file to turn; it
 must be a path the library records with that hash, or the request returns
 `404`. Without it, one of the copies is turned.

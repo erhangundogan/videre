@@ -346,6 +346,8 @@ mod tests {
              person_label TEXT REFERENCES people(name) ON DELETE RESTRICT ON UPDATE RESTRICT,
              confirmed INTEGER DEFAULT 0,
              is_primary INTEGER DEFAULT 0, det_score REAL, blur REAL, oriented INTEGER);
+             -- Every face's photo exists: these tests are not about missing photos, and the readers list, group and offer only faces some file still has.
+             CREATE VIEW file_hashes AS SELECT DISTINCT hash, '/p/' || hash AS path FROM faces;
              INSERT INTO people VALUES ('alice','Alice');",
         )
         .unwrap();

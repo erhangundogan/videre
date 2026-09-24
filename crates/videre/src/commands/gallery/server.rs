@@ -2102,7 +2102,38 @@ async fn handle_rotate_file(
         // decodes now; capture that canvas's dimensions before the turn so the
         // geometry can be mapped onto the post-rotation canvas.
         let dims = super::rotate::current_display_dimensions(source);
+        // Rotation swaps a new file in with a rename, which would replace a
+        // symbolic link with a plain file, or split a hard-linked photo from
+        // its other names. Those are left for the user to rotate at the
+        // target.
+        let meta = std::fs::symlink_metadata(source)?;
+        if meta.file_type().is_symlink() {
+            return Err(RotateRefused(format!(
+                "{path} is a link; rotate the photo it points to instead"
+            ))
+            .into());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if meta.nlink() > 1 {
+                return Err(RotateRefused(format!(
+                    "{path} has other hard links, which a rotation would split from it"
+                ))
+                .into());
+            }
+        }
         let bytes = read_bounded(source, stored.size_bytes)?;
+        // The new row is built from the stored one, so it must still describe
+        // this file: an edit another app made since the last scan would
+        // otherwise leave the old dates and faces on new content.
+        if blake3::hash(&bytes).to_hex().as_str() != stored.hash {
+            return Err(RotateRefused(format!(
+                "{path} changed on disk since it was last scanned; \
+                 rotate it again once `videre scan` or `videre watch` has picked up the change"
+            ))
+            .into());
+        }
         // Turned in memory, so the new content, its hash and its perceptual
         // hash are all known before anything on disk changes, and before the
         // connection lock is taken.
@@ -2110,7 +2141,16 @@ async fn handle_rotate_file(
         let phash = stored
             .phash
             .and_then(|_| videre::hasher::dhash_of_bytes(&turned));
-        let staged = stage_rotation(source, &turned)?;
+        let staged = stage_rotation(
+            source,
+            &state_for_task
+                .context
+                .library
+                .paths
+                .state
+                .join(ROTATE_STAGING),
+            &turned,
+        )?;
         let recorded = record_rotated(
             &state_for_task,
             &path,
@@ -2144,7 +2184,11 @@ async fn handle_rotate_file(
             serde_json::json!({ "orientation": orientation, "hash": hash, "path": path })
                 .to_string(),
         ),
-        Ok(Err(e)) => internal(anyhow::anyhow!("rotate failed for {hash}: {e}")).into_response(),
+        // A refusal is the user's to act on, and its reason is shown as is.
+        Ok(Err(e)) => match e.downcast_ref::<RotateRefused>() {
+            Some(refused) => (StatusCode::CONFLICT, refused.0.clone()).into_response(),
+            None => internal(anyhow::anyhow!("rotate failed for {hash}: {e}")).into_response(),
+        },
         Err(e) => internal(e).into_response(),
     }
 }
@@ -2161,15 +2205,37 @@ fn read_bounded(path: &std::path::Path, size: u64) -> anyhow::Result<Vec<u8>> {
     .with_context(|| format!("reading {}", path.display()))
 }
 
-/// Write the turned content beside the photo, under a hidden name the scanner
-/// ignores (no media extension), so it can replace the photo with one rename.
-/// Copying the photo first keeps its permissions (and, on macOS, its extended
-/// attributes such as Finder tags); the copy is then overwritten in place.
-fn stage_rotation(source: &std::path::Path, turned: &[u8]) -> anyhow::Result<std::path::PathBuf> {
-    let name = source
-        .file_name()
-        .with_context(|| format!("{} has no file name", source.display()))?;
-    let staged = source.with_file_name(format!(".{}.videre-rotate", name.to_string_lossy()));
+/// A rotation that is refused for a reason the user can act on (the file
+/// changed since its scan, it is a link): answered 409 with the reason.
+#[derive(Debug)]
+struct RotateRefused(String);
+
+impl std::fmt::Display for RotateRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for RotateRefused {}
+
+/// Where rotated content is staged before it is swapped in: inside the
+/// library's own state directory, which the scanner never walks, and which the
+/// gallery clears when it starts, so an interrupted rotation leaves nothing
+/// behind in the photo folders.
+const ROTATE_STAGING: &str = "rotate";
+
+/// Write the turned content into the staging directory, so it can replace the
+/// photo with one rename. Copying the photo first keeps its permissions (and,
+/// on macOS, its extended attributes such as Finder tags); the copy is then
+/// overwritten. A photo on another volume than the library's state directory
+/// cannot be swapped by rename, and its rotation fails without touching it.
+fn stage_rotation(
+    source: &std::path::Path,
+    staging: &std::path::Path,
+    turned: &[u8],
+) -> anyhow::Result<std::path::PathBuf> {
+    std::fs::create_dir_all(staging).with_context(|| format!("creating {}", staging.display()))?;
+    let staged = staging.join(blake3::hash(turned).to_hex().as_str());
     let (from, to, bytes) = (source.to_path_buf(), staged.clone(), turned.to_vec());
     let written = videre_core::io_timeout::run_with_timeout(
         videre_core::io_timeout::timeout_for_size(turned.len() as u64, 0) * 2,
@@ -2193,6 +2259,17 @@ fn stage_rotation(source: &std::path::Path, turned: &[u8]) -> anyhow::Result<std
         Err(_) => {
             let _ = std::fs::remove_file(&staged);
             anyhow::bail!("timed out staging {}", staged.display())
+        }
+    }
+}
+
+/// Clear rotations an earlier gallery left staged (it quit mid-rotate, or a
+/// timed-out copy finished late). Nothing staged is ever needed across starts.
+fn clear_rotate_staging(library: &videre_core::library::LibraryContext) {
+    let staging = library.paths.state.join(ROTATE_STAGING);
+    if staging.exists() {
+        if let Err(error) = std::fs::remove_dir_all(&staging) {
+            tracing::debug!("could not clear {}: {error}", staging.display());
         }
     }
 }
@@ -2255,13 +2332,10 @@ fn record_rotated(
             &state.context.library,
             std::slice::from_ref(&record),
         )?;
-        let (from, to) = (staged.to_path_buf(), std::path::PathBuf::from(path));
-        videre_core::io_timeout::run_with_timeout(
-            videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
-            move || std::fs::rename(from, to),
-        )
-        .map_err(|_| anyhow::anyhow!("timed out replacing {path}"))?
-        .with_context(|| format!("replacing {path}"))?;
+        // A plain rename, not a timed one: the data was written and synced
+        // while staging, so this is one metadata update, and a timed-out
+        // rename could still land after the database rolled back.
+        std::fs::rename(staged, path).with_context(|| format!("replacing {path}"))?;
         Ok(dropped)
     })?;
     Ok((record.hash, dropped))
@@ -3489,6 +3563,7 @@ async fn serve_faces_async(
         // worker's first promoted profile. Make that resource ready at startup.
         videre_core::face_learning::ensure_question_tables(&conn)?;
     }
+    clear_rotate_staging(&opts.context.library);
     // Only --all needs vectors. A missing model database disables the
     // similarity search with a note rather than failing the whole report,
     // which works perfectly well without embeddings.

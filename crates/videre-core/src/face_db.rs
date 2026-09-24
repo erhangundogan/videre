@@ -288,6 +288,12 @@ pub struct DroppedFaces {
     pub labeled: usize,
 }
 
+/// A face whose photo some file still has, as a condition on `faces.hash`.
+/// Every reader that shows, groups or offers faces uses it: a face `prune`
+/// kept for a missing photo has nothing to crop from, and returns with its
+/// photo.
+pub const HAS_PHOTO: &str = "hash IN (SELECT hash FROM file_hashes)";
+
 /// A face belongs to content, not to a path: while any `file_hashes` row has
 /// its hash, it still describes a file in the library.
 const UNREFERENCED: &str = "hash NOT IN (SELECT hash FROM file_hashes)";
@@ -677,7 +683,9 @@ pub fn load_faces_for_clustering(
     // The landmark string travels as-is. What "a good landmark set" means is a
     // property of the ArcFace template, which lives in `videre-ml`; this crate
     // is below it in the dependency graph and must not learn it.
-    let mut stmt = conn.prepare("SELECT id, embedding, bbox, landmark, blur FROM faces")?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id, embedding, bbox, landmark, blur FROM faces WHERE {HAS_PHOTO}"
+    ))?;
     let rows = stmt.query_map([], |row| {
         let id: i64 = row.get(0)?;
         let blob: Vec<u8> = row.get(1)?;
@@ -920,6 +928,17 @@ mod tests {
     }
 
     #[test]
+    fn clustering_leaves_out_faces_whose_photo_is_gone() {
+        let conn = orphan_fixture();
+        let ids: Vec<i64> = load_faces_for_clustering(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|row| row.0)
+            .collect();
+        assert_eq!(ids, vec![1, 2], "3, 4 (hgone) and 5 (hother) have no file");
+    }
+
+    #[test]
     fn a_deleted_face_id_is_never_handed_out_again() {
         let conn = orphan_fixture();
         // 5 is the highest id, and its content is gone.
@@ -1004,6 +1023,12 @@ mod tests {
         // by every reset and lifecycle test.
         conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
         create_faces_table(&conn).unwrap();
+        // Every face's photo exists: these tests are not about missing photos,
+        // and the readers list only faces some file still has.
+        conn.execute_batch(
+            "CREATE VIEW file_hashes AS SELECT DISTINCT hash, '/p/' || hash AS path FROM faces",
+        )
+        .unwrap();
         conn
     }
 
