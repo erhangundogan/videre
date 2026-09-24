@@ -191,6 +191,7 @@ fn add_missing_columns(
 pub fn ensure_scan_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(&file_hashes_ddl_for("file_hashes", true))?;
     add_missing_columns(conn, "file_hashes", FILE_HASHES_COLUMNS)?;
+    ensure_hash_index(conn)?;
     // The declared location-cluster key needs its parent table to exist
     // before any row is written, including through standalone scan writers
     // that never run the full schema preparation.
@@ -293,6 +294,11 @@ fn verify_foreign_keys(conn: &Connection) -> Result<()> {
 /// is not.
 fn schema_complete(conn: &Connection) -> Result<bool> {
     Ok(verify_schema(conn).is_ok() && verify_foreign_keys(conn).is_ok())
+}
+
+/// Index content hashes for scan-only libraries as well as embedded ones.
+pub fn ensure_hash_index(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_file_hashes_hash ON file_hashes(hash);")
 }
 
 /// Prepare the complete supported schema on a fresh database: the scan table
@@ -979,6 +985,39 @@ mod tests {
             column_exists(&conn, "file_hashes", "xmp_sidecar_mtime").unwrap(),
             "ensure_scan_schema must add the xmp_sidecar_mtime column to an older table"
         );
+    }
+
+    #[test]
+    fn scan_schema_indexes_hashes_without_an_embed_run() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_scan_schema(&conn).unwrap();
+        let plan: String = conn
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT path FROM file_hashes WHERE hash IN ('a','b')",
+                [],
+                |row| row.get(3),
+            )
+            .unwrap();
+        assert!(plan.contains("idx_file_hashes_hash"), "{plan}");
+    }
+
+    #[test]
+    fn opening_an_existing_library_does_not_add_a_missing_hash_index() {
+        let (_temp, ctx) = library();
+        let conn = initialize(&ctx).unwrap();
+        conn.execute_batch("DROP INDEX IF EXISTS idx_file_hashes_hash;")
+            .unwrap();
+        drop(conn);
+        drop(open_existing_read_only(&ctx).unwrap());
+        let conn = open_existing(&ctx).unwrap();
+        let index_count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='idx_file_hashes_hash'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_count, 0, "opening a library must not upgrade it");
     }
 
     /// One library root plus a context on it. All path expectations are built
