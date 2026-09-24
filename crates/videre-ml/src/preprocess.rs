@@ -119,19 +119,21 @@ pub fn decode_via_quicklook(path: &Path, size: usize, tag: &str) -> Result<image
         anyhow::bail!("no video track (audio-only file); skipped without calling QuickLook");
     }
 
-    use std::hash::{Hash, Hasher};
     use videre_core::io_timeout::{wait_with_timeout, WaitOutcome};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    path.hash(&mut h);
-    tag.hash(&mut h);
-    let out_dir = std::env::temp_dir().join(format!("dupe_embed_ql_{:016x}", h.finish()));
-    let _ = std::fs::remove_dir_all(&out_dir);
-    std::fs::create_dir_all(&out_dir).context("create qlmanage temp dir")?;
+    // A scratch directory of this call's own, removed when `scratch` drops, so
+    // simultaneous decodes of one file cannot delete each other's output. See
+    // `videre_core::heic::heic_via_quicklook`, which had the same shared,
+    // path-named directory.
+    let scratch = tempfile::Builder::new()
+        .prefix(&format!("videre_embed_ql_{tag}_"))
+        .tempdir()
+        .context("create qlmanage temp dir")?;
+    let out_dir = scratch.path();
     let target = (size * 2).to_string();
     let _permit = videre_core::heic::qlmanage_semaphore().acquire();
     let mut child = std::process::Command::new("qlmanage")
         .args(["-t", "-s", &target, "-o"])
-        .arg(&out_dir)
+        .arg(out_dir)
         .arg(path)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -151,10 +153,7 @@ pub fn decode_via_quicklook(path: &Path, size: usize, tag: &str) -> Result<image
     );
     let file_name = path.file_name().context("path has no file name")?;
     let out_file = out_dir.join(format!("{}.png", file_name.to_string_lossy()));
-    let img = image::open(&out_file)
-        .with_context(|| format!("decode qlmanage output for {}", path.display()));
-    let _ = std::fs::remove_dir_all(&out_dir);
-    img
+    image::open(&out_file).with_context(|| format!("decode qlmanage output for {}", path.display()))
 }
 
 #[cfg(test)]
