@@ -857,12 +857,49 @@ mod files_sort_tests {
             .with_state(state);
 
         let home = body_of(&app, "/").await;
-        assert!(home.contains("sort-select"), "{home}");
-        assert!(home.contains("sort-dir-btn"), "{home}");
+        assert!(home.contains("class=\"sort-select\""), "{home}");
+        assert!(home.contains("class=\"sort-dir-btn\""), "{home}");
 
         let events = body_of(&app, "/events").await;
         assert!(events.contains("view-mode-select"), "{events}"); // the page has a head
-        assert!(!events.contains("sort-select"), "{events}"); // but no sort control
+                                                                  // Match the attribute, not the bare class name: the inlined gallery.js
+                                                                  // mentions .sort-select in its querySelectorAll calls on every page.
+        assert!(!events.contains("class=\"sort-select\""), "{events}");
+        assert!(!events.contains("class=\"sort-dir-btn\""), "{events}");
+    }
+
+    #[test]
+    fn static_export_rows_carry_marks_so_offline_sorts_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        let out = dir.path().join("out.html");
+        // query_all_files drops rows whose path does not exist, so the scanned
+        // row needs a real file behind it.
+        let real = dir.path().join("a.jpg");
+        std::fs::write(&real, b"x").unwrap();
+        let rows = {
+            let conn = state.conn.lock().unwrap();
+            videre_core::library_db::ensure_scan_schema(&conn).unwrap();
+            videre_core::marks::ensure_marks_table(&conn).unwrap();
+            conn.execute(
+                "INSERT INTO file_hashes (path, hash, size_bytes, ext, mime, modified_at) \
+                 VALUES (?1, 'ha', 30, 'jpg', 'image/jpeg', '2021-01-01T00:00:00')",
+                rusqlite::params![real.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+            videre_core::marks::set(
+                &conn,
+                &["ha".to_string()],
+                &videre_core::marks::change_from_parts(Some(5), None, None, None),
+            )
+            .unwrap();
+            crate::render::query_all_files(&conn)
+        };
+        let conn = state.conn.lock().unwrap();
+        crate::render::write_static_page(&conn, &out, &[], Some(&rows)).unwrap();
+        let html = std::fs::read_to_string(&out).unwrap();
+        assert!(html.contains("var ALLFILES=["), "{html}");
+        assert!(html.contains("\"rating\":5"), "{html}");
     }
 
     #[tokio::test]
@@ -1799,6 +1836,8 @@ fn render_live_with_date(
         items,
         groups,
         faces_by_hash,
+        // Live pages inline no rows, so the marks map is never read.
+        marks_by_hash: Default::default(),
         nav,
         view,
         options: RenderOptions {
@@ -1873,27 +1912,6 @@ async fn handle_location(
 /// :warning: `limit` is capped. An unbounded `limit` would let a client ask for
 /// the whole library in one request, which is the exact page this endpoint
 /// exists to stop being built.
-/// The mark fields for a file object, as a leading-comma JSON fragment
-/// (`,"rating":..,"pick":..,"label":..,"liked":..`). An unmarked photo reads as
-/// nulls and `liked:false`, so every file has the same stable shape.
-fn mark_fields_json(m: Option<&videre_core::marks::Marks>) -> String {
-    use videre_core::marks::Pick;
-    let rating = m
-        .and_then(|m| m.rating)
-        .map(|r| r.to_string())
-        .unwrap_or_else(|| "null".into());
-    let pick = match m.and_then(|m| m.pick) {
-        Some(Pick::Keep) => "\"keep\"",
-        Some(Pick::Reject) => "\"reject\"",
-        None => "null",
-    };
-    let label = m
-        .and_then(|m| m.label.as_deref())
-        .and_then(|l| serde_json::to_string(l).ok())
-        .unwrap_or_else(|| "null".into());
-    let liked = m.map(|m| m.liked).unwrap_or(false);
-    format!(",\"rating\":{rating},\"pick\":{pick},\"label\":{label},\"liked\":{liked}")
-}
 
 async fn handle_files(
     State(state): State<Arc<AppState>>,
@@ -2566,6 +2584,7 @@ fn render_live_events(state: &Arc<AppState>, event_json: &str) -> axum::response
         items: Vec::new(),
         groups: Vec::new(),
         faces_by_hash,
+        marks_by_hash: Default::default(),
         nav: Some(Section::Events),
         view: View::Events,
         options: RenderOptions {

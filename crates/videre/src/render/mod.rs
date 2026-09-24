@@ -650,6 +650,30 @@ pub(crate) fn json_str(s: &str) -> String {
 /// into meta.faces. `faces` is the (face_id, person_label, bbox) list for this
 /// file's hash, as returned by videre_core::face_db::labeled_faces_by_hash()
 /// (note the tuple order: label is `.1`, bbox is `.2`).
+/// The mark fields for a file object, as a leading-comma JSON fragment
+/// (`,"rating":..,"pick":..,"label":..,"liked":..`). An unmarked photo reads as
+/// nulls and `liked:false`, so every file has the same stable shape. Shared by
+/// the live `/api/files` response and the static export's inlined rows, whose
+/// offline sorts read the same fields.
+pub(crate) fn mark_fields_json(m: Option<&videre_core::marks::Marks>) -> String {
+    use videre_core::marks::Pick;
+    let rating = m
+        .and_then(|m| m.rating)
+        .map(|r| r.to_string())
+        .unwrap_or_else(|| "null".into());
+    let pick = match m.and_then(|m| m.pick) {
+        Some(Pick::Keep) => "\"keep\"",
+        Some(Pick::Reject) => "\"reject\"",
+        None => "null",
+    };
+    let label = m
+        .and_then(|m| m.label.as_deref())
+        .and_then(|l| serde_json::to_string(l).ok())
+        .unwrap_or_else(|| "null".into());
+    let liked = m.map(|m| m.liked).unwrap_or(false);
+    format!(",\"rating\":{rating},\"pick\":{pick},\"label\":{label},\"liked\":{liked}")
+}
+
 pub(crate) fn file_to_json_with_faces(
     f: &FileRow,
     heic: bool,
@@ -1077,11 +1101,18 @@ pub(crate) fn write_static_page(
         None => (Vec::new(), groups.to_vec(), View::Duplicates),
         Some(rows) => (rows.to_vec(), Vec::new(), View::All),
     };
+    // The flat gallery's rows are what a static page inlines as ALLFILES, so
+    // they carry the marks fields the offline sorts read.
+    let hashes: Vec<String> = flat
+        .map(|rows| rows.iter().map(|r| r.hash.clone()).collect())
+        .unwrap_or_default();
+    let marks_by_hash = videre_core::marks::get_many(conn, &hashes).unwrap_or_default();
     let set = RenderSet {
         stats,
         items,
         groups,
         faces_by_hash,
+        marks_by_hash,
         nav: None,
         view,
         options: RenderOptions {
@@ -1132,6 +1163,10 @@ pub(crate) struct RenderSet {
     pub items: Vec<FileRow>,
     pub groups: Vec<Vec<FileRow>>,
     pub faces_by_hash: videre_core::face_db::LabeledFacesByHash,
+    /// Marks for the rows a static page inlines, so offline sorting by rating
+    /// and liked reads the same fields the live API splices in. Live pages
+    /// inline nothing and pass an empty map.
+    pub marks_by_hash: HashMap<String, videre_core::marks::Marks>,
     pub nav: Option<Section>,
     pub view: View,
     pub options: RenderOptions,
@@ -1186,6 +1221,7 @@ pub(crate) fn render(set: &RenderSet) -> String {
         heic,
         heic_original,
         faces_by_hash,
+        &set.marks_by_hash,
         live,
         has_embeddings,
         &set.options.date_filter_json,
@@ -1231,6 +1267,7 @@ fn build_data_block(
     heic: bool,
     heic_original: bool,
     faces_by_hash: &videre_core::face_db::LabeledFacesByHash,
+    marks_by_hash: &HashMap<String, videre_core::marks::Marks>,
     live: bool,
     has_embeddings: bool,
     date_filter_json: &str,
@@ -1297,7 +1334,9 @@ fn build_data_block(
             if i > 0 {
                 out.push(',');
             }
-            out.push_str(&file_to_json_with_faces(
+            // Same splice the live `/api/files` response does, so a static
+            // page's rows carry rating and liked for the offline sorts.
+            let mut obj = file_to_json_with_faces(
                 f,
                 heic,
                 heic_original,
@@ -1306,7 +1345,15 @@ fn build_data_block(
                     .map(|v| v.as_slice())
                     .unwrap_or(&[]),
                 live,
-            ));
+            );
+            if let Some(m) = marks_by_hash.get(&f.hash) {
+                if obj.ends_with('}') {
+                    obj.truncate(obj.len() - 1);
+                    obj.push_str(&mark_fields_json(Some(m)));
+                    obj.push('}');
+                }
+            }
+            out.push_str(&obj);
         }
         out.push_str("\n];\n");
     }
@@ -1320,7 +1367,7 @@ fn build_data_block(
             if i > 0 {
                 out.push(',');
             }
-            out.push_str(&file_to_json_with_faces(
+            let mut obj = file_to_json_with_faces(
                 f,
                 heic,
                 heic_original,
@@ -1329,7 +1376,15 @@ fn build_data_block(
                     .map(|v| v.as_slice())
                     .unwrap_or(&[]),
                 live,
-            ));
+            );
+            if let Some(m) = marks_by_hash.get(&f.hash) {
+                if obj.ends_with('}') {
+                    obj.truncate(obj.len() - 1);
+                    obj.push_str(&mark_fields_json(Some(m)));
+                    obj.push('}');
+                }
+            }
+            out.push_str(&obj);
         }
         out.push_str("\n];\n");
     }
