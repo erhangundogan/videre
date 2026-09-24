@@ -370,9 +370,16 @@ refused and rebuilt by a fresh scan; there is no migration.
 :warning: **Changing the splitter's spans changes stored keys.** Any change to
 which bytes `content_key` counts as content, including teaching it a format
 that used to fall back, gives the affected files new keys the next time they
-are hashed, and orphans their faces, names, tags and embeddings. Treat it like a schema
-version bump, and re-run the real-tool fixtures in `tests/content_key.rs`.
-Files on the fallback today are the rows with `meta_hash IS NULL`.
+are hashed, and orphans their faces, names, tags and embeddings. Treat it like
+a schema version bump, and re-run the real-tool fixtures in
+`tests/content_key.rs`. Files on the fallback today are the rows with
+`meta_hash IS NULL`.
+
+**A hash change is a breaking release.** The switch to the content key shipped
+in 0.41.0 as schema 3, with a "Breaking changes" changelog section: older
+libraries are refused, versions cannot share a library, and hashes saved from
+`--json`, JSONL or gallery URLs stop matching. Any later change to what `hash`
+covers needs the same schema bump and the same changelog section.
 
 ### Every filter goes through `videre_core::selection`
 
