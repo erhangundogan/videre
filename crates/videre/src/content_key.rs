@@ -955,6 +955,50 @@ mod tests {
         v
     }
 
+    /// A big-endian tiled TIFF: an ASCII tag, then two tiles whose offsets
+    /// and byte counts are arrays stored outside the IFD.
+    fn tiled_tiff(description: &[u8], tiles: [&[u8]; 2]) -> Vec<u8> {
+        let entry = |tag: u16, kind: u16, count: u32, value: u32| {
+            let mut e = tag.to_be_bytes().to_vec();
+            e.extend(kind.to_be_bytes());
+            e.extend(count.to_be_bytes());
+            e.extend(value.to_be_bytes());
+            e
+        };
+        let desc_at = 8u32;
+        let tile0_at = desc_at + description.len() as u32;
+        let tile1_at = tile0_at + tiles[0].len() as u32;
+        let offsets_at = tile1_at + tiles[1].len() as u32;
+        let counts_at = offsets_at + 8;
+        let ifd_at = counts_at + 8;
+        let mut v = b"MM".to_vec();
+        v.extend(42u16.to_be_bytes());
+        v.extend(ifd_at.to_be_bytes());
+        v.extend(description);
+        v.extend(tiles[0]);
+        v.extend(tiles[1]);
+        v.extend(tile0_at.to_be_bytes());
+        v.extend(tile1_at.to_be_bytes());
+        v.extend((tiles[0].len() as u32).to_be_bytes());
+        v.extend((tiles[1].len() as u32).to_be_bytes());
+        v.extend(3u16.to_be_bytes());
+        v.extend(entry(270, 2, description.len() as u32, desc_at));
+        v.extend(entry(324, 4, 2, offsets_at));
+        v.extend(entry(325, 4, 2, counts_at));
+        v.extend(0u32.to_be_bytes());
+        v
+    }
+
+    #[test]
+    fn tiff_tiles_are_the_content() {
+        assert_split(
+            &tiled_tiff(b"Arsiv 2011 ", [b"kose", b"orta"]),
+            &tiled_tiff(b"Arsiv 2024, edited ", [b"kose", b"orta"]),
+            &tiled_tiff(b"Arsiv 2011 ", [b"kose", b"ortA"]),
+            Format::Tiff,
+        );
+    }
+
     #[test]
     fn tiff_previews_are_metadata() {
         assert_split(
