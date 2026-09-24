@@ -13,7 +13,12 @@
 
    :warning: The reserved route `/smart` is deliberately absent. It answers
    404 "Not built yet", and a link to that is worse than no link. Add it here
-   when it renders. #}
+   when it renders.
+
+   The gallery settings (`commands/gallery/settings.rs`) are emitted first and
+   outside the nav condition, so every page that includes this file, a static
+   export too, has them before its own scripts run. #}
+{{ settings_script|safe }}<style>.settings-banner{padding:8px 16px;background:#7f1d1d;color:#fecaca;font:500 13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}</style>
 {% if let Some(current) = nav %}<style>
 .secnav{display:flex;align-items:center;gap:2px;padding:10px 16px;background:#1a1a1f;border-bottom:1px solid #2a2a33;position:sticky;top:0;z-index:50}
 /* The brand link is excluded from these rules so it never gets the section

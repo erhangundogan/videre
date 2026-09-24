@@ -91,6 +91,30 @@ pub(crate) fn snapshot(path: &Path) -> Snapshot {
     }
 }
 
+pub(crate) const SETTINGS_JS: &str = include_str!("../../../static/settings.js");
+
+/// The settings as page globals plus the client runtime, inlined by
+/// `templates/nav.html` so the first paint already uses them. `live` is false
+/// on a static export, where changes last the session and are not saved.
+/// `</` is escaped so no value can close the script element.
+pub(crate) fn page_script(s: &Snapshot, live: bool) -> String {
+    let js = |v: &Value| v.to_string().replace("</", "<\\/");
+    let error = s.error.clone().map(Value::String).unwrap_or(Value::Null);
+    format!(
+        "<script>var VIDERE_SETTINGS={};var VIDERE_SETTINGS_DEFAULTS={};\
+         var VIDERE_SETTINGS_LIVE={live};var VIDERE_SETTINGS_ERROR={};</script>\
+         <script>{SETTINGS_JS}</script>",
+        js(&s.effective),
+        js(&defaults()),
+        js(&error),
+    )
+}
+
+/// `page_script` for the library whose state directory is `state_dir`.
+pub(crate) fn page_script_for(state_dir: &Path, live: bool) -> String {
+    page_script(&snapshot(&path(state_dir)), live)
+}
+
 pub(crate) fn defaults() -> Value {
     serde_json::from_str(DEFAULTS_JSON).expect("gallery-defaults.json is valid JSON")
 }
@@ -272,6 +296,20 @@ mod tests {
         merge_patch(&mut t, &json!({"resume": {"route": "/map"}}));
         assert_eq!(t["routes"]["files"]["pageSize"], 50);
         assert_eq!(t["resume"]["route"], "/map");
+    }
+
+    #[test]
+    fn the_page_script_carries_the_settings_and_cannot_be_closed_by_a_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = path(dir.path());
+        std::fs::write(&p, r#"{"routes":{"files":{"view":"</script><b>"}}}"#).unwrap();
+        let live = page_script_for(dir.path(), true);
+        assert!(live.starts_with("<script>var VIDERE_SETTINGS={"), "{live}");
+        assert!(live.ends_with("</script>"));
+        assert!(live.contains("VIDERE_SETTINGS_LIVE=true"));
+        assert!(live.contains(r#"<\/script><b>"#));
+        assert!(!live.contains("</script><b>"));
+        assert!(page_script_for(dir.path(), false).contains("VIDERE_SETTINGS_LIVE=false"));
     }
 
     #[test]

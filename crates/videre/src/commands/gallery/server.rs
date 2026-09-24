@@ -1008,6 +1008,8 @@ mod pages {
     #[derive(Template)]
     #[template(path = "faces.html")]
     pub struct Faces {
+        /// Gallery settings for `templates/nav.html`. See `settings::page_script`.
+        pub settings_script: String,
         /// The chrome every videre page shares. See `static/chrome.css`.
         pub chrome: &'static str,
         pub css: &'static str,
@@ -1026,6 +1028,7 @@ mod pages {
     #[derive(Template)]
     #[template(path = "cluster.html")]
     pub struct Cluster {
+        pub settings_script: String,
         pub css: &'static str,
         pub js: &'static str,
         pub cluster_id: i64,
@@ -1039,6 +1042,7 @@ mod pages {
     #[derive(Template)]
     #[template(path = "person.html")]
     pub struct Person {
+        pub settings_script: String,
         pub css: &'static str,
         pub js: &'static str,
         pub faces_ui_enabled: bool,
@@ -1052,6 +1056,7 @@ mod pages {
     #[derive(Template)]
     #[template(path = "map.html")]
     pub struct Map {
+        pub settings_script: String,
         pub chrome: &'static str,
         pub gallery_css: &'static str,
         pub css: &'static str,
@@ -1130,6 +1135,12 @@ fn guard_operation(
 
 fn settings_file(state: &AppState) -> std::path::PathBuf {
     super::settings::path(&state.context.library.paths.state)
+}
+
+/// The settings script every served page inlines through `nav.html`. Read
+/// from disk on each render, so a hand edit applies on the next page load.
+fn page_settings(state: &AppState) -> String {
+    super::settings::page_script_for(&state.context.library.paths.state, true)
 }
 
 fn settings_json(s: super::settings::Snapshot) -> Json<serde_json::Value> {
@@ -1309,6 +1320,7 @@ async fn handle_root(State(state): State<Arc<AppState>>) -> impl axum::response:
         )
     };
     let page = pages::Faces {
+        settings_script: page_settings(&state),
         chrome: CHROME_CSS,
         css: pages::FACES_CSS,
         js: pages::FACES_JS,
@@ -1495,6 +1507,7 @@ fn render_map(state: &AppState, location_json: &str) -> axum::response::Html<Str
         cfg!(target_os = "macos")
     );
     let page = pages::Map {
+        settings_script: page_settings(&state),
         chrome: CHROME_CSS,
         gallery_css: include_str!("../../../static/gallery.css"),
         css: pages::MAP_CSS,
@@ -1807,6 +1820,7 @@ fn render_live_with_date(
             db_path,
             date_filter_json: date_filter_json.to_string(),
             event_json: "null".to_string(),
+            settings_script: page_settings(state),
         },
     };
     axum::response::Html(render(&set))
@@ -2572,6 +2586,7 @@ fn render_live_events(state: &Arc<AppState>, event_json: &str) -> axum::response
             db_path,
             date_filter_json: "null".to_string(),
             event_json: event_json.to_string(),
+            settings_script: page_settings(state),
         },
     };
     axum::response::Html(render(&set))
@@ -2808,6 +2823,7 @@ async fn handle_cluster_page(
 ) -> impl axum::response::IntoResponse {
     use askama::Template;
     let page = pages::Cluster {
+        settings_script: page_settings(&state),
         css: pages::CLUSTER_CSS,
         js: pages::CLUSTER_JS,
         cluster_id,
@@ -2831,6 +2847,7 @@ async fn handle_cluster_api(
 async fn handle_person_page(State(state): State<Arc<AppState>>) -> axum::response::Html<String> {
     use askama::Template;
     let page = pages::Person {
+        settings_script: page_settings(&state),
         css: pages::PERSON_CSS,
         js: pages::PERSON_JS,
         faces_ui_enabled: state.serve_faces_ui,
