@@ -169,7 +169,11 @@ Answering Yes names a cluster; No only teaches; Skip does neither.
 - Training needs both kinds of feedback: faces that belong together (naming
   people) and groups that are wrong (dissolving a cluster). Until there is
   enough of each, the page shows what it is waiting for, such as *dissolve 2
-  more wrong clusters*, rather than a failure.
+  more wrong clusters* or *name 1 more person from a group of two or more
+  faces*, rather than a failure. A person named from a single face counts as
+  a name but teaches nothing yet (there is no second face to compare it
+  with), so it does not start a new run; naming a group, or adding a face to
+  someone already named, does.
 - Every action's evidence stays inspectable (per person, and in the teaching
   journal), and no raw embeddings ever appear in a payload.
 - Failed runs keep the previous profile. Promotion affects suggestions and

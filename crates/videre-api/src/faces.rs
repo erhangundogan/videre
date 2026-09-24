@@ -1546,6 +1546,41 @@ mod tests {
             assert_eq!(cluster_id, None);
         }
 
+        /// The waiting ask says "from a group of two or more faces" because
+        /// that is what trains again: a person named from one face records
+        /// nothing and leaves the state where it was.
+        #[test]
+        fn following_the_waiting_ask_starts_a_new_run_and_one_face_does_not() {
+            let conn = learning_seed();
+            assign_with_learning(&conn, &[7, 8], "alice", &context()).unwrap();
+            videre_core::face_learning::mark_training_started(&conn).unwrap();
+            let ask = videre_core::face_learning::TrainingError::OneSidedValidation
+                .feedback_needed(&videre_core::face_learning::TrainingConfig::default())
+                .unwrap();
+            assert_eq!(ask, "name 1 more person from a group of two or more faces");
+            videre_core::face_learning::mark_training_waiting(&conn, 1, &ask).unwrap();
+
+            let single = new_person_with_learning(&conn, &[6], "Çağla", &context()).unwrap();
+            assert!(single.event_ids.is_empty());
+            let status = face_learning_status(&conn).unwrap();
+            assert_eq!(
+                (status.generation, status.status.as_str()),
+                (1, "waiting"),
+                "one face records nothing, so nothing new is trained"
+            );
+            assert_eq!(status.feedback_needed.as_deref(), Some(ask.as_str()));
+
+            let group = new_person_with_learning(&conn, &[3, 4, 5], "Özgür", &context()).unwrap();
+            assert!(!group.event_ids.is_empty());
+            let status = face_learning_status(&conn).unwrap();
+            assert_eq!(
+                (status.generation, status.status.as_str()),
+                (2, "stale"),
+                "a named group is new evidence, so the worker trains again"
+            );
+            assert_eq!(status.feedback_needed, None);
+        }
+
         #[test]
         fn new_person_collision_uses_existing_person_support() {
             let conn = learning_seed();

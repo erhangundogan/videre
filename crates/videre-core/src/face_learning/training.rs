@@ -146,6 +146,12 @@ pub enum TrainingError {
         identities: usize,
         folds: usize,
     },
+    /// Held-out validation saw only one kind of example. Validation holds
+    /// people out a fold at a time, and a "different people" pair counts
+    /// only in a fold that holds out both people, so a few named people
+    /// with one per fold validate no negatives at all. More named people
+    /// fix it; nothing is wrong with the data.
+    OneSidedValidation,
     NonConvergence,
 }
 
@@ -156,6 +162,7 @@ impl fmt::Display for TrainingError {
             Self::InvalidInput(reason) => write!(f, "invalid training input: {reason}"),
             Self::InsufficientEvidence { decision_kind, positive_identities, negative_identities } => write!(f, "insufficient {decision_kind:?} evidence: {positive_identities} positive and {negative_identities} negative identities"),
             Self::TooFewIdentities { identities, folds } => write!(f, "only {identities} labeled identities for {folds} cross-validation folds; label more people or lower the fold count"),
+            Self::OneSidedValidation => write!(f, "held-out validation saw only one kind of example; name more people"),
             Self::NonConvergence => write!(f, "logistic optimization did not converge"),
         }
     }
@@ -170,6 +177,16 @@ impl TrainingError {
         fn more(count: usize, one: &str, many: &str) -> String {
             format!("{count} more {}", if count == 1 { one } else { many })
         }
+        // Naming a single face records nothing to learn from (there is no
+        // second face to compare it with) and does not start a new run, so
+        // the ask names the action that does: a group of two or more faces.
+        fn named_from_a_group(count: usize) -> String {
+            if count == 1 {
+                "name 1 more person from a group of two or more faces".to_owned()
+            } else {
+                format!("name {count} more people, each from a group of two or more faces")
+            }
+        }
         match self {
             Self::InsufficientEvidence {
                 decision_kind,
@@ -179,12 +196,7 @@ impl TrainingError {
                 let positives = config
                     .min_positive_identities
                     .saturating_sub(*positive_identities);
-                let named = |count: usize| {
-                    format!(
-                        "name {} with at least two faces",
-                        more(count, "person", "people")
-                    )
-                };
+                let named = |count: usize| named_from_a_group(count);
                 match decision_kind {
                     // Only a dissolved cluster says "these faces are not one
                     // person"; confirmed labels are all positive.
@@ -215,10 +227,12 @@ impl TrainingError {
                     }
                 }
             }
-            Self::TooFewIdentities { identities, folds } => Some(format!(
-                "name {}",
-                more(folds.saturating_sub(*identities).max(1), "person", "people")
-            )),
+            Self::TooFewIdentities { identities, folds } => {
+                Some(named_from_a_group(folds.saturating_sub(*identities).max(1)))
+            }
+            // How many more depends on how people fall into folds; one more
+            // at a time until validation sees both kinds.
+            Self::OneSidedValidation => Some(named_from_a_group(1)),
             _ => None,
         }
     }
@@ -323,9 +337,7 @@ pub(crate) fn identity_held_out_splits(
             .cloned()
             .collect();
         if training.is_empty() || validation.is_empty() {
-            return Err(TrainingError::InvalidInput(
-                "identity fold has no training or validation examples".into(),
-            ));
+            return Err(TrainingError::OneSidedValidation);
         }
         folds.push(HeldOutFold {
             held_out_identities: identities,
@@ -1104,9 +1116,7 @@ pub(crate) fn held_out_scores(
             .then(left.logit.total_cmp(&right.logit))
     });
     if !scores.iter().any(|score| score.positive) || !scores.iter().any(|score| !score.positive) {
-        return Err(TrainingError::InvalidInput(
-            "held-out predictions need both classes".into(),
-        ));
+        return Err(TrainingError::OneSidedValidation);
     }
     Ok(scores)
 }
@@ -1132,9 +1142,7 @@ pub(crate) fn select_threshold(
         .map(|(_, _, weight)| weight)
         .sum();
     if positive_weight == 0.0 || scores.iter().all(|(_, positive, _)| *positive) {
-        return Err(TrainingError::InvalidInput(
-            "threshold selection needs both classes".into(),
-        ));
+        return Err(TrainingError::OneSidedValidation);
     }
     // One sweep over scores in descending order: walking down and grouping
     // equal scores means the cumulative counts at each distinct score are
@@ -1208,9 +1216,7 @@ pub(crate) fn fit_calibration(
         .map(|score| score.weight)
         .sum();
     if total_weight <= 0.0 || positive_weight <= 0.0 || positive_weight >= total_weight {
-        return Err(TrainingError::InvalidInput(
-            "calibration needs finite positive weight from both classes".into(),
-        ));
+        return Err(TrainingError::OneSidedValidation);
     }
     let prevalence = (positive_weight / total_weight).clamp(1e-9, 1.0 - 1e-9);
     let mut parameters = [(prevalence / (1.0 - prevalence)).ln(), 1.0];
@@ -1891,6 +1897,60 @@ mod tests {
         assert!((0.0..=1.0).contains(&scorer.threshold));
     }
 
+    /// The young-library path: after "name 1 more person", three people are
+    /// named with two faces each. With three folds each fold holds out one
+    /// person, so no "different people" pair can be validated. That is still
+    /// too little feedback, not a failure.
+    #[test]
+    fn three_named_people_across_three_folds_waits_instead_of_failing() {
+        let people = ["çağla", "özgür", "şükrü"];
+        let mut observations = Vec::new();
+        let mut labels = Vec::new();
+        for (index, person) in people.iter().enumerate() {
+            let angle = index as f32 * 2.0;
+            for offset in 0..2 {
+                let id = (index * 2 + offset) as i64 + 1;
+                let turn = angle + offset as f32 * 0.1;
+                observations.push(varied_observation(
+                    id,
+                    [turn.cos(), turn.sin()],
+                    &format!("h{id}"),
+                ));
+                labels.push(LabeledFace::new(id, *person));
+            }
+        }
+        let dissolved =
+            extract_cluster_quality_features(&observations[0..3], DecisionStage::GalleryCluster)
+                .unwrap();
+        let events: Vec<_> = (1..=2)
+            .map(|id| {
+                stored_event(
+                    id,
+                    LearningAction::DissolveCluster,
+                    LearningDecisionKind::ClusterQuality,
+                    LearningOutcome::Negative,
+                    None,
+                    dissolved.clone(),
+                )
+            })
+            .collect();
+        let config = TrainingConfig::default();
+        assert_eq!(config.folds, 3);
+        let snapshot =
+            build_training_snapshot(1, "arcface/model", &labels, &observations, &events, &config)
+                .unwrap();
+        let error = train_and_select_candidate(
+            &snapshot,
+            &config,
+            &crate::face_learning::PromotionGates::shipped(),
+        )
+        .unwrap_err();
+        assert!(
+            error.feedback_needed(&config).is_some(),
+            "following the ask must not turn waiting into failed: {error}"
+        );
+    }
+
     #[test]
     fn too_little_evidence_names_the_feedback_that_would_help() {
         let asked = |decision_kind, positive_identities, negative_identities| {
@@ -1907,16 +1967,16 @@ mod tests {
         );
         assert_eq!(
             asked(LearningDecisionKind::ClusterQuality, 1, 1).as_deref(),
-            Some("name 1 more person with at least two faces and dissolve 1 more wrong cluster")
+            Some("name 1 more person from a group of two or more faces and dissolve 1 more wrong cluster")
         );
         assert_eq!(
             asked(LearningDecisionKind::Membership, 1, 0).as_deref(),
-            Some("name 1 more person with at least two faces"),
+            Some("name 1 more person from a group of two or more faces"),
             "the person already named pairs with the next one"
         );
         assert_eq!(
             asked(LearningDecisionKind::Membership, 0, 0).as_deref(),
-            Some("name 2 more people with at least two faces")
+            Some("name 2 more people, each from a group of two or more faces")
         );
         assert_eq!(
             TrainingError::TooFewIdentities {
@@ -1925,7 +1985,7 @@ mod tests {
             }
             .feedback_needed(&config())
             .as_deref(),
-            Some("name 2 more people")
+            Some("name 2 more people, each from a group of two or more faces")
         );
         assert_eq!(
             TrainingError::NonConvergence.feedback_needed(&config()),
