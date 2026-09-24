@@ -114,7 +114,10 @@ fn needs_training(deps: &LearningDeps) -> bool {
     let conn = deps.conn.lock().expect("learning connection poisoned");
     match learning_state(&conn) {
         Ok(state) => {
+            // Waiting is retried on start: a newer build may train the same
+            // feedback, or ask for it in other words.
             state.status == videre_core::face_learning::LearningStatus::Training
+                || state.status == videre_core::face_learning::LearningStatus::Waiting
                 || state.generation > state.trained_generation
         }
         Err(_) => false,
@@ -140,7 +143,9 @@ fn prepare_training(conn: &Connection, deps: &LearningDeps) -> Result<Option<Pre
             .map_err(|_| ())?;
     }
     let state = learning_state(conn).map_err(|_| ())?;
-    if state.generation <= state.trained_generation {
+    if state.generation <= state.trained_generation
+        && state.status != videre_core::face_learning::LearningStatus::Waiting
+    {
         return Ok(None);
     }
     let state = mark_training_started(conn).map_err(|error| {
@@ -225,7 +230,13 @@ async fn run_cycle(deps: &LearningDeps) {
             // not a failure: the page asks for what is missing.
             Some(needed) => {
                 tracing::debug!(generation, %error, "face learning: waiting for feedback: {needed}");
-                let _ = mark_training_waiting(&conn, generation, &needed);
+                if let Err(write) = mark_training_waiting(&conn, generation, &needed) {
+                    // The state stays training until the next start retires
+                    // it; say why here, where the cause is known.
+                    tracing::warn!(
+                        "face learning: could not record waiting for generation {generation}: {write}"
+                    );
+                }
             }
             None => record_failure(&conn, generation, &error.to_string()),
         },
@@ -755,6 +766,10 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
+        panic!(
+            "status never became {wanted}: {:?}",
+            learning_status(&conn.lock().unwrap())
+        );
     }
 
     #[tokio::test]
@@ -766,7 +781,7 @@ mod tests {
         let trainer = move |_: &TrainingSnapshot,
                             _: &TrainingConfig,
                             _: &videre_core::face_learning::PromotionGates| {
-            if counter.fetch_add(1, AtomicOrdering::SeqCst) == 0 {
+            if counter.fetch_add(1, AtomicOrdering::SeqCst) < 2 {
                 // Only confirmed labels so far: no dissolved cluster yet.
                 Err(TrainingError::InsufficientEvidence {
                     decision_kind: videre_core::face_learning::LearningDecisionKind::ClusterQuality,
@@ -803,14 +818,25 @@ mod tests {
         }
         coordinator.shutdown();
 
-        // A restarted server finds nothing to train.
+        // A restarted server tries a waiting library once more (a newer
+        // build may train it or word the ask differently), and still waits.
         let second = trainer.clone();
         let restarted = spawn_with(
             make_deps(conn.clone(), move |s, c, g| second(s, c, g)),
             Duration::from_millis(20),
         );
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
+        for _ in 0..2000 {
+            if calls.load(AtomicOrdering::SeqCst) == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        wait_for_status(&conn, "waiting").await;
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 2);
+        assert_eq!(
+            learning_status(&conn.lock().unwrap()),
+            (1, 1, "waiting".to_string())
+        );
 
         // New feedback trains again.
         conn.lock()

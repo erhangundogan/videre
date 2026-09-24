@@ -161,7 +161,9 @@ pub enum LearningStatus {
     Training,
     Failed,
     /// The last run found too little feedback to train on. Not a failure:
-    /// the generation counts as evaluated, and the next feedback retries.
+    /// the generation counts as evaluated, and new feedback retries it. The
+    /// gallery also retries it once when it starts, so a newer build's
+    /// thresholds and wording apply without waiting for feedback.
     Waiting,
 }
 
@@ -910,8 +912,8 @@ pub fn mark_training_started(conn: &Connection) -> Result<LearningState, Learnin
         "UPDATE face_learning_state
          SET status = 'training', training_generation = generation, last_error = NULL
          WHERE id = 1
-           AND generation > trained_generation
-           AND status IN ('stale', 'failed')",
+           AND ((generation > trained_generation AND status IN ('stale', 'failed'))
+                OR status = 'waiting')",
         [],
     )?;
     if changed != 1 {
@@ -951,8 +953,8 @@ pub fn mark_training_failed(
 
 /// Record that `generation` could not be trained because the feedback so far
 /// is too thin, with `needed` saying what would change that. Unlike a failure
-/// the generation is marked evaluated, so a restart does not retrain it; the
-/// next feedback advances the generation and makes the state stale again.
+/// the generation is marked evaluated: only new feedback, which advances the
+/// generation, or the gallery's retry on start trains it again.
 pub fn mark_training_waiting(
     conn: &Connection,
     generation: u64,
@@ -1375,11 +1377,13 @@ mod tests {
             waiting.last_error.as_deref(),
             Some("dissolve 2 more wrong clusters")
         );
-        assert!(
-            mark_training_started(&conn).is_err(),
-            "nothing new to train until feedback arrives"
-        );
-        assert!(mark_training_waiting(&conn, 1, "again").is_err());
+        assert!(mark_training_waiting(&conn, 2, "again").is_err());
+        // A waiting generation may be tried again (the gallery does on start,
+        // so a newer build's thresholds or wording apply) without new feedback.
+        let retried = mark_training_started(&conn).unwrap();
+        assert_eq!(retried.training_generation, Some(1));
+        assert_eq!(retried.last_error, None);
+        mark_training_waiting(&conn, 1, "dissolve 2 more wrong clusters").unwrap();
 
         append_committed(&conn, &[event(LearningAction::DissolveCluster)]);
         let stale = learning_state(&conn).unwrap();

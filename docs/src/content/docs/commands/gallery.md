@@ -173,7 +173,8 @@ Answering Yes names a cluster; No only teaches; Skip does neither.
   faces*, rather than a failure. A person named from a single face counts as
   a name but teaches nothing yet (there is no second face to compare it
   with), so it does not start a new run; naming a group, or adding a face to
-  someone already named, does.
+  someone already named, does. The gallery also tries again each time it
+  starts.
 - Every action's evidence stays inspectable (per person, and in the teaching
   journal), and no raw embeddings ever appear in a payload.
 - Failed runs keep the previous profile. Promotion affects suggestions and

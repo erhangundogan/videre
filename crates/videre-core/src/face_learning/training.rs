@@ -167,7 +167,7 @@ impl fmt::Display for TrainingError {
             Self::InvalidInput(reason) => write!(f, "invalid training input: {reason}"),
             Self::InsufficientEvidence { decision_kind, positive_identities, negative_identities } => write!(f, "insufficient {decision_kind:?} evidence: {positive_identities} positive and {negative_identities} negative identities"),
             Self::TooFewIdentities { identities, folds } => write!(f, "only {identities} labeled identities for {folds} cross-validation folds; label more people or lower the fold count"),
-            Self::OneSidedFold { decision_kind, lacking_negatives } => write!(f, "a {decision_kind:?} validation fold has no {} examples", if *lacking_negatives { "negative" } else { "positive" }),
+            Self::OneSidedFold { decision_kind, lacking_negatives } => write!(f, "a {decision_kind:?} cross-validation fold has no {} examples on one side", if *lacking_negatives { "negative" } else { "positive" }),
             Self::NonConvergence => write!(f, "logistic optimization did not converge"),
         }
     }
@@ -1115,6 +1115,12 @@ pub(crate) fn held_out_scores(
     max_iterations: usize,
     tolerance: f64,
 ) -> Result<Vec<HeldOutScore>, TrainingError> {
+    // `identity_held_out_splits` always returns two or more folds, all of one
+    // decision kind; an empty slice is a caller bug, not a data shortage.
+    let decision_kind = folds
+        .first()
+        .ok_or_else(|| TrainingError::InvalidInput("no cross-validation folds".into()))?
+        .decision_kind;
     let mut scores = Vec::new();
     for (fold_index, fold) in folds.iter().enumerate() {
         let model = fit_logistic(&fold.training, l2, class_weight, max_iterations, tolerance)?;
@@ -1141,9 +1147,7 @@ pub(crate) fn held_out_scores(
     });
     if !scores.iter().any(|score| score.positive) || !scores.iter().any(|score| !score.positive) {
         return Err(TrainingError::OneSidedFold {
-            decision_kind: folds
-                .first()
-                .map_or(LearningDecisionKind::Membership, |fold| fold.decision_kind),
+            decision_kind,
             lacking_negatives: !scores.iter().any(|score| !score.positive),
         });
     }

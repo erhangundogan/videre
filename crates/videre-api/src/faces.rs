@@ -1064,6 +1064,7 @@ pub fn face_learning_status(conn: &Connection) -> Result<FaceLearningStatus> {
         None => None,
     };
     let waiting = state.status == videre_core::face_learning::LearningStatus::Waiting;
+    let failed = state.status == videre_core::face_learning::LearningStatus::Failed;
     Ok(FaceLearningStatus {
         generation: state.generation,
         trained_generation: state.trained_generation,
@@ -1071,8 +1072,10 @@ pub fn face_learning_status(conn: &Connection) -> Result<FaceLearningStatus> {
         last_profile_id: state.last_profile_id,
         last_candidate,
         // A waiting state stores what it needs in the same column a failure
-        // stores its error in; the API names the two apart.
-        last_error: state.last_error.clone().filter(|_| !waiting),
+        // stores its error in; the API names the two apart, and reports an
+        // error only for a failed run, so a path that marks the state stale
+        // without clearing the column never turns an ask into an error.
+        last_error: state.last_error.clone().filter(|_| failed),
         feedback_needed: state.last_error.filter(|_| waiting),
         pending_questions: pending_questions as usize,
     })
@@ -1581,6 +1584,35 @@ mod tests {
                 (2, "stale"),
                 "a named group is new evidence, so the worker trains again"
             );
+            assert_eq!(status.feedback_needed, None);
+            assert_eq!(
+                status.last_error, None,
+                "the ask stored for the waiting run never reads as an error"
+            );
+        }
+
+        /// The ask shares the column a failure's error uses. A path that marks
+        /// the state stale without clearing it (the foreign-key repair) must
+        /// not turn the ask into a reported error.
+        #[test]
+        fn a_stale_state_never_reports_the_waiting_ask_as_an_error() {
+            let conn = learning_seed();
+            assign_with_learning(&conn, &[7, 8], "alice", &context()).unwrap();
+            videre_core::face_learning::mark_training_started(&conn).unwrap();
+            videre_core::face_learning::mark_training_waiting(
+                &conn,
+                1,
+                "dissolve 2 more wrong clusters",
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE face_learning_state SET generation = generation + 1, status = 'stale'",
+                [],
+            )
+            .unwrap();
+            let status = face_learning_status(&conn).unwrap();
+            assert_eq!(status.status, "stale");
+            assert_eq!(status.last_error, None);
             assert_eq!(status.feedback_needed, None);
         }
 
