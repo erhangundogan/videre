@@ -1069,6 +1069,18 @@ mod pages {
         pub nav: Option<super::Section>,
     }
 
+    #[derive(Template)]
+    #[template(path = "settings.html")]
+    pub struct Settings {
+        pub settings_script: String,
+        pub chrome: &'static str,
+        pub js: &'static str,
+        /// The library's `gallery.json`, shown so hand editing is findable.
+        pub path: String,
+        pub nav: Option<super::Section>,
+    }
+
+    pub const SETTINGS_PAGE_JS: &str = include_str!("../../../static/settings-page.js");
     pub const FACES_CSS: &str = include_str!("../../../static/faces.css");
     pub const FACES_JS: &str = include_str!("../../../static/faces.js");
     pub const CLUSTER_CSS: &str = include_str!("../../../static/cluster.css");
@@ -1161,6 +1173,20 @@ fn settings_json(s: super::settings::Snapshot) -> Json<serde_json::Value> {
         "error": s.error,
         "path": s.path.display().to_string(),
     }))
+}
+
+/// `/settings`: import, export and reset of the library's gallery settings,
+/// reached from the nav's `...` menu.
+async fn handle_settings_page(State(state): State<Arc<AppState>>) -> axum::response::Html<String> {
+    use askama::Template;
+    let page = pages::Settings {
+        settings_script: page_settings(&state),
+        chrome: CHROME_CSS,
+        js: pages::SETTINGS_PAGE_JS,
+        path: settings_file(&state).display().to_string(),
+        nav: Some(Section::Settings),
+    };
+    axum::response::Html(page.render().expect("settings template"))
 }
 
 /// `GET /api/settings`: the effective settings, the stored overrides, and
@@ -3562,6 +3588,7 @@ async fn serve_faces_async(
         .route("/date", get(handle_gallery_date))
         .route("/map/location/{name}", get(handle_map_location))
         .route("/map", get(handle_map))
+        .route("/settings", get(handle_settings_page))
         .route("/events/{key}", get(handle_events_key))
         .route("/events", get(handle_events))
         .route("/smart", get(handle_not_yet));
@@ -4202,6 +4229,57 @@ mod settings_api_tests {
         let (status, _) = patch_settings(&app, json!({"big": "a".repeat(70_000)})).await;
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
         assert_eq!(std::fs::read_to_string(file(dir.path())).unwrap(), before);
+    }
+
+    async fn page(app: &Router, uri: &str) -> String {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{uri}");
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_settings_page_offers_import_export_and_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = Router::new()
+            .route("/settings", get(handle_settings_page))
+            .with_state(gallery_state(dir.path()));
+        let html = page(&app, "/settings").await;
+        for id in ["settings-export", "settings-import", "settings-reset"] {
+            assert!(html.contains(&format!("id=\"{id}\"")), "{id}");
+        }
+        assert!(html.contains(".videre/gallery.json"), "shows the file path");
+        assert!(html.contains("id=\"secnav-more\""), "carries the nav menu");
+    }
+
+    #[tokio::test]
+    async fn gallery_pages_have_the_menu_with_a_settings_item() {
+        // The menu lives in the shared `nav.html` include, so two pages built
+        // on different templates are enough to show every page carries it.
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        state
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch("CREATE TABLE file_hashes (path TEXT, hash TEXT);")
+            .unwrap();
+        let app = Router::new()
+            .route("/people", get(handle_root))
+            .route("/map", get(handle_map))
+            .with_state(state);
+        for uri in ["/people", "/map"] {
+            let html = page(&app, uri).await;
+            assert!(html.contains("id=\"secnav-more\""), "{uri}");
+            assert!(
+                html.contains("role=\"menuitem\" href=\"/settings\""),
+                "{uri}"
+            );
+        }
     }
 
     #[test]

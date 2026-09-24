@@ -859,6 +859,9 @@ pub(crate) enum Section {
     Events,
     People,
     Map,
+    /// `/settings`, reached from the nav's `...` menu rather than a section
+    /// link, so no link is highlighted on it.
+    Settings,
 }
 
 impl Section {

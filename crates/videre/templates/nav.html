@@ -30,16 +30,29 @@
    never highlighted: no background on hover, no active state. */
 .secnav-brand{display:flex;align-items:center;padding:2px 8px 2px 0;margin-right:4px;text-decoration:none}
 .secnav-logo{display:block;height:20px;width:auto;color:#f4f4f5}
-/* The search box sits at the far right of the strip. It always submits to `/`,
-   where the Files page reads `?q=` and runs a semantic search; from any other
-   section it just navigates there first. */
-.secnav-search{margin-left:auto;display:flex}
+/* The spacer pushes the search box and the "..." menu to the far right. It is
+   its own element, not the search box's auto margin, because the search box is
+   hidden on a library with no embeddings and the menu must stay right. */
+.secnav-spacer{flex:1}
+/* The search box always submits to `/`, where the Files page reads `?q=` and
+   runs a semantic search; from any other section it just navigates there
+   first. */
+.secnav-search{display:flex}
 /* 5px vertical padding (not 6px) so the input's 1px border does not make it
    taller than the borderless section links; the strip is then the same height
    whether the search box shows or is hidden. */
 .secnav-search input{width:200px;max-width:42vw;padding:5px 12px;border:1px solid #2a2a33;border-radius:6px;background:#25252d;color:#d8d8e0;font:500 14px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 .secnav-search input::placeholder{color:#71717a}
 .secnav-search input:focus-visible{outline:2px solid #3b82f6;outline-offset:1px}
+/* The "..." menu sits after the search box at the far right. Its item reuses
+   the section-link rule above for padding, colour and hover. */
+.secnav-menu{position:relative;margin-left:8px}
+.secnav-more{padding:4px 10px;border:0;border-radius:6px;background:transparent;color:#9a9aa8;font:600 18px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;cursor:pointer}
+.secnav-more:hover,.secnav-more[aria-expanded=true]{background:#25252d;color:#d8d8e0}
+.secnav-more:focus-visible{outline:2px solid #3b82f6;outline-offset:1px}
+.secnav-menu-list{position:absolute;right:0;top:calc(100% + 6px);min-width:160px;padding:4px;background:#1f1f25;border:1px solid #2a2a33;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+.secnav-menu-list[hidden]{display:none}
+.secnav-menu-list a{display:flex;align-items:center;gap:8px}
 </style>
 <nav class="secnav">
 <a class="secnav-brand" href="/" aria-label="videre home"><svg class="secnav-logo" viewBox="0 0 893 300" role="img" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><circle cx="24" cy="96" r="23.5" fill="currentColor"/><circle cx="216" cy="24" r="23.5" fill="currentColor"/><circle cx="408" cy="96" r="23.5" fill="currentColor"/><circle cx="216" cy="268" r="31.5" fill="currentColor"/><line x1="64.9706" y1="142" x2="154.066" y2="231.095" stroke="currentColor" stroke-width="24" stroke-linecap="round"/><line x1="215" y1="205" x2="215" y2="79" stroke="currentColor" stroke-width="24" stroke-linecap="round"/><line x1="278" y1="231.095" x2="367.095" y2="142" stroke="currentColor" stroke-width="24" stroke-linecap="round"/><path fill="currentColor" d="M488.75 212L471.797 74.4219H497.969L508.047 168.016L517.031 74.4219H543.203L526.25 212H488.75ZM554.8 212V74.5H581.363V212H554.8ZM597.1 212V74.5H634.912C644.808 74.5 652.256 77.2604 657.256 82.7812C662.256 88.25 664.756 96.2708 664.756 106.844V171.219C664.756 184.24 662.465 194.292 657.881 201.375C653.35 208.458 645.381 212 633.975 212H597.1ZM624.756 187.703H629.522C634.574 187.703 637.1 185.255 637.1 180.359V109.422C637.1 104.839 636.475 101.896 635.225 100.594C634.027 99.2396 631.553 98.5625 627.803 98.5625H624.756V187.703ZM680.806 212V74.5H735.806V101.062H708.775V127.859H734.712V153.719H708.775V185.203H737.603V212H680.806ZM751.544 212V74.5H793.731C800.763 74.5 806.075 76.1146 809.669 79.3438C813.263 82.5208 815.658 87 816.856 92.7812C818.106 98.5104 818.731 105.255 818.731 113.016C818.731 120.516 817.768 126.505 815.841 130.984C813.966 135.464 810.398 138.562 805.138 140.281C809.46 141.167 812.481 143.328 814.2 146.766C815.971 150.151 816.856 154.552 816.856 159.969V212H789.747V158.172C789.747 154.161 788.914 151.688 787.247 150.75C785.632 149.76 783.002 149.266 779.356 149.266V212H751.544ZM779.513 125.438H786.153C789.955 125.438 791.856 121.297 791.856 113.016C791.856 107.651 791.44 104.135 790.606 102.469C789.773 100.802 788.21 99.9688 785.919 99.9688H779.513V125.438ZM832.594 212V74.5H887.594V101.062H860.562V127.859H886.5V153.719H860.562V185.203H889.391V212H832.594Z"/></svg></a>
@@ -49,8 +62,30 @@
 <a href="/events"{% if current.is_events() %} class="on"{% endif %}>Events</a>
 <a href="/people"{% if current.is_people() %} class="on"{% endif %}>People</a>
 <a href="/map"{% if current.is_map() %} class="on"{% endif %}>Map</a>
+<span class="secnav-spacer"></span>
 <form class="secnav-search" action="/" method="get" role="search">
 <input type="search" name="q" id="nav-search" placeholder="Search photos&hellip;" aria-label="Search photos" autocomplete="off">
 </form>
+<div class="secnav-menu">
+<button type="button" id="secnav-more" class="secnav-more" aria-label="More" aria-haspopup="menu" aria-expanded="false" aria-controls="secnav-menu-list">&#8943;</button>
+<div id="secnav-menu-list" class="secnav-menu-list" role="menu" hidden>
+<a role="menuitem" href="/settings"><svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Settings</a>
+</div>
+</div>
 </nav>
+<script>
+// The nav's "..." menu: page-independent actions, Settings first. Closes on
+// Escape (focus back to the button), an outside click, or choosing an item.
+(function(){
+  var btn=document.getElementById('secnav-more'),list=document.getElementById('secnav-menu-list');
+  function set(open){
+    list.hidden=!open;
+    btn.setAttribute('aria-expanded',String(open));
+    if(open){ var first=list.querySelector('[role=menuitem]'); if(first)first.focus(); }
+  }
+  btn.addEventListener('click',function(e){ e.stopPropagation(); set(list.hidden); });
+  document.addEventListener('click',function(e){ if(!list.hidden&&!list.contains(e.target))set(false); });
+  document.addEventListener('keydown',function(e){ if(e.key==='Escape'&&!list.hidden){ set(false); btn.focus(); } });
+})();
+</script>
 {% endif %}
