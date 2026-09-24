@@ -125,6 +125,107 @@ pub(crate) fn query_embedded_count(conn: &Connection, model_id: &str) -> Option<
     .map(|n| n as usize)
 }
 
+/// Which field `/api/files` sorts by. Unknown query values fall back to the
+/// default rather than erroring: an unknown sort is a client bug, and a 400
+/// here would render as an empty gallery with no explanation, the same rule
+/// `view` follows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FileSortField {
+    Date,
+    Name,
+    Size,
+    Rating,
+    Liked,
+    Type,
+}
+
+impl FileSortField {
+    fn from_query(value: Option<&str>) -> Self {
+        match value {
+            Some("name") => Self::Name,
+            Some("size") => Self::Size,
+            Some("rating") => Self::Rating,
+            Some("liked") => Self::Liked,
+            Some("type") => Self::Type,
+            _ => Self::Date,
+        }
+    }
+
+    /// Rating and Liked read the marks table; the other four keep today's
+    /// single-table query plan.
+    fn needs_marks(self) -> bool {
+        matches!(self, Self::Rating | Self::Liked)
+    }
+}
+
+/// The field and direction `/api/files` orders by. The default is the
+/// gallery's own default: effective date, newest first.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct FileSort {
+    pub field: FileSortField,
+    pub desc: bool,
+}
+
+impl Default for FileSort {
+    fn default() -> Self {
+        Self {
+            field: FileSortField::Date,
+            desc: true,
+        }
+    }
+}
+
+impl FileSort {
+    /// `dir` anything but `asc` means `desc`, so a missing or unknown value
+    /// lands on the default direction.
+    pub(crate) fn from_query(sort: Option<&str>, dir: Option<&str>) -> Self {
+        Self {
+            field: FileSortField::from_query(sort),
+            desc: dir != Some("asc"),
+        }
+    }
+
+    /// The full ORDER BY body, ending in the `path` tie-break. `path` is the
+    /// table's primary key, so the order is total, which is what keeps
+    /// LIMIT/OFFSET pages disjoint. Nulls are forced last in both directions
+    /// with the `(expr IS NULL)` prefix: SQLite's default puts them first
+    /// ascending, which would read as undated files on top of "newest first".
+    fn order_by(self) -> String {
+        let dir = if self.desc { "DESC" } else { "ASC" };
+        let body = match self.field {
+            FileSortField::Date => {
+                format!("({FILE_EFFECTIVE_DATE} IS NULL), {FILE_EFFECTIVE_DATE} {dir}")
+            }
+            FileSortField::Name => format!("{FILE_BASENAME} COLLATE NOCASE {dir}"),
+            FileSortField::Size => format!("(f.size_bytes IS NULL), f.size_bytes {dir}"),
+            FileSortField::Rating => format!("(m.rating IS NULL), m.rating {dir}"),
+            // Liked keeps the effective date, newest first, as its second key
+            // in both directions, so liked files surface in shooting order.
+            FileSortField::Liked => {
+                format!("(COALESCE(m.liked, 0)) {dir}, {FILE_EFFECTIVE_DATE} DESC")
+            }
+            // NULL mime means unknown, which reads as a photo.
+            FileSortField::Type => format!("(COALESCE(f.mime LIKE 'video/%', 0)) {dir}"),
+        };
+        format!("{body}, f.path")
+    }
+}
+
+/// `EFFECTIVE_DATE_SQL` spelled against the `f` alias of the `/api/files`
+/// outer query, whose FROM is a flat `file_hashes` or the keep-set subquery;
+/// both expose the bare columns. The shared constant is unqualified and is
+/// still used inside the keep set and by the unqualified WHERE clauses.
+const FILE_EFFECTIVE_DATE: &str = "CASE WHEN f.exif_date IS NOT NULL \
+     AND f.exif_date NOT LIKE '0000%' THEN f.exif_date ELSE f.modified_at END";
+
+/// The basename of `f.path`. `rtrim(path, replace(path, '/', ''))` strips
+/// every trailing non-slash character (they are all in the set), leaving the
+/// directory part, so the `substr` starts after it. The `CASE` covers
+/// root-level paths with no slash. Always used with `COLLATE NOCASE`
+/// (ASCII folding only; ICU is not bundled).
+const FILE_BASENAME: &str = "CASE WHEN instr(f.path, '/') = 0 THEN f.path ELSE \
+     substr(f.path, length(rtrim(f.path, replace(f.path, '/', ''))) + 1) END";
+
 /// One page of the gallery's file list, for `/api/files`.
 ///
 /// Returns each row with its copy count, plus the total across the whole view
@@ -147,6 +248,7 @@ pub(crate) fn query_files_page(
     offset: i64,
     limit: i64,
     location: Option<&LocationFilter>,
+    sort: FileSort,
 ) -> anyhow::Result<(Vec<(FileRow, i64)>, i64)> {
     // `view=date` shows one row per hash, the same KEEP set `/date` renders.
     // Choosing it in SQL rather than in Rust is what makes it pageable.
@@ -226,11 +328,22 @@ pub(crate) fn query_files_page(
     // `copies` is how many files share this hash. The client derived it by
     // scanning the whole array, which is the only reason it needed the whole
     // array. The database knew it all along.
+    //
+    // The join exists only for the sorts that read marks, so the other five
+    // keep today's query plan. Every selected column and the WHERE clauses
+    // above stay resolvable with the join present: marks shares `hash`, so
+    // the selected columns are qualified with `f`.
+    let join_marks = if sort.field.needs_marks() {
+        " LEFT JOIN marks AS m ON m.hash = f.hash"
+    } else {
+        ""
+    };
     let sql = format!(
-        "SELECT path, hash, size_bytes, COALESCE(ext,''), created_at, modified_at, exif_date, \
-                gps_lat, gps_lon, width, height, \
+        "SELECT f.path, f.hash, f.size_bytes, COALESCE(f.ext,''), f.created_at, f.modified_at, \
+                f.exif_date, f.gps_lat, f.gps_lon, f.width, f.height, \
                 (SELECT COUNT(*) FROM file_hashes c WHERE c.hash = f.hash) AS copies \
-         FROM {from} AS f{where_sql} ORDER BY f.path LIMIT ? OFFSET ?"
+         FROM {from} AS f{join_marks}{where_sql} ORDER BY {} LIMIT ? OFFSET ?",
+        sort.order_by()
     );
     // :warning: A failed query must not read as an empty page. Returning
     // `(vec![], total)` here once hid malformed SQL behind a gallery that looked
@@ -1268,7 +1381,7 @@ mod tests {
         // No tables at all: the page query cannot prepare.
         let conn = Connection::open_in_memory().unwrap();
         let err = tracing::subscriber::with_default(sub, || {
-            match query_files_page(&conn, "all", None, 0, 10, None) {
+            match query_files_page(&conn, "all", None, 0, 10, None, FileSort::default()) {
                 Ok(_) => panic!("a page query with no tables must fail"),
                 Err(e) => e,
             }
@@ -1301,9 +1414,9 @@ mod tests {
         };
 
         let (first, first_total) =
-            query_files_page(&conn, "all", None, 0, 1, Some(&filter)).unwrap();
+            query_files_page(&conn, "all", None, 0, 1, Some(&filter), FileSort::default()).unwrap();
         let (second, second_total) =
-            query_files_page(&conn, "all", None, 1, 1, Some(&filter)).unwrap();
+            query_files_page(&conn, "all", None, 1, 1, Some(&filter), FileSort::default()).unwrap();
 
         assert_eq!(first_total, 2);
         assert_eq!(second_total, 2);
@@ -1330,6 +1443,7 @@ mod tests {
             0,
             10,
             Some(&antimeridian_filter),
+            FileSort::default(),
         )
         .unwrap();
         assert_eq!(total, 2);
@@ -1345,9 +1459,319 @@ mod tests {
             lon: 0.0,
             radius_km: 30.0,
         };
-        let (rows, total) =
-            query_files_page(&pole, "all", None, 0, 10, Some(&pole_filter)).unwrap();
+        let (rows, total) = query_files_page(
+            &pole,
+            "all",
+            None,
+            0,
+            10,
+            Some(&pole_filter),
+            FileSort::default(),
+        )
+        .unwrap();
         assert_eq!(total, 2);
         assert_eq!(hashes(&rows), vec!["prime", "opposite"]);
+    }
+
+    /// file_hashes plus marks, the two tables the sort reads. `mime` is
+    /// included because the Type sort reads it.
+    fn sort_connection(rows: &str) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (
+                path TEXT PRIMARY KEY,
+                hash TEXT NOT NULL,
+                size_bytes INTEGER,
+                ext TEXT,
+                created_at TEXT,
+                modified_at TEXT,
+                exif_date TEXT,
+                gps_lat REAL,
+                gps_lon REAL,
+                width INTEGER,
+                height INTEGER,
+                mime TEXT
+            );
+            CREATE TABLE marks (
+                hash TEXT PRIMARY KEY,
+                rating INTEGER,
+                pick INTEGER,
+                label TEXT,
+                liked INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        conn.execute_batch(rows).unwrap();
+        conn
+    }
+
+    const SORT_ROWS: &str = "
+INSERT INTO file_hashes (path, hash, size_bytes, ext, mime, modified_at, exif_date) VALUES
+    ('/lib/a_alpha.jpg', 'ha', 30, 'jpg', 'image/jpeg', '2021-01-01T00:00:00', '2021-08-10T19:34:03'),
+    ('/lib/b_beta.jpg',  'hb', 30, 'jpg', 'image/jpeg', '2021-06-01T00:00:00', '2021-08-10T19:34:03'),
+    ('/lib/c_clip.mp4',  'hc', 22, 'mp4', 'video/mp4',  '2022-05-01T00:00:00', NULL),
+    ('/lib/d_undated.jpg', 'hd', 10, 'jpg', 'image/jpeg', NULL, NULL),
+    ('/lib/e_copy.jpg',  'ha', 30, 'jpg', 'image/jpeg', '2021-02-01T00:00:00', '2021-08-10T19:34:03');
+INSERT INTO marks (hash, rating, liked, updated_at) VALUES
+    ('ha', 5, 0, '2026-01-01T00:00:00'),
+    ('hb', 3, 0, '2026-01-01T00:00:00'),
+    ('hc', NULL, 1, '2026-01-01T00:00:00');
+";
+
+    fn paths(rows: &[(FileRow, i64)]) -> Vec<String> {
+        rows.iter().map(|(r, _)| r.path.clone()).collect()
+    }
+
+    fn page_sorted(conn: &Connection, view: &str, sort: FileSort) -> Vec<String> {
+        let (rows, _) = query_files_page(conn, view, None, 0, 100, None, sort).unwrap();
+        paths(&rows)
+    }
+
+    #[test]
+    fn default_sort_is_newest_effective_date_with_path_tie_break() {
+        let conn = sort_connection(SORT_ROWS);
+        assert_eq!(
+            page_sorted(&conn, "all", FileSort::default()),
+            vec![
+                "/lib/c_clip.mp4".to_string(),    // modified 2022-05, no exif
+                "/lib/a_alpha.jpg".to_string(),   // exif 2021-08-10, path before b
+                "/lib/b_beta.jpg".to_string(),    // same exif, path tie-break
+                "/lib/e_copy.jpg".to_string(),    // same hash as a, later path
+                "/lib/d_undated.jpg".to_string(), // no dates at all: last
+            ]
+        );
+    }
+
+    #[test]
+    fn date_ascending_puts_undated_last() {
+        let conn = sort_connection(SORT_ROWS);
+        assert_eq!(
+            page_sorted(
+                &conn,
+                "all",
+                FileSort {
+                    field: FileSortField::Date,
+                    desc: false
+                }
+            ),
+            vec![
+                "/lib/a_alpha.jpg".to_string(),
+                "/lib/b_beta.jpg".to_string(),
+                "/lib/e_copy.jpg".to_string(),
+                "/lib/c_clip.mp4".to_string(),
+                "/lib/d_undated.jpg".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn name_sort_reads_the_basename_case_insensitively() {
+        let conn = sort_connection(&format!(
+            "{SORT_ROWS}\nINSERT INTO file_hashes (path, hash, size_bytes, ext, mime) VALUES \
+             ('/lib/Z_root.jpg', 'hz', 1, 'jpg', 'image/jpeg');"
+        ));
+        let asc = page_sorted(
+            &conn,
+            "all",
+            FileSort {
+                field: FileSortField::Name,
+                desc: false,
+            },
+        );
+        assert_eq!(asc[0], "/lib/a_alpha.jpg");
+        assert_eq!(*asc.last().unwrap(), "/lib/Z_root.jpg"); // NOCASE: z after the rest
+        assert_eq!(asc[3], "/lib/d_undated.jpg");
+    }
+
+    #[test]
+    fn basename_expression_handles_a_path_without_a_slash() {
+        let conn = sort_connection(&format!(
+            "{SORT_ROWS}\nINSERT INTO file_hashes (path, hash, size_bytes, ext, mime) VALUES \
+             ('plain.jpg', 'hp', 1, 'jpg', 'image/jpeg');"
+        ));
+        let asc = page_sorted(
+            &conn,
+            "all",
+            FileSort {
+                field: FileSortField::Name,
+                desc: false,
+            },
+        );
+        assert_eq!(*asc.last().unwrap(), "plain.jpg"); // basename 'p' after the /lib names
+    }
+
+    #[test]
+    fn size_sort_orders_both_ways() {
+        let conn = sort_connection(SORT_ROWS);
+        assert_eq!(
+            page_sorted(
+                &conn,
+                "all",
+                FileSort {
+                    field: FileSortField::Size,
+                    desc: true
+                }
+            ),
+            vec![
+                "/lib/a_alpha.jpg".to_string(),
+                "/lib/b_beta.jpg".to_string(),
+                "/lib/e_copy.jpg".to_string(),
+                "/lib/c_clip.mp4".to_string(),
+                "/lib/d_undated.jpg".to_string(),
+            ]
+        );
+        let asc = page_sorted(
+            &conn,
+            "all",
+            FileSort {
+                field: FileSortField::Size,
+                desc: false,
+            },
+        );
+        assert_eq!(asc[0], "/lib/d_undated.jpg");
+        assert_eq!(asc[1], "/lib/c_clip.mp4");
+    }
+
+    #[test]
+    fn rating_sort_puts_unrated_last_in_both_directions() {
+        let conn = sort_connection(SORT_ROWS);
+        // Marks are hash-keyed: e_copy shares hash 'ha' with a_alpha, so the
+        // rating 5 rides both copies. The unrated block sorts by path.
+        let desc = page_sorted(
+            &conn,
+            "all",
+            FileSort {
+                field: FileSortField::Rating,
+                desc: true,
+            },
+        );
+        assert_eq!(
+            desc,
+            vec![
+                "/lib/a_alpha.jpg".to_string(),   // 5
+                "/lib/e_copy.jpg".to_string(),    // 5, same hash, path after a
+                "/lib/b_beta.jpg".to_string(),    // 3
+                "/lib/c_clip.mp4".to_string(),    // unrated: last block
+                "/lib/d_undated.jpg".to_string(), // unrated: last block
+            ]
+        );
+        let asc = page_sorted(
+            &conn,
+            "all",
+            FileSort {
+                field: FileSortField::Rating,
+                desc: false,
+            },
+        );
+        assert_eq!(
+            asc,
+            vec![
+                "/lib/b_beta.jpg".to_string(),    // 3 before 5
+                "/lib/a_alpha.jpg".to_string(),   // 5, path tie-break within the hash
+                "/lib/e_copy.jpg".to_string(),    // 5, same hash
+                "/lib/c_clip.mp4".to_string(),    // unrated: last block
+                "/lib/d_undated.jpg".to_string(), // unrated: last block
+            ]
+        );
+    }
+
+    #[test]
+    fn liked_sort_keeps_newest_first_as_its_second_key() {
+        let conn = sort_connection(SORT_ROWS);
+        let first = page_sorted(
+            &conn,
+            "all",
+            FileSort {
+                field: FileSortField::Liked,
+                desc: true,
+            },
+        );
+        assert_eq!(first[0], "/lib/c_clip.mp4"); // the liked one
+        assert_eq!(first[1], "/lib/a_alpha.jpg"); // then newest first
+        let last = page_sorted(
+            &conn,
+            "all",
+            FileSort {
+                field: FileSortField::Liked,
+                desc: false,
+            },
+        );
+        assert_eq!(last[0], "/lib/a_alpha.jpg"); // unliked block, path order
+        assert_eq!(*last.last().unwrap(), "/lib/c_clip.mp4"); // liked one last
+    }
+
+    #[test]
+    fn type_sort_reads_the_mime_and_treats_null_as_photo() {
+        let conn = sort_connection(&format!(
+            "{SORT_ROWS}\nINSERT INTO file_hashes (path, hash, size_bytes, ext, mime) VALUES \
+             ('/lib/f_nomime.jpg', 'hf', 1, 'jpg', NULL);"
+        ));
+        let photos_first = page_sorted(
+            &conn,
+            "all",
+            FileSort {
+                field: FileSortField::Type,
+                desc: false,
+            },
+        );
+        assert_eq!(photos_first[0], "/lib/a_alpha.jpg");
+        assert_eq!(
+            photos_first.iter().position(|p| p == "/lib/c_clip.mp4"),
+            Some(5)
+        );
+        assert_eq!(photos_first[4], "/lib/f_nomime.jpg"); // NULL mime groups with the photos
+    }
+
+    #[test]
+    fn pages_of_a_sorted_view_are_disjoint_and_concatenate_to_the_order() {
+        let conn = sort_connection(SORT_ROWS);
+        let mut seen = Vec::new();
+        for offset in [0, 2, 4] {
+            let (rows, total) =
+                query_files_page(&conn, "all", None, offset, 2, None, FileSort::default()).unwrap();
+            assert_eq!(total, 5);
+            seen.extend(rows.into_iter().map(|(r, _)| r.path));
+        }
+        assert_eq!(seen.len(), 5, "no row appears twice across pages");
+        // Concatenating the pages reproduces the single-query order.
+        let (all, _) =
+            query_files_page(&conn, "all", None, 0, 100, None, FileSort::default()).unwrap();
+        let all: Vec<String> = all.into_iter().map(|(r, _)| r.path).collect();
+        assert_eq!(seen, all);
+    }
+
+    #[test]
+    fn the_keep_set_view_sorts_by_the_same_whitelist() {
+        let conn = sort_connection(SORT_ROWS);
+        let date_view = page_sorted(&conn, "date", FileSort::default());
+        // 'ha' is one hash with two paths; the keep set keeps a_alpha (earlier
+        // path at equal effective date) and the outer order is the whitelist.
+        assert_eq!(date_view[0], "/lib/c_clip.mp4");
+        assert!(date_view.contains(&"/lib/a_alpha.jpg".to_string()));
+        assert!(!date_view.contains(&"/lib/e_copy.jpg".to_string()));
+    }
+
+    #[test]
+    fn unknown_query_values_fall_back_to_the_default() {
+        assert_eq!(
+            FileSort::from_query(Some("bogus"), Some("sideways")),
+            FileSort::default()
+        );
+        assert_eq!(FileSort::from_query(None, None), FileSort::default());
+        assert_eq!(
+            FileSort::from_query(Some("name"), Some("asc")),
+            FileSort {
+                field: FileSortField::Name,
+                desc: false
+            }
+        );
+        assert_eq!(
+            FileSort::from_query(Some("liked"), Some("DESC")),
+            FileSort {
+                field: FileSortField::Liked,
+                desc: true
+            }
+        );
     }
 }

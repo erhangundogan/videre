@@ -1845,6 +1845,7 @@ async fn handle_files(
                 offset,
                 limit,
                 location.as_ref(),
+                crate::render::FileSort::default(),
             )
             .map_err(internal)?
         }
