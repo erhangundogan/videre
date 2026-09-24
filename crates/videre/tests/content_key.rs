@@ -140,3 +140,24 @@ fn dedupe_groups_the_same_image_with_different_metadata() {
     assert!(names.iter().any(|p| p.ends_with("özgür.jpg")), "{json}");
     assert!(names.iter().any(|p| p.ends_with("şükrü.jpg")), "{json}");
 }
+
+#[test]
+fn a_library_built_with_the_old_file_identity_is_refused_untouched() {
+    let lib = TestLibrary::new();
+    let conn = lib.init_db();
+    conn.pragma_update(None, "user_version", 2).unwrap();
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .unwrap();
+    drop(conn);
+    let before = std::fs::read(lib.db()).unwrap();
+    let out = lib.cmd().arg("stats").output().unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("created by an older videre"), "{stderr}");
+    assert!(stderr.contains("videre scan"), "{stderr}");
+    assert_eq!(
+        std::fs::read(lib.db()).unwrap(),
+        before,
+        "nothing was changed"
+    );
+}
