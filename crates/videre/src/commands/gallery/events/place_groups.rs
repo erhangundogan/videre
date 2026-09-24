@@ -18,6 +18,7 @@ pub(super) struct Places {
     pub groups: Vec<PlaceGroup>,
     pub by_row: Vec<Option<usize>>,
     pub home: Option<usize>,
+    #[cfg(test)]
     pub votes: Vec<usize>,
 }
 
@@ -160,6 +161,7 @@ pub(super) fn infer_places(rows: &[TripRow]) -> Places {
         groups,
         by_row,
         home,
+        #[cfg(test)]
         votes,
     }
 }
