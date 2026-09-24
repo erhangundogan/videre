@@ -10,15 +10,13 @@ test("the people layout choice survives a reload", async ({ page, gallery }) => 
   await page.goto(`${gallery.baseURL}/people`);
   await expect(page.locator("body")).toHaveClass(/sidebar-mode/);
 
-  // The fixture library has no faces, so the People section and its toggle
-  // button are hidden; call the handler the button runs.
-  await page.evaluate(() => (window as unknown as { toggleLayout: () => void }).toggleLayout());
+  await page.locator("#layout-select").selectOption("top");
   await expect(page.locator("body")).not.toHaveClass(/sidebar-mode/);
   await expect.poll(async () => (await settings(page, gallery)).effective.routes.people.align).toBe("top");
 
   await page.reload();
   await expect(page.locator("body")).not.toHaveClass(/sidebar-mode/);
-  await expect(page.locator("#layout-toggle")).toHaveText("People: Top");
+  await expect(page.locator("#layout-select")).toHaveValue("top");
 });
 
 test("the last page visited is saved, and the settings page never is", async ({ page, gallery }) => {

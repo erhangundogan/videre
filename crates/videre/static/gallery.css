@@ -1,6 +1,5 @@
-.sort-label{font-size:12px;color:#3f3f46;display:flex;align-items:center;gap:6px}
-.sort-label select{padding:4px 8px;border:1px solid #d4d4d8;border-radius:6px;font-size:12px;background:#fff;color:#3f3f46;cursor:pointer}
 .info{margin-left:auto;color:#a1a1aa;font-size:12px}
+.gallery-toolbar .info{color:inherit}
 .groups{padding:16px;display:flex;flex-direction:column;gap:10px}
 .group{background:#fff;border-radius:10px;border:1px solid #e4e4e7;overflow:hidden}
 .group-header{padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:10px;user-select:none}
@@ -109,8 +108,6 @@ th.preview-th{width:130px}
 .score{position:absolute;top:4px;left:8px;background:rgba(24,24,27,.75);color:#fff;font-size:10px;padding:1px 5px;border-radius:4px;z-index:1}
 .copies{position:absolute;top:4px;right:8px;background:#fbbf24;color:#18181b;font-size:10px;font-weight:700;padding:1px 5px;border-radius:4px}
 .rname{font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#52525b;margin-top:2px}
-.gallery-head{padding:20px 16px 4px;display:flex;align-items:baseline;gap:12px}
-.gallery-head h2{font-size:16px}
 .gallery{padding:12px 16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
 /* Flex column so the Similar button can be pinned to the card's bottom. Grid
    stretches every card in a row to the same height, so the pinned buttons line
@@ -157,6 +154,3 @@ img.heic-loading{display:block;width:100%;aspect-ratio:1;object-fit:cover;backgr
 .tile>a,.tile>img,.tile>video,.tile>.vthumb,.tile>span{display:block;width:100%;height:100%}
 .tile .thumb{border-radius:0;}
 .tile img,.tile video{width:100%;height:100%;max-width:none;max-height:none;margin:0;object-fit:cover;display:block}
-.view-toggle{font:500 13px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#9a9aa8;display:inline-flex;align-items:center;gap:6px}
-.view-toggle select{font:inherit;color:inherit;background:#25252d;border:1px solid #2a2a33;border-radius:6px;padding:4px 8px}
-.date-head{display:flex;align-items:center;gap:14px}
