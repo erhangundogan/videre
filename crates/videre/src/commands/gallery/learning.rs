@@ -136,7 +136,7 @@ fn retry_on_new_build(
     matches!(
         state.status,
         LearningStatus::Waiting | LearningStatus::Failed
-    ) && videre_core::library_state::get_string(conn, TRAINING_BUILD_KEY)
+    ) && videre_core::library_state::peek_string(conn, TRAINING_BUILD_KEY)
         .ok()
         .flatten()
         .as_deref()

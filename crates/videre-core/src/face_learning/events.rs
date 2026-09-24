@@ -239,7 +239,11 @@ pub struct LearningState {
 /// is retried without new feedback only when the build changed: the same
 /// build on the same evidence gives the same answer, while a newer one may
 /// train it or word the ask differently.
-pub const TRAINING_BUILD: &str = env!("CARGO_PKG_VERSION");
+///
+/// The part after `/` is bumped whenever the training rules change between
+/// releases (evidence thresholds, the fold split, the wording of an ask), so a
+/// build carrying such a change retries too.
+pub const TRAINING_BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), "/1");
 pub const TRAINING_BUILD_KEY: &str = "face_learning_build";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1385,6 +1389,32 @@ mod tests {
         assert_eq!(current.status, LearningStatus::Current);
         assert_eq!(current.trained_generation, 2);
         assert_eq!(current.last_profile_id, Some(43));
+    }
+
+    #[test]
+    fn an_older_state_table_gains_the_ask_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        // The table as it shipped before the waiting state.
+        conn.execute_batch(
+            "CREATE TABLE face_learning_state (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                generation INTEGER NOT NULL DEFAULT 0 CHECK(generation >= 0),
+                trained_generation INTEGER NOT NULL DEFAULT 0 CHECK(trained_generation >= 0),
+                status TEXT NOT NULL,
+                training_generation INTEGER,
+                last_profile_id INTEGER,
+                last_error TEXT
+            );
+            INSERT INTO face_learning_state (id, generation, trained_generation, status)
+                VALUES (1, 3, 3, 'failed');",
+        )
+        .unwrap();
+        ensure_learning_tables(&conn).unwrap();
+        ensure_learning_tables(&conn).unwrap();
+        let state = learning_state(&conn).unwrap();
+        assert_eq!(state.generation, 3, "existing state is kept");
+        assert_eq!(state.status, LearningStatus::Failed);
+        assert_eq!(state.feedback_needed, None);
     }
 
     #[test]
