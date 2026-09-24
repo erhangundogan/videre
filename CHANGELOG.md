@@ -16,6 +16,16 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.42.1] - 2026-09-25
+
+### Fixed
+
+- **Release artifacts now report the correct version.** v0.42.0 included the
+  changes listed below but was tagged before its version bump was merged, so
+  its binaries reported `videre 0.41.0`. v0.42.1 supersedes that release with
+  matching binary, crate and tag versions. No library rebuild is needed.
+
+
 ## [0.42.0] - 2026-09-24
 
 ### Added
@@ -2325,7 +2335,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.42.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.42.1...HEAD
+[0.42.1]: https://github.com/erhangundogan/videre/compare/v0.42.0...v0.42.1
 [0.42.0]: https://github.com/erhangundogan/videre/compare/v0.41.0...v0.42.0
 [0.41.0]: https://github.com/erhangundogan/videre/compare/v0.40.0...v0.41.0
 [0.40.0]: https://github.com/erhangundogan/videre/compare/v0.39.0...v0.40.0
