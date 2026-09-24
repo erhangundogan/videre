@@ -367,6 +367,13 @@ without that, files of metadata alone would share one key and dedupe would
 offer to delete them. Libraries built before this (schema below 3) are
 refused and rebuilt by a fresh scan; there is no migration.
 
+:warning: **Changing the splitter's spans changes stored keys.** Any change to
+which bytes `content_key` counts as content, including teaching it a format
+that used to fall back, gives the affected files new keys the next time they
+are hashed, and orphans their faces, names, tags and embeddings. Treat it like a schema
+version bump, and re-run the real-tool fixtures in `tests/content_key.rs`.
+Files on the fallback today are the rows with `meta_hash IS NULL`.
+
 ### Every filter goes through `videre_core::selection`
 
 One layer, two shapes. `RowSelection` filters rows that exist in the database

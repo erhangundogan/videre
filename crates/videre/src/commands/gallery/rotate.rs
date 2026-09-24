@@ -527,4 +527,28 @@ mod tests {
             assert_eq!(key(&path, format).content, before.content, "{ext}");
         }
     }
+
+    #[test]
+    fn a_photo_with_unreadable_exif_is_refused_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bozuk_exif_şubat.jpg");
+        let img = image::RgbImage::from_pixel(8, 4, image::Rgb([120, 60, 30]));
+        let mut plain = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut plain),
+            image::ImageFormat::Jpeg,
+        )
+        .unwrap();
+        // An APP1 Exif segment whose TIFF header is garbage, right after SOI.
+        let payload = b"Exif\0\0XX\0\x2a\0\0\0\x08garbage";
+        let mut bytes = plain[..2].to_vec();
+        bytes.extend([0xFF, 0xE1]);
+        bytes.extend(((payload.len() + 2) as u16).to_be_bytes());
+        bytes.extend(payload);
+        bytes.extend(&plain[2..]);
+        std::fs::write(&path, &bytes).unwrap();
+
+        assert!(rotate_cw_in_place(&path, "jpg").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes, "file left untouched");
+    }
 }
