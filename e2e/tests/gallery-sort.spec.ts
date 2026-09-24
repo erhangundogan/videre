@@ -1,5 +1,10 @@
-import { expect, test } from "../support/gallery";
+import { expect, preferListView, test } from "../support/gallery";
 import type { Page } from "@playwright/test";
+
+// These specs read list-view cards; Tile is the default view, so save List.
+test.beforeEach(async ({ sortedGallery }) => {
+  await preferListView(sortedGallery);
+});
 
 // The first card's filename, in list mode. buildCard emits the filename as
 // the card's first .card-meta.
@@ -88,6 +93,10 @@ test("the sort choice survives a reload", async ({ page, sortedGallery }) => {
   await chooseSort(page, "name", true);
   expect(await firstCard(page)).toBe("c_clip.mp4");
 
+  // The choice is saved to the library's settings after a short quiet period.
+  await expect.poll(async () =>
+    (await (await page.request.get(`${sortedGallery.baseURL}/api/settings`)).json()).effective.routes.files.sort
+  ).toEqual({ field: "name", dir: "desc" });
   await page.reload();
   await expect(page.locator(".sort-select").first()).toHaveValue("name");
   await expect(page.locator(".sort-dir-btn").first()).toHaveAttribute("aria-pressed", "true");
@@ -119,12 +128,11 @@ test("the date view has the control and the duplicates page does not", async ({
 }) => {
   await page.goto(`${sortedGallery.baseURL}/date`);
   await expect(page.locator("#dateGrid .date-card").first()).toBeVisible();
-  await expect(page.locator(".date-head .sort-select")).toHaveCount(1);
+  await expect(page.locator(".gallery-toolbar .sort-select")).toHaveCount(1);
 
   // The sorted seed has no duplicates, so the duplicates page renders its
   // empty state; either way the new control is absent there. (The page's own
   // Sort by select is id="sort-select", distinct from the class-only control.)
   await page.goto(`${sortedGallery.baseURL}/duplicates`);
-  await expect(page.locator(".gallery-head .sort-select")).toHaveCount(0);
-  await expect(page.locator(".gallery-head")).toHaveCount(0);
+  await expect(page.locator(".sort-select")).toHaveCount(0);
 });

@@ -1,0 +1,13 @@
+{
+  "resume": { "route": "/" },
+  "routes": {
+    "files": {
+      "view": "tile",
+      "pageSize": 200,
+      "sort": { "field": "date", "dir": "desc" },
+      "tile": { "rowHeight": 280, "colGap": 10, "rowGap": 10 }
+    },
+    "people": { "align": "right" },
+    "map": { "radiusKm": 0 }
+  }
+}

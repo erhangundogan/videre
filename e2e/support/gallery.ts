@@ -1,5 +1,5 @@
 import { once } from "node:events";
-import { access, copyFile, mkdir, mkdtemp, rm, utimes } from "node:fs/promises";
+import { access, copyFile, mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { get, request } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -194,12 +194,32 @@ async function startGallery(): Promise<ManagedGallery> {
   ]);
 }
 
-export const test = base.extend<{
-  gallery: GallerySession;
-  sortedGallery: GallerySession;
-  isolatedGallery: GallerySession;
-}>({
-  gallery: [async ({}, use) => {
+// Save List as the library's view, for specs that count list-view `.card`s.
+// Written to the settings file directly, the way a hand edit would be, so the
+// next page load picks it up.
+export async function preferListView(session: GallerySession): Promise<void> {
+  await mkdir(join(session.libraryRoot, ".videre"), { recursive: true });
+  await writeFile(
+    join(session.libraryRoot, ".videre", "gallery.json"),
+    JSON.stringify({ routes: { files: { view: "list" } } })
+  );
+}
+
+// Libraries are started once per worker (starting one is the slow part), but
+// each test starts from default gallery settings: the gallery saves choices
+// such as the view, the sort and the last page into the library's
+// `.videre/gallery.json`, so without clearing it one test's clicks would
+// become the next test's starting state.
+async function withDefaultSettings(session: GallerySession): Promise<GallerySession> {
+  await rm(join(session.libraryRoot, ".videre", "gallery.json"), { force: true });
+  return session;
+}
+
+export const test = base.extend<
+  { gallery: GallerySession; sortedGallery: GallerySession; isolatedGallery: GallerySession },
+  { galleryServer: GallerySession; sortedGalleryServer: GallerySession }
+>({
+  galleryServer: [async ({}, use) => {
     const session = await startGallery();
     try {
       await use(session);
@@ -207,7 +227,7 @@ export const test = base.extend<{
       await stopGallery(session);
     }
   }, { scope: "worker" }],
-  sortedGallery: [async ({}, use) => {
+  sortedGalleryServer: [async ({}, use) => {
     // Path order is a, b, c. Every other sort picks a different first file:
     // the clip has the newest date (mtime 2022), b has no EXIF so its mtime
     // (2021-06) is its date, and a carries the fixture's 2021-08-10 EXIF. The
@@ -231,6 +251,12 @@ export const test = base.extend<{
       await stopGallery(session);
     }
   }, { scope: "worker" }],
+  gallery: async ({ galleryServer }, use) => {
+    await use(await withDefaultSettings(galleryServer));
+  },
+  sortedGallery: async ({ sortedGalleryServer }, use) => {
+    await use(await withDefaultSettings(sortedGalleryServer));
+  },
   isolatedGallery: async ({}, use) => {
     const session = await startGallery();
     try {

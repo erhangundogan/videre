@@ -735,7 +735,10 @@ fn port_zero_announces_the_port_it_actually_bound() {
     let mut announced = None;
     for line in stderr.lines().map_while(Result::ok) {
         if let Some(rest) = line.split("http://127.0.0.1:").nth(1) {
-            announced = rest.trim().parse::<u16>().ok();
+            // Only the digits: a gallery resuming at a saved page prints its
+            // path after the port.
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            announced = digits.parse::<u16>().ok();
             break;
         }
     }

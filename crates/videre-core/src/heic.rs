@@ -126,19 +126,21 @@ pub fn heic_via_quicklook(path: &str, tag: &str, max_size: Option<u32>) -> Optio
         warn_quicklook_unavailable_once();
         return None;
     }
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    path.hash(&mut hasher);
-    tag.hash(&mut hasher);
-    let out_dir = std::env::temp_dir().join(format!("dupe_ql_{:016x}", hasher.finish()));
-    let _ = std::fs::remove_dir_all(&out_dir);
-    std::fs::create_dir_all(&out_dir).ok()?;
+    // A scratch directory of this call's own, removed when `scratch` drops.
+    // It used to be named from the path and tag and cleared before and after
+    // each run, so two simultaneous conversions of one file shared it and one
+    // deleted the other's output (the gallery requesting an uncached video
+    // poster twice at once got a 404).
+    let scratch = tempfile::Builder::new()
+        .prefix(&format!("videre_ql_{tag}_"))
+        .tempdir()
+        .ok()?;
+    let out_dir = scratch.path();
     let _permit = qlmanage_semaphore().acquire();
     let size_arg = max_size.unwrap_or(10000).to_string();
     let mut child = std::process::Command::new("qlmanage")
         .args(["-t", "-s", &size_arg, "-o"])
-        .arg(&out_dir)
+        .arg(out_dir)
         .arg(path)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -153,13 +155,11 @@ pub fn heic_via_quicklook(path: &str, tag: &str, max_size: Option<u32>) -> Optio
     }
     let file_name = std::path::Path::new(path).file_name()?.to_str()?;
     let out_file = out_dir.join(format!("{file_name}.png"));
-    let result = if outcome == WaitOutcome::Success {
+    if outcome == WaitOutcome::Success {
         image::open(&out_file).ok()
     } else {
         None
-    };
-    let _ = std::fs::remove_dir_all(&out_dir);
-    result
+    }
 }
 
 #[cfg(test)]
@@ -174,6 +174,31 @@ mod tests {
             Some(crate::error_kind::ErrorKind::QuicklookUnavailable)
         );
         assert!(format!("{err:#}").contains("qlmanage"));
+    }
+
+    /// Simultaneous conversions of one file must not share a scratch
+    /// directory. They did: it was named from the path and tag, and each call
+    /// cleared it before and after running, so one call deleted another's
+    /// output and failed. The gallery's tile view hit this whenever the page
+    /// and a second request asked for the same uncached video poster.
+    #[test]
+    fn simultaneous_conversions_of_one_file_all_succeed() {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        let video = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../videre/tests/fixtures/red_1s.mp4"
+        );
+        let handles: Vec<_> = (0..4)
+            .map(|_| std::thread::spawn(move || heic_via_quicklook(video, "vposter480", Some(480))))
+            .collect();
+        let ok = handles
+            .into_iter()
+            .map(|h| h.join().unwrap().is_some())
+            .filter(|ok| *ok)
+            .count();
+        assert_eq!(ok, 4, "every simultaneous conversion must produce an image");
     }
 
     #[test]

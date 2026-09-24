@@ -2,7 +2,7 @@ import { copyFileSync, mkdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "../support/gallery";
+import { expect, preferListView, test } from "../support/gallery";
 
 const FIXTURES = resolve(dirname(fileURLToPath(import.meta.url)), "../../crates/videre/tests/fixtures");
 
@@ -54,6 +54,7 @@ test.describe("map clusters", () => {
   // on headless WebGL; the MapLibre path has its own gated specs below.
   test.beforeEach(async ({ page, gallery }) => {
     seedClusters(gallery.libraryRoot);
+    await preferListView(gallery);
     await page.addInitScript(() => {
       (window as unknown as { __VIDERE_FORCE_CANVAS_MAP__: boolean }).__VIDERE_FORCE_CANVAS_MAP__ = true;
     });
@@ -175,7 +176,7 @@ test.describe("map clusters", () => {
 
   test("the selected location and radius sit in the grid head, without a title", async ({ page, gallery }) => {
     await page.goto(`${gallery.baseURL}/map/location/berlin?radius=20`);
-    const head = page.locator(".gallery-head");
+    const head = page.locator(".gallery-toolbar");
     await expect(head.locator("#map-breadcrumb")).toHaveText("Berlin");
     await expect(head.locator("#map-radius-group")).toBeVisible();
     await expect(head.locator("#map-radius")).toHaveValue("20");
@@ -223,6 +224,7 @@ test("the vendored map libraries are served on their own route", async ({ page, 
 test("the map renders MapLibre with attribution when WebGL is available", async ({ page, gallery }) => {
   seedClusters(gallery.libraryRoot);
   seedBasemap(gallery.libraryRoot);
+  await preferListView(gallery);
   await page.goto(`${gallery.baseURL}/map`);
 
   // Gate on the same feature-detect the page uses: a headless runner without
@@ -253,6 +255,7 @@ test("the map renders MapLibre with attribution when WebGL is available", async 
 test("zooming out to the world clears a MapLibre selection", async ({ page, gallery }) => {
   seedClusters(gallery.libraryRoot);
   seedBasemap(gallery.libraryRoot);
+  await preferListView(gallery);
   await page.goto(`${gallery.baseURL}/map/location/berlin?radius=20`);
 
   const webgl = await page.evaluate(() => {

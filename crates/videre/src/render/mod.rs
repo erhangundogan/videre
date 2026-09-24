@@ -1004,6 +1004,9 @@ pub(crate) enum Section {
     Events,
     People,
     Map,
+    /// `/settings`, reached from the nav's `...` menu rather than a section
+    /// link, so no link is highlighted on it.
+    Settings,
 }
 
 impl Section {
@@ -1056,6 +1059,8 @@ struct GalleryPage<'a> {
     has_keep_files: bool,
     /// The current section, or `None` on a page with nowhere to navigate to.
     /// Read by the included `nav.html`, which documents the rule.
+    /// Gallery settings, emitted by the included `nav.html`.
+    settings_script: &'a str,
     nav: Option<Section>,
     /// Whether to render the tall library header. It belongs on the home page
     /// (`/`, the All-files section) and on a standalone static export, and is
@@ -1102,6 +1107,12 @@ pub(crate) fn write_static_page(
     let stats = query_stats(conn);
     let faces_by_hash = videre_core::face_db::labeled_faces_by_hash(conn).unwrap_or_default();
     let db_path = conn.path().map(|p| p.to_string()).unwrap_or_default();
+    // The settings of the library it came from, so the export looks like its
+    // gallery. Nothing is saved: there is no server.
+    let settings_script = crate::commands::gallery::settings::page_script_for(
+        Path::new(&db_path).parent().unwrap_or(Path::new(".")),
+        false,
+    );
     // `dedupe --html` passes groups (a duplicates page); `search --html` passes
     // rows (a flat gallery). A static export has no server behind it, so `nav`
     // is None: every section link would be dead when opened from `file://`.
@@ -1131,6 +1142,7 @@ pub(crate) fn write_static_page(
             db_path,
             date_filter_json: "null".to_string(),
             event_json: "null".to_string(),
+            settings_script,
         },
     };
     let html = render(&set);
@@ -1160,6 +1172,9 @@ pub(crate) struct RenderOptions {
     pub db_path: String,
     pub date_filter_json: String,
     pub event_json: String,
+    /// Gallery settings for `templates/nav.html`. See
+    /// `commands::gallery::settings::page_script`.
+    pub settings_script: String,
 }
 
 /// One set of files plus everything known about them, ready to render as a
@@ -1258,6 +1273,7 @@ pub(crate) fn render(set: &RenderSet) -> String {
         // Home (`/` = All) and standalone exports (no nav) keep the header; the
         // secondary sections drop it. See `GalleryPage::show_header`.
         show_header: nav.is_none() || nav == Some(Section::All),
+        settings_script: &set.options.settings_script,
         no_duplicates: groups_view && groups.is_empty(),
         show_sort,
     };

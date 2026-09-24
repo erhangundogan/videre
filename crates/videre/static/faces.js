@@ -326,14 +326,14 @@ let facesData = { people: [], clusters: [], singletons: [] };
     // the same space. The sidebar runs down the right edge, where it competes
     // with nothing.
     //
-    // Only `toggleLayout` writes this key, so anyone who never chose a layout
-    // has nothing stored and picks the new default up immediately. A stored
-    // value is always a deliberate choice and is left alone.
+    // The default lives in the gallery settings (`routes.people.align`). Only
+    // `setLayout` saves it, so a library that never chose picks up a changed
+    // default immediately; a saved value is a deliberate choice and is kept.
     function applyLayout() {
-      const mode = localStorage.getItem('videre_people_layout') || 'right';
+      const mode = settingOneOf('routes.people.align', ['right', 'top']);
       document.body.classList.toggle('sidebar-mode', mode === 'right');
-      const btn = document.getElementById('layout-toggle');
-      if (btn) btn.textContent = mode === 'right' ? 'People: Right' : 'People: Top';
+      const select = document.getElementById('layout-select');
+      if (select) select.value = mode;
       measureChrome();
     }
 
@@ -350,9 +350,9 @@ let facesData = { people: [], clusters: [], singletons: [] };
         '--secnav-h', (nav ? nav.offsetHeight : 0) + 'px');
     }
 
-    function toggleLayout() {
-      const cur = localStorage.getItem('videre_people_layout') || 'right';
-      localStorage.setItem('videre_people_layout', cur === 'right' ? 'top' : 'right');
+    // The People list select in the page's settings bar (`.gallery-toolbar`).
+    function setLayout(mode) {
+      saveSetting('routes.people.align', mode === 'top' ? 'top' : 'right');
       applyLayout();
     }
 
