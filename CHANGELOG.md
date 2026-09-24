@@ -16,6 +16,45 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.41.0] - 2026-09-24
+
+### Changed
+
+- **Libraries built by 0.40.0 or earlier are refused and must be rebuilt.**
+  videre now identifies files differently (below), so an existing library's
+  stored identities match nothing a new scan produces. Every command stops
+  with a `library_schema` error that names the library's `.videre` folder;
+  remove that folder and run `videre scan` to build it again. That removal
+  also discards faces, named people, marks, tags and embeddings, which have to
+  be recreated with `faces`, `gallery`, `embed` and `classify`. There is no
+  migration, and 0.40.0 cannot open a library built by this version either.
+- **A file's identity ignores its metadata.** The content hash is now BLAKE3
+  over the image or media data with EXIF, XMP, comments and similar blocks
+  left out, for JPEG, PNG, WebP, GIF, BMP, TIFF and DNG, HEIC, MOV and MP4.
+  Rotating a photo in the gallery, or fixing its date or location in another
+  app, keeps its faces, names, marks, tags and embeddings attached. A new
+  `meta_hash` column (and JSONL field) records the metadata separately. A file
+  that does not parse, or holds no image or media data, keeps the whole-file
+  hash.
+- **Duplicate groups can differ in metadata.** `dedupe` now groups copies with
+  the same pixels or media data even when their dates or GPS differ, and only
+  the kept copy's metadata survives `--remove`. Since the oldest date is kept,
+  check dates in `dedupe --html` before removing a copy whose date you
+  corrected.
+- **Face learning waits instead of failing** when it has too little teaching
+  feedback. The People page says what it is waiting for, such as *dissolve 2
+  more wrong clusters*, rather than *last run failed*. `GET
+  /api/face-learning/status` reports a new `waiting` status with
+  `feedback_needed`; `last_error` is kept for real failures, which are now
+  also logged.
+
+### Fixed
+
+- **The gallery rotates a photo that has no EXIF** by giving it its first EXIF
+  block. A photo whose EXIF exists but cannot be read is still refused, so its
+  date and GPS are never replaced by a block holding only the orientation.
+
+
 ## [0.40.0] - 2026-09-23
 
 ### Added
@@ -2237,7 +2276,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.40.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.41.0...HEAD
+[0.41.0]: https://github.com/erhangundogan/videre/compare/v0.40.0...v0.41.0
 [0.40.0]: https://github.com/erhangundogan/videre/compare/v0.39.0...v0.40.0
 [0.39.0]: https://github.com/erhangundogan/videre/compare/v0.38.0...v0.39.0
 [0.38.0]: https://github.com/erhangundogan/videre/compare/v0.37.0...v0.38.0
