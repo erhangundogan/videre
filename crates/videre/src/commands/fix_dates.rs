@@ -73,23 +73,33 @@ fn run_fix_dates(
 ) -> anyhow::Result<usize> {
     let mut stmt = conn
         .prepare(
-            "SELECT path, exif_date FROM file_hashes \
+            "SELECT path, exif_date, modified_at FROM file_hashes \
              WHERE exif_date IS NOT NULL \
              ORDER BY path",
         )
         .expect("failed to prepare query");
 
-    let rows: Vec<(String, String)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+    let all: Vec<(String, String, Option<String>)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .expect("failed to execute query")
         .filter_map(|r| r.ok())
         .collect();
 
-    let total = rows.len();
+    let total = all.len();
+    // A row whose modified time already equals its camera date is left alone:
+    // rewriting it changes nothing but still touches the file and reported it
+    // as updated, so a status suggesting 8 files became a run "updating" 876.
+    // The same test `videre status` counts with, so the two always agree.
+    let (current, rows): (Vec<_>, Vec<_>) = all.into_iter().partition(|(_, exif, modified)| {
+        videre_core::fix_dates_target::is_current(exif, modified.as_deref()) == Some(true)
+    });
+    let already_correct = current.len();
+    let rows: Vec<(String, String)> = rows.into_iter().map(|(p, e, _)| (p, e)).collect();
+    let to_change = rows.len();
 
-    if !args.dry_run && total > 0 && !args.yes {
+    if !args.dry_run && to_change > 0 && !args.yes {
         let proceed = confirm(&format!(
-            "This will set the modified time on {total} file(s) from their exif_date. Continue?"
+            "This will set the modified time on {to_change} file(s) from their exif_date. Continue?"
         ))?;
         if !proceed {
             tracing::info!("Aborted; no files modified.");
@@ -181,7 +191,7 @@ fn run_fix_dates(
             String::new()
         };
         tracing::info!(
-            "{} file(s) with exif_date, {} {}, {} error(s){}.",
+            "{} file(s) with exif_date, {} {}, {} already correct, {} error(s){}.",
             total,
             changed,
             if args.dry_run {
@@ -189,6 +199,7 @@ fn run_fix_dates(
             } else {
                 "updated"
             },
+            already_correct,
             errors,
             skipped_note,
         );
