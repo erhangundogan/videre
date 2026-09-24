@@ -307,13 +307,11 @@ fn load_subject_clusters(
     config: &QuestionSelectionConfig,
 ) -> Result<Vec<SubjectCluster>, QuestionError> {
     let cluster_ids: Vec<i64> = {
-        let mut statement = conn.prepare(&format!(
+        let mut statement = conn.prepare(
             "SELECT DISTINCT cluster_id FROM faces
              WHERE cluster_id IS NOT NULL AND confirmed = 0 AND person_label IS NULL
-               AND {}
              ORDER BY cluster_id LIMIT ?1",
-            crate::face_db::HAS_PHOTO
-        ))?;
+        )?;
         let rows = statement
             .query_map([config.max_cluster_candidates as i64], |row| row.get(0))?
             .collect::<rusqlite::Result<Vec<i64>>>()?;
@@ -322,13 +320,11 @@ fn load_subject_clusters(
     let mut clusters = Vec::with_capacity(cluster_ids.len());
     for cluster_id in cluster_ids {
         let members: Vec<(i64, Option<f64>, Option<f64>, i64)> = {
-            let mut statement = conn.prepare(&format!(
+            let mut statement = conn.prepare(
                 "SELECT id, det_score, blur, is_primary FROM faces
                  WHERE cluster_id = ?1 AND confirmed = 0 AND person_label IS NULL
-                   AND {}
                  ORDER BY is_primary DESC, det_score DESC, id ASC",
-                crate::face_db::HAS_PHOTO
-            ))?;
+            )?;
             let rows = statement
                 .query_map([cluster_id], |row| {
                     Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
@@ -379,13 +375,11 @@ fn load_target_people(
     let mut targets = Vec::with_capacity(people.len());
     for (identity, display) in people {
         let support_ids: Vec<i64> = {
-            let mut statement = conn.prepare(&format!(
+            let mut statement = conn.prepare(
                 "SELECT id FROM faces
                  WHERE person_label = ?1 AND confirmed = 1 AND cluster_id IS NULL
-                   AND {}
                  ORDER BY is_primary DESC, id ASC LIMIT ?2",
-                crate::face_db::HAS_PHOTO
-            ))?;
+            )?;
             let rows = statement
                 .query_map(params![identity, MAX_SUPPORT_FACES as i64], |row| {
                     row.get(0)
@@ -911,12 +905,6 @@ mod tests {
         super::super::ensure_learning_tables(&conn).unwrap();
         super::super::ensure_profile_table(&conn).unwrap();
         ensure_question_tables(&conn).unwrap();
-        // Every face's photo exists: these tests are not about missing photos,
-        // and the readers list only faces some file still has.
-        conn.execute_batch(
-            "CREATE VIEW file_hashes AS SELECT DISTINCT hash, '/p/' || hash AS path FROM faces",
-        )
-        .unwrap();
         conn
     }
 

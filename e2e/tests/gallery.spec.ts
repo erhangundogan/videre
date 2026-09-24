@@ -1,6 +1,3 @@
-import { copyFileSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { expect, test } from "../support/gallery";
 
 test("loads a scanned local library in Chromium", async ({ page, gallery }) => {
@@ -204,22 +201,15 @@ test("rotate is offered for photos, rotates, and is hidden for video", async ({ 
   const ids = await page.locator(".lb-controls button").evaluateAll((els) => els.map((e) => e.id));
   expect(ids).toEqual(["lb-rotate-ccw", "lb-rotate", "lb-fs", "lb-close"]);
 
-  // Rotating posts to the endpoint and re-fetches the preview under the
-  // photo's new content hash (cache-busted).
+  // Rotating posts to the endpoint and re-fetches the preview (cache-busted).
   const rotateResponse = page.waitForResponse(
     (r) => /\/api\/files\/[^/]+\/rotate$/.test(new URL(r.url()).pathname) && r.request().method() === "POST"
   );
   const before = await page.locator("#lb-img").getAttribute("src");
   await page.locator("#lb-rotate").click();
-  const response = await rotateResponse;
-  expect(response.status()).toBe(200);
-  const { hash } = await response.json();
+  expect((await rotateResponse).status()).toBe(200);
   await expect(page.locator("#lb-img")).not.toHaveAttribute("src", before ?? "");
-  await expect(page.locator("#lb-img")).toHaveAttribute("src", new RegExp(`/api/files/${hash}/`));
   await expect(page.locator("#lb-img")).toHaveAttribute("src", /[?&]b=\d+/);
-  await expect
-    .poll(() => page.locator("#lb-img").evaluate((img: HTMLImageElement) => img.naturalWidth))
-    .toBeGreaterThan(0);
   await expect(page.locator("#lb-rotate")).toBeEnabled();
 
   // A video carries no EXIF orientation, so the rotate button is hidden.
@@ -227,91 +217,6 @@ test("rotate is offered for photos, rotates, and is hidden for video", async ({ 
   await page.locator("#gallery [data-lb-type='video']").first().click();
   await expect(page.locator("#lb")).toHaveClass(/on/);
   await expect(page.locator("#lb-rotate")).toBeHidden();
-});
-
-type TileMeta = { hash: string; path?: string };
-
-async function tileMetas(page: import("@playwright/test").Page, scope: string): Promise<TileMeta[]> {
-  return page
-    .locator(`${scope} [data-lb-meta]`)
-    .evaluateAll((els) => els.map((el) => JSON.parse((el as HTMLElement).dataset.lbMeta || "{}")));
-}
-
-async function rotateOpenPhoto(page: import("@playwright/test").Page) {
-  const rotateResponse = page.waitForResponse(
-    (r) => /\/api\/files\/[^/]+\/rotate$/.test(new URL(r.url()).pathname) && r.request().method() === "POST"
-  );
-  await page.locator("#lb-rotate").click();
-  const response = await rotateResponse;
-  expect(response.status()).toBe(200);
-  await expect(page.locator("#lb-rotate")).toBeEnabled();
-  return (await response.json()) as { hash: string; path: string };
-}
-
-test("rotating one of two identical photos leaves the other copy's item alone", async ({ page, gallery }) => {
-  // The library is shared by every test in this worker and others turn
-  // first.jpg, so the pair is made here from second.jpg's current bytes and
-  // row, and removed again afterwards (the map tests count every row).
-  const db = new DatabaseSync(join(gallery.libraryRoot, ".videre", "hashes.db"));
-  const source = db
-    .prepare("SELECT path, hash, ext, mime, size_bytes, exif_date FROM file_hashes WHERE path LIKE '%/second.jpg'")
-    .get() as { path: string; hash: string; ext: string; mime: string; size_bytes: number; exif_date: string };
-  const twins = ["twin-a.jpg", "twin-b.jpg"].map((name) => join(dirname(source.path), name));
-  try {
-    for (const twin of twins) {
-      copyFileSync(source.path, twin);
-      db.prepare(
-        "INSERT INTO file_hashes (path, hash, ext, mime, size_bytes, exif_date) VALUES (?, ?, ?, ?, ?, ?)"
-      ).run(twin, source.hash, source.ext, source.mime, source.size_bytes, source.exif_date);
-    }
-
-    await page.goto(gallery.baseURL);
-    const clicked = page.locator(`#gallery [data-lb-type='image'][data-lb-meta*="twin-a.jpg"]`).first();
-    await clicked.click();
-    const turned = await rotateOpenPhoto(page);
-    expect(turned.path, "the copy that was clicked is the one that turns").toBe(twins[0]);
-    await expect(page.locator("#lb-img")).toHaveAttribute("src", new RegExp(`/api/files/${turned.hash}/`));
-
-    const after = await tileMetas(page, "#gallery");
-    expect(after.find((m) => m.path === twins[0])!.hash).toBe(turned.hash);
-    expect(after.find((m) => m.path === twins[1])!.hash, "the copy that did not turn keeps its hash").toBe(
-      source.hash
-    );
-  } finally {
-    for (const twin of twins) {
-      db.prepare("DELETE FROM file_hashes WHERE path = ?").run(twin);
-      rmSync(twin, { force: true });
-    }
-    db.close();
-  }
-});
-
-test("rotating while the library is busy says so", async ({ page, gallery }) => {
-  await page.route("**/api/files/*/rotate*", (route) => route.fulfill({ status: 503, body: "" }));
-  await page.goto(gallery.baseURL);
-  await page.locator("#gallery [data-lb-type='image']").first().click();
-  const dialog = page.waitForEvent("dialog");
-  await page.locator("#lb-rotate").click();
-  const shown = await dialog;
-  expect(shown.message()).toContain("busy");
-  await shown.dismiss();
-  await expect(page.locator("#lb-rotate")).toBeEnabled();
-});
-
-test("a date page keeps the rotated photo's new hash across a layout switch", async ({ page, gallery }) => {
-  await page.goto(`${gallery.baseURL}/date/2021/08/10`);
-  await page.locator("#dateGrid [data-lb-type='image']").first().click();
-  const turned = await rotateOpenPhoto(page);
-  await page.keyboard.press("Escape");
-
-  // Switching layout rebuilds the items from the page's retained rows.
-  await page.locator(".view-mode-select").first().selectOption("tile");
-  await expect(page.locator("#dateGrid")).toHaveClass(/tile-mode/);
-  const item = (await tileMetas(page, "#dateGrid")).find((m) => m.path === turned.path);
-  expect(item!.hash).toBe(turned.hash);
-  await expect(
-    page.locator(`#dateGrid [data-lb-url*="/api/files/${turned.hash}/"]`).first()
-  ).toBeAttached();
 });
 
 test("opens a scanned MP4 in the lightbox", async ({ page, gallery }) => {

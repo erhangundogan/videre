@@ -14,7 +14,6 @@ videre prune --silent                  # no per-file output
 videre --library ~/Photos prune        # select a different library
 videre prune --prune-unreachable       # also drop entries whose folder is gone
 videre prune --force                   # allow an unusually large cleanup
-videre prune --drop-named-faces        # also remove named faces whose photo is gone
 ```
 
 ## When to run it
@@ -48,13 +47,6 @@ videre prune --dry-run
    [model](/reference/models/)
 4. Deletes [cached thumbnails](/guides/caches/#thumbnail-cache) whose photo is
    gone
-5. Deletes the faces of photos that are gone, reported as `removed N orphan
-   face(s)`. A photo on which someone named a face is the exception: all its
-   faces are **kept** and counted (`kept N face(s) of M missing photo(s) with
-   a named person`), because a name is yours, and if the photo comes back (a
-   folder moved out and back, a drive that dropped files) its faces come
-   back with it, named. Until then the People page leaves them out, since
-   there is nothing to show. Pass `--drop-named-faces` to remove them too
 
 Steps 3 and 4 are the reason to prune at all rather than ignoring stale rows:
 they are what actually reclaims disk space.
@@ -66,7 +58,7 @@ prune afterwards reports exactly the number of files it changed. On a library
 nothing has touched, the count is zero and a second pass is a no-op.
 
 If two paths share the same content and only one is deleted, the shared
-embedding, cache and face entries are **kept**. They are keyed by content, so they are
+embedding and cache entries are **kept**. They are keyed by content, so they are
 still in use by the surviving copy.
 
 :::note[`--dry-run` undercounts orphans]

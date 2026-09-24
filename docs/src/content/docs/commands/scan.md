@@ -80,14 +80,6 @@ deprecation notice.
 A file whose bytes were read but whose type could not be identified gets an
 explicit sentinel, so it counts as complete and is not re-read on every scan.
 
-Faces belong to a file's content, not its path. When another application
-changes a photo, its old faces are dropped and the new content is detected
-again by [`videre faces`](/commands/faces/) (or `watch`); faces that had been
-named need naming again, and scan warns with how many:
-`warning: <path> changed; its 2 labeled face(s) will be detected again and need
-naming`. A copy of the old content at another path keeps its faces. The
-gallery's own rotate is the exception: it keeps the faces and their names.
-
 ## `--similar`
 
 `--similar` computes a perceptual fingerprint used by

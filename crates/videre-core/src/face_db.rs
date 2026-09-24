@@ -280,203 +280,6 @@ pub fn mark_scanned(conn: &Connection, hash: &str) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Faces removed because no file has their content any more.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct DroppedFaces {
-    pub faces: usize,
-    /// Of those, the ones a person had been confirmed on.
-    pub labeled: usize,
-}
-
-/// A face whose photo some file still has, as a condition on `faces.hash`.
-/// Every reader that shows, groups or offers faces uses it: a face `prune`
-/// kept for a missing photo has nothing to crop from, and returns with its
-/// photo.
-pub const HAS_PHOTO: &str = "hash IN (SELECT hash FROM file_hashes)";
-
-/// A face belongs to content, not to a path: while any `file_hashes` row has
-/// its hash, it still describes a file in the library.
-const UNREFERENCED: &str = "hash NOT IN (SELECT hash FROM file_hashes)";
-const LABELED: &str = "confirmed = 1 AND person_label IS NOT NULL";
-/// Content with at least one named face. When `prune` keeps names, it keeps
-/// the whole photo's faces: they come back together, and the photo counts as
-/// scanned, so nothing would detect a dropped unnamed face again.
-const NAMED_PHOTO: &str =
-    "hash IN (SELECT hash FROM faces WHERE confirmed = 1 AND person_label IS NOT NULL)";
-
-/// Faces of absent content that `drop_unreferenced_faces(.., keep_labeled:
-/// true)` keeps, and on how many photos.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct KeptFaces {
-    pub faces: usize,
-    pub photos: usize,
-}
-
-pub fn kept_orphan_faces(conn: &Connection) -> rusqlite::Result<KeptFaces> {
-    if !crate::db::table_exists(conn, "faces")? {
-        return Ok(KeptFaces::default());
-    }
-    conn.query_row(
-        &format!(
-            "SELECT COUNT(*), COUNT(DISTINCT hash) FROM faces
-             WHERE {UNREFERENCED} AND {NAMED_PHOTO}"
-        ),
-        [],
-        |r| {
-            Ok(KeptFaces {
-                faces: r.get::<_, i64>(0)? as usize,
-                photos: r.get::<_, i64>(1)? as usize,
-            })
-        },
-    )
-}
-
-/// Whether a path other than `path` holds this content, so its faces belong
-/// to that copy too.
-pub fn hash_shared_elsewhere(conn: &Connection, hash: &str, path: &str) -> rusqlite::Result<bool> {
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM file_hashes WHERE hash = ?1 AND path <> ?2)",
-        rusqlite::params![hash, path],
-        |r| r.get(0),
-    )
-}
-
-/// Re-point one photo's faces, and its scan marker, from `old` to `new`
-/// content. Ids stay, so labels, clusters and learning references stay with
-/// them. For a file videre changed itself (rotate), where the faces are
-/// known to still hold.
-///
-/// When `new` already has faces or was already scanned for them (an
-/// identical copy was turned the same way earlier), those faces describe the
-/// content and nothing moves: merging two sets would duplicate or contradict
-/// them. The old faces stay under `old`, for the row write to drop once no
-/// path has it. Returns how many faces moved.
-pub fn move_faces_to_hash(conn: &Connection, old: &str, new: &str) -> rusqlite::Result<usize> {
-    if !crate::db::table_exists(conn, "faces")? {
-        return Ok(0);
-    }
-    let scanned = crate::db::table_exists(conn, "faces_scanned")?;
-    crate::db::in_savepoint(conn, || {
-        let populated: bool = conn.query_row(
-            &format!(
-                "SELECT EXISTS(SELECT 1 FROM faces WHERE hash = ?1){}",
-                if scanned {
-                    " OR EXISTS(SELECT 1 FROM faces_scanned WHERE hash = ?1)"
-                } else {
-                    ""
-                }
-            ),
-            [new],
-            |r| r.get(0),
-        )?;
-        if populated {
-            return Ok(0);
-        }
-        let moved = conn.execute(
-            "UPDATE faces SET hash = ?2 WHERE hash = ?1",
-            rusqlite::params![old, new],
-        )?;
-        if scanned {
-            conn.execute(
-                "INSERT OR IGNORE INTO faces_scanned (hash)
-                 SELECT ?2 WHERE EXISTS (SELECT 1 FROM faces_scanned WHERE hash = ?1)",
-                rusqlite::params![old, new],
-            )?;
-            conn.execute("DELETE FROM faces_scanned WHERE hash = ?1", [old])?;
-        }
-        Ok(moved)
-    })
-}
-
-/// How many faces of content no file has any more there are, and how many
-/// of those are named: what `drop_unreferenced_faces(conn, None, false)` removes.
-pub fn unreferenced_face_counts(conn: &Connection) -> rusqlite::Result<DroppedFaces> {
-    if !crate::db::table_exists(conn, "faces")? {
-        return Ok(DroppedFaces::default());
-    }
-    conn.query_row(
-        &format!(
-            "SELECT COUNT(*), COALESCE(SUM(CASE WHEN {LABELED} THEN 1 ELSE 0 END), 0)
-             FROM faces WHERE {UNREFERENCED}"
-        ),
-        [],
-        |r| {
-            Ok(DroppedFaces {
-                faces: r.get::<_, i64>(0)? as usize,
-                labeled: r.get::<_, i64>(1)? as usize,
-            })
-        },
-    )
-}
-
-/// Delete the faces, and scan markers, of content no file has any more: of
-/// `hashes`, or of every hash for `None`. The new content is detected again
-/// like any new file, and its faces need naming again. A hash some path
-/// still has is left alone.
-///
-/// `keep_labeled` (for `None`) keeps every face of a photo someone named a
-/// face on: a name is user data, and the content may come back (a folder
-/// moved out and back, a drive that dropped files), when the faces re-attach
-/// by hash. Their scan marker stays with them.
-pub fn drop_unreferenced_faces(
-    conn: &Connection,
-    hashes: Option<&[String]>,
-    keep_labeled: bool,
-) -> rusqlite::Result<DroppedFaces> {
-    if !crate::db::table_exists(conn, "faces")? {
-        return Ok(DroppedFaces::default());
-    }
-    remember_face_ids(conn)?;
-    let scanned = crate::db::table_exists(conn, "faces_scanned")?;
-    let Some(hashes) = hashes else {
-        let mut dropped = unreferenced_face_counts(conn)?;
-        let keep = if keep_labeled {
-            dropped.faces -= kept_orphan_faces(conn)?.faces;
-            dropped.labeled = 0;
-            format!(" AND NOT ({NAMED_PHOTO})")
-        } else {
-            String::new()
-        };
-        conn.execute(&format!("DELETE FROM faces WHERE {UNREFERENCED}{keep}"), [])?;
-        if scanned {
-            conn.execute(
-                &format!(
-                    "DELETE FROM faces_scanned WHERE {UNREFERENCED}
-                     AND hash NOT IN (SELECT hash FROM faces)"
-                ),
-                [],
-            )?;
-        }
-        return Ok(dropped);
-    };
-    let mut dropped = DroppedFaces::default();
-    for hash in hashes {
-        let referenced: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM file_hashes WHERE hash = ?1)",
-            [hash],
-            |r| r.get(0),
-        )?;
-        if referenced {
-            continue;
-        }
-        let (faces, labeled): (i64, i64) = conn.query_row(
-            &format!(
-                "SELECT COUNT(*), COALESCE(SUM(CASE WHEN {LABELED} THEN 1 ELSE 0 END), 0)
-                 FROM faces WHERE hash = ?1"
-            ),
-            [hash],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
-        conn.execute("DELETE FROM faces WHERE hash = ?1", [hash])?;
-        if scanned {
-            conn.execute("DELETE FROM faces_scanned WHERE hash = ?1", [hash])?;
-        }
-        dropped.faces += faces as usize;
-        dropped.labeled += labeled as usize;
-    }
-    Ok(dropped)
-}
-
 /// Every hash recorded as face-scanned.
 pub fn scanned_hashes(conn: &Connection) -> rusqlite::Result<Vec<String>> {
     let mut stmt = conn.prepare("SELECT hash FROM faces_scanned")?;
@@ -509,28 +312,6 @@ pub fn select_unscanned(
     out
 }
 
-/// Record the highest face id so far before faces are deleted, so it is
-/// never handed out again (see `library_state::FACE_ID_HIGH_WATER`).
-fn remember_face_ids(conn: &Connection) -> rusqlite::Result<()> {
-    let highest: Option<i64> = conn.query_row("SELECT MAX(id) FROM faces", [], |r| r.get(0))?;
-    match highest {
-        Some(id) => {
-            crate::library_state::raise_to(conn, crate::library_state::FACE_ID_HIGH_WATER, id)
-        }
-        None => Ok(()),
-    }
-}
-
-/// The id for the next new face: above every live face and every face ever
-/// deleted, so a learning event or question naming an old id never names a
-/// different face.
-fn next_face_id(conn: &Connection) -> rusqlite::Result<i64> {
-    let live: i64 = conn.query_row("SELECT COALESCE(MAX(id), 0) FROM faces", [], |r| r.get(0))?;
-    let deleted =
-        crate::library_state::value(conn, crate::library_state::FACE_ID_HIGH_WATER)?.unwrap_or(0);
-    Ok(live.max(deleted) + 1)
-}
-
 pub fn replace_faces_for_hash(
     conn: &Connection,
     hash: &str,
@@ -538,17 +319,15 @@ pub fn replace_faces_for_hash(
 ) -> rusqlite::Result<()> {
     conn.execute_batch("BEGIN")?;
     let result = (|| -> rusqlite::Result<()> {
-        remember_face_ids(conn)?;
         conn.execute("DELETE FROM faces WHERE hash = ?1", rusqlite::params![hash])?;
         for face in faces {
             conn.execute(
-                "INSERT INTO faces (id, hash, bbox, landmark, embedding, cluster_id, person_label, confirmed, is_primary, det_score, blur, oriented)
-                 VALUES (?12, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                "INSERT INTO faces (hash, bbox, landmark, embedding, cluster_id, person_label, confirmed, is_primary, det_score, blur, oriented)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 rusqlite::params![
                     face.hash, face.bbox, face.landmark, face.embedding,
                     face.cluster_id, face.person_label, face.confirmed, face.is_primary,
-                    face.det_score, face.blur, if face.oriented { 1 } else { 0 },
-                    next_face_id(conn)?
+                    face.det_score, face.blur, if face.oriented { 1 } else { 0 }
                 ],
             )?;
         }
@@ -683,9 +462,7 @@ pub fn load_faces_for_clustering(
     // The landmark string travels as-is. What "a good landmark set" means is a
     // property of the ArcFace template, which lives in `videre-ml`; this crate
     // is below it in the dependency graph and must not learn it.
-    let mut stmt = conn.prepare(&format!(
-        "SELECT id, embedding, bbox, landmark, blur FROM faces WHERE {HAS_PHOTO}"
-    ))?;
+    let mut stmt = conn.prepare("SELECT id, embedding, bbox, landmark, blur FROM faces")?;
     let rows = stmt.query_map([], |row| {
         let id: i64 = row.get(0)?;
         let blob: Vec<u8> = row.get(1)?;
@@ -801,234 +578,12 @@ fn make_embedding(vals: &[f32]) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    fn orphan_fixture() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL);")
-            .unwrap();
-        create_faces_table(&conn).unwrap();
-        conn.execute_batch(
-            "INSERT INTO people (name, full_name) VALUES ('çağla', 'Çağla');
-             INSERT INTO file_hashes VALUES ('/Arşiv/kept.jpg', 'hkept');
-             INSERT INTO file_hashes VALUES ('/Arşiv/copy-a.jpg', 'hshared');
-             INSERT INTO file_hashes VALUES ('/Arşiv/copy-b.jpg', 'hshared');
-             INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed)
-               VALUES (1, 'hkept', '0,0,9,9', X'0000', 'çağla', 1),
-                      (2, 'hshared', '0,0,9,9', X'0000', NULL, 0),
-                      (3, 'hgone', '0,0,9,9', X'0000', 'çağla', 1),
-                      (4, 'hgone', '5,5,9,9', X'0000', NULL, 0),
-                      (5, 'hother', '0,0,9,9', X'0000', NULL, 0);
-             INSERT INTO faces_scanned (hash) VALUES ('hkept'), ('hshared'), ('hgone'), ('hother');",
-        )
-        .unwrap();
-        conn
-    }
-
-    fn face_ids(conn: &Connection, hash: &str) -> Vec<i64> {
-        let mut stmt = conn
-            .prepare("SELECT id FROM faces WHERE hash = ?1 ORDER BY id")
-            .unwrap();
-        stmt.query_map([hash], |r| r.get(0))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap()
-    }
-
-    fn scanned(conn: &Connection, hash: &str) -> bool {
-        conn.query_row(
-            "SELECT COUNT(*) FROM faces_scanned WHERE hash = ?1",
-            [hash],
-            |r| r.get::<_, i64>(0),
-        )
-        .unwrap()
-            > 0
-    }
-
-    #[test]
-    fn dropping_named_hashes_skips_the_ones_a_path_still_has() {
-        let conn = orphan_fixture();
-        let dropped = drop_unreferenced_faces(
-            &conn,
-            Some(&[
-                "hgone".to_string(),
-                "hshared".to_string(),
-                "hkept".to_string(),
-            ]),
-            false,
-        )
-        .unwrap();
-        assert_eq!(
-            dropped,
-            DroppedFaces {
-                faces: 2,
-                labeled: 1
-            }
-        );
-        assert!(face_ids(&conn, "hgone").is_empty());
-        assert!(!scanned(&conn, "hgone"));
-        assert_eq!(face_ids(&conn, "hshared"), vec![2]);
-        assert_eq!(face_ids(&conn, "hkept"), vec![1]);
-        assert_eq!(face_ids(&conn, "hother"), vec![5], "not named, not touched");
-    }
-
-    #[test]
-    fn dropping_everything_unreferenced_and_counting_first() {
-        let conn = orphan_fixture();
-        assert_eq!(
-            unreferenced_face_counts(&conn).unwrap(),
-            DroppedFaces {
-                faces: 3,
-                labeled: 1
-            }
-        );
-        let dropped = drop_unreferenced_faces(&conn, None, false).unwrap();
-        assert_eq!(
-            dropped,
-            DroppedFaces {
-                faces: 3,
-                labeled: 1
-            }
-        );
-        assert!(face_ids(&conn, "hother").is_empty());
-        assert!(!scanned(&conn, "hother"));
-        assert_eq!(
-            unreferenced_face_counts(&conn).unwrap(),
-            DroppedFaces::default()
-        );
-    }
-
-    #[test]
-    fn a_library_without_faces_drops_nothing() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL);")
-            .unwrap();
-        assert_eq!(
-            drop_unreferenced_faces(&conn, None, false).unwrap(),
-            DroppedFaces::default()
-        );
-        assert_eq!(
-            unreferenced_face_counts(&conn).unwrap(),
-            DroppedFaces::default()
-        );
-        assert_eq!(move_faces_to_hash(&conn, "a", "b").unwrap(), 0);
-    }
-
-    #[test]
-    fn moving_faces_keeps_ids_labels_and_the_scan_marker() {
-        let conn = orphan_fixture();
-        assert_eq!(move_faces_to_hash(&conn, "hkept", "hturned").unwrap(), 1);
-        assert_eq!(face_ids(&conn, "hturned"), vec![1]);
-        let label: String = conn
-            .query_row("SELECT person_label FROM faces WHERE id = 1", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        assert_eq!(label, "çağla");
-        assert!(scanned(&conn, "hturned"));
-        assert!(!scanned(&conn, "hkept"));
-    }
-
-    #[test]
-    fn clustering_leaves_out_faces_whose_photo_is_gone() {
-        let conn = orphan_fixture();
-        let ids: Vec<i64> = load_faces_for_clustering(&conn)
-            .unwrap()
-            .into_iter()
-            .map(|row| row.0)
-            .collect();
-        assert_eq!(ids, vec![1, 2], "3, 4 (hgone) and 5 (hother) have no file");
-    }
-
-    #[test]
-    fn a_deleted_face_id_is_never_handed_out_again() {
-        let conn = orphan_fixture();
-        // 5 is the highest id, and its content is gone.
-        drop_unreferenced_faces(&conn, None, false).unwrap();
-        replace_faces_for_hash(
-            &conn,
-            "hkept",
-            &[FaceRow {
-                hash: "hkept".into(),
-                bbox: "1,1,5,5".into(),
-                landmark: None,
-                embedding: vec![0, 0],
-                cluster_id: None,
-                person_label: None,
-                confirmed: 0,
-                is_primary: 0,
-                det_score: 0.9,
-                blur: 100.0,
-                oriented: true,
-            }],
-        )
-        .unwrap();
-        // Learning events and questions still name 1..5, so a new face must
-        // not take any of those ids.
-        assert_eq!(face_ids(&conn, "hkept"), vec![6]);
-    }
-
-    #[test]
-    fn named_orphans_can_be_kept_and_come_back_with_their_photo() {
-        let conn = orphan_fixture();
-        let dropped = drop_unreferenced_faces(&conn, None, true).unwrap();
-        assert_eq!(
-            dropped,
-            DroppedFaces {
-                faces: 1,
-                labeled: 0
-            }
-        );
-        // The whole photo's faces stay, the unnamed one too: they come back
-        // together, and the photo counts as scanned, so nothing detects the
-        // unnamed one again.
-        assert_eq!(face_ids(&conn, "hgone"), vec![3, 4]);
-        assert!(scanned(&conn, "hgone"));
-        assert!(face_ids(&conn, "hother").is_empty());
-        assert!(!scanned(&conn, "hother"));
-        conn.execute(
-            "INSERT INTO file_hashes VALUES ('/Arşiv/back.jpg', 'hgone')",
-            [],
-        )
-        .unwrap();
-        assert_eq!(
-            unreferenced_face_counts(&conn).unwrap(),
-            DroppedFaces::default(),
-            "the photo is back, and so is its named face"
-        );
-    }
-
-    #[test]
-    fn moving_onto_content_that_already_has_faces_moves_nothing() {
-        let conn = orphan_fixture();
-        // hkept is turned into content hshared already describes.
-        assert_eq!(move_faces_to_hash(&conn, "hkept", "hshared").unwrap(), 0);
-        assert_eq!(face_ids(&conn, "hshared"), vec![2], "no merged face sets");
-        assert_eq!(
-            face_ids(&conn, "hkept"),
-            vec![1],
-            "left for the row write to drop"
-        );
-        assert!(scanned(&conn, "hkept"));
-    }
-
-    #[test]
-    fn a_hash_is_shared_only_through_another_path() {
-        let conn = orphan_fixture();
-        assert!(hash_shared_elsewhere(&conn, "hshared", "/Arşiv/copy-a.jpg").unwrap());
-        assert!(!hash_shared_elsewhere(&conn, "hkept", "/Arşiv/kept.jpg").unwrap());
-    }
-
     fn open() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         // Enforced, so the learning tables' declared parent keys are checked
         // by every reset and lifecycle test.
         conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
         create_faces_table(&conn).unwrap();
-        // Every face's photo exists: these tests are not about missing photos,
-        // and the readers list only faces some file still has.
-        conn.execute_batch(
-            "CREATE VIEW file_hashes AS SELECT DISTINCT hash, '/p/' || hash AS path FROM faces",
-        )
-        .unwrap();
         conn
     }
 
