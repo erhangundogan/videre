@@ -4,6 +4,11 @@ use serde::{Deserialize, Serialize};
 pub struct FileRecord {
     pub path: String,
     pub hash: String,
+    /// BLAKE3 of the file's metadata alone (see `content_key`); `None` for a
+    /// format that is not parsed. Records that the metadata changed while
+    /// `hash`, the content key, stays the same.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meta_hash: Option<String>,
     pub size_bytes: u64,
     pub created_at: Option<String>,
     pub modified_at: Option<String>,
@@ -45,8 +50,9 @@ pub struct DuplicateGroup {
 /// bump this; removals or renames would.
 pub const SCHEMA_VERSION: u32 = 1;
 
-/// One exact-duplicate group in `dedupe --json`: byte-identical files split
-/// into the one to keep (oldest by the KEEP rule) and the rest to remove.
+/// One exact-duplicate group in `dedupe --json`: files with the same content
+/// key (identical content, metadata aside) split into the one to keep (oldest
+/// by the KEEP rule) and the rest to remove.
 #[derive(Debug, Serialize)]
 pub struct DupGroupJson {
     pub hash: String,
@@ -70,7 +76,7 @@ impl From<DuplicateGroup> for DupGroupJson {
 
 /// One perceptual-hash near-duplicate group in `dedupe --json --similar`.
 /// Deliberately a flat review cluster with no keep/remove split: these files
-/// are NOT byte-identical, so no deletion is safe without human/agent judgment.
+/// do NOT share content, so no deletion is safe without human/agent judgment.
 #[derive(Debug, Serialize)]
 pub struct SimilarGroupJson {
     pub hash: String,
@@ -163,6 +169,7 @@ mod tests {
         let record = FileRecord {
             path: "/photos/img.jpg".to_string(),
             hash: "abc123".to_string(),
+            meta_hash: None,
             size_bytes: 1024,
             created_at: Some("2023-01-01T00:00:00Z".to_string()),
             modified_at: Some("2024-01-01T00:00:00Z".to_string()),
@@ -196,6 +203,7 @@ mod tests {
         let record = FileRecord {
             path: "/photos/img.jpg".to_string(),
             hash: "abc123".to_string(),
+            meta_hash: None,
             size_bytes: 1024,
             created_at: None,
             modified_at: None,
@@ -223,6 +231,7 @@ mod tests {
         let record = FileRecord {
             path: "/a.jpg".to_string(),
             hash: "x".to_string(),
+            meta_hash: None,
             size_bytes: 0,
             created_at: None,
             modified_at: None,
@@ -249,6 +258,7 @@ mod tests {
         FileRecord {
             path: path.to_string(),
             hash: hash.to_string(),
+            meta_hash: None,
             size_bytes: 1,
             created_at: None,
             modified_at: None,

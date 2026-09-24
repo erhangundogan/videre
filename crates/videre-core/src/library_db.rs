@@ -64,6 +64,7 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const FILE_HASHES_COLUMNS: &[(&str, &str)] = &[
     ("path", "TEXT PRIMARY KEY"),
     ("hash", "TEXT NOT NULL"),
+    ("meta_hash", "TEXT"),
     ("size_bytes", "INTEGER"),
     ("created_at", "TEXT"),
     ("modified_at", "TEXT"),

@@ -74,3 +74,69 @@ fn different_images_have_different_keys() {
         keys_of("red_1s.mp4", Format::Movie).content
     );
 }
+
+mod common;
+use common::TestLibrary;
+
+/// tiny.jpg with a COM segment inserted after SOI: the same image with
+/// different metadata.
+fn commented(comment: &[u8]) -> Vec<u8> {
+    let original =
+        std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tiny.jpg"))
+            .unwrap();
+    let mut v = original[..2].to_vec();
+    v.extend([0xFF, 0xFE]);
+    v.extend(((comment.len() + 2) as u16).to_be_bytes());
+    v.extend(comment);
+    v.extend(&original[2..]);
+    v
+}
+
+fn row(lib: &TestLibrary, name: &str) -> (String, Option<String>) {
+    let path = lib.context().paths.root.join(name);
+    lib.conn()
+        .query_row(
+            "SELECT hash, meta_hash FROM file_hashes WHERE path = ?1",
+            [path.to_string_lossy().as_ref()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+}
+
+#[test]
+fn a_rescan_after_a_metadata_edit_keeps_the_key() {
+    let lib = TestLibrary::new();
+    std::fs::write(lib.root.join("çağla.jpg"), commented(b"Arsiv 2011")).unwrap();
+    lib.scan();
+    let (key, meta) = row(&lib, "çağla.jpg");
+    assert!(meta.is_some());
+
+    std::fs::write(lib.root.join("çağla.jpg"), commented(b"Arsiv 2024, edited")).unwrap();
+    lib.scan();
+    let (key_after, meta_after) = row(&lib, "çağla.jpg");
+    assert_eq!(key_after, key, "the photo keeps its identity");
+    assert_ne!(meta_after, meta, "the metadata change is recorded");
+}
+
+#[test]
+fn dedupe_groups_the_same_image_with_different_metadata() {
+    let lib = TestLibrary::new();
+    std::fs::write(lib.root.join("özgür.jpg"), commented(b"one")).unwrap();
+    std::fs::write(lib.root.join("şükrü.jpg"), commented(b"two, longer")).unwrap();
+    lib.scan();
+    let out = lib.cmd().args(["dedupe", "--json"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let groups = json["duplicate_groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 1, "{json}");
+    let names: Vec<&str> = std::iter::once(&groups[0]["keep"])
+        .chain(groups[0]["remove"].as_array().unwrap())
+        .map(|f| f["path"].as_str().unwrap())
+        .collect();
+    assert!(names.iter().any(|p| p.ends_with("özgür.jpg")), "{json}");
+    assert!(names.iter().any(|p| p.ends_with("şükrü.jpg")), "{json}");
+}

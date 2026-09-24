@@ -37,11 +37,12 @@ fn write_records_to(conn: &rusqlite::Connection, records: &[FileRecord]) -> Resu
             "INSERT INTO file_hashes
                 (path, hash, size_bytes, created_at, modified_at, ext, mime,
                  phash, exif_date, gps_lat, gps_lon, width, height,
-                 duration_secs, codec)
+                 duration_secs, codec, meta_hash)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                     ?14, ?15)
+                     ?14, ?15, ?16)
              ON CONFLICT(path) DO UPDATE SET
                 hash = excluded.hash,
+                meta_hash = excluded.meta_hash,
                 size_bytes = excluded.size_bytes,
                 created_at = excluded.created_at,
                 modified_at = excluded.modified_at,
@@ -74,6 +75,7 @@ fn write_records_to(conn: &rusqlite::Connection, records: &[FileRecord]) -> Resu
                 r.height,
                 r.duration_secs,
                 r.codec,
+                r.meta_hash,
             ])?;
         }
     }
@@ -110,7 +112,7 @@ pub fn load_records_from(conn: &rusqlite::Connection) -> Result<Vec<FileRecord>>
 /// snapshot) so the projection and the mapping cannot drift apart.
 pub const FILE_RECORD_COLUMNS: &str =
     "path, hash, size_bytes, created_at, modified_at, ext, mime, phash, \
-     exif_date, gps_lat, gps_lon, width, height, duration_secs, codec";
+     exif_date, gps_lat, gps_lon, width, height, duration_secs, codec, meta_hash";
 
 /// Map one `file_hashes` row, projected as [`FILE_RECORD_COLUMNS`], into a
 /// [`FileRecord`]. The JSONL snapshot streams rows straight through this.
@@ -131,6 +133,7 @@ pub fn file_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileRec
         height: row.get(12)?,
         duration_secs: row.get(13)?,
         codec: row.get(14)?,
+        meta_hash: row.get(15)?,
     })
 }
 
@@ -142,6 +145,7 @@ mod tests {
         FileRecord {
             path: path.to_string(),
             hash: hash.to_string(),
+            meta_hash: None,
             size_bytes: 10,
             created_at: Some("2020-01-01T00:00:00+00:00".to_string()),
             modified_at: Some("2021-01-01T00:00:00+00:00".to_string()),
@@ -162,7 +166,8 @@ mod tests {
     fn load_records_roundtrips_write_records() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("t.db");
-        let written = vec![rec("/a.jpg", "h1"), rec("/b.jpg", "h2")];
+        let mut written = vec![rec("/a.jpg", "h1"), rec("/b.jpg", "h2")];
+        written[0].meta_hash = Some("m1".to_string());
         write_records(&written, &db).unwrap();
 
         let mut loaded = load_records(&db).unwrap();
@@ -170,6 +175,8 @@ mod tests {
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].path, "/a.jpg");
         assert_eq!(loaded[0].hash, "h1");
+        assert_eq!(loaded[0].meta_hash.as_deref(), Some("m1"));
+        assert_eq!(loaded[1].meta_hash, None);
         assert_eq!(loaded[0].size_bytes, 10);
         assert_eq!(loaded[0].phash, Some(u64::MAX));
         assert_eq!(loaded[0].exif_date.as_deref(), Some("2019-06-01T10:00:00"));
