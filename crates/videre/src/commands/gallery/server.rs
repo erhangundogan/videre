@@ -265,6 +265,8 @@ mod location_cluster_tests {
             context,
             embedder: Mutex::new(None),
             basemap_downloading: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            settings_lock: Arc::new(Mutex::new(())),
+            settings_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 
@@ -1290,6 +1292,8 @@ mod pages {
     #[derive(Template)]
     #[template(path = "faces.html")]
     pub struct Faces {
+        /// Gallery settings for `templates/nav.html`. See `settings::page_script`.
+        pub settings_script: String,
         /// The chrome every videre page shares. See `static/chrome.css`.
         pub chrome: &'static str,
         pub css: &'static str,
@@ -1308,6 +1312,7 @@ mod pages {
     #[derive(Template)]
     #[template(path = "cluster.html")]
     pub struct Cluster {
+        pub settings_script: String,
         pub css: &'static str,
         pub js: &'static str,
         pub cluster_id: i64,
@@ -1321,6 +1326,7 @@ mod pages {
     #[derive(Template)]
     #[template(path = "person.html")]
     pub struct Person {
+        pub settings_script: String,
         pub css: &'static str,
         pub js: &'static str,
         pub faces_ui_enabled: bool,
@@ -1334,6 +1340,7 @@ mod pages {
     #[derive(Template)]
     #[template(path = "map.html")]
     pub struct Map {
+        pub settings_script: String,
         pub chrome: &'static str,
         pub gallery_css: &'static str,
         pub css: &'static str,
@@ -1346,6 +1353,18 @@ mod pages {
         pub nav: Option<super::Section>,
     }
 
+    #[derive(Template)]
+    #[template(path = "settings.html")]
+    pub struct Settings {
+        pub settings_script: String,
+        pub chrome: &'static str,
+        pub js: &'static str,
+        /// The library's `gallery.json`, shown so hand editing is findable.
+        pub path: String,
+        pub nav: Option<super::Section>,
+    }
+
+    pub const SETTINGS_PAGE_JS: &str = include_str!("../../../static/settings-page.js");
     pub const FACES_CSS: &str = include_str!("../../../static/faces.css");
     pub const FACES_JS: &str = include_str!("../../../static/faces.js");
     pub const CLUSTER_CSS: &str = include_str!("../../../static/cluster.css");
@@ -1408,6 +1427,142 @@ fn guard_operation(
         videre_core::library_locks::ActivityMode::Shared,
     )
     .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
+}
+
+fn settings_file(state: &AppState) -> std::path::PathBuf {
+    super::settings::path(&state.context.library.paths.state)
+}
+
+/// Where the gallery opens: the library's saved route when it is a safe
+/// local page, otherwise `/`. See `settings::resume_route`. Resuming at `/`
+/// prints the bare address, exactly as before resume existed, so anything
+/// reading the port off that line keeps working.
+fn startup_url(addr: &str, state_dir: &Path) -> String {
+    let snapshot = super::settings::snapshot(&super::settings::path(state_dir));
+    match super::settings::resume_route(&snapshot.effective).as_str() {
+        "/" => format!("http://{addr}"),
+        route => format!("http://{addr}{route}"),
+    }
+}
+
+/// The settings script every served page inlines through `nav.html`. Read
+/// from disk on each render, so a hand edit applies on the next page load, and
+/// on a blocking thread, so a stalled library drive cannot tie up the async
+/// workers that serve every other request.
+async fn page_settings(state: &AppState) -> String {
+    let path = settings_file(state);
+    let warned = state.settings_warned.clone();
+    let rendered = tokio::task::spawn_blocking(move || {
+        let snapshot = super::settings::snapshot(&path);
+        if super::settings::should_warn(&warned, snapshot.error.as_deref()) {
+            tracing::warn!(
+                "gallery settings not loaded, using defaults and saving nothing until it is fixed or deleted: {}",
+                snapshot.error.as_deref().unwrap_or_default()
+            );
+        }
+        super::settings::page_script(&snapshot, true)
+    })
+    .await;
+    rendered.unwrap_or_else(|e| {
+        internal(e);
+        super::settings::default_page_script(true)
+    })
+}
+
+fn settings_json(s: super::settings::Snapshot) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "effective": s.effective,
+        "overrides": s.overrides,
+        "ignored": s.ignored,
+        "error": s.error,
+        "path": s.path.display().to_string(),
+    }))
+}
+
+/// `/settings`: import, export and reset of the library's gallery settings,
+/// reached from the nav's `...` menu.
+async fn handle_settings_page(State(state): State<Arc<AppState>>) -> axum::response::Html<String> {
+    use askama::Template;
+    let page = pages::Settings {
+        settings_script: page_settings(&state).await,
+        chrome: CHROME_CSS,
+        js: pages::SETTINGS_PAGE_JS,
+        path: settings_file(&state).display().to_string(),
+        nav: Some(Section::Settings),
+    };
+    axum::response::Html(page.render().expect("settings template"))
+}
+
+/// `GET /api/settings`: the effective settings, the stored overrides, and
+/// which overrides were ignored for having the wrong type.
+async fn handle_get_settings(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let path = settings_file(&state);
+    tokio::task::spawn_blocking(move || settings_json(super::settings::snapshot(&path)))
+        .await
+        .map_err(internal)
+}
+
+/// Read-modify-write of the overrides under one lock, from disk every time,
+/// so a hand edit made while the server runs is never overwritten by a stale
+/// copy in memory.
+async fn write_settings(
+    state: Arc<AppState>,
+    change: impl FnOnce(&mut serde_json::Value) + Send + 'static,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    use super::settings::{load, save, snapshot, SaveError, Stored};
+    tokio::task::spawn_blocking(move || {
+        let _guard = guard_operation(&state)?;
+        let _held = state.settings_lock.lock().map_err(poisoned)?;
+        let path = settings_file(&state);
+        let mut overrides = match load(&path) {
+            Stored::Absent => serde_json::Value::Object(Default::default()),
+            Stored::Valid(v) => v,
+            // Never overwrite a file that could not be read: it may hold hand
+            // edits. The page shows why, and the user fixes or deletes it.
+            Stored::Invalid(_) => return Err(StatusCode::CONFLICT),
+        };
+        change(&mut overrides);
+        super::settings::prune_defaults(&mut overrides, &super::settings::defaults());
+        match save(&path, &overrides) {
+            Ok(()) => Ok(settings_json(snapshot(&path))),
+            Err(SaveError::TooLarge) => Err(StatusCode::PAYLOAD_TOO_LARGE),
+            Err(SaveError::Io(e)) => Err(internal(e.context("save gallery settings"))),
+        }
+    })
+    .await
+    .map_err(internal)?
+}
+
+/// `PATCH /api/settings`: an RFC 7396 merge patch over the stored overrides.
+/// `null` removes a key, which reverts it to its default.
+async fn handle_patch_settings(
+    State(state): State<Arc<AppState>>,
+    AxumJson(patch): AxumJson<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if !patch.is_object() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    write_settings(state, move |o| super::settings::merge_patch(o, &patch)).await
+}
+
+/// `PUT /api/settings`: import. Replaces `routes` wholesale and keeps the
+/// rest, so importing another library's settings never moves where this one
+/// resumes.
+async fn handle_put_settings(
+    State(state): State<Arc<AppState>>,
+    AxumJson(body): AxumJson<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let Some(routes) = body.get("routes").filter(|r| r.is_object()).cloned() else {
+        return Err(StatusCode::BAD_REQUEST);
+    };
+    write_settings(state, move |o| {
+        o.as_object_mut()
+            .expect("stored overrides are an object")
+            .insert("routes".into(), routes);
+    })
+    .await
 }
 
 #[derive(Deserialize)]
@@ -1480,6 +1635,12 @@ pub(crate) struct AppState {
     /// /api/basemap/ensure` returns the current status instead of launching a
     /// second download of the same once-per-machine archive.
     basemap_downloading: Arc<std::sync::atomic::AtomicBool>,
+    /// Serializes read-modify-write of `.videre/gallery.json`, so two saves
+    /// from two tabs cannot interleave and drop one of them.
+    settings_lock: Arc<Mutex<()>>,
+    /// Whether the current unreadable-settings error has been logged, so a
+    /// broken `gallery.json` warns once rather than on every page render.
+    settings_warned: Arc<std::sync::atomic::AtomicBool>,
 }
 
 struct EventsCacheEntry {
@@ -1509,6 +1670,7 @@ async fn handle_root(State(state): State<Arc<AppState>>) -> impl axum::response:
         )
     };
     let page = pages::Faces {
+        settings_script: page_settings(&state).await,
         chrome: CHROME_CSS,
         css: pages::FACES_CSS,
         js: pages::FACES_JS,
@@ -1525,7 +1687,14 @@ async fn handle_root(State(state): State<Arc<AppState>>) -> impl axum::response:
 async fn handle_gallery_all(
     State(state): State<Arc<AppState>>,
 ) -> impl axum::response::IntoResponse {
-    render_live(&state, true, false, false, Some(Section::All))
+    render_live(
+        &state,
+        true,
+        false,
+        false,
+        Some(Section::All),
+        page_settings(&state).await,
+    )
 }
 
 /// `videre gallery`'s `/duplicates`: duplicate groups, the review
@@ -1533,7 +1702,14 @@ async fn handle_gallery_all(
 async fn handle_gallery_duplicates(
     State(state): State<Arc<AppState>>,
 ) -> impl axum::response::IntoResponse {
-    render_live(&state, false, false, true, Some(Section::Duplicates))
+    render_live(
+        &state,
+        false,
+        false,
+        true,
+        Some(Section::Duplicates),
+        page_settings(&state).await,
+    )
 }
 
 /// `videre gallery`'s `/date`: the year/month/day drill-down over KEEP files.
@@ -1546,7 +1722,7 @@ async fn handle_gallery_date(
         q.to.as_deref(),
         chrono::Local::now().date_naive(),
     )?;
-    render_live_date(&state, filter)
+    render_live_date(&state, filter, page_settings(&state).await)
 }
 
 #[derive(Deserialize)]
@@ -1560,7 +1736,7 @@ async fn handle_gallery_date_year(
     State(state): State<Arc<AppState>>,
 ) -> Result<axum::response::Response, StatusCode> {
     let filter = route_date_filter(&year, None, None)?;
-    render_live_date(&state, filter)
+    render_live_date(&state, filter, page_settings(&state).await)
 }
 
 async fn handle_gallery_date_month(
@@ -1568,7 +1744,7 @@ async fn handle_gallery_date_month(
     State(state): State<Arc<AppState>>,
 ) -> Result<axum::response::Response, StatusCode> {
     let filter = route_date_filter(&year, Some(&month), None)?;
-    render_live_date(&state, filter)
+    render_live_date(&state, filter, page_settings(&state).await)
 }
 
 async fn handle_gallery_date_day(
@@ -1576,7 +1752,7 @@ async fn handle_gallery_date_day(
     State(state): State<Arc<AppState>>,
 ) -> Result<axum::response::Response, StatusCode> {
     let filter = route_date_filter(&year, Some(&month), Some(&day))?;
-    render_live_date(&state, filter)
+    render_live_date(&state, filter, page_settings(&state).await)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1678,7 +1854,11 @@ struct MapPageQuery {
     radius: Option<f64>,
 }
 
-fn render_map(state: &AppState, location_json: &str) -> axum::response::Html<String> {
+fn render_map(
+    state: &AppState,
+    location_json: &str,
+    settings_script: String,
+) -> axum::response::Html<String> {
     use askama::Template;
 
     // Compute HAS_EMBEDDINGS exactly as the `/` handler does, so the Similar
@@ -1695,6 +1875,7 @@ fn render_map(state: &AppState, location_json: &str) -> axum::response::Html<Str
         cfg!(target_os = "macos")
     );
     let page = pages::Map {
+        settings_script,
         chrome: CHROME_CSS,
         gallery_css: include_str!("../../../static/gallery.css"),
         css: pages::MAP_CSS,
@@ -1740,7 +1921,7 @@ async fn handle_map(
         }
         None => "null".to_string(),
     };
-    render_map(&state, &json)
+    render_map(&state, &json, page_settings(&state).await)
 }
 
 async fn handle_map_location(
@@ -1773,7 +1954,7 @@ async fn handle_map_location(
         },
     };
     let json = serde_json::to_string(&bootstrap).map_err(internal)?;
-    Ok(render_map(&state, &json))
+    Ok(render_map(&state, &json, page_settings(&state).await))
 }
 
 #[derive(Deserialize)]
@@ -1908,13 +2089,23 @@ fn render_live(
     by_date: bool,
     with_groups: bool,
     nav: Option<Section>,
+    settings_script: String,
 ) -> axum::response::Html<String> {
-    render_live_with_date(state, all, by_date, with_groups, nav, "null")
+    render_live_with_date(
+        state,
+        all,
+        by_date,
+        with_groups,
+        nav,
+        "null",
+        settings_script,
+    )
 }
 
 fn render_live_date(
     state: &Arc<AppState>,
     filter: InitialDateFilter,
+    settings_script: String,
 ) -> Result<axum::response::Response, StatusCode> {
     use axum::response::IntoResponse;
 
@@ -1925,6 +2116,7 @@ fn render_live_date(
         false,
         Some(Section::Date),
         &initial_date_filter_json(&filter),
+        settings_script,
     )
     .into_response())
 }
@@ -1956,6 +2148,7 @@ fn render_live_with_date(
     with_groups: bool,
     nav: Option<Section>,
     date_filter_json: &str,
+    settings_script: String,
 ) -> axum::response::Html<String> {
     let conn = state.conn.lock().unwrap();
     let stats = query_stats(&conn);
@@ -2007,6 +2200,7 @@ fn render_live_with_date(
             db_path,
             date_filter_json: date_filter_json.to_string(),
             event_json: "null".to_string(),
+            settings_script,
         },
     };
     axum::response::Html(render(&set))
@@ -2825,7 +3019,11 @@ async fn handle_events_api(
     Ok(json_response(out))
 }
 
-fn render_live_events(state: &Arc<AppState>, event_json: &str) -> axum::response::Html<String> {
+fn render_live_events(
+    state: &Arc<AppState>,
+    event_json: &str,
+    settings_script: String,
+) -> axum::response::Html<String> {
     let conn = state.conn.lock().unwrap();
     let stats = query_stats(&conn);
     let faces_by_hash = videre_core::face_db::labeled_faces_by_hash(&conn).unwrap_or_default();
@@ -2846,6 +3044,7 @@ fn render_live_events(state: &Arc<AppState>, event_json: &str) -> axum::response
             db_path,
             date_filter_json: "null".to_string(),
             event_json: event_json.to_string(),
+            settings_script,
         },
     };
     axum::response::Html(render(&set))
@@ -2853,7 +3052,7 @@ fn render_live_events(state: &Arc<AppState>, event_json: &str) -> axum::response
 
 /// `videre gallery`'s `/events`: the travel-trip overview.
 async fn handle_events(State(state): State<Arc<AppState>>) -> axum::response::Html<String> {
-    render_live_events(&state, "null")
+    render_live_events(&state, "null", page_settings(&state).await)
 }
 
 /// `videre gallery`'s `/events/{key}`: one event's photos.
@@ -2883,7 +3082,7 @@ async fn handle_events_key(
                 .unwrap_or_else(|| "null".to_string()),
         )
     };
-    Ok(render_live_events(&state, &event_json).into_response())
+    Ok(render_live_events(&state, &event_json, page_settings(&state).await).into_response())
 }
 
 async fn handle_get_faces(
@@ -3080,6 +3279,7 @@ async fn handle_cluster_page(
 ) -> impl axum::response::IntoResponse {
     use askama::Template;
     let page = pages::Cluster {
+        settings_script: page_settings(&state).await,
         css: pages::CLUSTER_CSS,
         js: pages::CLUSTER_JS,
         cluster_id,
@@ -3103,6 +3303,7 @@ async fn handle_cluster_api(
 async fn handle_person_page(State(state): State<Arc<AppState>>) -> axum::response::Html<String> {
     use askama::Template;
     let page = pages::Person {
+        settings_script: page_settings(&state).await,
         css: pages::PERSON_CSS,
         js: pages::PERSON_JS,
         faces_ui_enabled: state.serve_faces_ui,
@@ -3717,6 +3918,8 @@ async fn serve_faces_async(
         context: opts.context.clone(),
         embedder: Mutex::new(None),
         basemap_downloading: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        settings_lock: Arc::new(Mutex::new(())),
+        settings_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
 
     // `videre gallery` is the only server configuration (labeling-only went away
@@ -3731,6 +3934,12 @@ async fn serve_faces_async(
         .route("/api/files/{hash}/raw", get(handle_raw_file))
         .route("/api/files/{hash}/rotate", post(handle_rotate_file))
         .route("/api/dates", get(handle_dates))
+        .route(
+            "/api/settings",
+            get(handle_get_settings)
+                .patch(handle_patch_settings)
+                .put(handle_put_settings),
+        )
         .route("/api/events", get(handle_events_api))
         .route("/api/events/{key}/files", get(handle_events_files))
         .route("/api/search", get(handle_search))
@@ -3801,6 +4010,7 @@ async fn serve_faces_async(
         .route("/date", get(handle_gallery_date))
         .route("/map/location/{name}", get(handle_map_location))
         .route("/map", get(handle_map))
+        .route("/settings", get(handle_settings_page))
         .route("/events/{key}", get(handle_events_key))
         .route("/events", get(handle_events))
         .route("/smart", get(handle_not_yet));
@@ -3840,17 +4050,23 @@ async fn serve_faces_async(
         .unwrap_or(requested);
     let addr = addr.as_str();
 
-    if opts.gallery {
-        tracing::info!("videre gallery: http://{addr}");
+    // The gallery reopens where it was last left: the printed URL and the
+    // `--browse` target both carry the saved route, so resuming works with or
+    // without `--browse`. `/` itself never redirects.
+    let url = if opts.gallery {
+        startup_url(addr, &opts.context.library.paths.state)
     } else {
-        tracing::info!("Faces labeling server: http://{addr}");
+        format!("http://{addr}")
+    };
+    if opts.gallery {
+        tracing::info!("videre gallery: {url}");
+    } else {
+        tracing::info!("Faces labeling server: {url}");
     }
     if opts.browse {
         // After the listener binds, or the browser races it and lands on a
         // connection refused.
-        let _ = std::process::Command::new("open")
-            .arg(format!("http://{addr}"))
-            .spawn();
+        let _ = std::process::Command::new("open").arg(&url).spawn();
     }
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
@@ -3990,6 +4206,8 @@ mod thumbnail_tests {
             context,
             embedder: Mutex::new(None),
             basemap_downloading: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            settings_lock: Arc::new(Mutex::new(())),
+            settings_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 
@@ -4240,5 +4458,323 @@ mod rotate_geometry_tests {
             .query_row("SELECT bbox FROM faces WHERE id = 1", [], |r| r.get(0))
             .unwrap();
         assert_eq!(rotated, "20,10,40,30", "the readable face still turns");
+    }
+}
+
+#[cfg(test)]
+mod settings_api_tests {
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::{header, Request};
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    /// A library whose state exists, as every served library's does: the
+    /// write path takes the activity lock, which needs `.videre/locks`.
+    fn gallery_state(root: &Path) -> Arc<AppState> {
+        std::fs::create_dir_all(root.join(".videre/locks")).unwrap();
+        super::location_cluster_tests::gallery_state(root)
+    }
+
+    fn app(state: Arc<AppState>) -> Router {
+        Router::new()
+            .route(
+                "/api/settings",
+                get(handle_get_settings)
+                    .patch(handle_patch_settings)
+                    .put(handle_put_settings),
+            )
+            .with_state(state)
+    }
+
+    async fn send(app: &Router, method: &str, ctype: &str, body: &str) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri("/api/settings")
+                    .header(header::CONTENT_TYPE, ctype)
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    async fn get_settings(app: &Router) -> Value {
+        let (status, body) = send(app, "GET", "application/json", "").await;
+        assert_eq!(status, StatusCode::OK);
+        body
+    }
+
+    async fn patch_settings(app: &Router, body: Value) -> (StatusCode, Value) {
+        send(
+            app,
+            "PATCH",
+            "application/merge-patch+json",
+            &body.to_string(),
+        )
+        .await
+    }
+
+    fn file(root: &Path) -> std::path::PathBuf {
+        root.join(".videre").join("gallery.json")
+    }
+
+    #[tokio::test]
+    async fn a_fresh_library_has_the_defaults_and_no_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(gallery_state(dir.path()));
+        let body = get_settings(&app).await;
+        assert_eq!(body["effective"], super::super::settings::defaults());
+        assert_eq!(body["overrides"], json!({}));
+        assert_eq!(body["ignored"], json!([]));
+        assert_eq!(body["error"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn a_patch_is_stored_sparse_and_null_reverts_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(gallery_state(dir.path()));
+
+        let (status, _) =
+            patch_settings(&app, json!({"routes": {"files": {"view": "list"}}})).await;
+        assert_eq!(status, StatusCode::OK);
+        let on_disk: Value =
+            serde_json::from_str(&std::fs::read_to_string(file(dir.path())).unwrap()).unwrap();
+        assert_eq!(on_disk, json!({"routes": {"files": {"view": "list"}}}));
+        assert_eq!(
+            get_settings(&app).await["effective"]["routes"]["files"]["view"],
+            "list"
+        );
+
+        let (status, body) =
+            patch_settings(&app, json!({"routes": {"files": {"view": null}}})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["effective"]["routes"]["files"]["view"], "tile");
+    }
+
+    #[tokio::test]
+    async fn choosing_the_default_again_removes_the_override() {
+        // Switching List back to Tile must not store "tile": a stored copy of
+        // a default would stop a later changed default reaching this library.
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(gallery_state(dir.path()));
+        patch_settings(&app, json!({"routes": {"files": {"view": "list"}}})).await;
+        let (status, body) =
+            patch_settings(&app, json!({"routes": {"files": {"view": "tile"}}})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["overrides"], json!({}));
+        let on_disk: Value =
+            serde_json::from_str(&std::fs::read_to_string(file(dir.path())).unwrap()).unwrap();
+        assert_eq!(on_disk, json!({}));
+
+        // An import that repeats defaults stores only what differs.
+        let (_, body) = send(
+            &app,
+            "PUT",
+            "application/json",
+            r#"{"routes":{"files":{"view":"tile","pageSize":50}}}"#,
+        )
+        .await;
+        assert_eq!(
+            body["overrides"],
+            json!({"routes": {"files": {"pageSize": 50}}})
+        );
+    }
+
+    #[tokio::test]
+    async fn a_hand_edit_shows_up_without_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(gallery_state(dir.path()));
+        get_settings(&app).await;
+        std::fs::create_dir_all(dir.path().join(".videre")).unwrap();
+        std::fs::write(file(dir.path()), r#"{"routes":{"people":{"align":"top"}}}"#).unwrap();
+        assert_eq!(
+            get_settings(&app).await["effective"]["routes"]["people"]["align"],
+            "top"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wrong_type_is_stored_but_ignored_and_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(gallery_state(dir.path()));
+        let (status, body) =
+            patch_settings(&app, json!({"routes": {"files": {"pageSize": "x"}}})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["ignored"], json!(["routes.files.pageSize"]));
+        assert_eq!(body["effective"]["routes"]["files"]["pageSize"], 200);
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_file_is_never_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(gallery_state(dir.path()));
+        std::fs::create_dir_all(dir.path().join(".videre")).unwrap();
+        std::fs::write(file(dir.path()), "{oops").unwrap();
+
+        let (status, _) =
+            patch_settings(&app, json!({"routes": {"files": {"view": "list"}}})).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let (status, _) = send(&app, "PUT", "application/json", r#"{"routes":{}}"#).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(std::fs::read_to_string(file(dir.path())).unwrap(), "{oops");
+
+        let body = get_settings(&app).await;
+        assert_eq!(body["effective"], super::super::settings::defaults());
+        assert!(body["error"].as_str().unwrap().contains("not valid JSON"));
+    }
+
+    #[tokio::test]
+    async fn import_replaces_routes_and_keeps_where_the_library_resumes() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(gallery_state(dir.path()));
+        patch_settings(
+            &app,
+            json!({"resume": {"route": "/map"}, "routes": {"files": {"view": "list"}}}),
+        )
+        .await;
+        let (status, body) = send(
+            &app,
+            "PUT",
+            "application/json",
+            r#"{"routes":{"map":{"radiusKm":5}},"resume":{"route":"/date"}}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["overrides"],
+            json!({"resume": {"route": "/map"}, "routes": {"map": {"radiusKm": 5}}})
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_bodies_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(gallery_state(dir.path()));
+        for body in [r#"{"routes":3}"#, "[]", "{}"] {
+            let (status, _) = send(&app, "PUT", "application/json", body).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        }
+        let (status, _) = send(&app, "PATCH", "application/json", "[1]").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        // A content type that is not CORS-simple is what keeps a cross-site
+        // page from writing without a preflight; plain text must not get in.
+        let (status, _) = send(&app, "PATCH", "text/plain", r#"{"routes":{}}"#).await;
+        assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert!(!file(dir.path()).exists());
+    }
+
+    #[tokio::test]
+    async fn an_oversized_write_is_refused_and_leaves_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(gallery_state(dir.path()));
+        patch_settings(&app, json!({"routes": {"files": {"view": "list"}}})).await;
+        let before = std::fs::read_to_string(file(dir.path())).unwrap();
+        let (status, _) = patch_settings(&app, json!({"big": "a".repeat(70_000)})).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(std::fs::read_to_string(file(dir.path())).unwrap(), before);
+    }
+
+    async fn page(app: &Router, uri: &str) -> String {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{uri}");
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_settings_page_offers_import_export_and_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = Router::new()
+            .route("/settings", get(handle_settings_page))
+            .with_state(gallery_state(dir.path()));
+        let html = page(&app, "/settings").await;
+        for id in ["settings-export", "settings-import", "settings-reset"] {
+            assert!(html.contains(&format!("id=\"{id}\"")), "{id}");
+        }
+        assert!(html.contains(".videre/gallery.json"), "shows the file path");
+        assert!(html.contains("id=\"secnav-more\""), "carries the nav menu");
+    }
+
+    #[tokio::test]
+    async fn gallery_pages_have_the_menu_with_a_settings_item() {
+        // The menu lives in the shared `nav.html` include, so two pages built
+        // on different templates are enough to show every page carries it.
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        state
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch("CREATE TABLE file_hashes (path TEXT, hash TEXT);")
+            .unwrap();
+        let app = Router::new()
+            .route("/people", get(handle_root))
+            .route("/map", get(handle_map))
+            .with_state(state);
+        for uri in ["/people", "/map"] {
+            let html = page(&app, uri).await;
+            assert!(html.contains("id=\"secnav-more\""), "{uri}");
+            assert!(
+                html.contains("role=\"menuitem\" href=\"/settings\""),
+                "{uri}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_gallery_opens_at_the_saved_route_when_it_is_safe() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join(".videre");
+        let addr = "127.0.0.1:7878";
+        assert_eq!(startup_url(addr, &state), "http://127.0.0.1:7878");
+
+        std::fs::create_dir_all(&state).unwrap();
+        let saved = |route: &str| {
+            std::fs::write(
+                state.join("gallery.json"),
+                json!({"resume": {"route": route}}).to_string(),
+            )
+            .unwrap();
+        };
+        saved("/map/location/berlin?radius=25");
+        assert_eq!(
+            startup_url(addr, &state),
+            "http://127.0.0.1:7878/map/location/berlin?radius=25"
+        );
+        saved("/api/quit");
+        assert_eq!(startup_url(addr, &state), "http://127.0.0.1:7878");
+        std::fs::write(state.join("gallery.json"), "{oops").unwrap();
+        assert_eq!(startup_url(addr, &state), "http://127.0.0.1:7878");
+    }
+
+    #[tokio::test]
+    async fn two_libraries_keep_separate_settings() {
+        let one = tempfile::tempdir().unwrap();
+        let two = tempfile::tempdir().unwrap();
+        let app_one = app(gallery_state(one.path()));
+        let app_two = app(gallery_state(two.path()));
+        patch_settings(&app_one, json!({"routes": {"files": {"view": "list"}}})).await;
+        assert_eq!(
+            get_settings(&app_one).await["effective"]["routes"]["files"]["view"],
+            "list"
+        );
+        assert_eq!(
+            get_settings(&app_two).await["effective"]["routes"]["files"]["view"],
+            "tile"
+        );
     }
 }

@@ -31,10 +31,10 @@ tokenizers = "0.20"
 ndarray = "0.17"
 ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
 hf-hub = { version = "1.0.0-rc.1", features = ["blocking"] }
+tempfile = "3"
 
 [dev-dependencies]
 rusqlite = { version = "0.40", features = ["bundled"] }
-tempfile = "3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 candle-core = { version = "0.11", features = ["metal"] }

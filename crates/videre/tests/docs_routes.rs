@@ -89,7 +89,7 @@ fn router_set() -> BTreeSet<Endpt> {
     let src = std::fs::read_to_string(ROUTER_RS).expect("read gallery/server.rs");
     let mut out: BTreeSet<Endpt> = BTreeSet::new();
     for piece in src.split(".route(").skip(1) {
-        let p = piece.trim_start();
+        let p = route_args(piece).trim_start();
         if let Some(rest) = p.strip_prefix('"') {
             if let Some(end) = rest.find('"') {
                 let path = &rest[..end];
@@ -104,9 +104,29 @@ fn router_set() -> BTreeSet<Endpt> {
     out
 }
 
-/// Every axum method constructor in a `.route(...)` piece (`get(`, `post(`, ...).
-/// The piece spans one route's args (up to the next `.route(`), so the methods
-/// found are exactly that route's.
+/// The text of one `.route(` call's arguments, up to its matching `)`. Without
+/// the cut a piece ran to the next `.route(` in the file, so any `patch(`-like
+/// text in the code between (a `merge_patch(` call did it) was read as that
+/// route's method.
+fn route_args(piece: &str) -> &str {
+    let mut depth = 1usize;
+    for (i, c) in piece.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &piece[..i];
+                }
+            }
+            _ => {}
+        }
+    }
+    piece
+}
+
+/// Every axum method constructor in a `.route(...)` call's arguments (`get(`,
+/// `post(`, ...), so the methods found are exactly that route's.
 fn methods_in(piece: &str) -> BTreeSet<String> {
     let cands = [
         ("get(", "GET"),

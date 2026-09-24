@@ -3,7 +3,8 @@ import { expect, test } from "../support/gallery";
 test("loads a scanned local library in Chromium", async ({ page, gallery }) => {
   await page.goto(gallery.baseURL);
   await expect(page.locator("#gallery [data-lb-url]").first()).toBeVisible();
-  await expect(page.locator("#gallery")).not.toHaveClass(/tile-mode/);
+  // Tile is the default view until a library saves another choice.
+  await expect(page.locator("#gallery")).toHaveClass(/tile-mode/);
 });
 
 test("renders and expands the duplicate-review route", async ({ page, gallery }) => {
@@ -39,21 +40,25 @@ test("loads the People route without face data", async ({ page, gallery }) => {
   await expect(page.getByText("Run videre faces to detect and group them")).toBeVisible();
 });
 
-test("persists the tile layout after a reload", async ({ page, gallery }) => {
+test("persists the list layout after a reload", async ({ page, gallery }) => {
   await page.goto(gallery.baseURL);
   const viewMode = page.locator(".view-mode-select").first();
-
-  await viewMode.selectOption("tile");
-  await expect(page.locator("#gallery")).toHaveClass(/tile-mode/);
   await expect(viewMode).toHaveValue("tile");
 
-  await page.reload();
-  await expect(page.locator("#gallery")).toHaveClass(/tile-mode/);
-  await expect(page.locator(".view-mode-select").first()).toHaveValue("tile");
-
-  await page.locator(".view-mode-select").first().selectOption("list");
+  await viewMode.selectOption("list");
   await expect(page.locator("#gallery")).not.toHaveClass(/tile-mode/);
   await expect(page.locator("#gallery .card").first()).toBeVisible();
+
+  // The choice is saved to the library's settings after a short quiet period.
+  await expect.poll(async () =>
+    (await (await page.request.get(`${gallery.baseURL}/api/settings`)).json()).effective.routes.files.view
+  ).toBe("list");
+  await page.reload();
+  await expect(page.locator("#gallery")).not.toHaveClass(/tile-mode/);
+  await expect(page.locator(".view-mode-select").first()).toHaveValue("list");
+
+  await page.locator(".view-mode-select").first().selectOption("tile");
+  await expect(page.locator("#gallery")).toHaveClass(/tile-mode/);
 });
 
 test("opens an image in the lightbox and navigates to the next item", async ({ page, gallery }) => {

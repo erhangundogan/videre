@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>videre settings</title>
+<style>{{ chrome|safe }}</style>
+<style>
+.settings-page{max-width:720px;padding:24px 32px;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.settings-page h1{font-size:22px;margin:0 0 8px}
+.settings-page h2{font-size:16px;margin:24px 0 8px}
+.settings-page code{font-size:13px;word-break:break-all}
+.settings-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.settings-actions button,.settings-import-label{padding:6px 14px;border:1px solid #d4d4d8;border-radius:6px;background:#fff;font:inherit;cursor:pointer}
+.settings-actions button:hover,.settings-import-label:hover{background:#f4f4f5}
+.settings-import-label input{position:absolute;width:1px;height:1px;opacity:0}
+.settings-import-label:focus-within{outline:2px solid #3b82f6;outline-offset:1px}
+#settings-status{min-height:1.5em;color:#52525b}
+</style>
+</head>
+<body>
+{% include "nav.html" %}
+<main class="settings-page">
+<h1>Settings</h1>
+<p>Gallery settings for this library are stored in <code id="settings-path">{{ path }}</code>. Only values that differ from the defaults are saved, and the file can be edited by hand; a change applies on the next page load.</p>
+<h2>Import and export</h2>
+<p>Export saves this library's choices to a file. Import applies a file exported from any library; it does not change which page this library reopens at.</p>
+<div class="settings-actions">
+<button id="settings-export" type="button">Export settings</button>
+<label class="settings-import-label">Import settings<input id="settings-import" type="file" accept="application/json,.json"></label>
+<button id="settings-reset" type="button">Reset to defaults</button>
+</div>
+<p id="settings-status" role="status"></p>
+</main>
+<script>{{ js|safe }}</script>
+</body>
+</html>

@@ -71,14 +71,21 @@ test("focuses the person-name input when New Person is clicked", async ({ page, 
   db.prepare(
     "INSERT INTO faces (hash, bbox, embedding, cluster_id) VALUES ('h1', '0,0,50,50', X'0000', 7), ('h1', '60,0,50,50', X'0000', 7)"
   ).run();
-  db.close();
 
-  await page.goto(`${gallery.baseURL}/people`);
-  const card = page.locator(".cluster-card").first();
-  await expect(card).toBeVisible();
+  // The library is shared by every test in this worker, so the seeded faces
+  // are removed afterwards: left behind, they hide the "No faces detected
+  // yet" state from whichever People test the worker runs next.
+  try {
+    await page.goto(`${gallery.baseURL}/people`);
+    const card = page.locator(".cluster-card").first();
+    await expect(card).toBeVisible();
 
-  await card.locator(".new-person-btn").click();
-  await expect(page.locator(".np-input").first()).toBeFocused();
+    await card.locator(".new-person-btn").click();
+    await expect(page.locator(".np-input").first()).toBeFocused();
+  } finally {
+    db.prepare("DELETE FROM faces WHERE hash = 'h1'").run();
+    db.close();
+  }
 });
 
 test("identity question controls stay hidden without a trained profile", async ({

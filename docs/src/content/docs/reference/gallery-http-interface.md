@@ -45,6 +45,7 @@ and cannot answer these HTTP requests after the command exits.
 | `GET /map/location/{name}` | One addressable location drill-down |
 | `GET /events` | Automatic travel-trip overview |
 | `GET /events/{key}` | One trip's media (`key` is its first photo anchor's compact time and full hash) |
+| `GET /settings` | Gallery settings: import, export and reset |
 | `GET /smart` | Reserved |
 
 Date route segments are zero-padded where applicable: `YYYY`, `YYYY/MM` and
@@ -73,8 +74,9 @@ The reserved `/smart` route currently returns a placeholder page with
 Map location names use the same normalized, URL-safe identity rule as people.
 When more than one cluster has the same normalized name, the route selects the
 largest cluster, then the lowest cluster id. The optional positive `radius`
-query is measured in kilometers; without it the route uses the cluster's stored
-radius. An unknown name still returns the working map page with HTTP 200 and an
+query is measured in kilometers; without it the route uses the library's
+`routes.map.radiusKm` setting when it is above 0, and otherwise the cluster's
+stored radius. An unknown name still returns the working map page with HTTP 200 and an
 unknown-location state.
 
 `GET /map?near={lat},{lon}` takes a `"lat,lon"` pair instead of a name and
@@ -83,6 +85,57 @@ bootstrapping that cluster's drill-down. The lightbox place link uses it because
 a photo's reverse-geocoded place name is finer than any cluster name; the client
 then rewrites the address bar to the resolved `/map/location/{name}`. A library
 with no clusters resolves to the unselected map.
+
+## Settings
+
+The library's gallery settings, stored in `.videre/gallery.json`. See
+[settings](/commands/gallery/#settings) for the keys and defaults. Every
+response has the same shape:
+
+```json
+{
+  "effective": { "resume": { "route": "/" }, "routes": { "files": { "view": "list", "...": "..." } } },
+  "overrides": { "routes": { "files": { "view": "list" } } },
+  "ignored": [],
+  "error": null,
+  "path": "/Users/me/Photos/.videre/gallery.json"
+}
+```
+
+`effective` is the defaults with `overrides` (the file's contents) merged on
+top. `ignored` lists the dotted paths of overrides whose type does not match
+the default, which the merge skipped. `error` explains why the file could not
+be read, when it exists but is not a JSON object; the effective settings are
+then the defaults.
+
+Write bodies must be a JSON object sent as `application/json` or
+`application/merge-patch+json`. A write answers `409 Conflict` while the file
+is unreadable, so hand edits are never overwritten, and `413 Payload Too Large`
+when the result would exceed 64 KiB.
+
+### `GET /api/settings`
+
+The current settings, read from disk, so a hand edit shows up without a
+restart.
+
+### `PATCH /api/settings`
+
+A JSON merge patch ([RFC 7396](https://www.rfc-editor.org/rfc/rfc7396)) over
+the stored overrides. `null` removes a key, reverting it to its default. After
+every write, `PATCH` or `PUT`, any value equal to its default is dropped, so
+the file only ever holds what differs.
+
+```bash
+curl -X PATCH -H 'Content-Type: application/merge-patch+json' \
+  -d '{"routes":{"files":{"tile":{"rowHeight":320}}}}' \
+  http://127.0.0.1:7878/api/settings
+```
+
+### `PUT /api/settings`
+
+Import. The body must hold a `routes` object, which replaces the stored
+`routes` wholesale; everything else in the file, including where the library
+reopens, is kept. `{"routes":{}}` resets every preference to its default.
 
 ## Files
 

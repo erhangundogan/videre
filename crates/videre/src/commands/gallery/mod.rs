@@ -13,6 +13,7 @@ mod events;
 mod learning;
 mod rotate;
 mod server;
+pub(crate) mod settings;
 
 use crate::command_context::CommandContext;
 
