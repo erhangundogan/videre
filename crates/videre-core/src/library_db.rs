@@ -1133,38 +1133,22 @@ mod tests {
     }
 
     #[test]
-    fn opening_an_existing_library_adds_only_the_missing_hash_index() {
+    fn opening_an_existing_library_does_not_add_a_missing_hash_index() {
         let (_temp, ctx) = library();
         let conn = initialize(&ctx).unwrap();
         conn.execute_batch("DROP INDEX IF EXISTS idx_file_hashes_hash;")
             .unwrap();
-        let root_page_before: i64 = conn
-            .query_row(
-                "SELECT rootpage FROM sqlite_master WHERE type='table' AND name='file_hashes'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
         drop(conn);
-        // An index-only optimization does not make old libraries unreadable.
         drop(open_existing_read_only(&ctx).unwrap());
         let conn = open_existing(&ctx).unwrap();
-        let root_page_after: i64 = conn
+        let index_count: i64 = conn
             .query_row(
-                "SELECT rootpage FROM sqlite_master WHERE type='table' AND name='file_hashes'",
+                "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='idx_file_hashes_hash'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(root_page_after, root_page_before);
-        let plan: String = conn
-            .query_row(
-                "EXPLAIN QUERY PLAN SELECT path FROM file_hashes WHERE hash IN ('a','b')",
-                [],
-                |row| row.get(3),
-            )
-            .unwrap();
-        assert!(plan.contains("idx_file_hashes_hash"), "{plan}");
+        assert_eq!(index_count, 0, "opening a library must not upgrade it");
     }
 
     /// One library root plus a context on it. All path expectations are built
