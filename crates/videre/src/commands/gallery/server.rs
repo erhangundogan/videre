@@ -266,6 +266,7 @@ mod location_cluster_tests {
             embedder: Mutex::new(None),
             basemap_downloading: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             settings_lock: Arc::new(Mutex::new(())),
+            settings_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 
@@ -1445,9 +1446,27 @@ fn startup_url(addr: &str, state_dir: &Path) -> String {
 }
 
 /// The settings script every served page inlines through `nav.html`. Read
-/// from disk on each render, so a hand edit applies on the next page load.
-fn page_settings(state: &AppState) -> String {
-    super::settings::page_script_for(&state.context.library.paths.state, true)
+/// from disk on each render, so a hand edit applies on the next page load, and
+/// on a blocking thread, so a stalled library drive cannot tie up the async
+/// workers that serve every other request.
+async fn page_settings(state: &AppState) -> String {
+    let path = settings_file(state);
+    let warned = state.settings_warned.clone();
+    let rendered = tokio::task::spawn_blocking(move || {
+        let snapshot = super::settings::snapshot(&path);
+        if super::settings::should_warn(&warned, snapshot.error.as_deref()) {
+            tracing::warn!(
+                "gallery settings not loaded, using defaults and saving nothing until it is fixed or deleted: {}",
+                snapshot.error.as_deref().unwrap_or_default()
+            );
+        }
+        super::settings::page_script(&snapshot, true)
+    })
+    .await;
+    rendered.unwrap_or_else(|e| {
+        internal(e);
+        super::settings::default_page_script(true)
+    })
 }
 
 fn settings_json(s: super::settings::Snapshot) -> Json<serde_json::Value> {
@@ -1465,7 +1484,7 @@ fn settings_json(s: super::settings::Snapshot) -> Json<serde_json::Value> {
 async fn handle_settings_page(State(state): State<Arc<AppState>>) -> axum::response::Html<String> {
     use askama::Template;
     let page = pages::Settings {
-        settings_script: page_settings(&state),
+        settings_script: page_settings(&state).await,
         chrome: CHROME_CSS,
         js: pages::SETTINGS_PAGE_JS,
         path: settings_file(&state).display().to_string(),
@@ -1619,6 +1638,9 @@ pub(crate) struct AppState {
     /// Serializes read-modify-write of `.videre/gallery.json`, so two saves
     /// from two tabs cannot interleave and drop one of them.
     settings_lock: Arc<Mutex<()>>,
+    /// Whether the current unreadable-settings error has been logged, so a
+    /// broken `gallery.json` warns once rather than on every page render.
+    settings_warned: Arc<std::sync::atomic::AtomicBool>,
 }
 
 struct EventsCacheEntry {
@@ -1648,7 +1670,7 @@ async fn handle_root(State(state): State<Arc<AppState>>) -> impl axum::response:
         )
     };
     let page = pages::Faces {
-        settings_script: page_settings(&state),
+        settings_script: page_settings(&state).await,
         chrome: CHROME_CSS,
         css: pages::FACES_CSS,
         js: pages::FACES_JS,
@@ -1665,7 +1687,14 @@ async fn handle_root(State(state): State<Arc<AppState>>) -> impl axum::response:
 async fn handle_gallery_all(
     State(state): State<Arc<AppState>>,
 ) -> impl axum::response::IntoResponse {
-    render_live(&state, true, false, false, Some(Section::All))
+    render_live(
+        &state,
+        true,
+        false,
+        false,
+        Some(Section::All),
+        page_settings(&state).await,
+    )
 }
 
 /// `videre gallery`'s `/duplicates`: duplicate groups, the review
@@ -1673,7 +1702,14 @@ async fn handle_gallery_all(
 async fn handle_gallery_duplicates(
     State(state): State<Arc<AppState>>,
 ) -> impl axum::response::IntoResponse {
-    render_live(&state, false, false, true, Some(Section::Duplicates))
+    render_live(
+        &state,
+        false,
+        false,
+        true,
+        Some(Section::Duplicates),
+        page_settings(&state).await,
+    )
 }
 
 /// `videre gallery`'s `/date`: the year/month/day drill-down over KEEP files.
@@ -1686,7 +1722,7 @@ async fn handle_gallery_date(
         q.to.as_deref(),
         chrono::Local::now().date_naive(),
     )?;
-    render_live_date(&state, filter)
+    render_live_date(&state, filter, page_settings(&state).await)
 }
 
 #[derive(Deserialize)]
@@ -1700,7 +1736,7 @@ async fn handle_gallery_date_year(
     State(state): State<Arc<AppState>>,
 ) -> Result<axum::response::Response, StatusCode> {
     let filter = route_date_filter(&year, None, None)?;
-    render_live_date(&state, filter)
+    render_live_date(&state, filter, page_settings(&state).await)
 }
 
 async fn handle_gallery_date_month(
@@ -1708,7 +1744,7 @@ async fn handle_gallery_date_month(
     State(state): State<Arc<AppState>>,
 ) -> Result<axum::response::Response, StatusCode> {
     let filter = route_date_filter(&year, Some(&month), None)?;
-    render_live_date(&state, filter)
+    render_live_date(&state, filter, page_settings(&state).await)
 }
 
 async fn handle_gallery_date_day(
@@ -1716,7 +1752,7 @@ async fn handle_gallery_date_day(
     State(state): State<Arc<AppState>>,
 ) -> Result<axum::response::Response, StatusCode> {
     let filter = route_date_filter(&year, Some(&month), Some(&day))?;
-    render_live_date(&state, filter)
+    render_live_date(&state, filter, page_settings(&state).await)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1818,7 +1854,11 @@ struct MapPageQuery {
     radius: Option<f64>,
 }
 
-fn render_map(state: &AppState, location_json: &str) -> axum::response::Html<String> {
+fn render_map(
+    state: &AppState,
+    location_json: &str,
+    settings_script: String,
+) -> axum::response::Html<String> {
     use askama::Template;
 
     // Compute HAS_EMBEDDINGS exactly as the `/` handler does, so the Similar
@@ -1835,7 +1875,7 @@ fn render_map(state: &AppState, location_json: &str) -> axum::response::Html<Str
         cfg!(target_os = "macos")
     );
     let page = pages::Map {
-        settings_script: page_settings(state),
+        settings_script,
         chrome: CHROME_CSS,
         gallery_css: include_str!("../../../static/gallery.css"),
         css: pages::MAP_CSS,
@@ -1881,7 +1921,7 @@ async fn handle_map(
         }
         None => "null".to_string(),
     };
-    render_map(&state, &json)
+    render_map(&state, &json, page_settings(&state).await)
 }
 
 async fn handle_map_location(
@@ -1914,7 +1954,7 @@ async fn handle_map_location(
         },
     };
     let json = serde_json::to_string(&bootstrap).map_err(internal)?;
-    Ok(render_map(&state, &json))
+    Ok(render_map(&state, &json, page_settings(&state).await))
 }
 
 #[derive(Deserialize)]
@@ -2049,13 +2089,23 @@ fn render_live(
     by_date: bool,
     with_groups: bool,
     nav: Option<Section>,
+    settings_script: String,
 ) -> axum::response::Html<String> {
-    render_live_with_date(state, all, by_date, with_groups, nav, "null")
+    render_live_with_date(
+        state,
+        all,
+        by_date,
+        with_groups,
+        nav,
+        "null",
+        settings_script,
+    )
 }
 
 fn render_live_date(
     state: &Arc<AppState>,
     filter: InitialDateFilter,
+    settings_script: String,
 ) -> Result<axum::response::Response, StatusCode> {
     use axum::response::IntoResponse;
 
@@ -2066,6 +2116,7 @@ fn render_live_date(
         false,
         Some(Section::Date),
         &initial_date_filter_json(&filter),
+        settings_script,
     )
     .into_response())
 }
@@ -2097,6 +2148,7 @@ fn render_live_with_date(
     with_groups: bool,
     nav: Option<Section>,
     date_filter_json: &str,
+    settings_script: String,
 ) -> axum::response::Html<String> {
     let conn = state.conn.lock().unwrap();
     let stats = query_stats(&conn);
@@ -2148,7 +2200,7 @@ fn render_live_with_date(
             db_path,
             date_filter_json: date_filter_json.to_string(),
             event_json: "null".to_string(),
-            settings_script: page_settings(state),
+            settings_script,
         },
     };
     axum::response::Html(render(&set))
@@ -2967,7 +3019,11 @@ async fn handle_events_api(
     Ok(json_response(out))
 }
 
-fn render_live_events(state: &Arc<AppState>, event_json: &str) -> axum::response::Html<String> {
+fn render_live_events(
+    state: &Arc<AppState>,
+    event_json: &str,
+    settings_script: String,
+) -> axum::response::Html<String> {
     let conn = state.conn.lock().unwrap();
     let stats = query_stats(&conn);
     let faces_by_hash = videre_core::face_db::labeled_faces_by_hash(&conn).unwrap_or_default();
@@ -2988,7 +3044,7 @@ fn render_live_events(state: &Arc<AppState>, event_json: &str) -> axum::response
             db_path,
             date_filter_json: "null".to_string(),
             event_json: event_json.to_string(),
-            settings_script: page_settings(state),
+            settings_script,
         },
     };
     axum::response::Html(render(&set))
@@ -2996,7 +3052,7 @@ fn render_live_events(state: &Arc<AppState>, event_json: &str) -> axum::response
 
 /// `videre gallery`'s `/events`: the travel-trip overview.
 async fn handle_events(State(state): State<Arc<AppState>>) -> axum::response::Html<String> {
-    render_live_events(&state, "null")
+    render_live_events(&state, "null", page_settings(&state).await)
 }
 
 /// `videre gallery`'s `/events/{key}`: one event's photos.
@@ -3026,7 +3082,7 @@ async fn handle_events_key(
                 .unwrap_or_else(|| "null".to_string()),
         )
     };
-    Ok(render_live_events(&state, &event_json).into_response())
+    Ok(render_live_events(&state, &event_json, page_settings(&state).await).into_response())
 }
 
 async fn handle_get_faces(
@@ -3223,7 +3279,7 @@ async fn handle_cluster_page(
 ) -> impl axum::response::IntoResponse {
     use askama::Template;
     let page = pages::Cluster {
-        settings_script: page_settings(&state),
+        settings_script: page_settings(&state).await,
         css: pages::CLUSTER_CSS,
         js: pages::CLUSTER_JS,
         cluster_id,
@@ -3247,7 +3303,7 @@ async fn handle_cluster_api(
 async fn handle_person_page(State(state): State<Arc<AppState>>) -> axum::response::Html<String> {
     use askama::Template;
     let page = pages::Person {
-        settings_script: page_settings(&state),
+        settings_script: page_settings(&state).await,
         css: pages::PERSON_CSS,
         js: pages::PERSON_JS,
         faces_ui_enabled: state.serve_faces_ui,
@@ -3863,6 +3919,7 @@ async fn serve_faces_async(
         embedder: Mutex::new(None),
         basemap_downloading: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         settings_lock: Arc::new(Mutex::new(())),
+        settings_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
 
     // `videre gallery` is the only server configuration (labeling-only went away
@@ -4150,6 +4207,7 @@ mod thumbnail_tests {
             embedder: Mutex::new(None),
             basemap_downloading: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             settings_lock: Arc::new(Mutex::new(())),
+            settings_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 

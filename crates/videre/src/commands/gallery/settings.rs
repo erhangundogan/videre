@@ -112,6 +112,33 @@ pub(crate) fn page_script(s: &Snapshot, live: bool) -> String {
     )
 }
 
+/// Whether an unreadable settings file should be logged now: once when the
+/// error first appears, then quiet on every later render until the file is
+/// fixed, after which breaking it again warns again.
+pub(crate) fn should_warn(warned: &std::sync::atomic::AtomicBool, error: Option<&str>) -> bool {
+    use std::sync::atomic::Ordering;
+    match error {
+        Some(_) => !warned.swap(true, Ordering::Relaxed),
+        None => {
+            warned.store(false, Ordering::Relaxed);
+            false
+        }
+    }
+}
+
+/// The page script with the built-in defaults and no file, for when reading
+/// the library's settings failed outright.
+pub(crate) fn default_page_script(live: bool) -> String {
+    let snapshot = Snapshot {
+        effective: defaults(),
+        overrides: Value::Object(Map::new()),
+        ignored: Vec::new(),
+        error: None,
+        path: PathBuf::new(),
+    };
+    page_script(&snapshot, live)
+}
+
 /// `page_script` for the library whose state directory is `state_dir`.
 pub(crate) fn page_script_for(state_dir: &Path, live: bool) -> String {
     page_script(&snapshot(&path(state_dir)), live)
@@ -372,6 +399,29 @@ mod tests {
             o,
             json!({"routes": {"files": {"tile": {"rowHeight": 320}}}, "mine": "kept"})
         );
+    }
+
+    #[test]
+    fn an_unreadable_file_warns_once_until_it_is_fixed() {
+        use std::sync::atomic::AtomicBool;
+        let warned = AtomicBool::new(false);
+        assert!(should_warn(&warned, Some("bad JSON")), "first sight warns");
+        assert!(
+            !should_warn(&warned, Some("bad JSON")),
+            "every later render is quiet"
+        );
+        assert!(!should_warn(&warned, None), "a fixed file says nothing");
+        assert!(
+            should_warn(&warned, Some("bad again")),
+            "breaking it again warns again"
+        );
+    }
+
+    #[test]
+    fn the_default_page_script_carries_the_defaults() {
+        let s = default_page_script(true);
+        assert!(s.contains("VIDERE_SETTINGS_LIVE=true"), "{s}");
+        assert!(s.contains("VIDERE_SETTINGS_ERROR=null"), "{s}");
     }
 
     #[test]
