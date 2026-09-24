@@ -35,11 +35,18 @@ pub(super) fn destination_episodes(rows: &[TripRow], places: &Places) -> Vec<Epi
         while end < photos.len() && rows[photos[end]].capture == Some(when) {
             end += 1;
         }
+        let mut at_time = BTreeMap::<usize, Vec<usize>>::new();
+        for &i in &photos[pos..end] {
+            at_time
+                .entry(places.by_row[i].unwrap())
+                .or_default()
+                .push(i);
+        }
         // A home photo at this second contradicts away anchors at the same
         // time. Resolve it before hashes can choose a side of that boundary.
-        if photos[pos..end]
-            .iter()
-            .any(|&i| !eligible_destination(places.by_row[i].unwrap(), places))
+        if at_time
+            .keys()
+            .any(|&group| !eligible_destination(group, places))
         {
             if let Some(episode) = current.take() {
                 episodes.push(episode);
@@ -47,26 +54,12 @@ pub(super) fn destination_episodes(rows: &[TripRow], places: &Places) -> Vec<Epi
             pos = end;
             continue;
         }
-        // Distant away observations at one timestamp cannot be ordered in
-        // time. Isolate each observed place, rather than allowing hash order
-        // to attach one to a preceding or following stop.
-        let conflicting_destinations = photos[pos..end].iter().enumerate().any(|(offset, &a)| {
-            photos[pos + offset + 1..end].iter().any(|&b| {
-                let before = places.groups[places.by_row[a].unwrap()].center;
-                let after = places.groups[places.by_row[b].unwrap()].center;
-                haversine_km(before.0, before.1, after.0, after.1) > 40.0
-            })
-        });
-        if conflicting_destinations {
+        // Multiple observed places at one timestamp have no known temporal
+        // order, even when nearby. Isolate each as an episode; a dense burst
+        // in one place stays together and costs only one group lookup per row.
+        if at_time.len() > 1 {
             if let Some(episode) = current.take() {
                 episodes.push(episode);
-            }
-            let mut at_time = BTreeMap::<usize, Vec<usize>>::new();
-            for &i in &photos[pos..end] {
-                at_time
-                    .entry(places.by_row[i].unwrap())
-                    .or_default()
-                    .push(i);
             }
             for (group, anchors) in at_time {
                 episodes.push(Episode {
@@ -586,6 +579,95 @@ mod tests {
                 vec!["a-distant".to_owned()],
                 vec!["a-11".to_owned()]
             ]
+        );
+    }
+
+    #[test]
+    fn simultaneous_nearby_stops_do_not_depend_on_hash_order() {
+        fn anchor_sets(a_hash: &str, b_hash: &str) -> Vec<Vec<String>> {
+            let rows = with_home(vec![
+                row(
+                    "c-09",
+                    "2020-03-12T09:00:00",
+                    Some((47.0, 19.0)),
+                    MediaKind::Photo,
+                ),
+                row(
+                    a_hash,
+                    "2020-03-12T10:00:00",
+                    Some((47.315, 19.0)),
+                    MediaKind::Photo,
+                ),
+                row(
+                    b_hash,
+                    "2020-03-12T10:00:00",
+                    Some((47.585, 19.0)),
+                    MediaKind::Photo,
+                ),
+                row(
+                    "c-11",
+                    "2020-03-12T11:00:00",
+                    Some((47.0, 19.0)),
+                    MediaKind::Photo,
+                ),
+            ]);
+            let places = infer_places(&rows);
+            destination_episodes(&rows, &places)
+                .iter()
+                .map(|episode| {
+                    episode
+                        .anchors
+                        .iter()
+                        .map(|&i| rows[i].hash.clone())
+                        .collect()
+                })
+                .collect()
+        }
+        assert_eq!(
+            anchor_sets("a-middle", "z-middle"),
+            vec![
+                vec!["c-09".to_owned()],
+                vec!["a-middle".to_owned()],
+                vec!["z-middle".to_owned()],
+                vec!["c-11".to_owned()]
+            ]
+        );
+        assert_eq!(
+            anchor_sets("z-middle", "a-middle"),
+            vec![
+                vec!["c-09".to_owned()],
+                vec!["z-middle".to_owned()],
+                vec!["a-middle".to_owned()],
+                vec!["c-11".to_owned()]
+            ]
+        );
+    }
+
+    #[test]
+    #[ignore = "manual dense same-second burst scaling measurement"]
+    fn benchmark_dense_same_second_away_burst() {
+        let rows = with_home(
+            (0..70_000)
+                .map(|i| {
+                    row(
+                        &format!("away-{i:05}"),
+                        "2020-03-12T10:00:00",
+                        Some((47.5, 19.0)),
+                        MediaKind::Photo,
+                    )
+                })
+                .collect(),
+        );
+        let mut places = infer_places(&rows);
+        let home_row = rows.iter().position(|r| r.hash == "home-0").unwrap();
+        places.home = places.by_row[home_row];
+        let started = std::time::Instant::now();
+        let episodes = destination_episodes(&rows, &places);
+        assert_eq!(episodes.len(), 1);
+        assert_eq!(episodes[0].anchors.len(), 70_000);
+        eprintln!(
+            "dense same-second episode detection: {:?}",
+            started.elapsed()
         );
     }
 }
