@@ -32,13 +32,10 @@ pub fn list_persons(conn: &Connection) -> rusqlite::Result<Vec<String>> {
     let mut stmt = conn.prepare(
         // Shows what a reader recognises. LEFT JOIN so a label with no people
         // row yet - one written before the table existed - still appears.
-        &format!(
-            "SELECT DISTINCT COALESCE(p.full_name, f.person_label) FROM faces f
-             LEFT JOIN people p ON p.name = f.person_label
-             WHERE f.person_label IS NOT NULL AND f.confirmed = 1 AND f.{}
-             ORDER BY 1",
-            crate::face_db::HAS_PHOTO
-        ),
+        "SELECT DISTINCT COALESCE(p.full_name, f.person_label) FROM faces f
+         LEFT JOIN people p ON p.name = f.person_label
+         WHERE f.person_label IS NOT NULL AND f.confirmed = 1
+         ORDER BY 1",
     )?;
     let rows = stmt.query_map([], |r| r.get(0))?;
     rows.collect()

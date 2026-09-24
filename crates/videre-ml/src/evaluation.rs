@@ -186,12 +186,6 @@ mod tests {
     fn connection() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         videre_core::face_db::create_faces_table(&conn).unwrap();
-        // Every face's photo exists: these tests are not about missing
-        //  photos, and the readers list, group and offer only faces some file still has.
-        conn.execute_batch(
-            "CREATE VIEW file_hashes AS SELECT DISTINCT hash, '/p/' || hash AS path FROM faces;",
-        )
-        .unwrap();
         conn
     }
 
