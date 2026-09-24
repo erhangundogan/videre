@@ -381,6 +381,29 @@ pub(crate) fn run_prune(
         tracing::info!("{tag} {marks_orphans} orphan mark(s)");
     }
 
+    // Remove orphan faces: faces of content no path has any more. Same
+    // shared-hash rule as above. They cannot be shown (their thumbnails have
+    // no file to crop from), and a changed photo's faces are detected again.
+    // Dry-run counts pre-existing orphans only, for the same reason.
+    let face_orphans = if args.dry_run {
+        videre_core::face_db::unreferenced_face_counts(conn)
+    } else {
+        videre_core::face_db::drop_unreferenced_faces(conn, None)
+    }
+    .unwrap_or_default();
+    if !args.silent && face_orphans.faces > 0 {
+        let tag = if args.dry_run {
+            "[dry-run] would remove"
+        } else {
+            "removed"
+        };
+        tracing::info!(
+            "{tag} {} orphan face(s) ({} labeled)",
+            face_orphans.faces,
+            face_orphans.labeled
+        );
+    }
+
     // Remove orphan thumbnail-cache files: any videre_core::thumb_cache entry
     // (240/1200px thumbnail, face crop, or full-res original) whose content
     // hash has no remaining file_hashes row. Same "shared-hash safety" as the
