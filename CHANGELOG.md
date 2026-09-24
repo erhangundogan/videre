@@ -16,6 +16,41 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.42.0] - 2026-09-24
+
+### Added
+
+- **Gallery settings are saved per library** in `.videre/gallery.json`. The
+  Settings page can import, export and reset them. The gallery can reopen at
+  the last page visited, and tile view is now the default. Tile dimensions,
+  spacing, page size, map radius and People layout can be customized.
+- **Library and Date sorting.** Order files by date, name, size, rating, liked
+  status or type, in either direction. The choice is saved per library and
+  applies to static exports too.
+
+### Changed
+
+- **Events now shows substantial travel trips** instead of one-file events.
+  Located photos and their capture times establish a destination; dated videos
+  and photos without GPS can join when the photo evidence supports them.
+  Nearby stops over several days can form one trip. Local outings are not yet
+  detected.
+- **Gallery pages share a settings bar.** Library, Date, Events, Duplicates
+  and People put their relevant view controls in a consistent place.
+
+### Fixed
+
+- **`fix-dates` only prompts for and changes files whose dates differ** from
+  the embedded EXIF date. Already-correct files are left untouched.
+- **Concurrent QuickLook previews use separate temporary output**, preventing
+  missing video posters when the same file is requested at once.
+
+### Documentation
+
+- The command index is alphabetical, and the mark and tag guides explain how
+  to remove values.
+
+
 ## [0.41.0] - 2026-09-24
 
 ### Breaking changes
@@ -2290,7 +2325,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.41.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.42.0...HEAD
+[0.42.0]: https://github.com/erhangundogan/videre/compare/v0.41.0...v0.42.0
 [0.41.0]: https://github.com/erhangundogan/videre/compare/v0.40.0...v0.41.0
 [0.40.0]: https://github.com/erhangundogan/videre/compare/v0.39.0...v0.40.0
 [0.39.0]: https://github.com/erhangundogan/videre/compare/v0.38.0...v0.39.0
