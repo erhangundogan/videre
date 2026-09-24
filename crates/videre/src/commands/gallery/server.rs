@@ -254,6 +254,7 @@ mod location_cluster_tests {
         let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel();
         Arc::new(AppState {
             conn: Arc::new(Mutex::new(conn)),
+            events_cache: Mutex::new(None),
             learning: None,
             shutdown_tx: Mutex::new(Some(shutdown_tx)),
             model_id: String::new(),
@@ -809,27 +810,185 @@ mod events_tests {
     use axum::http::Request;
     use tower::ServiceExt;
 
-    fn seed_events(conn: &Connection) {
-        videre_core::library_db::ensure_scan_schema(conn).unwrap();
-        // Two Berlin sessions a day apart, plus one Istanbul shot minutes after
-        // the first Berlin shot (a location split within one time window).
+    #[test]
+    fn trip_snapshot_uses_capture_date_only_and_rejects_invalid_gps() {
+        let conn = Connection::open_in_memory().unwrap();
+        videre_core::library_db::ensure_scan_schema(&conn).unwrap();
         conn.execute_batch(
-            "INSERT INTO file_hashes (path, hash, size_bytes, ext, exif_date, gps_lat, gps_lon, width, height) VALUES
-                ('/p/a.jpg','a',100,'jpg','2021-08-10T10:00:00',52.52,13.40,4000,3000),
-                ('/p/b.jpg','b',100,'jpg','2021-08-10T10:05:00',41.01,28.98,4000,3000),
-                ('/p/c.jpg','c',100,'jpg','2021-08-12T09:00:00',52.52,13.40,4000,3000);",
+            "INSERT INTO file_hashes (path, hash, ext, modified_at, gps_lat, gps_lon) VALUES
+             ('/p/no-date.jpg','no-date','jpg','2020-03-12T09:30:00+02:00',52.52,13.4),
+             ('/p/bad-lat.jpg','bad-lat','jpg','2020-03-12T09:30:00+02:00',91,13.4),
+             ('/p/bad-lon.jpg','bad-lon','jpg','2020-03-12T09:30:00+02:00',52.52,181),
+             ('/p/infinite.jpg','infinite','jpg','2020-03-12T09:30:00+02:00',1e999,13.4);",
         )
         .unwrap();
+        let rows = load_trip_rows(&conn).unwrap();
+        assert_eq!(rows.len(), 4);
+        assert!(rows.iter().all(|row| row.capture.is_none()));
+        assert_eq!(
+            rows.iter().find(|row| row.hash == "no-date").unwrap().gps,
+            Some((52.52, 13.4))
+        );
+        assert!(rows
+            .iter()
+            .filter(|row| row.hash.starts_with("bad-") || row.hash == "infinite")
+            .all(|row| row.gps.is_none()));
+    }
+
+    #[test]
+    fn trip_snapshot_prefers_usable_duplicate_metadata_in_any_insert_order() {
+        fn snapshot(reverse: bool) -> Vec<super::super::events::TripRow> {
+            let conn = Connection::open_in_memory().unwrap();
+            videre_core::library_db::ensure_scan_schema(&conn).unwrap();
+            let good = "INSERT INTO file_hashes (path, hash, ext, exif_date, gps_lat, gps_lon) VALUES ('/p/z.jpg','same','jpg','2020-03-12T09:30:00',47.5,19.0)";
+            let stale = "INSERT INTO file_hashes (path, hash, ext, modified_at) VALUES ('/p/a.jpg','same','jpg','2020-03-12T09:30:00+02:00')";
+            if reverse {
+                conn.execute(stale, []).unwrap();
+                conn.execute(good, []).unwrap();
+            } else {
+                conn.execute(good, []).unwrap();
+                conn.execute(stale, []).unwrap();
+            }
+            load_trip_rows(&conn).unwrap()
+        }
+        let rows = snapshot(false);
+        assert_eq!(rows, snapshot(true));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].path, "/p/z.jpg");
+        assert_eq!(
+            rows[0].capture,
+            Some(super::super::events::parse_capture("2020-03-12T09:30:00").unwrap())
+        );
+        assert_eq!(rows[0].gps, Some((47.5, 19.0)));
+    }
+
+    fn seed_events(conn: &Connection) {
+        videre_core::library_db::ensure_scan_schema(conn).unwrap();
+        let mut add = conn.prepare("INSERT INTO file_hashes (path,hash,size_bytes,ext,mime,exif_date,modified_at,gps_lat,gps_lon,width,height) VALUES (?1,?2,100,?3,?4,?5,'2020-03-12T11:00:00+00:00',?6,?7,4000,3000)").unwrap();
+        let mut insert_media =
+            |i: usize, ext: &str, when: Option<String>, gps: Option<(f64, f64)>| {
+                add.execute(rusqlite::params![
+                    format!("/p/{i}.{ext}"),
+                    format!("{i:064x}"),
+                    ext,
+                    if ext == "mp4" {
+                        "video/mp4"
+                    } else {
+                        "image/jpeg"
+                    },
+                    when,
+                    gps.map(|p| p.0),
+                    gps.map(|p| p.1)
+                ])
+                .unwrap();
+            };
+        for i in 1..=13 {
+            insert_media(
+                i,
+                "jpg",
+                Some(format!("2020-01-01T08:{i:02}:00")),
+                Some((52.52, 13.405)),
+            );
+        }
+        insert_media(
+            101,
+            "jpg",
+            Some("2020-03-12T10:00:00".into()),
+            Some((47.4979, 19.0402)),
+        );
+        insert_media(
+            102,
+            "jpg",
+            Some("2020-03-12T11:00:00".into()),
+            Some((47.4980, 19.0410)),
+        );
+        insert_media(
+            103,
+            "jpg",
+            Some("2020-03-12T12:00:00".into()),
+            Some((47.4981, 19.0420)),
+        );
+        for i in 0..8 {
+            insert_media(
+                104 + i,
+                "jpg",
+                Some(format!("2020-03-12T10:{:02}:00", 10 + i * 5)),
+                None,
+            );
+        }
+        insert_media(112, "mp4", Some("2020-03-12T11:40:00".into()), None);
+        insert_media(113, "jpg", None, None);
+    }
+
+    #[test]
+    fn events_cache_reuses_clean_snapshot_and_invalidates_same_connection_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        let conn = state.conn.lock().unwrap();
+        seed_events(&conn);
+        let first = cached_events(&state, &conn).unwrap();
+        assert_eq!(first.events.len(), 1);
+        let second = cached_events(&state, &conn).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        conn.execute(
+            "UPDATE file_hashes SET exif_date=NULL WHERE hash=?1",
+            [format!("{:064x}", 101)],
+        )
+        .unwrap();
+        let changed = cached_events(&state, &conn).unwrap();
+        assert!(!Arc::ptr_eq(&first, &changed));
+        assert!(changed.events.is_empty());
+    }
+
+    #[test]
+    fn events_cache_invalidates_other_connection_commits_and_never_caches_a_transaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = gallery_state(dir.path());
+        let db_path = dir.path().join("events.db");
+        let first_conn = Connection::open(&db_path).unwrap();
+        seed_events(&first_conn);
+        Arc::get_mut(&mut state).unwrap().conn = Arc::new(Mutex::new(first_conn));
+        let second_conn = Connection::open(&db_path).unwrap();
+        let conn = state.conn.lock().unwrap();
+        let first = cached_events(&state, &conn).unwrap();
+        second_conn
+            .execute(
+                "UPDATE file_hashes SET exif_date=NULL WHERE hash=?1",
+                [format!("{:064x}", 101)],
+            )
+            .unwrap();
+        let external = cached_events(&state, &conn).unwrap();
+        assert!(!Arc::ptr_eq(&first, &external));
+        assert!(external.events.is_empty());
+        second_conn
+            .execute(
+                "UPDATE file_hashes SET exif_date='2020-03-12T10:00:00' WHERE hash=?1",
+                [format!("{:064x}", 101)],
+            )
+            .unwrap();
+        let restored = cached_events(&state, &conn).unwrap();
+        assert_eq!(restored.events.len(), 1);
+        conn.execute_batch("BEGIN; UPDATE file_hashes SET exif_date=NULL WHERE hash=(SELECT hash FROM file_hashes WHERE path='/p/101.jpg');").unwrap();
+        let uncommitted = cached_events(&state, &conn).unwrap();
+        assert!(uncommitted.events.is_empty());
+        assert!(!Arc::ptr_eq(&restored, &uncommitted));
+        conn.execute_batch("ROLLBACK").unwrap();
+        let rolled_back = cached_events(&state, &conn).unwrap();
+        assert_eq!(rolled_back.events.len(), 1);
     }
 
     #[tokio::test]
-    async fn api_events_groups_into_time_and_place_sessions_newest_first() {
+    async fn api_events_serves_substantial_trip_not_singletons() {
         let dir = tempfile::tempdir().unwrap();
         let state = gallery_state(dir.path());
         {
             let conn = state.conn.lock().unwrap();
             videre_core::face_db::create_faces_table(&conn).unwrap();
             seed_events(&conn);
+            for i in 201..=210 {
+                conn.execute("INSERT INTO file_hashes (path,hash,size_bytes,ext,mime,exif_date,gps_lat,gps_lon) VALUES (?1,?2,100,'jpg','image/jpeg',?3,48.21,16.37)",
+                    rusqlite::params![format!("/p/{i}.jpg"),format!("{i:064x}"),format!("2020-04-01T10:{:02}:00", i-201)]).unwrap();
+            }
         }
         let app = Router::new()
             .route("/api/events", get(handle_events_api))
@@ -848,17 +1007,136 @@ mod events_tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let events = json["events"].as_array().unwrap();
-        // Berlin(10:00) | Istanbul(10:05) | Berlin(Aug 12) = three events.
-        assert_eq!(events.len(), 3);
-        // Newest first.
-        assert_eq!(events[0]["start"], "2021-08-12 09:00:00");
-        assert_eq!(events[0]["count"], 1);
-        // The key is the compact start plus the first member's short hash.
-        assert_eq!(events[0]["key"], "20210812T090000-c");
-        // The offline reverse geocoder resolves the Berlin centroid to a place.
-        let place = events[0]["place"].as_str().unwrap();
-        assert!(place.ends_with(", DE"), "unexpected place: {place}");
-        assert_eq!(events[0]["sample"]["hash"], "c");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["start"], "2020-04-01 10:00:00");
+        assert_eq!(events[0]["count"], 10);
+        assert_eq!(events[1]["kind"], "trip");
+        assert_eq!(events[1]["start"], "2020-03-12 10:00:00");
+        assert_eq!(events[1]["count"], 12);
+        assert_eq!(events[1]["key"], format!("20200312T100000-{:064x}", 101));
+        let place = events[1]["place"].as_str().unwrap();
+        assert!(place.ends_with(", HU"), "unexpected place: {place}");
+        assert!(events[1]["title"]
+            .as_str()
+            .unwrap()
+            .ends_with("March 2020 Trip"));
+        assert_eq!(events[1]["sample"]["hash"], format!("{:064x}", 101));
+        assert!(json["empty_reason"].is_null());
+    }
+
+    #[tokio::test]
+    async fn api_events_reports_specific_empty_reasons() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        {
+            let conn = state.conn.lock().unwrap();
+            videre_core::library_db::ensure_scan_schema(&conn).unwrap();
+        }
+        let app = Router::new()
+            .route("/api/events", get(handle_events_api))
+            .with_state(state.clone());
+        async fn reason(app: Router, expected: &str) {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/events")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["events"].as_array().unwrap().len(), 0);
+            assert_eq!(json["empty_reason"], expected);
+        }
+        reason(app.clone(), "no_media").await;
+        {
+            let conn = state.conn.lock().unwrap();
+            conn.execute("INSERT INTO file_hashes (path,hash,ext,mime) VALUES ('/p/a.jpg','a','jpg','image/jpeg')", []).unwrap();
+        }
+        reason(app.clone(), "no_capture_dates").await;
+        {
+            let conn = state.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE file_hashes SET exif_date='2020-03-12T10:00:00' WHERE hash='a'",
+                [],
+            )
+            .unwrap();
+        }
+        reason(app.clone(), "insufficient_location_evidence").await;
+        {
+            let conn = state.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE file_hashes SET gps_lat=52.52,gps_lon=13.4 WHERE hash='a'",
+                [],
+            )
+            .unwrap();
+            conn.execute("INSERT INTO file_hashes (path,hash,ext,mime,exif_date,gps_lat,gps_lon) VALUES ('/p/b.jpg','b','jpg','image/jpeg','2020-03-12T11:00:00',47.5,19.0)", []).unwrap();
+        }
+        reason(app, "no_qualifying_trips").await;
+    }
+
+    #[tokio::test]
+    async fn trip_title_falls_back_when_offline_place_cache_is_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        {
+            let conn = state.conn.lock().unwrap();
+            seed_events(&conn);
+        }
+        let geo = &state.context.library.cache.geo;
+        std::fs::create_dir_all(geo.parent().unwrap()).unwrap();
+        std::fs::write(geo, b"not a directory").unwrap();
+        let app = Router::new()
+            .route("/api/events", get(handle_events_api))
+            .with_state(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/events")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["events"][0]["title"], "Trip, March 2020");
+        assert!(json["events"][0]["place"].is_null());
+    }
+
+    #[tokio::test]
+    async fn trip_title_preserves_offline_utf8_place_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        {
+            let conn = state.conn.lock().unwrap();
+            seed_events(&conn);
+            for i in 201..=210 {
+                conn.execute("INSERT INTO file_hashes (path,hash,size_bytes,ext,mime,exif_date,gps_lat,gps_lon) VALUES (?1,?2,100,'jpg','image/jpeg',?3,41.02274,29.01366)",
+                    rusqlite::params![format!("/p/{i}.jpg"),format!("{i:064x}"),format!("2020-04-01T10:{:02}:00", i-201)]).unwrap();
+            }
+        }
+        let app = Router::new()
+            .route("/api/events", get(handle_events_api))
+            .with_state(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/events")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["events"][0]["title"]
+            .as_str()
+            .unwrap()
+            .starts_with("Üsküdar, April 2020 Trip"));
     }
 
     #[tokio::test]
@@ -874,12 +1152,12 @@ mod events_tests {
             .route("/api/events/{key}/files", get(handle_events_files))
             .with_state(state);
 
-        // The Aug 12 Berlin event holds only hash "c".
+        // The trip includes exact dated members but no Berlin or undated file.
         let response = app
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/events/20210812T090000-c/files")
+                    .uri(format!("/api/events/20200312T100000-{:064x}/files", 101))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -889,8 +1167,9 @@ mod events_tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let files = json["files"].as_array().unwrap();
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0]["hash"], "c");
+        assert_eq!(files.len(), 12);
+        assert_eq!(files[0]["hash"], format!("{:064x}", 101));
+        assert!(files.iter().all(|f| f["hash"] != format!("{:064x}", 113)));
 
         // An unknown key is a 404, not an empty grid.
         let missing = app
@@ -914,11 +1193,11 @@ mod events_tests {
         // A size that cannot decode as an integer: the row must not vanish
         // from the event silently.
         conn.execute(
-            "UPDATE file_hashes SET size_bytes = 'x' WHERE hash = 'c'",
-            [],
+            "UPDATE file_hashes SET size_bytes = 'x' WHERE hash = ?1",
+            [format!("{:064x}", 101)],
         )
         .unwrap();
-        assert!(crate::render::query_event_files(&conn, &["c".to_string()]).is_err());
+        assert!(crate::render::query_event_files(&conn, &[format!("{:064x}", 101)]).is_err());
     }
 
     #[tokio::test]
@@ -960,7 +1239,7 @@ mod events_tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/events/20210812T090000-c")
+                    .uri(format!("/events/20200312T100000-{:064x}", 101))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -970,11 +1249,15 @@ mod events_tests {
         let body = to_bytes(leaf.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
         assert!(body.contains("var GVIEW=\"events\";"), "{body}");
-        assert!(body.contains("\"key\":\"20210812T090000-c\""), "{body}");
+        assert!(
+            body.contains(&format!("\"key\":\"20200312T100000-{:064x}\"", 101)),
+            "{body}"
+        );
         // Events are one-shot: the paged gallery's Show more button (whose
         // pager would fetch /api/files) must not be on the page at all.
         assert!(!body.contains("id=\"gallery-more\""), "{body}");
-        assert!(body.contains("\"from\":\"2021-08-12 09:00:00\""), "{body}");
+        assert!(body.contains("\"from\":\"2020-03-12 10:00:00\""), "{body}");
+        assert!(body.contains("March 2020 Trip"), "{body}");
 
         // Unknown key is a 404.
         let missing = app
@@ -1172,6 +1455,7 @@ struct MarkBody {
 
 pub(crate) struct AppState {
     pub(super) conn: Arc<Mutex<Connection>>,
+    events_cache: Mutex<Option<EventsCacheEntry>>,
     /// Background face-learning worker; present whenever people pages are
     /// served. Teaching mutations notify it after their commit.
     pub(super) learning: Option<super::learning::LearningCoordinator>,
@@ -1196,6 +1480,11 @@ pub(crate) struct AppState {
     /// /api/basemap/ensure` returns the current status instead of launching a
     /// second download of the same once-per-machine archive.
     basemap_downloading: Arc<std::sync::atomic::AtomicBool>,
+}
+
+struct EventsCacheEntry {
+    version: (i64, i64),
+    detection: Arc<super::events::Detection>,
 }
 
 /// The labeling UI. Served as `/people` under `videre gallery`, and as `/` on a
@@ -1913,9 +2202,10 @@ async fn handle_events_files(
     State(state): State<Arc<AppState>>,
 ) -> Result<axum::response::Response, StatusCode> {
     let conn = state.conn.lock().map_err(poisoned)?;
-    let rows = load_event_rows(&conn).map_err(internal)?;
-    let event = super::events::segment(&rows)
-        .into_iter()
+    let detection = cached_events(&state, &conn)?;
+    let event = detection
+        .events
+        .iter()
         .find(|e| e.key() == key)
         .ok_or(StatusCode::NOT_FOUND)?;
     let (files, total) = query_event_files(&conn, &event.members).map_err(internal)?;
@@ -2364,78 +2654,144 @@ async fn handle_dates(
     Ok(json_response(out))
 }
 
-/// One ordered pass of every displayable, dated file, ready for segmentation.
-fn load_event_rows(conn: &Connection) -> rusqlite::Result<Vec<super::events::EventRow>> {
-    let keep = keep_set_sql();
-    let effective = videre_core::query::EFFECTIVE_DATE_SQL;
-    let sql = format!(
-        "SELECT hash, {effective} AS d, gps_lat, gps_lon, path, COALESCE(ext,''), width, height \
-         FROM {keep} AS f \
-         WHERE {effective} IS NOT NULL AND {effective} NOT LIKE '0000%' \
-         ORDER BY d ASC, hash ASC"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let raw = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, Option<f64>>(2)?,
-                r.get::<_, Option<f64>>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, String>(5)?,
-                r.get::<_, Option<i32>>(6)?,
-                r.get::<_, Option<i32>>(7)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut rows = Vec::with_capacity(raw.len());
-    for (hash, d, lat, lon, path, ext, width, height) in raw {
-        let Some(when) = super::events::parse_effective(&d) else {
+/// A capture-only snapshot for travel inference, including undated files for
+/// home evidence. A content hash counts once even when several paths exist.
+fn load_trip_rows(conn: &Connection) -> rusqlite::Result<Vec<super::events::TripRow>> {
+    use super::events::{MediaKind, TripRow};
+    use std::collections::BTreeMap;
+
+    let mut stmt = conn.prepare(
+        "SELECT hash, exif_date, gps_lat, gps_lon, path, COALESCE(ext,''), mime, width, height \
+         FROM file_hashes ORDER BY hash, path",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, Option<String>>(1)?,
+            r.get::<_, Option<f64>>(2)?,
+            r.get::<_, Option<f64>>(3)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, String>(5)?,
+            r.get::<_, Option<String>>(6)?,
+            r.get::<_, Option<i32>>(7)?,
+            r.get::<_, Option<i32>>(8)?,
+        ))
+    })?;
+    let mut by_hash: BTreeMap<String, TripRow> = BTreeMap::new();
+    for row in rows {
+        let (hash, capture, lat, lon, path, ext, mime, width, height) = row?;
+        let ext = ext.to_ascii_lowercase();
+        let Some(effective) = videre_core::mime_probe::effective_mime(mime.as_deref(), &ext) else {
+            continue;
+        };
+        let media = if effective.starts_with("image/") {
+            MediaKind::Photo
+        } else if videre_core::mime_probe::is_video_mime(effective) {
+            MediaKind::Video
+        } else {
             continue;
         };
         let gps = match (lat, lon) {
-            (Some(lat), Some(lon)) => Some((lat, lon)),
+            (Some(lat), Some(lon))
+                if lat.is_finite()
+                    && lon.is_finite()
+                    && (-90.0..=90.0).contains(&lat)
+                    && (-180.0..=180.0).contains(&lon) =>
+            {
+                Some((lat, lon))
+            }
             _ => None,
         };
-        rows.push(super::events::EventRow {
-            hash,
-            when,
+        let candidate = TripRow {
+            hash: hash.clone(),
+            capture: capture.as_deref().and_then(super::events::parse_capture),
             gps,
+            media,
             path,
             ext,
             width,
             height,
+        };
+        let better = by_hash.get(&hash).is_none_or(|prior| {
+            (candidate.capture.is_some(), candidate.gps.is_some())
+                > (prior.capture.is_some(), prior.gps.is_some())
+                || ((candidate.capture.is_some(), candidate.gps.is_some())
+                    == (prior.capture.is_some(), prior.gps.is_some())
+                    && candidate.path < prior.path)
         });
+        if better {
+            by_hash.insert(hash, candidate);
+        }
     }
-    Ok(rows)
+    Ok(by_hash.into_values().collect())
+}
+
+/// The lock caller holds on `conn` also covers the snapshot version check and
+/// reader, so all Events routes share one result until this DB changes.
+fn cached_events(
+    state: &AppState,
+    conn: &Connection,
+) -> Result<Arc<super::events::Detection>, StatusCode> {
+    if !conn.is_autocommit() {
+        let rows = load_trip_rows(conn).map_err(internal)?;
+        return Ok(Arc::new(super::events::detect(&rows)));
+    }
+    let version = (
+        conn.query_row("PRAGMA data_version", [], |row| row.get::<_, i64>(0))
+            .map_err(internal)?,
+        conn.query_row("SELECT total_changes()", [], |row| row.get::<_, i64>(0))
+            .map_err(internal)?,
+    );
+    let mut cache = state.events_cache.lock().map_err(poisoned)?;
+    if let Some(entry) = cache.as_ref().filter(|entry| entry.version == version) {
+        return Ok(entry.detection.clone());
+    }
+    let rows = load_trip_rows(conn).map_err(internal)?;
+    let detection = Arc::new(super::events::detect(&rows));
+    *cache = Some(EventsCacheEntry {
+        version,
+        detection: detection.clone(),
+    });
+    Ok(detection)
+}
+
+fn trip_place_and_title(
+    cache: &videre_core::library::CachePaths,
+    event: &super::events::Trip,
+) -> (Option<String>, String) {
+    let (lat, lon) = event.dominant_stop;
+    let place = videre_core::location::location_name_in(cache, lat, lon)
+        .ok()
+        .flatten();
+    let month = event.anchor_when.format("%B %Y");
+    let title = match place.as_deref().and_then(|p| p.split(',').next()) {
+        Some(city) if !city.trim().is_empty() => format!("{}, {month} Trip", city.trim()),
+        _ => format!("Trip, {month}"),
+    };
+    (place, title)
 }
 
 /// `GET /api/events`: the event overview, newest first.
 async fn handle_events_api(
     State(state): State<Arc<AppState>>,
 ) -> Result<axum::response::Response, StatusCode> {
-    let events = {
+    let detection = {
         let conn = state.conn.lock().map_err(poisoned)?;
-        let rows = load_event_rows(&conn).map_err(internal)?;
-        super::events::segment(&rows)
+        cached_events(&state, &conn)?
     };
     let cache = &state.context.library.cache;
     let mut out = String::from("{\"events\":[");
-    for (i, event) in events.iter().rev().enumerate() {
+    for (i, event) in detection.events.iter().rev().enumerate() {
         if i > 0 {
             out.push(',');
         }
         let key = event.key();
-        let place = event.centroid.and_then(|(lat, lon)| {
-            videre_core::location::location_name_in(cache, lat, lon)
-                .ok()
-                .flatten()
-        });
+        let (place, title) = trip_place_and_title(cache, event);
         out.push_str(&format!(
-            "{{\"key\":{},\"start\":{},\"end\":{},\"count\":{},\"place\":{},\
+            "{{\"key\":{},\"kind\":\"trip\",\"title\":{},\"start\":{},\"end\":{},\"count\":{},\"place\":{},\
               \"sample\":{{\"path\":{},\"hash\":{},\"ext\":{},\"w\":{},\"h\":{}}}}}",
             json_str(&key),
+            json_str(&title),
             json_str(&event.start.format("%Y-%m-%d %H:%M:%S").to_string()),
             json_str(&event.end.format("%Y-%m-%d %H:%M:%S").to_string()),
             event.members.len(),
@@ -2458,7 +2814,14 @@ async fn handle_events_api(
                 .unwrap_or_else(|| "null".to_string()),
         ));
     }
-    out.push_str("]}");
+    out.push_str("],\"empty_reason\":");
+    out.push_str(
+        &detection
+            .empty_reason
+            .map(|reason| json_str(reason.as_str()))
+            .unwrap_or_else(|| "null".to_owned()),
+    );
+    out.push('}');
     Ok(json_response(out))
 }
 
@@ -2488,7 +2851,7 @@ fn render_live_events(state: &Arc<AppState>, event_json: &str) -> axum::response
     axum::response::Html(render(&set))
 }
 
-/// `videre gallery`'s `/events`: the time-and-place session overview.
+/// `videre gallery`'s `/events`: the travel-trip overview.
 async fn handle_events(State(state): State<Arc<AppState>>) -> axum::response::Html<String> {
     render_live_events(&state, "null")
 }
@@ -2501,19 +2864,17 @@ async fn handle_events_key(
     use axum::response::IntoResponse;
     let event_json = {
         let conn = state.conn.lock().map_err(poisoned)?;
-        let rows = load_event_rows(&conn).map_err(internal)?;
-        let event = super::events::segment(&rows)
-            .into_iter()
+        let detection = cached_events(&state, &conn)?;
+        let event = detection
+            .events
+            .iter()
             .find(|e| e.key() == key)
             .ok_or(StatusCode::NOT_FOUND)?;
-        let place = event.centroid.and_then(|(lat, lon)| {
-            videre_core::location::location_name_in(&state.context.library.cache, lat, lon)
-                .ok()
-                .flatten()
-        });
+        let (place, title) = trip_place_and_title(&state.context.library.cache, event);
         format!(
-            "{{\"key\":{},\"from\":{},\"to\":{},\"place\":{}}}",
+            "{{\"key\":{},\"kind\":\"trip\",\"title\":{},\"from\":{},\"to\":{},\"place\":{}}}",
             json_str(&key),
+            json_str(&title),
             json_str(&event.start.format("%Y-%m-%d %H:%M:%S").to_string()),
             json_str(&event.end.format("%Y-%m-%d %H:%M:%S").to_string()),
             place
@@ -3346,6 +3707,7 @@ async fn serve_faces_async(
     let state = Arc::new(AppState {
         learning,
         conn,
+        events_cache: Mutex::new(None),
         shutdown_tx: Mutex::new(Some(shutdown_tx)),
         model_id: opts.model_id.clone(),
         report_heic: opts.report_heic,
@@ -3617,6 +3979,7 @@ mod thumbnail_tests {
         let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel();
         Arc::new(AppState {
             conn: Arc::new(Mutex::new(conn)),
+            events_cache: Mutex::new(None),
             learning: None,
             shutdown_tx: Mutex::new(Some(shutdown_tx)),
             model_id: String::new(),
