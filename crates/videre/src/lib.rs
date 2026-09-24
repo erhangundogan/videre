@@ -1,3 +1,4 @@
+pub mod content_key;
 pub mod hasher;
 pub mod incremental;
 pub mod output;

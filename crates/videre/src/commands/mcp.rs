@@ -380,7 +380,7 @@ impl VidereServer {
 
     /// Exact-duplicate groups from the database, instantly (no scan).
     #[tool(
-        description = "Exact-duplicate groups from the videre database. Each group has 'keep' (the oldest file, safe to keep) and 'remove' (byte-identical copies, safe to delete). With include_similar=true, also returns review-only near-duplicate clusters ('files' arrays; NOT safe to auto-delete). Results reflect the last scan: verify paths still exist before acting."
+        description = "Exact-duplicate groups from the videre database. Each group has 'keep' (the oldest file, safe to keep) and 'remove' (copies with identical image or video content, safe to delete; their metadata such as EXIF dates may differ). With include_similar=true, also returns review-only near-duplicate clusters ('files' arrays; NOT safe to auto-delete). Results reflect the last scan: verify paths still exist before acting."
     )]
     async fn find_duplicates(
         &self,

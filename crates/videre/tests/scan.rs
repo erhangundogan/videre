@@ -12,9 +12,13 @@ fn scan(library: &TestLibrary, args: &[&str]) -> std::process::Output {
 fn scan_writes_local_records_with_correct_hashes() {
     let library = TestLibrary::new();
     let path = library.copy_fixture("tiny.jpg", "nested/image.jpg");
-    let expected = blake3::hash(&std::fs::read(&path).unwrap())
-        .to_hex()
-        .to_string();
+    let expected = {
+        let mut file = std::fs::File::open(&path).unwrap();
+        let len = file.metadata().unwrap().len();
+        videre::content_key::keys(&mut file, len, Some(videre::content_key::Format::Jpeg))
+            .unwrap()
+            .content
+    };
 
     let output = scan(&library, &["--silent"]);
     assert!(

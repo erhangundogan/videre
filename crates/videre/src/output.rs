@@ -166,6 +166,7 @@ mod tests {
         FileRecord {
             path: path.to_string(),
             hash: hash.to_string(),
+            meta_hash: None,
             size_bytes: 100,
             created_at: None,
             modified_at: Some("2023-01-01T00:00:00+00:00".to_string()),

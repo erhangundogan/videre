@@ -218,39 +218,35 @@ fn hash_open_file(path: &Path, file: File) -> io::Result<FileRecord> {
     let created_at = metadata.created().ok().map(system_time_to_iso);
     let modified_at = metadata.modified().ok().map(system_time_to_iso);
 
-    let mut hasher = blake3::Hasher::new();
-    let mut reader = BufReader::new(file);
-    let mut buffer = [0u8; 65536];
-    let mut mime: Option<String> = None;
-    let mut first_chunk = true;
-    loop {
-        let n = reader.read(&mut buffer)?;
+    // The first bytes identify the type; the content key is then computed
+    // with that type's metadata left out (see `content_key`).
+    let mut file = file;
+    let mut head = vec![0u8; 65536];
+    let mut read = 0;
+    while read < head.len() {
+        let n = file.read(&mut head[read..])?;
         if n == 0 {
             break;
         }
-        if first_chunk {
-            // Free: the bytes are already here for BLAKE3. The signature
-            // lives in the first 12, and the buffer is 64KB. An unrecognised
-            // file records the sentinel rather than NULL, so NULL keeps its
-            // single meaning of "never scanned". A zero-byte file never
-            // enters this loop and correctly stays NULL: nothing was read.
-            mime = Some(
-                videre_core::mime_probe::sniff(&buffer[..n])
-                    .unwrap_or(videre_core::mime_probe::UNKNOWN_MIME)
-                    .to_string(),
-            );
-            first_chunk = false;
-        }
-        hasher.update(&buffer[..n]);
+        read += n;
     }
-    let hash = hasher.finalize().to_hex().to_string();
-    let file = reader.into_inner();
-
+    head.truncate(read);
+    // An unrecognised file records the sentinel rather than NULL, so NULL
+    // keeps its single meaning of "never scanned". A zero-byte file stays
+    // NULL: nothing was read.
+    let mime: Option<String> = (!head.is_empty()).then(|| {
+        videre_core::mime_probe::sniff(&head)
+            .unwrap_or(videre_core::mime_probe::UNKNOWN_MIME)
+            .to_string()
+    });
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
+    let format = videre_core::mime_probe::effective_mime(mime.as_deref(), &ext)
+        .and_then(crate::content_key::Format::for_mime);
+    let keys = crate::content_key::keys(&mut file, size_bytes, format)?;
 
     let mut meta = match videre_core::mime_probe::effective_mime(mime.as_deref(), &ext) {
         Some(m) if videre_core::mime_probe::EXIF_MIMES.contains(&m) => file
@@ -297,7 +293,8 @@ fn hash_open_file(path: &Path, file: File) -> io::Result<FileRecord> {
 
     Ok(FileRecord {
         path: path.to_string_lossy().to_string(),
-        hash,
+        hash: keys.content,
+        meta_hash: keys.meta,
         size_bytes,
         created_at,
         modified_at,

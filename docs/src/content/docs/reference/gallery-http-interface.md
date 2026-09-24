@@ -215,7 +215,8 @@ Rotates one photo 90 degrees clockwise by bumping its EXIF `Orientation` tag in
 place - no pixels are re-encoded - and drops the file's cached previews so the
 grid and lightbox re-render upright. The photo's display-canvas face boxes and
 landmarks are turned with it, so face crops stay on their faces and keep their
-people labels. Supported for EXIF-bearing images (JPEG, PNG, TIFF, WebP); any
+people labels. Supported for EXIF-bearing images (JPEG, PNG, TIFF, WebP),
+including one that has no EXIF yet, which gets its first EXIF block; any
 other format (video, HEIC, and the like) returns `415 Unsupported Media Type`.
 The response body carries the new orientation value.
 

@@ -13,14 +13,13 @@
 //!
 //! An existing database is checked before it is trusted: it must carry the
 //! SQLite header, and if it has tables of its own but no `file_hashes` it is
-//! somebody else's database and is refused unchanged. Older supported
-//! schemas are upgraded in place, under exclusive activity plus init, by
-//! inspecting `PRAGMA table_info` and adding exactly the columns that are
-//! missing, never by firing every `ALTER` and swallowing the errors. A
-//! successful preparation is recorded as `PRAGMA user_version = 1`; a
-//! version from a future videre is refused with an actionable error, and the
-//! required tables and columns are verified after preparation so a helper
-//! that swallowed an error cannot produce a false ready marker.
+//! somebody else's database and is refused unchanged. Its schema version
+//! must be exactly this build's: a newer one needs a newer videre, and an
+//! older one identified files differently, so it is refused with the
+//! instruction to rebuild it by scanning. Nothing is migrated, and every
+//! refusal leaves the file untouched. A fresh database's required tables and
+//! columns are verified after preparation, so a helper that swallowed an
+//! error cannot produce a false ready marker.
 //!
 //! Every indexed path in an opened database is validated against the
 //! canonical root's components, once per context, before anything is
@@ -41,12 +40,11 @@ use std::path::{Component, Path};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-/// The schema version this build writes and understands. `1` is the first
-/// versioned schema: every pre-marker database reads as `0` and is treated
-/// as an older supported library, validated then prepared.
-const SCHEMA_VERSION: i64 = 2;
-
-mod foreign_keys;
+/// The schema version this build writes and understands. 3 identifies files
+/// by their content key (`videre::content_key`); a library with any other
+/// version is refused, because keys stored by an older videre were computed
+/// over whole files and match nothing a scan produces now.
+const SCHEMA_VERSION: i64 = 3;
 
 /// The first sixteen bytes of every SQLite database file. A library
 /// candidate without them is not a SQLite file, whatever its name.
@@ -64,6 +62,7 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const FILE_HASHES_COLUMNS: &[(&str, &str)] = &[
     ("path", "TEXT PRIMARY KEY"),
     ("hash", "TEXT NOT NULL"),
+    ("meta_hash", "TEXT"),
     ("size_bytes", "INTEGER"),
     ("created_at", "TEXT"),
     ("modified_at", "TEXT"),
@@ -131,8 +130,8 @@ const REQUIRED_TABLES: &[&str] = &[
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Build the `file_hashes` DDL from the one column list, so the created
-/// table and the upgrade expectations are the same source of truth. Version
-/// 2 declares the location-cluster relationship so SQLite rejects an unknown
+/// table and the schema checks are the same source of truth. The table
+/// declares the location-cluster relationship so SQLite rejects an unknown
 /// cluster reference instead of storing an orphan. `table` must be a trusted
 /// static name (only ever a literal here): it is interpolated, not bound.
 pub(crate) fn file_hashes_ddl_for(table: &str, if_not_exists: bool) -> String {
@@ -228,12 +227,9 @@ fn verify_schema(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Version 2's own contract: the declared parent-child relationships exist.
-/// A table with the right columns but no key is an incomplete upgrade, not a
-/// valid schema. Separate from `verify_schema` because a legacy database only
-/// satisfies these checks once the versioned rebuild has run; the
-/// pre-rebuild preparation is verified by `verify_schema` alone.
-pub(crate) fn verify_foreign_keys(conn: &Connection) -> Result<()> {
+/// The declared parent-child relationships exist: a table with the right
+/// columns but no key is not a valid schema.
+fn verify_foreign_keys(conn: &Connection) -> Result<()> {
     for (child, from, parent, to, on_update, on_delete) in [
         (
             "faces",
@@ -294,45 +290,10 @@ pub(crate) fn verify_foreign_keys(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// The version-1 fixture DDL used by the foreign-key migration tests: the
-/// pre-FK `file_hashes` and `faces` shapes.
-#[cfg(test)]
-pub(crate) fn legacy_v1_fixture_ddl() -> String {
-    "CREATE TABLE file_hashes (
-        path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
-        created_at TEXT, modified_at TEXT, ext TEXT, phash INTEGER,
-        exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER,
-        height INTEGER
-    );
-    CREATE TABLE faces (
-        id            INTEGER PRIMARY KEY,
-        hash          TEXT NOT NULL,
-        bbox          TEXT NOT NULL,
-        landmark      TEXT,
-        embedding     BLOB NOT NULL,
-        cluster_id    INTEGER,
-        person_label  TEXT,
-        confirmed     INTEGER DEFAULT 0,
-        is_primary    INTEGER DEFAULT 0,
-        det_score     REAL,
-        blur          REAL
-    );"
-    .to_owned()
-}
-
-/// Whether the schema is already complete, used to decide whether an open
-/// needs the upgrade path at all.
+/// Whether the schema is complete: every open refuses a library whose schema
+/// is not.
 fn schema_complete(conn: &Connection) -> Result<bool> {
     Ok(verify_schema(conn).is_ok() && verify_foreign_keys(conn).is_ok())
-}
-
-fn hash_index_exists(conn: &Connection) -> rusqlite::Result<bool> {
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master \
-         WHERE type='index' AND tbl_name='file_hashes' AND name='idx_file_hashes_hash')",
-        [],
-        |row| row.get(0),
-    )
 }
 
 /// Index content hashes for scan-only libraries as well as embedded ones.
@@ -340,21 +301,11 @@ pub fn ensure_hash_index(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_file_hashes_hash ON file_hashes(hash);")
 }
 
-/// Prepare the complete supported schema on `conn`: the scan table plus the
-/// optional faces/people/marks/tags/classification/location/run tables,
-/// created by the existing helpers the commands already use, then verified.
+/// Prepare the complete supported schema on a fresh database: the scan table
+/// plus the optional faces/people/marks/tags/classification/location/run
+/// tables, created by the existing helpers the commands already use, then
+/// verified.
 fn prepare_schema(conn: &Connection) -> Result<()> {
-    prepare_schema_components(conn)?;
-    verify_schema(conn)?;
-    Ok(())
-}
-
-/// Create every table the prepared schema needs, without touching data and
-/// without opening a transaction of its own, so the versioned upgrade can
-/// call it inside one outer transaction. Uses the schema-only faces helper
-/// (no label detach, no row migration); data fixes belong to the upgrade's
-/// repair step.
-pub(crate) fn prepare_schema_components(conn: &Connection) -> Result<()> {
     ensure_scan_schema(conn)?;
     // people comes with the faces schema; faces_scanned stays with the face
     // writers that own it.
@@ -369,6 +320,7 @@ pub(crate) fn prepare_schema_components(conn: &Connection) -> Result<()> {
     crate::face_learning::ensure_learning_tables(conn)?;
     crate::face_learning::ensure_question_tables(conn)?;
     add_missing_columns(conn, "faces", FACES_COLUMNS)?;
+    verify_schema(conn)?;
     Ok(())
 }
 
@@ -382,7 +334,7 @@ fn user_version(conn: &Connection) -> Result<i64> {
 
 /// Whether the file begins with the SQLite header. The caller has already
 /// handled existence and size; this is the supported-library check that
-/// comes before any upgrade touches a file.
+/// comes before anything else reads the file as a library.
 fn is_sqlite_file(path: &Path) -> Result<bool> {
     let owned = path.to_path_buf();
     match bounded_op(path, "read", STAT_TIMEOUT, move || {
@@ -444,19 +396,10 @@ fn inspect_db_file(ctx: &LibraryContext) -> Result<DbFile> {
 /// `Connection::open`. `NOFOLLOW` backs up the lstat redirect checks with
 /// the kernel's own refusal to open a symlink's target; `NO_MUTEX` matches
 /// the default `rusqlite::Connection::open` uses, leaving threading to the
-/// caller.
-/// Open an existing database with foreign keys verified on. The signal-handler
-/// path uses this so its writes run under the same enforcement as every other
-/// library connection.
+/// caller. Foreign keys are verified on, so every write (the signal-handler
+/// path's included) runs under the same enforcement as every other library
+/// connection.
 pub(crate) fn open_without_create(path: &Path) -> rusqlite::Result<Connection> {
-    let conn = open_without_create_unconfigured(path)?;
-    crate::db::enable_foreign_keys(&conn)?;
-    Ok(conn)
-}
-
-/// Private open for the versioned migration: explicitly disable enforcement
-/// before it clears violations, regardless of SQLite's compiled default.
-fn open_without_create_unconfigured(path: &Path) -> rusqlite::Result<Connection> {
     use rusqlite::OpenFlags;
     let conn = Connection::open_with_flags(
         path,
@@ -464,19 +407,13 @@ fn open_without_create_unconfigured(path: &Path) -> rusqlite::Result<Connection>
             | OpenFlags::SQLITE_OPEN_NO_MUTEX
             | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
-    conn.pragma_update(None, "foreign_keys", "OFF")?;
-    let enabled: i64 = conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?;
-    if enabled != 0 {
-        return Err(rusqlite::Error::InvalidQuery);
-    }
+    crate::db::enable_foreign_keys(&conn)?;
     Ok(conn)
 }
 
 /// Open an existing database with the busy timeout every library open uses.
-/// This private connection remains unconfigured until inspection decides
-/// whether a legacy repair must run; every public return enables keys first.
 fn open_existing_conn(ctx: &LibraryContext) -> Result<Connection> {
-    let conn = open_without_create_unconfigured(&ctx.paths.db)
+    let conn = open_without_create(&ctx.paths.db)
         .with_context(|| format!("open {}", ctx.paths.db.display()))?;
     conn.busy_timeout(BUSY_TIMEOUT)
         .context("set the library database busy timeout")?;
@@ -598,10 +535,6 @@ fn validate_row_containment(ctx: &LibraryContext, conn: &Connection) -> Result<(
     Ok(())
 }
 
-/// Finish opening an existing database while the caller holds the
-/// appropriate locks: refuse future versions, refuse foreign databases and
-/// foreign rows (all read-only checks, so a refusal leaves the file
-/// untouched), then prepare and mark the schema when it is still incomplete.
 /// The refusal for a database written by a newer videre, shared by every
 /// open path so the wording and its kind cannot drift apart.
 fn newer_schema(ctx: &LibraryContext, version: i64) -> anyhow::Error {
@@ -612,32 +545,37 @@ fn newer_schema(ctx: &LibraryContext, version: i64) -> anyhow::Error {
     .context(crate::error_kind::ErrorKind::LibrarySchema)
 }
 
-fn open_prepared(ctx: &LibraryContext, conn: &Connection) -> Result<()> {
+/// Refuse a library this build cannot use as it is. Libraries written before
+/// the content key (schema 3) are not migrated: their stored keys were
+/// computed over whole files, so nothing in them matches a new scan, and the
+/// library is built again from its photos. An incomplete schema is refused
+/// the same way; videre only ever publishes a complete one.
+fn require_current(ctx: &LibraryContext, conn: &Connection) -> Result<()> {
     let version = user_version(conn)?;
     if version > SCHEMA_VERSION {
         return Err(newer_schema(ctx, version));
     }
+    if version < SCHEMA_VERSION || !schema_complete(conn)? {
+        return Err(anyhow::anyhow!(
+            "the library at {} was created by an older videre, which identified files differently; \
+             remove {} and run `videre scan` to build it again",
+            ctx.paths.root.display(),
+            ctx.paths.state.display()
+        )
+        .context(crate::error_kind::ErrorKind::LibrarySchema));
+    }
+    Ok(())
+}
+
+/// Finish opening an existing database while the caller holds the
+/// appropriate locks: refuse foreign databases, foreign rows and any schema
+/// but the current one (all read-only checks, so a refusal leaves the file
+/// untouched), then enable WAL and foreign keys.
+fn open_prepared(ctx: &LibraryContext, conn: &Connection) -> Result<()> {
     require_supported_library(conn, &ctx.paths.db)?;
     validate_row_containment(ctx, conn)?;
+    require_current(ctx, conn)?;
     set_wal(conn)?;
-    if version < SCHEMA_VERSION || !schema_complete(conn)? {
-        // One transactional upgrade: repairs the known legacy rows, rebuilds
-        // `file_hashes` and `faces` into their foreign-keyed shapes, verifies,
-        // and stamps version 2. Nothing here reports a repair unless the
-        // upgrade committed.
-        let report = foreign_keys::upgrade_to_v2(conn)?;
-        for line in report.stderr_lines() {
-            // A warning: the upgrade changed data, so the record must survive
-            // in the primary log at the default level.
-            tracing::warn!("{line}");
-        }
-    } else if !hash_index_exists(conn)? {
-        // An already prepared v2 library may have been scanned but never
-        // embedded. Add only the missing index; do not rebuild its FK tables.
-        ensure_hash_index(conn)?;
-    }
-    verify_schema(conn)?;
-    verify_foreign_keys(conn)?;
     crate::db::enable_foreign_keys(conn)
         .context("enable foreign keys on the library connection")?;
     Ok(())
@@ -789,7 +727,7 @@ fn publish_fresh(ctx: &LibraryContext) -> Result<Connection> {
 /// Creates the state directories, takes the library's activity lock
 /// exclusive and then its init lock (the acquisition order every writer
 /// follows), and either publishes a freshly built database by rename or
-/// brings an existing one up to the current schema in place. The config is
+/// opens an existing one, which must be current (an older one is refused). The config is
 /// written last, read-before-write: exactly the six declarations of a
 /// fresh library, and only when no config exists, so a repeated initialize
 /// never rewrites what a user or a previous run wrote.
@@ -826,11 +764,7 @@ pub fn initialize(ctx: &LibraryContext) -> Result<Connection> {
 ///
 /// The open holds the activity lock shared, long enough to inspect and
 /// validate the library; long-lived readers take their own shared activity
-/// lock around their work. A database needing an upgrade is the one case
-/// that writes: the shared lock is released, exclusive activity and init
-/// are taken, and everything is rechecked under the new locks before the
-/// upgrade runs, so two processes cannot both upgrade and a reader never
-/// upgrades while another reads.
+/// lock around their work.
 pub fn open_existing(ctx: &LibraryContext) -> Result<Connection> {
     crate::library_locks::verify_state(ctx)?;
     let _activity = crate::library_locks::try_activity(ctx, ActivityMode::Shared)?;
@@ -849,49 +783,14 @@ pub fn open_existing(ctx: &LibraryContext) -> Result<Connection> {
             ctx.paths.db.display()
         ),
     }
-    // Phase one, under shared activity: read-only inspection and validation.
     // Every refusal below leaves the file exactly as it was.
-    let conn = open_existing_conn(ctx)?;
-    let version = user_version(&conn)?;
-    if version > SCHEMA_VERSION {
-        return Err(newer_schema(ctx, version));
-    }
-    require_supported_library(&conn, &ctx.paths.db)?;
-    validate_row_containment(ctx, &conn)?;
-    if version == SCHEMA_VERSION && schema_complete(&conn)? && hash_index_exists(&conn)? {
-        set_wal(&conn)?;
-        crate::db::enable_foreign_keys(&conn)
-            .context("enable foreign keys on the library connection")?;
-        return Ok(conn);
-    }
-    // Phase two: the upgrade writes, so shared activity gives way to
-    // exclusive activity plus init, and everything is rechecked under the
-    // new locks, because another process may have finished the upgrade in
-    // the gap.
-    drop(conn);
-    drop(_activity);
-    let _exclusive = crate::library_locks::try_activity(ctx, ActivityMode::Exclusive)?;
-    let _init = crate::library_locks::try_init(ctx)?;
-    crate::library_locks::verify_state(ctx)?;
-    match inspect_db_file(ctx)? {
-        DbFile::Present => {}
-        DbFile::ZeroByte => bail!(
-            "the database at {} became empty while the library was being opened",
-            ctx.paths.db.display()
-        ),
-        DbFile::Absent => bail!(
-            "the database at {} disappeared while the library was being opened",
-            ctx.paths.db.display()
-        ),
-    }
     let conn = open_existing_conn(ctx)?;
     open_prepared(ctx, &conn)?;
     Ok(conn)
 }
 
-/// Opens a complete current library without creating, migrating, or changing
-/// its database. Libraries that need preparation are refused with an
-/// instruction to run a normal writer command first.
+/// Opens a complete current library without creating or changing its
+/// database. Anything else is refused.
 pub fn open_existing_read_only(ctx: &LibraryContext) -> Result<Connection> {
     crate::library_locks::verify_state(ctx)?;
     let _activity = crate::library_locks::try_activity(ctx, ActivityMode::Shared)?;
@@ -912,45 +811,15 @@ pub fn open_existing_read_only(ctx: &LibraryContext) -> Result<Connection> {
     }
 
     let conn = open_existing_read_only_conn(ctx)?;
-    let version = user_version(&conn)?;
-    if version > SCHEMA_VERSION {
-        return Err(newer_schema(ctx, version));
-    }
     require_supported_library(&conn, &ctx.paths.db)?;
     validate_row_containment(ctx, &conn)?;
-    if version < SCHEMA_VERSION || !schema_complete(&conn)? {
-        return Err(anyhow::anyhow!(
-            "the library at {} requires an upgrade before it can be opened read-only; run a normal writer command such as `videre scan`, then retry",
-            ctx.paths.root.display()
-        )
-        .context(crate::error_kind::ErrorKind::LibrarySchema));
-    }
-    verify_schema(&conn)?;
+    require_current(ctx, &conn)?;
     Ok(conn)
 }
 
 #[cfg(test)]
 mod tests {
     use crate::db::enable_foreign_keys;
-
-    #[test]
-    fn migration_open_starts_unconfigured_but_normal_open_enforces_keys() {
-        let (_t, ctx) = library();
-        drop(initialize(&ctx).unwrap());
-
-        let migration = open_existing_conn(&ctx).unwrap();
-        let during_upgrade: i64 = migration
-            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(during_upgrade, 0);
-        drop(migration);
-
-        let normal = open_existing(&ctx).unwrap();
-        let after_open: i64 = normal
-            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(after_open, 1);
-    }
 
     #[test]
     fn complete_schema_requires_declared_foreign_keys_not_only_columns() {
@@ -1197,7 +1066,7 @@ mod tests {
 
         let error = open_existing_read_only(&ctx).unwrap_err();
 
-        assert!(format!("{error:#}").contains("requires an upgrade"));
+        assert!(format!("{error:#}").contains("created by an older videre"));
         assert_eq!(
             crate::error_kind::ErrorKind::in_chain(&error),
             Some(crate::error_kind::ErrorKind::LibrarySchema)
@@ -1318,80 +1187,6 @@ mod tests {
             "{err:#}"
         );
         assert_eq!(std::fs::read(&ctx.paths.db).unwrap(), before);
-    }
-
-    #[test]
-    fn an_older_supported_schema_is_upgraded_in_place_with_its_rows() {
-        let (_t, ctx) = library();
-        std::fs::create_dir_all(&ctx.paths.locks).unwrap();
-        {
-            let conn = rusqlite::Connection::open(&ctx.paths.db).unwrap();
-            conn.execute_batch(
-                "CREATE TABLE file_hashes (
-                    path TEXT PRIMARY KEY, hash TEXT NOT NULL, size_bytes INTEGER,
-                    created_at TEXT, modified_at TEXT, ext TEXT, phash INTEGER,
-                    exif_date TEXT, gps_lat REAL, gps_lon REAL, width INTEGER,
-                    height INTEGER
-                );",
-            )
-            .unwrap();
-            for name in ["a.jpg", "b.jpg"] {
-                conn.execute(
-                    "INSERT INTO file_hashes (path, hash, ext) VALUES (?1, 'h', 'jpg')",
-                    params![ctx.paths.root.join(name).to_str().unwrap()],
-                )
-                .unwrap();
-            }
-        }
-        let conn = open_existing(&ctx).unwrap();
-        // The newer optional columns were added by inspecting the table, not
-        // by firing every ALTER and swallowing the errors.
-        for column in [
-            "mime",
-            "duration_secs",
-            "codec",
-            "location_name",
-            "location_cluster_id",
-        ] {
-            let present: i64 = conn
-                .query_row(
-                    &format!(
-                        "SELECT count(*) FROM pragma_table_info('file_hashes') WHERE name = '{column}'"
-                    ),
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(present, 1, "file_hashes.{column}");
-        }
-        // The optional tables are prepared under the same protection.
-        for table in [
-            "people",
-            "faces",
-            "faces_scanned",
-            "marks",
-            "photo_tags",
-            "classifications",
-            "location_clusters",
-            "pipeline_runs",
-        ] {
-            assert!(crate::db::table_exists(&conn, table).unwrap(), "{table}");
-        }
-        let count: i64 = conn
-            .query_row("SELECT count(*) FROM file_hashes", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(count, 2, "the upgrade must keep the existing rows");
-        let version: i64 = conn
-            .query_row("PRAGMA user_version", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(version, SCHEMA_VERSION);
-        drop(conn);
-        // A second open finds the ready marker: no upgrade work, same state.
-        let conn = open_existing(&ctx).unwrap();
-        let version: i64 = conn
-            .query_row("PRAGMA user_version", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(version, SCHEMA_VERSION);
     }
 
     #[test]
@@ -1721,48 +1516,6 @@ mod tests {
         // The no-create open used by the signal-handler path.
         let conn = open_without_create(&ctx.paths.db).unwrap();
         assert_keys_on(&conn);
-    }
-
-    #[test]
-    fn opening_a_v1_library_upgrades_it_and_the_second_open_does_not_re_repair() {
-        let (_t, ctx) = library();
-        std::fs::create_dir_all(&ctx.paths.locks).unwrap();
-        {
-            let conn = rusqlite::Connection::open(&ctx.paths.db).unwrap();
-            conn.execute_batch(&legacy_v1_fixture_ddl()).unwrap();
-            conn.execute_batch("PRAGMA user_version = 1;").unwrap();
-            let path_a = ctx.paths.root.join("a.jpg");
-            let path = path_a.to_str().unwrap().to_owned();
-            conn.execute(
-                "INSERT INTO file_hashes (path, hash, ext) VALUES (?1, 'aaaa', 'jpg')",
-                rusqlite::params![path],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO faces (id, hash, bbox, embedding, person_label, confirmed)
-                 VALUES (1, 'aaaa', '0,0,50,50', X'0000', 'missing_person', 1)",
-                [],
-            )
-            .unwrap();
-        }
-
-        let conn = open_existing(&ctx).unwrap();
-        let version: i64 = conn
-            .query_row("PRAGMA user_version", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(version, SCHEMA_VERSION, "the v1 library must be upgraded");
-        let label: Option<String> = conn
-            .query_row("SELECT person_label FROM faces", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(label, None, "the orphan label is unassigned");
-        // The repair report prints exactly once, on the upgrading open; this
-        // second open is a plain fast-path open and must be silent by
-        // construction (no repairs are pending), so only assert enforcement
-        // and version here.
-        let version: i64 = conn
-            .query_row("PRAGMA user_version", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(version, SCHEMA_VERSION);
     }
 
     #[test]
