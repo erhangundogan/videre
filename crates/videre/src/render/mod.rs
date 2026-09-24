@@ -337,7 +337,7 @@ pub(crate) fn query_files_by_hash(
 
 /// Fetch every row named in `hashes`, in the given order, with no cap. Unlike
 /// `query_files_by_hash` (bounded at 100 for the in-page similarity feature),
-/// this backs the `/events` leaf, which must render a whole session however
+/// this backs the `/events` leaf, which must render a whole trip however
 /// large. Rows are returned in `hashes` order so an event stays chronological.
 pub(crate) fn query_event_files(
     conn: &Connection,
@@ -351,37 +351,45 @@ pub(crate) fn query_event_files(
     if wanted.is_empty() {
         return Ok((Vec::new(), 0));
     }
-    let placeholders = std::iter::repeat_n("?", wanted.len())
-        .collect::<Vec<_>>()
-        .join(",");
-    let sql = format!(
-        "SELECT path, hash, size_bytes, COALESCE(ext,''), created_at, modified_at, exif_date, \
-                gps_lat, gps_lon, width, height, \
-                (SELECT COUNT(*) FROM file_hashes c WHERE c.hash = f.hash) AS copies \
-         FROM file_hashes AS f WHERE f.hash IN ({placeholders})"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let mut by_hash: std::collections::HashMap<String, (FileRow, i64)> = stmt
-        .query_map(rusqlite::params_from_iter(wanted.iter()), |r| {
-            Ok((
-                FileRow {
-                    path: r.get(0)?,
-                    hash: r.get(1)?,
-                    size_bytes: r.get(2)?,
-                    ext: r.get(3)?,
-                    created_at: r.get(4)?,
-                    modified_at: r.get(5)?,
-                    exif_date: r.get(6)?,
-                    gps_lat: r.get(7)?,
-                    gps_lon: r.get(8)?,
-                    width: r.get(9)?,
-                    height: r.get(10)?,
-                },
-                r.get::<_, i64>(11)?,
-            ))
-        })?
-        .map(|r| r.map(|entry| (entry.0.hash.clone(), entry)))
-        .collect::<rusqlite::Result<_>>()?;
+    // Modern SQLite allows 32,766 variables by default, but older builds
+    // allow only 999. A trip can easily exceed either limit, so keep every
+    // lookup below the older bound without truncating exact membership.
+    const BATCH: usize = 900;
+    let mut by_hash = std::collections::HashMap::<String, (FileRow, i64)>::new();
+    for batch in wanted.chunks(BATCH) {
+        let placeholders = std::iter::repeat_n("?", batch.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT path, hash, size_bytes, COALESCE(ext,''), created_at, modified_at, exif_date, \
+                    gps_lat, gps_lon, width, height, \
+                    (SELECT COUNT(*) FROM file_hashes c WHERE c.hash = f.hash) AS copies \
+             FROM file_hashes AS f WHERE f.hash IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let entries = stmt
+            .query_map(rusqlite::params_from_iter(batch.iter()), |r| {
+                Ok((
+                    FileRow {
+                        path: r.get(0)?,
+                        hash: r.get(1)?,
+                        size_bytes: r.get(2)?,
+                        ext: r.get(3)?,
+                        created_at: r.get(4)?,
+                        modified_at: r.get(5)?,
+                        exif_date: r.get(6)?,
+                        gps_lat: r.get(7)?,
+                        gps_lon: r.get(8)?,
+                        width: r.get(9)?,
+                        height: r.get(10)?,
+                    },
+                    r.get::<_, i64>(11)?,
+                ))
+            })?
+            .map(|row| row.map(|entry| (entry.0.hash.clone(), entry)))
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        by_hash.extend(entries);
+    }
     // Preserve the caller's (chronological) order; a hash present more than
     // once in the library still resolves to a single row here.
     let mut rows = Vec::with_capacity(wanted.len());
@@ -1245,6 +1253,25 @@ mod tests {
 
     fn hashes(rows: &[(FileRow, i64)]) -> Vec<&str> {
         rows.iter().map(|(row, _)| row.hash.as_str()).collect()
+    }
+
+    #[test]
+    fn event_file_lookup_handles_more_hashes_than_one_sqlite_parameter_batch() {
+        let conn = geo_connection("");
+        let wanted: Vec<String> = (0..32_768).map(|i| format!("{i:064x}")).collect();
+        for (name, i) in [("first", 0), ("last", 32_767)] {
+            conn.execute(
+                "INSERT INTO file_hashes (path,hash,size_bytes,ext) VALUES (?1,?2,100,'jpg')",
+                rusqlite::params![format!("/p/{name}.jpg"), wanted[i]],
+            )
+            .unwrap();
+        }
+        let (rows, total) = query_event_files(&conn, &wanted).unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(
+            hashes(&rows),
+            vec![wanted[0].as_str(), wanted[32_767].as_str()]
+        );
     }
 
     #[test]

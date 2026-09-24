@@ -28,30 +28,48 @@ pub(super) fn destination_episodes(rows: &[TripRow], places: &Places) -> Vec<Epi
 
     let mut episodes = Vec::new();
     let mut current: Option<Episode> = None;
-    for i in photos {
-        let group_id = places.by_row[i].unwrap();
-        if !eligible_destination(group_id, places) {
+    let mut pos = 0;
+    while pos < photos.len() {
+        let when = rows[photos[pos]].capture.unwrap();
+        let mut end = pos + 1;
+        while end < photos.len() && rows[photos[end]].capture == Some(when) {
+            end += 1;
+        }
+        // A home (or overlapping-home) photo at this exact wall-clock time
+        // contradicts every away photo at that time. Resolve the whole second
+        // before looking at hashes, so hash spelling cannot pick which side
+        // of the home boundary an away anchor belongs to.
+        if photos[pos..end]
+            .iter()
+            .any(|&i| !eligible_destination(places.by_row[i].unwrap(), places))
+        {
             if let Some(episode) = current.take() {
                 episodes.push(episode);
             }
+            pos = end;
             continue;
         }
-        let split = current.as_ref().is_some_and(|episode| {
-            let prior = *episode.anchors.last().unwrap();
-            let before = places.groups[places.by_row[prior].unwrap()].center;
-            let after = places.groups[group_id].center;
-            rows[i].capture.unwrap() - rows[prior].capture.unwrap() > chrono::Duration::hours(72)
-                || haversine_km(before.0, before.1, after.0, after.1) > 40.0
-        });
-        if split {
-            episodes.push(current.take().unwrap());
+        for &i in &photos[pos..end] {
+            let group_id = places.by_row[i].unwrap();
+            let split = current.as_ref().is_some_and(|episode| {
+                let prior = *episode.anchors.last().unwrap();
+                let before = places.groups[places.by_row[prior].unwrap()].center;
+                let after = places.groups[group_id].center;
+                rows[i].capture.unwrap() - rows[prior].capture.unwrap()
+                    > chrono::Duration::hours(72)
+                    || haversine_km(before.0, before.1, after.0, after.1) > 40.0
+            });
+            if split {
+                episodes.push(current.take().unwrap());
+            }
+            let episode = current.get_or_insert_with(|| Episode {
+                anchors: Vec::new(),
+                stop_groups: BTreeSet::new(),
+            });
+            episode.anchors.push(i);
+            episode.stop_groups.insert(group_id);
         }
-        let episode = current.get_or_insert_with(|| Episode {
-            anchors: Vec::new(),
-            stop_groups: BTreeSet::new(),
-        });
-        episode.anchors.push(i);
-        episode.stop_groups.insert(group_id);
+        pos = end;
     }
     if let Some(episode) = current {
         episodes.push(episode);
@@ -425,5 +443,60 @@ mod tests {
         rows.retain(|r| r.media == MediaKind::Video || r.hash.starts_with("home"));
         let places = infer_places(&rows);
         assert!(destination_episodes(&rows, &places).is_empty());
+    }
+
+    #[test]
+    fn simultaneous_home_photo_vetoes_destination_anchor_regardless_of_hash_order() {
+        fn anchor_sets(home_hash: &str) -> Vec<Vec<String>> {
+            let rows = with_home(vec![
+                row(
+                    "away-10",
+                    "2020-03-12T10:00:00",
+                    Some((47.5, 19.0)),
+                    MediaKind::Photo,
+                ),
+                row(
+                    "middle",
+                    "2020-03-12T11:00:00",
+                    Some((47.5, 19.0)),
+                    MediaKind::Photo,
+                ),
+                row(
+                    home_hash,
+                    "2020-03-12T11:00:00",
+                    Some((52.52, 13.4)),
+                    MediaKind::Photo,
+                ),
+                row(
+                    "away-12",
+                    "2020-03-12T12:00:00",
+                    Some((47.5, 19.0)),
+                    MediaKind::Photo,
+                ),
+                row(
+                    "away-13",
+                    "2020-03-12T13:00:00",
+                    Some((47.5, 19.0)),
+                    MediaKind::Photo,
+                ),
+            ]);
+            let places = infer_places(&rows);
+            destination_episodes(&rows, &places)
+                .iter()
+                .map(|episode| {
+                    episode
+                        .anchors
+                        .iter()
+                        .map(|&i| rows[i].hash.clone())
+                        .collect()
+                })
+                .collect()
+        }
+        let expected = vec![
+            vec!["away-10".to_owned()],
+            vec!["away-12".to_owned(), "away-13".to_owned()],
+        ];
+        assert_eq!(anchor_sets("a-home"), expected);
+        assert_eq!(anchor_sets("z-home"), expected);
     }
 }
