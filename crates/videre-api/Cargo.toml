@@ -1,6 +1,6 @@
 [package]
 name = "videre-api"
-version = "0.41.0"
+version = "0.42.0"
 edition = "2021"
 description = "Transport-agnostic facade over videre's face-labeling and image-serving operations"
 license = "Apache-2.0"
@@ -12,7 +12,7 @@ categories = ["multimedia::images"]
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-videre-core = { path = "../videre-core", version = "0.41.0" }
+videre-core = { path = "../videre-core", version = "0.42.0" }
 image = { version = "0.25", default-features = false, features = [
     "jpeg",
     "png",
