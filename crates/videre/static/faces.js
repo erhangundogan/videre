@@ -326,14 +326,14 @@ let facesData = { people: [], clusters: [], singletons: [] };
     // the same space. The sidebar runs down the right edge, where it competes
     // with nothing.
     //
-    // Only `toggleLayout` writes this key, so anyone who never chose a layout
+    // Only `setLayout` writes this key, so anyone who never chose a layout
     // has nothing stored and picks the new default up immediately. A stored
     // value is always a deliberate choice and is left alone.
     function applyLayout() {
       const mode = localStorage.getItem('videre_people_layout') || 'right';
       document.body.classList.toggle('sidebar-mode', mode === 'right');
-      const btn = document.getElementById('layout-toggle');
-      if (btn) btn.textContent = mode === 'right' ? 'People: Right' : 'People: Top';
+      const select = document.getElementById('layout-select');
+      if (select) select.value = mode;
       measureChrome();
     }
 
@@ -350,9 +350,9 @@ let facesData = { people: [], clusters: [], singletons: [] };
         '--secnav-h', (nav ? nav.offsetHeight : 0) + 'px');
     }
 
-    function toggleLayout() {
-      const cur = localStorage.getItem('videre_people_layout') || 'right';
-      localStorage.setItem('videre_people_layout', cur === 'right' ? 'top' : 'right');
+    // The People list select in the page's settings bar (`.gallery-head`).
+    function setLayout(mode) {
+      localStorage.setItem('videre_people_layout', mode === 'top' ? 'top' : 'right');
       applyLayout();
     }
 

@@ -23,7 +23,6 @@
     .badge-green { background: var(--green-bg); border-color: var(--green-border); color: var(--green-text); }
     .badge-orange { background: var(--orange-bg); border-color: var(--orange-border); color: var(--orange-text); }
     h2.title-people { color: var(--blue-text); display: flex; align-items: center; gap: 8px; }
-    h2.title-people #layout-toggle { margin-left: auto; font-weight: 400; }
     h2.title-clusters { color: var(--green-text); }
     h2.title-singletons { color: var(--orange-text); }
     .new-person-area { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; flex: 1; justify-content: end; }
@@ -112,7 +111,7 @@
   align-items: center;
   gap: 8px;
   padding: 6px 12px;
-  margin: 0 32px 8px;
+  margin: 8px 32px;
   border: 1px solid #e2e2e2;
   border-radius: 8px;
   font-size: 13px;
