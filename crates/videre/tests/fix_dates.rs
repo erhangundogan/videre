@@ -128,3 +128,102 @@ fn eof_on_stdin_is_treated_as_no() {
         "EOF on stdin must be treated as 'no'"
     );
 }
+
+/// The rfc3339 value fix-dates writes for `exif_date`, as the command itself
+/// computes it.
+fn target(exif_date: &str) -> String {
+    videre_core::fix_dates_target::target_modified_at(exif_date).unwrap()
+}
+
+/// A library of Turkish-named files where only `değişen.jpg` needs its date
+/// fixed: `doğru.jpg` already carries its camera date, on disk and in its row.
+fn one_right_one_wrong() -> (TestLibrary, PathBuf, PathBuf) {
+    let lib = TestLibrary::new();
+    let root = lib.context().paths.root.clone();
+    let right = root.join("doğru.jpg");
+    let wrong = root.join("değişen.jpg");
+    std::fs::write(&right, b"img_right").unwrap();
+    std::fs::write(&wrong, b"img_wrong").unwrap();
+    let right_date = "2014-09-20T05:39:39";
+    let stamp = chrono::DateTime::parse_from_rfc3339(&target(right_date)).unwrap();
+    filetime::set_file_mtime(
+        &right,
+        filetime::FileTime::from_unix_time(stamp.timestamp(), 0),
+    )
+    .unwrap();
+    let conn = lib.init_db();
+    conn.execute(
+        "INSERT INTO file_hashes (path, hash, exif_date, modified_at)
+         VALUES (?1, 'hright', ?2, ?3)",
+        rusqlite::params![right.to_string_lossy(), right_date, target(right_date)],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO file_hashes (path, hash, exif_date)
+         VALUES (?1, 'hwrong', '2019-06-15T10:00:00')",
+        [wrong.to_string_lossy().as_ref()],
+    )
+    .unwrap();
+    (lib, right, wrong)
+}
+
+#[test]
+fn the_prompt_counts_only_files_whose_date_would_change() {
+    let (lib, _right, _wrong) = one_right_one_wrong();
+    let out = run_fix_dates(&lib, &[], Some("n\n"));
+    assert!(out.status.success());
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.contains("set the modified time on 1 file(s)"),
+        "the prompt must name the one file that changes, not both: {text}"
+    );
+}
+
+#[test]
+fn a_file_already_at_its_camera_date_is_left_alone() {
+    let (lib, right, wrong) = one_right_one_wrong();
+    let out = run_fix_dates(&lib, &["--yes"], None);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stdout.contains("değişen.jpg"), "{stdout}");
+    assert!(
+        !stdout.contains("doğru.jpg"),
+        "an already-correct file must not be reported as updated: {stdout}"
+    );
+    assert!(stderr.contains("1 updated"), "{stderr}");
+    assert!(stderr.contains("1 already correct"), "{stderr}");
+    assert_eq!(mtime_year(&wrong), 2019);
+    assert_eq!(mtime_year(&right), 2014);
+}
+
+#[test]
+fn nothing_to_fix_asks_nothing_and_says_so() {
+    let (lib, _right, wrong) = one_right_one_wrong();
+    lib.init_db()
+        .execute(
+            "DELETE FROM file_hashes WHERE path = ?1",
+            [wrong.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+    // No stdin at all: a prompt here would read EOF and abort, so success with
+    // no "Aborted" proves none was shown.
+    let out = run_fix_dates(&lib, &[], Some(""));
+    assert!(out.status.success());
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!text.contains("Continue?"), "{text}");
+    assert!(!text.contains("Aborted"), "{text}");
+    assert!(text.contains("1 already correct"), "{text}");
+}

@@ -194,7 +194,11 @@ async function startGallery(): Promise<ManagedGallery> {
   ]);
 }
 
-export const test = base.extend<{ gallery: GallerySession; sortedGallery: GallerySession }>({
+export const test = base.extend<{
+  gallery: GallerySession;
+  sortedGallery: GallerySession;
+  isolatedGallery: GallerySession;
+}>({
   gallery: [async ({}, use) => {
     const session = await startGallery();
     try {
@@ -226,7 +230,15 @@ export const test = base.extend<{ gallery: GallerySession; sortedGallery: Galler
     } finally {
       await stopGallery(session);
     }
-  }, { scope: "worker" }]
+  }, { scope: "worker" }],
+  isolatedGallery: async ({}, use) => {
+    const session = await startGallery();
+    try {
+      await use(session);
+    } finally {
+      await stopGallery(session);
+    }
+  }
 });
 
 export { expect };
