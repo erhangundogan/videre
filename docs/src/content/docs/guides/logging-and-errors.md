@@ -129,7 +129,7 @@ When videre knows why something failed, the line carries a `kind` and a
 | `quicklook_unavailable` | HEIC and video need macOS QuickLook | These files are skipped on this platform |
 | `model_unavailable` | A search or face model could not be downloaded or loaded | Check network access for the first run, or the Hugging Face cache location |
 | `library_busy` | Another videre command holds the library or this command's lock | Retry when it finishes; `watch` retries by itself |
-| `library_schema` | The database needs an upgrade, or was written by a newer videre | Follow the message: run a writer command such as `videre scan`, or upgrade videre |
+| `library_schema` | The library was created by an older videre, or by a newer one | Older: remove `.videre` and run `videre scan`. Newer: upgrade videre |
 | `database` | SQLite reported an error | The message says which operation failed |
 
 A failure without a known cause has an empty `kind`; its message is still the

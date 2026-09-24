@@ -22,6 +22,7 @@ what nearly everything else reads.
 CREATE TABLE file_hashes (
     path        TEXT PRIMARY KEY,
     hash        TEXT NOT NULL,
+    meta_hash   TEXT,
     size_bytes  INTEGER,
     created_at  TEXT,
     modified_at TEXT,
@@ -43,13 +44,14 @@ CREATE TABLE file_hashes (
 );
 ```
 
-Older libraries gained some of these columns through automatic upgrades; this
-is the current table shape.
+This is the table's shape. A library created by an older videre is refused, not
+upgraded: remove its `.videre` directory and run `videre scan`.
 
 | Column | Notes |
 |---|---|
 | `path` | Absolute path. The primary key, so re-scanning updates in place |
-| `hash` | BLAKE3 of the file contents. Two identical files share one hash |
+| `hash` | Identity of the file's content: BLAKE3 over the file with its metadata left out (EXIF, XMP, comments and similar). The same image with different metadata shares one hash |
+| `meta_hash` | BLAKE3 over the metadata alone; changes when only metadata does. NULL for a file whose format is not parsed, whose `hash` is then the whole file's |
 | `mime` | Detected from the file's leading bytes, not its name |
 | `phash` | Perceptual fingerprint, only with [`scan --similar`](/commands/scan/). NULL otherwise |
 | `exif_date` | Camera-local, no timezone. `0000-*` values are discarded as absent |
@@ -347,15 +349,6 @@ unassigns their faces and invalidates their teaching evidence first; when the
 location clusters are recomputed, the file references are cleared before the
 old clusters are removed.
 
-Libraries created before this enforcement existed carry rows that would
-violate these keys. The first time a videre command opens such a library it
-runs a one-time upgrade: it unassigns faces whose person no longer exists,
-clears references to missing location clusters, removes broken provenance
-rows, rebuilds `file_hashes` and `faces` with the keys declared, and stamps
-schema version 2. The repair prints what it did to stderr, once, and only
-after it committed. An old library opened read-only is never upgraded or
-modified.
-
 Two relationships are deliberately **not** foreign keys, because their
 parents are not the rows a child belongs to:
 
@@ -375,7 +368,7 @@ coexist. You can safely run `sqlite3` queries while
 [`videre watch`](/commands/watch/) is running.
 
 Reading is entirely safe. If you write, note that videre assumes `hash` is a
-real BLAKE3 of the file at `path`, and [`videre prune`](/commands/prune/)
+the content key videre computes for the file at `path`, and [`videre prune`](/commands/prune/)
 deletes embeddings and cached thumbnails whose hash no longer appears in
 `file_hashes`. Deleting rows by hand therefore discards the derived work for
 those photos too. With foreign keys enforced, a `DELETE` of a person that

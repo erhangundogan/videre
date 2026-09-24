@@ -5,7 +5,8 @@
 //!
 //! Only formats that carry an EXIF Orientation tag are supported (JPEG and the
 //! PNG/TIFF/WebP family); videos and everything else are refused so the button
-//! is never offered where it cannot work.
+//! is never offered where it cannot work. A photo that has no EXIF at all gets
+//! its first EXIF block on its first rotation.
 
 use anyhow::Context;
 use little_exif::exif_tag::ExifTag;
@@ -200,14 +201,33 @@ fn rotate_in_place(path: &Path, ext: &str, next: fn(u16) -> u16) -> anyhow::Resu
     if ext.eq_ignore_ascii_case("png") {
         write_png_orientation(path, next)?;
     } else {
-        let mut metadata = Metadata::new_from_path(path)
-            .with_context(|| format!("reading EXIF from {}", path.display()))?;
+        let mut metadata = match Metadata::new_from_path(path) {
+            Ok(metadata) => metadata,
+            // A photo that has never carried EXIF gets its first block. Any
+            // other failure is refused, so EXIF that could not be read is
+            // never replaced by a block holding only the orientation.
+            Err(_) if !carries_exif(path) => Metadata::new(),
+            Err(e) => {
+                return Err(e).with_context(|| format!("reading EXIF from {}", path.display()))
+            }
+        };
         metadata.set_tag(ExifTag::Orientation(vec![next]));
         metadata
             .write_to_file(path)
             .with_context(|| format!("writing EXIF orientation to {}", path.display()))?;
     }
     Ok(next)
+}
+
+/// Whether the file holds an EXIF block at all, readable or not.
+fn carries_exif(path: &Path) -> bool {
+    let Ok(file) = std::fs::File::open(path) else {
+        return true;
+    };
+    !matches!(
+        exif::Reader::new().read_from_container(&mut std::io::BufReader::new(file)),
+        Err(exif::Error::NotFound(_))
+    )
 }
 
 const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
@@ -463,5 +483,48 @@ mod tests {
         let path = dir.path().join("clip.mp4");
         std::fs::write(&path, b"not a real mp4").unwrap();
         assert!(rotate_cw_in_place(&path, "mp4").is_err());
+    }
+
+    #[test]
+    fn a_photo_without_exif_rotates_and_keeps_its_content_key() {
+        use videre::content_key::{keys, Format, Keys};
+        fn key(path: &Path, format: Format) -> Keys {
+            let mut file = std::fs::File::open(path).unwrap();
+            let len = file.metadata().unwrap().len();
+            keys(&mut file, len, Some(format)).unwrap()
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let img =
+            image::RgbImage::from_fn(8, 4, |x, y| image::Rgb([x as u8 * 30, y as u8 * 60, 90]));
+        for (ext, encoding, format) in [
+            ("jpg", image::ImageFormat::Jpeg, Format::Jpeg),
+            ("png", image::ImageFormat::Png, Format::Png),
+            ("tiff", image::ImageFormat::Tiff, Format::Tiff),
+            ("webp", image::ImageFormat::WebP, Format::Webp),
+        ] {
+            let path = dir.path().join(format!("çağla.{ext}"));
+            img.save_with_format(&path, encoding).unwrap();
+            let before = key(&path, format);
+            assert_eq!(rotate_cw_in_place(&path, ext).unwrap(), 6, "{ext}");
+            let after = key(&path, format);
+            assert!(
+                before.meta.is_some() && after.meta.is_some(),
+                "{ext} parsed"
+            );
+            assert_eq!(
+                after.content, before.content,
+                "{ext}: same photo after a rotate"
+            );
+            assert_ne!(
+                after.meta, before.meta,
+                "{ext}: the orientation is recorded"
+            );
+            assert_eq!(
+                rotate_cw_in_place(&path, ext).unwrap(),
+                3,
+                "{ext}: the new EXIF block reads back"
+            );
+            assert_eq!(key(&path, format).content, before.content, "{ext}");
+        }
     }
 }
