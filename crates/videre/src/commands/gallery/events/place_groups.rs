@@ -3,8 +3,6 @@ use chrono::{NaiveDate, NaiveDateTime};
 use std::collections::{BTreeMap, BTreeSet};
 use videre_core::location_cluster::haversine_km;
 
-const MAX_RADIUS_KM: f64 = 20.0;
-
 #[derive(Clone, Debug)]
 pub(super) struct PlaceGroup {
     pub id: usize,
@@ -22,7 +20,7 @@ pub(super) struct Places {
     pub votes: Vec<usize>,
 }
 
-fn bucket(lat: f64, lon: f64) -> (i32, i32, i32) {
+fn bucket(lat: f64, lon: f64, radius_km: f64) -> (i32, i32, i32) {
     let a = lat.to_radians();
     let o = lon.to_radians();
     let xyz = [
@@ -31,9 +29,9 @@ fn bucket(lat: f64, lon: f64) -> (i32, i32, i32) {
         6371.0 * a.sin(),
     ];
     (
-        (xyz[0] / MAX_RADIUS_KM).floor() as i32,
-        (xyz[1] / MAX_RADIUS_KM).floor() as i32,
-        (xyz[2] / MAX_RADIUS_KM).floor() as i32,
+        (xyz[0] / radius_km).floor() as i32,
+        (xyz[1] / radius_km).floor() as i32,
+        (xyz[2] / radius_km).floor() as i32,
     )
 }
 
@@ -63,7 +61,7 @@ fn unambiguous_neighbor(
     (after_groups.first() == Some(&before)).then_some(before)
 }
 
-pub(super) fn infer_places(rows: &[TripRow]) -> Places {
+pub(super) fn infer_places(rows: &[TripRow], radius_km: f64) -> Places {
     let mut located: Vec<usize> = rows
         .iter()
         .enumerate()
@@ -82,7 +80,7 @@ pub(super) fn infer_places(rows: &[TripRow]) -> Places {
     let mut by_row = vec![None; rows.len()];
     for i in located {
         let gps = rows[i].gps.unwrap();
-        let cell = bucket(gps.0, gps.1);
+        let cell = bucket(gps.0, gps.1, radius_km);
         let mut best: Option<(usize, f64)> = None;
         for dx in -1..=1 {
             for dy in -1..=1 {
@@ -92,7 +90,7 @@ pub(super) fn infer_places(rows: &[TripRow]) -> Places {
                         for &id in candidates {
                             let seed = groups[id].center;
                             let km = haversine_km(seed.0, seed.1, gps.0, gps.1);
-                            if km <= MAX_RADIUS_KM
+                            if km <= radius_km
                                 && best.is_none_or(|(old, old_km)| {
                                     km.total_cmp(&old_km).is_lt()
                                         || (km.total_cmp(&old_km).is_eq()
@@ -212,12 +210,12 @@ mod tests {
             row("away", Some("2020-02-01T10:00:00"), Some((47.5, 19.0))),
             row("unbracketed", Some("2020-02-01T11:00:00"), None),
         ];
-        let places = infer_places(&rows);
+        let places = infer_places(&rows, 20.0);
         let home = places.home.unwrap();
         assert_eq!(places.groups[home].located_rows.len(), 3);
         assert_eq!(places.votes[home], 4);
         rows.reverse();
-        let again = infer_places(&rows);
+        let again = infer_places(&rows, 20.0);
         assert_eq!(
             again.groups[again.home.unwrap()].center,
             places.groups[home].center
@@ -233,7 +231,7 @@ mod tests {
             row("berlin2", Some("2020-01-04T10:00:00"), Some((52.52, 13.4))),
             row("too-long", Some("2020-01-03T10:00:00"), None),
         ];
-        let places = infer_places(&rows);
+        let places = infer_places(&rows, 20.0);
         assert_eq!(places.votes.iter().sum::<usize>(), 3);
     }
 
@@ -245,7 +243,7 @@ mod tests {
             row("b1", Some("2020-02-01T10:00:00"), Some((50.0, 0.0))),
             row("b2", Some("2020-02-01T10:00:00"), None),
         ];
-        let places = infer_places(&direct);
+        let places = infer_places(&direct, 20.0);
         assert_eq!(places.groups[places.home.unwrap()].center, (40.0, 0.0));
 
         let dates = vec![
@@ -254,14 +252,14 @@ mod tests {
             row("b1", Some("2020-02-01T10:00:00"), Some((50.0, 0.0))),
             row("b2", Some("2020-02-01T11:00:00"), Some((50.0, 0.0))),
         ];
-        let places = infer_places(&dates);
+        let places = infer_places(&dates, 20.0);
         assert_eq!(places.groups[places.home.unwrap()].center, (40.0, 0.0));
 
         let center = vec![
             row("a", None, Some((40.0, 0.0))),
             row("b", None, Some((50.0, 0.0))),
         ];
-        let places = infer_places(&center);
+        let places = infer_places(&center, 20.0);
         assert_eq!(places.groups[places.home.unwrap()].center, (40.0, 0.0));
     }
 
@@ -276,7 +274,7 @@ mod tests {
             row("pole-a", None, Some((89.99, 0.0))),
             row("pole-b", None, Some((89.99, 180.0))),
         ];
-        let places = infer_places(&rows);
+        let places = infer_places(&rows, 20.0);
         assert_ne!(places.by_row[0], places.by_row[2]);
         assert_eq!(places.by_row[3], places.by_row[4]);
         assert_eq!(places.by_row[5], places.by_row[6]);
@@ -299,7 +297,7 @@ mod tests {
             row("near2", None, Some((52.52, 13.95))),
             row("far", None, Some((47.5, 19.0))),
         ];
-        let places = infer_places(&rows);
+        let places = infer_places(&rows, 20.0);
         let near = places.by_row[3].unwrap();
         assert_ne!(near, places.home.unwrap());
         assert!(!eligible_destination(near, &places));

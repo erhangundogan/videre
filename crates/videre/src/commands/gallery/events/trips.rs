@@ -1,8 +1,7 @@
 use super::place_groups::{eligible_destination, Places};
-use super::{MediaKind, Trip, TripRow};
-use chrono::NaiveDateTime;
+use super::{EventsConfig, MediaKind, Trip, TripRow};
+use chrono::{Duration, NaiveDateTime};
 use std::collections::{BTreeMap, BTreeSet};
-use videre_core::location_cluster::haversine_km;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Episode {
@@ -74,11 +73,9 @@ pub(super) fn destination_episodes(rows: &[TripRow], places: &Places) -> Vec<Epi
             let group_id = places.by_row[i].unwrap();
             let split = current.as_ref().is_some_and(|episode| {
                 let prior = *episode.anchors.last().unwrap();
-                let before = places.groups[places.by_row[prior].unwrap()].center;
-                let after = places.groups[group_id].center;
                 rows[i].capture.unwrap() - rows[prior].capture.unwrap()
                     > chrono::Duration::hours(72)
-                    || haversine_km(before.0, before.1, after.0, after.1) > 40.0
+                    || places.by_row[prior] != Some(group_id)
             });
             if split {
                 episodes.push(current.take().unwrap());
@@ -135,36 +132,46 @@ fn gpsless_agrees(
     end: NaiveDateTime,
     episode: &Episode,
     located: &BTreeMap<NaiveDateTime, BTreeSet<usize>>,
+    window: Duration,
 ) -> bool {
     let before = located.range(..=when).next_back();
     let after = located.range(when..).next();
     if when < start {
         after.is_some_and(|(_, groups)| single_stop(groups, episode))
-            && before.is_none_or(|(time, groups)| {
-                *time < start - chrono::Duration::hours(3) || single_stop(groups, episode)
-            })
+            && before
+                .is_none_or(|(time, groups)| *time < start - window || single_stop(groups, episode))
     } else if when > end {
         before.is_some_and(|(_, groups)| single_stop(groups, episode))
-            && after.is_none_or(|(time, groups)| {
-                *time > end + chrono::Duration::hours(3) || single_stop(groups, episode)
-            })
+            && after
+                .is_none_or(|(time, groups)| *time > end + window || single_stop(groups, episode))
     } else {
         before.is_some_and(|(_, groups)| single_stop(groups, episode))
             && after.is_some_and(|(_, groups)| single_stop(groups, episode))
     }
 }
 
-fn inside_bounds(when: NaiveDateTime, start: NaiveDateTime, end: NaiveDateTime) -> bool {
+fn inside_bounds(
+    when: NaiveDateTime,
+    start: NaiveDateTime,
+    end: NaiveDateTime,
+    window: Duration,
+) -> bool {
     if when < start {
-        when.date() == start.date() && start - when <= chrono::Duration::hours(3)
+        start - when <= window
     } else if when > end {
-        when.date() == end.date() && when - end <= chrono::Duration::hours(3)
+        when - end <= window
     } else {
         true
     }
 }
 
-fn rolling_three_hours_has(rows: &[TripRow], members: &[usize], anchors: &BTreeSet<usize>) -> bool {
+fn qualifying_window<'a>(
+    rows: &[TripRow],
+    members: &'a [usize],
+    anchors: &BTreeSet<usize>,
+    config: &EventsConfig,
+    must_cross_midnight: bool,
+) -> Option<&'a [usize]> {
     let mut left = 0;
     let mut anchor_count = 0;
     for right in 0..members.len() {
@@ -174,7 +181,7 @@ fn rolling_three_hours_has(rows: &[TripRow], members: &[usize], anchors: &BTreeS
         let end = rows[members[right]].capture.unwrap();
         while left <= right {
             let start = rows[members[left]].capture.unwrap();
-            if start.date() == end.date() && end - start <= chrono::Duration::hours(3) {
+            if end - start <= config.time_window {
                 break;
             }
             if anchors.contains(&members[left]) {
@@ -182,11 +189,14 @@ fn rolling_three_hours_has(rows: &[TripRow], members: &[usize], anchors: &BTreeS
             }
             left += 1;
         }
-        if right + 1 - left >= 10 && anchor_count >= 3 {
-            return true;
+        if right + 1 - left >= config.min_media_items
+            && anchor_count >= 3
+            && (!must_cross_midnight || rows[members[left]].capture.unwrap().date() != end.date())
+        {
+            return Some(&members[left..=right]);
         }
     }
-    false
+    None
 }
 
 fn make_trip(rows: &[TripRow], places: &Places, anchors: &[usize], members: &[usize]) -> Trip {
@@ -224,7 +234,12 @@ fn make_trip(rows: &[TripRow], places: &Places, anchors: &[usize], members: &[us
     }
 }
 
-pub(super) fn qualify_trips(rows: &[TripRow], places: &Places, episodes: &[Episode]) -> Vec<Trip> {
+pub(super) fn qualify_trips(
+    rows: &[TripRow],
+    places: &Places,
+    episodes: &[Episode],
+    config: &EventsConfig,
+) -> Vec<Trip> {
     if episodes.is_empty() {
         return Vec::new();
     }
@@ -285,12 +300,12 @@ pub(super) fn qualify_trips(rows: &[TripRow], places: &Places, episodes: &[Episo
         };
         let episode = &episodes[eid];
         let (start, end) = bounds[eid];
-        if !inside_bounds(when, start, end) {
+        if !inside_bounds(when, start, end, config.time_window) {
             continue;
         }
         let agrees = match places.by_row[i] {
             Some(group) => row.media == MediaKind::Video && episode.stop_groups.contains(&group),
-            None => gpsless_agrees(when, start, end, episode, &located),
+            None => gpsless_agrees(when, start, end, episode, &located, config.time_window),
         };
         if agrees {
             assigned[eid].push(i);
@@ -313,11 +328,14 @@ pub(super) fn qualify_trips(rows: &[TripRow], places: &Places, episodes: &[Episo
         let multidate = dates.len() > 1;
         if multidate
             && dates.values().filter(|&&count| count >= 2).count() >= 2
-            && members.len() >= 10
+            && members.len() >= config.min_media_items
         {
             trips.push(make_trip(rows, places, &episode.anchors, members));
         } else if multidate {
-            for date in dates.keys() {
+            let dates: Vec<_> = dates.keys().copied().collect();
+            let mut anchors_by_day = Vec::with_capacity(dates.len());
+            let mut members_by_day = Vec::with_capacity(dates.len());
+            for date in &dates {
                 let day_anchors: Vec<_> = episode
                     .anchors
                     .iter()
@@ -331,14 +349,60 @@ pub(super) fn qualify_trips(rows: &[TripRow], places: &Places, episodes: &[Episo
                     .copied()
                     .filter(|&i| {
                         let when = rows[i].capture.unwrap();
-                        when.date() == *date && inside_bounds(when, day_first, day_last)
+                        when.date() == *date
+                            && inside_bounds(when, day_first, day_last, config.time_window)
                     })
                     .collect();
-                if rolling_three_hours_has(rows, &day_members, &anchors) {
+                anchors_by_day.push(day_anchors);
+                members_by_day.push(day_members);
+            }
+            // A failed multi-day gate cannot be bypassed by chaining separate
+            // midnight visits through a shared calendar date. Keep each short
+            // cross-midnight visit to its qualifying window, with no reused row.
+            let mut used = BTreeSet::new();
+            for day in 0..dates.len() {
+                if day + 1 < dates.len() {
+                    let pair_members: Vec<_> = members_by_day[day]
+                        .iter()
+                        .chain(members_by_day[day + 1].iter())
+                        .filter(|i| !used.contains(*i))
+                        .copied()
+                        .collect();
+                    if let Some(window) =
+                        qualifying_window(rows, &pair_members, &anchors, config, true)
+                    {
+                        let first = pair_members.iter().position(|&i| i == window[0]).unwrap();
+                        let start = rows[window[0]].capture.unwrap();
+                        let visit: Vec<_> = pair_members[first..]
+                            .iter()
+                            .copied()
+                            .take_while(|&i| rows[i].capture.unwrap() - start <= config.time_window)
+                            .collect();
+                        let visit_anchors: Vec<_> = visit
+                            .iter()
+                            .copied()
+                            .filter(|i| anchors.contains(i))
+                            .collect();
+                        trips.push(make_trip(rows, places, &visit_anchors, &visit));
+                        used.extend(visit);
+                    }
+                }
+                let day_members: Vec<_> = members_by_day[day]
+                    .iter()
+                    .filter(|i| !used.contains(*i))
+                    .copied()
+                    .collect();
+                if qualifying_window(rows, &day_members, &anchors, config, false).is_some() {
+                    let day_anchors: Vec<_> = anchors_by_day[day]
+                        .iter()
+                        .copied()
+                        .filter(|i| !used.contains(i))
+                        .collect();
                     trips.push(make_trip(rows, places, &day_anchors, &day_members));
+                    used.extend(day_members);
                 }
             }
-        } else if rolling_three_hours_has(rows, members, &anchors) {
+        } else if qualifying_window(rows, members, &anchors, config, false).is_some() {
             trips.push(make_trip(rows, places, &episode.anchors, members));
         }
     }
@@ -381,24 +445,59 @@ mod tests {
     }
 
     #[test]
-    fn nearby_stops_across_four_days_form_one_episode() {
+    fn stops_within_one_place_radius_across_four_days_form_one_episode() {
         let rows = with_home(
             (0..8)
                 .map(|i| {
                     row(
                         &format!("away-{i}"),
                         &format!("2020-03-{:02}T10:00:00", 12 + i / 2),
-                        Some(if i < 4 { (47.5, 19.0) } else { (47.5, 19.35) }),
+                        Some(if i < 4 { (47.5, 19.0) } else { (47.5, 19.15) }),
                         MediaKind::Photo,
                     )
                 })
                 .collect(),
         );
-        let places = infer_places(&rows);
+        let places = infer_places(&rows, 20.0);
         let episodes = destination_episodes(&rows, &places);
         assert_eq!(episodes.len(), 1);
         assert_eq!(episodes[0].anchors.len(), 8);
-        assert_eq!(episodes[0].stop_groups.len(), 2);
+        assert_eq!(episodes[0].stop_groups.len(), 1);
+    }
+
+    #[test]
+    fn a_second_place_beyond_twenty_km_starts_a_new_episode() {
+        let rows = with_home(vec![
+            row(
+                "a-1",
+                "2020-03-12T10:00:00",
+                Some((47.5, 19.0)),
+                MediaKind::Photo,
+            ),
+            row(
+                "a-2",
+                "2020-03-12T11:00:00",
+                Some((47.5, 19.0)),
+                MediaKind::Photo,
+            ),
+            row(
+                "b-1",
+                "2020-03-12T12:00:00",
+                Some((47.5, 19.32)),
+                MediaKind::Photo,
+            ),
+            row(
+                "b-2",
+                "2020-03-12T13:00:00",
+                Some((47.5, 19.32)),
+                MediaKind::Photo,
+            ),
+        ]);
+        let places = infer_places(&rows, 20.0);
+        let episodes = destination_episodes(&rows, &places);
+        assert_eq!(episodes.len(), 2);
+        assert_eq!(episodes[0].anchors.len(), 2);
+        assert_eq!(episodes[1].anchors.len(), 2);
     }
 
     #[test]
@@ -423,7 +522,7 @@ mod tests {
                 MediaKind::Photo,
             ),
         ]);
-        let places = infer_places(&rows);
+        let places = infer_places(&rows, 20.0);
         let episodes = destination_episodes(&rows, &places);
         assert_eq!(
             episodes.iter().map(|e| e.anchors.len()).collect::<Vec<_>>(),
@@ -471,14 +570,14 @@ mod tests {
                 MediaKind::Photo,
             ),
         ]);
-        let places = infer_places(&rows);
+        let places = infer_places(&rows, 20.0);
         let episodes = destination_episodes(&rows, &places);
         assert_eq!(
             episodes.iter().map(|e| e.anchors.len()).collect::<Vec<_>>(),
             vec![1, 1, 1, 1]
         );
         rows.retain(|r| r.media == MediaKind::Video || r.hash.starts_with("home"));
-        let places = infer_places(&rows);
+        let places = infer_places(&rows, 20.0);
         assert!(destination_episodes(&rows, &places).is_empty());
     }
 
@@ -517,7 +616,7 @@ mod tests {
                     MediaKind::Photo,
                 ),
             ]);
-            let places = infer_places(&rows);
+            let places = infer_places(&rows, 20.0);
             destination_episodes(&rows, &places)
                 .iter()
                 .map(|episode| {
@@ -566,7 +665,7 @@ mod tests {
                     MediaKind::Photo,
                 ),
             ]);
-            let places = infer_places(&rows);
+            let places = infer_places(&rows, 20.0);
             destination_episodes(&rows, &places)
                 .iter()
                 .map(|episode| {
@@ -627,7 +726,7 @@ mod tests {
                     MediaKind::Photo,
                 ),
             ]);
-            let places = infer_places(&rows);
+            let places = infer_places(&rows, 20.0);
             destination_episodes(&rows, &places)
                 .iter()
                 .map(|episode| {
@@ -674,7 +773,7 @@ mod tests {
                 })
                 .collect(),
         );
-        let mut places = infer_places(&rows);
+        let mut places = infer_places(&rows, 20.0);
         let home_row = rows.iter().position(|r| r.hash == "home-0").unwrap();
         places.home = places.by_row[home_row];
         let started = std::time::Instant::now();

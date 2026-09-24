@@ -1,10 +1,27 @@
 //! Read-only travel trips inferred from capture dates and photo locations.
 //! Home, bounded places and exact membership are derived on demand.
 
-use chrono::NaiveDateTime;
+use chrono::{Duration, NaiveDateTime};
 
 mod place_groups;
 mod trips;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct EventsConfig {
+    pub min_media_items: usize,
+    pub time_window: Duration,
+    pub place_radius_km: f64,
+}
+
+impl Default for EventsConfig {
+    fn default() -> Self {
+        Self {
+            min_media_items: 10,
+            time_window: Duration::hours(3),
+            place_radius_km: 20.0,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MediaKind {
@@ -71,6 +88,10 @@ pub(crate) struct Detection {
 }
 
 pub(crate) fn detect(rows: &[TripRow]) -> Detection {
+    detect_with_config(rows, &EventsConfig::default())
+}
+
+pub(crate) fn detect_with_config(rows: &[TripRow], config: &EventsConfig) -> Detection {
     use std::collections::BTreeMap;
     let mut by_hash = BTreeMap::<&str, &TripRow>::new();
     for row in rows {
@@ -98,9 +119,9 @@ pub(crate) fn detect(rows: &[TripRow]) -> Detection {
             empty_reason: Some(empty_reason),
         };
     }
-    let places = place_groups::infer_places(&rows);
+    let places = place_groups::infer_places(&rows, config.place_radius_km);
     let episodes = trips::destination_episodes(&rows, &places);
-    let events = trips::qualify_trips(&rows, &places, &episodes);
+    let events = trips::qualify_trips(&rows, &places, &episodes, config);
     let empty_reason = if events.is_empty() {
         Some(if places.groups.len() < 2 || episodes.is_empty() {
             EmptyReason::InsufficientLocationEvidence
@@ -364,6 +385,297 @@ mod tests {
             .unwrap()
             .capture = parse_capture("2020-03-12T13:00:01");
         assert!(detect(&rows).events.is_empty());
+    }
+
+    #[test]
+    fn a_qualifying_three_hour_burst_can_cross_midnight() {
+        let mut rows: Vec<_> = (0..13)
+            .map(|i| {
+                trip_row(
+                    &format!("home-{i}"),
+                    Some(&format!("2020-01-01T08:{i:02}:00")),
+                    Some((52.52, 13.4)),
+                    MediaKind::Photo,
+                )
+            })
+            .collect();
+        for (i, when) in [
+            "2020-03-12T23:00:00",
+            "2020-03-13T00:00:00",
+            "2020-03-13T01:30:00",
+        ]
+        .iter()
+        .enumerate()
+        {
+            rows.push(trip_row(
+                &format!("anchor-{i}"),
+                Some(when),
+                Some((47.5, 19.0)),
+                MediaKind::Photo,
+            ));
+        }
+        for (i, when) in [
+            "2020-03-12T23:10:00",
+            "2020-03-12T23:20:00",
+            "2020-03-12T23:30:00",
+            "2020-03-13T00:10:00",
+            "2020-03-13T00:20:00",
+            "2020-03-13T00:30:00",
+            "2020-03-13T01:00:00",
+        ]
+        .iter()
+        .enumerate()
+        {
+            rows.push(trip_row(
+                &format!("plain-{i}"),
+                Some(when),
+                None,
+                MediaKind::Photo,
+            ));
+        }
+
+        let result = detect(&rows);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].members.len(), 10);
+        assert_eq!(result.events[0].start, dt("2020-03-12 23:00:00"));
+        assert_eq!(result.events[0].end, dt("2020-03-13 01:30:00"));
+
+        let mut with_extra = rows.clone();
+        with_extra.push(trip_row(
+            "plain-7",
+            Some("2020-03-13T01:40:00"),
+            None,
+            MediaKind::Photo,
+        ));
+        let extended = detect(&with_extra);
+        assert_eq!(extended.events.len(), 1);
+        assert_eq!(extended.events[0].members.len(), 11);
+        assert!(extended.events[0].members.contains(&"plain-7".to_owned()));
+
+        let fewer: Vec<_> = rows
+            .iter()
+            .filter(|row| row.hash != "plain-6")
+            .cloned()
+            .collect();
+        assert!(detect(&fewer).events.is_empty());
+        rows.iter_mut()
+            .find(|row| row.hash == "anchor-2")
+            .unwrap()
+            .capture = parse_capture("2020-03-13T02:00:01");
+        assert!(detect(&rows).events.is_empty());
+    }
+
+    #[test]
+    fn midnight_edge_files_join_within_the_configured_window() {
+        let home: Vec<_> = (0..13)
+            .map(|i| {
+                trip_row(
+                    &format!("home-{i}"),
+                    Some(&format!("2020-01-01T08:{i:02}:00")),
+                    Some((52.52, 13.4)),
+                    MediaKind::Photo,
+                )
+            })
+            .collect();
+        let cases = [
+            (
+                [
+                    "2020-03-12T22:30:00",
+                    "2020-03-12T23:00:00",
+                    "2020-03-12T23:30:00",
+                ],
+                [
+                    "2020-03-12T23:35:00",
+                    "2020-03-12T23:40:00",
+                    "2020-03-13T00:00:00",
+                    "2020-03-13T00:10:00",
+                    "2020-03-13T00:20:00",
+                    "2020-03-13T00:30:00",
+                    "2020-03-13T00:40:00",
+                ],
+            ),
+            (
+                [
+                    "2020-03-13T00:30:00",
+                    "2020-03-13T01:00:00",
+                    "2020-03-13T01:30:00",
+                ],
+                [
+                    "2020-03-12T23:20:00",
+                    "2020-03-12T23:30:00",
+                    "2020-03-12T23:40:00",
+                    "2020-03-12T23:50:00",
+                    "2020-03-13T00:05:00",
+                    "2020-03-13T00:10:00",
+                    "2020-03-13T00:20:00",
+                ],
+            ),
+        ];
+        for (anchors, plain) in cases {
+            let mut rows = home.clone();
+            for (i, when) in anchors.iter().enumerate() {
+                rows.push(trip_row(
+                    &format!("anchor-{i}"),
+                    Some(when),
+                    Some((47.5, 19.0)),
+                    MediaKind::Photo,
+                ));
+            }
+            for (i, when) in plain.into_iter().enumerate() {
+                rows.push(trip_row(
+                    &format!("plain-{i}"),
+                    Some(when),
+                    None,
+                    MediaKind::Photo,
+                ));
+            }
+            let result = detect(&rows);
+            assert_eq!(result.events.len(), 1, "anchors: {anchors:?}");
+            assert_eq!(result.events[0].members.len(), 10);
+        }
+    }
+
+    #[test]
+    fn separate_midnight_bursts_do_not_merge_without_multi_day_evidence() {
+        let mut rows: Vec<_> = (0..30)
+            .map(|i| {
+                trip_row(
+                    &format!("home-{i}"),
+                    Some(&format!("2020-01-01T08:{i:02}:00")),
+                    Some((52.52, 13.4)),
+                    MediaKind::Photo,
+                )
+            })
+            .collect();
+        for (i, when) in [
+            "2020-03-12T23:00:00",
+            "2020-03-13T00:00:00",
+            "2020-03-13T00:30:00",
+            "2020-03-13T23:00:00",
+            "2020-03-13T23:30:00",
+            "2020-03-14T00:30:00",
+        ]
+        .iter()
+        .enumerate()
+        {
+            rows.push(trip_row(
+                &format!("anchor-{i}"),
+                Some(when),
+                Some((47.5, 19.0)),
+                MediaKind::Photo,
+            ));
+        }
+        for (i, when) in [
+            "2020-03-12T23:05:00",
+            "2020-03-12T23:10:00",
+            "2020-03-12T23:15:00",
+            "2020-03-12T23:20:00",
+            "2020-03-13T00:05:00",
+            "2020-03-13T00:10:00",
+            "2020-03-13T00:15:00",
+            "2020-03-13T23:05:00",
+            "2020-03-13T23:10:00",
+            "2020-03-13T23:15:00",
+            "2020-03-13T23:20:00",
+            "2020-03-14T00:05:00",
+            "2020-03-14T00:10:00",
+            "2020-03-14T00:15:00",
+        ]
+        .iter()
+        .enumerate()
+        {
+            rows.push(trip_row(
+                &format!("plain-{i}"),
+                Some(when),
+                None,
+                MediaKind::Photo,
+            ));
+        }
+        let events = detect(&rows).events;
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert_eq!(events[0].members.len(), 10);
+        assert_eq!(events[1].members.len(), 10);
+        assert!(events
+            .iter()
+            .all(|trip| trip.end - trip.start <= Duration::hours(3)));
+    }
+
+    #[test]
+    fn configured_item_minimum_controls_trip_qualification() {
+        let rows = travel_fixture();
+        assert_eq!(detect(&rows).events.len(), 1);
+        let config = EventsConfig {
+            min_media_items: 13,
+            ..EventsConfig::default()
+        };
+        assert!(detect_with_config(&rows, &config).events.is_empty());
+    }
+
+    #[test]
+    fn configured_time_window_controls_trip_qualification() {
+        let rows = travel_fixture();
+        assert_eq!(detect(&rows).events.len(), 1);
+        let config = EventsConfig {
+            time_window: Duration::minutes(30),
+            ..EventsConfig::default()
+        };
+        assert!(detect_with_config(&rows, &config).events.is_empty());
+    }
+
+    #[test]
+    fn configured_place_radius_controls_trip_boundaries() {
+        let mut rows = travel_fixture();
+        rows.iter_mut()
+            .find(|row| row.hash == "anchor-2")
+            .unwrap()
+            .gps = Some((47.5, 19.30));
+        assert!(detect(&rows).events.is_empty());
+        let config = EventsConfig {
+            place_radius_km: 30.0,
+            ..EventsConfig::default()
+        };
+        assert_eq!(detect_with_config(&rows, &config).events.len(), 1);
+    }
+
+    #[test]
+    fn distinct_away_places_must_each_qualify_as_a_trip() {
+        let mut rows: Vec<_> = (0..13)
+            .map(|i| {
+                trip_row(
+                    &format!("home-{i}"),
+                    Some(&format!("2020-01-01T08:{i:02}:00")),
+                    Some((52.52, 13.4)),
+                    MediaKind::Photo,
+                )
+            })
+            .collect();
+        for (place, lon, hour) in [("first", 19.0, 10), ("second", 19.32, 15)] {
+            for i in 0..3 {
+                rows.push(trip_row(
+                    &format!("{place}-anchor-{i}"),
+                    Some(&format!("2020-03-12T{:02}:00:00", hour + i)),
+                    Some((47.5, lon)),
+                    MediaKind::Photo,
+                ));
+            }
+            for i in 0..7 {
+                rows.push(trip_row(
+                    &format!("{place}-plain-{i}"),
+                    Some(&format!("2020-03-12T{hour:02}:{:02}:00", 5 + i * 5)),
+                    None,
+                    MediaKind::Photo,
+                ));
+            }
+        }
+        let result = detect(&rows);
+        assert_eq!(result.events.len(), 2);
+        assert_eq!(result.events[0].members.len(), 10);
+        assert_eq!(result.events[1].members.len(), 10);
+
+        rows.retain(|row| !row.hash.starts_with("second-plain"));
+        let result = detect(&rows);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].members.len(), 10);
     }
 
     #[test]

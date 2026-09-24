@@ -266,14 +266,17 @@ curl "http://127.0.0.1:7878/api/dates?level=month&parent=2026"
 ### `GET /api/events`
 
 Returns automatic travel trips, newest first. Home is inferred from the place
-group with the most assignable media. A same-day trip needs ten distinct files
-within a rolling three-hour window, including three dated, located photos. A
-multi-day trip needs ten files and at least two such photo anchors on each of
-two dates. Adjacent local stops can merge, while a home photo or a gap over
-72 hours between destination photo anchors ends a trip. Videos may join a
-photo-established trip but never anchor one; GPS-less media join only with
-supporting capture-time and location evidence. Only full stored capture dates
-count. Filesystem modification times are not used for Events.
+group with the most assignable media. A short trip needs ten distinct files
+within a rolling three-hour window that may cross midnight, including three
+dated, located photos. A multi-day trip needs ten files and at least two such
+photo anchors on each of two dates. Local stops within one 20 km place group can
+merge. A stop outside that radius starts a separate candidate trip that must
+qualify independently; a home photo or a gap over 72 hours between destination
+photo anchors also ends a trip. The ten-file, three-hour, and 20 km values are
+initial defaults for a future editable Gallery configuration. Videos may join a photo-established trip
+but never anchor one; GPS-less media join only with supporting capture-time and
+location evidence. Only full stored capture dates count. Filesystem modification
+times are not used for Events.
 
 Each `kind` is currently `trip`. `key` is the first destination photo anchor's
 `%Y%m%dT%H%M%S` wall-clock time, a hyphen and its full content hash; adding an
@@ -282,8 +285,8 @@ place name, or falls back to `Trip, March 2020`. `place` is the full offline
 name or `null`. The `empty_reason` field is `null` when trips are present; for
 an empty list it is one of `no_media`, `no_capture_dates`,
 `insufficient_location_evidence` or `no_qualifying_trips`. No prior
-`videre locations` or `videre embed` run is needed. Local outings and manual
-membership edits are not supported in this iteration.
+`videre locations` or `videre embed` run is needed. Local outings, manual
+membership edits, and combining events are not supported in this iteration.
 
 ```bash
 curl "http://127.0.0.1:7878/api/events"

@@ -111,13 +111,17 @@ self-drawn plot with the same clusters, drill-down, and grid.
 
 The Events view currently finds travel trips, not ordinary local outings. It
 infers home from the place with the most assignable media in your library, then
-looks for substantial activity in another place. A same-day trip needs at least
-ten distinct media files in a rolling three-hour window, including three
-located photos. A multi-day trip needs at least ten files and two located
-photos on each of at least two dates. Nearby stops can form one trip; a home
-photo or more than 72 hours between destination photo anchors ends it. A
-place group's observed footprint can be compact or reach up to 20 km from its
-fixed center. A group overlapping home is not treated as travel.
+looks for substantial activity in another place. A short trip needs at least
+ten distinct media files in a rolling three-hour window, which may cross
+midnight, including three located photos. A multi-day trip needs at least ten
+files and two located photos on each of at least two dates. Nearby stops within
+one place group can form one trip. A stop outside its 20 km radius starts a
+separate candidate and must qualify on its own; a home photo or more than 72
+hours between destination photo anchors also ends a trip. A place group's
+observed footprint can be compact or reach up to 20 km from its fixed center.
+A group overlapping home is
+not treated as travel. The ten-item, three-hour, and 20 km values are initial
+defaults; a later Gallery configuration will make them editable.
 
 Photos with valid GPS and a full embedded capture date establish the trip.
 Dated videos and GPS-less photos can join when nearby photo and location
@@ -131,9 +135,11 @@ it to see exactly the included files. If the evidence is too thin, Events
 explains why instead of showing one-file cards.
 
 Local outings near home, such as a museum opening, and manual add/remove of
-trip files are planned for later iterations. An automatic trip can miss files
-without strong time or place evidence, and a heavily photographed second
-routine area can look like a destination until home correction is available.
+trip files are planned for later iterations. A later iteration will also let
+you combine events into a curated event and organize their media together. An
+automatic trip can miss files without strong time or place evidence, and a
+heavily photographed second routine area can look like a destination until home
+correction is available.
 
 They link to each other in smaller ways too, which is the point of serving them
 together: a face in
