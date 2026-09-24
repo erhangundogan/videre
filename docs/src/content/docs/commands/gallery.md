@@ -75,8 +75,8 @@ people or location data yet.
 | `/date/2024`, `/date/2024/09`, `/date/2024/09/26` | The media of that year, month, or day, each with its item count |
 | `/map` | Location clusters plotted on a world map, with the full file grid below; click a cluster to see its photos |
 | `/map/location/berlin?radius=25` | An addressable location drill-down with a proximity radius in kilometers |
-| `/events` | Photos grouped into automatic time-and-place events; click one to see its photos |
-| `/events/20210810T143207-3f9a1c2e` | One event's photos, keyed by its start time and a short hash |
+| `/events` | Substantial travel trips inferred from capture dates and photo locations; click one to see its media |
+| `/events/20200312T100000-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` | One trip's media, keyed by its first photo anchor's time and full content hash |
 | `/smart` | Reserved, not built yet |
 
 **Library**, **Duplicates**, **Date**, **Events**, **People** and **Map** sit in a strip along
@@ -109,20 +109,31 @@ library database, and once the basemap is present the view makes no outbound map
 or tile requests. On a machine without working WebGL the map falls back to a
 self-drawn plot with the same clusters, drill-down, and grid.
 
-The Events view groups your photos into sessions the way an outing feels: a run
-of shots with no long quiet stretch and no big move between them is one event. A
-gap of more than six hours starts a new event, and so does a jump of more than
-five kilometers between two located shots. Events are computed from the library
-each time you open the page, so there is nothing to build or keep up to date;
-each card shows the session's place name (when the photos carry GPS), its date
-range, and its file count. Click one to see just that session's photos.
+The Events view currently finds travel trips, not ordinary local outings. It
+infers home from the place with the most assignable media in your library, then
+looks for substantial activity in another place. A same-day trip needs at least
+ten distinct media files in a rolling three-hour window, including three
+located photos. A multi-day trip needs at least ten files and two located
+photos on each of at least two dates. Nearby stops can form one trip; a home
+photo or more than 72 hours between destination photo anchors ends it. A
+place group's observed footprint can be compact or reach up to 20 km from its
+fixed center. A group overlapping home is not treated as travel.
 
-Events use the same date each file has everywhere else: its camera capture
-time, or its file modification time when there is none. Capture times are the
-camera's local clock. A modification time is used as the wall-clock time it
-was recorded with, without converting between time zones, so files whose
-modification times were recorded under different offsets are grouped by those
-nominal times rather than by absolute time.
+Photos with valid GPS and a full embedded capture date establish the trip.
+Dated videos and GPS-less photos can join when nearby photo and location
+evidence supports their placement, but they cannot start or extend it. Events
+uses the scanner's stored photo capture time or video container creation time,
+in wall-clock order, without a filesystem-date fallback. A file with only a
+modification date does not join automatically. Trips are recomputed from the
+library on demand: neither `videre locations` nor `videre embed` is required.
+Each card shows an offline place-based title, date range and file count; click
+it to see exactly the included files. If the evidence is too thin, Events
+explains why instead of showing one-file cards.
+
+Local outings near home, such as a museum opening, and manual add/remove of
+trip files are planned for later iterations. An automatic trip can miss files
+without strong time or place evidence, and a heavily photographed second
+routine area can look like a destination until home correction is available.
 
 They link to each other in smaller ways too, which is the point of serving them
 together: a face in

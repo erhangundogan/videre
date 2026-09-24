@@ -748,7 +748,7 @@ function buildDateInitialView(){
 }
 
 // Events reuse the date view's grid, breadcrumb and card styles. The server
-// segments the library into events; the client only draws them.
+// infers exact travel trips; the client only draws them.
 function eventDateRange(from,to){
   // from/to are "YYYY-MM-DD HH:MM:SS"; show a compact, human span.
   var months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -762,8 +762,8 @@ function eventDateRange(from,to){
 function eventCards(events){
   return events.map(function(e){
     var range=eventDateRange(e.start,e.end);
-    var label=e.place||range;
-    var sub=(e.place?escH(range)+' · ':'')+e.count+' file'+(e.count===1?'':'s');
+    var label=e.title||range;
+    var sub=escH(range)+' · '+e.count+' file'+(e.count===1?'':'s');
     return '<div class="date-card event-card" data-key="'+escA(e.key)+'">'+
       '<a class="date-card-link" href="/events/'+escA(e.key)+'" aria-label="Open '+escA(label)+'"></a>'+
       buildPreview(e.sample)+
@@ -780,14 +780,22 @@ function buildEventsOverview(){
   fetch('/api/events').then(function(r){return r.json();})
     .then(function(d){
       var evs=d.events||[];
-      grid.innerHTML=evs.length?eventCards(evs):'<p class="muted">No events yet.</p>';
+      var reasons={
+        no_media:'No media has been scanned yet.',
+        no_capture_dates:'Events needs photo capture dates or video creation dates.',
+        insufficient_location_evidence:'Events needs dated, location-supported photos to recognize travel.',
+        no_qualifying_trips:'No substantial travel trips were found yet.'
+      };
+      grid.innerHTML=evs.length?eventCards(evs):
+        '<div class="empty-state"><h2>No travel trips yet</h2><p>'+escH(reasons[d.empty_reason]||reasons.no_qualifying_trips)+
+        '</p><p class="hint">Events finds travel from dated, location-supported photos.</p></div>';
     })
     .catch(function(){ grid.innerHTML='<p class="muted">Could not load events.</p>'; });
 }
 function buildEventLeaf(ev){
   var range=eventDateRange(ev.from,ev.to);
   document.getElementById('dateBreadcrumb').innerHTML=
-    '<a href="/events">All Events</a> &gt; '+escH(ev.place||range);
+    '<a href="/events">All Events</a> &gt; '+escH(ev.title||range);
   var narrowing=document.getElementById('dateNarrowing');
   if(narrowing)narrowing.innerHTML='';
   var grid=document.getElementById('dateGrid');

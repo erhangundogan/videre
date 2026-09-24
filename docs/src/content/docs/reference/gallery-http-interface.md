@@ -43,8 +43,8 @@ and cannot answer these HTTP requests after the command exits.
 | `GET /map` | Location cluster map with the full file grid |
 | `GET /map?near={lat},{lon}` | Map centred on the cluster nearest a coordinate pair (used by the lightbox place link) |
 | `GET /map/location/{name}` | One addressable location drill-down |
-| `GET /events` | Automatic time-and-place event overview |
-| `GET /events/{key}` | One event's photos (`key` is its compact start time and a short hash) |
+| `GET /events` | Automatic travel-trip overview |
+| `GET /events/{key}` | One trip's media (`key` is its first photo anchor's compact time and full hash) |
 | `GET /smart` | Reserved |
 
 Date route segments are zero-padded where applicable: `YYYY`, `YYYY/MM` and
@@ -265,13 +265,25 @@ curl "http://127.0.0.1:7878/api/dates?level=month&parent=2026"
 
 ### `GET /api/events`
 
-Returns the automatic event overview, newest first. An event is a run of
-photos with no gap longer than six hours and no jump greater than five
-kilometers between two located shots; both are computed from the library on
-each request, so there is nothing to precompute. `key` is the event's start
-time in a URL-safe compact form (`%Y%m%dT%H%M%S`), used as the drill-down
-address. `place` is the offline reverse-geocode of the event's GPS centroid,
-or `null` when no member carried GPS.
+Returns automatic travel trips, newest first. Home is inferred from the place
+group with the most assignable media. A same-day trip needs ten distinct files
+within a rolling three-hour window, including three dated, located photos. A
+multi-day trip needs ten files and at least two such photo anchors on each of
+two dates. Adjacent local stops can merge, while a home photo or a gap over
+72 hours between destination photo anchors ends a trip. Videos may join a
+photo-established trip but never anchor one; GPS-less media join only with
+supporting capture-time and location evidence. Only full stored capture dates
+count. Filesystem modification times are not used for Events.
+
+Each `kind` is currently `trip`. `key` is the first destination photo anchor's
+`%Y%m%dT%H%M%S` wall-clock time, a hyphen and its full content hash; adding an
+edge file cannot rename the trip. `title` uses the dominant stop's offline
+place name, or falls back to `Trip, March 2020`. `place` is the full offline
+name or `null`. The `empty_reason` field is `null` when trips are present; for
+an empty list it is one of `no_media`, `no_capture_dates`,
+`insufficient_location_evidence` or `no_qualifying_trips`. No prior
+`videre locations` or `videre embed` run is needed. Local outings and manual
+membership edits are not supported in this iteration.
 
 ```bash
 curl "http://127.0.0.1:7878/api/events"
@@ -281,11 +293,13 @@ curl "http://127.0.0.1:7878/api/events"
 {
   "events": [
     {
-      "key": "20210810T143207-3f9a1c2e",
-      "start": "2021-08-10 14:32:07",
-      "end": "2021-08-12 09:15:44",
+      "key": "20200312T100000-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "kind": "trip",
+      "title": "Budapest, March 2020 Trip",
+      "start": "2020-03-12 10:00:00",
+      "end": "2020-03-15 16:30:00",
       "count": 83,
-      "place": "Bodrum, TR",
+      "place": "Budapest, HU",
       "sample": {
         "path": "/Users/me/Photos/IMG_0001.jpg",
         "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -294,21 +308,22 @@ curl "http://127.0.0.1:7878/api/events"
         "h": 3024
       }
     }
-  ]
+  ],
+  "empty_reason": null
 }
 ```
 
 ### `GET /api/events/{key}/files`
 
-Returns the files of one event, by its exact members, in the same
+Returns the files of one trip, by its exact members, in the same
 `{total, offset, files}` shape as `GET /api/files`. `key` comes from `/api/events`:
-the event's compact start time, a hyphen, and the first eight characters of
-its first file's hash, so two events starting in the same second stay
-distinct. An unknown or stale key (the library or
+the first destination photo anchor's compact time, a hyphen, and its full
+content hash, so two trips starting in the same second stay distinct. An
+unknown or stale key (the library or
 the thresholds changed since it was read) returns `404`.
 
 ```bash
-curl "http://127.0.0.1:7878/api/events/20210810T143207-3f9a1c2e/files"
+curl "http://127.0.0.1:7878/api/events/20200312T100000-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/files"
 ```
 
 ### `GET /api/search`
@@ -781,8 +796,8 @@ content-length: 0
 | `GET /api/files/{hash}/raw` | Serve bytes for one library file |
 | `POST /api/files/{hash}/rotate` | Rotate one photo 90 degrees clockwise (EXIF) |
 | `GET /api/dates` | Read date buckets |
-| `GET /api/events` | List automatic time-and-place events |
-| `GET /api/events/{key}/files` | Files of one event |
+| `GET /api/events` | List automatic travel trips and an empty reason when none qualify |
+| `GET /api/events/{key}/files` | Exact files of one trip |
 | `GET /api/search` | Rank by text or by an existing file hash |
 | `GET /api/locations` | Resolve one coordinate pair to a place name |
 | `GET /api/location-clusters` | List location clusters for the Map view |
