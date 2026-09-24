@@ -2829,10 +2829,19 @@ async fn handle_face_image(
         let _guard = guard_operation(&state)?;
         let lookup = {
             let conn = state.conn.lock().map_err(poisoned)?;
-            videre_api::face_lookup(&conn, face_id).map_err(|_| StatusCode::NOT_FOUND)?
+            videre_api::face_lookup(&conn, face_id).map_err(|_| {
+                // Either the face is gone or no file has its content any more
+                // (an orphan, removed by `videre prune`).
+                tracing::debug!(face_id, "face image: no face row joined to a file");
+                StatusCode::NOT_FOUND
+            })?
         };
-        videre_api::face_bytes_from_lookup(&lookup, face_id, &state.context.library.cache)
-            .map_err(|_| StatusCode::NOT_FOUND)
+        videre_api::face_bytes_from_lookup(&lookup, face_id, &state.context.library.cache).map_err(
+            |e| {
+                tracing::debug!(face_id, path = %lookup.file_path, "face image: no crop ({e})");
+                StatusCode::NOT_FOUND
+            },
+        )
     })
     .await
     .map_err(internal)??;
