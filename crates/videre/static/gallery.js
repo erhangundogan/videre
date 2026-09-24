@@ -446,14 +446,19 @@ function rotateLb(dir){
   btns.forEach(function(b){ if(b)b.disabled=true; });
   var which=lbCurrent.path?'&path='+encodeURIComponent(lbCurrent.path):'';
   fetch('/api/files/'+encodeURIComponent(lbCurrent.hash)+'/rotate?dir='+dir+which,{method:'POST'})
-    .then(function(r){ if(!r.ok)throw new Error('rotate failed'); return r.json(); })
+    .then(function(r){
+      // 503: another videre command (prune, faces --reset) holds the library.
+      if(r.status===503)throw new Error('The library is busy with another videre command; try the rotation again in a moment.');
+      if(!r.ok)throw new Error('Rotating the photo failed; it was left as it was.');
+      return r.json();
+    })
     .then(function(res){
       rehashPhoto(lbCurrent.hash,res&&res.hash,res&&res.path);
       var token='b='+Date.now();
       document.getElementById('lb-img').src=bustUrl(lbCurrent.url,token);
       refreshTilesFor(lbCurrent.hash,token);
     })
-    .catch(function(){})
+    .catch(function(e){ alert(e.message); })
     .then(function(){ lbRotating=false; btns.forEach(function(b){ if(b)b.disabled=false; }); });
 }
 

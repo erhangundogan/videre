@@ -3,6 +3,7 @@
 //! `search --html` lives in `crate::render`; this file is the HTTP layer only.
 
 use crate::render::*;
+use anyhow::Context as _;
 use axum::body::Body;
 use axum::extract::{Json as AxumJson, Query, State};
 use axum::http::Request;
@@ -2078,33 +2079,53 @@ async fn handle_rotate_file(
         let _guard = guard;
         let source = std::path::Path::new(&path);
         // A copy at another path has this content and these faces too; turning
-        // or moving them would break that copy, so they stay with it.
-        let shared = {
+        // or moving them would break that copy, so they stay with it. The
+        // stored row supplies everything but the new content's own facts, so
+        // the file is read once.
+        let (shared, stored) = {
             let conn = state_for_task
                 .conn
                 .lock()
                 .map_err(|_| anyhow::anyhow!("the database connection lock is poisoned"))?;
-            videre_core::face_db::hash_shared_elsewhere(&conn, &hash_for_task, &path)?
+            let shared = videre_core::face_db::hash_shared_elsewhere(&conn, &hash_for_task, &path)?;
+            let stored = conn.query_row(
+                &format!(
+                    "SELECT {} FROM file_hashes WHERE path = ?1",
+                    videre::sqlite_output::FILE_RECORD_COLUMNS
+                ),
+                [&path],
+                videre::sqlite_output::file_record_from_row,
+            )?;
+            (shared, stored)
         };
         // The stored face bboxes/landmarks are in the display canvas as it
         // decodes now; capture that canvas's dimensions before the turn so the
-        // geometry can be mapped onto the post-rotation canvas. Read them up
-        // front: the rotation bumps the EXIF the dimensions depend on.
+        // geometry can be mapped onto the post-rotation canvas.
         let dims = super::rotate::current_display_dimensions(source);
-        let original = videre::hasher::hash_file_in(&state_for_task.context.library, source)?;
-        let bytes = std::fs::read(source)?;
-        // Turned in memory first, so the new content hash is known and
-        // recorded before the file changes on disk.
+        let bytes = read_bounded(source, stored.size_bytes)?;
+        // Turned in memory, so the new content, its hash and its perceptual
+        // hash are all known before anything on disk changes, and before the
+        // connection lock is taken.
         let (turned, orientation) = super::rotate::rotated_bytes(&bytes, &ext, ccw)?;
+        let phash = stored
+            .phash
+            .and_then(|_| videre::hasher::dhash_of_bytes(&turned));
+        let staged = stage_rotation(source, &turned)?;
         let recorded = record_rotated(
             &state_for_task,
             &path,
             &hash_for_task,
             shared,
             dims.map(|(w, h)| (ccw, w as i32, h as i32)),
-            original,
+            stored,
             &turned,
+            phash,
+            &staged,
         );
+        if recorded.is_err() {
+            // Nothing was swapped in; the original is untouched.
+            let _ = std::fs::remove_file(&staged);
+        }
         invalidate_thumb_cache(&cache, &hash_for_task);
         let (hash, dropped) =
             anyhow::Context::with_context(recorded, || format!("rotating {path}"))?;
@@ -2128,44 +2149,93 @@ async fn handle_rotate_file(
     }
 }
 
-/// Record a rotated file's new content, then write it. Its faces move with
+/// Read a whole source file within a timeout scaled to its size, so a drive
+/// that stalls fails this request instead of hanging it.
+fn read_bounded(path: &std::path::Path, size: u64) -> anyhow::Result<Vec<u8>> {
+    let owned = path.to_path_buf();
+    videre_core::io_timeout::run_with_timeout(
+        videre_core::io_timeout::timeout_for_size(size, 0),
+        move || std::fs::read(owned),
+    )
+    .map_err(|_| anyhow::anyhow!("timed out reading {}", path.display()))?
+    .with_context(|| format!("reading {}", path.display()))
+}
+
+/// Write the turned content beside the photo, under a hidden name the scanner
+/// ignores (no media extension), so it can replace the photo with one rename.
+/// Copying the photo first keeps its permissions (and, on macOS, its extended
+/// attributes such as Finder tags); the copy is then overwritten in place.
+fn stage_rotation(source: &std::path::Path, turned: &[u8]) -> anyhow::Result<std::path::PathBuf> {
+    let name = source
+        .file_name()
+        .with_context(|| format!("{} has no file name", source.display()))?;
+    let staged = source.with_file_name(format!(".{}.videre-rotate", name.to_string_lossy()));
+    let (from, to, bytes) = (source.to_path_buf(), staged.clone(), turned.to_vec());
+    let written = videre_core::io_timeout::run_with_timeout(
+        videre_core::io_timeout::timeout_for_size(turned.len() as u64, 0) * 2,
+        move || -> std::io::Result<()> {
+            use std::io::Write;
+            std::fs::copy(&from, &to)?;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&to)?;
+            file.write_all(&bytes)?;
+            file.sync_all()
+        },
+    );
+    match written {
+        Ok(Ok(())) => Ok(staged),
+        Ok(Err(error)) => {
+            let _ = std::fs::remove_file(&staged);
+            Err(anyhow::Error::new(error).context(format!("staging {}", staged.display())))
+        }
+        Err(_) => {
+            let _ = std::fs::remove_file(&staged);
+            anyhow::bail!("timed out staging {}", staged.display())
+        }
+    }
+}
+
+/// Record a rotated file's new content and swap it in. Its faces move with
 /// it (ids and labels stay) and their geometry turns with the photo, unless
 /// another path shares the old content or the new content already has faces
 /// of its own. The row goes through scan's own writer.
 ///
-/// Everything happens in one savepoint, in an order that closes the race with
-/// a `watch` rescan: the row is written first, so this connection holds the
-/// write lock before the file changes; a rescan racing the file write waits,
-/// then finds the new hash already recorded and drops nothing. If the file
-/// write fails, the database rolls back with it.
+/// One savepoint holds the row, the faces and the swap, in an order that
+/// keeps the photo and the database in step: the row is written first, so
+/// this connection holds the write lock; then the staged file replaces the
+/// photo in one rename, so no reader ever sees a half-written photo; a watch
+/// rescan racing it waits on the lock and finds the new hash recorded. If
+/// the rename fails, the database rolls back and the photo is untouched.
+#[allow(clippy::too_many_arguments)]
 fn record_rotated(
     state: &AppState,
     path: &str,
     old: &str,
     shared: bool,
     turn: Option<(bool, i32, i32)>,
-    original: videre::types::FileRecord,
+    stored: videre::types::FileRecord,
     turned: &[u8],
+    phash: Option<u64>,
+    staged: &std::path::Path,
 ) -> anyhow::Result<(String, Vec<videre::sqlite_output::DroppedNames>)> {
-    let library = &state.context.library;
-    let source = std::path::Path::new(path);
+    let mut record = stored;
+    record.path = path.to_string();
+    record.hash = blake3::hash(turned).to_hex().to_string();
+    record.size_bytes = turned.len() as u64;
+    record.phash = phash;
+    // The rename keeps the staged file's mtime, so the row describes the
+    // photo as it will be and an incremental scan skips it.
+    record.modified_at = std::fs::metadata(staged)
+        .ok()
+        .and_then(|meta| meta.modified().ok())
+        .map(videre_core::db::mtime_iso)
+        .or(record.modified_at);
     let conn = state
         .conn
         .lock()
         .map_err(|_| anyhow::anyhow!("the database connection lock is poisoned"))?;
-    let had_phash: bool = conn
-        .query_row(
-            "SELECT phash IS NOT NULL FROM file_hashes WHERE path = ?1",
-            [path],
-            |r| r.get(0),
-        )
-        .optional()?
-        .unwrap_or(false);
-    let mut record = original;
-    record.path = path.to_string();
-    record.hash = blake3::hash(turned).to_hex().to_string();
-    record.size_bytes = turned.len() as u64;
-    record.phash = None;
     let dropped = videre_core::db::in_savepoint(&conn, || -> anyhow::Result<_> {
         let moved = if shared {
             0
@@ -2182,28 +2252,16 @@ fn record_rotated(
         }
         let dropped = videre::sqlite_output::write_records_in_nested(
             &conn,
-            library,
+            &state.context.library,
             std::slice::from_ref(&record),
         )?;
-        anyhow::Context::with_context(std::fs::write(source, turned), || {
-            format!("writing {path}")
-        })?;
-        // Describe the file as written, so an incremental scan skips it, and
-        // keep a perceptual hash the row had, recomputed for the new pixels.
-        let meta = std::fs::metadata(source)?;
-        let phash = had_phash
-            .then(|| videre::hasher::compute_dhash_in(library, source, record.mime.as_deref()))
-            .flatten()
-            .map(|p| p as i64);
-        conn.execute(
-            "UPDATE file_hashes SET size_bytes = ?1, modified_at = ?2, phash = ?3 WHERE path = ?4",
-            rusqlite::params![
-                meta.len() as i64,
-                meta.modified().ok().map(videre_core::db::mtime_iso),
-                phash,
-                path
-            ],
-        )?;
+        let (from, to) = (staged.to_path_buf(), std::path::PathBuf::from(path));
+        videre_core::io_timeout::run_with_timeout(
+            videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
+            move || std::fs::rename(from, to),
+        )
+        .map_err(|_| anyhow::anyhow!("timed out replacing {path}"))?
+        .with_context(|| format!("replacing {path}"))?;
         Ok(dropped)
     })?;
     Ok((record.hash, dropped))

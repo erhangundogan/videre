@@ -396,15 +396,20 @@ pub(crate) fn run_prune(
     // orphans only, for the same reason.
     let keep_named = !args.drop_named_faces;
     let orphans_found = videre_core::face_db::unreferenced_face_counts(conn).unwrap_or_default();
+    let kept = if keep_named {
+        videre_core::face_db::kept_orphan_faces(conn).unwrap_or_default()
+    } else {
+        Default::default()
+    };
     let removed_faces = if args.dry_run {
-        orphans_found.faces - if keep_named { orphans_found.labeled } else { 0 }
+        orphans_found.faces - kept.faces
     } else {
         videre_core::face_db::drop_unreferenced_faces(conn, None, keep_named)
             .unwrap_or_default()
             .faces
     };
     if !args.silent {
-        let (removed, kept) = if args.dry_run {
+        let (removed, kept_tag) = if args.dry_run {
             ("[dry-run] would remove", "[dry-run] would keep")
         } else {
             ("removed", "kept")
@@ -412,11 +417,12 @@ pub(crate) fn run_prune(
         if removed_faces > 0 {
             tracing::info!("{removed} {removed_faces} orphan face(s)");
         }
-        if keep_named && orphans_found.labeled > 0 {
+        if kept.faces > 0 {
             tracing::info!(
-                "{kept} {} named face(s) whose photo is gone; they come back with it, \
-                 or remove them with --drop-named-faces",
-                orphans_found.labeled
+                "{kept_tag} {} face(s) of {} missing photo(s) with a named person; they come \
+                 back with their photos, or remove them with --drop-named-faces",
+                kept.faces,
+                kept.photos
             );
         }
     }

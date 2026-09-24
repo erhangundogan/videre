@@ -1445,6 +1445,14 @@ fn rotating_a_photo_keeps_its_faces_under_the_new_hash() {
 
     let (status, _) = server.get(&format!("/api/files/{new}/raw?size=240"));
     assert_eq!(status, 200);
+
+    // The new content was staged beside the photo and swapped in; nothing
+    // of the staging is left.
+    let names: Vec<String> = std::fs::read_dir(lib.root.join("Arşiv"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, vec!["çağla.jpg".to_string()]);
 }
 
 #[test]

@@ -292,6 +292,38 @@ pub struct DroppedFaces {
 /// its hash, it still describes a file in the library.
 const UNREFERENCED: &str = "hash NOT IN (SELECT hash FROM file_hashes)";
 const LABELED: &str = "confirmed = 1 AND person_label IS NOT NULL";
+/// Content with at least one named face. When `prune` keeps names, it keeps
+/// the whole photo's faces: they come back together, and the photo counts as
+/// scanned, so nothing would detect a dropped unnamed face again.
+const NAMED_PHOTO: &str =
+    "hash IN (SELECT hash FROM faces WHERE confirmed = 1 AND person_label IS NOT NULL)";
+
+/// Faces of absent content that `drop_unreferenced_faces(.., keep_labeled:
+/// true)` keeps, and on how many photos.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct KeptFaces {
+    pub faces: usize,
+    pub photos: usize,
+}
+
+pub fn kept_orphan_faces(conn: &Connection) -> rusqlite::Result<KeptFaces> {
+    if !crate::db::table_exists(conn, "faces")? {
+        return Ok(KeptFaces::default());
+    }
+    conn.query_row(
+        &format!(
+            "SELECT COUNT(*), COUNT(DISTINCT hash) FROM faces
+             WHERE {UNREFERENCED} AND {NAMED_PHOTO}"
+        ),
+        [],
+        |r| {
+            Ok(KeptFaces {
+                faces: r.get::<_, i64>(0)? as usize,
+                photos: r.get::<_, i64>(1)? as usize,
+            })
+        },
+    )
+}
 
 /// Whether a path other than `path` holds this content, so its faces belong
 /// to that copy too.
@@ -376,10 +408,10 @@ pub fn unreferenced_face_counts(conn: &Connection) -> rusqlite::Result<DroppedFa
 /// like any new file, and its faces need naming again. A hash some path
 /// still has is left alone.
 ///
-/// `keep_labeled` (for `None`) keeps faces someone named: a name is user
-/// data, and the content may come back (a folder moved out and back, a drive
-/// that dropped files), when the face re-attaches by hash. Their scan marker
-/// stays with them.
+/// `keep_labeled` (for `None`) keeps every face of a photo someone named a
+/// face on: a name is user data, and the content may come back (a folder
+/// moved out and back, a drive that dropped files), when the faces re-attach
+/// by hash. Their scan marker stays with them.
 pub fn drop_unreferenced_faces(
     conn: &Connection,
     hashes: Option<&[String]>,
@@ -393,9 +425,9 @@ pub fn drop_unreferenced_faces(
     let Some(hashes) = hashes else {
         let mut dropped = unreferenced_face_counts(conn)?;
         let keep = if keep_labeled {
-            dropped.faces -= dropped.labeled;
+            dropped.faces -= kept_orphan_faces(conn)?.faces;
             dropped.labeled = 0;
-            format!(" AND NOT ({LABELED})")
+            format!(" AND NOT ({NAMED_PHOTO})")
         } else {
             String::new()
         };
@@ -922,12 +954,15 @@ mod tests {
         assert_eq!(
             dropped,
             DroppedFaces {
-                faces: 2,
+                faces: 1,
                 labeled: 0
             }
         );
-        assert_eq!(face_ids(&conn, "hgone"), vec![3], "the named face stays");
-        assert!(scanned(&conn, "hgone"), "its content still has a face");
+        // The whole photo's faces stay, the unnamed one too: they come back
+        // together, and the photo counts as scanned, so nothing detects the
+        // unnamed one again.
+        assert_eq!(face_ids(&conn, "hgone"), vec![3, 4]);
+        assert!(scanned(&conn, "hgone"));
         assert!(face_ids(&conn, "hother").is_empty());
         assert!(!scanned(&conn, "hother"));
         conn.execute(

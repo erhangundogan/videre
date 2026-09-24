@@ -286,6 +286,18 @@ test("rotating one of two identical photos leaves the other copy's item alone", 
   }
 });
 
+test("rotating while the library is busy says so", async ({ page, gallery }) => {
+  await page.route("**/api/files/*/rotate*", (route) => route.fulfill({ status: 503, body: "" }));
+  await page.goto(gallery.baseURL);
+  await page.locator("#gallery [data-lb-type='image']").first().click();
+  const dialog = page.waitForEvent("dialog");
+  await page.locator("#lb-rotate").click();
+  const shown = await dialog;
+  expect(shown.message()).toContain("busy");
+  await shown.dismiss();
+  await expect(page.locator("#lb-rotate")).toBeEnabled();
+});
+
 test("a date page keeps the rotated photo's new hash across a layout switch", async ({ page, gallery }) => {
   await page.goto(`${gallery.baseURL}/date/2021/08/10`);
   await page.locator("#dateGrid [data-lb-type='image']").first().click();

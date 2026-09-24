@@ -48,12 +48,13 @@ videre prune --dry-run
    [model](/reference/models/)
 4. Deletes [cached thumbnails](/guides/caches/#thumbnail-cache) whose photo is
    gone
-5. Deletes unnamed faces whose photo is gone, reported as `removed N orphan
-   face(s)`. Such a face cannot be shown (there is no file to crop it from).
-   Named faces are **kept** and counted (`kept N named face(s) whose photo is
-   gone`): a name is yours, and if the photo comes back (a folder moved out
-   and back, a drive that dropped files) its faces come back named. Pass
-   `--drop-named-faces` to remove them too
+5. Deletes the faces of photos that are gone, reported as `removed N orphan
+   face(s)`. A photo on which someone named a face is the exception: all its
+   faces are **kept** and counted (`kept N face(s) of M missing photo(s) with
+   a named person`), because a name is yours, and if the photo comes back (a
+   folder moved out and back, a drive that dropped files) its faces come
+   back with it, named. Until then the People page leaves them out, since
+   there is nothing to show. Pass `--drop-named-faces` to remove them too
 
 Steps 3 and 4 are the reason to prune at all rather than ignoring stale rows:
 they are what actually reclaims disk space.

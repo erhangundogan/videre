@@ -68,9 +68,14 @@ test("focuses the person-name input when New Person is clicked", async ({ page, 
   // training, lazily created tables), so wait briefly instead of failing on
   // a transient write lock.
   db.exec("PRAGMA busy_timeout = 5000");
+  // A real scanned hash: the People page lists only faces whose photo some
+  // file still has.
+  const { hash } = db
+    .prepare("SELECT hash FROM file_hashes WHERE path LIKE '%.jpg' ORDER BY path LIMIT 1")
+    .get() as { hash: string };
   db.prepare(
-    "INSERT INTO faces (hash, bbox, embedding, cluster_id) VALUES ('h1', '0,0,50,50', X'0000', 7), ('h1', '60,0,50,50', X'0000', 7)"
-  ).run();
+    "INSERT INTO faces (hash, bbox, embedding, cluster_id) VALUES (?, '0,0,50,50', X'0000', 7), (?, '60,0,50,50', X'0000', 7)"
+  ).run(hash, hash);
   db.close();
 
   await page.goto(`${gallery.baseURL}/people`);

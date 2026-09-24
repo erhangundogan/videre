@@ -461,6 +461,7 @@ fn prune_removes_faces_whose_photo_is_gone_and_dry_run_only_counts() {
              INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
                VALUES ('hphantom', '0,0,9,9', X'0000', 'çağla', 1),
                       ('hphantom', '5,5,9,9', X'0000', NULL, 0),
+                      ('hgone', '0,0,9,9', X'0000', NULL, 0),
                       ('haaa', '0,0,9,9', X'0000', NULL, 0);",
         )
         .unwrap();
@@ -486,14 +487,15 @@ fn prune_removes_faces_whose_photo_is_gone_and_dry_run_only_counts() {
     assert!(!row_exists(&lib, &phantom));
     assert_eq!(
         faces("hphantom"),
-        1,
-        "a name is kept: it comes back if the photo does"
+        2,
+        "a photo with a name keeps all its faces: they come back together"
     );
+    assert_eq!(faces("hgone"), 0, "a photo nobody named goes");
     assert_eq!(faces("haaa"), 1, "a live photo keeps its faces");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("removed 1 orphan face(s)"), "{stderr}");
     assert!(
-        stderr.contains("kept 1 named face(s) whose photo is gone"),
+        stderr.contains("kept 2 face(s) of 1 missing photo(s) with a named person"),
         "{stderr}"
     );
 
