@@ -201,15 +201,22 @@ test("rotate is offered for photos, rotates, and is hidden for video", async ({ 
   const ids = await page.locator(".lb-controls button").evaluateAll((els) => els.map((e) => e.id));
   expect(ids).toEqual(["lb-rotate-ccw", "lb-rotate", "lb-fs", "lb-close"]);
 
-  // Rotating posts to the endpoint and re-fetches the preview (cache-busted).
+  // Rotating posts to the endpoint and re-fetches the preview under the
+  // photo's new content hash (cache-busted).
   const rotateResponse = page.waitForResponse(
     (r) => /\/api\/files\/[^/]+\/rotate$/.test(new URL(r.url()).pathname) && r.request().method() === "POST"
   );
   const before = await page.locator("#lb-img").getAttribute("src");
   await page.locator("#lb-rotate").click();
-  expect((await rotateResponse).status()).toBe(200);
+  const response = await rotateResponse;
+  expect(response.status()).toBe(200);
+  const { hash } = await response.json();
   await expect(page.locator("#lb-img")).not.toHaveAttribute("src", before ?? "");
+  await expect(page.locator("#lb-img")).toHaveAttribute("src", new RegExp(`/api/files/${hash}/`));
   await expect(page.locator("#lb-img")).toHaveAttribute("src", /[?&]b=\d+/);
+  await expect
+    .poll(() => page.locator("#lb-img").evaluate((img: HTMLImageElement) => img.naturalWidth))
+    .toBeGreaterThan(0);
   await expect(page.locator("#lb-rotate")).toBeEnabled();
 
   // A video carries no EXIF orientation, so the rotate button is hidden.

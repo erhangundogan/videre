@@ -387,6 +387,37 @@ function refreshTilesFor(hash,token){
     if(imgs[i].src&&imgs[i].src.indexOf(needle)>=0)imgs[i].src=bustUrl(imgs[i].src,token);
   }
 }
+// A rotate gives the photo new content, and so a new hash. Point everything on
+// the page that names the old one at the new one: the loaded rows, the tiles'
+// data-lb-meta, data-lb-url and links, image sources, and the open lightbox.
+function rehashPhoto(oldHash,newHash){
+  if(!newHash||newHash===oldHash)return;
+  var from='/api/files/'+encodeURIComponent(oldHash)+'/';
+  var to='/api/files/'+encodeURIComponent(newHash)+'/';
+  var swap=function(v){ return v&&v.indexOf(from)>=0 ? v.split(from).join(to) : v; };
+  if(typeof galleryFiles!=='undefined'){
+    galleryFiles.forEach(function(f){ if(f.hash===oldHash) f.hash=newHash; });
+  }
+  document.querySelectorAll('[data-lb-meta]').forEach(function(el){
+    try{
+      var m=JSON.parse(el.dataset.lbMeta);
+      if(m && m.hash===oldHash){ m.hash=newHash; el.dataset.lbMeta=JSON.stringify(m); }
+    }catch(e){}
+  });
+  document.querySelectorAll('[data-lb-url]').forEach(function(el){ el.dataset.lbUrl=swap(el.dataset.lbUrl); });
+  document.querySelectorAll('img[src]').forEach(function(img){
+    var src=img.getAttribute('src'), next=swap(src);
+    if(next!==src) img.setAttribute('src',next);
+  });
+  document.querySelectorAll('a[href]').forEach(function(a){
+    var href=a.getAttribute('href'), next=swap(href);
+    if(next!==href) a.setAttribute('href',next);
+  });
+  if(lbCurrent&&lbCurrent.hash===oldHash){
+    lbCurrent.hash=newHash;
+    lbCurrent.url=swap(lbCurrent.url);
+  }
+}
 // Rotate the open photo 90 clockwise. The click is debounced: the button is
 // disabled while the request is in flight, so a rapid double-click cannot queue
 // two rotations. On success the source EXIF is bumped and its caches dropped, so
@@ -400,7 +431,8 @@ function rotateLb(dir){
   btns.forEach(function(b){ if(b)b.disabled=true; });
   fetch('/api/files/'+encodeURIComponent(lbCurrent.hash)+'/rotate?dir='+dir,{method:'POST'})
     .then(function(r){ if(!r.ok)throw new Error('rotate failed'); return r.json(); })
-    .then(function(){
+    .then(function(res){
+      rehashPhoto(lbCurrent.hash,res&&res.hash);
       var token='b='+Date.now();
       document.getElementById('lb-img').src=bustUrl(lbCurrent.url,token);
       refreshTilesFor(lbCurrent.hash,token);

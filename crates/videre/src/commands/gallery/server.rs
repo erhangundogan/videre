@@ -2015,9 +2015,11 @@ struct RotateQuery {
 /// `POST /api/files/{hash}/rotate`: rotate one photo 90 degrees (clockwise by
 /// default, counter-clockwise with `?dir=ccw`) by bumping its EXIF Orientation
 /// tag in place, then drop its cached previews so the grid and lightbox
-/// re-render. Refuses a format that carries no EXIF orientation (video, HEIC,
-/// and the like) with 415, matching the button the gallery only shows for
-/// supported images.
+/// re-render. The rewritten file is new content, so its new hash is recorded
+/// at once, its faces move with it, and the response carries the new hash for
+/// the page to use. Refuses a format that carries no EXIF orientation (video,
+/// HEIC, and the like) with 415, matching the button the gallery only shows
+/// for supported images.
 async fn handle_rotate_file(
     axum::extract::Path(hash): axum::extract::Path<String>,
     Query(query): Query<RotateQuery>,
@@ -2061,6 +2063,15 @@ async fn handle_rotate_file(
     // EXIF read/write, the DB update and the cache sweep are blocking work.
     let result = tokio::task::spawn_blocking(move || {
         let source = std::path::Path::new(&path);
+        // A copy at another path has this content and these faces too; turning
+        // or moving them would break that copy, so they stay with it.
+        let shared = {
+            let conn = state_for_task
+                .conn
+                .lock()
+                .map_err(|_| anyhow::anyhow!("the database connection lock is poisoned"))?;
+            videre_core::face_db::hash_shared_elsewhere(&conn, &hash_for_task, &path)?
+        };
         // The stored face bboxes/landmarks are in the display canvas as it
         // decodes now; capture that canvas's dimensions before the turn so the
         // geometry can be mapped onto the post-rotation canvas. Read them up
@@ -2076,25 +2087,64 @@ async fn handle_rotate_file(
         // instead of cropping the pre-rotation region of the new canvas. Only
         // display-canvas rows (oriented=1) are transformed; legacy raw-canvas
         // rows still crop the correct region through their own orientation path.
-        if let Some((display_w, display_h)) = dims {
-            rotate_faces_geometry(
-                &state_for_task,
-                &hash_for_task,
-                ccw,
-                display_w as i32,
-                display_h as i32,
-            );
+        if !shared {
+            if let Some((display_w, display_h)) = dims {
+                rotate_faces_geometry(
+                    &state_for_task,
+                    &hash_for_task,
+                    ccw,
+                    display_w as i32,
+                    display_h as i32,
+                );
+            }
         }
+        // The rotated file has new content. Record it now, faces and all, so
+        // the page and a later scan agree on it; on failure the next scan
+        // records it and the faces are detected again.
+        let hash = match rehash_rotated(&state_for_task, &path, &hash_for_task, shared) {
+            Ok(new_hash) => new_hash,
+            Err(e) => {
+                videre_core::error_log::report(
+                    tracing::Level::ERROR,
+                    &e.context(format!("videre gallery: recording rotated {path}")),
+                    Some(&path),
+                );
+                hash_for_task.clone()
+            }
+        };
         invalidate_thumb_cache(&cache, &hash_for_task);
-        Ok::<u16, anyhow::Error>(orientation)
+        Ok::<(u16, String), anyhow::Error>((orientation, hash))
     })
     .await;
 
     match result {
-        Ok(Ok(orientation)) => json_response(format!("{{\"orientation\":{orientation}}}")),
+        Ok(Ok((orientation, hash))) => json_response(
+            serde_json::json!({ "orientation": orientation, "hash": hash }).to_string(),
+        ),
         Ok(Err(e)) => internal(anyhow::anyhow!("rotate failed for {hash}: {e}")).into_response(),
         Err(e) => internal(e).into_response(),
     }
+}
+
+/// Record a rotated file's new content hash. Its faces move with it (ids,
+/// labels and the turned geometry stay) unless another path shares the old
+/// content. The row goes through scan's own writer, so a later scan finds
+/// nothing changed.
+fn rehash_rotated(state: &AppState, path: &str, old: &str, shared: bool) -> anyhow::Result<String> {
+    let record = videre::hasher::hash_file_in(&state.context.library, std::path::Path::new(path))?;
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| anyhow::anyhow!("the database connection lock is poisoned"))?;
+    if !shared {
+        videre_core::face_db::move_faces_to_hash(&conn, old, &record.hash)?;
+    }
+    videre::sqlite_output::write_records_in(
+        &conn,
+        &state.context.library,
+        std::slice::from_ref(&record),
+    )?;
+    Ok(record.hash)
 }
 
 /// Turn every display-canvas (`oriented = 1`) face row for `hash` 90 degrees to

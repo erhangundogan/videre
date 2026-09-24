@@ -1388,3 +1388,94 @@ fn face_learning_boundary_only_user_mutations_change_faces() {
         }
     }
 }
+
+fn scanned_photo_with_a_labeled_face(names: &[&str]) -> (TestLibrary, String, i64) {
+    let lib = TestLibrary::new();
+    for name in names {
+        lib.copy_fixture("sample_with_exif.jpg", name);
+    }
+    lib.scan();
+    let conn = lib.conn();
+    // Scan records canonical paths (a macOS temp dir sits behind /private).
+    let path = lib.root.canonicalize().unwrap().join(names[0]);
+    let hash: String = conn
+        .query_row(
+            "SELECT hash FROM file_hashes WHERE path = ?1",
+            [path.to_string_lossy().as_ref()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    conn.execute_batch("INSERT INTO people (name, full_name) VALUES ('çağla', 'Çağla');")
+        .unwrap();
+    conn.execute(
+        "INSERT INTO faces (hash, bbox, embedding, person_label, confirmed, oriented)
+         VALUES (?1, '10,20,30,40', X'0000', 'çağla', 1, 1)",
+        [&hash],
+    )
+    .unwrap();
+    let id = conn.last_insert_rowid();
+    (lib, hash, id)
+}
+
+#[test]
+fn rotating_a_photo_keeps_its_faces_under_the_new_hash() {
+    let (lib, old, face_id) = scanned_photo_with_a_labeled_face(&["Arşiv/çağla.jpg"]);
+    let server = Server::start(&lib);
+
+    let (status, body) = server.send("POST", &format!("/api/files/{old}/rotate"), "");
+    assert_eq!(status, 200, "{body}");
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let new = json["hash"].as_str().unwrap().to_string();
+    assert_ne!(new, old);
+
+    let conn = lib.conn();
+    let (hash, label, bbox): (String, String, String) = conn
+        .query_row(
+            "SELECT hash, person_label, bbox FROM faces WHERE id = ?1",
+            [face_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!((hash.as_str(), label.as_str()), (new.as_str(), "çağla"));
+    assert_ne!(bbox, "10,20,30,40", "the geometry turned with the photo");
+    let stored: String = conn
+        .query_row("SELECT hash FROM file_hashes", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(stored, new, "a later scan has nothing to change");
+
+    let (status, _) = server.get(&format!("/api/files/{new}/raw?size=240"));
+    assert_eq!(status, 200);
+}
+
+#[test]
+fn rotating_one_copy_leaves_the_shared_faces_alone() {
+    let (lib, old, face_id) = scanned_photo_with_a_labeled_face(&["a.jpg", "b.jpg"]);
+    let server = Server::start(&lib);
+
+    // The endpoint turns one of the two copies; whichever it is, the face
+    // stays with the other, unturned.
+    let (status, body) = server.send("POST", &format!("/api/files/{old}/rotate"), "");
+    assert_eq!(status, 200, "{body}");
+
+    let conn = lib.conn();
+    let (hash, bbox): (String, String) = conn
+        .query_row(
+            "SELECT hash, bbox FROM faces WHERE id = ?1",
+            [face_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        hash, old,
+        "the unturned copy still has this content and face"
+    );
+    assert_eq!(bbox, "10,20,30,40", "and its geometry is untouched");
+    let still: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM file_hashes WHERE hash = ?1",
+            [&old],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(still, 1);
+}
