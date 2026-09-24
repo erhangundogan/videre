@@ -18,6 +18,20 @@ pub fn target_modified_at(exif_date: &str) -> Option<String> {
     Some(local_dt.to_rfc3339())
 }
 
+/// Whether a row's stored `modified_at` already equals what fix-dates would
+/// write for its `exif_date`, compared as instants so an equal time written
+/// with a different offset still matches. `None` when the `exif_date` has no
+/// target (unparseable or ambiguous), which fix-dates reports as an error.
+///
+/// The one test of "would fix-dates change this row?": `videre status` counts
+/// the rows where this is `Some(false)`, and fix-dates writes only those, so
+/// the count status suggests is the count fix-dates asks about.
+pub fn is_current(exif_date: &str, modified_at: Option<&str>) -> Option<bool> {
+    let target = chrono::DateTime::parse_from_rfc3339(&target_modified_at(exif_date)?).ok()?;
+    let current = modified_at.and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok());
+    Some(current == Some(target))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

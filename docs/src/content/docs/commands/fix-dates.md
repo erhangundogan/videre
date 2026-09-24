@@ -48,7 +48,7 @@ videre fix-dates               # apply
 | Access time (`atime`) | Left as it was |
 | Creation / birth time | Not touched. See the platform notes below |
 | Filename, path, permissions | Untouched |
-| The database | Not updated by this command; run [`videre prune`](/commands/prune/) to re-sync `modified_at` |
+| The database | Only `modified_at`, which is set to the new time so the next scan does not treat the file as changed |
 
 Sub-second precision is set to zero, since EXIF dates have one-second
 resolution. A file whose mtime was `10:31:07.482` becomes `10:31:07.000`.
@@ -59,8 +59,17 @@ Only files that actually have an EXIF date. In practice that means camera
 photos: `jpg`, `jpeg`, `tiff`, `heic` and `dng`.
 
 Screenshots, PNGs, memes, and most videos have no EXIF date and are left alone
-entirely. On a mixed library, expect a good fraction of files to be untouched,
-and the count printed before the prompt tells you exactly how many will change.
+entirely.
+
+A file whose modification time already equals its EXIF date is left alone too,
+so running this a second time changes nothing. The count in the prompt is the
+number of files whose time will actually change, the same number
+[`videre status`](/commands/status/) suggests, and the summary reports the rest
+as already correct:
+
+```
+876 file(s) with exif_date, 8 updated, 868 already correct, 0 error(s).
+```
 
 Both KEEP and REMOVE candidates are included, since duplicates you are about to
 delete do not benefit from being skipped.
@@ -132,11 +141,6 @@ changes nothing, and the prompt is skipped entirely when there is nothing to do.
 
 **No undo.** Take a backup first if the existing timestamps have any value to
 you. `--dry-run` costs nothing and shows the exact before and after.
-
-**The database is not updated.** `file_hashes.modified_at` still holds the old
-value until you run [`videre prune`](/commands/prune/), which refreshes
-timestamps for files still on disk. Nothing depends on this being current, but
-`videre stats` and reports will show the old dates until then.
 
 **Files missing on disk are skipped**, not treated as errors. Deleted duplicates
 still recorded in the database fall into this category, and appear in the
