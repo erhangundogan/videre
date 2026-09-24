@@ -1,6 +1,88 @@
 
 var PAGE=100,sorted=GROUPS.slice(),shown=0;
 
+// Sort state for the Files and Date views. Mirrors the server whitelist: six
+// fields, asc/desc, default date desc. Persisted the same way viewMode is.
+var SORT_KEY='videre.sort',SORT_FIELDS=['date','name','size','rating','liked','type'];
+var rerunDateView=null;  // set by each date renderer, so a sort change re-runs the view on screen
+var allFilesSorted=null; // ALLFILES, re-sorted per sort choice (static export only)
+function sortState(){
+  try{
+    var s=JSON.parse(localStorage.getItem(SORT_KEY)||'{}');
+    if(SORT_FIELDS.indexOf(s.field)>=0)return{field:s.field,dir:s.dir==='asc'?'asc':'desc'};
+  }catch(e){}
+  return{field:'date',dir:'desc'};
+}
+function storeSortState(s){ try{ localStorage.setItem(SORT_KEY,JSON.stringify(s)); }catch(e){} }
+function sortQuery(){ var s=sortState(); return '&sort='+s.field+'&dir='+s.dir; }
+function setSortField(f){
+  var s=sortState(); s.field=f; storeSortState(s);
+  reflectSort(); refetchCurrentView();
+}
+function toggleSortDir(){
+  var s=sortState(); s.dir=(s.dir==='asc'?'desc':'asc'); storeSortState(s);
+  reflectSort(); refetchCurrentView();
+}
+function reflectSort(){
+  var s=sortState();
+  document.querySelectorAll('.sort-select').forEach(function(sel){ sel.value=s.field; });
+  document.querySelectorAll('.sort-dir-btn').forEach(function(btn){
+    btn.setAttribute('aria-pressed',s.dir==='desc'?'true':'false');
+  });
+}
+function basenameOf(p){ var i=p.lastIndexOf('/'); return i<0?p:p.slice(i+1); }
+function cmpPath(a,b){ return a.path<b.path?-1:(a.path>b.path?1:0); }
+// The static comparator: the exact semantics of the server's ORDER BY (see
+// the gallery sort spec). Values compare with the direction; nulls sit last
+// in both directions; the path tie-break is direction-neutral. Liked keeps
+// effective date, newest first, as its second key, like the SQL.
+function sortFiles(files){
+  var s=sortState(),f=s.field,asc=(s.dir==='asc');
+  function by(fn){
+    return function(a,b){
+      var va=fn(a),vb=fn(b);
+      if(va===null||vb===null)return (va===vb)?0:(va===null?1:-1);
+      if(va<vb)return asc?-1:1;
+      if(va>vb)return asc?1:-1;
+      return 0;
+    };
+  }
+  function dateOrNull(x){ return bestDateJs(x)||null; }
+  function nameOf(x){ return basenameOf(x.path).toLowerCase(); }
+  function sizeOf(x){ return (typeof x.size==='number')?x.size:null; }
+  function ratingOf(x){ return (typeof x.rating==='number')?x.rating:null; }
+  function typeOf(x){ return (x.ext==='mov'||x.ext==='mp4')?1:0; }
+  var cmp;
+  if(f==='date')cmp=by(dateOrNull);
+  else if(f==='name')cmp=by(nameOf);
+  else if(f==='size')cmp=by(sizeOf);
+  else if(f==='rating')cmp=by(ratingOf);
+  else if(f==='type')cmp=by(typeOf);
+  else{
+    cmp=function(a,b){
+      var al=a.liked?1:0,bl=b.liked?1:0;
+      if(al!==bl)return asc?al-bl:(bl-al);
+      var da=dateOrNull(a),db=dateOrNull(b);
+      if(da===null||db===null)return (da===db)?0:(da===null?1:-1);
+      return da<db?1:(da>db?-1:0);
+    };
+  }
+  return files.slice().sort(function(a,b){
+    var r=cmp(a,b);
+    return r!==0?r:cmpPath(a,b);
+  });
+}
+function refetchCurrentView(){
+  var g=document.getElementById('gallery');
+  if(g){
+    gRequest++; gLoading=false; gShown=0; galleryFiles=[]; allFilesSorted=null;
+    clearTileMode(g); g.innerHTML='';
+    renderGallery();
+    return;
+  }
+  if(rerunDateView)rerunDateView();
+}
+
 function escA(s){
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
@@ -620,6 +702,7 @@ function groupInlined(len,parent){
 }
 
 function buildYearView(){
+  rerunDateView=function(){buildYearView();};
   dateState={level:'year',year:null,month:null};
   document.getElementById('dateBreadcrumb').innerHTML='All Dates';
   var narrowing=document.getElementById('dateNarrowing');
@@ -631,6 +714,7 @@ function buildYearView(){
   if(dateInlined())draw(groupInlined(4,null)); else fetchBuckets('year',null,draw);
 }
 function buildMonthView(year){
+  rerunDateView=function(){buildMonthView(year);};
   dateState={level:'month',year:year,month:null};
   document.getElementById('dateBreadcrumb').innerHTML=
     dateRootCrumb()+' &gt; '+dateCrumb(year,year,'buildYearView()');
@@ -644,6 +728,7 @@ function buildMonthView(year){
   if(dateInlined())draw(groupInlined(7,year)); else fetchBuckets('month',year,draw);
 }
 function buildDayView(month){
+  rerunDateView=function(){buildDayView(month);};
   dateState={level:'day',year:dateState.year||month.slice(0,4),month:month};
   document.getElementById('dateBreadcrumb').innerHTML=
     dateRootCrumb()+' &gt; '+
@@ -659,6 +744,7 @@ function buildDayView(month){
   if(dateInlined())draw(groupInlined(10,month)); else fetchBuckets('day',month,draw);
 }
 function buildDayGallery(day){
+  rerunDateView=function(){buildDayGallery(day);};
   document.getElementById('dateBreadcrumb').innerHTML=
     dateRootCrumb()+' &gt; '+
     dateCrumb(dateState.year,dateState.year,'buildYearView()')+' &gt; '+
@@ -671,22 +757,15 @@ function buildDayGallery(day){
       var d=bestDateJs(f); return d && d.slice(0,10)===day;
     });
     showPeriodCount(files.length);
-    renderDateFiles(files,'No files for '+day+'.');
+    renderDateFiles(sortFiles(files),'No files for '+day+'.');
     return;
   }
-  grid.innerHTML='<p class="muted">Loading\u2026</p>';
-  fetch('/api/files?view=date&date='+encodeURIComponent(day)+'&limit=500')
-    .then(function(r){return r.json();})
-    .then(function(d){
-      showPeriodCount(d.total!=null?d.total:(d.files||[]).length);
-      renderDateFiles(d.files||[],'No files for '+day+'.');
-    })
-    .catch(function(){ grid.innerHTML='<p class="muted">Could not load that day.</p>'; });
+  fetchDateFiles('date='+encodeURIComponent(day),'No files for '+day+'.');
 }
 function fetchDateFiles(params,emptyText){
   var grid=document.getElementById('dateGrid');
   grid.innerHTML='<p class="muted">Loading...</p>';
-  fetch('/api/files?view=date&'+params+'&limit=500')
+  fetch('/api/files?view=date&'+params+'&limit=500'+sortQuery())
     .then(function(r){return r.json();})
     .then(function(d){
       showPeriodCount(d.total!=null?d.total:(d.files||[]).length);
@@ -725,6 +804,7 @@ function renderDateNarrowing(prefix){
   },narrowing);
 }
 function buildPrefixGallery(prefix){
+  rerunDateView=function(){buildPrefixGallery(prefix);};
   var parts=prefix.split('-');
   dateState.year=parts[0]||null;
   dateState.month=parts.length>=2 ? parts[0]+'-'+parts[1] : null;
@@ -733,6 +813,7 @@ function buildPrefixGallery(prefix){
   fetchDateFiles('date='+encodeURIComponent(prefix),'No files for '+prefix+'.');
 }
 function buildRangeGallery(range){
+  rerunDateView=function(){buildRangeGallery(range);};
   document.getElementById('dateBreadcrumb').innerHTML=dateRootCrumb()+' &gt; Date range';
   var narrowing=document.getElementById('dateNarrowing');
   if(narrowing)narrowing.innerHTML='';
@@ -772,6 +853,7 @@ function eventCards(events){
   }).join('');
 }
 function buildEventsOverview(){
+  rerunDateView=function(){buildEventsOverview();};
   document.getElementById('dateBreadcrumb').innerHTML='Events';
   var narrowing=document.getElementById('dateNarrowing');
   if(narrowing)narrowing.innerHTML='';
@@ -785,6 +867,7 @@ function buildEventsOverview(){
     .catch(function(){ grid.innerHTML='<p class="muted">Could not load events.</p>'; });
 }
 function buildEventLeaf(ev){
+  rerunDateView=function(){buildEventLeaf(ev);};
   var range=eventDateRange(ev.from,ev.to);
   document.getElementById('dateBreadcrumb').innerHTML=
     '<a href="/events">All Events</a> &gt; '+escH(ev.place||range);
@@ -1024,7 +1107,8 @@ function appendCards(files,total){
 var gLoading=false;
 function renderGallery(){
   if(typeof ALLFILES!=='undefined'){
-    appendCards(ALLFILES.slice(gShown,gShown+GPAGE),ALLFILES.length);
+    if(allFilesSorted===null)allFilesSorted=sortFiles(ALLFILES.slice());
+    appendCards(allFilesSorted.slice(gShown,gShown+GPAGE),allFilesSorted.length);
     return;
   }
   if(gLoading)return;
@@ -1033,7 +1117,7 @@ function renderGallery(){
   var btn=document.getElementById('gallery-more');
   if(btn)btn.textContent='Loading\u2026';
   fetch('/api/files?view='+encodeURIComponent(GVIEW)+'&offset='+gShown+'&limit='+GPAGE+
-        galleryLocationQuery())
+        galleryLocationQuery()+sortQuery())
     .then(function(r){ return r.json(); })
     .then(function(d){
       if(request!==gRequest)return;
@@ -1192,9 +1276,11 @@ document.addEventListener('click',function(e){
   var sb=e.target.closest('[data-similar]');
   if(sb){e.preventDefault();e.stopPropagation();findSimilar(sb.dataset.similar);}
 });
-// Reflect the stored mode in the toggle(s) on load. The initial render already
-// honours viewMode() through appendCards / the date path.
+// Reflect the stored mode and sort in the controls on load. The initial
+// render already honours viewMode() through appendCards / the date path, and
+// sortState() through the first fetch (or the sorted inlined array).
 document.querySelectorAll('.view-mode-select').forEach(function(s){ s.value=viewMode(); });
+reflectSort();
 // Row geometry depends on width, so recompute tile layouts on resize (debounced).
 var _viewResizeT=null;
 window.addEventListener('resize',function(){
