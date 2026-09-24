@@ -1137,6 +1137,16 @@ fn settings_file(state: &AppState) -> std::path::PathBuf {
     super::settings::path(&state.context.library.paths.state)
 }
 
+/// Where the gallery opens: the library's saved route when it is a safe
+/// local page, otherwise `/`. See `settings::resume_route`.
+fn startup_url(addr: &str, state_dir: &Path) -> String {
+    let snapshot = super::settings::snapshot(&super::settings::path(state_dir));
+    format!(
+        "http://{addr}{}",
+        super::settings::resume_route(&snapshot.effective)
+    )
+}
+
 /// The settings script every served page inlines through `nav.html`. Read
 /// from disk on each render, so a hand edit applies on the next page load.
 fn page_settings(state: &AppState) -> String {
@@ -3591,17 +3601,23 @@ async fn serve_faces_async(
         .unwrap_or(requested);
     let addr = addr.as_str();
 
-    if opts.gallery {
-        tracing::info!("videre gallery: http://{addr}");
+    // The gallery reopens where it was last left: the printed URL and the
+    // `--browse` target both carry the saved route, so resuming works with or
+    // without `--browse`. `/` itself never redirects.
+    let url = if opts.gallery {
+        startup_url(addr, &opts.context.library.paths.state)
     } else {
-        tracing::info!("Faces labeling server: http://{addr}");
+        format!("http://{addr}")
+    };
+    if opts.gallery {
+        tracing::info!("videre gallery: {url}");
+    } else {
+        tracing::info!("Faces labeling server: {url}");
     }
     if opts.browse {
         // After the listener binds, or the browser races it and lands on a
         // connection refused.
-        let _ = std::process::Command::new("open")
-            .arg(format!("http://{addr}"))
-            .spawn();
+        let _ = std::process::Command::new("open").arg(&url).spawn();
     }
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
@@ -4186,6 +4202,32 @@ mod settings_api_tests {
         let (status, _) = patch_settings(&app, json!({"big": "a".repeat(70_000)})).await;
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
         assert_eq!(std::fs::read_to_string(file(dir.path())).unwrap(), before);
+    }
+
+    #[test]
+    fn the_gallery_opens_at_the_saved_route_when_it_is_safe() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join(".videre");
+        let addr = "127.0.0.1:7878";
+        assert_eq!(startup_url(addr, &state), "http://127.0.0.1:7878/");
+
+        std::fs::create_dir_all(&state).unwrap();
+        let saved = |route: &str| {
+            std::fs::write(
+                state.join("gallery.json"),
+                json!({"resume": {"route": route}}).to_string(),
+            )
+            .unwrap();
+        };
+        saved("/map/location/berlin?radius=25");
+        assert_eq!(
+            startup_url(addr, &state),
+            "http://127.0.0.1:7878/map/location/berlin?radius=25"
+        );
+        saved("/api/quit");
+        assert_eq!(startup_url(addr, &state), "http://127.0.0.1:7878/");
+        std::fs::write(state.join("gallery.json"), "{oops").unwrap();
+        assert_eq!(startup_url(addr, &state), "http://127.0.0.1:7878/");
     }
 
     #[tokio::test]

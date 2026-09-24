@@ -55,6 +55,23 @@ function flushSettings(){
     headers:{'Content-Type':'application/merge-patch+json'},body:body}).catch(function(){});
 }
 window.addEventListener('pagehide',flushSettings);
+// Where to reopen the gallery: saved on load and on every in-page
+// navigation. The server validates it before use (settings::resume_route),
+// and /settings is never recorded because it is a detour, not a place.
+(function(){
+  if(!VIDERE_SETTINGS_LIVE)return;
+  function record(){
+    var here=location.pathname+location.search;
+    if(location.pathname==='/settings'||setting('resume.route')===here)return;
+    saveSetting('resume.route',here);
+  }
+  ['pushState','replaceState'].forEach(function(name){
+    var orig=history[name];
+    history[name]=function(){ var r=orig.apply(this,arguments); record(); return r; };
+  });
+  window.addEventListener('popstate',record);
+  record();
+})();
 // A settings file that exists but cannot be read is never overwritten, so
 // say why choices are not being kept rather than dropping them silently.
 if(VIDERE_SETTINGS_ERROR){
