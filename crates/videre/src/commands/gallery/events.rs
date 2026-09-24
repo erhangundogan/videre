@@ -10,6 +10,7 @@ use chrono::NaiveDateTime;
 use videre_core::location_cluster::haversine_km;
 
 mod place_groups;
+mod trips;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MediaKind {
