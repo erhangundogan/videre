@@ -81,6 +81,7 @@ pub struct TrainingRun {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct HeldOutFold {
+    pub(crate) decision_kind: LearningDecisionKind,
     pub(crate) held_out_identities: Vec<String>,
     pub(crate) training: Vec<WeightedExample>,
     pub(crate) validation: Vec<WeightedExample>,
@@ -146,12 +147,16 @@ pub enum TrainingError {
         identities: usize,
         folds: usize,
     },
-    /// Held-out validation saw only one kind of example. Validation holds
-    /// people out a fold at a time, and a "different people" pair counts
-    /// only in a fold that holds out both people, so a few named people
-    /// with one per fold validate no negatives at all. More named people
-    /// fix it; nothing is wrong with the data.
-    OneSidedValidation,
+    /// A cross-validation fold saw only one kind of example: its training
+    /// side (it would fit on one class), or the pooled held-out predictions.
+    /// Folds hold people out a few at a time, so a handful of named people
+    /// or dissolved clusters can all fall on one side. More feedback of the
+    /// missing kind fixes it; nothing is wrong with the data.
+    OneSidedFold {
+        decision_kind: LearningDecisionKind,
+        /// The missing kind is "not the same person" (else it is "same").
+        lacking_negatives: bool,
+    },
     NonConvergence,
 }
 
@@ -162,7 +167,7 @@ impl fmt::Display for TrainingError {
             Self::InvalidInput(reason) => write!(f, "invalid training input: {reason}"),
             Self::InsufficientEvidence { decision_kind, positive_identities, negative_identities } => write!(f, "insufficient {decision_kind:?} evidence: {positive_identities} positive and {negative_identities} negative identities"),
             Self::TooFewIdentities { identities, folds } => write!(f, "only {identities} labeled identities for {folds} cross-validation folds; label more people or lower the fold count"),
-            Self::OneSidedValidation => write!(f, "held-out validation saw only one kind of example; name more people"),
+            Self::OneSidedFold { decision_kind, lacking_negatives } => write!(f, "a {decision_kind:?} validation fold has no {} examples", if *lacking_negatives { "negative" } else { "positive" }),
             Self::NonConvergence => write!(f, "logistic optimization did not converge"),
         }
     }
@@ -230,9 +235,13 @@ impl TrainingError {
             Self::TooFewIdentities { identities, folds } => {
                 Some(named_from_a_group(folds.saturating_sub(*identities).max(1)))
             }
-            // How many more depends on how people fall into folds; one more
-            // at a time until validation sees both kinds.
-            Self::OneSidedValidation => Some(named_from_a_group(1)),
+            // How many more depends on how identities fall into folds; one
+            // more of the missing kind at a time until every fold has both.
+            Self::OneSidedFold {
+                decision_kind: LearningDecisionKind::ClusterQuality,
+                lacking_negatives: true,
+            } => Some("dissolve 1 more wrong cluster".to_owned()),
+            Self::OneSidedFold { .. } => Some(named_from_a_group(1)),
             _ => None,
         }
     }
@@ -336,10 +345,25 @@ pub(crate) fn identity_held_out_splits(
             .filter(|example| example.identity_keys.iter().all(|key| held.contains(key)))
             .cloned()
             .collect();
-        if training.is_empty() || validation.is_empty() {
-            return Err(TrainingError::OneSidedValidation);
+        let has_negative = |side: &[WeightedExample]| side.iter().any(|e| !e.positive);
+        let has_positive = |side: &[WeightedExample]| side.iter().any(|e| e.positive);
+        // A fold fits on its training side, so that side needs both kinds.
+        // Its held-out side may be one-sided (predictions are pooled across
+        // folds and checked there) but not empty.
+        if !has_negative(&training) || !has_positive(&training) {
+            return Err(TrainingError::OneSidedFold {
+                decision_kind: dataset.decision_kind,
+                lacking_negatives: !has_negative(&training),
+            });
+        }
+        if validation.is_empty() {
+            return Err(TrainingError::OneSidedFold {
+                decision_kind: dataset.decision_kind,
+                lacking_negatives: false,
+            });
         }
         folds.push(HeldOutFold {
+            decision_kind: dataset.decision_kind,
             held_out_identities: identities,
             training,
             validation,
@@ -1116,7 +1140,12 @@ pub(crate) fn held_out_scores(
             .then(left.logit.total_cmp(&right.logit))
     });
     if !scores.iter().any(|score| score.positive) || !scores.iter().any(|score| !score.positive) {
-        return Err(TrainingError::OneSidedValidation);
+        return Err(TrainingError::OneSidedFold {
+            decision_kind: folds
+                .first()
+                .map_or(LearningDecisionKind::Membership, |fold| fold.decision_kind),
+            lacking_negatives: !scores.iter().any(|score| !score.positive),
+        });
     }
     Ok(scores)
 }
@@ -1142,7 +1171,9 @@ pub(crate) fn select_threshold(
         .map(|(_, _, weight)| weight)
         .sum();
     if positive_weight == 0.0 || scores.iter().all(|(_, positive, _)| *positive) {
-        return Err(TrainingError::OneSidedValidation);
+        return Err(TrainingError::InvalidInput(
+            "threshold selection needs both classes".into(),
+        ));
     }
     // One sweep over scores in descending order: walking down and grouping
     // equal scores means the cumulative counts at each distinct score are
@@ -1216,7 +1247,9 @@ pub(crate) fn fit_calibration(
         .map(|score| score.weight)
         .sum();
     if total_weight <= 0.0 || positive_weight <= 0.0 || positive_weight >= total_weight {
-        return Err(TrainingError::OneSidedValidation);
+        return Err(TrainingError::InvalidInput(
+            "calibration needs finite positive weight from both classes".into(),
+        ));
     }
     let prevalence = (positive_weight / total_weight).clamp(1e-9, 1.0 - 1e-9);
     let mut parameters = [(prevalence / (1.0 - prevalence)).ln(), 1.0];
@@ -1948,6 +1981,77 @@ mod tests {
         assert!(
             error.feedback_needed(&config).is_some(),
             "following the ask must not turn waiting into failed: {error}"
+        );
+    }
+
+    /// Two dissolved clusters are two negative identities, but when both fall
+    /// into the same held-out fold, that fold trains on positives only. Still
+    /// too little feedback: one more dissolve spreads them.
+    #[test]
+    fn both_dissolves_in_one_fold_waits_for_another() {
+        let people = ["çağla", "özgür", "şükrü", "ılgın"];
+        let mut observations = Vec::new();
+        let mut labels = Vec::new();
+        for (index, person) in people.iter().enumerate() {
+            for offset in 0..2 {
+                let id = (index * 2 + offset) as i64 + 1;
+                let turn = index as f32 * 1.5 + offset as f32 * 0.1;
+                observations.push(varied_observation(
+                    id,
+                    [turn.cos(), turn.sin()],
+                    &format!("h{id}"),
+                ));
+                labels.push(LabeledFace::new(id, *person));
+            }
+        }
+        let dissolved =
+            extract_cluster_quality_features(&observations[0..3], DecisionStage::GalleryCluster)
+                .unwrap();
+        let config = TrainingConfig::default();
+        let snapshot_with = |first: i64, second: i64| {
+            let events: Vec<_> = [first, second]
+                .into_iter()
+                .map(|id| {
+                    stored_event(
+                        id,
+                        LearningAction::DissolveCluster,
+                        LearningDecisionKind::ClusterQuality,
+                        LearningOutcome::Negative,
+                        None,
+                        dissolved.clone(),
+                    )
+                })
+                .collect();
+            build_training_snapshot(1, "arcface/model", &labels, &observations, &events, &config)
+                .unwrap()
+        };
+        // Find two event ids the seeded split puts in the same fold.
+        // Ids of one digit length hash next to each other and never share
+        // a fold; a short and a long id can.
+        let (first, second) = (1..10i64)
+            .flat_map(|a| (10..1000).map(move |b| (a, b)))
+            // Both events held out together leave that fold's training side
+            // with positives only, which the split itself now reports.
+            .find(|&(a, b)| {
+                matches!(
+                    identity_held_out_splits(
+                        &snapshot_with(a, b).cluster_quality,
+                        config.folds,
+                        config.seed,
+                    ),
+                    Err(TrainingError::OneSidedFold {
+                        lacking_negatives: true,
+                        ..
+                    })
+                )
+            })
+            .expect("some pair shares a fold");
+        let snapshot = snapshot_with(first, second);
+        let error = train_scorer(&snapshot.cluster_quality, &config).unwrap_err();
+        assert_eq!(
+            error.feedback_needed(&config).as_deref(),
+            Some("dissolve 1 more wrong cluster"),
+            "{error}"
         );
     }
 

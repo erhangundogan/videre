@@ -1554,9 +1554,12 @@ mod tests {
             let conn = learning_seed();
             assign_with_learning(&conn, &[7, 8], "alice", &context()).unwrap();
             videre_core::face_learning::mark_training_started(&conn).unwrap();
-            let ask = videre_core::face_learning::TrainingError::OneSidedValidation
-                .feedback_needed(&videre_core::face_learning::TrainingConfig::default())
-                .unwrap();
+            let ask = videre_core::face_learning::TrainingError::OneSidedFold {
+                decision_kind: videre_core::face_learning::LearningDecisionKind::Membership,
+                lacking_negatives: true,
+            }
+            .feedback_needed(&videre_core::face_learning::TrainingConfig::default())
+            .unwrap();
             assert_eq!(ask, "name 1 more person from a group of two or more faces");
             videre_core::face_learning::mark_training_waiting(&conn, 1, &ask).unwrap();
 
