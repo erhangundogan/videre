@@ -3,6 +3,7 @@
 //! `search --html` lives in `crate::render`; this file is the HTTP layer only.
 
 use crate::render::*;
+use anyhow::Context as _;
 use axum::body::Body;
 use axum::extract::{Json as AxumJson, Query, State};
 use axum::http::Request;
@@ -2010,19 +2011,33 @@ struct RotateQuery {
     /// `cw` (default) or `ccw`: which way to turn. The lightbox has a button for
     /// each. Anything else is treated as `cw`.
     dir: Option<String>,
+    /// Which file to turn. Identical copies share the hash, so the hash alone
+    /// does not say which one the user is looking at; the page sends the
+    /// item's path. Must be a path the library records with this hash.
+    /// Without it, any path with the hash is turned.
+    path: Option<String>,
 }
 
 /// `POST /api/files/{hash}/rotate`: rotate one photo 90 degrees (clockwise by
 /// default, counter-clockwise with `?dir=ccw`) by bumping its EXIF Orientation
 /// tag in place, then drop its cached previews so the grid and lightbox
-/// re-render. Refuses a format that carries no EXIF orientation (video, HEIC,
-/// and the like) with 415, matching the button the gallery only shows for
-/// supported images.
+/// re-render. The rewritten file is new content, so its new hash is recorded
+/// at once, its faces move with it, and the response carries the new hash for
+/// the page to use. Refuses a format that carries no EXIF orientation (video,
+/// HEIC, and the like) with 415, matching the button the gallery only shows
+/// for supported images.
 async fn handle_rotate_file(
     axum::extract::Path(hash): axum::extract::Path<String>,
     Query(query): Query<RotateQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
+    // Rotate rewrites a file and its rows, so it takes the same activity lease
+    // as every other library operation: never inside exclusive maintenance
+    // (prune, faces --reset), and never against a root replaced under us.
+    let guard = match guard_operation(&state) {
+        Ok(guard) => guard,
+        Err(status) => return status.into_response(),
+    };
     let ccw = query.dir.as_deref() == Some("ccw");
     let path = {
         let conn = match state.conn.lock() {
@@ -2031,8 +2046,9 @@ async fn handle_rotate_file(
         };
         match conn
             .query_row(
-                "SELECT path FROM file_hashes WHERE hash = ?1 LIMIT 1",
-                [&hash],
+                "SELECT path FROM file_hashes WHERE hash = ?1 AND (?2 IS NULL OR path = ?2)
+                 ORDER BY path LIMIT 1",
+                rusqlite::params![&hash, query.path],
                 |r| r.get::<_, String>(0),
             )
             .optional()
@@ -2060,41 +2076,269 @@ async fn handle_rotate_file(
     let state_for_task = state.clone();
     // EXIF read/write, the DB update and the cache sweep are blocking work.
     let result = tokio::task::spawn_blocking(move || {
+        let _guard = guard;
         let source = std::path::Path::new(&path);
+        // A copy at another path has this content and these faces too; turning
+        // or moving them would break that copy, so they stay with it. The
+        // stored row supplies everything but the new content's own facts, so
+        // the file is read once.
+        let (shared, stored) = {
+            let conn = state_for_task
+                .conn
+                .lock()
+                .map_err(|_| anyhow::anyhow!("the database connection lock is poisoned"))?;
+            let shared = videre_core::face_db::hash_shared_elsewhere(&conn, &hash_for_task, &path)?;
+            let stored = conn.query_row(
+                &format!(
+                    "SELECT {} FROM file_hashes WHERE path = ?1",
+                    videre::sqlite_output::FILE_RECORD_COLUMNS
+                ),
+                [&path],
+                videre::sqlite_output::file_record_from_row,
+            )?;
+            (shared, stored)
+        };
         // The stored face bboxes/landmarks are in the display canvas as it
         // decodes now; capture that canvas's dimensions before the turn so the
-        // geometry can be mapped onto the post-rotation canvas. Read them up
-        // front: the rotation bumps the EXIF the dimensions depend on.
+        // geometry can be mapped onto the post-rotation canvas.
         let dims = super::rotate::current_display_dimensions(source);
-        let orientation = if ccw {
-            super::rotate::rotate_ccw_in_place(source, &ext)?
-        } else {
-            super::rotate::rotate_cw_in_place(source, &ext)?
-        };
-        // Turn the display-canvas face geometry with the photo, so a rotated
-        // photo's face crops stay on their faces and keep their people labels
-        // instead of cropping the pre-rotation region of the new canvas. Only
-        // display-canvas rows (oriented=1) are transformed; legacy raw-canvas
-        // rows still crop the correct region through their own orientation path.
-        if let Some((display_w, display_h)) = dims {
-            rotate_faces_geometry(
-                &state_for_task,
-                &hash_for_task,
-                ccw,
-                display_w as i32,
-                display_h as i32,
-            );
+        // Rotation swaps a new file in with a rename, which would replace a
+        // symbolic link with a plain file, or split a hard-linked photo from
+        // its other names. Those are left for the user to rotate at the
+        // target.
+        let meta = std::fs::symlink_metadata(source)?;
+        if meta.file_type().is_symlink() {
+            return Err(RotateRefused(format!(
+                "{path} is a link; rotate the photo it points to instead"
+            ))
+            .into());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if meta.nlink() > 1 {
+                return Err(RotateRefused(format!(
+                    "{path} has other hard links, which a rotation would split from it"
+                ))
+                .into());
+            }
+        }
+        let bytes = read_bounded(source, stored.size_bytes)?;
+        // The new row is built from the stored one, so it must still describe
+        // this file: an edit another app made since the last scan would
+        // otherwise leave the old dates and faces on new content.
+        if blake3::hash(&bytes).to_hex().as_str() != stored.hash {
+            return Err(RotateRefused(format!(
+                "{path} changed on disk since it was last scanned; \
+                 rotate it again once `videre scan` or `videre watch` has picked up the change"
+            ))
+            .into());
+        }
+        // Turned in memory, so the new content, its hash and its perceptual
+        // hash are all known before anything on disk changes, and before the
+        // connection lock is taken.
+        let (turned, orientation) = super::rotate::rotated_bytes(&bytes, &ext, ccw)?;
+        let phash = stored
+            .phash
+            .and_then(|_| videre::hasher::dhash_of_bytes(&turned));
+        let staged = stage_rotation(
+            source,
+            &state_for_task
+                .context
+                .library
+                .paths
+                .state
+                .join(ROTATE_STAGING),
+            &turned,
+        )?;
+        let recorded = record_rotated(
+            &state_for_task,
+            &path,
+            &hash_for_task,
+            shared,
+            dims.map(|(w, h)| (ccw, w as i32, h as i32)),
+            stored,
+            &turned,
+            phash,
+            &staged,
+        );
+        if recorded.is_err() {
+            // Nothing was swapped in; the original is untouched.
+            let _ = std::fs::remove_file(&staged);
         }
         invalidate_thumb_cache(&cache, &hash_for_task);
-        Ok::<u16, anyhow::Error>(orientation)
+        let (hash, dropped) =
+            anyhow::Context::with_context(recorded, || format!("rotating {path}"))?;
+        // Committed: now it is true that these names must be given again.
+        for names in dropped {
+            names.warn();
+        }
+        Ok::<(u16, String, String), anyhow::Error>((orientation, hash, path))
     })
     .await;
 
     match result {
-        Ok(Ok(orientation)) => json_response(format!("{{\"orientation\":{orientation}}}")),
-        Ok(Err(e)) => internal(anyhow::anyhow!("rotate failed for {hash}: {e}")).into_response(),
+        // The path says which item turned: a copy at another path keeps the
+        // old hash, so the page must not rewrite it.
+        Ok(Ok((orientation, hash, path))) => json_response(
+            serde_json::json!({ "orientation": orientation, "hash": hash, "path": path })
+                .to_string(),
+        ),
+        // A refusal is the user's to act on, and its reason is shown as is.
+        Ok(Err(e)) => match e.downcast_ref::<RotateRefused>() {
+            Some(refused) => (StatusCode::CONFLICT, refused.0.clone()).into_response(),
+            None => internal(anyhow::anyhow!("rotate failed for {hash}: {e}")).into_response(),
+        },
         Err(e) => internal(e).into_response(),
     }
+}
+
+/// Read a whole source file within a timeout scaled to its size, so a drive
+/// that stalls fails this request instead of hanging it.
+fn read_bounded(path: &std::path::Path, size: u64) -> anyhow::Result<Vec<u8>> {
+    let owned = path.to_path_buf();
+    videre_core::io_timeout::run_with_timeout(
+        videre_core::io_timeout::timeout_for_size(size, 0),
+        move || std::fs::read(owned),
+    )
+    .map_err(|_| anyhow::anyhow!("timed out reading {}", path.display()))?
+    .with_context(|| format!("reading {}", path.display()))
+}
+
+/// A rotation that is refused for a reason the user can act on (the file
+/// changed since its scan, it is a link): answered 409 with the reason.
+#[derive(Debug)]
+struct RotateRefused(String);
+
+impl std::fmt::Display for RotateRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for RotateRefused {}
+
+/// Where rotated content is staged before it is swapped in: inside the
+/// library's own state directory, which the scanner never walks, and which the
+/// gallery clears when it starts, so an interrupted rotation leaves nothing
+/// behind in the photo folders.
+const ROTATE_STAGING: &str = "rotate";
+
+/// Write the turned content into the staging directory, so it can replace the
+/// photo with one rename. Copying the photo first keeps its permissions (and,
+/// on macOS, its extended attributes such as Finder tags); the copy is then
+/// overwritten. A photo on another volume than the library's state directory
+/// cannot be swapped by rename, and its rotation fails without touching it.
+fn stage_rotation(
+    source: &std::path::Path,
+    staging: &std::path::Path,
+    turned: &[u8],
+) -> anyhow::Result<std::path::PathBuf> {
+    std::fs::create_dir_all(staging).with_context(|| format!("creating {}", staging.display()))?;
+    let staged = staging.join(blake3::hash(turned).to_hex().as_str());
+    let (from, to, bytes) = (source.to_path_buf(), staged.clone(), turned.to_vec());
+    let written = videre_core::io_timeout::run_with_timeout(
+        videre_core::io_timeout::timeout_for_size(turned.len() as u64, 0) * 2,
+        move || -> std::io::Result<()> {
+            use std::io::Write;
+            std::fs::copy(&from, &to)?;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&to)?;
+            file.write_all(&bytes)?;
+            file.sync_all()
+        },
+    );
+    match written {
+        Ok(Ok(())) => Ok(staged),
+        Ok(Err(error)) => {
+            let _ = std::fs::remove_file(&staged);
+            Err(anyhow::Error::new(error).context(format!("staging {}", staged.display())))
+        }
+        Err(_) => {
+            let _ = std::fs::remove_file(&staged);
+            anyhow::bail!("timed out staging {}", staged.display())
+        }
+    }
+}
+
+/// Clear rotations an earlier gallery left staged (it quit mid-rotate, or a
+/// timed-out copy finished late). Nothing staged is ever needed across starts.
+fn clear_rotate_staging(library: &videre_core::library::LibraryContext) {
+    let staging = library.paths.state.join(ROTATE_STAGING);
+    if staging.exists() {
+        if let Err(error) = std::fs::remove_dir_all(&staging) {
+            tracing::debug!("could not clear {}: {error}", staging.display());
+        }
+    }
+}
+
+/// Record a rotated file's new content and swap it in. Its faces move with
+/// it (ids and labels stay) and their geometry turns with the photo, unless
+/// another path shares the old content or the new content already has faces
+/// of its own. The row goes through scan's own writer.
+///
+/// One savepoint holds the row, the faces and the swap, in an order that
+/// keeps the photo and the database in step: the row is written first, so
+/// this connection holds the write lock; then the staged file replaces the
+/// photo in one rename, so no reader ever sees a half-written photo; a watch
+/// rescan racing it waits on the lock and finds the new hash recorded. If
+/// the rename fails, the database rolls back and the photo is untouched.
+#[allow(clippy::too_many_arguments)]
+fn record_rotated(
+    state: &AppState,
+    path: &str,
+    old: &str,
+    shared: bool,
+    turn: Option<(bool, i32, i32)>,
+    stored: videre::types::FileRecord,
+    turned: &[u8],
+    phash: Option<u64>,
+    staged: &std::path::Path,
+) -> anyhow::Result<(String, Vec<videre::sqlite_output::DroppedNames>)> {
+    let mut record = stored;
+    record.path = path.to_string();
+    record.hash = blake3::hash(turned).to_hex().to_string();
+    record.size_bytes = turned.len() as u64;
+    record.phash = phash;
+    // The rename keeps the staged file's mtime, so the row describes the
+    // photo as it will be and an incremental scan skips it.
+    record.modified_at = std::fs::metadata(staged)
+        .ok()
+        .and_then(|meta| meta.modified().ok())
+        .map(videre_core::db::mtime_iso)
+        .or(record.modified_at);
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|_| anyhow::anyhow!("the database connection lock is poisoned"))?;
+    let dropped = videre_core::db::in_savepoint(&conn, || -> anyhow::Result<_> {
+        let moved = if shared {
+            0
+        } else {
+            videre_core::face_db::move_faces_to_hash(&conn, old, &record.hash)?
+        };
+        // Turn the display-canvas face geometry with the photo, so a rotated
+        // photo's face crops stay on their faces instead of cropping the
+        // pre-rotation region of the new canvas. Only the rows that moved
+        // are this photo's; legacy raw-canvas rows (oriented NULL) crop the
+        // right region through their own orientation path.
+        if let (true, Some((ccw, display_w, display_h))) = (moved > 0, turn) {
+            rotate_faces_geometry(&conn, &record.hash, ccw, display_w, display_h);
+        }
+        let dropped = videre::sqlite_output::write_records_in_nested(
+            &conn,
+            &state.context.library,
+            std::slice::from_ref(&record),
+        )?;
+        // A plain rename, not a timed one: the data was written and synced
+        // while staging, so this is one metadata update, and a timed-out
+        // rename could still land after the database rolled back.
+        std::fs::rename(staged, path).with_context(|| format!("replacing {path}"))?;
+        Ok(dropped)
+    })?;
+    Ok((record.hash, dropped))
 }
 
 /// Turn every display-canvas (`oriented = 1`) face row for `hash` 90 degrees to
@@ -2103,21 +2347,17 @@ async fn handle_rotate_file(
 /// a row whose bbox or landmark will not parse is left untouched rather than
 /// corrupted, and a DB error is logged, since the rotation itself has already
 /// succeeded and the caller reports that.
-fn rotate_faces_geometry(state: &AppState, hash: &str, ccw: bool, display_w: i32, display_h: i32) {
+fn rotate_faces_geometry(
+    conn: &rusqlite::Connection,
+    hash: &str,
+    ccw: bool,
+    display_w: i32,
+    display_h: i32,
+) {
     // The file itself was rotated already, so a failure here leaves face
     // boxes stale: logged at error, where the primary log keeps it.
     let failed = |what: String, e: anyhow::Error| {
         videre_core::error_log::report(tracing::Level::ERROR, &e.context(what), None)
-    };
-    let conn = match state.conn.lock() {
-        Ok(conn) => conn,
-        Err(_) => {
-            failed(
-                format!("videre gallery: rotating face geometry for {hash}"),
-                anyhow::anyhow!("the database connection lock is poisoned by an earlier panic"),
-            );
-            return;
-        }
     };
     let rows: Vec<(i64, String, Option<String>)> = {
         let mut stmt = match conn.prepare(
@@ -2779,10 +3019,19 @@ async fn handle_face_image(
         let _guard = guard_operation(&state)?;
         let lookup = {
             let conn = state.conn.lock().map_err(poisoned)?;
-            videre_api::face_lookup(&conn, face_id).map_err(|_| StatusCode::NOT_FOUND)?
+            videre_api::face_lookup(&conn, face_id).map_err(|_| {
+                // Either the face is gone or no file has its content any more
+                // (an orphan, removed by `videre prune`).
+                tracing::debug!(face_id, "face image: no face row joined to a file");
+                StatusCode::NOT_FOUND
+            })?
         };
-        videre_api::face_bytes_from_lookup(&lookup, face_id, &state.context.library.cache)
-            .map_err(|_| StatusCode::NOT_FOUND)
+        videre_api::face_bytes_from_lookup(&lookup, face_id, &state.context.library.cache).map_err(
+            |e| {
+                tracing::debug!(face_id, path = %lookup.file_path, "face image: no crop ({e})");
+                StatusCode::NOT_FOUND
+            },
+        )
     })
     .await
     .map_err(internal)??;
@@ -3317,6 +3566,7 @@ async fn serve_faces_async(
         videre_core::face_learning::ensure_learning_tables(&conn)?;
         videre_core::face_learning::ensure_question_tables(&conn)?;
     }
+    clear_rotate_staging(&opts.context.library);
     // Only --all needs vectors. A missing model database disables the
     // similarity search with a note rather than failing the whole report,
     // which works perfectly well without embeddings.
@@ -3864,7 +4114,7 @@ mod rotate_geometry_tests {
             .with_writer(move || w.clone())
             .finish();
         tracing::subscriber::with_default(sub, || {
-            rotate_faces_geometry(&state, "çağla", false, 100, 80)
+            rotate_faces_geometry(&state.conn.lock().unwrap(), "çağla", false, 100, 80)
         });
 
         let logged = String::from_utf8_lossy(&buf.0.lock().unwrap()).to_string();

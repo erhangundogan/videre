@@ -1390,3 +1390,281 @@ fn face_learning_boundary_only_user_mutations_change_faces() {
         }
     }
 }
+
+fn scanned_photo_with_a_labeled_face(names: &[&str]) -> (TestLibrary, String, i64) {
+    let lib = TestLibrary::new();
+    for name in names {
+        lib.copy_fixture("sample_with_exif.jpg", name);
+    }
+    lib.scan();
+    let conn = lib.conn();
+    // Scan records canonical paths (a macOS temp dir sits behind /private).
+    let path = lib.root.canonicalize().unwrap().join(names[0]);
+    let hash: String = conn
+        .query_row(
+            "SELECT hash FROM file_hashes WHERE path = ?1",
+            [path.to_string_lossy().as_ref()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    conn.execute_batch("INSERT INTO people (name, full_name) VALUES ('çağla', 'Çağla');")
+        .unwrap();
+    conn.execute(
+        "INSERT INTO faces (hash, bbox, embedding, person_label, confirmed, oriented)
+         VALUES (?1, '10,20,30,40', X'0000', 'çağla', 1, 1)",
+        [&hash],
+    )
+    .unwrap();
+    let id = conn.last_insert_rowid();
+    (lib, hash, id)
+}
+
+#[test]
+fn rotating_a_photo_keeps_its_faces_under_the_new_hash() {
+    let (lib, old, face_id) = scanned_photo_with_a_labeled_face(&["Arşiv/çağla.jpg"]);
+    let server = Server::start(&lib);
+
+    let (status, body) = server.send("POST", &format!("/api/files/{old}/rotate"), "");
+    assert_eq!(status, 200, "{body}");
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let new = json["hash"].as_str().unwrap().to_string();
+    assert_ne!(new, old);
+
+    let conn = lib.conn();
+    let (hash, label, bbox): (String, String, String) = conn
+        .query_row(
+            "SELECT hash, person_label, bbox FROM faces WHERE id = ?1",
+            [face_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!((hash.as_str(), label.as_str()), (new.as_str(), "çağla"));
+    assert_ne!(bbox, "10,20,30,40", "the geometry turned with the photo");
+    let stored: String = conn
+        .query_row("SELECT hash FROM file_hashes", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(stored, new, "a later scan has nothing to change");
+
+    let (status, _) = server.get(&format!("/api/files/{new}/raw?size=240"));
+    assert_eq!(status, 200);
+
+    // The new content was staged beside the photo and swapped in; nothing
+    // of the staging is left.
+    let names: Vec<String> = std::fs::read_dir(lib.root.join("Arşiv"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, vec!["çağla.jpg".to_string()]);
+}
+
+#[test]
+fn rotating_one_copy_leaves_the_shared_faces_alone() {
+    let (lib, old, face_id) = scanned_photo_with_a_labeled_face(&["a.jpg", "b.jpg"]);
+    let server = Server::start(&lib);
+
+    // The page names the copy it shows; the face stays with the other one,
+    // unturned.
+    let b = lib.root.canonicalize().unwrap().join("b.jpg");
+    let b = b.to_string_lossy().into_owned();
+    let (status, body) = server.send(
+        "POST",
+        &format!(
+            "/api/files/{old}/rotate?path={}",
+            b.replace('/', "%2F").replace(' ', "%20")
+        ),
+        "",
+    );
+    assert_eq!(status, 200, "{body}");
+
+    let conn = lib.conn();
+    let (hash, bbox): (String, String) = conn
+        .query_row(
+            "SELECT hash, bbox FROM faces WHERE id = ?1",
+            [face_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        hash, old,
+        "the unturned copy still has this content and face"
+    );
+    assert_eq!(bbox, "10,20,30,40", "and its geometry is untouched");
+    let still: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM file_hashes WHERE hash = ?1",
+            [&old],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(still, 1);
+
+    // The response names the one path that turned, so the page updates only
+    // that item; the other copy's row still has the old hash.
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let turned = json["path"]
+        .as_str()
+        .expect("the response names the rotated path");
+    assert_eq!(turned, b, "the named copy is the one that turned");
+    let untouched: String = conn
+        .query_row(
+            "SELECT path FROM file_hashes WHERE hash = ?1",
+            [&old],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_ne!(turned, untouched);
+}
+
+#[test]
+fn rotating_into_content_that_already_has_faces_does_not_merge_them() {
+    // Two identical copies, each turned in turn: the second turn produces the
+    // content the first already has, with its own detected faces.
+    let (lib, old, _) = scanned_photo_with_a_labeled_face(&["a.jpg", "b.jpg"]);
+    let server = Server::start(&lib);
+    let (status, body) = server.send("POST", &format!("/api/files/{old}/rotate"), "");
+    assert_eq!(status, 200, "{body}");
+    let first: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let turned = first["hash"].as_str().unwrap().to_string();
+    {
+        // Detection ran on the turned content between the two rotations.
+        let conn = lib.conn();
+        conn.execute(
+            "INSERT INTO faces (hash, bbox, embedding, person_label, confirmed, oriented)
+             VALUES (?1, '1,2,3,4', X'0000', NULL, 0, 1)",
+            [&turned],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO faces_scanned (hash) VALUES (?1)", [&turned])
+            .unwrap();
+    }
+
+    let (status, body) = server.send("POST", &format!("/api/files/{old}/rotate"), "");
+    assert_eq!(status, 200, "{body}");
+    let second: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        second["hash"].as_str().unwrap(),
+        turned,
+        "precondition: both copies turned into the same content"
+    );
+
+    let conn = lib.conn();
+    let faces: Vec<(String, String)> = conn
+        .prepare("SELECT hash, bbox FROM faces ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        faces,
+        vec![(turned.clone(), "1,2,3,4".to_string())],
+        "the turned content keeps its own faces; the old content, now on no path, takes its faces with it"
+    );
+}
+
+#[test]
+fn rotate_refuses_a_file_that_changed_since_its_scan() {
+    let (lib, old, face_id) = scanned_photo_with_a_labeled_face(&["Arşiv/çağla.jpg"]);
+    let server = Server::start(&lib);
+    let file = lib.root.join("Arşiv/çağla.jpg");
+    // Another app changed it; watch has not rescanned yet.
+    let mut bytes = std::fs::read(&file).unwrap();
+    bytes.extend_from_slice(b"edited elsewhere");
+    std::fs::write(&file, &bytes).unwrap();
+
+    let (status, body) = server.send("POST", &format!("/api/files/{old}/rotate"), "");
+    assert_eq!(status, 409, "{body}");
+    assert!(body.contains("changed"), "{body}");
+    assert_eq!(
+        std::fs::read(&file).unwrap(),
+        bytes,
+        "the file is untouched"
+    );
+    let hash: String = lib
+        .conn()
+        .query_row("SELECT hash FROM faces WHERE id = ?1", [face_id], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(hash, old, "the faces are untouched");
+}
+
+#[cfg(unix)]
+#[test]
+fn rotate_refuses_a_symlinked_photo() {
+    let (lib, _, _) = scanned_photo_with_a_labeled_face(&["Arşiv/çağla.jpg"]);
+    let archive = tempfile::tempdir().unwrap();
+    let target = archive.path().join("original.jpg");
+    std::fs::rename(lib.root.join("Arşiv/çağla.jpg"), &target).unwrap();
+    std::os::unix::fs::symlink(&target, lib.root.join("Arşiv/çağla.jpg")).unwrap();
+    let server = Server::start(&lib);
+    let old: String = lib
+        .conn()
+        .query_row("SELECT hash FROM file_hashes", [], |r| r.get(0))
+        .unwrap();
+
+    let (status, body) = server.send("POST", &format!("/api/files/{old}/rotate"), "");
+    assert!(status == 409 || status == 404, "{status} {body}");
+    assert!(
+        std::fs::symlink_metadata(lib.root.join("Arşiv/çağla.jpg"))
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the link is left as it was"
+    );
+}
+
+#[test]
+fn rotate_waits_for_exclusive_maintenance() {
+    let (lib, old, _) = scanned_photo_with_a_labeled_face(&["Arşiv/çağla.jpg"]);
+    let server = Server::start(&lib);
+    let file = lib.root.join("Arşiv/çağla.jpg");
+    let before = std::fs::read(&file).unwrap();
+    {
+        // A prune or faces --reset in another process holds this.
+        let _maintenance = videre_core::library_locks::try_activity(
+            &lib.context(),
+            videre_core::library_locks::ActivityMode::Exclusive,
+        )
+        .unwrap();
+        let (status, body) = server.send("POST", &format!("/api/files/{old}/rotate"), "");
+        assert_eq!(status, 503, "{body}");
+        assert_eq!(
+            std::fs::read(&file).unwrap(),
+            before,
+            "the file is untouched"
+        );
+    }
+    let (status, body) = server.send("POST", &format!("/api/files/{old}/rotate"), "");
+    assert_eq!(status, 200, "{body}");
+}
+
+#[test]
+fn rotating_keeps_a_perceptual_hash_the_row_had() {
+    let (lib, old, _) = scanned_photo_with_a_labeled_face(&["Arşiv/çağla.jpg"]);
+    lib.conn()
+        .execute("UPDATE file_hashes SET phash = 12345", [])
+        .unwrap();
+    let server = Server::start(&lib);
+    let (status, body) = server.send("POST", &format!("/api/files/{old}/rotate"), "");
+    assert_eq!(status, 200, "{body}");
+    let (phash, modified_at, size): (Option<i64>, String, i64) = lib
+        .conn()
+        .query_row(
+            "SELECT phash, modified_at, size_bytes FROM file_hashes",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert!(
+        phash.is_some(),
+        "similar-image search still finds the photo"
+    );
+    // The row describes the file as written, so an incremental scan skips it.
+    let meta = std::fs::metadata(lib.root.join("Arşiv/çağla.jpg")).unwrap();
+    assert_eq!(size as u64, meta.len());
+    assert_eq!(
+        modified_at,
+        videre_core::db::mtime_iso(meta.modified().unwrap())
+    );
+}

@@ -217,15 +217,39 @@ grid and lightbox re-render upright. The photo's display-canvas face boxes and
 landmarks are turned with it, so face crops stay on their faces and keep their
 people labels. Supported for EXIF-bearing images (JPEG, PNG, TIFF, WebP); any
 other format (video, HEIC, and the like) returns `415 Unsupported Media Type`.
-The response body carries the new orientation value.
+
+While another videre command holds the library for exclusive maintenance
+(`prune`, `faces --reset`), the request returns `503` and the file is not
+touched.
+
+It returns `409` with the reason, and leaves the file alone, when the file
+changed on disk since it was last scanned (rotate it again once `scan` or
+`watch` has picked the change up), or when it is a symbolic link or has other
+hard links, which the swap would replace or split.
+
+Identical copies share a hash, so pass `path` to say which file to turn; it
+must be a path the library records with that hash, or the request returns
+`404`. Without it, one of the copies is turned.
+
+Rewriting the tag changes the file's content, and so its content hash. The new
+hash is recorded at once, together with the move of the photo's faces to it,
+and a failure to record it fails the request. The faces stay with the old
+content when another path still holds it, and the new content keeps its own
+faces when it already has some. The response carries the new orientation, the
+new hash and the path that turned. Use the new hash for later requests about
+that file; a copy at another path keeps the old one.
 
 ```bash
 curl -X POST \
-  "http://127.0.0.1:7878/api/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/rotate"
+  "http://127.0.0.1:7878/api/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/rotate?path=%2FPhotos%2FAr%C5%9Fiv%2Fcagla.jpg"
 ```
 
 ```json
-{ "orientation": 6 }
+{
+  "orientation": 6,
+  "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "path": "/Photos/Arşiv/cagla.jpg"
+}
 ```
 
 ## Dates, search and locations

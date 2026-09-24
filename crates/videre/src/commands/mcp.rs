@@ -171,7 +171,14 @@ fn build_stats(ctx: &crate::command_context::CommandContext) -> anyhow::Result<S
         .unwrap_or(0);
 
     let (faces_count, people) = if videre_core::db::table_exists(&conn, "faces")? {
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM faces", [], |r| r.get(0))?;
+        let count: i64 = conn.query_row(
+            &format!(
+                "SELECT COUNT(*) FROM faces WHERE {}",
+                videre_core::face_db::HAS_PHOTO
+            ),
+            [],
+            |r| r.get(0),
+        )?;
         // This was a second copy of the query in `person_search::list_persons`.
         // Sharing it is not tidiness: the copy returned raw labels, so once
         // labels became identities it would have reported `alice` where the

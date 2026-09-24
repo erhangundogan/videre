@@ -7,6 +7,7 @@ use crate::types::*;
 use rusqlite::Connection;
 use std::collections::{BTreeSet, HashMap};
 use videre_core::face_db::load_face_observations;
+use videre_core::face_db::HAS_PHOTO;
 use videre_core::face_learning::{
     active_question_context, append_event_batch_in_transaction, extract_cluster_quality_features,
     extract_membership_features, finish_question_in_transaction,
@@ -214,10 +215,17 @@ pub fn faces_list(conn: &Connection) -> Result<FacesData> {
             // LEFT JOIN, not JOIN: a face labelled before the people table
             // existed still has to appear, showing its raw label until the
             // migration gives it a row.
-            "SELECT f.id, f.hash, f.person_label, COALESCE(p.full_name, f.person_label) \
+            //
+            // Every query here lists only faces whose photo some file still
+            // has: a named face `prune` kept for an absent photo has nothing
+            // to crop from, and returns with its photo.
+            &format!(
+                "SELECT f.id, f.hash, f.person_label, COALESCE(p.full_name, f.person_label) \
              FROM faces f LEFT JOIN people p ON p.name = f.person_label \
              WHERE f.confirmed = 1 AND f.person_label IS NOT NULL \
-             ORDER BY f.person_label, f.is_primary DESC, f.id ASC",
+               AND f.{HAS_PHOTO} \
+             ORDER BY f.person_label, f.is_primary DESC, f.id ASC"
+            ),
         )?;
         let rows = stmt.query_map([], |r| {
             Ok((
@@ -245,11 +253,12 @@ pub fn faces_list(conn: &Connection) -> Result<FacesData> {
 
     let mut cluster_map: HashMap<i64, ClusterData> = HashMap::new();
     {
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(&format!(
             "SELECT id, hash, cluster_id FROM faces \
              WHERE cluster_id IS NOT NULL AND (confirmed = 0 OR person_label IS NULL) \
-             ORDER BY cluster_id, id",
-        )?;
+               AND {HAS_PHOTO} \
+             ORDER BY cluster_id, id"
+        ))?;
         let rows = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
@@ -273,11 +282,12 @@ pub fn faces_list(conn: &Connection) -> Result<FacesData> {
 
     let mut singletons: Vec<SingletonData> = vec![];
     {
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(&format!(
             "SELECT id, hash FROM faces \
              WHERE cluster_id IS NULL AND (confirmed = 0 OR person_label IS NULL) \
-             ORDER BY id",
-        )?;
+               AND {HAS_PHOTO} \
+             ORDER BY id"
+        ))?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
         for row in rows {
             let (id, hash) = row?;
@@ -1840,6 +1850,29 @@ mod tests {
     }
 
     #[test]
+    fn faces_list_hides_faces_whose_photo_is_gone() {
+        let conn = seed();
+        conn.execute_batch(
+            "INSERT INTO people (name, full_name) VALUES ('fulya', 'Fulya');
+             INSERT INTO faces (id,hash,bbox,embedding,cluster_id,person_label,confirmed,is_primary) VALUES
+                (20,'hgone','0,0,9,9',X'0000',NULL,'fulya',1,1),
+                (21,'hgone','0,0,9,9',X'0000',7,NULL,0,0),
+                (22,'hgone','0,0,9,9',X'0000',NULL,NULL,0,0),
+                (23,'hgone','0,0,9,9',X'0000',NULL,'alice',1,1);",
+        )
+        .unwrap();
+        // A kept named face of an absent photo has nothing to crop from, so
+        // listing it would show a broken tile; it returns with its photo.
+        let d = faces_list(&conn).unwrap();
+        assert!(d.people.iter().all(|p| p.label != "fulya"));
+        let alice = d.people.iter().find(|p| p.label == "alice").unwrap();
+        assert!(!alice.face_ids.contains(&23));
+        assert_ne!(alice.representative_id, 23);
+        assert!(d.clusters.iter().all(|c| !c.face_ids.contains(&21)));
+        assert!(d.singletons.iter().all(|s| s.face_id != 22));
+    }
+
+    #[test]
     fn faces_list_splits_people_clusters_singletons() {
         let conn = seed();
         let d = faces_list(&conn).unwrap();
@@ -2413,7 +2446,9 @@ mod never_run_tests {
                  cluster_id INTEGER,
                  person_label TEXT REFERENCES people(name) ON DELETE RESTRICT ON UPDATE RESTRICT,
                  confirmed INTEGER DEFAULT 0,
-                 is_primary INTEGER DEFAULT 0, det_score REAL, blur REAL, oriented INTEGER);",
+                 is_primary INTEGER DEFAULT 0, det_score REAL, blur REAL, oriented INTEGER);
+                 -- Every face's photo exists: these tests are not about missing photos, and the readers list, group and offer only faces some file still has.
+                 CREATE VIEW file_hashes AS SELECT DISTINCT hash, '/p/' || hash AS path FROM faces;",
             )
             .unwrap();
             videre_core::face_learning::ensure_learning_tables(&conn).unwrap();

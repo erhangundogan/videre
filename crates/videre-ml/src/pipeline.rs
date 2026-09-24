@@ -1097,6 +1097,8 @@ mod tests {
     fn run_clustering_on_empty_db_does_not_error() {
         let conn = Connection::open_in_memory().unwrap();
         face_db::create_faces_table(&conn).unwrap();
+        conn.execute_batch("CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL)")
+            .unwrap();
         let result =
             run_clustering(&conn, 0.6, 3, 0.35, 50.0, 0.4, f32::MAX, 0.0, 1.0, true).unwrap();
         assert!(result.is_none());

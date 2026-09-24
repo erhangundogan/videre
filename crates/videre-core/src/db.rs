@@ -118,6 +118,29 @@ pub fn ensure_file_hashes_columns(conn: &Connection) {
     let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN codec TEXT;");
 }
 
+/// Run `step` inside a savepoint, rolling back everything it did on error.
+///
+/// A savepoint is a transaction of its own when none is open and a nested one
+/// inside the caller's otherwise, so a writer built on this composes: scan's
+/// row writer runs alone during a scan and inside the gallery's rotate, whose
+/// face move and row write must commit or fail together.
+pub fn in_savepoint<T, E>(conn: &Connection, step: impl FnOnce() -> Result<T, E>) -> Result<T, E>
+where
+    E: From<rusqlite::Error>,
+{
+    conn.execute_batch("SAVEPOINT videre_step")?;
+    match step() {
+        Ok(value) => {
+            conn.execute_batch("RELEASE videre_step")?;
+            Ok(value)
+        }
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK TO videre_step; RELEASE videre_step");
+            Err(error)
+        }
+    }
+}
+
 /// Whether `name` exists as a table in `conn`, used by every reader that
 /// queries an optional table (`faces`, `embeddings`, `classifications`) added
 /// after `file_hashes` and not guaranteed present in an older db.
@@ -159,6 +182,41 @@ pub fn paths_with_known_mime(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn a_failed_savepoint_undoes_its_own_steps_and_nests_in_a_caller() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t (v TEXT)").unwrap();
+        let count = |conn: &Connection| -> i64 {
+            conn.query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0))
+                .unwrap()
+        };
+
+        let failed: rusqlite::Result<()> = in_savepoint(&conn, || {
+            conn.execute("INSERT INTO t VALUES ('çağla')", [])?;
+            Err(rusqlite::Error::QueryReturnedNoRows)
+        });
+        assert!(failed.is_err());
+        assert_eq!(count(&conn), 0, "the insert before the failure is undone");
+
+        // Inside an outer step, an inner failure undoes only itself, and the
+        // outer failure undoes everything.
+        let outer: rusqlite::Result<()> = in_savepoint(&conn, || {
+            conn.execute("INSERT INTO t VALUES ('özgür')", [])?;
+            let inner: rusqlite::Result<()> = in_savepoint(&conn, || {
+                conn.execute("INSERT INTO t VALUES ('şükrü')", [])?;
+                Err(rusqlite::Error::QueryReturnedNoRows)
+            });
+            assert!(inner.is_err());
+            assert_eq!(count(&conn), 1);
+            Err(rusqlite::Error::QueryReturnedNoRows)
+        });
+        assert!(outer.is_err());
+        assert_eq!(count(&conn), 0);
+
+        in_savepoint(&conn, || conn.execute("INSERT INTO t VALUES ('ılgın')", [])).unwrap();
+        assert_eq!(count(&conn), 1);
+    }
 
     #[test]
     fn is_current_only_when_unchanged_and_complete() {
