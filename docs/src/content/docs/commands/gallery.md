@@ -142,6 +142,17 @@ adapt when you resize the window or load more files on the Library tab. Click a
 tile to open the same lightbox, with the same previous/next navigation.
 Thumbnails are served at 480px so tiles stay sharp on high-DPI displays.
 
+## Sorting
+
+Next to the View selector on the Library and Date tabs, the **Sort** selector
+orders the files: Date (the default, newest first), Name, Size, Rating,
+Liked, or Type. The arrow button beside it flips the direction: triangle up
+is ascending, and while it reads pressed it points down for descending.
+Files with no date and unrated files always sort last. The choice is
+remembered across visits and applies to both list and tile views, so the
+lightbox's previous/next follows the same order. The duplicates page keeps
+its own Sort by control.
+
 ## Options
 
 | Flag | What it does |
