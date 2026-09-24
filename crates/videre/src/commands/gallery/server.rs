@@ -3561,6 +3561,9 @@ async fn serve_faces_async(
     if opts.serve_faces_ui {
         // The first questions request can precede the status request or the
         // worker's first promoted profile. Make that resource ready at startup.
+        // The learning tables too: an older library gains columns here (the
+        // waiting ask), before the worker or any handler reads the state.
+        videre_core::face_learning::ensure_learning_tables(&conn)?;
         videre_core::face_learning::ensure_question_tables(&conn)?;
     }
     clear_rotate_staging(&opts.context.library);

@@ -38,10 +38,23 @@ pub fn get(conn: &Connection, key: &str) -> Result<Option<i64>> {
     Ok(v)
 }
 
-/// Store `value` under `key`, creating the table on first use.
 /// The stored value, for callers inside a rusqlite-typed transaction.
 pub fn value(conn: &Connection, key: &str) -> rusqlite::Result<Option<i64>> {
     ensure_table(conn)?;
+    conn.query_row(
+        "SELECT value FROM library_state WHERE key = ?1",
+        [key],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
+/// The stored text, or `None` when there is none or no table yet: a pure read
+/// that never creates the table, for checks on a read path.
+pub fn peek_string(conn: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
+    if !crate::db::table_exists(conn, "library_state")? {
+        return Ok(None);
+    }
     conn.query_row(
         "SELECT value FROM library_state WHERE key = ?1",
         [key],
@@ -61,6 +74,7 @@ pub fn raise_to(conn: &Connection, key: &str, value: i64) -> rusqlite::Result<()
     Ok(())
 }
 
+/// Store `value` under `key`, creating the table on first use.
 pub fn set(conn: &Connection, key: &str, value: i64) -> Result<()> {
     ensure_table(conn)?;
     conn.execute(

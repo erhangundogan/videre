@@ -27,6 +27,9 @@ pub struct FaceLearningStatus {
     /// say whether the last run changed the profile in use.
     pub last_candidate: Option<String>,
     pub last_error: Option<String>,
+    /// While `status` is `waiting`: the feedback training still needs, in
+    /// words the People page shows as is (`dissolve 2 more wrong clusters`).
+    pub feedback_needed: Option<String>,
     pub pending_questions: usize,
 }
 

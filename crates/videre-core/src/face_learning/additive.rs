@@ -436,9 +436,10 @@ pub(crate) fn additive_held_out_scores(
     });
     if !held_out.iter().any(|score| score.positive) || !held_out.iter().any(|score| !score.positive)
     {
-        return Err(TrainingError::InvalidInput(
-            "additive held-out predictions need both classes".into(),
-        ));
+        return Err(TrainingError::OneSidedFold {
+            decision_kind: dataset.decision_kind,
+            lacking_negatives: !held_out.iter().any(|score| !score.positive),
+        });
     }
     Ok(held_out)
 }
