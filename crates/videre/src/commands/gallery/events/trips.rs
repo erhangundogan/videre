@@ -264,7 +264,23 @@ pub(super) fn qualify_trips(rows: &[TripRow], places: &Places, episodes: &[Episo
         if row.media == MediaKind::Photo && places.by_row[i].is_some() {
             continue;
         }
-        let Some(eid) = nearest_episode(when, &timed_anchors) else {
+        let eid = nearest_episode(when, &timed_anchors).or_else(|| {
+            // Distinct photo-anchored trips may share an exact timestamp.
+            // A located video can join only if its place matches exactly one
+            // of those episodes; a GPS-less item stays ambiguous.
+            if row.media != MediaKind::Video {
+                return None;
+            }
+            let group = places.by_row[i]?;
+            let mut matching = timed_anchors
+                .get(&when)?
+                .iter()
+                .copied()
+                .filter(|&id| episodes[id].stop_groups.contains(&group));
+            let selected = matching.next()?;
+            matching.next().is_none().then_some(selected)
+        });
+        let Some(eid) = eid else {
             continue;
         };
         let episode = &episodes[eid];

@@ -442,6 +442,55 @@ mod tests {
     }
 
     #[test]
+    fn simultaneous_trips_claim_only_their_matching_located_videos() {
+        let mut rows: Vec<_> = (0..30)
+            .map(|i| {
+                trip_row(
+                    &format!("home-{i:02}"),
+                    Some("2020-01-01T08:00:00"),
+                    Some((52.52, 13.4)),
+                    MediaKind::Photo,
+                )
+            })
+            .collect();
+        for i in 0..10 {
+            for (prefix, gps) in [("a", (47.5, 19.0)), ("b", (41.0, 29.0))] {
+                rows.push(trip_row(
+                    &format!("{prefix}{i:02}"),
+                    Some("2020-03-12T10:00:00"),
+                    Some(gps),
+                    MediaKind::Photo,
+                ));
+            }
+        }
+        for (hash, gps) in [
+            ("video-a", Some((47.5, 19.0))),
+            ("video-b", Some((41.0, 29.0))),
+            ("video-unknown", None),
+        ] {
+            rows.push(trip_row(
+                hash,
+                Some("2020-03-12T10:00:00"),
+                gps,
+                MediaKind::Video,
+            ));
+        }
+        let events = detect(&rows).events;
+        assert_eq!(events.len(), 2);
+        for (anchor, own_video, other_video) in
+            [("a00", "video-a", "video-b"), ("b00", "video-b", "video-a")]
+        {
+            let trip = events
+                .iter()
+                .find(|trip| trip.members.contains(&anchor.to_owned()))
+                .unwrap();
+            assert!(trip.members.contains(&own_video.to_owned()));
+            assert!(!trip.members.contains(&other_video.to_owned()));
+            assert!(!trip.members.contains(&"video-unknown".to_owned()));
+        }
+    }
+
+    #[test]
     fn equidistant_edge_file_is_not_claimed_by_two_trips() {
         let mut rows: Vec<_> = (0..30)
             .map(|i| {
