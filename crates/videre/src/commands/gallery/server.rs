@@ -254,6 +254,7 @@ mod location_cluster_tests {
         let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel();
         Arc::new(AppState {
             conn: Arc::new(Mutex::new(conn)),
+            events_cache: Mutex::new(None),
             learning: None,
             shutdown_tx: Mutex::new(Some(shutdown_tx)),
             model_id: String::new(),
@@ -864,58 +865,116 @@ mod events_tests {
     fn seed_events(conn: &Connection) {
         videre_core::library_db::ensure_scan_schema(conn).unwrap();
         let mut add = conn.prepare("INSERT INTO file_hashes (path,hash,size_bytes,ext,mime,exif_date,modified_at,gps_lat,gps_lon,width,height) VALUES (?1,?2,100,?3,?4,?5,'2020-03-12T11:00:00+00:00',?6,?7,4000,3000)").unwrap();
-        let mut put = |i: usize, ext: &str, when: Option<String>, gps: Option<(f64, f64)>| {
-            add.execute(rusqlite::params![
-                format!("/p/{i}.{ext}"),
-                format!("{i:064x}"),
-                ext,
-                if ext == "mp4" {
-                    "video/mp4"
-                } else {
-                    "image/jpeg"
-                },
-                when,
-                gps.map(|p| p.0),
-                gps.map(|p| p.1)
-            ])
-            .unwrap();
-        };
+        let mut insert_media =
+            |i: usize, ext: &str, when: Option<String>, gps: Option<(f64, f64)>| {
+                add.execute(rusqlite::params![
+                    format!("/p/{i}.{ext}"),
+                    format!("{i:064x}"),
+                    ext,
+                    if ext == "mp4" {
+                        "video/mp4"
+                    } else {
+                        "image/jpeg"
+                    },
+                    when,
+                    gps.map(|p| p.0),
+                    gps.map(|p| p.1)
+                ])
+                .unwrap();
+            };
         for i in 1..=13 {
-            put(
+            insert_media(
                 i,
                 "jpg",
                 Some(format!("2020-01-01T08:{i:02}:00")),
                 Some((52.52, 13.405)),
             );
         }
-        put(
+        insert_media(
             101,
             "jpg",
             Some("2020-03-12T10:00:00".into()),
             Some((47.4979, 19.0402)),
         );
-        put(
+        insert_media(
             102,
             "jpg",
             Some("2020-03-12T11:00:00".into()),
             Some((47.4980, 19.0410)),
         );
-        put(
+        insert_media(
             103,
             "jpg",
             Some("2020-03-12T12:00:00".into()),
             Some((47.4981, 19.0420)),
         );
         for i in 0..8 {
-            put(
+            insert_media(
                 104 + i,
                 "jpg",
                 Some(format!("2020-03-12T10:{:02}:00", 10 + i * 5)),
                 None,
             );
         }
-        put(112, "mp4", Some("2020-03-12T11:40:00".into()), None);
-        put(113, "jpg", None, None);
+        insert_media(112, "mp4", Some("2020-03-12T11:40:00".into()), None);
+        insert_media(113, "jpg", None, None);
+    }
+
+    #[test]
+    fn events_cache_reuses_clean_snapshot_and_invalidates_same_connection_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        let conn = state.conn.lock().unwrap();
+        seed_events(&conn);
+        let first = cached_events(&state, &conn).unwrap();
+        assert_eq!(first.events.len(), 1);
+        let second = cached_events(&state, &conn).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        conn.execute(
+            "UPDATE file_hashes SET exif_date=NULL WHERE hash=?1",
+            [format!("{:064x}", 101)],
+        )
+        .unwrap();
+        let changed = cached_events(&state, &conn).unwrap();
+        assert!(!Arc::ptr_eq(&first, &changed));
+        assert!(changed.events.is_empty());
+    }
+
+    #[test]
+    fn events_cache_invalidates_other_connection_commits_and_never_caches_a_transaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = gallery_state(dir.path());
+        let db_path = dir.path().join("events.db");
+        let first_conn = Connection::open(&db_path).unwrap();
+        seed_events(&first_conn);
+        Arc::get_mut(&mut state).unwrap().conn = Arc::new(Mutex::new(first_conn));
+        let second_conn = Connection::open(&db_path).unwrap();
+        let conn = state.conn.lock().unwrap();
+        let first = cached_events(&state, &conn).unwrap();
+        second_conn
+            .execute(
+                "UPDATE file_hashes SET exif_date=NULL WHERE hash=?1",
+                [format!("{:064x}", 101)],
+            )
+            .unwrap();
+        let external = cached_events(&state, &conn).unwrap();
+        assert!(!Arc::ptr_eq(&first, &external));
+        assert!(external.events.is_empty());
+        second_conn
+            .execute(
+                "UPDATE file_hashes SET exif_date='2020-03-12T10:00:00' WHERE hash=?1",
+                [format!("{:064x}", 101)],
+            )
+            .unwrap();
+        let restored = cached_events(&state, &conn).unwrap();
+        assert_eq!(restored.events.len(), 1);
+        conn.execute_batch("BEGIN; UPDATE file_hashes SET exif_date=NULL WHERE hash=(SELECT hash FROM file_hashes WHERE path='/p/101.jpg');").unwrap();
+        let uncommitted = cached_events(&state, &conn).unwrap();
+        assert!(uncommitted.events.is_empty());
+        assert!(!Arc::ptr_eq(&restored, &uncommitted));
+        conn.execute_batch("ROLLBACK").unwrap();
+        let rolled_back = cached_events(&state, &conn).unwrap();
+        assert_eq!(rolled_back.events.len(), 1);
     }
 
     #[tokio::test]
@@ -1396,6 +1455,7 @@ struct MarkBody {
 
 pub(crate) struct AppState {
     pub(super) conn: Arc<Mutex<Connection>>,
+    events_cache: Mutex<Option<EventsCacheEntry>>,
     /// Background face-learning worker; present whenever people pages are
     /// served. Teaching mutations notify it after their commit.
     pub(super) learning: Option<super::learning::LearningCoordinator>,
@@ -1420,6 +1480,11 @@ pub(crate) struct AppState {
     /// /api/basemap/ensure` returns the current status instead of launching a
     /// second download of the same once-per-machine archive.
     basemap_downloading: Arc<std::sync::atomic::AtomicBool>,
+}
+
+struct EventsCacheEntry {
+    version: (i64, i64),
+    detection: Arc<super::events::Detection>,
 }
 
 /// The labeling UI. Served as `/people` under `videre gallery`, and as `/` on a
@@ -2137,10 +2202,10 @@ async fn handle_events_files(
     State(state): State<Arc<AppState>>,
 ) -> Result<axum::response::Response, StatusCode> {
     let conn = state.conn.lock().map_err(poisoned)?;
-    let rows = load_trip_rows(&conn).map_err(internal)?;
-    let event = super::events::detect(&rows)
+    let detection = cached_events(&state, &conn)?;
+    let event = detection
         .events
-        .into_iter()
+        .iter()
         .find(|e| e.key() == key)
         .ok_or(StatusCode::NOT_FOUND)?;
     let (files, total) = query_event_files(&conn, &event.members).map_err(internal)?;
@@ -2661,6 +2726,35 @@ fn load_trip_rows(conn: &Connection) -> rusqlite::Result<Vec<super::events::Trip
     Ok(by_hash.into_values().collect())
 }
 
+/// The lock caller holds on `conn` also covers the snapshot version check and
+/// reader, so all Events routes share one result until this DB changes.
+fn cached_events(
+    state: &AppState,
+    conn: &Connection,
+) -> Result<Arc<super::events::Detection>, StatusCode> {
+    if !conn.is_autocommit() {
+        let rows = load_trip_rows(conn).map_err(internal)?;
+        return Ok(Arc::new(super::events::detect(&rows)));
+    }
+    let version = (
+        conn.query_row("PRAGMA data_version", [], |row| row.get::<_, i64>(0))
+            .map_err(internal)?,
+        conn.query_row("SELECT total_changes()", [], |row| row.get::<_, i64>(0))
+            .map_err(internal)?,
+    );
+    let mut cache = state.events_cache.lock().map_err(poisoned)?;
+    if let Some(entry) = cache.as_ref().filter(|entry| entry.version == version) {
+        return Ok(entry.detection.clone());
+    }
+    let rows = load_trip_rows(conn).map_err(internal)?;
+    let detection = Arc::new(super::events::detect(&rows));
+    *cache = Some(EventsCacheEntry {
+        version,
+        detection: detection.clone(),
+    });
+    Ok(detection)
+}
+
 fn trip_place_and_title(
     cache: &videre_core::library::CachePaths,
     event: &super::events::Trip,
@@ -2683,8 +2777,7 @@ async fn handle_events_api(
 ) -> Result<axum::response::Response, StatusCode> {
     let detection = {
         let conn = state.conn.lock().map_err(poisoned)?;
-        let rows = load_trip_rows(&conn).map_err(internal)?;
-        super::events::detect(&rows)
+        cached_events(&state, &conn)?
     };
     let cache = &state.context.library.cache;
     let mut out = String::from("{\"events\":[");
@@ -2771,13 +2864,13 @@ async fn handle_events_key(
     use axum::response::IntoResponse;
     let event_json = {
         let conn = state.conn.lock().map_err(poisoned)?;
-        let rows = load_trip_rows(&conn).map_err(internal)?;
-        let event = super::events::detect(&rows)
+        let detection = cached_events(&state, &conn)?;
+        let event = detection
             .events
-            .into_iter()
+            .iter()
             .find(|e| e.key() == key)
             .ok_or(StatusCode::NOT_FOUND)?;
-        let (place, title) = trip_place_and_title(&state.context.library.cache, &event);
+        let (place, title) = trip_place_and_title(&state.context.library.cache, event);
         format!(
             "{{\"key\":{},\"kind\":\"trip\",\"title\":{},\"from\":{},\"to\":{},\"place\":{}}}",
             json_str(&key),
@@ -3614,6 +3707,7 @@ async fn serve_faces_async(
     let state = Arc::new(AppState {
         learning,
         conn,
+        events_cache: Mutex::new(None),
         shutdown_tx: Mutex::new(Some(shutdown_tx)),
         model_id: opts.model_id.clone(),
         report_heic: opts.report_heic,
@@ -3885,6 +3979,7 @@ mod thumbnail_tests {
         let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel();
         Arc::new(AppState {
             conn: Arc::new(Mutex::new(conn)),
+            events_cache: Mutex::new(None),
             learning: None,
             shutdown_tx: Mutex::new(Some(shutdown_tx)),
             model_id: String::new(),

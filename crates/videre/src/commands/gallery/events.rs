@@ -514,4 +514,89 @@ mod tests {
         assert!(parse_capture("2020-03-12").is_none());
         assert!(parse_capture("not a date").is_none());
     }
+
+    fn synthetic_library(n: usize) -> Vec<TripRow> {
+        let home = n * 2 / 7;
+        let away = n / 14;
+        let trip_unlocated = n / 7;
+        let jan = chrono::NaiveDate::from_ymd_opt(2020, 1, 1)
+            .unwrap()
+            .and_hms_opt(8, 0, 0)
+            .unwrap();
+        let mar = chrono::NaiveDate::from_ymd_opt(2020, 3, 12)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+        let apr = chrono::NaiveDate::from_ymd_opt(2020, 4, 1)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+        (0..n)
+            .map(|i| {
+                let at_home = i < home;
+                let video = i % 10 == 0;
+                let gps = if at_home {
+                    Some((52.52, 13.405))
+                } else if i < home + away {
+                    Some((47.4979, 19.0402))
+                } else {
+                    None
+                };
+                let capture = if at_home {
+                    jan
+                } else if i < home + away + trip_unlocated {
+                    mar
+                } else {
+                    apr
+                } + chrono::Duration::seconds((i % 7200) as i64);
+                TripRow {
+                    hash: format!("{i:064x}"),
+                    capture: Some(capture),
+                    gps,
+                    media: if video {
+                        MediaKind::Video
+                    } else {
+                        MediaKind::Photo
+                    },
+                    path: format!("/synthetic/{i}.{}", if video { "mp4" } else { "jpg" }),
+                    ext: if video { "mp4" } else { "jpg" }.into(),
+                    width: Some(4000),
+                    height: Some(3000),
+                }
+            })
+            .collect()
+    }
+
+    fn measure(n: usize) {
+        let rows = synthetic_library(n);
+        let start = std::time::Instant::now();
+        let result = detect(&rows);
+        eprintln!(
+            "events rows={} elapsed_ms={}",
+            rows.len(),
+            start.elapsed().as_millis()
+        );
+        assert!(!result.events.is_empty());
+        for trip in &result.events {
+            assert_eq!(
+                trip.members
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len(),
+                trip.members.len()
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "manual event measurement"]
+    fn event_measurement_20k() {
+        measure(20_000);
+    }
+
+    #[test]
+    #[ignore = "manual event measurement"]
+    fn event_measurement_70k() {
+        measure(70_000);
+    }
 }
