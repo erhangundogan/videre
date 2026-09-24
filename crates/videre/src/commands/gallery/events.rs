@@ -30,6 +30,98 @@ pub(crate) struct TripRow {
     pub height: Option<i32>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Trip {
+    pub start: NaiveDateTime,
+    pub end: NaiveDateTime,
+    pub sample: TripRow,
+    pub members: Vec<String>,
+    pub anchor_when: NaiveDateTime,
+    pub anchor_hash: String,
+    pub dominant_stop: (f64, f64),
+}
+
+impl Trip {
+    pub(crate) fn key(&self) -> String {
+        format!(
+            "{}-{}",
+            self.anchor_when.format("%Y%m%dT%H%M%S"),
+            self.anchor_hash
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EmptyReason {
+    NoMedia,
+    NoCaptureDates,
+    InsufficientLocationEvidence,
+    NoQualifyingTrips,
+}
+
+impl EmptyReason {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::NoMedia => "no_media",
+            Self::NoCaptureDates => "no_capture_dates",
+            Self::InsufficientLocationEvidence => "insufficient_location_evidence",
+            Self::NoQualifyingTrips => "no_qualifying_trips",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Detection {
+    pub events: Vec<Trip>,
+    pub empty_reason: Option<EmptyReason>,
+}
+
+pub(crate) fn detect(rows: &[TripRow]) -> Detection {
+    use std::collections::BTreeMap;
+    let mut by_hash = BTreeMap::<&str, &TripRow>::new();
+    for row in rows {
+        let prior = by_hash.get(row.hash.as_str()).copied();
+        let better = prior.is_none_or(|old| {
+            let quality = (row.capture.is_some(), row.gps.is_some());
+            let old_quality = (old.capture.is_some(), old.gps.is_some());
+            quality > old_quality || (quality == old_quality && row.path < old.path)
+        });
+        if better {
+            by_hash.insert(&row.hash, row);
+        }
+    }
+    let rows: Vec<TripRow> = by_hash.into_values().cloned().collect();
+    let reason = if rows.is_empty() {
+        Some(EmptyReason::NoMedia)
+    } else if rows.iter().all(|row| row.capture.is_none()) {
+        Some(EmptyReason::NoCaptureDates)
+    } else {
+        None
+    };
+    if let Some(empty_reason) = reason {
+        return Detection {
+            events: Vec::new(),
+            empty_reason: Some(empty_reason),
+        };
+    }
+    let places = place_groups::infer_places(&rows);
+    let episodes = trips::destination_episodes(&rows, &places);
+    let events = trips::qualify_trips(&rows, &places, &episodes);
+    let empty_reason = if events.is_empty() {
+        Some(if places.groups.len() < 2 || episodes.is_empty() {
+            EmptyReason::InsufficientLocationEvidence
+        } else {
+            EmptyReason::NoQualifyingTrips
+        })
+    } else {
+        None
+    };
+    Detection {
+        events,
+        empty_reason,
+    }
+}
+
 /// Only stored full capture timestamps can establish travel chronology.
 pub(crate) fn parse_capture(value: &str) -> Option<NaiveDateTime> {
     chrono::DateTime::parse_from_rfc3339(value)
@@ -212,6 +304,368 @@ mod tests {
 
     fn dt(s: &str) -> chrono::NaiveDateTime {
         parse_effective(s).unwrap()
+    }
+
+    fn trip_row(
+        hash: &str,
+        when: Option<&str>,
+        gps: Option<(f64, f64)>,
+        media: MediaKind,
+    ) -> TripRow {
+        TripRow {
+            hash: hash.into(),
+            capture: when.and_then(parse_capture),
+            gps,
+            media,
+            path: format!("/p/{hash}.jpg"),
+            ext: if media == MediaKind::Video {
+                "mp4"
+            } else {
+                "jpg"
+            }
+            .into(),
+            width: None,
+            height: None,
+        }
+    }
+
+    fn travel_fixture() -> Vec<TripRow> {
+        let mut rows: Vec<_> = (0..13)
+            .map(|i| {
+                trip_row(
+                    &format!("home-{i}"),
+                    Some(&format!("2020-01-01T08:{i:02}:00")),
+                    Some((52.52, 13.4)),
+                    MediaKind::Photo,
+                )
+            })
+            .collect();
+        for (i, time) in ["10:00:00", "11:00:00", "12:00:00"].iter().enumerate() {
+            rows.push(trip_row(
+                &format!("anchor-{i}"),
+                Some(&format!("2020-03-12T{time}")),
+                Some((47.5, 19.0)),
+                MediaKind::Photo,
+            ));
+        }
+        for i in 0..8 {
+            rows.push(trip_row(
+                &format!("plain-{i}"),
+                Some(&format!("2020-03-12T10:{:02}:00", 10 + 5 * i)),
+                None,
+                MediaKind::Photo,
+            ));
+        }
+        rows.push(trip_row(
+            "video",
+            Some("2020-03-12T11:40:00"),
+            None,
+            MediaKind::Video,
+        ));
+        rows.push(trip_row("undated", None, None, MediaKind::Photo));
+        rows
+    }
+
+    #[test]
+    fn travel_trip_has_exact_members_and_stable_full_hash_key() {
+        let mut rows = travel_fixture();
+        rows[13].hash = "aabbccdd".repeat(8);
+        let result = detect(&rows);
+        assert_eq!(result.events.len(), 1);
+        let trip = &result.events[0];
+        assert_eq!(trip.members.len(), 12);
+        assert_eq!(
+            trip.key(),
+            format!("20200312T100000-{}", "aabbccdd".repeat(8))
+        );
+        assert!(trip.members.contains(&"video".to_owned()));
+        assert!(!trip.members.contains(&"undated".to_owned()));
+        assert!(!trip.members.iter().any(|hash| hash.starts_with("home")));
+        assert_eq!(
+            trip.members
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            trip.members.len()
+        );
+        let before = trip.key();
+        rows.push(trip_row(
+            "edge",
+            Some("2020-03-12T09:30:00"),
+            None,
+            MediaKind::Photo,
+        ));
+        assert_eq!(detect(&rows).events[0].key(), before);
+        rows.reverse();
+        assert_eq!(detect(&rows).events[0].key(), before);
+    }
+
+    #[test]
+    fn empty_reasons_distinguish_missing_time_location_and_volume() {
+        assert_eq!(detect(&[]).empty_reason, Some(EmptyReason::NoMedia));
+        assert_eq!(
+            detect(&[trip_row(
+                "undated",
+                None,
+                Some((52.52, 13.4)),
+                MediaKind::Photo
+            )])
+            .empty_reason,
+            Some(EmptyReason::NoCaptureDates)
+        );
+        assert_eq!(
+            detect(&[trip_row(
+                "plain",
+                Some("2020-03-12T10:00:00"),
+                None,
+                MediaKind::Photo
+            )])
+            .empty_reason,
+            Some(EmptyReason::InsufficientLocationEvidence)
+        );
+        let mut rows = travel_fixture();
+        rows.retain(|r| !r.hash.starts_with("plain") && r.hash != "video");
+        assert_eq!(
+            detect(&rows).empty_reason,
+            Some(EmptyReason::NoQualifyingTrips)
+        );
+    }
+
+    #[test]
+    fn video_location_and_gpsless_edge_membership_are_conservative() {
+        let mut rows = travel_fixture();
+        rows.push(trip_row(
+            "matching-video",
+            Some("2020-03-12T11:20:00"),
+            Some((47.5, 19.0)),
+            MediaKind::Video,
+        ));
+        rows.push(trip_row(
+            "conflicting-video",
+            Some("2020-03-12T11:21:00"),
+            Some((41.0, 29.0)),
+            MediaKind::Video,
+        ));
+        rows.push(trip_row(
+            "ambiguous",
+            Some("2020-03-12T11:20:30"),
+            None,
+            MediaKind::Photo,
+        ));
+        rows.push(trip_row(
+            "before-edge",
+            Some("2020-03-12T09:30:00"),
+            None,
+            MediaKind::Photo,
+        ));
+        rows.push(trip_row(
+            "after-edge",
+            Some("2020-03-12T12:30:00"),
+            None,
+            MediaKind::Video,
+        ));
+        rows.push(trip_row(
+            "too-early",
+            Some("2020-03-12T06:59:59"),
+            None,
+            MediaKind::Photo,
+        ));
+        rows.push(trip_row(
+            "next-date",
+            Some("2020-03-13T00:01:00"),
+            None,
+            MediaKind::Photo,
+        ));
+        let trip = detect(&rows).events.remove(0);
+        for hash in ["matching-video", "before-edge", "after-edge"] {
+            assert!(trip.members.contains(&hash.to_owned()), "missing {hash}");
+        }
+        for hash in [
+            "conflicting-video",
+            "ambiguous",
+            "too-early",
+            "next-date",
+            "undated",
+        ] {
+            assert!(!trip.members.contains(&hash.to_owned()), "included {hash}");
+        }
+        assert_eq!(trip.start, dt("2020-03-12 09:30:00"));
+        assert_eq!(trip.end, dt("2020-03-12 12:30:00"));
+    }
+
+    #[test]
+    fn same_day_gate_requires_ten_items_and_three_anchors_in_three_hours() {
+        let mut rows: Vec<_> = (0..13)
+            .map(|i| {
+                trip_row(
+                    &format!("home-{i}"),
+                    Some(&format!("2020-01-01T08:{i:02}:00")),
+                    Some((52.52, 13.4)),
+                    MediaKind::Photo,
+                )
+            })
+            .collect();
+        for (i, time) in ["10:00:00", "11:00:00", "13:00:00"].iter().enumerate() {
+            rows.push(trip_row(
+                &format!("anchor-{i}"),
+                Some(&format!("2020-03-12T{time}")),
+                Some((43.08, -79.07)),
+                MediaKind::Photo,
+            ));
+        }
+        for i in 0..7 {
+            rows.push(trip_row(
+                &format!("plain-{i}"),
+                Some(&format!("2020-03-12T11:{i:02}:00")),
+                None,
+                MediaKind::Photo,
+            ));
+        }
+        assert_eq!(detect(&rows).events.len(), 1);
+        rows.pop();
+        assert!(detect(&rows).events.is_empty());
+        rows.push(trip_row(
+            "plain-6",
+            Some("2020-03-12T11:06:00"),
+            None,
+            MediaKind::Photo,
+        ));
+        rows.iter_mut()
+            .find(|r| r.hash == "anchor-2")
+            .unwrap()
+            .capture = parse_capture("2020-03-12T13:00:01");
+        assert!(detect(&rows).events.is_empty());
+    }
+
+    #[test]
+    fn two_day_trip_qualifies_without_same_day_burst() {
+        let mut rows: Vec<_> = (0..13)
+            .map(|i| {
+                trip_row(
+                    &format!("home-{i}"),
+                    Some(&format!("2020-01-01T08:{i:02}:00")),
+                    Some((52.52, 13.4)),
+                    MediaKind::Photo,
+                )
+            })
+            .collect();
+        for day in [12, 13] {
+            for (j, hour) in [10, 16].iter().enumerate() {
+                rows.push(trip_row(
+                    &format!("anchor-{day}-{j}"),
+                    Some(&format!("2020-03-{day}T{hour:02}:00:00")),
+                    Some((47.5, 19.0)),
+                    MediaKind::Photo,
+                ));
+            }
+            for i in 0..3 {
+                rows.push(trip_row(
+                    &format!("plain-{day}-{i}"),
+                    Some(&format!("2020-03-{day}T11:{i:02}:00")),
+                    None,
+                    MediaKind::Photo,
+                ));
+            }
+        }
+        let result = detect(&rows);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].members.len(), 10);
+    }
+
+    #[test]
+    fn same_second_trips_have_distinct_keys_and_duplicate_hashes_do_not_count_twice() {
+        let mut rows: Vec<_> = (0..30)
+            .map(|i| {
+                trip_row(
+                    &format!("home-{i:02}"),
+                    Some("2020-01-01T08:00:00"),
+                    Some((52.52, 13.4)),
+                    MediaKind::Photo,
+                )
+            })
+            .collect();
+        for i in 0..10 {
+            rows.push(trip_row(
+                &format!("a{i:02}"),
+                Some("2020-03-12T10:00:00"),
+                Some((47.5, 19.0)),
+                MediaKind::Photo,
+            ));
+            rows.push(trip_row(
+                &format!("b{i:02}"),
+                Some("2020-03-12T10:00:00"),
+                Some((41.0, 29.0)),
+                MediaKind::Photo,
+            ));
+        }
+        let result = detect(&rows);
+        assert_eq!(result.events.len(), 2);
+        assert_ne!(result.events[0].key(), result.events[1].key());
+        let before = result.events.clone();
+        rows.push(trip_row(
+            "a00",
+            Some("2020-03-12T10:00:00"),
+            Some((47.5, 19.0)),
+            MediaKind::Photo,
+        ));
+        rows.reverse();
+        assert_eq!(detect(&rows).events, before);
+    }
+
+    #[test]
+    fn equidistant_edge_file_is_not_claimed_by_two_trips() {
+        let mut rows: Vec<_> = (0..30)
+            .map(|i| {
+                trip_row(
+                    &format!("home-{i:02}"),
+                    Some("2020-01-01T08:00:00"),
+                    Some((52.52, 13.4)),
+                    MediaKind::Photo,
+                )
+            })
+            .collect();
+        for (prefix, gps, hours) in [
+            ("a", (47.5, 19.0), [10, 11, 12]),
+            ("b", (41.0, 29.0), [14, 15, 16]),
+        ] {
+            for (j, hour) in hours.iter().enumerate() {
+                rows.push(trip_row(
+                    &format!("{prefix}-anchor-{j}"),
+                    Some(&format!("2020-03-12T{hour:02}:00:00")),
+                    Some(gps),
+                    MediaKind::Photo,
+                ));
+            }
+            for i in 0..7 {
+                rows.push(trip_row(
+                    &format!("{prefix}-plain-{i}"),
+                    Some(&format!("2020-03-12T{:02}:{i:02}:00", hours[0])),
+                    None,
+                    MediaKind::Photo,
+                ));
+            }
+        }
+        rows.push(trip_row(
+            "middle",
+            Some("2020-03-12T13:00:00"),
+            None,
+            MediaKind::Photo,
+        ));
+        let result = detect(&rows);
+        assert_eq!(result.events.len(), 2);
+        assert!(result
+            .events
+            .iter()
+            .all(|t| !t.members.contains(&"middle".to_owned())));
+        assert_eq!(
+            result
+                .events
+                .iter()
+                .flat_map(|t| &t.members)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            result.events.iter().map(|t| t.members.len()).sum::<usize>()
+        );
     }
 
     #[test]
