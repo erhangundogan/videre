@@ -52,10 +52,10 @@ Steps 3 and 4 are the reason to prune at all rather than ignoring stale rows:
 they are what actually reclaims disk space.
 
 Step 2 only touches rows that actually differ, so the count tells you something.
-Its usual cause is [`videre fix-dates`](/commands/fix-dates/), which rewrites
-modification times from EXIF and deliberately leaves the database alone; running
-prune afterwards reports exactly the number of files it changed. On a library
-nothing has touched, the count is zero and a second pass is a no-op.
+Its usual cause is another program changing a file's modification time.
+[`videre fix-dates`](/commands/fix-dates/) is not one: it records the times it
+writes. On a library nothing has touched, the count is zero and a second pass
+is a no-op.
 
 If two paths share the same content and only one is deleted, the shared
 embedding and cache entries are **kept**. They are keyed by content, so they are

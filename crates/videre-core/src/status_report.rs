@@ -181,14 +181,8 @@ fn fix_dates_coverage(conn: &Connection) -> Result<StageCoverage> {
     for row in rows {
         let (exif_date, modified_at) = row?;
         total += 1;
-        if let Some(target) = crate::fix_dates_target::target_modified_at(&exif_date) {
-            let target = chrono::DateTime::parse_from_rfc3339(&target)?;
-            let current = modified_at
-                .as_deref()
-                .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok());
-            if current.as_ref() != Some(&target) {
-                outstanding += 1;
-            }
+        if crate::fix_dates_target::is_current(&exif_date, modified_at.as_deref()) == Some(false) {
+            outstanding += 1;
         }
     }
     Ok(StageCoverage {

@@ -92,7 +92,6 @@ empty until you have opened `videre gallery` and assigned some.
 | After you | Run |
 |---|---|
 | Delete files (`dedupe --remove`) | [`prune`](/commands/prune/) |
-| [`fix-dates`](/commands/fix-dates/) | [`prune`](/commands/prune/), to re-sync stored timestamps |
 | Move or reorganise folders | [`scan`](/commands/scan/), then [`prune`](/commands/prune/) |
 | Add new photos | [`scan`](/commands/scan/), then `embed` / `faces` / `classify` again |
 | Finish chunked `faces --limit` runs | [`faces --recluster`](/commands/faces/) |
@@ -176,15 +175,12 @@ videre faces --recluster       # once, at the end
 videre --library ~/Photos scan
 videre fix-dates --dry-run     # check first; this writes to your files
 videre fix-dates
-videre prune                   # re-sync the timestamps videre stores
 ```
 
-`fix-dates` changes the files; `prune` then copies the new times into the
-database. Nothing goes the other way, and `prune` never writes to a file.
-
-The two counts should match. If `fix-dates` reports 9 files updated, `prune`
-reports 9 rows synced, and running it again reports zero because there is
-nothing left to reconcile.
+`fix-dates` changes only the files whose time differs from their EXIF date, the
+count [`videre status`](/commands/status/) suggests, and records each new time
+in the database itself, so nothing needs re-syncing afterwards. Running it again
+reports every file as already correct.
 
 ### Keep everything current
 
