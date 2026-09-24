@@ -1150,13 +1150,15 @@ fn settings_file(state: &AppState) -> std::path::PathBuf {
 }
 
 /// Where the gallery opens: the library's saved route when it is a safe
-/// local page, otherwise `/`. See `settings::resume_route`.
+/// local page, otherwise `/`. See `settings::resume_route`. Resuming at `/`
+/// prints the bare address, exactly as before resume existed, so anything
+/// reading the port off that line keeps working.
 fn startup_url(addr: &str, state_dir: &Path) -> String {
     let snapshot = super::settings::snapshot(&super::settings::path(state_dir));
-    format!(
-        "http://{addr}{}",
-        super::settings::resume_route(&snapshot.effective)
-    )
+    match super::settings::resume_route(&snapshot.effective).as_str() {
+        "/" => format!("http://{addr}"),
+        route => format!("http://{addr}{route}"),
+    }
 }
 
 /// The settings script every served page inlines through `nav.html`. Read
@@ -4287,7 +4289,7 @@ mod settings_api_tests {
         let dir = tempfile::tempdir().unwrap();
         let state = dir.path().join(".videre");
         let addr = "127.0.0.1:7878";
-        assert_eq!(startup_url(addr, &state), "http://127.0.0.1:7878/");
+        assert_eq!(startup_url(addr, &state), "http://127.0.0.1:7878");
 
         std::fs::create_dir_all(&state).unwrap();
         let saved = |route: &str| {
@@ -4303,9 +4305,9 @@ mod settings_api_tests {
             "http://127.0.0.1:7878/map/location/berlin?radius=25"
         );
         saved("/api/quit");
-        assert_eq!(startup_url(addr, &state), "http://127.0.0.1:7878/");
+        assert_eq!(startup_url(addr, &state), "http://127.0.0.1:7878");
         std::fs::write(state.join("gallery.json"), "{oops").unwrap();
-        assert_eq!(startup_url(addr, &state), "http://127.0.0.1:7878/");
+        assert_eq!(startup_url(addr, &state), "http://127.0.0.1:7878");
     }
 
     #[tokio::test]
