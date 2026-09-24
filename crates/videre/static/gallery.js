@@ -36,6 +36,7 @@ function buildPreview(f){
     date: bestDateJs(f),
     ext: f.ext,
     hash: f.hash,
+    path: f.path,
     liked: !!f.liked
   })));
   if(ext==='jpg'||ext==='jpeg'||ext==='png'||ext==='gif'||ext==='webp'||ext==='bmp'){
@@ -321,7 +322,7 @@ function openLb(url,type,metaJson){
     var b=document.getElementById(id);
     if(b){ b.hidden=!canRotate; b.disabled=false; }
   });
-  lbCurrent = { hash: meta&&meta.hash, url: url };
+  lbCurrent = { hash: meta&&meta.hash, path: meta&&meta.path, url: url };
   // A fresh image starts fit-to-screen at the preview resolution; the full-res
   // original is loaded lazily on the first zoom.
   lbz={scale:1,x:0,y:0,full:false};
@@ -387,33 +388,44 @@ function refreshTilesFor(hash,token){
     if(imgs[i].src&&imgs[i].src.indexOf(needle)>=0)imgs[i].src=bustUrl(imgs[i].src,token);
   }
 }
-// A rotate gives the photo new content, and so a new hash. Point everything on
-// the page that names the old one at the new one: the loaded rows, the tiles'
-// data-lb-meta, data-lb-url and links, image sources, and the open lightbox.
-function rehashPhoto(oldHash,newHash){
-  if(!newHash||newHash===oldHash)return;
+// A rotate gives one file new content, and so a new hash. Point that file's
+// entries at the new hash: its rows in the page's retained data (which a layout
+// switch rebuilds from), its item's markup, and the open lightbox. Matched by
+// path as well as hash, because an identical copy at another path shares the
+// old hash and did not turn.
+function rehashPhoto(oldHash,newHash,path){
+  if(!newHash||newHash===oldHash||!path)return;
   var from='/api/files/'+encodeURIComponent(oldHash)+'/';
   var to='/api/files/'+encodeURIComponent(newHash)+'/';
   var swap=function(v){ return v&&v.indexOf(from)>=0 ? v.split(from).join(to) : v; };
-  if(typeof galleryFiles!=='undefined'){
-    galleryFiles.forEach(function(f){ if(f.hash===oldHash) f.hash=newHash; });
+  var mine=function(f){ return !!f && f.hash===oldHash && f.path===path; };
+  [typeof galleryFiles!=='undefined'?galleryFiles:null, typeof dateFiles!=='undefined'?dateFiles:null]
+    .forEach(function(list){
+      if(list) list.forEach(function(f){ if(mine(f)) f.hash=newHash; });
+    });
+  if(typeof RESULT_ROWS!=='undefined' && mine(RESULT_ROWS[oldHash])){
+    RESULT_ROWS[newHash]=RESULT_ROWS[oldHash];
+    RESULT_ROWS[newHash].hash=newHash;
+    delete RESULT_ROWS[oldHash];
   }
   document.querySelectorAll('[data-lb-meta]').forEach(function(el){
-    try{
-      var m=JSON.parse(el.dataset.lbMeta);
-      if(m && m.hash===oldHash){ m.hash=newHash; el.dataset.lbMeta=JSON.stringify(m); }
-    }catch(e){}
+    var m;
+    try{ m=JSON.parse(el.dataset.lbMeta); }catch(e){ return; }
+    if(!mine(m))return;
+    m.hash=newHash;
+    el.dataset.lbMeta=JSON.stringify(m);
+    var item=el.closest('.card, .tile')||el;
+    [item].concat(Array.prototype.slice.call(item.querySelectorAll('*'))).forEach(function(n){
+      if(n.dataset.lbUrl) n.dataset.lbUrl=swap(n.dataset.lbUrl);
+      if(n.dataset.hash===oldHash) n.dataset.hash=newHash;
+      if(n.dataset.similar===oldHash) n.dataset.similar=newHash;
+      ['src','href'].forEach(function(attr){
+        var v=n.getAttribute(attr), next=swap(v);
+        if(next!==v) n.setAttribute(attr,next);
+      });
+    });
   });
-  document.querySelectorAll('[data-lb-url]').forEach(function(el){ el.dataset.lbUrl=swap(el.dataset.lbUrl); });
-  document.querySelectorAll('img[src]').forEach(function(img){
-    var src=img.getAttribute('src'), next=swap(src);
-    if(next!==src) img.setAttribute('src',next);
-  });
-  document.querySelectorAll('a[href]').forEach(function(a){
-    var href=a.getAttribute('href'), next=swap(href);
-    if(next!==href) a.setAttribute('href',next);
-  });
-  if(lbCurrent&&lbCurrent.hash===oldHash){
+  if(mine(lbCurrent)){
     lbCurrent.hash=newHash;
     lbCurrent.url=swap(lbCurrent.url);
   }
@@ -429,10 +441,11 @@ function rotateLb(dir){
   var btns=[document.getElementById('lb-rotate'),document.getElementById('lb-rotate-ccw')];
   lbRotating=true;
   btns.forEach(function(b){ if(b)b.disabled=true; });
-  fetch('/api/files/'+encodeURIComponent(lbCurrent.hash)+'/rotate?dir='+dir,{method:'POST'})
+  var which=lbCurrent.path?'&path='+encodeURIComponent(lbCurrent.path):'';
+  fetch('/api/files/'+encodeURIComponent(lbCurrent.hash)+'/rotate?dir='+dir+which,{method:'POST'})
     .then(function(r){ if(!r.ok)throw new Error('rotate failed'); return r.json(); })
     .then(function(res){
-      rehashPhoto(lbCurrent.hash,res&&res.hash);
+      rehashPhoto(lbCurrent.hash,res&&res.hash,res&&res.path);
       var token='b='+Date.now();
       document.getElementById('lb-img').src=bustUrl(lbCurrent.url,token);
       refreshTilesFor(lbCurrent.hash,token);

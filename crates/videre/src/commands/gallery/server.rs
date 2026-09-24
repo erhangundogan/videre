@@ -2010,6 +2010,11 @@ struct RotateQuery {
     /// `cw` (default) or `ccw`: which way to turn. The lightbox has a button for
     /// each. Anything else is treated as `cw`.
     dir: Option<String>,
+    /// Which file to turn. Identical copies share the hash, so the hash alone
+    /// does not say which one the user is looking at; the page sends the
+    /// item's path. Must be a path the library records with this hash.
+    /// Without it, any path with the hash is turned.
+    path: Option<String>,
 }
 
 /// `POST /api/files/{hash}/rotate`: rotate one photo 90 degrees (clockwise by
@@ -2033,8 +2038,9 @@ async fn handle_rotate_file(
         };
         match conn
             .query_row(
-                "SELECT path FROM file_hashes WHERE hash = ?1 LIMIT 1",
-                [&hash],
+                "SELECT path FROM file_hashes WHERE hash = ?1 AND (?2 IS NULL OR path = ?2)
+                 ORDER BY path LIMIT 1",
+                rusqlite::params![&hash, query.path],
                 |r| r.get::<_, String>(0),
             )
             .optional()
@@ -2082,68 +2088,73 @@ async fn handle_rotate_file(
         } else {
             super::rotate::rotate_cw_in_place(source, &ext)?
         };
-        // Turn the display-canvas face geometry with the photo, so a rotated
-        // photo's face crops stay on their faces and keep their people labels
-        // instead of cropping the pre-rotation region of the new canvas. Only
-        // display-canvas rows (oriented=1) are transformed; legacy raw-canvas
-        // rows still crop the correct region through their own orientation path.
-        if !shared {
-            if let Some((display_w, display_h)) = dims {
-                rotate_faces_geometry(
-                    &state_for_task,
-                    &hash_for_task,
-                    ccw,
-                    display_w as i32,
-                    display_h as i32,
-                );
-            }
-        }
-        // The rotated file has new content. Record it now, faces and all, so
-        // the page and a later scan agree on it; on failure the next scan
-        // records it and the faces are detected again.
-        let hash = match rehash_rotated(&state_for_task, &path, &hash_for_task, shared) {
-            Ok(new_hash) => new_hash,
-            Err(e) => {
-                videre_core::error_log::report(
-                    tracing::Level::ERROR,
-                    &e.context(format!("videre gallery: recording rotated {path}")),
-                    Some(&path),
-                );
-                hash_for_task.clone()
-            }
-        };
+        // The rotated file is new content: record it now, faces and all, so
+        // the page and a later scan agree on it. A failure is the request's
+        // failure; the next scan then records the file and its faces are
+        // detected again.
+        let recorded = record_rotated(
+            &state_for_task,
+            &path,
+            &hash_for_task,
+            shared,
+            dims.map(|(w, h)| (ccw, w as i32, h as i32)),
+        );
         invalidate_thumb_cache(&cache, &hash_for_task);
-        Ok::<(u16, String), anyhow::Error>((orientation, hash))
+        let hash = anyhow::Context::with_context(recorded, || format!("recording rotated {path}"))?;
+        Ok::<(u16, String, String), anyhow::Error>((orientation, hash, path))
     })
     .await;
 
     match result {
-        Ok(Ok((orientation, hash))) => json_response(
-            serde_json::json!({ "orientation": orientation, "hash": hash }).to_string(),
+        // The path says which item turned: a copy at another path keeps the
+        // old hash, so the page must not rewrite it.
+        Ok(Ok((orientation, hash, path))) => json_response(
+            serde_json::json!({ "orientation": orientation, "hash": hash, "path": path })
+                .to_string(),
         ),
         Ok(Err(e)) => internal(anyhow::anyhow!("rotate failed for {hash}: {e}")).into_response(),
         Err(e) => internal(e).into_response(),
     }
 }
 
-/// Record a rotated file's new content hash. Its faces move with it (ids,
-/// labels and the turned geometry stay) unless another path shares the old
-/// content. The row goes through scan's own writer, so a later scan finds
-/// nothing changed.
-fn rehash_rotated(state: &AppState, path: &str, old: &str, shared: bool) -> anyhow::Result<String> {
+/// Record a rotated file's new content hash. Its faces move with it (ids and
+/// labels stay) and their geometry turns with the photo, unless another path
+/// shares the old content or the new content already has faces of its own.
+/// The row goes through scan's own writer, so a later scan finds nothing
+/// changed, and every change commits together or not at all.
+fn record_rotated(
+    state: &AppState,
+    path: &str,
+    old: &str,
+    shared: bool,
+    turn: Option<(bool, i32, i32)>,
+) -> anyhow::Result<String> {
     let record = videre::hasher::hash_file_in(&state.context.library, std::path::Path::new(path))?;
     let conn = state
         .conn
         .lock()
         .map_err(|_| anyhow::anyhow!("the database connection lock is poisoned"))?;
-    if !shared {
-        videre_core::face_db::move_faces_to_hash(&conn, old, &record.hash)?;
-    }
-    videre::sqlite_output::write_records_in(
-        &conn,
-        &state.context.library,
-        std::slice::from_ref(&record),
-    )?;
+    videre_core::db::in_savepoint(&conn, || -> anyhow::Result<()> {
+        let moved = if shared {
+            0
+        } else {
+            videre_core::face_db::move_faces_to_hash(&conn, old, &record.hash)?
+        };
+        // Turn the display-canvas face geometry with the photo, so a rotated
+        // photo's face crops stay on their faces instead of cropping the
+        // pre-rotation region of the new canvas. Only the rows that moved
+        // are this photo's; legacy raw-canvas rows (oriented NULL) crop the
+        // right region through their own orientation path.
+        if let (true, Some((ccw, display_w, display_h))) = (moved > 0, turn) {
+            rotate_faces_geometry(&conn, &record.hash, ccw, display_w, display_h);
+        }
+        videre::sqlite_output::write_records_in(
+            &conn,
+            &state.context.library,
+            std::slice::from_ref(&record),
+        )?;
+        Ok(())
+    })?;
     Ok(record.hash)
 }
 
@@ -2153,21 +2164,17 @@ fn rehash_rotated(state: &AppState, path: &str, old: &str, shared: bool) -> anyh
 /// a row whose bbox or landmark will not parse is left untouched rather than
 /// corrupted, and a DB error is logged, since the rotation itself has already
 /// succeeded and the caller reports that.
-fn rotate_faces_geometry(state: &AppState, hash: &str, ccw: bool, display_w: i32, display_h: i32) {
+fn rotate_faces_geometry(
+    conn: &rusqlite::Connection,
+    hash: &str,
+    ccw: bool,
+    display_w: i32,
+    display_h: i32,
+) {
     // The file itself was rotated already, so a failure here leaves face
     // boxes stale: logged at error, where the primary log keeps it.
     let failed = |what: String, e: anyhow::Error| {
         videre_core::error_log::report(tracing::Level::ERROR, &e.context(what), None)
-    };
-    let conn = match state.conn.lock() {
-        Ok(conn) => conn,
-        Err(_) => {
-            failed(
-                format!("videre gallery: rotating face geometry for {hash}"),
-                anyhow::anyhow!("the database connection lock is poisoned by an earlier panic"),
-            );
-            return;
-        }
     };
     let rows: Vec<(i64, String, Option<String>)> = {
         let mut stmt = match conn.prepare(
@@ -3920,7 +3927,7 @@ mod rotate_geometry_tests {
             .with_writer(move || w.clone())
             .finish();
         tracing::subscriber::with_default(sub, || {
-            rotate_faces_geometry(&state, "çağla", false, 100, 80)
+            rotate_faces_geometry(&state.conn.lock().unwrap(), "çağla", false, 100, 80)
         });
 
         let logged = String::from_utf8_lossy(&buf.0.lock().unwrap()).to_string();

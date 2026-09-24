@@ -307,25 +307,47 @@ pub fn hash_shared_elsewhere(conn: &Connection, hash: &str, path: &str) -> rusql
 /// content. Ids stay, so labels, clusters and learning references stay with
 /// them. For a file videre changed itself (rotate), where the faces are
 /// known to still hold.
+///
+/// When `new` already has faces or was already scanned for them (an
+/// identical copy was turned the same way earlier), those faces describe the
+/// content and nothing moves: merging two sets would duplicate or contradict
+/// them. The old faces stay under `old`, for the row write to drop once no
+/// path has it. Returns how many faces moved.
 pub fn move_faces_to_hash(conn: &Connection, old: &str, new: &str) -> rusqlite::Result<usize> {
     if !crate::db::table_exists(conn, "faces")? {
         return Ok(0);
     }
-    let tx = conn.unchecked_transaction()?;
-    let moved = tx.execute(
-        "UPDATE faces SET hash = ?2 WHERE hash = ?1",
-        rusqlite::params![old, new],
-    )?;
-    if crate::db::table_exists(&tx, "faces_scanned")? {
-        tx.execute(
-            "INSERT OR IGNORE INTO faces_scanned (hash)
-             SELECT ?2 WHERE EXISTS (SELECT 1 FROM faces_scanned WHERE hash = ?1)",
+    let scanned = crate::db::table_exists(conn, "faces_scanned")?;
+    crate::db::in_savepoint(conn, || {
+        let populated: bool = conn.query_row(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM faces WHERE hash = ?1){}",
+                if scanned {
+                    " OR EXISTS(SELECT 1 FROM faces_scanned WHERE hash = ?1)"
+                } else {
+                    ""
+                }
+            ),
+            [new],
+            |r| r.get(0),
+        )?;
+        if populated {
+            return Ok(0);
+        }
+        let moved = conn.execute(
+            "UPDATE faces SET hash = ?2 WHERE hash = ?1",
             rusqlite::params![old, new],
         )?;
-        tx.execute("DELETE FROM faces_scanned WHERE hash = ?1", [old])?;
-    }
-    tx.commit()?;
-    Ok(moved)
+        if scanned {
+            conn.execute(
+                "INSERT OR IGNORE INTO faces_scanned (hash)
+                 SELECT ?2 WHERE EXISTS (SELECT 1 FROM faces_scanned WHERE hash = ?1)",
+                rusqlite::params![old, new],
+            )?;
+            conn.execute("DELETE FROM faces_scanned WHERE hash = ?1", [old])?;
+        }
+        Ok(moved)
+    })
 }
 
 /// How many faces `drop_unreferenced_faces(conn, None)` would remove.
@@ -820,6 +842,20 @@ mod tests {
         assert_eq!(label, "çağla");
         assert!(scanned(&conn, "hturned"));
         assert!(!scanned(&conn, "hkept"));
+    }
+
+    #[test]
+    fn moving_onto_content_that_already_has_faces_moves_nothing() {
+        let conn = orphan_fixture();
+        // hkept is turned into content hshared already describes.
+        assert_eq!(move_faces_to_hash(&conn, "hkept", "hshared").unwrap(), 0);
+        assert_eq!(face_ids(&conn, "hshared"), vec![2], "no merged face sets");
+        assert_eq!(
+            face_ids(&conn, "hkept"),
+            vec![1],
+            "left for the row write to drop"
+        );
+        assert!(scanned(&conn, "hkept"));
     }
 
     #[test]

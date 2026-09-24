@@ -30,73 +30,77 @@ pub fn write_records_in(
 
 fn write_records_to(conn: &rusqlite::Connection, records: &[FileRecord]) -> Result<()> {
     videre_core::library_db::ensure_scan_schema(conn)?;
-    let tx = conn.unchecked_transaction()?;
-    // Paths whose content changed since the last scan, with the old hash.
-    let mut changed: Vec<(&str, String)> = Vec::new();
+    // A savepoint rather than a transaction, so the gallery's rotate can run
+    // this inside its own: the face move and this row commit together.
+    let relabel = videre_core::db::in_savepoint(conn, || {
+        let tx = conn;
+        // Paths whose content changed since the last scan, with the old hash.
+        let mut changed: Vec<(&str, String)> = Vec::new();
 
-    {
-        let mut previous = tx.prepare("SELECT hash FROM file_hashes WHERE path = ?1")?;
-        let mut stmt = tx.prepare(
-            "INSERT INTO file_hashes
-                (path, hash, size_bytes, created_at, modified_at, ext, mime,
-                 phash, exif_date, gps_lat, gps_lon, width, height,
-                 duration_secs, codec)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                     ?14, ?15)
-             ON CONFLICT(path) DO UPDATE SET
-                hash = excluded.hash,
-                size_bytes = excluded.size_bytes,
-                created_at = excluded.created_at,
-                modified_at = excluded.modified_at,
-                ext = excluded.ext,
-                mime = excluded.mime,
-                phash = excluded.phash,
-                exif_date = excluded.exif_date,
-                gps_lat = excluded.gps_lat,
-                gps_lon = excluded.gps_lon,
-                width = excluded.width,
-                height = excluded.height,
-                duration_secs = excluded.duration_secs,
-                codec = excluded.codec",
-        )?;
+        {
+            let mut previous = tx.prepare("SELECT hash FROM file_hashes WHERE path = ?1")?;
+            let mut stmt = tx.prepare(
+                "INSERT INTO file_hashes
+                    (path, hash, size_bytes, created_at, modified_at, ext, mime,
+                     phash, exif_date, gps_lat, gps_lon, width, height,
+                     duration_secs, codec)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                         ?14, ?15)
+                 ON CONFLICT(path) DO UPDATE SET
+                    hash = excluded.hash,
+                    size_bytes = excluded.size_bytes,
+                    created_at = excluded.created_at,
+                    modified_at = excluded.modified_at,
+                    ext = excluded.ext,
+                    mime = excluded.mime,
+                    phash = excluded.phash,
+                    exif_date = excluded.exif_date,
+                    gps_lat = excluded.gps_lat,
+                    gps_lon = excluded.gps_lon,
+                    width = excluded.width,
+                    height = excluded.height,
+                    duration_secs = excluded.duration_secs,
+                    codec = excluded.codec",
+            )?;
 
-        for r in records {
-            let old: Option<String> = previous.query_row([&r.path], |row| row.get(0)).optional()?;
-            stmt.execute(params![
-                r.path,
-                r.hash,
-                r.size_bytes as i64,
-                r.created_at,
-                r.modified_at,
-                r.ext,
-                r.mime,
-                r.phash.map(|p| p as i64),
-                r.exif_date,
-                r.gps_lat,
-                r.gps_lon,
-                r.width,
-                r.height,
-                r.duration_secs,
-                r.codec,
-            ])?;
-            if let Some(old) = old.filter(|old| *old != r.hash) {
-                changed.push((r.path.as_str(), old));
+            for r in records {
+                let old: Option<String> =
+                    previous.query_row([&r.path], |row| row.get(0)).optional()?;
+                stmt.execute(params![
+                    r.path,
+                    r.hash,
+                    r.size_bytes as i64,
+                    r.created_at,
+                    r.modified_at,
+                    r.ext,
+                    r.mime,
+                    r.phash.map(|p| p as i64),
+                    r.exif_date,
+                    r.gps_lat,
+                    r.gps_lon,
+                    r.width,
+                    r.height,
+                    r.duration_secs,
+                    r.codec,
+                ])?;
+                if let Some(old) = old.filter(|old| *old != r.hash) {
+                    changed.push((r.path.as_str(), old));
+                }
             }
         }
-    }
 
-    // A face belongs to the content it was detected on. Content no file has
-    // any more takes its faces with it; the new content is detected again.
-    let mut relabel: Vec<(&str, usize)> = Vec::new();
-    for (path, old) in &changed {
-        let dropped =
-            videre_core::face_db::drop_unreferenced_faces(&tx, Some(std::slice::from_ref(old)))?;
-        if dropped.labeled > 0 {
-            relabel.push((path, dropped.labeled));
+        // A face belongs to the content it was detected on. Content no file has
+        // any more takes its faces with it; the new content is detected again.
+        let mut relabel: Vec<(&str, usize)> = Vec::new();
+        for (path, old) in &changed {
+            let dropped =
+                videre_core::face_db::drop_unreferenced_faces(tx, Some(std::slice::from_ref(old)))?;
+            if dropped.labeled > 0 {
+                relabel.push((path, dropped.labeled));
+            }
         }
-    }
-
-    tx.commit()?;
+        Ok::<_, rusqlite::Error>(relabel)
+    })?;
     for (path, labeled) in relabel {
         tracing::warn!(
             "{path} changed; its {labeled} labeled face(s) will be detected again and need naming"

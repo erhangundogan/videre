@@ -218,19 +218,29 @@ landmarks are turned with it, so face crops stay on their faces and keep their
 people labels. Supported for EXIF-bearing images (JPEG, PNG, TIFF, WebP); any
 other format (video, HEIC, and the like) returns `415 Unsupported Media Type`.
 
+Identical copies share a hash, so pass `path` to say which file to turn; it
+must be a path the library records with that hash, or the request returns
+`404`. Without it, one of the copies is turned.
+
 Rewriting the tag changes the file's content, and so its content hash. The new
-hash is recorded at once, the faces move to it (unless another path holds the
-old content, in which case they stay with that copy), and the response carries
-it with the new orientation value. Use the new hash for later requests about
-this photo; the old one no longer names it.
+hash is recorded at once, together with the move of the photo's faces to it,
+and a failure to record it fails the request. The faces stay with the old
+content when another path still holds it, and the new content keeps its own
+faces when it already has some. The response carries the new orientation, the
+new hash and the path that turned. Use the new hash for later requests about
+that file; a copy at another path keeps the old one.
 
 ```bash
 curl -X POST \
-  "http://127.0.0.1:7878/api/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/rotate"
+  "http://127.0.0.1:7878/api/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/rotate?path=%2FPhotos%2FAr%C5%9Fiv%2Fcagla.jpg"
 ```
 
 ```json
-{ "orientation": 6, "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }
+{
+  "orientation": 6,
+  "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "path": "/Photos/Arşiv/cagla.jpg"
+}
 ```
 
 ## Dates, search and locations

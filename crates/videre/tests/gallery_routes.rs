@@ -1452,9 +1452,18 @@ fn rotating_one_copy_leaves_the_shared_faces_alone() {
     let (lib, old, face_id) = scanned_photo_with_a_labeled_face(&["a.jpg", "b.jpg"]);
     let server = Server::start(&lib);
 
-    // The endpoint turns one of the two copies; whichever it is, the face
-    // stays with the other, unturned.
-    let (status, body) = server.send("POST", &format!("/api/files/{old}/rotate"), "");
+    // The page names the copy it shows; the face stays with the other one,
+    // unturned.
+    let b = lib.root.canonicalize().unwrap().join("b.jpg");
+    let b = b.to_string_lossy().into_owned();
+    let (status, body) = server.send(
+        "POST",
+        &format!(
+            "/api/files/{old}/rotate?path={}",
+            b.replace('/', "%2F").replace(' ', "%20")
+        ),
+        "",
+    );
     assert_eq!(status, 200, "{body}");
 
     let conn = lib.conn();
@@ -1478,4 +1487,67 @@ fn rotating_one_copy_leaves_the_shared_faces_alone() {
         )
         .unwrap();
     assert_eq!(still, 1);
+
+    // The response names the one path that turned, so the page updates only
+    // that item; the other copy's row still has the old hash.
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let turned = json["path"]
+        .as_str()
+        .expect("the response names the rotated path");
+    assert_eq!(turned, b, "the named copy is the one that turned");
+    let untouched: String = conn
+        .query_row(
+            "SELECT path FROM file_hashes WHERE hash = ?1",
+            [&old],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_ne!(turned, untouched);
+}
+
+#[test]
+fn rotating_into_content_that_already_has_faces_does_not_merge_them() {
+    // Two identical copies, each turned in turn: the second turn produces the
+    // content the first already has, with its own detected faces.
+    let (lib, old, _) = scanned_photo_with_a_labeled_face(&["a.jpg", "b.jpg"]);
+    let server = Server::start(&lib);
+    let (status, body) = server.send("POST", &format!("/api/files/{old}/rotate"), "");
+    assert_eq!(status, 200, "{body}");
+    let first: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let turned = first["hash"].as_str().unwrap().to_string();
+    {
+        // Detection ran on the turned content between the two rotations.
+        let conn = lib.conn();
+        conn.execute(
+            "INSERT INTO faces (hash, bbox, embedding, person_label, confirmed, oriented)
+             VALUES (?1, '1,2,3,4', X'0000', NULL, 0, 1)",
+            [&turned],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO faces_scanned (hash) VALUES (?1)", [&turned])
+            .unwrap();
+    }
+
+    let (status, body) = server.send("POST", &format!("/api/files/{old}/rotate"), "");
+    assert_eq!(status, 200, "{body}");
+    let second: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        second["hash"].as_str().unwrap(),
+        turned,
+        "precondition: both copies turned into the same content"
+    );
+
+    let conn = lib.conn();
+    let faces: Vec<(String, String)> = conn
+        .prepare("SELECT hash, bbox FROM faces ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        faces,
+        vec![(turned.clone(), "1,2,3,4".to_string())],
+        "the turned content keeps its own faces; the old content, now on no path, takes its faces with it"
+    );
 }
