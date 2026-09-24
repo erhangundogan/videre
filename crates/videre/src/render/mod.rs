@@ -1257,21 +1257,36 @@ mod tests {
 
     #[test]
     fn event_file_lookup_handles_more_hashes_than_one_sqlite_parameter_batch() {
-        let conn = geo_connection("");
+        let mut conn = geo_connection("");
+        videre_core::library_db::ensure_hash_index(&conn).unwrap();
         let wanted: Vec<String> = (0..32_768).map(|i| format!("{i:064x}")).collect();
-        for (name, i) in [("first", 0), ("last", 32_767)] {
-            conn.execute(
-                "INSERT INTO file_hashes (path,hash,size_bytes,ext) VALUES (?1,?2,100,'jpg')",
-                rusqlite::params![format!("/p/{name}.jpg"), wanted[i]],
-            )
-            .unwrap();
+        let transaction = conn.transaction().unwrap();
+        {
+            let mut insert = transaction
+                .prepare(
+                    "INSERT INTO file_hashes (path,hash,size_bytes,ext) VALUES (?1,?2,100,'jpg')",
+                )
+                .unwrap();
+            for (i, hash) in wanted.iter().enumerate() {
+                insert
+                    .execute(rusqlite::params![format!("/p/{i}.jpg"), hash])
+                    .unwrap();
+            }
+            for i in [0, 32_767] {
+                insert
+                    .execute(rusqlite::params![format!("/p/copy-{i}.jpg"), wanted[i]])
+                    .unwrap();
+            }
         }
+        transaction.commit().unwrap();
         let (rows, total) = query_event_files(&conn, &wanted).unwrap();
-        assert_eq!(total, 2);
+        assert_eq!(total, 32_768);
         assert_eq!(
             hashes(&rows),
-            vec![wanted[0].as_str(), wanted[32_767].as_str()]
+            wanted.iter().map(String::as_str).collect::<Vec<_>>()
         );
+        assert_eq!(rows[0].1, 2);
+        assert_eq!(rows[32_767].1, 2);
     }
 
     #[test]

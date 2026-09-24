@@ -192,6 +192,7 @@ fn add_missing_columns(
 pub fn ensure_scan_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(&file_hashes_ddl_for("file_hashes", true))?;
     add_missing_columns(conn, "file_hashes", FILE_HASHES_COLUMNS)?;
+    ensure_hash_index(conn)?;
     // The declared location-cluster key needs its parent table to exist
     // before any row is written, including through standalone scan writers
     // that never run the full schema preparation.
@@ -323,6 +324,20 @@ pub(crate) fn legacy_v1_fixture_ddl() -> String {
 /// needs the upgrade path at all.
 fn schema_complete(conn: &Connection) -> Result<bool> {
     Ok(verify_schema(conn).is_ok() && verify_foreign_keys(conn).is_ok())
+}
+
+fn hash_index_exists(conn: &Connection) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master \
+         WHERE type='index' AND tbl_name='file_hashes' AND name='idx_file_hashes_hash')",
+        [],
+        |row| row.get(0),
+    )
+}
+
+/// Index content hashes for scan-only libraries as well as embedded ones.
+pub fn ensure_hash_index(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_file_hashes_hash ON file_hashes(hash);")
 }
 
 /// Prepare the complete supported schema on `conn`: the scan table plus the
@@ -616,6 +631,10 @@ fn open_prepared(ctx: &LibraryContext, conn: &Connection) -> Result<()> {
             // in the primary log at the default level.
             tracing::warn!("{line}");
         }
+    } else if !hash_index_exists(conn)? {
+        // An already prepared v2 library may have been scanned but never
+        // embedded. Add only the missing index; do not rebuild its FK tables.
+        ensure_hash_index(conn)?;
     }
     verify_schema(conn)?;
     verify_foreign_keys(conn)?;
@@ -839,7 +858,7 @@ pub fn open_existing(ctx: &LibraryContext) -> Result<Connection> {
     }
     require_supported_library(&conn, &ctx.paths.db)?;
     validate_row_containment(ctx, &conn)?;
-    if version == SCHEMA_VERSION && schema_complete(&conn)? {
+    if version == SCHEMA_VERSION && schema_complete(&conn)? && hash_index_exists(&conn)? {
         set_wal(&conn)?;
         crate::db::enable_foreign_keys(&conn)
             .context("enable foreign keys on the library connection")?;
@@ -1097,6 +1116,55 @@ mod tests {
             column_exists(&conn, "file_hashes", "xmp_sidecar_mtime").unwrap(),
             "ensure_scan_schema must add the xmp_sidecar_mtime column to an older table"
         );
+    }
+
+    #[test]
+    fn scan_schema_indexes_hashes_without_an_embed_run() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_scan_schema(&conn).unwrap();
+        let plan: String = conn
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT path FROM file_hashes WHERE hash IN ('a','b')",
+                [],
+                |row| row.get(3),
+            )
+            .unwrap();
+        assert!(plan.contains("idx_file_hashes_hash"), "{plan}");
+    }
+
+    #[test]
+    fn opening_an_existing_library_adds_only_the_missing_hash_index() {
+        let (_temp, ctx) = library();
+        let conn = initialize(&ctx).unwrap();
+        conn.execute_batch("DROP INDEX IF EXISTS idx_file_hashes_hash;")
+            .unwrap();
+        let root_page_before: i64 = conn
+            .query_row(
+                "SELECT rootpage FROM sqlite_master WHERE type='table' AND name='file_hashes'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        drop(conn);
+        // An index-only optimization does not make old libraries unreadable.
+        drop(open_existing_read_only(&ctx).unwrap());
+        let conn = open_existing(&ctx).unwrap();
+        let root_page_after: i64 = conn
+            .query_row(
+                "SELECT rootpage FROM sqlite_master WHERE type='table' AND name='file_hashes'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(root_page_after, root_page_before);
+        let plan: String = conn
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT path FROM file_hashes WHERE hash IN ('a','b')",
+                [],
+                |row| row.get(3),
+            )
+            .unwrap();
+        assert!(plan.contains("idx_file_hashes_hash"), "{plan}");
     }
 
     /// One library root plus a context on it. All path expectations are built

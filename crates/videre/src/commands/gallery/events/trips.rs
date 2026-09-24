@@ -35,9 +35,21 @@ pub(super) fn destination_episodes(rows: &[TripRow], places: &Places) -> Vec<Epi
         while end < photos.len() && rows[photos[end]].capture == Some(when) {
             end += 1;
         }
-        // A home photo or mutually distant away photos at the same wall-clock
-        // time are contradictory location evidence. Resolve the whole second
-        // before looking at hashes, so hash spelling cannot choose a boundary.
+        // A home photo at this second contradicts away anchors at the same
+        // time. Resolve it before hashes can choose a side of that boundary.
+        if photos[pos..end]
+            .iter()
+            .any(|&i| !eligible_destination(places.by_row[i].unwrap(), places))
+        {
+            if let Some(episode) = current.take() {
+                episodes.push(episode);
+            }
+            pos = end;
+            continue;
+        }
+        // Distant away observations at one timestamp cannot be ordered in
+        // time. Isolate each observed place, rather than allowing hash order
+        // to attach one to a preceding or following stop.
         let conflicting_destinations = photos[pos..end].iter().enumerate().any(|(offset, &a)| {
             photos[pos + offset + 1..end].iter().any(|&b| {
                 let before = places.groups[places.by_row[a].unwrap()].center;
@@ -45,13 +57,22 @@ pub(super) fn destination_episodes(rows: &[TripRow], places: &Places) -> Vec<Epi
                 haversine_km(before.0, before.1, after.0, after.1) > 40.0
             })
         });
-        if conflicting_destinations
-            || photos[pos..end]
-                .iter()
-                .any(|&i| !eligible_destination(places.by_row[i].unwrap(), places))
-        {
+        if conflicting_destinations {
             if let Some(episode) = current.take() {
                 episodes.push(episode);
+            }
+            let mut at_time = BTreeMap::<usize, Vec<usize>>::new();
+            for &i in &photos[pos..end] {
+                at_time
+                    .entry(places.by_row[i].unwrap())
+                    .or_default()
+                    .push(i);
+            }
+            for (group, anchors) in at_time {
+                episodes.push(Episode {
+                    anchors,
+                    stop_groups: BTreeSet::from([group]),
+                });
             }
             pos = end;
             continue;
@@ -508,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn simultaneous_distant_destinations_veto_anchors_regardless_of_hash_order() {
+    fn simultaneous_distant_destinations_form_separate_episodes_regardless_of_hash_order() {
         fn anchor_sets(a_hash: &str, b_hash: &str) -> Vec<Vec<String>> {
             let rows = with_home(vec![
                 row(
@@ -548,8 +569,23 @@ mod tests {
                 })
                 .collect()
         }
-        let expected = vec![vec!["a-09".to_owned()], vec!["a-11".to_owned()]];
-        assert_eq!(anchor_sets("a-middle", "z-distant"), expected);
-        assert_eq!(anchor_sets("z-middle", "a-distant"), expected);
+        assert_eq!(
+            anchor_sets("a-middle", "z-distant"),
+            vec![
+                vec!["a-09".to_owned()],
+                vec!["a-middle".to_owned()],
+                vec!["z-distant".to_owned()],
+                vec!["a-11".to_owned()]
+            ]
+        );
+        assert_eq!(
+            anchor_sets("z-middle", "a-distant"),
+            vec![
+                vec!["a-09".to_owned()],
+                vec!["z-middle".to_owned()],
+                vec!["a-distant".to_owned()],
+                vec!["a-11".to_owned()]
+            ]
+        );
     }
 }
