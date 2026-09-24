@@ -11,8 +11,85 @@
 //! in a later release reaches every library that never touched that key.
 
 use serde_json::{Map, Value};
+use std::path::{Path, PathBuf};
 
 pub(crate) const DEFAULTS_JSON: &str = include_str!("../../../static/gallery-defaults.json");
+
+pub(crate) const FILE_NAME: &str = "gallery.json";
+
+/// A write whose file would exceed this is refused. Settings are a few
+/// hundred bytes; anything near this is not settings.
+pub(crate) const MAX_BYTES: usize = 64 * 1024;
+
+pub(crate) fn path(state_dir: &Path) -> PathBuf {
+    state_dir.join(FILE_NAME)
+}
+
+pub(crate) enum Stored {
+    Absent,
+    Valid(Value),
+    /// Present but not a readable JSON object. Never overwritten: it may hold
+    /// hand edits the user wants back.
+    Invalid(String),
+}
+
+pub(crate) fn load(path: &Path) -> Stored {
+    match std::fs::read_to_string(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Stored::Absent,
+        Err(e) => Stored::Invalid(format!("cannot read {}: {e}", path.display())),
+        Ok(text) => match serde_json::from_str::<Value>(&text) {
+            Ok(v @ Value::Object(_)) => Stored::Valid(v),
+            Ok(_) => Stored::Invalid(format!("{} is not a JSON object", path.display())),
+            Err(e) => Stored::Invalid(format!("{} is not valid JSON: {e}", path.display())),
+        },
+    }
+}
+
+pub(crate) enum SaveError {
+    TooLarge,
+    Io(anyhow::Error),
+}
+
+pub(crate) fn save(path: &Path, overrides: &Value) -> Result<(), SaveError> {
+    let mut text = serde_json::to_string_pretty(overrides).expect("a Value serializes");
+    text.push('\n');
+    if text.len() > MAX_BYTES {
+        return Err(SaveError::TooLarge);
+    }
+    videre_core::atomic_file::publish(path, |file| {
+        use std::io::Write;
+        file.write_all(text.as_bytes())?;
+        Ok(())
+    })
+    .map_err(SaveError::Io)
+}
+
+/// Everything a page or `GET /api/settings` needs, read from disk each time
+/// so a hand edit applies on the next load with no restart.
+pub(crate) struct Snapshot {
+    pub effective: Value,
+    pub overrides: Value,
+    pub ignored: Vec<String>,
+    /// Why the file could not be used, when it exists but is unreadable.
+    pub error: Option<String>,
+    pub path: PathBuf,
+}
+
+pub(crate) fn snapshot(path: &Path) -> Snapshot {
+    let (overrides, error) = match load(path) {
+        Stored::Absent => (Value::Object(Map::new()), None),
+        Stored::Valid(v) => (v, None),
+        Stored::Invalid(e) => (Value::Object(Map::new()), Some(e)),
+    };
+    let Merged { effective, ignored } = merge(&defaults(), &overrides);
+    Snapshot {
+        effective,
+        overrides,
+        ignored,
+        error,
+        path: path.to_path_buf(),
+    }
+}
 
 pub(crate) fn defaults() -> Value {
     serde_json::from_str(DEFAULTS_JSON).expect("gallery-defaults.json is valid JSON")
@@ -125,9 +202,7 @@ mod tests {
         fn walk(v: &Value, path: &str) {
             match v {
                 Value::Null => panic!("null default at {path}"),
-                Value::Object(m) => m
-                    .iter()
-                    .for_each(|(k, v)| walk(v, &format!("{path}.{k}"))),
+                Value::Object(m) => m.iter().for_each(|(k, v)| walk(v, &format!("{path}.{k}"))),
                 _ => {}
             }
         }
@@ -154,7 +229,10 @@ mod tests {
         );
         assert_eq!(m.effective["routes"]["files"]["pageSize"], 200);
         assert_eq!(m.effective["routes"]["files"]["view"], "tile");
-        assert_eq!(m.ignored, vec!["routes.files.pageSize", "routes.files.view"]);
+        assert_eq!(
+            m.ignored,
+            vec!["routes.files.pageSize", "routes.files.view"]
+        );
     }
 
     #[test]
@@ -194,6 +272,52 @@ mod tests {
         merge_patch(&mut t, &json!({"resume": {"route": "/map"}}));
         assert_eq!(t["routes"]["files"]["pageSize"], 50);
         assert_eq!(t["resume"]["route"], "/map");
+    }
+
+    #[test]
+    fn load_tells_absent_valid_and_invalid_apart() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = path(dir.path());
+        assert!(matches!(load(&p), Stored::Absent));
+        std::fs::write(&p, r#"{"routes":{}}"#).unwrap();
+        assert!(matches!(load(&p), Stored::Valid(_)));
+        std::fs::write(&p, "not json").unwrap();
+        assert!(matches!(load(&p), Stored::Invalid(m) if m.contains("not valid JSON")));
+        std::fs::write(&p, "[1]").unwrap();
+        assert!(matches!(load(&p), Stored::Invalid(m) if m.contains("not a JSON object")));
+    }
+
+    #[test]
+    fn save_round_trips_as_pretty_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = path(&dir.path().join(".videre"));
+        let v = json!({"routes": {"files": {"view": "list"}}});
+        assert!(save(&p, &v).is_ok());
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(text.ends_with("}\n"), "{text}");
+        assert!(text.contains("\n  \"routes\""), "{text}");
+        assert!(matches!(load(&p), Stored::Valid(back) if back == v));
+    }
+
+    #[test]
+    fn an_oversized_save_is_refused_and_leaves_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = path(dir.path());
+        std::fs::write(&p, "{}\n").unwrap();
+        let big = json!({"x": "a".repeat(MAX_BYTES)});
+        assert!(matches!(save(&p, &big), Err(SaveError::TooLarge)));
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "{}\n");
+    }
+
+    #[test]
+    fn a_snapshot_of_an_invalid_file_is_the_defaults_with_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = path(dir.path());
+        std::fs::write(&p, "{oops").unwrap();
+        let s = snapshot(&p);
+        assert_eq!(s.effective, defaults());
+        assert_eq!(s.overrides, json!({}));
+        assert!(s.error.is_some());
     }
 
     #[test]

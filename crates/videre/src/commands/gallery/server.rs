@@ -264,6 +264,7 @@ mod location_cluster_tests {
             context,
             embedder: Mutex::new(None),
             basemap_downloading: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            settings_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -1127,6 +1128,91 @@ fn guard_operation(
     .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
 }
 
+fn settings_file(state: &AppState) -> std::path::PathBuf {
+    super::settings::path(&state.context.library.paths.state)
+}
+
+fn settings_json(s: super::settings::Snapshot) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "effective": s.effective,
+        "overrides": s.overrides,
+        "ignored": s.ignored,
+        "error": s.error,
+        "path": s.path.display().to_string(),
+    }))
+}
+
+/// `GET /api/settings`: the effective settings, the stored overrides, and
+/// which overrides were ignored for having the wrong type.
+async fn handle_get_settings(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let path = settings_file(&state);
+    tokio::task::spawn_blocking(move || settings_json(super::settings::snapshot(&path)))
+        .await
+        .map_err(internal)
+}
+
+/// Read-modify-write of the overrides under one lock, from disk every time,
+/// so a hand edit made while the server runs is never overwritten by a stale
+/// copy in memory.
+async fn write_settings(
+    state: Arc<AppState>,
+    change: impl FnOnce(&mut serde_json::Value) + Send + 'static,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    use super::settings::{load, save, snapshot, SaveError, Stored};
+    tokio::task::spawn_blocking(move || {
+        let _guard = guard_operation(&state)?;
+        let _held = state.settings_lock.lock().map_err(poisoned)?;
+        let path = settings_file(&state);
+        let mut overrides = match load(&path) {
+            Stored::Absent => serde_json::Value::Object(Default::default()),
+            Stored::Valid(v) => v,
+            // Never overwrite a file that could not be read: it may hold hand
+            // edits. The page shows why, and the user fixes or deletes it.
+            Stored::Invalid(_) => return Err(StatusCode::CONFLICT),
+        };
+        change(&mut overrides);
+        match save(&path, &overrides) {
+            Ok(()) => Ok(settings_json(snapshot(&path))),
+            Err(SaveError::TooLarge) => Err(StatusCode::PAYLOAD_TOO_LARGE),
+            Err(SaveError::Io(e)) => Err(internal(e.context("save gallery settings"))),
+        }
+    })
+    .await
+    .map_err(internal)?
+}
+
+/// `PATCH /api/settings`: an RFC 7396 merge patch over the stored overrides.
+/// `null` removes a key, which reverts it to its default.
+async fn handle_patch_settings(
+    State(state): State<Arc<AppState>>,
+    AxumJson(patch): AxumJson<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if !patch.is_object() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    write_settings(state, move |o| super::settings::merge_patch(o, &patch)).await
+}
+
+/// `PUT /api/settings`: import. Replaces `routes` wholesale and keeps the
+/// rest, so importing another library's settings never moves where this one
+/// resumes.
+async fn handle_put_settings(
+    State(state): State<Arc<AppState>>,
+    AxumJson(body): AxumJson<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let Some(routes) = body.get("routes").filter(|r| r.is_object()).cloned() else {
+        return Err(StatusCode::BAD_REQUEST);
+    };
+    write_settings(state, move |o| {
+        o.as_object_mut()
+            .expect("stored overrides are an object")
+            .insert("routes".into(), routes);
+    })
+    .await
+}
+
 #[derive(Deserialize)]
 struct NewPersonRequest {
     face_ids: Vec<i64>,
@@ -1196,6 +1282,9 @@ pub(crate) struct AppState {
     /// /api/basemap/ensure` returns the current status instead of launching a
     /// second download of the same once-per-machine archive.
     basemap_downloading: Arc<std::sync::atomic::AtomicBool>,
+    /// Serializes read-modify-write of `.videre/gallery.json`, so two saves
+    /// from two tabs cannot interleave and drop one of them.
+    settings_lock: Arc<Mutex<()>>,
 }
 
 /// The labeling UI. Served as `/people` under `videre gallery`, and as `/` on a
@@ -3355,6 +3444,7 @@ async fn serve_faces_async(
         context: opts.context.clone(),
         embedder: Mutex::new(None),
         basemap_downloading: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        settings_lock: Arc::new(Mutex::new(())),
     });
 
     // `videre gallery` is the only server configuration (labeling-only went away
@@ -3369,6 +3459,12 @@ async fn serve_faces_async(
         .route("/api/files/{hash}/raw", get(handle_raw_file))
         .route("/api/files/{hash}/rotate", post(handle_rotate_file))
         .route("/api/dates", get(handle_dates))
+        .route(
+            "/api/settings",
+            get(handle_get_settings)
+                .patch(handle_patch_settings)
+                .put(handle_put_settings),
+        )
         .route("/api/events", get(handle_events_api))
         .route("/api/events/{key}/files", get(handle_events_files))
         .route("/api/search", get(handle_search))
@@ -3627,6 +3723,7 @@ mod thumbnail_tests {
             context,
             embedder: Mutex::new(None),
             basemap_downloading: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            settings_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -3877,5 +3974,217 @@ mod rotate_geometry_tests {
             .query_row("SELECT bbox FROM faces WHERE id = 1", [], |r| r.get(0))
             .unwrap();
         assert_eq!(rotated, "20,10,40,30", "the readable face still turns");
+    }
+}
+
+#[cfg(test)]
+mod settings_api_tests {
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::{header, Request};
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    /// A library whose state exists, as every served library's does: the
+    /// write path takes the activity lock, which needs `.videre/locks`.
+    fn gallery_state(root: &Path) -> Arc<AppState> {
+        std::fs::create_dir_all(root.join(".videre/locks")).unwrap();
+        super::location_cluster_tests::gallery_state(root)
+    }
+
+    fn app(state: Arc<AppState>) -> Router {
+        Router::new()
+            .route(
+                "/api/settings",
+                get(handle_get_settings)
+                    .patch(handle_patch_settings)
+                    .put(handle_put_settings),
+            )
+            .with_state(state)
+    }
+
+    async fn send(app: &Router, method: &str, ctype: &str, body: &str) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri("/api/settings")
+                    .header(header::CONTENT_TYPE, ctype)
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    async fn get_settings(app: &Router) -> Value {
+        let (status, body) = send(app, "GET", "application/json", "").await;
+        assert_eq!(status, StatusCode::OK);
+        body
+    }
+
+    async fn patch_settings(app: &Router, body: Value) -> (StatusCode, Value) {
+        send(
+            app,
+            "PATCH",
+            "application/merge-patch+json",
+            &body.to_string(),
+        )
+        .await
+    }
+
+    fn file(root: &Path) -> std::path::PathBuf {
+        root.join(".videre").join("gallery.json")
+    }
+
+    #[tokio::test]
+    async fn a_fresh_library_has_the_defaults_and_no_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(gallery_state(dir.path()));
+        let body = get_settings(&app).await;
+        assert_eq!(body["effective"], super::super::settings::defaults());
+        assert_eq!(body["overrides"], json!({}));
+        assert_eq!(body["ignored"], json!([]));
+        assert_eq!(body["error"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn a_patch_is_stored_sparse_and_null_reverts_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(gallery_state(dir.path()));
+
+        let (status, _) =
+            patch_settings(&app, json!({"routes": {"files": {"view": "list"}}})).await;
+        assert_eq!(status, StatusCode::OK);
+        let on_disk: Value =
+            serde_json::from_str(&std::fs::read_to_string(file(dir.path())).unwrap()).unwrap();
+        assert_eq!(on_disk, json!({"routes": {"files": {"view": "list"}}}));
+        assert_eq!(
+            get_settings(&app).await["effective"]["routes"]["files"]["view"],
+            "list"
+        );
+
+        let (status, body) =
+            patch_settings(&app, json!({"routes": {"files": {"view": null}}})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["effective"]["routes"]["files"]["view"], "tile");
+    }
+
+    #[tokio::test]
+    async fn a_hand_edit_shows_up_without_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(gallery_state(dir.path()));
+        get_settings(&app).await;
+        std::fs::create_dir_all(dir.path().join(".videre")).unwrap();
+        std::fs::write(file(dir.path()), r#"{"routes":{"people":{"align":"top"}}}"#).unwrap();
+        assert_eq!(
+            get_settings(&app).await["effective"]["routes"]["people"]["align"],
+            "top"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wrong_type_is_stored_but_ignored_and_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(gallery_state(dir.path()));
+        let (status, body) =
+            patch_settings(&app, json!({"routes": {"files": {"pageSize": "x"}}})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["ignored"], json!(["routes.files.pageSize"]));
+        assert_eq!(body["effective"]["routes"]["files"]["pageSize"], 200);
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_file_is_never_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(gallery_state(dir.path()));
+        std::fs::create_dir_all(dir.path().join(".videre")).unwrap();
+        std::fs::write(file(dir.path()), "{oops").unwrap();
+
+        let (status, _) =
+            patch_settings(&app, json!({"routes": {"files": {"view": "list"}}})).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let (status, _) = send(&app, "PUT", "application/json", r#"{"routes":{}}"#).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(std::fs::read_to_string(file(dir.path())).unwrap(), "{oops");
+
+        let body = get_settings(&app).await;
+        assert_eq!(body["effective"], super::super::settings::defaults());
+        assert!(body["error"].as_str().unwrap().contains("not valid JSON"));
+    }
+
+    #[tokio::test]
+    async fn import_replaces_routes_and_keeps_where_the_library_resumes() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(gallery_state(dir.path()));
+        patch_settings(
+            &app,
+            json!({"resume": {"route": "/map"}, "routes": {"files": {"view": "list"}}}),
+        )
+        .await;
+        let (status, body) = send(
+            &app,
+            "PUT",
+            "application/json",
+            r#"{"routes":{"map":{"radiusKm":5}},"resume":{"route":"/date"}}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["overrides"],
+            json!({"resume": {"route": "/map"}, "routes": {"map": {"radiusKm": 5}}})
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_bodies_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(gallery_state(dir.path()));
+        for body in [r#"{"routes":3}"#, "[]", "{}"] {
+            let (status, _) = send(&app, "PUT", "application/json", body).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        }
+        let (status, _) = send(&app, "PATCH", "application/json", "[1]").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        // A content type that is not CORS-simple is what keeps a cross-site
+        // page from writing without a preflight; plain text must not get in.
+        let (status, _) = send(&app, "PATCH", "text/plain", r#"{"routes":{}}"#).await;
+        assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert!(!file(dir.path()).exists());
+    }
+
+    #[tokio::test]
+    async fn an_oversized_write_is_refused_and_leaves_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(gallery_state(dir.path()));
+        patch_settings(&app, json!({"routes": {"files": {"view": "list"}}})).await;
+        let before = std::fs::read_to_string(file(dir.path())).unwrap();
+        let (status, _) = patch_settings(&app, json!({"big": "a".repeat(70_000)})).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(std::fs::read_to_string(file(dir.path())).unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn two_libraries_keep_separate_settings() {
+        let one = tempfile::tempdir().unwrap();
+        let two = tempfile::tempdir().unwrap();
+        let app_one = app(gallery_state(one.path()));
+        let app_two = app(gallery_state(two.path()));
+        patch_settings(&app_one, json!({"routes": {"files": {"view": "list"}}})).await;
+        assert_eq!(
+            get_settings(&app_one).await["effective"]["routes"]["files"]["view"],
+            "list"
+        );
+        assert_eq!(
+            get_settings(&app_two).await["effective"]["routes"]["files"]["view"],
+            "tile"
+        );
     }
 }
