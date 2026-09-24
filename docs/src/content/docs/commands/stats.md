@@ -79,7 +79,8 @@ embeddings live under its own root and never appear here. See
 [keeping libraries separate](/guides/multiple-libraries/).
 :::
 
-**Duplicates** counts exact, byte-identical copies only. "Wasted" is what you
+**Duplicates** counts exact copies only: the same pixels or media data, even when
+their metadata differs. "Wasted" is what you
 would reclaim by deleting all but one of each group, which is what
 [`videre dedupe`](/commands/dedupe/) proposes.
 

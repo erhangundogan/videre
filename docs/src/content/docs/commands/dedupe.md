@@ -123,15 +123,17 @@ are treated as absent and fall through to step 2.
 The intent is to keep the copy closest to the original: an edited or re-saved
 copy usually has a later filesystem date, while the EXIF date survives copying.
 
-:::note[It does not matter which copy survives]
-Members of a group are byte-identical, so whichever is kept, the file you end up
-with is the same file. The only thing that differs is **which path** remains,
-which is why reviewing in `videre dedupe --html` is worth it: the KEEP copy may be in a
-folder you would not have chosen, especially across
-[multiple scanned folders](/guides/multiple-libraries/).
+:::caution[The kept copy decides which metadata survives]
+Members of a group have the same pixels or media data, but their metadata can
+differ: one copy may carry a date or location you corrected in another app. Only
+the KEEP copy's metadata survives `--remove`, and because the oldest date wins,
+a copy whose date you moved later is the one removed.
 
-If two copies have identical dates, the choice between them is arbitrary. Again,
-the bytes are the same.
+Review in `videre dedupe --html` before removing: check the dates, and check
+**which path** remains, since the KEEP copy may be in a folder you would not have
+chosen, especially across [multiple scanned folders](/guides/multiple-libraries/).
+
+If two copies have identical dates, the choice between them is arbitrary.
 :::
 
 ## `--similar` is review-only
