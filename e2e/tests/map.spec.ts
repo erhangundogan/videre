@@ -175,7 +175,7 @@ test.describe("map clusters", () => {
 
   test("the selected location and radius sit in the grid head, without a title", async ({ page, gallery }) => {
     await page.goto(`${gallery.baseURL}/map/location/berlin?radius=20`);
-    const head = page.locator(".gallery-head");
+    const head = page.locator(".gallery-toolbar");
     await expect(head.locator("#map-breadcrumb")).toHaveText("Berlin");
     await expect(head.locator("#map-radius-group")).toBeVisible();
     await expect(head.locator("#map-radius")).toHaveValue("20");

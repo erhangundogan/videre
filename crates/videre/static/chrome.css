@@ -29,8 +29,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
    the controls that change how that page shows its content, such as View,
    Sort or the People layout. One class on every page, so they look alike and
    a new page setting has an obvious home. */
-.gallery-head{padding:8px 16px 8px;display:flex;align-items:baseline;flex-wrap:wrap;gap:12px;background:#AAA;color:#333;}
-.gallery-head h2{font-size:16px}
+.gallery-toolbar{padding:8px 16px 8px;display:flex;align-items:baseline;flex-wrap:wrap;gap:12px;background:#AAA;color:#333;}
+.gallery-toolbar h2{font-size:16px}
 .view-toggle{font:500 13px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;display:inline-flex;align-items:center;gap:6px}
 .view-toggle select{font:inherit;color:inherit;border:1px solid #2a2a33;border-radius:6px;padding:4px 8px}
 .toolbar{padding:10px 32px;background:#fff;border-bottom:1px solid #e4e4e7;display:flex;gap:8px;align-items:center;position:sticky;top:0;z-index:10;box-shadow:0 1px 3px rgba(0,0,0,.06)}

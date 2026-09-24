@@ -19,7 +19,7 @@ test("the home header carries Library/Date/count lines and sections drop it", as
   await expect(header).toContainText("Date:");
   await expect(header).toContainText("Files/Embedding Count:");
   // The count moved into the header, so the grid head no longer titles itself.
-  await expect(page.locator(".gallery-head")).not.toContainText("All files");
+  await expect(page.locator(".gallery-toolbar")).not.toContainText("All files");
 
   for (const route of ["/duplicates", "/date", "/map"]) {
     await page.goto(`${gallery.baseURL}${route}`);

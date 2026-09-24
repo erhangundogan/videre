@@ -350,7 +350,7 @@ let facesData = { people: [], clusters: [], singletons: [] };
         '--secnav-h', (nav ? nav.offsetHeight : 0) + 'px');
     }
 
-    // The People list select in the page's settings bar (`.gallery-head`).
+    // The People list select in the page's settings bar (`.gallery-toolbar`).
     function setLayout(mode) {
       localStorage.setItem('videre_people_layout', mode === 'top' ? 'top' : 'right');
       applyLayout();
