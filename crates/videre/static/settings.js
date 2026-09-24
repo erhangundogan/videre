@@ -25,6 +25,12 @@ function settingInRange(path,min,max){
   var v=setting(path);
   return (typeof v==='number'&&isFinite(v)&&v>=min&&v<=max)?v:settingDefault(path);
 }
+// For a count that goes to the server as an integer (a page size): 1.5 is a
+// valid JSON number but not a valid `limit`, and sent as one it empties the grid.
+function settingIntInRange(path,min,max){
+  var v=settingInRange(path,min,max);
+  return Number.isInteger(v)?v:settingDefault(path);
+}
 var settingsPatch=null,settingsTimer=null;
 // Applies to this page at once and saves after a quiet 300 ms, so a burst of
 // changes writes once. A static export has no server: the change lasts the

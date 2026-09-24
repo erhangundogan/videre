@@ -96,9 +96,11 @@ pub(crate) const SETTINGS_JS: &str = include_str!("../../../static/settings.js")
 /// The settings as page globals plus the client runtime, inlined by
 /// `templates/nav.html` so the first paint already uses them. `live` is false
 /// on a static export, where changes last the session and are not saved.
-/// `</` is escaped so no value can close the script element.
+/// Every `<` is written as `\u003c`, so no value can reach the HTML parser: not
+/// `</script>`, and not `<!--<script>`, which leaves the element open and
+/// swallows the rest of the page. A value can be anything a user imported.
 pub(crate) fn page_script(s: &Snapshot, live: bool) -> String {
-    let js = |v: &Value| v.to_string().replace("</", "<\\/");
+    let js = |v: &Value| v.to_string().replace('<', "\\u003c");
     let error = s.error.clone().map(Value::String).unwrap_or(Value::Null);
     format!(
         "<script>var VIDERE_SETTINGS={};var VIDERE_SETTINGS_DEFAULTS={};\
@@ -188,6 +190,35 @@ pub(crate) fn merge_patch(target: &mut Value, patch: &Value) {
         } else {
             merge_patch(t.entry(k.clone()).or_insert(Value::Null), v);
         }
+    }
+}
+
+/// Drop every override equal to its default, and any object left empty by
+/// that, so the file stays sparse. Without this, choosing Tile again after List
+/// stored `"view":"tile"`, and a later release changing the default would
+/// never reach that library. Undeclared keys have no default and are kept.
+pub(crate) fn prune_defaults(overrides: &mut Value, defaults: &Value) {
+    let (Value::Object(o), Value::Object(d)) = (overrides, defaults) else {
+        return;
+    };
+    o.retain(|key, value| {
+        let Some(default) = d.get(key) else {
+            return true;
+        };
+        if value.is_object() && default.is_object() {
+            prune_defaults(value, default);
+            return !value.as_object().is_some_and(Map::is_empty);
+        }
+        !same_value(value, default)
+    });
+}
+
+/// Equality with numbers compared by value, so `200.0` equals a default of
+/// `200` the way `merge` treats them as one type.
+fn same_value(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => x.as_f64() == y.as_f64(),
+        _ => a == b,
     }
 }
 
@@ -302,14 +333,45 @@ mod tests {
     fn the_page_script_carries_the_settings_and_cannot_be_closed_by_a_value() {
         let dir = tempfile::tempdir().unwrap();
         let p = path(dir.path());
-        std::fs::write(&p, r#"{"routes":{"files":{"view":"</script><b>"}}}"#).unwrap();
+        std::fs::write(
+            &p,
+            r#"{"routes":{"files":{"view":"</script><b>"}},"mine":"<!--<script>"}"#,
+        )
+        .unwrap();
         let live = page_script_for(dir.path(), true);
         assert!(live.starts_with("<script>var VIDERE_SETTINGS={"), "{live}");
         assert!(live.ends_with("</script>"));
         assert!(live.contains("VIDERE_SETTINGS_LIVE=true"));
-        assert!(live.contains(r#"<\/script><b>"#));
-        assert!(!live.contains("</script><b>"));
+        // Not only `</`: `<!--<script>` inside a script element sends the HTML
+        // parser into its escaped state and swallows the rest of the page. No
+        // `<` from a value may reach the page at all.
+        let data = live
+            .split("</script>")
+            .next()
+            .unwrap()
+            .trim_start_matches("<script>");
+        assert!(!data.contains('<'), "{data}");
+        assert!(data.contains(r"\u003c!--\u003cscript>"), "{data}");
         assert!(page_script_for(dir.path(), false).contains("VIDERE_SETTINGS_LIVE=false"));
+    }
+
+    #[test]
+    fn values_equal_to_their_default_are_pruned() {
+        let mut o = json!({
+            "resume": {"route": "/"},
+            "routes": {
+                "files": {"view": "tile", "pageSize": 200.0, "tile": {"rowHeight": 320, "colGap": 10}},
+                "people": {"align": "right"},
+            },
+            "mine": "kept",
+        });
+        prune_defaults(&mut o, &defaults());
+        // Equal values go, including 200.0 against 200; objects left empty go
+        // with them; a value that differs and an undeclared key stay.
+        assert_eq!(
+            o,
+            json!({"routes": {"files": {"tile": {"rowHeight": 320}}}, "mine": "kept"})
+        );
     }
 
     #[test]

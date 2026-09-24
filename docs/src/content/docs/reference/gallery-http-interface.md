@@ -121,7 +121,9 @@ restart.
 ### `PATCH /api/settings`
 
 A JSON merge patch ([RFC 7396](https://www.rfc-editor.org/rfc/rfc7396)) over
-the stored overrides. `null` removes a key, reverting it to its default.
+the stored overrides. `null` removes a key, reverting it to its default. After
+every write, `PATCH` or `PUT`, any value equal to its default is dropped, so
+the file only ever holds what differs.
 
 ```bash
 curl -X PATCH -H 'Content-Type: application/merge-patch+json' \

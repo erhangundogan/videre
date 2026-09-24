@@ -875,7 +875,7 @@ document.getElementById('lb').addEventListener('click',function(e){
 // HASH_FILES stays for the inlined static export, whose rows carry no `copies`
 // field and so must be counted client-side.
 // GPAGE is capped at 500, the most /api/files returns per request.
-var GPAGE=settingInRange('routes.files.pageSize',1,500),gShown=0,HASH_FILES={},RESULT_ROWS={},galleryFiles=[];
+var GPAGE=settingIntInRange('routes.files.pageSize',1,500),gShown=0,HASH_FILES={},RESULT_ROWS={},galleryFiles=[];
 var GLOCATION=null,gRequest=0;
 function galleryLocationQuery(){
   if(!GLOCATION)return '';

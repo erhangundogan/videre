@@ -1505,6 +1505,7 @@ async fn write_settings(
             Stored::Invalid(_) => return Err(StatusCode::CONFLICT),
         };
         change(&mut overrides);
+        super::settings::prune_defaults(&mut overrides, &super::settings::defaults());
         match save(&path, &overrides) {
             Ok(()) => Ok(settings_json(snapshot(&path))),
             Err(SaveError::TooLarge) => Err(StatusCode::PAYLOAD_TOO_LARGE),
@@ -4500,6 +4501,35 @@ mod settings_api_tests {
             patch_settings(&app, json!({"routes": {"files": {"view": null}}})).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["effective"]["routes"]["files"]["view"], "tile");
+    }
+
+    #[tokio::test]
+    async fn choosing_the_default_again_removes_the_override() {
+        // Switching List back to Tile must not store "tile": a stored copy of
+        // a default would stop a later changed default reaching this library.
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(gallery_state(dir.path()));
+        patch_settings(&app, json!({"routes": {"files": {"view": "list"}}})).await;
+        let (status, body) =
+            patch_settings(&app, json!({"routes": {"files": {"view": "tile"}}})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["overrides"], json!({}));
+        let on_disk: Value =
+            serde_json::from_str(&std::fs::read_to_string(file(dir.path())).unwrap()).unwrap();
+        assert_eq!(on_disk, json!({}));
+
+        // An import that repeats defaults stores only what differs.
+        let (_, body) = send(
+            &app,
+            "PUT",
+            "application/json",
+            r#"{"routes":{"files":{"view":"tile","pageSize":50}}}"#,
+        )
+        .await;
+        assert_eq!(
+            body["overrides"],
+            json!({"routes": {"files": {"pageSize": 50}}})
+        );
     }
 
     #[tokio::test]

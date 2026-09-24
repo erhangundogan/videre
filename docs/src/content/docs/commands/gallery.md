@@ -167,7 +167,9 @@ The gallery keeps its settings per library, in `.videre/gallery.json` inside
 the library folder. The file holds only what differs from the defaults: the
 View selector, the People layout toggle and the page you were on save
 themselves as you use the gallery, and anything else can be set by editing the
-file. A change applies on the next page load, with no restart.
+file. A change applies on the next page load, with no restart. Choosing a
+default again removes that setting from the file, so a default changed in a
+later release still reaches this library.
 
 These are the defaults every library starts from:
 
@@ -192,7 +194,7 @@ These are the defaults every library starts from:
 |---|---|---|
 | `resume.route` | a page path | The page the gallery reopens at. Saved as you move around; see below |
 | `routes.files.view` | `tile`, `list` | The file view on the Library, Date, Events and Map grids |
-| `routes.files.pageSize` | 1 to 500 | How many files the Library and Map grids load at a time, and with each **Show more** |
+| `routes.files.pageSize` | a whole number, 1 to 500 | How many files the Library and Map grids load at a time, and with each **Show more** |
 | `routes.files.tile.rowHeight` | 80 to 1000 | Target height of a tile row, in pixels |
 | `routes.files.tile.colGap` | 0 to 100 | Space between tiles in a row, in pixels |
 | `routes.files.tile.rowGap` | 0 to 100 | Space between tile rows, in pixels |

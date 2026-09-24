@@ -73,6 +73,30 @@ test("export, reset and import round-trip the library's choices", async ({ page,
   await expect(page.locator(".view-mode-select").first()).toHaveValue("list");
 });
 
+test("a settings value that looks like markup cannot swallow the page", async ({ page, gallery }) => {
+  // An undeclared key survives into the inlined settings, so an imported file
+  // can carry any string. `<!--<script>` inside a script element used to keep
+  // the HTML parser in the script and blank everything after it.
+  await writeFile(
+    join(gallery.libraryRoot, ".videre", "gallery.json"),
+    JSON.stringify({ mine: "<!--<script>", routes: { files: { view: "</script><b>x" } } })
+  );
+  await page.goto(gallery.baseURL);
+  await expect(page.locator("#gallery [data-lb-url]").first()).toBeVisible();
+  await expect(page.locator("#secnav-more")).toBeVisible();
+  expect(await page.evaluate(() => (window as unknown as { VIDERE_SETTINGS: { mine: string } }).VIDERE_SETTINGS.mine))
+    .toBe("<!--<script>");
+});
+
+test("a fractional page size falls back to the default instead of emptying the grid", async ({ page, gallery }) => {
+  await writeFile(
+    join(gallery.libraryRoot, ".videre", "gallery.json"),
+    JSON.stringify({ routes: { files: { pageSize: 1.5 } } })
+  );
+  await page.goto(gallery.baseURL);
+  await expect(page.locator("#gallery [data-lb-url]").first()).toBeVisible();
+});
+
 test("an unreadable settings file shows a banner and is never overwritten", async ({ page, gallery }) => {
   const path = join(gallery.libraryRoot, ".videre", "gallery.json");
   await writeFile(path, "{oops");
