@@ -1353,14 +1353,16 @@ fn face_learning_boundary_only_user_mutations_change_faces() {
     assert_eq!(status, 200, "{body}");
     assert!(body.contains("\"generation\":1"), "{body}");
 
-    // Wait until the background worker settles (it may succeed or fail on
-    // this tiny evidence; either way it must not touch faces). A worker that
+    // Wait until the background worker settles (it may succeed, fail, or wait
+    // for more feedback on this tiny evidence; either way it must not touch
+    // faces). A worker that
     // never settles fails the test instead of letting it pass unobserved.
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let (_, status_body) = server.get("/api/face-learning/status");
         let settled = status_body.contains("\"status\":\"current\"")
-            || status_body.contains("\"status\":\"failed\"");
+            || status_body.contains("\"status\":\"failed\"")
+            || status_body.contains("\"status\":\"waiting\"");
         if settled {
             break;
         }

@@ -450,7 +450,8 @@ let facesData = { people: [], clusters: [], singletons: [] };
           current: 'Learning: up to date',
           stale: 'Learning: new feedback pending',
           training: 'Learning: training',
-          failed: 'Learning: last run failed, will retry after new feedback'
+          failed: 'Learning: last run failed, will retry after new feedback',
+          waiting: 'Learning: waiting for more feedback'
         };
         // A current status alone cannot say whether the last run changed the
         // profile in use, so the stored candidate outcome qualifies it.
@@ -460,6 +461,8 @@ let facesData = { people: [], clusters: [], singletons: [] };
         };
         let text = labels[s.status] || ('Learning: ' + s.status);
         if (s.status === 'current' && outcomes[s.last_candidate]) text += outcomes[s.last_candidate];
+        // Too little feedback is a normal early state, so say what would help.
+        if (s.status === 'waiting' && s.feedback_needed) text += ': ' + s.feedback_needed;
         strip.dataset.learningStatus = s.status;
         strip.dataset.learningCandidate = s.last_candidate || '';
         document.getElementById('learning-status-text').textContent = text;

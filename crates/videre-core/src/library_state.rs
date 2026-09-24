@@ -34,6 +34,20 @@ pub fn get(conn: &Connection, key: &str) -> Result<Option<i64>> {
 }
 
 /// Store `value` under `key`, creating the table on first use.
+/// The stored text, or `None` when there is none or no table yet: a pure read
+/// that never creates the table, for checks on a read path.
+pub fn peek_string(conn: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
+    if !crate::db::table_exists(conn, "library_state")? {
+        return Ok(None);
+    }
+    conn.query_row(
+        "SELECT value FROM library_state WHERE key = ?1",
+        [key],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
 pub fn set(conn: &Connection, key: &str, value: i64) -> Result<()> {
     ensure_table(conn)?;
     conn.execute(
