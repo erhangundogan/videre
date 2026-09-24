@@ -866,7 +866,8 @@ document.getElementById('lb').addEventListener('click',function(e){
 // RESULT_ROWS holds only the rows a search returned, a couple of dozen at most.
 // HASH_FILES stays for the inlined static export, whose rows carry no `copies`
 // field and so must be counted client-side.
-var GPAGE=200,gShown=0,HASH_FILES={},RESULT_ROWS={},galleryFiles=[];
+// GPAGE is capped at 500, the most /api/files returns per request.
+var GPAGE=settingInRange('routes.files.pageSize',1,500),gShown=0,HASH_FILES={},RESULT_ROWS={},galleryFiles=[];
 var GLOCATION=null,gRequest=0;
 function galleryLocationQuery(){
   if(!GLOCATION)return '';
@@ -908,16 +909,14 @@ function similarBtn(hash){
   return '<button class="similar-btn" data-similar="'+escA(hash)+'">Similar</button>';
 }
 // ---- Tile view (justified rows) --------------------------------------------
-// A second, image-first layout for the Files and Date galleries. List stays the
-// default. Tile reuses buildPreview for the tile body, so HEIC and video
-// handling and the decode-failure gate are unchanged, and positions each tile
-// with the vendored justified-layout over the items' aspect ratios. No caption.
-var VIEW_KEY='videre.viewMode';
-function viewMode(){
-  try{ return localStorage.getItem(VIEW_KEY)==='tile' ? 'tile' : 'list'; }
-  catch(e){ return 'list'; }
-}
-function storeViewMode(m){ try{ localStorage.setItem(VIEW_KEY,m); }catch(e){} }
+// An image-first layout for the Files and Date galleries, beside List. The
+// default and the last choice come from the library's gallery settings
+// (`routes.files.view`). Tile reuses buildPreview for the tile body, so HEIC
+// and video handling and the decode-failure gate are unchanged, and positions
+// each tile with the vendored justified-layout over the items' aspect ratios.
+// No caption.
+function viewMode(){ return settingOneOf('routes.files.view',['list','tile']); }
+function storeViewMode(m){ saveSetting('routes.files.view',m); }
 // Older scans carry no w/h, so fall back to square rather than dropping the item.
 function tileRatio(f){ return (f.w&&f.h) ? (f.w/f.h) : 1; }
 // One tile: the existing preview markup, positioned absolutely from the box the
@@ -936,7 +935,10 @@ function layoutTiles(container,files){
   // offsets every box by this padding and folds top+bottom into the container
   // height, so tile mode lines up with the list grid and the strip above it.
   var geo=justifiedLayout(files.map(tileRatio),{
-    containerWidth:width, containerPadding:{top:12,right:16,bottom:12,left:16}, boxSpacing:6, targetRowHeight:220
+    containerWidth:width, containerPadding:{top:12,right:16,bottom:12,left:16},
+    boxSpacing:{horizontal:settingInRange('routes.files.tile.colGap',0,100),
+                vertical:settingInRange('routes.files.tile.rowGap',0,100)},
+    targetRowHeight:settingInRange('routes.files.tile.rowHeight',80,1000)
   });
   var html='';
   for(var i=0;i<files.length;i++) html+=tileHtml(files[i],geo.boxes[i]);

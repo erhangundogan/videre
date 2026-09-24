@@ -80,7 +80,7 @@
     /* Right-hand People pane: a sticky column inside the content, below the nav
        and header, not a fixed panel over the whole viewport. It keeps the base
        `position: sticky; top: --secnav-h`, so it never overlaps the chrome
-       (toggled, remembered in localStorage). */
+       (toggled, remembered in the library's gallery settings). */
     body.sidebar-mode .page-body { display: flex; gap: 24px; align-items: flex-start; }
     body.sidebar-mode .labeling-main { order: 1; flex: 1; min-width: 0; }
     body.sidebar-mode .people-section { order: 2; width: 300px; flex-shrink: 0; border-left: 1px solid #eee; padding-left: 16px; }
