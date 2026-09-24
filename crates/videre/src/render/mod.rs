@@ -1034,6 +1034,10 @@ struct GalleryPage<'a> {
     /// header and nothing else, which reads as broken rather than as good news,
     /// and a library that has already been deduped is the common case.
     no_duplicates: bool,
+    /// Whether the page's heads carry the Sort control. True for the Files
+    /// tab and the Date galleries; false on the Events view, whose rows are
+    /// chronological by definition. The duplicates page renders neither head.
+    show_sort: bool,
 }
 
 /// The rows behind a list of paths, in the order given.
@@ -1155,6 +1159,9 @@ pub(crate) fn render(set: &RenderSet) -> String {
     let live = set.options.live;
     let nav = set.nav;
     let groups_view = set.view == View::Duplicates;
+    // The Sort control rides both heads (Files and Date); the Events view is
+    // chronological by definition, so its leaf page goes without.
+    let show_sort = set.view != View::Events;
 
     use askama::Template;
     use chrono::Utc;
@@ -1208,6 +1215,7 @@ pub(crate) fn render(set: &RenderSet) -> String {
         // secondary sections drop it. See `GalleryPage::show_header`.
         show_header: nav.is_none() || nav == Some(Section::All),
         no_duplicates: groups_view && groups.is_empty(),
+        show_sort,
     };
     page.render().expect("gallery template")
 }

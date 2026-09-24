@@ -843,6 +843,29 @@ mod files_sort_tests {
     }
 
     #[tokio::test]
+    async fn files_page_carries_the_sort_control_and_events_page_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        {
+            let conn = state.conn.lock().unwrap();
+            videre_core::library_db::ensure_scan_schema(&conn).unwrap();
+            videre_core::marks::ensure_marks_table(&conn).unwrap();
+        }
+        let app = Router::new()
+            .route("/", get(handle_gallery_all))
+            .route("/events", get(handle_events))
+            .with_state(state);
+
+        let home = body_of(&app, "/").await;
+        assert!(home.contains("sort-select"), "{home}");
+        assert!(home.contains("sort-dir-btn"), "{home}");
+
+        let events = body_of(&app, "/events").await;
+        assert!(events.contains("view-mode-select"), "{events}"); // the page has a head
+        assert!(!events.contains("sort-select"), "{events}"); // but no sort control
+    }
+
+    #[tokio::test]
     async fn files_endpoint_sorts_by_the_query_parameters_and_falls_back_on_unknowns() {
         let (_dir, app) = sorted_files_app();
 

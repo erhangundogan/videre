@@ -31,7 +31,7 @@
 <div class="groups" id="groups-container"></div>
 <div class="more-wrap"><button id="more-btn" onclick="showMore()"></button></div>
 {% endif %}{% if all_files_count.is_some() %}<div class="results-panel" id="results" style="display:none"></div>
-<div class="gallery-head"><label class="view-toggle">View <select class="view-mode-select" onchange="setViewMode(this.value)"><option value="list">List</option><option value="tile">Tile</option></select></label></div>
+<div class="gallery-head"><label class="view-toggle">View <select class="view-mode-select" onchange="setViewMode(this.value)"><option value="list">List</option><option value="tile">Tile</option></select></label>{% if show_sort %}<label class="sort-toggle">Sort <select class="sort-select" onchange="setSortField(this.value)"><option value="date">Date</option><option value="name">Name</option><option value="size">Size</option><option value="rating">Rating</option><option value="liked">Liked</option><option value="type">Type</option></select><button type="button" class="sort-dir-btn" aria-pressed="false" aria-label="Toggle sort direction" onclick="toggleSortDir()"><svg class="sort-tri" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 2 L11 10 L1 10 Z"/></svg></button></label>{% endif %}</div>
 <div class="gallery" id="gallery"></div>
 <div class="more-wrap"><button id="gallery-more" class="primary" onclick="showMoreGallery()"></button></div>
 {% endif %}{% if no_duplicates %}<div class="empty-state">
@@ -40,7 +40,7 @@
 <p class="hint">Visually similar photos are a different question: <code>videre scan --similar</code> finds those, and they appear here once it has run.</p>
 </div>
 {% endif %}{% if has_keep_files %}<div class="date-view" id="dateView">
-<div class="date-head"><label class="view-toggle">View <select class="view-mode-select" onchange="setViewMode(this.value)"><option value="list">List</option><option value="tile">Tile</option></select></label></div>
+<div class="date-head"><label class="view-toggle">View <select class="view-mode-select" onchange="setViewMode(this.value)"><option value="list">List</option><option value="tile">Tile</option></select></label>{% if show_sort %}<label class="sort-toggle">Sort <select class="sort-select" onchange="setSortField(this.value)"><option value="date">Date</option><option value="name">Name</option><option value="size">Size</option><option value="rating">Rating</option><option value="liked">Liked</option><option value="type">Type</option></select><button type="button" class="sort-dir-btn" aria-pressed="false" aria-label="Toggle sort direction" onclick="toggleSortDir()"><svg class="sort-tri" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 2 L11 10 L1 10 Z"/></svg></button></label>{% endif %}</div>
 <div class="date-breadcrumb" id="dateBreadcrumb"></div>
 <div class="date-grid date-narrowing" id="dateNarrowing"></div>
 <div class="date-grid" id="dateGrid"></div>

@@ -160,3 +160,13 @@ img.heic-loading{display:block;width:100%;aspect-ratio:1;object-fit:cover;backgr
 .view-toggle{font:500 13px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#9a9aa8;display:inline-flex;align-items:center;gap:6px}
 .view-toggle select{font:inherit;color:inherit;background:#25252d;border:1px solid #2a2a33;border-radius:6px;padding:4px 8px}
 .date-head{display:flex;align-items:center;gap:14px}
+/* Sort control: a select plus a direction button, next to the View toggle.
+   The button is a persistent toggle: at rest the triangle points up
+   (ascending); pressed, it flips 180 degrees and reads as descending.
+   aria-pressed carries the state for CSS and assistive tech alike. */
+.sort-toggle{font:500 13px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#9a9aa8;display:inline-flex;align-items:center;gap:6px}
+.sort-toggle select{font:inherit;color:inherit;background:#25252d;border:1px solid #2a2a33;border-radius:6px;padding:4px 8px}
+.sort-dir-btn{display:inline-flex;align-items:center;justify-content:center;width:26px;height:24px;padding:0;border:1px solid #2a2a33;border-radius:6px;background:#25252d;cursor:pointer;color:#9a9aa8}
+.sort-dir-btn .sort-tri{width:10px;height:10px;fill:currentColor;display:block;transition:transform .12s ease}
+.sort-dir-btn[aria-pressed="true"]{background:#2f2f3a;color:#d8d8e0;box-shadow:inset 0 1px 2px rgba(0,0,0,.4)}
+.sort-dir-btn[aria-pressed="true"] .sort-tri{transform:rotate(180deg)}
