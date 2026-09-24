@@ -579,8 +579,8 @@ would change that, for example `dissolve 2 more wrong clusters`: naming
 people only ever says which faces belong together, so the gallery also needs
 a few dissolved clusters before it can learn what a wrong group looks like.
 The next teaching action that records evidence trains again (naming a
-person from a single face records none), and the gallery also tries once
-when it starts. `last_error` is set only while `status` is `failed`.
+person from a single face records none), and the first gallery start after
+an upgrade tries once more. A failed run is retried the same ways. `last_error` is set only while `status` is `failed`.
 
 `last_candidate` says what became of the last trained candidate:
 `promoted` (it passed the quality gates and is the profile in use),

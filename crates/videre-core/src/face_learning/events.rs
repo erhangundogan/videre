@@ -229,7 +229,18 @@ pub struct LearningState {
     pub training_generation: Option<u64>,
     pub last_profile_id: Option<i64>,
     pub last_error: Option<String>,
+    /// While waiting: the feedback that would let training run. Kept apart
+    /// from `last_error` so an ask can never read as an error.
+    pub feedback_needed: Option<String>,
 }
+
+/// The build that last completed a training attempt, kept in
+/// `library_state` under [`TRAINING_BUILD_KEY`]. A waiting or failed library
+/// is retried without new feedback only when the build changed: the same
+/// build on the same evidence gives the same answer, while a newer one may
+/// train it or word the ask differently.
+pub const TRAINING_BUILD: &str = env!("CARGO_PKG_VERSION");
+pub const TRAINING_BUILD_KEY: &str = "face_learning_build";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LearningBatchReceipt {
@@ -336,7 +347,16 @@ pub fn ensure_learning_tables(conn: &Connection) -> rusqlite::Result<()> {
         CREATE TRIGGER IF NOT EXISTS face_learning_event_faces_immutable_delete
         BEFORE DELETE ON face_learning_event_faces
         BEGIN SELECT RAISE(ABORT, 'face learning provenance is immutable'); END;",
-    )
+    )?;
+    // The ask a waiting state carries, added after the table first shipped;
+    // an existing table gains it as NULL.
+    if conn
+        .prepare("SELECT feedback_needed FROM face_learning_state LIMIT 0")
+        .is_err()
+    {
+        conn.execute_batch("ALTER TABLE face_learning_state ADD COLUMN feedback_needed TEXT")?;
+    }
+    Ok(())
 }
 
 fn validate_new_event(event: &NewLearningEvent) -> Result<(), LearningEventError> {
@@ -857,7 +877,7 @@ pub fn eligible_events_for_training(
 fn raw_learning_state(conn: &Connection) -> Result<LearningState, LearningEventError> {
     let raw = conn.query_row(
         "SELECT generation, trained_generation, status, training_generation,
-                last_profile_id, last_error
+                last_profile_id, last_error, feedback_needed
          FROM face_learning_state WHERE id = 1",
         [],
         |row| {
@@ -868,6 +888,7 @@ fn raw_learning_state(conn: &Connection) -> Result<LearningState, LearningEventE
                 row.get::<_, Option<i64>>(3)?,
                 row.get::<_, Option<i64>>(4)?,
                 row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
             ))
         },
     )?;
@@ -900,6 +921,7 @@ fn raw_learning_state(conn: &Connection) -> Result<LearningState, LearningEventE
         training_generation,
         last_profile_id: raw.4,
         last_error: raw.5,
+        feedback_needed: raw.6,
     })
 }
 
@@ -910,10 +932,11 @@ pub fn learning_state(conn: &Connection) -> Result<LearningState, LearningEventE
 pub fn mark_training_started(conn: &Connection) -> Result<LearningState, LearningEventError> {
     let changed = conn.execute(
         "UPDATE face_learning_state
-         SET status = 'training', training_generation = generation, last_error = NULL
+         SET status = 'training', training_generation = generation, last_error = NULL,
+             feedback_needed = NULL
          WHERE id = 1
-           AND ((generation > trained_generation AND status IN ('stale', 'failed'))
-                OR status = 'waiting')",
+           AND ((generation > trained_generation AND status = 'stale')
+                OR status IN ('failed', 'waiting'))",
         [],
     )?;
     if changed != 1 {
@@ -973,7 +996,8 @@ pub fn mark_training_waiting(
          SET trained_generation = ?1,
              status = CASE WHEN generation = ?1 THEN 'waiting' ELSE 'stale' END,
              training_generation = NULL,
-             last_error = CASE WHEN generation = ?1 THEN ?2 ELSE NULL END
+             last_error = NULL,
+             feedback_needed = CASE WHEN generation = ?1 THEN ?2 ELSE NULL END
          WHERE id = 1 AND status = 'training' AND training_generation = ?1",
         params![generation, needed],
     )?;
@@ -1327,6 +1351,7 @@ mod tests {
                 training_generation: None,
                 last_profile_id: None,
                 last_error: None,
+                feedback_needed: None,
             }
         );
 
@@ -1374,15 +1399,22 @@ mod tests {
         assert_eq!(waiting.trained_generation, 1);
         assert_eq!(waiting.training_generation, None);
         assert_eq!(
-            waiting.last_error.as_deref(),
+            waiting.feedback_needed.as_deref(),
             Some("dissolve 2 more wrong clusters")
         );
+        assert_eq!(waiting.last_error, None, "an ask is not an error");
         assert!(mark_training_waiting(&conn, 2, "again").is_err());
         // A waiting generation may be tried again (the gallery does on start,
         // so a newer build's thresholds or wording apply) without new feedback.
         let retried = mark_training_started(&conn).unwrap();
         assert_eq!(retried.training_generation, Some(1));
         assert_eq!(retried.last_error, None);
+        // A failed generation may be retried the same way.
+        mark_training_failed(&conn, 1, "interrupted").unwrap();
+        assert_eq!(
+            mark_training_started(&conn).unwrap().training_generation,
+            Some(1)
+        );
         mark_training_waiting(&conn, 1, "dissolve 2 more wrong clusters").unwrap();
 
         append_committed(&conn, &[event(LearningAction::DissolveCluster)]);
@@ -1401,6 +1433,7 @@ mod tests {
         assert_eq!(behind.status, LearningStatus::Stale);
         assert_eq!(behind.trained_generation, 2);
         assert_eq!(behind.last_error, None);
+        assert_eq!(behind.feedback_needed, None);
     }
 
     #[test]

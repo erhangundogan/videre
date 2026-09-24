@@ -1071,12 +1071,10 @@ pub fn face_learning_status(conn: &Connection) -> Result<FaceLearningStatus> {
         status: format!("{:?}", state.status).to_lowercase(),
         last_profile_id: state.last_profile_id,
         last_candidate,
-        // A waiting state stores what it needs in the same column a failure
-        // stores its error in; the API names the two apart, and reports an
-        // error only for a failed run, so a path that marks the state stale
-        // without clearing the column never turns an ask into an error.
-        last_error: state.last_error.clone().filter(|_| failed),
-        feedback_needed: state.last_error.filter(|_| waiting),
+        // Each reported only in the state it describes: a path that moves the
+        // state on without clearing a column never shows a stale message.
+        last_error: state.last_error.filter(|_| failed),
+        feedback_needed: state.feedback_needed.filter(|_| waiting),
         pending_questions: pending_questions as usize,
     })
 }
