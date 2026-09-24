@@ -44,7 +44,9 @@ item pulls in the next page automatically and keeps going, so **Show more** is
 not needed to browse to the end. At the item's top-right corner sit up to three
 buttons: **Rotate** (photos only) turns the image 90 degrees clockwise by
 editing its EXIF orientation in place, and turns the photo's face boxes with it
-so face crops stay on their faces; **Fullscreen** blows the whole lightbox up to
+so face crops stay on their faces and keep their names (if another path holds
+the same photo, its faces stay with that copy and the rotated one's are
+detected again); **Fullscreen** blows the whole lightbox up to
 the screen, arrows and info panel included (the same button, or **Escape**,
 steps back); and **Close** (the &#215; at its right) dismisses it. The close
 button, **Escape**, or a click outside the item all close the lightbox.

@@ -47,6 +47,9 @@ videre prune --dry-run
    [model](/reference/models/)
 4. Deletes [cached thumbnails](/guides/caches/#thumbnail-cache) whose photo is
    gone
+5. Deletes faces whose photo is gone, reported as `removed N orphan face(s)
+   (M labeled)`. Such a face cannot be shown (there is no file to crop it
+   from), and its name went with the content it was detected on
 
 Steps 3 and 4 are the reason to prune at all rather than ignoring stale rows:
 they are what actually reclaims disk space.
@@ -58,7 +61,7 @@ prune afterwards reports exactly the number of files it changed. On a library
 nothing has touched, the count is zero and a second pass is a no-op.
 
 If two paths share the same content and only one is deleted, the shared
-embedding and cache entries are **kept**. They are keyed by content, so they are
+embedding, cache and face entries are **kept**. They are keyed by content, so they are
 still in use by the surviving copy.
 
 :::note[`--dry-run` undercounts orphans]

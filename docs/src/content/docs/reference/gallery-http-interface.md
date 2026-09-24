@@ -217,7 +217,12 @@ grid and lightbox re-render upright. The photo's display-canvas face boxes and
 landmarks are turned with it, so face crops stay on their faces and keep their
 people labels. Supported for EXIF-bearing images (JPEG, PNG, TIFF, WebP); any
 other format (video, HEIC, and the like) returns `415 Unsupported Media Type`.
-The response body carries the new orientation value.
+
+Rewriting the tag changes the file's content, and so its content hash. The new
+hash is recorded at once, the faces move to it (unless another path holds the
+old content, in which case they stay with that copy), and the response carries
+it with the new orientation value. Use the new hash for later requests about
+this photo; the old one no longer names it.
 
 ```bash
 curl -X POST \
@@ -225,7 +230,7 @@ curl -X POST \
 ```
 
 ```json
-{ "orientation": 6 }
+{ "orientation": 6, "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }
 ```
 
 ## Dates, search and locations
