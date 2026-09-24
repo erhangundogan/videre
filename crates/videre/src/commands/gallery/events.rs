@@ -9,6 +9,36 @@
 use chrono::NaiveDateTime;
 use videre_core::location_cluster::haversine_km;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MediaKind {
+    Photo,
+    Video,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TripRow {
+    pub hash: String,
+    pub capture: Option<NaiveDateTime>,
+    pub gps: Option<(f64, f64)>,
+    pub media: MediaKind,
+    pub path: String,
+    pub ext: String,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+}
+
+/// Only stored full capture timestamps can establish travel chronology.
+pub(crate) fn parse_capture(value: &str) -> Option<NaiveDateTime> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|d| d.naive_local())
+        .ok()
+        .or_else(|| {
+            ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"]
+                .iter()
+                .find_map(|fmt| NaiveDateTime::parse_from_str(value, fmt).ok())
+        })
+}
+
 /// A new outing starts after this much quiet time.
 const GAP_HOURS: i64 = 6;
 /// ...or when the camera has moved at least this far between two located shots.
@@ -179,6 +209,24 @@ mod tests {
 
     fn dt(s: &str) -> chrono::NaiveDateTime {
         parse_effective(s).unwrap()
+    }
+
+    #[test]
+    fn parse_capture_requires_full_time_and_keeps_wall_clock() {
+        assert_eq!(
+            parse_capture("2020-03-12T09:30:00"),
+            Some(dt("2020-03-12 09:30:00"))
+        );
+        assert_eq!(
+            parse_capture("2020-03-12 09:30:00"),
+            Some(dt("2020-03-12 09:30:00"))
+        );
+        assert_eq!(
+            parse_capture("2020-03-12T09:30:00+02:00"),
+            Some(dt("2020-03-12 09:30:00"))
+        );
+        assert!(parse_capture("2020-03-12").is_none());
+        assert!(parse_capture("not a date").is_none());
     }
 
     #[test]

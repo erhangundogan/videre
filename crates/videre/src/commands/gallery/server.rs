@@ -809,6 +809,58 @@ mod events_tests {
     use axum::http::Request;
     use tower::ServiceExt;
 
+    #[test]
+    fn trip_snapshot_uses_capture_date_only_and_rejects_invalid_gps() {
+        let conn = Connection::open_in_memory().unwrap();
+        videre_core::library_db::ensure_scan_schema(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO file_hashes (path, hash, ext, modified_at, gps_lat, gps_lon) VALUES
+             ('/p/no-date.jpg','no-date','jpg','2020-03-12T09:30:00+02:00',52.52,13.4),
+             ('/p/bad-lat.jpg','bad-lat','jpg','2020-03-12T09:30:00+02:00',91,13.4),
+             ('/p/bad-lon.jpg','bad-lon','jpg','2020-03-12T09:30:00+02:00',52.52,181),
+             ('/p/infinite.jpg','infinite','jpg','2020-03-12T09:30:00+02:00',1e999,13.4);",
+        )
+        .unwrap();
+        let rows = load_trip_rows(&conn).unwrap();
+        assert_eq!(rows.len(), 4);
+        assert!(rows.iter().all(|row| row.capture.is_none()));
+        assert_eq!(
+            rows.iter().find(|row| row.hash == "no-date").unwrap().gps,
+            Some((52.52, 13.4))
+        );
+        assert!(rows
+            .iter()
+            .filter(|row| row.hash.starts_with("bad-") || row.hash == "infinite")
+            .all(|row| row.gps.is_none()));
+    }
+
+    #[test]
+    fn trip_snapshot_prefers_usable_duplicate_metadata_in_any_insert_order() {
+        fn snapshot(reverse: bool) -> Vec<super::super::events::TripRow> {
+            let conn = Connection::open_in_memory().unwrap();
+            videre_core::library_db::ensure_scan_schema(&conn).unwrap();
+            let good = "INSERT INTO file_hashes (path, hash, ext, exif_date, gps_lat, gps_lon) VALUES ('/p/z.jpg','same','jpg','2020-03-12T09:30:00',47.5,19.0)";
+            let stale = "INSERT INTO file_hashes (path, hash, ext, modified_at) VALUES ('/p/a.jpg','same','jpg','2020-03-12T09:30:00+02:00')";
+            if reverse {
+                conn.execute(stale, []).unwrap();
+                conn.execute(good, []).unwrap();
+            } else {
+                conn.execute(good, []).unwrap();
+                conn.execute(stale, []).unwrap();
+            }
+            load_trip_rows(&conn).unwrap()
+        }
+        let rows = snapshot(false);
+        assert_eq!(rows, snapshot(true));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].path, "/p/z.jpg");
+        assert_eq!(
+            rows[0].capture,
+            Some(super::super::events::parse_capture("2020-03-12T09:30:00").unwrap())
+        );
+        assert_eq!(rows[0].gps, Some((47.5, 19.0)));
+    }
+
     fn seed_events(conn: &Connection) {
         videre_core::library_db::ensure_scan_schema(conn).unwrap();
         // Two Berlin sessions a day apart, plus one Istanbul shot minutes after
@@ -2362,6 +2414,78 @@ async fn handle_dates(
     }
     out.push_str("]}");
     Ok(json_response(out))
+}
+
+/// A capture-only snapshot for travel inference, including undated files for
+/// home evidence. A content hash counts once even when several paths exist.
+fn load_trip_rows(conn: &Connection) -> rusqlite::Result<Vec<super::events::TripRow>> {
+    use super::events::{MediaKind, TripRow};
+    use std::collections::BTreeMap;
+
+    let mut stmt = conn.prepare(
+        "SELECT hash, exif_date, gps_lat, gps_lon, path, COALESCE(ext,''), mime, width, height \
+         FROM file_hashes ORDER BY hash, path",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, Option<String>>(1)?,
+            r.get::<_, Option<f64>>(2)?,
+            r.get::<_, Option<f64>>(3)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, String>(5)?,
+            r.get::<_, Option<String>>(6)?,
+            r.get::<_, Option<i32>>(7)?,
+            r.get::<_, Option<i32>>(8)?,
+        ))
+    })?;
+    let mut by_hash: BTreeMap<String, TripRow> = BTreeMap::new();
+    for row in rows {
+        let (hash, capture, lat, lon, path, ext, mime, width, height) = row?;
+        let ext = ext.to_ascii_lowercase();
+        let Some(effective) = videre_core::mime_probe::effective_mime(mime.as_deref(), &ext) else {
+            continue;
+        };
+        let media = if effective.starts_with("image/") {
+            MediaKind::Photo
+        } else if videre_core::mime_probe::is_video_mime(effective) {
+            MediaKind::Video
+        } else {
+            continue;
+        };
+        let gps = match (lat, lon) {
+            (Some(lat), Some(lon))
+                if lat.is_finite()
+                    && lon.is_finite()
+                    && (-90.0..=90.0).contains(&lat)
+                    && (-180.0..=180.0).contains(&lon) =>
+            {
+                Some((lat, lon))
+            }
+            _ => None,
+        };
+        let candidate = TripRow {
+            hash: hash.clone(),
+            capture: capture.as_deref().and_then(super::events::parse_capture),
+            gps,
+            media,
+            path,
+            ext,
+            width,
+            height,
+        };
+        let better = by_hash.get(&hash).is_none_or(|prior| {
+            (candidate.capture.is_some(), candidate.gps.is_some())
+                > (prior.capture.is_some(), prior.gps.is_some())
+                || ((candidate.capture.is_some(), candidate.gps.is_some())
+                    == (prior.capture.is_some(), prior.gps.is_some())
+                    && candidate.path < prior.path)
+        });
+        if better {
+            by_hash.insert(hash, candidate);
+        }
+    }
+    Ok(by_hash.into_values().collect())
 }
 
 /// One ordered pass of every displayable, dated file, ready for segmentation.
