@@ -181,7 +181,10 @@ export async function preferListView(session: GallerySession): Promise<void> {
 // from default gallery settings: the gallery saves choices such as the view
 // mode and the last page into the library's `.videre/gallery.json`, so without
 // clearing it one test's clicks would become the next test's starting state.
-export const test = base.extend<{ gallery: GallerySession }, { galleryServer: GallerySession }>({
+export const test = base.extend<
+  { gallery: GallerySession; isolatedGallery: GallerySession },
+  { galleryServer: GallerySession }
+>({
   galleryServer: [async ({}, use) => {
     const session = await startGallery();
     try {
@@ -193,6 +196,14 @@ export const test = base.extend<{ gallery: GallerySession }, { galleryServer: Ga
   gallery: async ({ galleryServer }, use) => {
     await rm(join(galleryServer.libraryRoot, ".videre", "gallery.json"), { force: true });
     await use(galleryServer);
+  },
+  isolatedGallery: async ({}, use) => {
+    const session = await startGallery();
+    try {
+      await use(session);
+    } finally {
+      await stopGallery(session);
+    }
   }
 });
 
