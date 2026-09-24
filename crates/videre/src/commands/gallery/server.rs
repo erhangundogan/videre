@@ -1543,7 +1543,7 @@ fn render_map(state: &AppState, location_json: &str) -> axum::response::Html<Str
         cfg!(target_os = "macos")
     );
     let page = pages::Map {
-        settings_script: page_settings(&state),
+        settings_script: page_settings(state),
         chrome: CHROME_CSS,
         gallery_css: include_str!("../../../static/gallery.css"),
         css: pages::MAP_CSS,
