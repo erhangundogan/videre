@@ -14,7 +14,7 @@
 #map-plot{display:block;width:100%;height:100%}
 #map-gl{position:absolute;inset:0}
 #map-gl canvas{outline:none}
-.map-attribution{position:absolute;left:8px;bottom:6px;z-index:3;padding:2px 6px;border-radius:6px;background:rgba(18,18,22,.72);color:#a1a1aa;font-size:11px;line-height:1.4;pointer-events:none}
+.map-attribution{position:absolute;left:8px;bottom:6px;z-index:3;padding:2px 6px;border-radius:6px;background:transparent;color:#a1a1aa;font-size:11px;line-height:1.4;pointer-events:none}
 #map-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:32px;color:#a1a1aa;text-align:center}
 #map-empty[hidden]{display:none}
 #map-empty code{margin:0 4px;color:#e4e4e7}
