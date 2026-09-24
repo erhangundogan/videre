@@ -356,6 +356,17 @@ show artificially low numbers despite being well covered.
 
 The expensive-to-rediscover things. Each was measured, not assumed.
 
+### File identity ignores metadata
+
+`file_hashes.hash` is the content key: BLAKE3 over the file with its
+metadata blocks left out (`videre::content_key`), so an EXIF rotate or a date
+fix in another app keeps a photo's faces, names, marks and tags attached.
+`meta_hash` covers the metadata alone. A format the splitter cannot parse, or
+a file with no image or media data in it, falls back to the whole-file hash;
+without that, files of metadata alone would share one key and dedupe would
+offer to delete them. Libraries built before this (schema below 3) are
+refused and rebuilt by a fresh scan; there is no migration.
+
 ### Every filter goes through `videre_core::selection`
 
 One layer, two shapes. `RowSelection` filters rows that exist in the database
@@ -482,10 +493,6 @@ Seeing two date sources and picking the standard-looking one is the obvious
 "simplification" here, so the reasoning sits at the parse site as well. Measured
 on a 260-file corpus: 10 carry only the UTC field, all re-encoded renders rather
 than camera originals.
-
-:warning: **Video metadata needs a full re-scan to appear.** An incremental
-`scan` keys on `mime IS NULL`, which does not mean "scanned before video
-metadata existed", so an older library shows empty dates until re-scanned.
 
 ### Probe videos before invoking QuickLook
 
@@ -734,6 +741,7 @@ above.
 - `videre locations` is a global recompute -> `commands::locations`
 - Undecodable files are skipped after two strikes -> `videre_core::decode_failures`
 - Errors logged once, at boundaries; per-command log layout and reader -> `videre_core::error_log`, `videre_core::error_kind`, `crates/videre/src/logging.rs`
+- File identity is the content key, metadata excluded -> `videre::content_key`
 - Offline map basemap: one shared PMTiles archive per machine, downloaded once
   behind a cross-process flock; the map grid never gates on MapLibre's load
   (a WebGL probe can pass where the context still cannot render) -> `videre_core::basemap`, `commands::gallery::server` (`handle_basemap_*`), `static/map.js`

@@ -40,7 +40,7 @@ and a selection that matches nothing leaves an empty file, never a partial one.
 One JSON object per line, appended:
 
 ```json
-{"path":"/Photos/IMG_0042.jpg","hash":"5c5254e2...","size_bytes":4823921,"created_at":"2021-06-14T09:12:33","modified_at":"2021-06-14T09:12:33","ext":"jpg","mime":"image/jpeg","exif_date":"2021-06-14T09:12:33","gps_lat":52.5163,"gps_lon":13.3777,"width":4032,"height":3024}
+{"path":"/Photos/IMG_0042.jpg","hash":"5c5254e2...","meta_hash":"9e1f3c07...","size_bytes":4823921,"created_at":"2021-06-14T09:12:33","modified_at":"2021-06-14T09:12:33","ext":"jpg","mime":"image/jpeg","exif_date":"2021-06-14T09:12:33","gps_lat":52.5163,"gps_lon":13.3777,"width":4032,"height":3024}
 ```
 
 The fields match the [database columns](/reference/database/) of the same names.

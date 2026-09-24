@@ -290,16 +290,6 @@ On a real library that returns 349 photos and 6 videos together. Before v0.14.0
 the videos could not have matched either half, because neither field existed for
 them.
 
-:::caution[Older libraries need a re-scan]
-Video dates and coordinates only appear after the library has been scanned with
-v0.14.0 or later. An incremental scan will not pick them up, since it looks for
-files with no recorded type and these have one:
-
-```bash
-videre --library ~/Pictures scan
-```
-:::
-
 ### Capture date, not file date
 
 The date a video matches is when it was **recorded**, not when the file was

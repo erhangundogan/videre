@@ -94,8 +94,11 @@ deleted files, and their embeddings and cached thumbnails are still on disk. See
 
 ## What counts as a duplicate
 
-Exact, byte-for-byte identical content. Files are hashed with BLAKE3 and grouped
-by that hash, so two files are duplicates only if their bytes match completely.
+Exact, identical image or video content. Each file is hashed with BLAKE3 with
+its metadata left out (EXIF, XMP, comments, a video's creation date), and files
+are grouped by that hash. So a copy whose date was fixed, or that was rotated
+in the gallery, is still a duplicate of the original, and
+[`--remove`](#which-copy-is-kept) keeps the oldest-dated copy.
 
 A re-saved, re-compressed, resized or cropped copy is **not** a duplicate here,
 however similar it looks. That is what `--similar` is for.
