@@ -149,15 +149,84 @@ open from disk, because both need something running to answer.
 
 ## List and Tile views
 
-The **View** selector on the Library, Date, and Events tabs switches between **List**, the
-default view with file details, and **Tile**, an image-first view without
-captions. Tile arranges photos and videos into rows using their stored aspect
-ratios; files with no recorded dimensions use a square tile.
+The **View** selector on the Library, Date, and Events tabs switches between
+**Tile**, the default image-first view without captions, and **List**, which
+shows file details. Tile arranges photos and videos into rows using their
+stored aspect ratios; files with no recorded dimensions use a square tile.
 
-Your browser remembers the choice across both tabs and page reloads. Tile rows
-adapt when you resize the window or load more files on the Library tab. Click a
-tile to open the same lightbox, with the same previous/next navigation.
-Thumbnails are served at 480px so tiles stay sharp on high-DPI displays.
+The choice is saved in the library's [settings](#settings), so it applies to
+every tab, survives reloads, and stays with this library whichever port the
+gallery runs on. Tile rows adapt when you resize the window or load more files
+on the Library tab. Click a tile to open the same lightbox, with the same
+previous/next navigation. Thumbnails are served at 480px so tiles stay sharp on
+high-DPI displays.
+
+## Settings
+
+The gallery keeps its settings per library, in `.videre/gallery.json` inside
+the library folder. The file holds only what differs from the defaults: the
+View selector, the People layout toggle and the page you were on save
+themselves as you use the gallery, and anything else can be set by editing the
+file. A change applies on the next page load, with no restart. Choosing a
+default again removes that setting from the file, so a default changed in a
+later release still reaches this library.
+
+These are the defaults every library starts from:
+
+<!-- gallery-defaults -->
+```json
+{
+  "resume": { "route": "/" },
+  "routes": {
+    "files": {
+      "view": "tile",
+      "pageSize": 200,
+      "sort": { "field": "date", "dir": "desc" },
+      "tile": { "rowHeight": 280, "colGap": 10, "rowGap": 10 }
+    },
+    "people": { "align": "right" },
+    "map": { "radiusKm": 0 }
+  }
+}
+```
+
+| Setting | Values | What it does |
+|---|---|---|
+| `resume.route` | a page path | The page the gallery reopens at. Saved as you move around; see below |
+| `routes.files.view` | `tile`, `list` | The file view on the Library, Date, Events and Map grids |
+| `routes.files.pageSize` | a whole number, 1 to 500 | How many files the Library and Map grids load at a time, and with each **Show more** |
+| `routes.files.tile.rowHeight` | 80 to 1000 | Target height of a tile row, in pixels |
+| `routes.files.tile.colGap` | 0 to 100 | Space between tiles in a row, in pixels |
+| `routes.files.tile.rowGap` | 0 to 100 | Space between tile rows, in pixels |
+| `routes.people.align` | `right`, `top` | Where the People list sits on the People page |
+| `routes.map.radiusKm` | 0 to 20000 | Radius a map location opens with, in km. `0` uses each place's own radius |
+
+`routes.files.sort` is reserved for the upcoming sort control and is not read
+yet.
+
+A value of the wrong type (a word where a number belongs) or out of range is
+ignored and the default used instead. Keys the gallery does not know are kept
+in the file but have no effect. If the file is not valid JSON, the gallery runs
+on the defaults, shows a banner saying why, and saves nothing until you fix or
+delete the file, so hand edits are never overwritten.
+
+**Reopening where you left off.** The address `videre gallery` prints, and the
+page `--browse` opens, is the last page you visited in that library, such as a
+day in the Date view or a place on the map. Opening the bare address still
+lands on the Library tab.
+
+**The settings page.** The **...** button at the right end of the navigation
+bar opens a menu; **Settings** there leads to a page that shows the file's
+location and can:
+
+- **Export settings** to `videre-gallery-settings.json`. Only the `routes`
+  section is exported; the page a library reopens at belongs to that library.
+- **Import settings** from such a file, into this or any other library.
+- **Reset to defaults**, clearing every saved choice except where the library
+  reopens.
+
+Copying `.videre/gallery.json` into another library's `.videre` folder works
+too.
 
 ## Options
 
@@ -166,7 +235,7 @@ Thumbnails are served at 480px so tiles stay sharp on high-DPI displays.
 | `--library <DIR>` | Select a different library (default: the current directory) |
 | `--model <MODEL>` | Embedding model backing similarity search |
 | `--port <PORT>` | Port to listen on. Omitted: start at 7878 and advance to the next free port if taken. Given: use exactly that port (fails if busy); `0` lets the OS choose |
-| `--browse` | Open a browser once the server is listening |
+| `--browse` | Open a browser once the server is listening, at the page you last visited in this library |
 
 ## Face learning
 

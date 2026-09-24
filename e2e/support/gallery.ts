@@ -1,5 +1,5 @@
 import { once } from "node:events";
-import { access, copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { access, copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { get, request } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -166,8 +166,26 @@ async function startGallery(): Promise<ManagedGallery> {
   }
 }
 
-export const test = base.extend<{ gallery: GallerySession; isolatedGallery: GallerySession }>({
-  gallery: [async ({}, use) => {
+// Save List as the library's view, for specs that count list-view `.card`s.
+// Written to the settings file directly, the way a hand edit would be, so the
+// next page load picks it up.
+export async function preferListView(session: GallerySession): Promise<void> {
+  await mkdir(join(session.libraryRoot, ".videre"), { recursive: true });
+  await writeFile(
+    join(session.libraryRoot, ".videre", "gallery.json"),
+    JSON.stringify({ routes: { files: { view: "list" } } })
+  );
+}
+
+// One gallery per worker (starting one is the slow part), but each test starts
+// from default gallery settings: the gallery saves choices such as the view
+// mode and the last page into the library's `.videre/gallery.json`, so without
+// clearing it one test's clicks would become the next test's starting state.
+export const test = base.extend<
+  { gallery: GallerySession; isolatedGallery: GallerySession },
+  { galleryServer: GallerySession }
+>({
+  galleryServer: [async ({}, use) => {
     const session = await startGallery();
     try {
       await use(session);
@@ -175,6 +193,10 @@ export const test = base.extend<{ gallery: GallerySession; isolatedGallery: Gall
       await stopGallery(session);
     }
   }, { scope: "worker" }],
+  gallery: async ({ galleryServer }, use) => {
+    await rm(join(galleryServer.libraryRoot, ".videre", "gallery.json"), { force: true });
+    await use(galleryServer);
+  },
   isolatedGallery: async ({}, use) => {
     const session = await startGallery();
     try {

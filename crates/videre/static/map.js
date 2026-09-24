@@ -12,6 +12,14 @@
   }
   runCanvasPlot();
 
+  // The radius a place opens with: `routes.map.radiusKm` from the gallery
+  // settings when positive, otherwise the place's own cluster radius. An
+  // explicit `?radius=` in the URL still wins over both.
+  function defaultRadius(cluster) {
+    var r = settingInRange('routes.map.radiusKm', 0, 20000);
+    return r > 0 ? r : cluster.radius_km;
+  }
+
   // A working WebGL context and the vendored libraries are both required; the
   // E2E suite forces the fallback with `__VIDERE_FORCE_CANVAS_MAP__` so the
   // interaction-contract specs test the canvas path deterministically, while a
@@ -176,7 +184,7 @@
           label: cluster.name, count: cluster.photo_count,
           lat: cluster.centroid_lat, lon: cluster.centroid_lon,
           tier: 'cluster', clusterId: cluster.cluster_id, active: isActive,
-          click: function () { selectCluster(cluster, cluster.radius_km, 'push'); }
+          click: function () { selectCluster(cluster, defaultRadius(cluster), 'push'); }
         };
       }).sort(function (a, b) {
         if (a.active !== b.active) return a.active ? -1 : 1;
@@ -304,7 +312,7 @@
       });
       if (!cluster) { showUnknownLocation(); return; }
       var radius = Number(state.radius);
-      if (!Number.isFinite(radius) || radius <= 0) radius = cluster.radius_km;
+      if (!Number.isFinite(radius) || radius <= 0) radius = defaultRadius(cluster);
       selectCluster(cluster, radius, 'none');
     }
 
@@ -680,7 +688,7 @@
           'cluster',
           cluster.cluster_id,
           function () {
-            selectCluster(cluster, cluster.radius_km, 'push');
+            selectCluster(cluster, defaultRadius(cluster), 'push');
           }
         );
       });
@@ -824,7 +832,7 @@
         return;
       }
       var radius = Number(state.radius);
-      if (!Number.isFinite(radius) || radius <= 0) radius = cluster.radius_km;
+      if (!Number.isFinite(radius) || radius <= 0) radius = defaultRadius(cluster);
       selectCluster(cluster, radius, 'none');
     }
 
