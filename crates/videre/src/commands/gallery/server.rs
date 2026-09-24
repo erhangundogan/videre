@@ -805,6 +805,134 @@ mod basemap_tests {
 }
 
 #[cfg(test)]
+mod files_sort_tests {
+    use super::location_cluster_tests::gallery_state;
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    async fn body_of(app: &Router, uri: &str) -> String {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
+    }
+
+    fn sorted_files_app() -> (tempfile::TempDir, Router) {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        {
+            let conn = state.conn.lock().unwrap();
+            videre_core::library_db::ensure_scan_schema(&conn).unwrap();
+            videre_core::marks::ensure_marks_table(&conn).unwrap();
+            conn.execute_batch(
+                "INSERT INTO file_hashes (path, hash, size_bytes, ext, mime, modified_at) VALUES
+                    ('/lib/a_old.jpg', 'ha', 30, 'jpg', 'image/jpeg', '2021-01-01T00:00:00'),
+                    ('/lib/b_new.jpg', 'hb', 20, 'jpg', 'image/jpeg', '2022-01-01T00:00:00');
+                INSERT INTO marks (hash, rating, liked, updated_at) VALUES
+                    ('ha', 5, 0, '2026-01-01T00:00:00');",
+            )
+            .unwrap();
+        }
+        let app = Router::new()
+            .route("/api/files", get(handle_files))
+            .with_state(state);
+        (dir, app)
+    }
+
+    #[tokio::test]
+    async fn files_page_carries_the_sort_control_and_events_page_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        {
+            let conn = state.conn.lock().unwrap();
+            videre_core::library_db::ensure_scan_schema(&conn).unwrap();
+            videre_core::marks::ensure_marks_table(&conn).unwrap();
+        }
+        let app = Router::new()
+            .route("/", get(handle_gallery_all))
+            .route("/events", get(handle_events))
+            .with_state(state);
+
+        let home = body_of(&app, "/").await;
+        assert!(home.contains("class=\"sort-select\""), "{home}");
+        assert!(home.contains("class=\"sort-dir-btn\""), "{home}");
+
+        let events = body_of(&app, "/events").await;
+        assert!(events.contains("view-mode-select"), "{events}"); // the page has a head
+                                                                  // Match the attribute, not the bare class name: the inlined gallery.js
+                                                                  // mentions .sort-select in its querySelectorAll calls on every page.
+        assert!(!events.contains("class=\"sort-select\""), "{events}");
+        assert!(!events.contains("class=\"sort-dir-btn\""), "{events}");
+    }
+
+    #[test]
+    fn static_export_rows_carry_marks_so_offline_sorts_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        let out = dir.path().join("out.html");
+        // query_all_files drops rows whose path does not exist, so the scanned
+        // row needs a real file behind it.
+        let real = dir.path().join("a.jpg");
+        std::fs::write(&real, b"x").unwrap();
+        let rows = {
+            let conn = state.conn.lock().unwrap();
+            videre_core::library_db::ensure_scan_schema(&conn).unwrap();
+            videre_core::marks::ensure_marks_table(&conn).unwrap();
+            conn.execute(
+                "INSERT INTO file_hashes (path, hash, size_bytes, ext, mime, modified_at) \
+                 VALUES (?1, 'ha', 30, 'jpg', 'image/jpeg', '2021-01-01T00:00:00')",
+                rusqlite::params![real.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+            videre_core::marks::set(
+                &conn,
+                &["ha".to_string()],
+                &videre_core::marks::change_from_parts(Some(5), None, None, None),
+            )
+            .unwrap();
+            crate::render::query_all_files(&conn)
+        };
+        let conn = state.conn.lock().unwrap();
+        crate::render::write_static_page(&conn, &out, &[], Some(&rows)).unwrap();
+        let html = std::fs::read_to_string(&out).unwrap();
+        assert!(html.contains("var ALLFILES=["), "{html}");
+        assert!(html.contains("\"rating\":5"), "{html}");
+    }
+
+    #[tokio::test]
+    async fn files_endpoint_sorts_by_the_query_parameters_and_falls_back_on_unknowns() {
+        let (_dir, app) = sorted_files_app();
+
+        // Default (date, desc): b_new (2022) before a_old (2021).
+        let body = body_of(&app, "/api/files?view=all").await;
+        assert!(body.find("\"hash\":\"hb\"").unwrap() < body.find("\"hash\":\"ha\"").unwrap());
+
+        // Name asc: a_old before b_new.
+        let body = body_of(&app, "/api/files?view=all&sort=name&dir=asc").await;
+        assert!(body.find("\"hash\":\"ha\"").unwrap() < body.find("\"hash\":\"hb\"").unwrap());
+
+        // Size desc: a_old (30) before b_new (20).
+        let body = body_of(&app, "/api/files?view=all&sort=size&dir=desc").await;
+        assert!(body.find("\"hash\":\"ha\"").unwrap() < body.find("\"hash\":\"hb\"").unwrap());
+
+        // Unknown values fall back to the default, without erroring.
+        let body = body_of(&app, "/api/files?view=all&sort=bogus&dir=sideways").await;
+        assert!(body.find("\"hash\":\"hb\"").unwrap() < body.find("\"hash\":\"ha\"").unwrap());
+
+        // Marks ride along for the sorts that need them.
+        let body = body_of(&app, "/api/files?view=all&sort=rating&dir=desc").await;
+        assert!(body.contains("\"rating\":5"));
+        assert!(body.find("\"hash\":\"ha\"").unwrap() < body.find("\"hash\":\"hb\"").unwrap());
+    }
+}
+
+#[cfg(test)]
 mod events_tests {
     use super::location_cluster_tests::gallery_state;
     use super::*;
@@ -2190,6 +2318,8 @@ fn render_live_with_date(
         items,
         groups,
         faces_by_hash,
+        // Live pages inline no rows, so the marks map is never read.
+        marks_by_hash: Default::default(),
         nav,
         view,
         options: RenderOptions {
@@ -2265,28 +2395,6 @@ async fn handle_location(
 /// :warning: `limit` is capped. An unbounded `limit` would let a client ask for
 /// the whole library in one request, which is the exact page this endpoint
 /// exists to stop being built.
-/// The mark fields for a file object, as a leading-comma JSON fragment
-/// (`,"rating":..,"pick":..,"label":..,"liked":..`). An unmarked photo reads as
-/// nulls and `liked:false`, so every file has the same stable shape.
-fn mark_fields_json(m: Option<&videre_core::marks::Marks>) -> String {
-    use videre_core::marks::Pick;
-    let rating = m
-        .and_then(|m| m.rating)
-        .map(|r| r.to_string())
-        .unwrap_or_else(|| "null".into());
-    let pick = match m.and_then(|m| m.pick) {
-        Some(Pick::Keep) => "\"keep\"",
-        Some(Pick::Reject) => "\"reject\"",
-        None => "null",
-    };
-    let label = m
-        .and_then(|m| m.label.as_deref())
-        .and_then(|l| serde_json::to_string(l).ok())
-        .unwrap_or_else(|| "null".into());
-    let liked = m.map(|m| m.liked).unwrap_or(false);
-    format!(",\"rating\":{rating},\"pick\":{pick},\"label\":{label},\"liked\":{liked}")
-}
-
 async fn handle_files(
     State(state): State<Arc<AppState>>,
     Query(q): Query<FilesQuery>,
@@ -2321,6 +2429,7 @@ async fn handle_files(
                 None
             };
             let location = files_location_filter(&q, view)?;
+            let sort = FileSort::from_query(q.sort.as_deref(), q.dir.as_deref());
             query_files_page(
                 &conn,
                 view,
@@ -2328,6 +2437,7 @@ async fn handle_files(
                 offset,
                 limit,
                 location.as_ref(),
+                sort,
             )
             .map_err(internal)?
         }
@@ -3034,6 +3144,7 @@ fn render_live_events(
         items: Vec::new(),
         groups: Vec::new(),
         faces_by_hash,
+        marks_by_hash: Default::default(),
         nav: Some(Section::Events),
         view: View::Events,
         options: RenderOptions {
@@ -3420,6 +3531,12 @@ struct FilesQuery {
     lon: Option<f64>,
     /// Map drill-down radius in positive kilometers.
     radius: Option<f64>,
+    /// Which field the files are ordered by: `date`, `name`, `size`,
+    /// `rating`, `liked` or `type`. Unknown values fall back to the default,
+    /// the same rule `view` follows.
+    sort: Option<String>,
+    /// `asc` or `desc`. Anything else means `desc`.
+    dir: Option<String>,
 }
 
 fn files_location_filter(

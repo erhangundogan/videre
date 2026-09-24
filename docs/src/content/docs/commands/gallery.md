@@ -200,9 +200,8 @@ These are the defaults every library starts from:
 | `routes.files.tile.rowGap` | 0 to 100 | Space between tile rows, in pixels |
 | `routes.people.align` | `right`, `top` | Where the People list sits on the People page |
 | `routes.map.radiusKm` | 0 to 20000 | Radius a map location opens with, in km. `0` uses each place's own radius |
-
-`routes.files.sort` is reserved for the upcoming sort control and is not read
-yet.
+| `routes.files.sort.field` | `date`, `name`, `size`, `rating`, `liked`, `type` | What the Library and Date grids are ordered by; see [Sorting](#sorting) |
+| `routes.files.sort.dir` | `asc`, `desc` | Which way that order runs |
 
 A value of the wrong type (a word where a number belongs) or out of range is
 ignored and the default used instead. Keys the gallery does not know are kept
@@ -227,6 +226,18 @@ location and can:
 
 Copying `.videre/gallery.json` into another library's `.videre` folder works
 too.
+
+## Sorting
+
+In the toolbar on the Library and Date tabs, next to View, the **Sort**
+selector orders the files: Date (the default, newest first), Name, Size,
+Rating, Liked, or Type. The arrow button beside it flips the direction:
+triangle up is ascending, and while it reads pressed it points down for
+descending. Files with no date and unrated files always sort last. The choice
+is saved in the library's [settings](#settings) and applies to both list and
+tile views, so the
+lightbox's previous/next follows the same order. The duplicates page keeps
+its own Sort by control.
 
 ## Options
 

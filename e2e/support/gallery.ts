@@ -1,11 +1,11 @@
 import { once } from "node:events";
-import { access, copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { get, request } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { expect, test as base } from "@playwright/test";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -21,7 +21,7 @@ export type GallerySession = {
 };
 
 type ManagedGallery = GallerySession & {
-  child: ChildProcessWithoutNullStreams;
+  child: ChildProcess;
   stdout: () => string;
 };
 
@@ -49,7 +49,10 @@ async function binaryPath(): Promise<string> {
 }
 
 async function run(binary: string, args: string[], env?: NodeJS.ProcessEnv): Promise<void> {
-  const child = spawn(binary, args, { stdio: "pipe", env });
+  // stdin is a pipe in a spawned child, and `videre mark` reads targets from
+  // stdin whenever stdin is not a terminal, blocking forever on an open pipe.
+  // /dev/null stdin reads as EOF immediately, so the --path flags win.
+  const child = spawn(binary, args, { stdio: ["ignore", "pipe", "pipe"], env });
   const stdout = logBuffer(child.stdout);
   const stderr = logBuffer(child.stderr);
   const [code] = await once(child, "exit") as [number | null];
@@ -110,7 +113,7 @@ async function waitForReady(session: ManagedGallery): Promise<void> {
   throw new Error(`gallery did not become ready at ${endpoint}\nstdout:\n${session.stdout()}\nstderr:\n${session.stderr()}`);
 }
 
-async function waitForExit(child: ChildProcessWithoutNullStreams): Promise<void> {
+async function waitForExit(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null) return;
   await once(child, "exit");
 }
@@ -127,7 +130,14 @@ async function stopGallery(session: ManagedGallery): Promise<void> {
   await rm(session.libraryRoot, { recursive: true, force: true });
 }
 
-async function startGallery(): Promise<ManagedGallery> {
+type SeedFile = {
+  name: string;
+  fixture: string;
+  mtime?: string;
+  mark?: string[];
+};
+
+async function startGalleryWith(seed: SeedFile[]): Promise<ManagedGallery> {
   const binary = await binaryPath();
   const libraryRoot = await mkdtemp(join(tmpdir(), "videre-e2e-"));
   // Isolate the cache: videre derives its cache (thumbnails and the shared geo
@@ -139,10 +149,20 @@ async function startGallery(): Promise<ManagedGallery> {
   await mkdir(home, { recursive: true });
   const env = { ...process.env, HOME: home };
   try {
-    await copyFile(join(FIXTURES, "tiny.jpg"), join(libraryRoot, "first.jpg"));
-    await copyFile(join(FIXTURES, "tiny.jpg"), join(libraryRoot, "second.jpg"));
-    await copyFile(join(FIXTURES, "red_1s.mp4"), join(libraryRoot, "clip.mp4"));
+    for (const file of seed) {
+      const target = join(libraryRoot, file.name);
+      await copyFile(join(FIXTURES, file.fixture), target);
+      if (file.mtime) {
+        const when = new Date(file.mtime);
+        await utimes(target, when, when);
+      }
+    }
     await run(binary, ["--library", libraryRoot, "scan", "--silent"], env);
+    for (const file of seed) {
+      if (file.mark) {
+        await run(binary, ["--library", libraryRoot, "mark", ...file.mark], env);
+      }
+    }
 
     const port = await freePort();
     const child = spawn(binary, ["--library", libraryRoot, "gallery", "--port", String(port)], {
@@ -166,6 +186,14 @@ async function startGallery(): Promise<ManagedGallery> {
   }
 }
 
+async function startGallery(): Promise<ManagedGallery> {
+  return startGalleryWith([
+    { name: "first.jpg", fixture: "tiny.jpg" },
+    { name: "second.jpg", fixture: "tiny.jpg" },
+    { name: "clip.mp4", fixture: "red_1s.mp4" }
+  ]);
+}
+
 // Save List as the library's view, for specs that count list-view `.card`s.
 // Written to the settings file directly, the way a hand edit would be, so the
 // next page load picks it up.
@@ -177,13 +205,19 @@ export async function preferListView(session: GallerySession): Promise<void> {
   );
 }
 
-// One gallery per worker (starting one is the slow part), but each test starts
-// from default gallery settings: the gallery saves choices such as the view
-// mode and the last page into the library's `.videre/gallery.json`, so without
-// clearing it one test's clicks would become the next test's starting state.
+// Libraries are started once per worker (starting one is the slow part), but
+// each test starts from default gallery settings: the gallery saves choices
+// such as the view, the sort and the last page into the library's
+// `.videre/gallery.json`, so without clearing it one test's clicks would
+// become the next test's starting state.
+async function withDefaultSettings(session: GallerySession): Promise<GallerySession> {
+  await rm(join(session.libraryRoot, ".videre", "gallery.json"), { force: true });
+  return session;
+}
+
 export const test = base.extend<
-  { gallery: GallerySession; isolatedGallery: GallerySession },
-  { galleryServer: GallerySession }
+  { gallery: GallerySession; sortedGallery: GallerySession; isolatedGallery: GallerySession },
+  { galleryServer: GallerySession; sortedGalleryServer: GallerySession }
 >({
   galleryServer: [async ({}, use) => {
     const session = await startGallery();
@@ -193,9 +227,35 @@ export const test = base.extend<
       await stopGallery(session);
     }
   }, { scope: "worker" }],
+  sortedGalleryServer: [async ({}, use) => {
+    // Path order is a, b, c. Every other sort picks a different first file:
+    // the clip has the newest date (mtime 2022), b has no EXIF so its mtime
+    // (2021-06) is its date, and a carries the fixture's 2021-08-10 EXIF. The
+    // three files must be three distinct images: marks are keyed by the
+    // content key, so byte-identical copies would share one mark row. Sizes:
+    // b (1.2 MB) > a (3 KB) > c (2 KB). a is rated 5, b is rated 3, c is the
+    // liked one and the only video.
+    const session = await startGalleryWith([
+      { name: "a_alpha.jpg", fixture: "tiny.jpg", mark: ["--path", "a_alpha.jpg", "--rating", "5"] },
+      {
+        name: "b_beta.jpg",
+        fixture: "ai-generated-couple.jpg",
+        mtime: "2021-06-01T00:00:00Z",
+        mark: ["--path", "b_beta.jpg", "--rating", "3"]
+      },
+      { name: "c_clip.mp4", fixture: "red_1s.mp4", mtime: "2022-05-01T00:00:00Z", mark: ["--path", "c_clip.mp4", "--like"] }
+    ]);
+    try {
+      await use(session);
+    } finally {
+      await stopGallery(session);
+    }
+  }, { scope: "worker" }],
   gallery: async ({ galleryServer }, use) => {
-    await rm(join(galleryServer.libraryRoot, ".videre", "gallery.json"), { force: true });
-    await use(galleryServer);
+    await use(await withDefaultSettings(galleryServer));
+  },
+  sortedGallery: async ({ sortedGalleryServer }, use) => {
+    await use(await withDefaultSettings(sortedGalleryServer));
   },
   isolatedGallery: async ({}, use) => {
     const session = await startGallery();

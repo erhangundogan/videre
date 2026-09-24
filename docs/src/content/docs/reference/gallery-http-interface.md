@@ -156,11 +156,17 @@ Returns a page of file rows. By default it lists all scanned paths.
 | `lat=<number>` | Center latitude for a `view=all` proximity filter |
 | `lon=<number>` | Center longitude for a `view=all` proximity filter |
 | `radius=<km>` | Positive radius in kilometers for a `view=all` proximity filter |
+| `sort=<date\|name\|size\|rating\|liked\|type>` | Field the files are ordered by. Default `date`. Unknown values fall back to the default |
+| `dir=<asc\|desc>` | Sort direction. Default `desc`. `path` is always the final tie-break, so pages stay stable |
 
 `lat`, `lon` and `radius` must be supplied together. The server first narrows
 GPS-bearing rows with the coordinate index, then applies exact great-circle
 distance, so the returned page and `total` describe the same circle. The date
 view ignores all three parameters and keeps its own one-row-per-hash behavior.
+
+Every sort puts nulls last in both directions (undated files, unrated files),
+and appends `path` as the final tie-break, so two consecutive pages never
+share a row and "Show more" concatenates into the sorted order.
 
 ```bash
 curl "http://127.0.0.1:7878/api/files?limit=1"
