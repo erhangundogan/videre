@@ -77,12 +77,9 @@ pub struct LearningDeps {
 /// Start the coordinator. Also performs startup recovery: a state left in
 /// training by a previous process, or a stale generation, trains right away.
 pub fn spawn(deps: LearningDeps) -> LearningCoordinator {
-    let (tx, rx) = mpsc::unbounded_channel();
-    tokio::spawn(run(deps, DEBOUNCE, rx));
-    LearningCoordinator { tx }
+    spawn_with(deps, DEBOUNCE)
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn spawn_with(deps: LearningDeps, debounce: Duration) -> LearningCoordinator {
     let (tx, rx) = mpsc::unbounded_channel();
     tokio::spawn(run(deps, debounce, rx));

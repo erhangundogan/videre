@@ -27,7 +27,7 @@ mod tests {
             );",
         )
         .unwrap();
-        videre_core::db::ensure_file_hashes_columns(&conn);
+        videre_core::library_db::ensure_scan_schema(&conn).unwrap();
 
         let stats = library_stats(&conn).unwrap();
         assert_eq!(stats.total_files, 0);

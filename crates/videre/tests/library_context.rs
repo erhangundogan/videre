@@ -13,8 +13,7 @@ fn command(root: &Path, home: &Path) -> std::process::Command {
     command
         .current_dir(root)
         .env("HOME", home)
-        .env("HF_HOME", home.join(".cache/huggingface"))
-        .env_remove("VIDERE_HOME");
+        .env("HF_HOME", home.join(".cache/huggingface"));
     command
 }
 
@@ -34,7 +33,6 @@ fn child_context_is_explicit_without_mutating_parent_environment() {
         std::ffi::OsStr::new("HF_HOME"),
         Some(a.home.join(".cache/huggingface").as_os_str())
     )));
-    assert!(envs.contains(&(std::ffi::OsStr::new("VIDERE_HOME"), None)));
     assert_eq!(std::env::current_dir().unwrap(), before);
     assert!(!a.db().exists());
     assert!(!b.db().exists());

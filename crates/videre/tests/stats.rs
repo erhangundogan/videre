@@ -56,6 +56,56 @@ fn stats_json_has_no_pipelines_field() {
 }
 
 #[test]
+fn stats_prints_disk_use_once_and_counts_logs() {
+    let lib = library_with_one_file();
+    let out = lib
+        .cmd()
+        .arg("stats")
+        .output()
+        .expect("failed to run videre stats");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(stdout.matches("Disk use:").count(), 1, "{stdout}");
+    // The scan above wrote its log, so the logs directory is not empty.
+    assert!(
+        stdout.lines().any(|l| l.trim_start().starts_with("logs ")),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn stats_json_carries_types_and_disk_use() {
+    let lib = library_with_one_file();
+    let out = lib
+        .cmd()
+        .args(["stats", "--json"])
+        .output()
+        .expect("failed to run videre stats");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let types = doc["by_type"].as_array().expect("by_type is an array");
+    assert_eq!(types.len(), 1, "{doc}");
+    assert_eq!(types[0]["ext"], "jpg");
+    assert_eq!(types[0]["files"], 1);
+    let disk = doc["disk_use"].as_array().expect("disk_use is an array");
+    let labels: Vec<&str> = disk.iter().filter_map(|u| u["label"].as_str()).collect();
+    assert!(labels.contains(&"database"), "{doc}");
+    assert!(labels.contains(&"logs"), "{doc}");
+    for u in disk {
+        assert!(u["bytes"].as_u64().is_some_and(|b| b > 0), "{u}");
+        assert!(u["rebuildable"].is_boolean(), "{u}");
+    }
+}
+
+#[test]
 fn stats_check_flag_is_no_longer_accepted() {
     // --check moved to `videre status` along with the pipeline block; stats
     // is a command that never fails a script, so the flag must be gone

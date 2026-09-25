@@ -384,8 +384,6 @@ mod tests {
         assert_eq!(enabled, 1);
     }
 
-    /// Gives one test its own directory under the shared per-binary
-    /// `VIDERE_HOME`. See `test_home` for why the home is not set per test.
     #[test]
     fn model_slug_replaces_the_owner_separator() {
         assert_eq!(

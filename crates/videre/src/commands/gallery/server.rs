@@ -2667,9 +2667,7 @@ async fn handle_rotate_file(
         };
         // Turn the display-canvas face geometry with the photo, so a rotated
         // photo's face crops stay on their faces and keep their people labels
-        // instead of cropping the pre-rotation region of the new canvas. Only
-        // display-canvas rows (oriented=1) are transformed; legacy raw-canvas
-        // rows still crop the correct region through their own orientation path.
+        // instead of cropping the pre-rotation region of the new canvas.
         if let Some((display_w, display_h)) = dims {
             rotate_faces_geometry(
                 &state_for_task,
@@ -2691,7 +2689,7 @@ async fn handle_rotate_file(
     }
 }
 
-/// Turn every display-canvas (`oriented = 1`) face row for `hash` 90 degrees to
+/// Turn every face row for `hash` 90 degrees to
 /// match one rotation of the photo: clockwise on a canvas of height `display_h`,
 /// or counter-clockwise on a canvas of width `display_w` when `ccw`. Best-effort:
 /// a row whose bbox or landmark will not parse is left untouched rather than
@@ -2714,9 +2712,7 @@ fn rotate_faces_geometry(state: &AppState, hash: &str, ccw: bool, display_w: i32
         }
     };
     let rows: Vec<(i64, String, Option<String>)> = {
-        let mut stmt = match conn.prepare(
-            "SELECT id, bbox, landmark FROM faces WHERE hash = ?1 AND COALESCE(oriented, 0) = 1",
-        ) {
+        let mut stmt = match conn.prepare("SELECT id, bbox, landmark FROM faces WHERE hash = ?1") {
             Ok(stmt) => stmt,
             Err(e) => {
                 failed(
@@ -3965,7 +3961,6 @@ async fn serve_faces_async(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let conn = videre_core::db::open_wal(db)?;
     videre_core::location_cluster::register_haversine_sql_function(&conn)?;
-    videre_core::location::ensure_location_column(&conn);
     // Thumbnail decode-failure records are the one skip with no --reprocess
     // hatch, so clear them once per server run: a HEIC that hit two transient
     // QuickLook failures (a wedged agent, Spotlight contention) is retried on
