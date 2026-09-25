@@ -54,6 +54,9 @@ digiKam read an exported photo the same way. To say a photo is bad, use
 `--pick reject`.
 :::
 
+The gallery sets the same marks on many photos at once: see
+[Selecting](/commands/gallery/#selecting).
+
 ## Choosing what to mark
 
 Targets come from either the selection flags or a pipe:
