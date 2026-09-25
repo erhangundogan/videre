@@ -341,6 +341,26 @@ orientation (videos, RAW) are skipped and counted.
 { "rotated": 10, "skipped": 2, "failed": 0 }
 ```
 
+### `POST /api/files/delete`
+
+Moves every file of each hash (all copies) to the system Trash, where it can
+be restored, and removes their rows from the library; marks, tags and faces
+stay until [`videre prune`](/commands/prune/) clears data for missing files.
+With `"dry_run": true` it only counts, which the confirmation dialog shows.
+
+```json
+{ "hashes": ["aaaa…"], "dry_run": true }
+```
+
+```json
+{ "items": 1, "files": 2, "photos": 1, "videos": 0, "extra_copies": 1 }
+```
+
+The real run adds `trashed` (hashes with no file left) and `failed` (`[{ path,
+error }]` for files that could not be moved, which keep their rows). It needs
+the library to itself: while another videre command or a `watch` stage is
+working, it answers `409 {"error":"library_busy"}` and moves nothing.
+
 ## Dates, search and locations
 
 ### `GET /api/dates`
@@ -995,6 +1015,7 @@ content-length: 0
 | `POST /api/files/tags` | Add or remove tags on a selection |
 | `GET /api/tags` | List the library's tags with counts |
 | `POST /api/files/rotate` | Rotate a selection a quarter turn |
+| `POST /api/files/delete` | Move a selection's files to the system Trash |
 | `GET /api/dates` | Read date buckets |
 | `GET /api/events` | List automatic travel trips and an empty reason when none qualify |
 | `GET /api/events/{key}/files` | Exact files of one trip |

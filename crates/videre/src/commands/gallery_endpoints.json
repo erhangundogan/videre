@@ -8,6 +8,7 @@
     { "method": "POST",   "path": "/api/files/marks" },
     { "method": "POST",   "path": "/api/files/tags" },
     { "method": "POST",   "path": "/api/files/rotate" },
+    { "method": "POST",   "path": "/api/files/delete" },
     { "method": "GET",    "path": "/api/tags" },
     { "method": "GET",    "path": "/api/dates" },
     { "method": "GET",    "path": "/api/settings" },

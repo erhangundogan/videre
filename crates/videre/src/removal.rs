@@ -18,6 +18,28 @@ pub fn trash_paths(paths: &[PathBuf]) -> Vec<(PathBuf, Result<(), String>)> {
         .collect()
 }
 
+/// Trash library files and forget the rows of those that moved, in one
+/// transaction, so the library stops listing them at once. Derived data
+/// (marks, tags, faces, embeddings) stays for `videre prune`, as after
+/// `dedupe --remove`. A file that could not be trashed keeps its row.
+pub fn trash_and_forget(
+    conn: &rusqlite::Connection,
+    paths: &[PathBuf],
+) -> rusqlite::Result<Vec<(PathBuf, Result<(), String>)>> {
+    let results = trash_paths(paths);
+    let tx = conn.unchecked_transaction()?;
+    for (path, result) in &results {
+        if result.is_ok() {
+            tx.execute(
+                "DELETE FROM file_hashes WHERE path = ?1",
+                [path.to_string_lossy()],
+            )?;
+        }
+    }
+    tx.commit()?;
+    Ok(results)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

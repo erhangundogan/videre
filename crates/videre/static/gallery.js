@@ -1414,6 +1414,7 @@ function fileSelectionActions(){
     '<button type="button" data-sel-act="rotate-ccw" title="Rotate left" aria-label="Rotate left">&#10226;</button>'+
     '<button type="button" data-sel-act="rotate-cw" title="Rotate right" aria-label="Rotate right">&#10227;</button>'+
     '<button type="button" data-sel-act="copy">Copy paths</button>'+
+    '<button type="button" data-sel-act="delete" class="sel-danger">Delete\u2026</button>'+
     (selectionResult?'<span class="sel-hint sel-result" role="status">'+escH(selectionResult)+'</span>':'');
 }
 
@@ -1514,5 +1515,54 @@ document.addEventListener('click',function(e){
     case 'rotate-ccw': selectionRotate('ccw'); break;
     case 'rotate-cw': selectionRotate('cw'); break;
     case 'copy': selectionCopyPaths(); break;
+    case 'delete': selectionDelete(); break;
   }
 });
+
+// Delete: count first (a dry run of the same request), say exactly what will
+// move, and only then move it. Files go to the system Trash, every copy of
+// each item.
+function selectionDelete(){
+  var hashes=fileSelection.list();
+  selectionPost('/api/files/delete',{hashes:hashes,dry_run:true}).then(function(c){
+    confirmDelete(c).then(function(ok){
+      if(!ok)return;
+      selectionPost('/api/files/delete',{hashes:hashes,dry_run:false}).then(function(r){
+        var gone={};
+        (r.trashed||[]).forEach(function(h){ gone[h]=true; });
+        var before=galleryFiles.length;
+        galleryFiles=galleryFiles.filter(function(f){ return !gone[f.hash]; });
+        // The next Show more pages from the server's shorter list.
+        gShown=Math.max(0,gShown-(before-galleryFiles.length));
+        if(typeof dateFiles!=='undefined'&&dateFiles)dateFiles=dateFiles.filter(function(f){ return !gone[f.hash]; });
+        renderCurrentMode();
+        fileSelection.remove(r.trashed||[]);
+        var text='Moved '+(r.trashed||[]).length+' item(s) to the Trash';
+        if(r.failed&&r.failed.length)text+='; '+r.failed.length+' file(s) could not be moved ('+r.failed[0].error+')';
+        showSelectionResult(text);
+      }).catch(function(e){ showSelectionResult(e.message); });
+    });
+  }).catch(function(e){ showSelectionResult(e.message); });
+}
+
+function confirmDelete(c){
+  return new Promise(function(resolve){
+    var parts=[];
+    if(c.photos)parts.push(c.photos+' photo'+(c.photos===1?'':'s'));
+    if(c.videos)parts.push(c.videos+' video'+(c.videos===1?'':'s'));
+    var copies=c.extra_copies?' and '+c.extra_copies+' extra cop'+(c.extra_copies===1?'y':'ies')+' of items with duplicates':'';
+    var d=document.createElement('dialog');
+    d.className='sel-confirm';
+    d.innerHTML='<h2>Move '+c.items+' item'+(c.items===1?'':'s')+' to the Trash?</h2>'+
+      '<p>'+c.files+' file'+(c.files===1?'':'s')+': '+escH(parts.join(', '))+copies+'.</p>'+
+      '<p>They go to the system Trash and can be restored from there. Their marks, tags and faces stay until <code>videre prune</code> clears data for missing files.</p>'+
+      '<div class="sel-confirm-actions"><button type="button" data-no autofocus>Cancel</button>'+
+      '<button type="button" data-yes class="primary">Move to Trash</button></div>';
+    document.body.appendChild(d);
+    function done(ok){ d.close(); d.remove(); resolve(ok); }
+    d.querySelector('[data-no]').addEventListener('click',function(){ done(false); });
+    d.querySelector('[data-yes]').addEventListener('click',function(){ done(true); });
+    d.addEventListener('cancel',function(e){ e.preventDefault(); done(false); });
+    d.showModal();
+  });
+}

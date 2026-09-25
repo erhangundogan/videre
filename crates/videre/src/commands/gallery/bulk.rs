@@ -189,6 +189,101 @@ pub(crate) async fn handle_rotate(
     respond(result)
 }
 
+#[derive(Deserialize)]
+pub(crate) struct DeleteBody {
+    hashes: Vec<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+/// POST /api/files/delete: move every file of the selected items to the
+/// system Trash (all copies of a hash: leaving one would bring the item
+/// straight back) and forget their rows. `dry_run` only counts, for the
+/// confirmation dialog. Needs the library to itself, like `dedupe --remove`.
+pub(crate) async fn handle_delete(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<DeleteBody>,
+) -> Response {
+    let result = tokio::task::spawn_blocking(move || -> Result<Value, Refusal> {
+        let library = &state.context.library;
+        library
+            .ensure_root_identity()
+            .map_err(|_| axum::http::StatusCode::SERVICE_UNAVAILABLE)?;
+        let mode = if body.dry_run {
+            videre_core::library_locks::ActivityMode::Shared
+        } else {
+            videre_core::library_locks::ActivityMode::Exclusive
+        };
+        let _activity = videre_core::library_locks::try_activity(library, mode)
+            .map_err(|_| Refusal::Busy("library_busy"))?;
+        let conn = state.conn.lock().map_err(poisoned)?;
+        let hashes = known_hashes(&conn, &body.hashes)?;
+        let mut files: Vec<(String, String, String)> = Vec::new();
+        {
+            let mut stmt = conn
+                .prepare_cached("SELECT path, hash, lower(coalesce(ext, '')) FROM file_hashes WHERE hash = ?1 ORDER BY path")
+                .map_err(failed)?;
+            for hash in &hashes {
+                let rows = stmt
+                    .query_map([hash], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                    .map_err(failed)?;
+                for row in rows {
+                    files.push(row.map_err(failed)?);
+                }
+            }
+        }
+        let is_video = |ext: &str| videre_core::embeddings::is_video_ext(ext);
+        let videos = hashes
+            .iter()
+            .filter(|h| files.iter().any(|(_, fh, ext)| fh == *h && is_video(ext)))
+            .count();
+        let mut report = json!({
+            "items": hashes.len(),
+            "files": files.len(),
+            "photos": hashes.len() - videos,
+            "videos": videos,
+            "extra_copies": files.len() - hashes.len(),
+        });
+        if body.dry_run {
+            return Ok(report);
+        }
+        let paths: Vec<std::path::PathBuf> =
+            files.iter().map(|(p, _, _)| std::path::PathBuf::from(p)).collect();
+        let results = crate::removal::trash_and_forget(&conn, &paths).map_err(failed)?;
+        let failed_paths: Vec<Value> = results
+            .iter()
+            .filter_map(|(path, r)| {
+                r.as_ref()
+                    .err()
+                    .map(|e| json!({ "path": path.to_string_lossy(), "error": e }))
+            })
+            .collect();
+        // An item is gone when none of its files is left.
+        let kept: std::collections::HashSet<&str> = results
+            .iter()
+            .filter(|(_, r)| r.is_err())
+            .filter_map(|(path, _)| {
+                files
+                    .iter()
+                    .find(|(p, _, _)| std::path::Path::new(p) == path)
+                    .map(|(_, h, _)| h.as_str())
+            })
+            .collect();
+        let trashed: Vec<&String> = hashes.iter().filter(|h| !kept.contains(h.as_str())).collect();
+        tracing::info!(
+            "videre gallery: moved {} file(s) of {} item(s) to the trash, {} failed",
+            results.len() - failed_paths.len(),
+            trashed.len(),
+            failed_paths.len()
+        );
+        report["trashed"] = json!(trashed);
+        report["failed"] = Value::Array(failed_paths);
+        Ok(report)
+    })
+    .await;
+    respond(result)
+}
+
 fn respond(result: Result<Result<Value, Refusal>, tokio::task::JoinError>) -> Response {
     match result {
         Ok(Ok(v)) => Json(v).into_response(),

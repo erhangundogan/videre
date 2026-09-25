@@ -4052,6 +4052,7 @@ async fn serve_faces_async(
         .route("/api/files/marks", post(super::bulk::handle_marks))
         .route("/api/files/tags", post(super::bulk::handle_tags))
         .route("/api/files/rotate", post(super::bulk::handle_rotate))
+        .route("/api/files/delete", post(super::bulk::handle_delete))
         .route("/api/tags", get(super::bulk::handle_list_tags))
         .route("/api/files/{hash}/raw", get(handle_raw_file))
         .route("/api/files/{hash}/rotate", post(handle_rotate_file))
@@ -5293,5 +5294,151 @@ mod bulk_api_tests {
         .await;
         assert_eq!(s, StatusCode::OK, "{b}");
         assert_eq!(b, json!({ "rotated": 1, "skipped": 1, "failed": 0 }));
+    }
+}
+
+#[cfg(test)]
+mod bulk_delete_tests {
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::{header, Request};
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    fn app(state: Arc<AppState>) -> Router {
+        Router::new()
+            .route("/api/files/delete", post(super::super::bulk::handle_delete))
+            .with_state(state)
+    }
+
+    /// `rows` are (file name, hash, create the file?): a missing file is one
+    /// the trash cannot move.
+    fn library(root: &Path, rows: &[(&str, &str, bool)]) -> Arc<AppState> {
+        let state = super::location_cluster_tests::gallery_state(root);
+        let disk = videre_core::library_db::initialize(&state.context.library).unwrap();
+        for (name, hash, exists) in rows {
+            let path = root.join(name);
+            if *exists {
+                std::fs::write(&path, b"x").unwrap();
+            }
+            disk.execute(
+                "INSERT INTO file_hashes (path, hash, ext) VALUES (?1, ?2, ?3)",
+                rusqlite::params![
+                    path.to_string_lossy(),
+                    hash,
+                    name.rsplit('.').next().unwrap()
+                ],
+            )
+            .unwrap();
+        }
+        drop(disk);
+        *state.conn.lock().unwrap() =
+            videre_core::library_db::open_existing(&state.context.library).unwrap();
+        state
+    }
+
+    async fn delete(app: &Router, body: Value) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/files/delete")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    fn rows(state: &AppState) -> i64 {
+        state
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT count(*) FROM file_hashes", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_dry_run_counts_every_copy_and_moves_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = library(
+            dir.path(),
+            &[
+                ("a.jpg", "ha", true),
+                ("a copy.jpg", "ha", true),
+                ("v.mp4", "hv", true),
+            ],
+        );
+        let (status, body) = delete(
+            &app(state.clone()),
+            json!({ "hashes": ["ha", "hv"], "dry_run": true }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body,
+            json!({ "items": 2, "files": 3, "photos": 1, "videos": 1, "extra_copies": 1 })
+        );
+        assert!(dir.path().join("a copy.jpg").exists());
+        assert_eq!(rows(&state), 3);
+    }
+
+    #[tokio::test]
+    async fn delete_trashes_files_forgets_rows_and_reports_what_it_could_not_move() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = library(
+            dir.path(),
+            &[("a.jpg", "ha", true), ("gone.jpg", "hg", false)],
+        );
+        let (status, body) = delete(
+            &app(state.clone()),
+            json!({ "hashes": ["ha", "hg"], "dry_run": false }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(!dir.path().join("a.jpg").exists(), "moved to the trash");
+        assert_eq!(body["trashed"], json!(["ha"]));
+        assert_eq!(body["failed"].as_array().unwrap().len(), 1);
+        let left: Vec<String> = {
+            let conn = state.conn.lock().unwrap();
+            let mut stmt = conn.prepare("SELECT hash FROM file_hashes").unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        assert_eq!(
+            left,
+            vec!["hg".to_string()],
+            "a file that did not move keeps its row"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_waits_for_the_library_to_be_free() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = library(dir.path(), &[("a.jpg", "ha", true)]);
+        let _other = videre_core::library_locks::try_activity(
+            &state.context.library,
+            videre_core::library_locks::ActivityMode::Shared,
+        )
+        .unwrap();
+        let (status, body) = delete(
+            &app(state.clone()),
+            json!({ "hashes": ["ha"], "dry_run": false }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"], "library_busy");
+        assert!(dir.path().join("a.jpg").exists());
     }
 }

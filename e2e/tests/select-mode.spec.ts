@@ -114,6 +114,32 @@ test("the bar's actions mark, tag and copy the selection", async ({ page, sorted
   });
 });
 
+test("delete asks first, Cancel keeps everything, confirm moves the item to the Trash", async ({
+  page,
+  isolatedGallery: gallery
+}) => {
+  // A library of its own, since this one deletes. first.jpg and second.jpg are
+  // one item (same bytes, two cards), so deleting it moves both files.
+  await preferListView(gallery);
+  await page.goto(gallery.baseURL);
+  await page.locator(".gallery-toolbar .select-toggle").first().click();
+  const photo = page.locator("#gallery .card[data-hash]").filter({ hasText: /first|second/ }).first();
+  await photo.click();
+  const bar = page.locator("#file-sel-bar");
+  await bar.locator('[data-sel-act="delete"]').click();
+  const dialog = page.locator("dialog.sel-confirm");
+  await expect(dialog).toContainText("Move 1 item to the Trash?");
+  await expect(dialog).toContainText("2 files: 1 photo and 1 extra copy");
+  await dialog.locator("[data-no]").click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator("#gallery .card[data-hash]")).toHaveCount(3);
+
+  await bar.locator('[data-sel-act="delete"]').click();
+  await page.locator("dialog.sel-confirm [data-yes]").click();
+  await expect(bar).not.toHaveClass(/on/);
+  await expect(page.locator("#gallery .card[data-hash]")).toHaveCount(1);
+});
+
 test("Clear in the selection bar empties the selection", async ({ page, sortedGallery }) => {
   await page.goto(sortedGallery.baseURL);
   await page.locator(".gallery-toolbar .select-toggle").first().click();
