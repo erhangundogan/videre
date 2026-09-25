@@ -6,25 +6,7 @@
 use rusqlite::{params, Connection, Result};
 
 /// Create `classifications`, keyed by `(model_id, hash)`.
-///
-/// A pre-existing table without `model_id` is dropped and recreated rather
-/// than migrated. Classifications are pure vector arithmetic over embeddings
-/// that already exist, with no image decoding, so rebuilding costs minutes.
-/// Guessing which model produced the legacy rows would instead produce data
-/// that looks valid and is not.
 pub fn ensure_classifications_table(conn: &Connection) -> Result<()> {
-    if crate::db::table_exists(conn, "classifications")? {
-        let has_model_id = conn
-            .prepare("SELECT model_id FROM classifications LIMIT 0")
-            .is_ok();
-        if !has_model_id {
-            tracing::info!(
-                "note: the classifications table predates multi-model support and has been \
-                 reset. Re-run 'videre classify' to rebuild it (minutes, no image decoding)."
-            );
-            conn.execute_batch("DROP TABLE classifications;")?;
-        }
-    }
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS classifications (
             model_id      TEXT NOT NULL,
@@ -150,7 +132,7 @@ mod tests {
             );",
         )
         .unwrap();
-        crate::db::ensure_file_hashes_columns(&conn);
+        crate::library_db::ensure_scan_schema(&conn).unwrap();
         ensure_classifications_table(&conn).unwrap();
         crate::embeddings_db::attach_in(&conn, &ctx, "owner/test-model", true).unwrap();
         conn
@@ -234,7 +216,7 @@ mod tests {
             "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL, ext TEXT);",
         )
         .unwrap();
-        crate::db::ensure_file_hashes_columns(&conn);
+        crate::library_db::ensure_scan_schema(&conn).unwrap();
         ensure_classifications_table(&conn).unwrap();
 
         crate::embeddings_db::attach_in(&conn, &ctx, "owner/model-a", true).unwrap();
@@ -280,35 +262,6 @@ mod tests {
         assert!(paths_for_category(&conn, "model-b", "screenshot")
             .unwrap()
             .is_empty());
-    }
-
-    #[test]
-    fn a_legacy_table_without_model_id_is_dropped_and_recreated() {
-        // Rebuilding costs minutes (pure vector arithmetic, no image
-        // decoding). Guessing a model_id to stamp would produce data that
-        // looks valid and is not.
-        let conn = test_db_attached("cls_legacy");
-        conn.execute_batch("DROP TABLE classifications;").unwrap();
-        conn.execute_batch(
-            "CREATE TABLE classifications (
-                hash TEXT PRIMARY KEY NOT NULL, category TEXT NOT NULL,
-                confidence REAL NOT NULL, classified_at TEXT NOT NULL
-            );
-            INSERT INTO classifications VALUES ('h1', 'photo', 0.9, 'now');",
-        )
-        .unwrap();
-
-        ensure_classifications_table(&conn).unwrap();
-
-        let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM classifications", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(n, 0, "legacy rows are dropped, not silently mislabeled");
-        conn.execute(
-            "INSERT INTO classifications VALUES ('m', 'h1', 'photo', 0.9, 'now')",
-            [],
-        )
-        .expect("recreated table must have the 5-column shape");
     }
 
     #[test]

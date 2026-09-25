@@ -18,6 +18,7 @@ jobs:
   # attempt. Created as a draft so a failing smoke job can stop it going public.
   create-release:
     name: create draft release
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     permissions:
       contents: write # creates the draft release
@@ -198,6 +199,7 @@ jobs:
   # download that was never run.
   publish:
     name: publish the release
+    timeout-minutes: 10
     needs: smoke
     runs-on: ubuntu-latest
     permissions:

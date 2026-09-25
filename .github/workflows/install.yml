@@ -20,6 +20,10 @@ on:
       - ".github/workflows/install.yml"
   workflow_dispatch:
 
+# The test only downloads published releases and reads the checkout.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: ${{ matrix.os }}

@@ -591,9 +591,8 @@ fn heic_to_b64(path: &str, max_px: u32) -> Option<String> {
 /// as a base64 JPEG data URI, mirroring heic_to_b64()'s pattern, for use in
 /// the static export where thumbnails must be embedded inline rather than
 /// served as raw bytes (that's what handle_face_image does instead).
-/// `oriented` mirrors faces.oriented: which canvas the bbox is in.
-fn face_thumb_b64(path: &str, bbox: [f32; 4], oriented: bool, face_id: i64) -> Option<String> {
-    let thumb = videre_api::make_face_thumb(path, bbox, oriented, face_id)?;
+fn face_thumb_b64(path: &str, bbox: [f32; 4], face_id: i64) -> Option<String> {
+    let thumb = videre_api::make_face_thumb(path, bbox, face_id)?;
     let mut buf = Vec::new();
     thumb
         .write_to(
@@ -752,7 +751,7 @@ pub(crate) fn file_to_json_with_faces(
     // acceptable there because an exported page is built once, not per view.
     let faces_json: Vec<String> = faces
         .iter()
-        .filter_map(|(id, name, bbox, oriented)| {
+        .filter_map(|(id, name, bbox)| {
             if live {
                 return Some(format!(
                     "{{\"id\":{id},\"name\":{name}}}",
@@ -760,7 +759,7 @@ pub(crate) fn file_to_json_with_faces(
                 ));
             }
             let bbox = parse_bbox(bbox)?;
-            let thumb = face_thumb_b64(&f.path, bbox, *oriented, *id)?;
+            let thumb = face_thumb_b64(&f.path, bbox, *id)?;
             Some(format!(
                 "{{\"thumb\":{thumb},\"name\":{name}}}",
                 thumb = json_str(&thumb),

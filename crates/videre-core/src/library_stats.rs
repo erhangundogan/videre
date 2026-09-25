@@ -179,7 +179,7 @@ mod tests {
             );",
         )
         .unwrap();
-        crate::db::ensure_file_hashes_columns(&conn);
+        crate::library_db::ensure_scan_schema(&conn).unwrap();
         conn
     }
 

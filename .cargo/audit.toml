@@ -1,0 +1,12 @@
+# cargo audit configuration.
+[advisories]
+ignore = [
+    # quick-xml 0.37 via little_exif (no release with >= 0.41 yet). little_exif
+    # parses XML only in `xmp::remove_exif_from_xmp`, called from its PNG
+    # writer. videre never reaches it: rotate writes PNG orientation through
+    # its own `write_png_orientation` (commands/gallery/rotate.rs) and uses
+    # little_exif for the other formats only. Drop these once little_exif
+    # updates, or if videre ever writes PNG metadata through it.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]
