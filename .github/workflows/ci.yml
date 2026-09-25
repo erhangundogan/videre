@@ -14,10 +14,16 @@ concurrency:
 permissions:
   contents: read
 
+# Every job sets timeout-minutes. The default is six hours, and a hung job
+# fails nothing, so it would hold a runner and the PR's checks that long. Each
+# limit is several times the longest successful run measured over the last
+# 110 runs (rustfmt 1m, clippy 3m, build-arm64 2m, Linux tests 7m, macOS
+# tests 15m including its retry), leaving room for a cold cache.
 jobs:
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -47,6 +53,7 @@ jobs:
   clippy:
     name: clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -97,6 +104,7 @@ jobs:
             test_threads: "2"
             test_attempts: "2"
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
 
@@ -254,6 +262,7 @@ jobs:
   build-arm64:
     name: build (aarch64-linux, no fp16 override)
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
