@@ -166,6 +166,17 @@ pub(crate) fn resolve_for_run(
     resolved.params
 }
 
+/// What the gallery saves after applying `params`: the fields that differ
+/// from the built-in set, or `null` to remove the override entirely.
+pub(crate) fn saved_value(params: &ClusteringParameters) -> Value {
+    let diff = PartialClusteringParameters::differing_from_default(params);
+    if diff.is_empty() {
+        Value::Null
+    } else {
+        serde_json::to_value(diff).expect("parameters serialize")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,5 +267,13 @@ mod tests {
             &PartialClusteringParameters::default(),
         );
         assert_eq!(r.info_line(), None, "flags alone are not news");
+    }
+
+    #[test]
+    fn only_non_default_fields_are_saved() {
+        let mut p = ClusteringParameters::default();
+        assert_eq!(saved_value(&p), Value::Null);
+        p.eps = 0.7;
+        assert_eq!(saved_value(&p), json!({ "eps": 0.7f32 }));
     }
 }

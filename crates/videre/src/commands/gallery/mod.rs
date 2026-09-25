@@ -11,6 +11,7 @@
 
 mod events;
 mod learning;
+mod recluster;
 mod rotate;
 mod server;
 pub(crate) mod settings;

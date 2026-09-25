@@ -1543,7 +1543,7 @@ pub(super) fn internal<E: Into<anyhow::Error>>(e: E) -> StatusCode {
 /// maintenance yields a retryable 503 rather than serving from, or mutating,
 /// whatever now sits at the path. The returned guard must be held for the whole
 /// operation (decode and cache publication included), so callers bind it.
-fn guard_operation(
+pub(super) fn guard_operation(
     state: &AppState,
 ) -> Result<videre_core::library_locks::ActivityGuard, StatusCode> {
     let library = &state.context.library;
@@ -1557,7 +1557,7 @@ fn guard_operation(
     .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
 }
 
-fn settings_file(state: &AppState) -> std::path::PathBuf {
+pub(super) fn settings_file(state: &AppState) -> std::path::PathBuf {
     super::settings::path(&state.context.library.paths.state)
 }
 
@@ -1755,7 +1755,7 @@ pub(crate) struct AppState {
     /// `search::run_json_in` against this, and a location lookup geocodes into
     /// this library's cache, so no request can retarget the server at another
     /// library.
-    context: Arc<crate::command_context::CommandContext>,
+    pub(super) context: Arc<crate::command_context::CommandContext>,
     /// Loaded on the first ranking search and kept for the process's life. Empty
     /// until then: a gallery whose library nobody searches never loads a model.
     embedder: Mutex<Option<videre_ml::model::Embedder>>,
@@ -1765,7 +1765,7 @@ pub(crate) struct AppState {
     basemap_downloading: Arc<std::sync::atomic::AtomicBool>,
     /// Serializes read-modify-write of `.videre/gallery.json`, so two saves
     /// from two tabs cannot interleave and drop one of them.
-    settings_lock: Arc<Mutex<()>>,
+    pub(super) settings_lock: Arc<Mutex<()>>,
     /// Whether the current unreadable-settings error has been logged, so a
     /// broken `gallery.json` warns once rather than on every page render.
     settings_warned: Arc<std::sync::atomic::AtomicBool>,
@@ -4086,6 +4086,15 @@ async fn serve_faces_async(
             patch(handle_set_primary).delete(handle_remove_face),
         )
         .route("/api/faces/{id}/image", get(handle_face_image))
+        .route(
+            "/api/faces/cluster-params",
+            get(super::recluster::handle_cluster_params),
+        )
+        .route(
+            "/api/faces/recluster/preview",
+            post(super::recluster::handle_preview),
+        )
+        .route("/api/faces/recluster", post(super::recluster::handle_apply))
         .route("/api/faces/{id}/original", get(handle_original_image))
         // clusters
         .route(
@@ -4893,5 +4902,197 @@ mod settings_api_tests {
             get_settings(&app_two).await["effective"]["routes"]["files"]["view"],
             "tile"
         );
+    }
+}
+
+#[cfg(test)]
+mod recluster_api_tests {
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::{header, Request};
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    /// A real library on disk (the handlers open their own connection), with
+    /// four unlabeled faces: three identical, which group, and one apart.
+    fn library(root: &Path) -> Arc<AppState> {
+        let state = super::location_cluster_tests::gallery_state(root);
+        let conn = videre_core::library_db::initialize(&state.context.library).unwrap();
+        let unit = |axis: usize| -> Vec<u8> {
+            (0..512)
+                .flat_map(|i| {
+                    let v = if i == axis { 1.0f32 } else { 0.0 };
+                    half::f16::from_f32(v).to_le_bytes()
+                })
+                .collect()
+        };
+        for (id, axis) in [(1, 0), (2, 0), (3, 0), (4, 1)] {
+            conn.execute(
+                "INSERT INTO faces (id, hash, bbox, embedding, blur) VALUES (?1, ?2, '0,0,100,100', ?3, 500.0)",
+                rusqlite::params![id, format!("h{id}"), unit(axis)],
+            )
+            .unwrap();
+        }
+        state
+    }
+
+    fn app(state: Arc<AppState>) -> Router {
+        Router::new()
+            .route(
+                "/api/faces/cluster-params",
+                get(super::super::recluster::handle_cluster_params),
+            )
+            .route(
+                "/api/faces/recluster/preview",
+                post(super::super::recluster::handle_preview),
+            )
+            .route(
+                "/api/faces/recluster",
+                post(super::super::recluster::handle_apply),
+            )
+            .with_state(state)
+    }
+
+    async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(if method == "GET" {
+                        Body::empty()
+                    } else {
+                        Body::from(body.to_string())
+                    })
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    fn clustered(state: &AppState) -> Vec<(i64, Option<i64>)> {
+        let conn = videre_core::library_db::open_existing(&state.context.library).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT id, cluster_id FROM faces ORDER BY id")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    fn settings(root: &Path) -> Option<Value> {
+        std::fs::read_to_string(root.join(".videre/gallery.json"))
+            .ok()
+            .map(|t| serde_json::from_str(&t).unwrap())
+    }
+
+    #[tokio::test]
+    async fn preview_reports_the_grouping_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = library(dir.path());
+        let app = app(state.clone());
+        let (status, body) = call(&app, "POST", "/api/faces/recluster/preview", json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["cluster_count"], 1);
+        assert_eq!(body["clustered_faces"], 3);
+        assert_eq!(body["singletons"], 1);
+        assert_eq!(
+            body["before"],
+            json!({ "cluster_count": 0, "singletons": 4 })
+        );
+        assert!(clustered(&state).iter().all(|(_, c)| c.is_none()));
+        assert_eq!(settings(dir.path()), None);
+    }
+
+    #[tokio::test]
+    async fn apply_regroups_records_the_run_and_saves_only_what_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = library(dir.path());
+        let app = app(state.clone());
+        let (status, body) =
+            call(&app, "POST", "/api/faces/recluster", json!({ "eps": 0.7 })).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["saved"], true);
+        let rows = clustered(&state);
+        let cluster = rows[0].1.expect("the identical faces group");
+        assert_eq!(rows[1].1, Some(cluster));
+        assert_eq!(rows[3].1, None);
+        assert_eq!(
+            settings(dir.path()).unwrap(),
+            json!({ "faces": { "clustering": { "eps": 0.7f32 } } })
+        );
+        let conn = videre_core::library_db::open_existing(&state.context.library).unwrap();
+        let runs: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pipeline_runs WHERE command = 'face-recluster' AND status = 'success'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(runs, 1);
+
+        let (_, params) = call(&app, "GET", "/api/faces/cluster-params", Value::Null).await;
+        assert_eq!(params["saved"], json!({ "eps": 0.7f32 }));
+        assert_eq!(params["effective"]["eps"], json!(0.7f32));
+        assert_eq!(params["defaults"]["eps"], json!(0.6f32));
+    }
+
+    #[tokio::test]
+    async fn applying_the_defaults_removes_the_override_and_keeps_other_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = library(dir.path());
+        std::fs::write(
+            dir.path().join(".videre/gallery.json"),
+            r#"{ "faces": { "clustering": { "eps": 0.7 } }, "routes": { "people": { "align": "top" } } }"#,
+        )
+        .unwrap();
+        let app = app(state);
+        let (status, _) = call(&app, "POST", "/api/faces/recluster", json!({ "eps": 0.6 })).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            settings(dir.path()).unwrap(),
+            json!({ "routes": { "people": { "align": "top" } } })
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_is_refused_while_a_faces_run_holds_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = library(dir.path());
+        let _held =
+            videre_core::library_locks::try_command(&state.context.library, "faces").unwrap();
+        let (status, body) = call(
+            &app(state.clone()),
+            "POST",
+            "/api/faces/recluster",
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"], "faces_busy");
+        assert!(clustered(&state).iter().all(|(_, c)| c.is_none()));
+    }
+
+    #[tokio::test]
+    async fn an_out_of_range_parameter_is_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(library(dir.path()));
+        for uri in ["/api/faces/recluster/preview", "/api/faces/recluster"] {
+            let (status, body) = call(&app, "POST", uri, json!({ "min_cluster_size": 0 })).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+            assert_eq!(
+                body,
+                json!({ "error": "invalid_parameter", "field": "min_cluster_size" })
+            );
+        }
     }
 }
