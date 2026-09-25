@@ -846,29 +846,43 @@ mod files_sort_tests {
     }
 
     #[tokio::test]
-    async fn files_page_carries_the_sort_control_and_events_page_does_not() {
+    async fn every_file_and_event_page_carries_its_sort_control() {
         let dir = tempfile::tempdir().unwrap();
         let state = gallery_state(dir.path());
         {
             let conn = state.conn.lock().unwrap();
-            videre_core::library_db::ensure_scan_schema(&conn).unwrap();
+            videre_core::face_db::create_faces_table(&conn).unwrap();
+            super::events_tests::seed_events(&conn);
             videre_core::marks::ensure_marks_table(&conn).unwrap();
         }
         let app = Router::new()
             .route("/", get(handle_gallery_all))
             .route("/events", get(handle_events))
+            .route("/events/{key}", get(handle_events_key))
+            .route("/map", get(handle_map))
             .with_state(state);
 
-        let home = body_of(&app, "/").await;
-        assert!(home.contains("class=\"sort-select\""), "{home}");
-        assert!(home.contains("class=\"sort-dir-btn\""), "{home}");
+        // Match the attribute, not the bare class name: the inlined gallery.js
+        // mentions .sort-select in its querySelectorAll calls on every page.
+        let file_fields = "<option value=\"rating\">";
+        let event_fields = "<option value=\"length\">";
+        for uri in [
+            "/".to_string(),
+            "/map".to_string(),
+            format!("/events/20200312T100000-{:064x}", 101),
+        ] {
+            let page = body_of(&app, &uri).await;
+            assert!(page.contains("class=\"sort-select\""), "{uri}: {page}");
+            assert!(page.contains("class=\"sort-dir-btn\""), "{uri}: {page}");
+            assert!(page.contains(file_fields), "{uri}: {page}");
+            assert!(!page.contains(event_fields), "{uri}: {page}");
+        }
 
+        // The overview sorts events, not files.
         let events = body_of(&app, "/events").await;
-        assert!(events.contains("view-mode-select"), "{events}"); // the page has a head
-                                                                  // Match the attribute, not the bare class name: the inlined gallery.js
-                                                                  // mentions .sort-select in its querySelectorAll calls on every page.
-        assert!(!events.contains("class=\"sort-select\""), "{events}");
-        assert!(!events.contains("class=\"sort-dir-btn\""), "{events}");
+        assert!(events.contains("class=\"sort-select\""), "{events}");
+        assert!(events.contains(event_fields), "{events}");
+        assert!(!events.contains(file_fields), "{events}");
     }
 
     #[test]
@@ -992,7 +1006,7 @@ mod events_tests {
         assert_eq!(rows[0].gps, Some((47.5, 19.0)));
     }
 
-    fn seed_events(conn: &Connection) {
+    pub(super) fn seed_events(conn: &Connection) {
         videre_core::library_db::ensure_scan_schema(conn).unwrap();
         let mut add = conn.prepare("INSERT INTO file_hashes (path,hash,size_bytes,ext,mime,exif_date,modified_at,gps_lat,gps_lon,width,height) VALUES (?1,?2,100,?3,?4,?5,'2020-03-12T11:00:00+00:00',?6,?7,4000,3000)").unwrap();
         let mut insert_media =
@@ -1455,6 +1469,8 @@ mod pages {
     #[template(path = "person.html")]
     pub struct Person {
         pub settings_script: String,
+        /// The chrome every videre page shares. See `static/chrome.css`.
+        pub chrome: &'static str,
         pub css: &'static str,
         pub js: &'static str,
         pub faces_ui_enabled: bool,
@@ -1479,6 +1495,8 @@ mod pages {
         pub vendor_version: &'static str,
         pub globals: String,
         pub nav: Option<super::Section>,
+        /// Always false: the map orders files. `templates/sort-control.html`.
+        pub event_sort: bool,
     }
 
     #[derive(Template)]
@@ -2019,6 +2037,7 @@ fn render_map(
         vendor_version: env!("CARGO_PKG_VERSION"),
         globals,
         nav: Some(Section::Map),
+        event_sort: false,
     };
     axum::response::Html(page.render().expect("map template"))
 }
@@ -3417,6 +3436,7 @@ async fn handle_person_page(State(state): State<Arc<AppState>>) -> axum::respons
     use askama::Template;
     let page = pages::Person {
         settings_script: page_settings(&state).await,
+        chrome: CHROME_CSS,
         css: pages::PERSON_CSS,
         js: pages::PERSON_JS,
         faces_ui_enabled: state.serve_faces_ui,
