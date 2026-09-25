@@ -16,6 +16,45 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.43.0] - 2026-09-25
+
+### Added
+
+- **Select mode in the gallery.** Library, Date, Events and Map get a Select
+  toggle: click to select, Shift-click for a range, Escape to clear. A bar
+  along the bottom likes, keeps or rejects, rates, labels, tags, untags,
+  rotates, copies paths, or moves the selection to the system Trash after a
+  confirmation. People singletons use the same bar and gain Shift ranges.
+- **Recluster from the People page.** A Recluster row shows the grouping
+  values the library uses, previews a regroup without writing anything, and
+  applies it. Applied values are saved to `gallery.json` `faces.clustering`,
+  and `videre faces` and `videre watch` use them unless a flag overrides them.
+- **`stats` reports logs** in its disk use, and `stats --json` now includes
+  the type breakdown (`by_type`) and disk use (`disk_use`).
+
+### Changed
+
+- **`watch` keeps leftover faces attached when it regroups**, as `faces`
+  always did; its regroup used to skip that pass.
+- **Face learning updates are hidden by default** on the People page; a
+  toolbar toggle shows them. Its outcomes go to the gallery log, and the
+  Recluster row summarises what learning currently contributes.
+
+### Fixed
+
+- **A face named during a regroup keeps its name.** Cluster assignments are
+  written in one transaction and never onto a labeled face.
+- **`stats` printed its Disk use section twice.**
+- **Dependency advisories:** rustls is updated (RUSTSEC-2026-0285) and the
+  unmaintained `number_prefix` is no longer pulled in.
+
+### Security
+
+- Workflows pin every action to a commit, keep the job token out of the
+  checkout, grant write access only to the release jobs that need it, set
+  timeouts on every job, and run `cargo audit` on every change and weekly.
+
+
 ## [0.42.1] - 2026-09-25
 
 ### Fixed
@@ -2335,7 +2374,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.42.1...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.43.0...HEAD
+[0.43.0]: https://github.com/erhangundogan/videre/compare/v0.42.1...v0.43.0
 [0.42.1]: https://github.com/erhangundogan/videre/compare/v0.42.0...v0.42.1
 [0.42.0]: https://github.com/erhangundogan/videre/compare/v0.41.0...v0.42.0
 [0.41.0]: https://github.com/erhangundogan/videre/compare/v0.40.0...v0.41.0
