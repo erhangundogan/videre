@@ -89,7 +89,7 @@ fn every_display_surface_shows_the_display_name() {
     let names: Vec<_> = overlays
         .values()
         .flatten()
-        .map(|(_, name, _, _)| name.as_str())
+        .map(|(_, name, _)| name.as_str())
         .collect();
     assert_eq!(names, vec![DISPLAY], "face overlays showed the identity");
 

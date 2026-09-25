@@ -165,7 +165,6 @@ fn ensure_optional_tables(conn: &rusqlite::Connection) {
     let _ = videre_core::face_db::create_faces_table(conn);
     let _ = videre_core::classify::ensure_classifications_table(conn);
     let _ = videre_core::location_cluster::ensure_location_clusters_table(conn);
-    videre_core::location_cluster::ensure_location_cluster_id_column(conn);
     let _ = videre_core::tags::ensure_photo_tags_table(conn);
 }
 
@@ -195,7 +194,7 @@ fn write_sidecars_for(
             .get(hash)
             .map(|fs| {
                 fs.iter()
-                    .filter_map(|(_, name, bbox, _)| {
+                    .filter_map(|(_, name, bbox)| {
                         let (w, h) = g.dims?;
                         Some(Region {
                             name: name.clone(),

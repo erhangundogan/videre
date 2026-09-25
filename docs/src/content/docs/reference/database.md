@@ -100,12 +100,8 @@ stored as raw f16, so 1024 bytes. `cluster_id` is assigned by grouping;
 `person_label` and `confirmed` are what the labeling UI writes, and
 [`search --person`](/commands/search/) reads.
 
-`oriented` says which canvas `bbox` and `landmark` are measured on. `NULL`
-means the raw pixel canvas the file happened to store, which is every row
-written before videre decoded orientation-correctly; `1` means the display
-canvas, the orientation a person sees. Face thumbnails branch on it when
-cropping, so old and new rows both render upright. Rows with `NULL` can be
-brought current with [`videre faces --reprocess`](/commands/faces/).
+`oriented` is always `1`: `bbox` and `landmark` are measured on the display
+canvas, the orientation a person sees.
 
 ```sql
 CREATE TABLE people (
