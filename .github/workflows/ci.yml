@@ -25,7 +25,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing later in the job pushes or fetches with this token.
+          persist-credentials: false
 
       # No cargo build, no dependency resolution: rustfmt parses the source
       # directly. That is what keeps this job under a minute despite the
@@ -55,11 +58,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing later in the job pushes or fetches with this token.
+          persist-credentials: false
 
       # Unlike rustfmt, clippy type-checks the whole workspace, so it needs the
       # dependencies compiled (candle, ONNX Runtime) and therefore this cache.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # The version comes from rust-toolchain.toml, the one place it is written.
       # Installed explicitly (with the clippy component) rather than relied on,
@@ -106,9 +112,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing later in the job pushes or fetches with this token.
+          persist-credentials: false
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # Model weights, persisted between runs. Keyed on the two files that
       # decide which weights are fetched, so changing the buffalo_l repo or
@@ -126,7 +135,7 @@ jobs:
       # be restored forever without this. Bump the salt again if weights ever
       # get in that should not be there.
       - id: models
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/huggingface
           key: hf-v2-${{ runner.os }}-${{ hashFiles('crates/videre-ml/src/face_models.rs', 'crates/videre-core/src/embeddings.rs') }}
@@ -264,9 +273,12 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing later in the job pushes or fetches with this token.
+          persist-credentials: false
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install the pinned toolchain
         run: |

@@ -1,0 +1,49 @@
+name: Audit
+
+# Checks Cargo.lock against the RustSec advisory database. Advisories are
+# published against dependencies that have not changed, so this runs on a
+# schedule as well as on every change: a lockfile that was clean when it
+# merged can be vulnerable a week later. Deliberate exceptions, each with its
+# reason, live in .cargo/audit.toml.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # cargo reads rust-toolchain.toml inside the repository, so the pinned
+      # toolchain is installed explicitly, as in the CI jobs.
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install --profile minimal \
+            "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
+
+      # Building cargo-audit takes minutes; the binary is cached by version.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-0.22.2-${{ runner.os }}
+
+      - name: Install cargo-audit
+        run: |
+          command -v cargo-audit || cargo install cargo-audit --version 0.22.2 --locked
+
+      # Fails on any vulnerability not ignored in .cargo/audit.toml.
+      # Unmaintained-crate notices are printed as warnings and do not fail.
+      - name: Audit Cargo.lock
+        run: cargo audit

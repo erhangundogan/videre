@@ -36,7 +36,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # Nothing later in the job pushes or fetches with this token.
+          persist-credentials: false
 
       # Every install in the test goes to a temp directory, and none of them is
       # put on PATH. This job installs software on a runner; it should leave
