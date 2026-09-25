@@ -19,6 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # Nothing later in the job pushes or fetches with this token.
+          persist-credentials: false
       - name: Create or reuse the draft release
         shell: bash
         env:
@@ -75,6 +78,9 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # Nothing later in the job pushes or fetches with this token.
+          persist-credentials: false
 
       - name: Add the target
         shell: bash
@@ -131,6 +137,9 @@ jobs:
       # not from git), so checkout gives the smoke test real JPEG/MOV/MP4 to
       # work on without downloading anything.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # Nothing later in the job pushes or fetches with this token.
+          persist-credentials: false
 
       - name: Download the built artifact
         shell: bash
@@ -182,6 +191,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # Nothing later in the job pushes or fetches with this token.
+          persist-credentials: false
       - name: Undraft
         shell: bash
         env:

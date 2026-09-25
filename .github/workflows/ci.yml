@@ -20,6 +20,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing later in the job pushes or fetches with this token.
+          persist-credentials: false
 
       # No cargo build, no dependency resolution: rustfmt parses the source
       # directly. That is what keeps this job under a minute despite the
@@ -49,6 +52,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing later in the job pushes or fetches with this token.
+          persist-credentials: false
 
       # Unlike rustfmt, clippy type-checks the whole workspace, so it needs the
       # dependencies compiled (candle, ONNX Runtime) and therefore this cache.
@@ -99,6 +105,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing later in the job pushes or fetches with this token.
+          persist-credentials: false
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
@@ -256,6 +265,9 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing later in the job pushes or fetches with this token.
+          persist-credentials: false
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
