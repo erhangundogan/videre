@@ -151,7 +151,11 @@ const clusterId = window.CLUSTER_ID;
       const r = await fetch(`/api/clusters/${clusterId}`, { method: 'DELETE' });
       if (!r.ok) { document.getElementById('status').textContent = 'Error: dissolve failed'; return; }
       const ack = await r.json().catch(() => null);
-      const taught = ack && Array.isArray(ack.event_ids) && ack.event_ids.length;
+      // The teaching note is a learning update, shown only when the library
+      // chose to see those (People toolbar, Learning updates).
+      const showUpdates = typeof settingOneOf === 'function'
+        && settingOneOf('routes.people.learningUpdates', ['hide', 'show']) === 'show';
+      const taught = showUpdates && ack && Array.isArray(ack.event_ids) && ack.event_ids.length;
       document.getElementById('status').textContent = 'Cluster dissolved'
         + (taught ? '; the negative example was recorded' : '');
       setTimeout(() => { window.location.href = peopleHome(); }, 500);

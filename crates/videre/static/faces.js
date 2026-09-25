@@ -426,7 +426,35 @@ let facesData = { people: [], clusters: [], singletons: [] };
       });
     }
 
+    // Learning updates (the status strip and these toasts) are off unless the
+    // library chose to show them: they describe the process, and the result,
+    // a question card, shows either way.
+    function learningUpdatesShown() {
+      return settingOneOf('routes.people.learningUpdates', ['hide', 'show']) === 'show';
+    }
+
+    function setLearningUpdates(value) {
+      saveSetting('routes.people.learningUpdates', value === 'show' ? 'show' : 'hide');
+      applyLearningUpdates();
+    }
+    window.setLearningUpdates = setLearningUpdates;
+
+    function applyLearningUpdates() {
+      const shown = learningUpdatesShown();
+      const select = document.getElementById('learning-updates-select');
+      if (select) select.value = shown ? 'show' : 'hide';
+      if (shown) {
+        refreshLearning();
+      } else {
+        const strip = document.getElementById('learning-strip');
+        if (strip) strip.hidden = true;
+        const toast = document.getElementById('learning-toast');
+        if (toast) toast.hidden = true;
+      }
+    }
+
     function showLearningToast(ack) {
+      if (!learningUpdatesShown()) return;
       if (!ack || !Array.isArray(ack.event_ids) || !ack.event_ids.length) return;
       const toast = document.getElementById('learning-toast');
       if (!toast) return;
@@ -441,7 +469,7 @@ let facesData = { people: [], clusters: [], singletons: [] };
 
     async function refreshLearning() {
       const strip = document.getElementById('learning-strip');
-      if (!strip) return;
+      if (!strip || !learningUpdatesShown()) return;
       try {
         const r = await fetch('/api/face-learning/status');
         if (!r.ok) return;
@@ -539,6 +567,132 @@ let facesData = { people: [], clusters: [], singletons: [] };
       const btn = document.getElementById('q-' + answer);
       if (btn) btn.addEventListener('click', function() { answerQuestion(answer); });
     });
-    refreshLearning();
+    applyLearningUpdates();
     loadQuestion();
     setInterval(refreshLearning, 10000);
+
+    // ---------- recluster ----------
+    // The row under the settings bar: tune the grouping values, preview what
+    // they would produce, apply them. Applying saves them for this library, so
+    // `videre faces` and `videre watch` keep the grouping.
+    let reclusterDefaults = null;
+
+    function reclusterInputs() {
+      return Array.from(document.querySelectorAll('#recluster-row input[data-param]'));
+    }
+
+    function fillRecluster(params) {
+      reclusterInputs().forEach(function(input) {
+        const v = params[input.dataset.param];
+        if (v !== undefined && v !== null) input.value = String(Math.round(v * 1000) / 1000);
+      });
+    }
+
+    function fillReclusterDefaults() {
+      if (reclusterDefaults) fillRecluster(reclusterDefaults);
+    }
+    window.fillReclusterDefaults = fillReclusterDefaults;
+
+    function reclusterBody() {
+      const body = {};
+      reclusterInputs().forEach(function(input) {
+        if (input.value === '') return;
+        const n = Number(input.value);
+        if (Number.isFinite(n)) body[input.dataset.param] = n;
+      });
+      return body;
+    }
+
+    async function loadReclusterParams() {
+      try {
+        const r = await fetch('/api/faces/cluster-params');
+        if (!r.ok) return;
+        const p = await r.json();
+        reclusterDefaults = p.defaults;
+        fillRecluster(p.effective);
+        document.getElementById('recluster-learning').textContent = p.learning || '';
+        if (p.warnings && p.warnings.length) {
+          document.getElementById('recluster-result').textContent = p.warnings.join(' ');
+        }
+      } catch (_) { /* the row still works with typed values */ }
+    }
+
+    function applyReclusterOpen() {
+      const open = setting('routes.people.reclusterOpen') === true;
+      const row = document.getElementById('recluster-row');
+      const button = document.getElementById('recluster-toggle');
+      if (!row || !button) return;
+      row.hidden = !open;
+      button.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open) loadReclusterParams();
+      measureChrome();
+    }
+
+    function toggleRecluster() {
+      saveSetting('routes.people.reclusterOpen', setting('routes.people.reclusterOpen') !== true);
+      applyReclusterOpen();
+    }
+    window.toggleRecluster = toggleRecluster;
+
+    function describeRecluster(s, verb) {
+      return verb + ': ' + s.cluster_count + ' group' + (s.cluster_count === 1 ? '' : 's')
+        + ' from ' + s.clustered_faces + ' of ' + s.total_faces + ' unnamed faces; '
+        + s.singletons + ' left single (' + s.held_out + ' held out by quality). '
+        + 'Before: ' + s.before.cluster_count + ' group' + (s.before.cluster_count === 1 ? '' : 's')
+        + ', ' + s.before.singletons + ' single.';
+    }
+
+    async function refusalText(r) {
+      const body = await r.json().catch(() => ({}));
+      if (r.status === 400 && body.field) return body.field + ' is out of range.';
+      if (r.status === 409) return 'A faces or watch run is in progress; try again when it finishes.';
+      return 'Recluster failed (' + r.status + ').';
+    }
+
+    function setReclusterBusy(busy) {
+      ['recluster-preview', 'recluster-apply', 'recluster-defaults'].forEach(function(id) {
+        const b = document.getElementById(id);
+        if (b) b.disabled = busy;
+      });
+      const body = document.querySelector('.page-body');
+      if (body) body.classList.toggle('recluster-busy', busy);
+    }
+
+    async function runRecluster(url, verb) {
+      const line = document.getElementById('recluster-result');
+      setReclusterBusy(true);
+      line.textContent = verb === 'Applied' ? 'Reclustering...' : 'Computing preview...';
+      try {
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(reclusterBody())
+        });
+        if (!r.ok) { line.textContent = await refusalText(r); return null; }
+        const s = await r.json();
+        let text = describeRecluster(s, verb);
+        if (s.saved === false) text += ' Settings not saved: ' + (s.settings_error || 'gallery.json could not be read') + '.';
+        line.textContent = text;
+        return s;
+      } catch (_) {
+        line.textContent = 'Recluster failed.';
+        return null;
+      } finally {
+        setReclusterBusy(false);
+      }
+    }
+
+    async function previewRecluster() {
+      await runRecluster('/api/faces/recluster/preview', 'Preview');
+    }
+    window.previewRecluster = previewRecluster;
+
+    async function applyRecluster() {
+      const s = await runRecluster('/api/faces/recluster', 'Applied');
+      if (!s) return;
+      await loadFaces();
+      loadQuestion();
+    }
+    window.applyRecluster = applyRecluster;
+
+    applyReclusterOpen();
