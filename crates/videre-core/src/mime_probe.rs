@@ -8,8 +8,6 @@
 //! Detection reads no I/O of its own. `hasher::hash_file_inner` already fills
 //! a 64KB buffer to compute BLAKE3, and the signature lives in the first 12
 //! bytes of it.
-//!
-//! See docs/superpowers/specs/2026-08-09-mime-detection-design.md.
 
 /// Top-level boxes that identify a classic QuickTime file, which predates
 /// ISO-BMFF's `ftyp` and may begin with any of these.

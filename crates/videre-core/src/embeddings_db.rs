@@ -5,8 +5,7 @@
 //! database, tagged with a `model_id` column. That allowed exactly one model
 //! to be usable at a time (every read filters on `model_id`, so switching
 //! models made the whole library look unembedded) and left the main database
-//! roughly three-quarters vectors. See
-//! docs/superpowers/specs/2026-08-05-multi-model-embeddings-split-design.md.
+//! roughly three-quarters vectors.
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;

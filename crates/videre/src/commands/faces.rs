@@ -124,17 +124,15 @@ pub struct FacesArgs {
     min_blur: Option<f32>,
     /// Print per-stage timing (load/detect/align/embed/db_write, load split
     /// HEIC vs. other) averaged per image, after the run finishes. A tuning
-    /// tool, not part of the normal summary. See
-    /// docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md.
+    /// tool, not part of the normal summary.
     #[arg(long)]
     profile: bool,
     /// Number of worker threads for face detection/embedding (each with its
     /// own ONNX sessions, intra-op-thread-capped so they don't collectively
-    /// oversubscribe the machine). Defaults to 2x available core count, real
-    /// profiling data (docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md,
-    /// and see the architecture memory) showed HEIC file loading (via a
-    /// qlmanage subprocess) averages ~52x longer than non-HEIC loading and
-    /// dominates the whole per-image cost, so a flat 1:1 worker:core mapping
+    /// oversubscribe the machine). Defaults to 2x available core count: real
+    /// profiling data showed HEIC file loading (via a qlmanage subprocess)
+    /// averages ~52x longer than non-HEIC loading and dominates the whole
+    /// per-image cost, so a flat 1:1 worker:core mapping
     /// leaves CPU idle while many workers sit blocked on that subprocess,
     /// oversubscribing keeps cores busy with other workers' CPU-bound
     /// detect/embed work while some workers wait on I/O.
@@ -142,8 +140,7 @@ pub struct FacesArgs {
     workers: Option<usize>,
     /// Max concurrent `qlmanage` subprocesses (HEIC decoding), process-wide.
     /// Default 6 (raised from 3 after real profiling showed HEIC-heavy runs
-    /// leaving CPU idle under `--workers`'s default 2x-cores worker count.
-    /// See docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md).
+    /// leaving CPU idle under `--workers`'s default 2x-cores worker count).
     /// Raising this further trades a known-safe default for an untested one:
     /// QuickLook's thumbnail agent and the source drive's I/O may not
     /// actually sustain more concurrent conversions, so treat higher values

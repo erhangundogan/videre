@@ -1,5 +1,4 @@
-//! Facade over videre-core's pipeline run tracking. See
-//! docs/superpowers/specs/2026-07-31-dashboard-stats-pass-b-design.md.
+//! Facade over videre-core's pipeline run tracking.
 
 use crate::error::Result;
 use rusqlite::Connection;

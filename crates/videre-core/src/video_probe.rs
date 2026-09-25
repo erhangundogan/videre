@@ -7,10 +7,6 @@
 //! permanently unembeddable. Measured on a real 70,601-file library: three
 //! audio-only Live Photo companions cost 60s per `videre embed` run and
 //! another 60s per `videre scan --similar`.
-//!
-//! See docs/superpowers/specs/2026-08-09-video-track-probe-design.md, which
-//! also records why a fourth failing file in that library is *not* detectable
-//! this way.
 
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;

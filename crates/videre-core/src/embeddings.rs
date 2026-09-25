@@ -5,8 +5,7 @@ use rusqlite::{params, Connection, Result};
 /// Extensions the embedding pipeline can decode. `.mov`/`.mp4` are handled by
 /// extracting one representative frame via QuickLook (macOS only, degrades to
 /// a per-file decode error on other platforms, same pattern already
-/// accepted for `.heic`). See
-/// docs/superpowers/specs/2026-07-31-video-embedding-design.md.
+/// accepted for `.heic`).
 ///
 /// `.dng` is deliberately NOT included: the `image` crate has no DNG decoder,
 /// so including it here would make `videre embed` query DNG hashes as

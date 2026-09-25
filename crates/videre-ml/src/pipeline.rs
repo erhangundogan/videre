@@ -6,7 +6,7 @@ use rusqlite::Connection;
 /// divides by the relevant count to report per-image averages. Load time is
 /// tracked separately for HEIC (goes through a `qlmanage` subprocess) vs.
 /// everything else, since that's the one stage known to differ sharply by
-/// file type. See `docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md`.
+/// file type.
 #[derive(Debug, Default, Clone)]
 pub struct ProfileStats {
     pub load_heic: std::time::Duration,
