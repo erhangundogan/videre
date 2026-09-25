@@ -34,6 +34,7 @@
   <p id="map-selection-status" class="map-selection-status" role="status" hidden></p>
   <div class="gallery-toolbar" data-files>
     <label class="view-toggle">View <select class="view-mode-select" onchange="setViewMode(this.value)"><option value="list">List</option><option value="tile">Tile</option></select></label>
+    {% include "sort-control.html" %}
     <span id="map-breadcrumb" class="map-place" hidden></span>
     <span id="map-radius-group" class="map-radius-group" hidden>
       <label for="map-radius">Radius</label>

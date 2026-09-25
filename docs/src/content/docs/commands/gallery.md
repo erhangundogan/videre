@@ -184,8 +184,9 @@ These are the defaults every library starts from:
       "sort": { "field": "date", "dir": "desc" },
       "tile": { "rowHeight": 280, "colGap": 10, "rowGap": 10 }
     },
+    "events": { "sort": { "field": "date", "dir": "desc" } },
     "people": { "align": "right", "learningUpdates": "hide", "reclusterOpen": false },
-    "map": { "radiusKm": 0 }
+    "map": { "radiusKm": 0, "sort": { "field": "date", "dir": "desc" } }
   }
 }
 ```
@@ -202,8 +203,11 @@ These are the defaults every library starts from:
 | `routes.people.learningUpdates` | `hide`, `show` | Whether the People page shows face learning's status strip and teaching notes; see [Face learning](#face-learning) |
 | `routes.people.reclusterOpen` | `true`, `false` | Whether the People page's Recluster row is open |
 | `routes.map.radiusKm` | 0 to 20000 | Radius a map location opens with, in km. `0` uses each place's own radius |
-| `routes.files.sort.field` | `date`, `name`, `size`, `rating`, `liked`, `type` | What the Library and Date grids are ordered by; see [Sorting](#sorting) |
+| `routes.files.sort.field` | `date`, `name`, `size`, `rating`, `liked`, `type` | What the Library and Date grids and an event's files are ordered by; see [Sorting](#sorting) |
 | `routes.files.sort.dir` | `asc`, `desc` | Which way that order runs |
+| `routes.map.sort.field`, `routes.map.sort.dir` | as `routes.files.sort` | The same for the Map grid |
+| `routes.events.sort.field` | `date`, `files`, `length`, `name` | What the Events overview orders trips by |
+| `routes.events.sort.dir` | `asc`, `desc` | Which way that order runs |
 
 A value of the wrong type (a word where a number belongs) or out of range is
 ignored and the default used instead. Keys the gallery does not know are kept
@@ -264,15 +268,18 @@ Select mode needs the running gallery: a static export has no Select button.
 
 ## Sorting
 
-In the toolbar on the Library and Date tabs, next to View, the **Sort**
-selector orders the files: Date (the default, newest first), Name, Size,
-Rating, Liked, or Type. The arrow button beside it flips the direction:
-triangle up is ascending, and while it reads pressed it points down for
-descending. Files with no date and unrated files always sort last. The choice
-is saved in the library's [settings](#settings) and applies to both list and
-tile views, so the
-lightbox's previous/next follows the same order. The duplicates page keeps
-its own Sort by control.
+In the toolbar on the Library, Date and Map tabs and on an event's page, next
+to View, the **Sort** selector orders the files: Date (the default, newest
+first), Name, Size, Rating, Liked, or Type. The arrow button beside it flips
+the direction: triangle up is ascending, and while it reads pressed it points
+down for descending. Files with no date and unrated files always sort last.
+The choice is saved in the library's [settings](#settings) and applies to both
+list and tile views, so the lightbox's previous/next follows the same order.
+The Map keeps a choice of its own.
+
+On the Events overview, Sort orders the trips instead: Date (when the trip
+started, the default, newest first), Files, Length, or Name. The duplicates
+page keeps its own Sort by control.
 
 ## Options
 

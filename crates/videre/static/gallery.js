@@ -1,19 +1,27 @@
 
 var PAGE=100,sorted=GROUPS.slice(),shown=0;
 
-// Sort state for the Files and Date views. Mirrors the server whitelist: six
-// fields, asc/desc. Kept in the library's gallery settings
-// (`routes.files.sort`, default date desc) the same way the view mode is.
-var SORT_FIELDS=['date','name','size','rating','liked','type'];
+// Sort state, kept in the library's gallery settings the same way the view
+// mode is, default date desc. File grids mirror the server whitelist (six
+// fields); Library, Date and an event's page share `routes.files.sort`, the
+// map keeps its own. The Events overview orders events, by its own fields.
+var FILE_SORT_FIELDS=['date','name','size','rating','liked','type'];
+var EVENT_SORT_FIELDS=['date','files','length','name'];
+var SORT=(function(){
+  if(document.getElementById('map-plot'))return{key:'routes.map.sort',fields:FILE_SORT_FIELDS};
+  if(typeof GVIEW!=='undefined'&&GVIEW==='events'&&!(typeof GEVENT==='object'&&GEVENT))
+    return{key:'routes.events.sort',fields:EVENT_SORT_FIELDS};
+  return{key:'routes.files.sort',fields:FILE_SORT_FIELDS};
+})();
 var rerunDateView=null;  // set by each date renderer, so a sort change re-runs the view on screen
 var allFilesSorted=null; // ALLFILES, re-sorted per sort choice (static export only)
 function sortState(){
   return{
-    field:settingOneOf('routes.files.sort.field',SORT_FIELDS),
-    dir:settingOneOf('routes.files.sort.dir',['asc','desc'])
+    field:settingOneOf(SORT.key+'.field',SORT.fields),
+    dir:settingOneOf(SORT.key+'.dir',['asc','desc'])
   };
 }
-function storeSortState(s){ saveSetting('routes.files.sort',{field:s.field,dir:s.dir}); }
+function storeSortState(s){ saveSetting(SORT.key,{field:s.field,dir:s.dir}); }
 function sortQuery(){ var s=sortState(); return '&sort='+s.field+'&dir='+s.dir; }
 function setSortField(f){
   var s=sortState(); s.field=f; storeSortState(s);
@@ -852,16 +860,36 @@ function eventCards(events){
       '<div class="date-card-count">'+sub+'</div></div>';
   }).join('');
 }
+// Event start/end are "YYYY-MM-DD HH:MM:SS" local wall-clock, so the string
+// order is the time order and a span needs only the difference.
+function eventMillis(t){ return Date.parse(t.replace(' ','T'))||0; }
+function sortEvents(evs){
+  var s=sortState(),asc=(s.dir==='asc');
+  function key(e){
+    if(s.field==='files')return e.count;
+    if(s.field==='length')return eventMillis(e.end)-eventMillis(e.start);
+    if(s.field==='name')return (e.title||eventDateRange(e.start,e.end)).toLowerCase();
+    return e.start;
+  }
+  return evs.slice().sort(function(a,b){
+    var ka=key(a),kb=key(b);
+    if(ka<kb)return asc?-1:1;
+    if(ka>kb)return asc?1:-1;
+    return a.start<b.start?1:(a.start>b.start?-1:0);
+  });
+}
+var eventsResponse=null; // the overview's /api/events answer, so a sort change does not recompute trips
 function buildEventsOverview(){
   rerunDateView=function(){buildEventsOverview();};
   document.getElementById('dateBreadcrumb').innerHTML='Events';
   var narrowing=document.getElementById('dateNarrowing');
   if(narrowing)narrowing.innerHTML='';
   var grid=document.getElementById('dateGrid');
-  grid.innerHTML='<p class="muted">Loading…</p>';
-  fetch('/api/events').then(function(r){return r.json();})
+  if(!eventsResponse)grid.innerHTML='<p class="muted">Loading…</p>';
+  (eventsResponse?Promise.resolve(eventsResponse):fetch('/api/events').then(function(r){return r.json();}))
     .then(function(d){
-      var evs=d.events||[];
+      eventsResponse=d;
+      var evs=sortEvents(d.events||[]);
       var reasons={
         no_media:'No media has been scanned yet.',
         no_capture_dates:'Events needs photo capture dates or video creation dates.',
@@ -887,7 +915,7 @@ function buildEventLeaf(ev){
     .then(function(r){return r.json();})
     .then(function(d){
       showPeriodCount(d.total!=null?d.total:(d.files||[]).length);
-      renderDateFiles(d.files||[],'No files in this event.');
+      renderDateFiles(sortFiles(d.files||[]),'No files in this event.');
     })
     .catch(function(){ grid.innerHTML='<p class="muted">Could not load this event.</p>'; });
 }
@@ -1168,7 +1196,7 @@ function findSimilar(hash){
     .then(function(d){ renderResults(hash,d.results||[]); })
     .catch(function(){
       if(panel)panel.innerHTML='<div class="results-head"><h2>Search failed</h2>'+
-        '<button onclick="clearResults()">Clear</button></div>';
+        '<button onclick="clearResults()">Close</button></div>';
     });
 }
 function resultCard(hash,score,isQuery){
@@ -1203,7 +1231,7 @@ function renderResults(qHash,scored){
 function drawResults(qHash,scored){
   var panel=document.getElementById('results');
   var html='<div class="results-head"><h2>Similar images</h2>'+
-    '<button onclick="clearResults()">Clear</button></div>'+
+    '<button onclick="clearResults()">Close</button></div>'+
     '<div class="results-strip">'+resultCard(qHash,1,true);
   for(var i=0;i<scored.length;i++){
     html+=resultCard(scored[i].hash,scored[i].score,false);
@@ -1233,7 +1261,7 @@ function runTextSearch(q){
     .then(function(d){ resolveTextResults(q,d.results||[]); })
     .catch(function(){
       panel.innerHTML='<div class="results-head"><h2>Search failed</h2>'+
-        '<button onclick="clearResults()">Clear</button></div>';
+        '<button onclick="clearResults()">Close</button></div>';
     });
 }
 // Search returns a ranking of hashes; resolve the rows behind them by hash
@@ -1252,11 +1280,11 @@ function resolveTextResults(query,scored){
 function drawTextResults(query,scored){
   var panel=document.getElementById('results');
   var html='<div class="results-head"><h2>Results for &ldquo;'+escH(query)+'&rdquo;</h2>'+
-    '<button onclick="clearResults()">Clear</button></div><div class="results-strip">';
+    '<button onclick="clearResults()">Close</button></div><div class="results-strip">';
   for(var i=0;i<scored.length;i++)html+=resultCard(scored[i].hash,scored[i].score,false);
   html+='</div>';
   if(!scored.length)html='<div class="results-head"><h2>No matches for &ldquo;'+escH(query)+
-    '&rdquo;</h2><button onclick="clearResults()">Clear</button></div>';
+    '&rdquo;</h2><button onclick="clearResults()">Close</button></div>';
   panel.innerHTML=html;
   panel.style.display='block';
   panel.querySelectorAll('img').forEach(function(img){if(img.loading==='lazy')img.loading='eager';});
