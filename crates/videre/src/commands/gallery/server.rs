@@ -1494,7 +1494,12 @@ mod pages {
 
     pub const SETTINGS_PAGE_JS: &str = include_str!("../../../static/settings-page.js");
     pub const FACES_CSS: &str = include_str!("../../../static/faces.css");
-    pub const FACES_JS: &str = include_str!("../../../static/faces.js");
+    /// The People script, with the shared multi-select component ahead of it.
+    pub const FACES_JS: &str = concat!(
+        include_str!("../../../static/selection.js"),
+        "\n",
+        include_str!("../../../static/faces.js")
+    );
     pub const CLUSTER_CSS: &str = include_str!("../../../static/cluster.css");
     pub const CLUSTER_JS: &str = include_str!("../../../static/cluster.js");
     pub const PERSON_CSS: &str = include_str!("../../../static/person.css");
@@ -2008,7 +2013,7 @@ fn render_map(
         gallery_css: include_str!("../../../static/gallery.css"),
         css: pages::MAP_CSS,
         justified_js: include_str!("../../../static/justified-layout.js"),
-        gallery_js: include_str!("../../../static/gallery.js"),
+        gallery_js: crate::render::GALLERY_JS,
         js: pages::MAP_JS,
         basemap_style: pages::BASEMAP_STYLE,
         vendor_version: env!("CARGO_PKG_VERSION"),

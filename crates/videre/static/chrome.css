@@ -44,3 +44,23 @@ button.primary:hover{background:#2563eb;border-color:#2563eb}
 .empty-state p{margin:0 0 10px;color:#55555f;line-height:1.5}
 .empty-state .hint{font-size:14px;color:#8a8a96}
 .empty-state code{background:#f4f4f8;padding:2px 6px;border-radius:4px;font-size:13px}
+/* Multi-select, shared by the People page and the file grids (selection.js):
+   a selected item's ring and check badge, and the bar along the bottom. */
+.selected{border-color:#2a6db5;box-shadow:0 0 0 2px #2a6db5}
+.sel-check{position:absolute;top:6px;right:6px;width:22px;height:22px;border-radius:50%;background:#2a6db5;color:#fff;align-items:center;justify-content:center;font-size:13px;z-index:5;display:none}
+.selected .sel-check{display:flex}
+.sel-bar{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#2a6db5;color:#fff;padding:10px 16px;border-radius:10px;display:none;gap:12px;align-items:center;z-index:300;box-shadow:0 4px 16px rgba(0,0,0,.25);flex-wrap:wrap;max-width:calc(100vw - 32px);font:500 13px/1.3 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.sel-bar.on{display:flex}
+.sel-bar .sel-count{font-weight:600}
+.sel-bar .sel-hint{font-size:12px;opacity:.85}
+.sel-bar button{background:#fff;color:#2a6db5;font-weight:600;border:none}
+.sel-bar input[type=text]{width:160px}
+/* File grids in select mode: the same check badge, drawn by the item itself so
+   every grid (list, tile, date, events, map) gets it from one rule. */
+.select-toggle[aria-pressed="true"]{background:#2a6db5;color:#fff;border-color:#2a6db5}
+.select-state{font:500 13px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#2a6db5}
+body.select-mode .card[data-hash],body.select-mode .tile[data-hash]{cursor:pointer}
+body.select-mode .card[data-hash]{position:relative}
+body.select-mode .card[data-hash]::after,body.select-mode .tile[data-hash]::after{content:"";position:absolute;top:6px;right:6px;width:20px;height:20px;border-radius:50%;border:2px solid #fff;background:rgba(0,0,0,.25);box-shadow:0 1px 3px rgba(0,0,0,.3);z-index:5;opacity:0}
+body.select-mode .card[data-hash]:hover::after,body.select-mode .tile[data-hash]:hover::after{opacity:1}
+body.select-mode .selected::after{content:"\2713";opacity:1;background:#2a6db5;border-color:#2a6db5;color:#fff;font-size:13px;line-height:20px;text-align:center}

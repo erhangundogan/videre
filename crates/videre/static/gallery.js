@@ -897,6 +897,7 @@ function buildEventsInitialView(){
 }
 // Event delegation: toggle, lightbox, copy. One listener for all dynamic content
 document.addEventListener('click',function(e){
+  if(selectModeClick(e))return;
   var lb=e.target.closest('[data-lb-url]');
   if(lb){e.preventDefault();e.stopPropagation();openTile(lb);return;}
   var cp=e.target.closest('[data-path]');
@@ -905,6 +906,10 @@ document.addEventListener('click',function(e){
   if(hdr){toggle(hdr.closest('.group').id);return;}
 });
 document.addEventListener('keydown',function(e){
+  if(e.key==='Escape'&&selectMode&&!document.getElementById('lb').classList.contains('on')){
+    if(fileSelection)fileSelection.clear();
+    return;
+  }
   if(e.key==='Escape'){closeLb();return;}
   if(!document.getElementById('lb').classList.contains('on'))return;
   if(e.key==='ArrowLeft'){e.preventDefault();lbStep(-1);}
@@ -1014,7 +1019,7 @@ function tileRatio(f){ return (f.w&&f.h) ? (f.w/f.h) : 1; }
 // layout computed. buildPreview already carries data-lb-url/-type/-meta, so the
 // lightbox and its nav keep working and DOM order stays file (row) order.
 function tileHtml(f,box){
-  return '<div class="tile" style="left:'+box.left+'px;top:'+box.top+'px;'+
+  return '<div class="tile" data-hash="'+escA(f.hash)+'" style="left:'+box.left+'px;top:'+box.top+'px;'+
     'width:'+box.width+'px;height:'+box.height+'px">'+buildPreview(f)+'</div>';
 }
 // Lay files out as justified rows inside container. Pure geometry over ratios,
@@ -1305,3 +1310,79 @@ window.addEventListener('load',function(){ if(viewMode()==='tile') renderCurrent
 render(true);
 if(typeof GVIEW!=='undefined'&&GVIEW==='events') buildEventsInitialView();
 else if(document.getElementById('dateGrid')) buildDateInitialView();
+
+// ---------- select mode ----------
+// A Select toggle in the file-grid toolbars (live server only: selections act
+// through the server). While on, a click on a card or tile selects it instead
+// of opening the lightbox, Shift-click selects the run from the last plain
+// click, and the shared selection bar (selection.js) carries the actions.
+// Items are keyed by content hash, like marks and tags.
+var SELECT_ITEMS='#gallery .card[data-hash], #gallery .tile[data-hash], '+
+  '#dateGrid .card[data-hash], #dateGrid .tile[data-hash]';
+var selectMode=false, fileSelection=null, selectObserver=null;
+
+function selectionActions(){ return typeof fileSelectionActions==='function'?fileSelectionActions():''; }
+
+function ensureFileSelection(){
+  if(fileSelection)return fileSelection;
+  fileSelection=createSelection({
+    bar:'file-sel-bar',
+    items:SELECT_ITEMS,
+    keyOf:function(el){ return el.dataset.hash; },
+    actions:selectionActions
+  });
+  return fileSelection;
+}
+
+// Handled here, before the lightbox: in select mode an item click selects.
+// Buttons and copy-path links inside a card keep their own behaviour.
+function selectModeClick(e){
+  if(!selectMode)return false;
+  var item=e.target.closest(SELECT_ITEMS);
+  if(!item||e.target.closest('button, [data-path]'))return false;
+  e.preventDefault();e.stopPropagation();
+  var sel=ensureFileSelection();
+  if(e.shiftKey)sel.extend(item.dataset.hash); else sel.toggle(item.dataset.hash);
+  return true;
+}
+
+function setSelectMode(on){
+  selectMode=!!on;
+  document.body.classList.toggle('select-mode',selectMode);
+  document.querySelectorAll('.select-toggle').forEach(function(b){
+    b.setAttribute('aria-pressed',selectMode?'true':'false');
+  });
+  document.querySelectorAll('.select-state').forEach(function(s){ s.hidden=!selectMode; });
+  var sel=ensureFileSelection();
+  if(!selectMode){ sel.clear(); if(selectObserver){selectObserver.disconnect();selectObserver=null;} return; }
+  // Grids re-render wholesale (Show more, List/Tile, sort, a new date); keep
+  // the selected look on whatever is drawn now.
+  var pending=false;
+  selectObserver=new MutationObserver(function(){
+    if(pending)return; pending=true;
+    requestAnimationFrame(function(){ pending=false; sel.paint(); });
+  });
+  ['gallery','dateGrid'].forEach(function(id){
+    var el=document.getElementById(id);
+    if(el)selectObserver.observe(el,{childList:true,subtree:true});
+  });
+}
+function toggleSelectMode(){ setSelectMode(!selectMode); }
+
+(function(){
+  if(!LIVE_SERVER)return;
+  document.querySelectorAll('.gallery-toolbar[data-files]').forEach(function(bar){
+    var b=document.createElement('button');
+    b.type='button';
+    b.className='select-toggle';
+    b.setAttribute('aria-pressed','false');
+    b.textContent='Select';
+    b.addEventListener('click',toggleSelectMode);
+    var state=document.createElement('span');
+    state.className='select-state';
+    state.hidden=true;
+    state.textContent='Select enabled';
+    bar.appendChild(b);
+    bar.appendChild(state);
+  });
+})();
