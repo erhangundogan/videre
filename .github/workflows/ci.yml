@@ -140,6 +140,26 @@ jobs:
       - name: Build
         run: cargo build --workspace --tests
 
+      # Temporary branch-only probe. Remove after the macOS lock refusal is
+      # explained; ordinary CI does not run these ignored stress tests.
+      - name: Probe macOS library locks
+        if: runner.os == 'macOS' && github.head_ref == 'debug/macos-lock-diagnostics'
+        env:
+          RUST_BACKTRACE: "1"
+        run: |
+          set +e
+          cargo test -p videre-core --lib \
+            library_locks::tests::diagnostic_probe_distinct_fresh_lock_files \
+            -- --exact --ignored
+          core_status=$?
+          cargo test -p videre --test library_runtime \
+            diagnostic_probe_repeated_library_activity_locks \
+            -- --exact --ignored
+          runtime_status=$?
+          if [ "$core_status" -ne 0 ] || [ "$runtime_status" -ne 0 ]; then
+            exit 1
+          fi
+
       # Downloading happens here, in an explicit step, and never inside a test.
       # That is what keeps "tests never download" literally true and puts the
       # cost on its own visible line in the log.

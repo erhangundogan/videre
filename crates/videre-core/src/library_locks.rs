@@ -42,6 +42,7 @@ use crate::library::{bounded_op, root_cause_is_not_found, LibraryContext};
 use anyhow::{bail, Context, Result};
 use fs2::FileExt;
 use std::fs::{File, OpenOptions};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -279,7 +280,20 @@ fn acquire_lock_file(path: &Path, exclusive: bool, busy: String, what: &str) -> 
     };
     if let Err(e) = taken {
         tracing::debug!(lock = %path.display(), exclusive, "lock refused: {e}");
-        return Err(lock_refusal(e, busy, what));
+        // This is a diagnostic branch: keep the original busy classification,
+        // but record the exact failed syscall while the file is still open.
+        // No new filesystem operation is allowed on this error path.
+        let attempt = format!(
+            "flock path={} mode={} pid={} thread={:?} fd={} errno={:?} kind={:?}",
+            path.display(),
+            if exclusive { "exclusive" } else { "shared" },
+            std::process::id(),
+            std::thread::current().id(),
+            file.as_raw_fd(),
+            e.raw_os_error(),
+            e.kind()
+        );
+        return Err(lock_refusal(e, format!("{busy}; {attempt}"), what));
     }
     tracing::debug!(lock = %path.display(), exclusive, "lock acquired");
     Ok(file)
@@ -419,6 +433,55 @@ mod tests {
         let _exclusive = try_activity(&ctx, ActivityMode::Exclusive).unwrap();
         let err = try_activity(&ctx, ActivityMode::Shared).unwrap_err();
         assert_eq!(ErrorKind::in_chain(&err), Some(ErrorKind::LibraryBusy));
+    }
+
+    #[test]
+    fn a_refused_activity_lock_reports_the_kernel_attempt() {
+        let (_temp, ctx) = locked_library();
+        let _held = try_activity(&ctx, ActivityMode::Exclusive).unwrap();
+        let err = try_activity(&ctx, ActivityMode::Shared).unwrap_err();
+        let report = format!("{err:#}");
+        assert!(
+            report.contains(&lock_path(&ctx, "activity").display().to_string()),
+            "missing lock path: {report}"
+        );
+        assert!(report.contains("mode=shared"), "missing mode: {report}");
+        assert!(
+            report.contains(&format!("pid={}", std::process::id())),
+            "missing process ID: {report}"
+        );
+        assert!(report.contains("errno="), "missing OS error: {report}");
+    }
+
+    #[test]
+    #[ignore = "temporary macOS runner lock diagnostic"]
+    fn diagnostic_probe_distinct_fresh_lock_files() {
+        // Isolate fs2/flock from database initialization. If this fails too,
+        // the error is below the library's lifecycle code.
+        for attempt in 0..256 {
+            let (_ta, a) = locked_library();
+            let (_tb, b) = locked_library();
+            let held_a = try_activity(&a, ActivityMode::Exclusive)
+                .unwrap_or_else(|err| panic!("attempt {attempt}: lock a: {err:#}"));
+            let held_b = try_activity(&b, ActivityMode::Exclusive).unwrap_or_else(|err| {
+                let id = |ctx: &LibraryContext| {
+                    let path = lock_path(ctx, "activity");
+                    match std::fs::metadata(&path) {
+                        Ok(meta) => {
+                            format!("{} dev={} ino={}", path.display(), meta.dev(), meta.ino())
+                        }
+                        Err(err) => format!("{} metadata_error={err}", path.display()),
+                    }
+                };
+                panic!(
+                    "attempt {attempt}: lock b: {err:#}; a: {}; b: {}",
+                    id(&a),
+                    id(&b)
+                )
+            });
+            drop(held_a);
+            drop(held_b);
+        }
     }
 
     #[test]
