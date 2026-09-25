@@ -7,7 +7,8 @@
       "sort": { "field": "date", "dir": "desc" },
       "tile": { "rowHeight": 280, "colGap": 10, "rowGap": 10 }
     },
+    "events": { "sort": { "field": "date", "dir": "desc" } },
     "people": { "align": "right", "learningUpdates": "hide", "reclusterOpen": false },
-    "map": { "radiusKm": 0 }
+    "map": { "radiusKm": 0, "sort": { "field": "date", "dir": "desc" } }
   }
 }
