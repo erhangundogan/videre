@@ -19,8 +19,7 @@ const REPO_NAME: &str = "buffalo_l";
 /// model-compile cost), so it is intentionally not used. The dominant cost
 /// of `videre faces` is SCRFD detection plus per-image loading (HEIC via
 /// qlmanage) and, per the pipeline being fully serial until 2026-07-29, a
-/// lack of concurrency. See
-/// docs/superpowers/specs/2026-07-29-faces-pipeline-parallelization-design.md.
+/// lack of concurrency.
 pub fn build_session(model_path: &Path, intra_threads: usize) -> Result<Session> {
     Session::builder()
         .context("create ort SessionBuilder")?

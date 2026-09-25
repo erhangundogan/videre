@@ -1,7 +1,6 @@
 //! GPS coordinate clustering: groups nearby `(lat, lon)` points by
 //! haversine distance into named location clusters, persisted to
-//! `location_clusters` + `file_hashes.location_cluster_id`. See
-//! docs/superpowers/specs/2026-08-01-location-clustering-design.md.
+//! `location_clusters` + `file_hashes.location_cluster_id`.
 
 use rusqlite::Connection;
 

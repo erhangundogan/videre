@@ -1,8 +1,6 @@
 //! Aggregate library statistics for dashboard-style callers.
 //! Plain queries over an open `rusqlite::Connection`, shared source of truth
 //! for the gallery's stats tile, `videre stats`, and any other embedder.
-//! See docs/superpowers/specs/2026-07-31-dashboard-stats-backend-design.md
-//! (Pass A) for what is and isn't in scope.
 
 use rusqlite::{Connection, Result};
 use serde::Serialize;

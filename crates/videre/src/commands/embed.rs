@@ -314,8 +314,8 @@ mod tests {
     fn safe_batch_maximum_stays_below_the_measured_corruption_threshold() {
         // 120 measured clean, 127 measured corrupt, so anything at 121 or
         // above is unproven at best. This guards against someone raising
-        // MAX_SAFE_BATCH for speed without re-running the baseline comparison in
-        // docs/superpowers/2026-08-04-embed-batch-corruption-investigation.md.
+        // MAX_SAFE_BATCH for speed without re-running the comparison against a
+        // one-image-at-a-time baseline.
         // The corruption is silent, so a bad value there would not surface as a
         // failure anywhere else in the suite.
         let max = model::MAX_SAFE_BATCH;

@@ -41,8 +41,7 @@ pub fn image_size_for(model_id: &str) -> usize {
 /// affected while the trailing partial batch is correct, which is what makes
 /// the failure so easy to miss.
 ///
-/// Measured on Metal 2026-08-09 (full tables in
-/// `docs/superpowers/2026-08-04-embed-batch-corruption-investigation.md`):
+/// Measured on Metal 2026-08-09:
 ///
 /// | model | last clean | first corrupt |
 /// |---|---|---|
@@ -631,10 +630,9 @@ mod batch_correctness_tests {
 
     /// **Validates the instrument, not the product.**
     ///
-    /// Every measurement in
-    /// `docs/superpowers/plans/2026-08-09-embed-batch-corruption.md` depends on
-    /// `worst_cosine_vs_singles` actually being able to see the corruption. So
-    /// this runs the configuration measured corrupt on 2026-08-04 (Metal,
+    /// Every batch-corruption measurement depends on `worst_cosine_vs_singles`
+    /// actually being able to see the corruption. So this runs the
+    /// configuration measured corrupt on 2026-08-04 (Metal,
     /// `siglip-so400m-patch14-384`, batch 128) and asserts it is detected as
     /// corrupt.
     ///

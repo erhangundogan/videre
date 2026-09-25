@@ -1,10 +1,9 @@
 //! Per-command pipeline run history and liveness, surfaced by `videre stats`
 //! and other dashboard-style callers.
-//! See docs/superpowers/specs/2026-07-31-dashboard-stats-pass-b-design.md
-//! for the full design, and in particular why `track_in()` below does not rely
-//! on Drop/RAII for the success/failure bookkeeping: the library-scoped command
-//! lock's release does, backstopped by the OS releasing `flock` on any process
-//! death.
+//!
+//! `track_in()` below does not rely on Drop/RAII for the success/failure
+//! bookkeeping: the library-scoped command lock's release does, backstopped by
+//! the OS releasing `flock` on any process death.
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};

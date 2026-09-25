@@ -1,7 +1,6 @@
 //! Forward geocoding: place name (e.g. "Berlin, Germany") -> (lat, lon), via
 //! the free public Nominatim (OpenStreetMap) API, with a local cache so a
-//! repeated query never repeats the network call. See
-//! docs/superpowers/specs/2026-08-01-location-clustering-design.md.
+//! repeated query never repeats the network call.
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};

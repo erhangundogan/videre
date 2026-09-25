@@ -1,7 +1,6 @@
 //! Classifications table: one row per unique content hash (photo/screenshot/
 //! document/meme/unknown), keyed to embeddings.hash. Zero-shot classification
-//! reuses embeddings `videre embed` already computed. See
-//! docs/superpowers/specs/2026-07-29-screenshot-document-classification-design.md.
+//! reuses embeddings `videre embed` already computed.
 
 use rusqlite::{params, Connection, Result};
 

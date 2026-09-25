@@ -667,7 +667,6 @@ fn cosine_dist(a: &[f32], b: &[f32]) -> f32 {
 /// a cartesian product of two sets equals the dot product of the two sets'
 /// sums). This lets cluster distance be computed on demand in O(dim) from
 /// two running sums, instead of maintaining/looking up an O(n^2) matrix.
-/// See docs/superpowers/specs/2026-08-03-face-clustering-performance-design.md.
 fn cluster_dist_from_sums(sum_a: &[f32], sum_b: &[f32], size_a: f32, size_b: f32) -> f32 {
     let dot: f32 = sum_a.iter().zip(sum_b).map(|(x, y)| x * y).sum();
     1.0 - dot / (size_a * size_b)

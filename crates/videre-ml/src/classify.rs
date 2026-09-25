@@ -1,7 +1,6 @@
 //! Zero-shot classification of already-computed image embeddings against a
 //! fixed set of category prompts, reusing the SigLIP text tower `videre
 //! embed`/`videre search` already use, with no new model and no re-embedding.
-//! See docs/superpowers/specs/2026-07-29-screenshot-document-classification-design.md.
 
 /// Category name used when no prompt's similarity clearly wins.
 pub const UNKNOWN_CATEGORY: &str = "unknown";
