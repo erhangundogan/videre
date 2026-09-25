@@ -7,17 +7,7 @@ use videre_core::face_learning::{
     EvaluationError, EVALUATION_PROTOCOL_VERSION,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ClusteringParameters {
-    pub eps: f32,
-    pub min_cluster_size: usize,
-    pub merge_sim: f32,
-    pub min_face_size: f32,
-    pub max_generic_sim: f32,
-    pub max_landmark_error: f32,
-    pub min_blur: f32,
-    pub attach_sim: f32,
-}
+use crate::cluster_params::ClusteringParameters;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BaselineEvaluation {
@@ -63,37 +53,6 @@ fn ordered_faces_for_evaluation(mut faces: Vec<ClusteringFace>) -> Vec<Clusterin
     faces
 }
 
-fn validate_parameters(parameters: &ClusteringParameters) -> Result<(), ReplayError> {
-    fn in_range(value: f32, range: std::ops::RangeInclusive<f32>) -> bool {
-        value.is_finite() && range.contains(&value)
-    }
-    if !in_range(parameters.eps, 0.0..=2.0) {
-        return Err(ReplayError::InvalidParameter("eps"));
-    }
-    if parameters.min_cluster_size == 0 {
-        return Err(ReplayError::InvalidParameter("min_cluster_size"));
-    }
-    for (value, name) in [
-        (parameters.merge_sim, "merge_sim"),
-        (parameters.max_generic_sim, "max_generic_sim"),
-        (parameters.attach_sim, "attach_sim"),
-    ] {
-        if !in_range(value, -1.0..=1.0) {
-            return Err(ReplayError::InvalidParameter(name));
-        }
-    }
-    for (value, name) in [
-        (parameters.min_face_size, "min_face_size"),
-        (parameters.max_landmark_error, "max_landmark_error"),
-        (parameters.min_blur, "min_blur"),
-    ] {
-        if !value.is_finite() || value < 0.0 {
-            return Err(ReplayError::InvalidParameter(name));
-        }
-    }
-    Ok(())
-}
-
 impl From<rusqlite::Error> for ReplayError {
     fn from(value: rusqlite::Error) -> Self {
         Self::Database(value)
@@ -110,7 +69,9 @@ pub fn evaluate_current_clustering(
     conn: &Connection,
     parameters: &ClusteringParameters,
 ) -> Result<BaselineEvaluation, ReplayError> {
-    validate_parameters(parameters)?;
+    parameters
+        .validate()
+        .map_err(ReplayError::InvalidParameter)?;
     let faces =
         ordered_faces_for_evaluation(videre_core::face_db::load_faces_for_clustering(conn)?);
     let labels = videre_core::face_db::load_confirmed_face_labels(conn)?;
@@ -119,18 +80,8 @@ pub fn evaluate_current_clustering(
     }
 
     let started = Instant::now();
-    let assignments = crate::pipeline::cluster_with_quality_gate(
-        &faces,
-        parameters.eps,
-        parameters.min_cluster_size,
-        parameters.merge_sim,
-        parameters.min_face_size,
-        parameters.max_generic_sim,
-        parameters.max_landmark_error,
-        parameters.min_blur,
-        parameters.attach_sim,
-        true,
-    );
+    let assignments =
+        crate::pipeline::cluster_with_quality_gate(&faces, parameters, true).assignments;
     let elapsed = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
     let labeled_ids: std::collections::BTreeSet<i64> =

@@ -889,23 +889,17 @@ fn run_recluster_stage(
                 }
                 return Ok(());
             }
-            let clustering = run_clustering(
-                conn,
-                0.6,
-                3,
-                videre_core::face_cluster::DEFAULT_MERGE_SIM,
-                videre_core::face_cluster::DEFAULT_MIN_FACE_PX,
-                videre_core::face_cluster::DEFAULT_MAX_GENERIC_SIM,
-                videre_core::face_cluster::DEFAULT_MAX_LANDMARK_ERR,
-                videre_core::face_cluster::DEFAULT_MIN_BLUR,
-                1.0,
+            let params = super::cluster_settings::resolve_for_run(
+                &ctx.library.paths.state,
+                &videre_ml::cluster_params::PartialClusteringParameters::default(),
                 args.silent,
-            )?;
+            );
+            let clustering = run_clustering(conn, &params, args.silent)?;
             videre_core::face_db::advance_recluster_watermark(conn)?;
             if !args.silent {
                 tracing::info!(
                     "videre watch: {}",
-                    format_clustering_only_summary(clustering, 0.6)
+                    format_clustering_only_summary(clustering, params.eps)
                 );
             }
             Ok(())

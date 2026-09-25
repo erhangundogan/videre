@@ -512,6 +512,34 @@ pub struct ClusteringResult {
     pub total_faces: usize,
     pub clustered_faces: usize,
     pub cluster_count: usize,
+    /// Faces the quality gates kept out of clustering.
+    pub held_out: usize,
+}
+
+/// One clustering pass's decision for every input face, and how many of them
+/// the quality gates held out (those are among the `None` assignments).
+pub struct ClusterOutcome {
+    pub assignments: Vec<(i64, Option<i64>)>,
+    pub held_out: usize,
+}
+
+impl ClusterOutcome {
+    /// What the pass produced, without writing anything.
+    pub fn summarize(&self) -> ClusteringResult {
+        let clustered_faces = self.assignments.iter().filter(|(_, c)| c.is_some()).count();
+        let cluster_count = self
+            .assignments
+            .iter()
+            .filter_map(|(_, c)| *c)
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        ClusteringResult {
+            total_faces: self.assignments.len(),
+            clustered_faces,
+            cluster_count,
+            held_out: self.held_out,
+        }
+    }
 }
 
 /// Clusters `faces` (each `(id, embedding, min_bbox_side_px)`) after gating out
@@ -535,16 +563,19 @@ pub struct ClusteringResult {
 /// Returns assignments for every input face.
 pub fn cluster_with_quality_gate(
     faces: &[(i64, Vec<f32>, f32, Option<String>, Option<f32>)],
-    eps: f32,
-    min_cluster_size: usize,
-    merge_sim: f32,
-    min_face_px: f32,
-    max_generic_sim: f32,
-    max_landmark_err: f32,
-    min_blur: f32,
-    attach_sim: f32,
+    params: &crate::cluster_params::ClusteringParameters,
     silent: bool,
-) -> Vec<(i64, Option<i64>)> {
+) -> ClusterOutcome {
+    let crate::cluster_params::ClusteringParameters {
+        eps,
+        min_cluster_size,
+        merge_sim,
+        min_face_size: min_face_px,
+        max_generic_sim,
+        max_landmark_error: max_landmark_err,
+        min_blur,
+        attach_sim,
+    } = *params;
     let global_mean = normalized_mean(faces.iter().map(|(_, e, _, _, _)| e));
 
     let mut quality: Vec<(i64, Vec<f32>)> = Vec::new();
@@ -611,8 +642,12 @@ pub fn cluster_with_quality_gate(
         attach_leftovers(&quality, &mut assignments, attach_sim, silent);
     }
 
+    let held_out = low_quality_ids.len();
     assignments.extend(low_quality_ids.into_iter().map(|id| (id, None)));
-    assignments
+    ClusterOutcome {
+        assignments,
+        held_out,
+    }
 }
 
 /// Second pass: a face left unclustered joins the cluster containing its
@@ -708,16 +743,24 @@ fn cosine_sim(a: &[f32], b: &[f32]) -> f32 {
 /// decide whether/how to report that.
 pub fn run_clustering(
     conn: &Connection,
-    eps: f32,
-    min_cluster_size: usize,
-    merge_sim: f32,
-    min_face_px: f32,
-    max_generic_sim: f32,
-    max_landmark_err: f32,
-    min_blur: f32,
-    attach_sim: f32,
+    params: &crate::cluster_params::ClusteringParameters,
     silent: bool,
 ) -> Result<Option<ClusteringResult>> {
+    let Some(outcome) = compute_clustering(conn, params, silent)? else {
+        return Ok(None);
+    };
+    videre_core::face_db::update_cluster_assignments(conn, &outcome.assignments)?;
+    Ok(Some(outcome.summarize()))
+}
+
+/// The clustering `run_clustering` would write, without writing it: every
+/// unlabeled face and where it would go. `None` when there is nothing to
+/// cluster.
+pub fn compute_clustering(
+    conn: &Connection,
+    params: &crate::cluster_params::ClusteringParameters,
+    silent: bool,
+) -> Result<Option<ClusterOutcome>> {
     let all_faces = videre_core::face_db::load_faces_for_clustering(conn)?;
     // Labeled faces are manually verified: re-clustering must not shuffle
     // them into different groups. Exclude them so only unconfirmed,
@@ -735,30 +778,7 @@ pub fn run_clustering(
     if all_faces.is_empty() {
         return Ok(None);
     }
-    let assignments = cluster_with_quality_gate(
-        &all_faces,
-        eps,
-        min_cluster_size,
-        merge_sim,
-        min_face_px,
-        max_generic_sim,
-        max_landmark_err,
-        min_blur,
-        attach_sim,
-        silent,
-    );
-    videre_core::face_db::update_cluster_assignments(conn, &assignments)?;
-    let clustered_faces = assignments.iter().filter(|(_, c)| c.is_some()).count();
-    let cluster_count = assignments
-        .iter()
-        .filter_map(|(_, c)| *c)
-        .collect::<std::collections::HashSet<_>>()
-        .len();
-    Ok(Some(ClusteringResult {
-        total_faces: all_faces.len(),
-        clustered_faces,
-        cluster_count,
-    }))
+    Ok(Some(cluster_with_quality_gate(&all_faces, params, silent)))
 }
 
 fn load_image(
@@ -832,6 +852,30 @@ fn load_image(
 
 #[cfg(test)]
 mod tests {
+    /// Positional, in `ClusteringParameters` field order, so each test's
+    /// parameters stay one line.
+    fn params(
+        eps: f32,
+        min_cluster_size: usize,
+        merge_sim: f32,
+        min_face_size: f32,
+        max_generic_sim: f32,
+        max_landmark_error: f32,
+        min_blur: f32,
+        attach_sim: f32,
+    ) -> crate::cluster_params::ClusteringParameters {
+        crate::cluster_params::ClusteringParameters {
+            eps,
+            min_cluster_size,
+            merge_sim,
+            min_face_size,
+            max_generic_sim,
+            max_landmark_error,
+            min_blur,
+            attach_sim,
+        }
+    }
+
     use super::*;
     use videre_core::face_db;
 
@@ -1045,8 +1089,12 @@ mod tests {
         ];
         seed_faces(&conn, &faces);
 
-        let _result =
-            run_clustering(&conn, 0.6, 2, 1.0, 5.0, 0.4, f32::MAX, 0.0, 1.0, true).unwrap();
+        let _result = run_clustering(
+            &conn,
+            &params(0.6, 2, 1.0, 5.0, 0.4, f32::MAX, 0.0, 1.0),
+            true,
+        )
+        .unwrap();
 
         for id in [0i64, 1, 2] {
             let (label, confirmed, cid): (Option<String>, i64, Option<i64>) = conn
@@ -1086,8 +1134,12 @@ mod tests {
         ];
         seed_faces(&conn, &faces);
 
-        let result =
-            run_clustering(&conn, 0.6, 2, 1.0, 5.0, 0.4, f32::MAX, 0.0, 1.0, true).unwrap();
+        let result = run_clustering(
+            &conn,
+            &params(0.6, 2, 1.0, 5.0, 0.4, f32::MAX, 0.0, 1.0),
+            true,
+        )
+        .unwrap();
 
         assert!(result.is_some(), "some faces should cluster");
     }
@@ -1096,8 +1148,12 @@ mod tests {
     fn run_clustering_on_empty_db_does_not_error() {
         let conn = Connection::open_in_memory().unwrap();
         face_db::create_faces_table(&conn).unwrap();
-        let result =
-            run_clustering(&conn, 0.6, 3, 0.35, 50.0, 0.4, f32::MAX, 0.0, 1.0, true).unwrap();
+        let result = run_clustering(
+            &conn,
+            &params(0.6, 3, 0.35, 50.0, 0.4, f32::MAX, 0.0, 1.0),
+            true,
+        )
+        .unwrap();
         assert!(result.is_none());
     }
 
@@ -1127,8 +1183,12 @@ mod tests {
             (8, a(), 15.0, None, None), // tiny, would otherwise join A
         ];
         // max_generic_sim = 1.0 disables the distinctiveness gate for this test.
-        let result =
-            cluster_with_quality_gate(&faces, 0.3, 3, 1.0, 50.0, 1.0, f32::MAX, 0.0, 1.0, true);
+        let result = cluster_with_quality_gate(
+            &faces,
+            &params(0.3, 3, 1.0, 50.0, 1.0, f32::MAX, 0.0, 1.0),
+            true,
+        )
+        .assignments;
         let map: std::collections::HashMap<_, _> = result.into_iter().collect();
         assert_eq!(map[&7], None, "tiny face must be gated out of clustering");
         assert_eq!(map[&8], None, "tiny face must be gated out of clustering");
@@ -1157,8 +1217,12 @@ mod tests {
             (8, dist(0.03), 300.0, None, None),
         ];
         // size gate off (min_face_px=0), distinctiveness gate at 0.6.
-        let result =
-            cluster_with_quality_gate(&faces, 0.3, 3, 1.0, 0.0, 0.6, f32::MAX, 0.0, 1.0, true);
+        let result = cluster_with_quality_gate(
+            &faces,
+            &params(0.3, 3, 1.0, 0.0, 0.6, f32::MAX, 0.0, 1.0),
+            true,
+        )
+        .assignments;
         let map: std::collections::HashMap<_, _> = result.into_iter().collect();
         for id in 1..=5 {
             assert_eq!(
@@ -1323,16 +1387,19 @@ mod tests {
                 .collect();
         let out = cluster_with_quality_gate(
             &faces,
-            0.6,
-            2,
-            0.35,
-            80.0,
-            0.40,
-            7.0,
-            100.0,
-            videre_core::face_cluster::DEFAULT_ATTACH_SIM,
+            &params(
+                0.6,
+                2,
+                0.35,
+                80.0,
+                0.40,
+                7.0,
+                100.0,
+                videre_core::face_cluster::DEFAULT_ATTACH_SIM,
+            ),
             true,
-        );
+        )
+        .assignments;
         let map: std::collections::HashMap<_, _> = out.into_iter().collect();
         let cluster = map[&0].expect("the core group must cluster");
         assert_eq!(

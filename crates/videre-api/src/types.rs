@@ -31,6 +31,18 @@ pub struct FaceLearningStatus {
     /// words the People page shows as is (`dissolve 2 more wrong clusters`).
     pub feedback_needed: Option<String>,
     pub pending_questions: usize,
+    /// The profile in use, if any: its id and stage (`suggestion` asks
+    /// questions, `grouping` may also shape clustering).
+    pub active_profile: Option<ActiveProfile>,
+    /// What learning contributes right now, in one sentence for the People
+    /// toolbar.
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ActiveProfile {
+    pub profile_id: i64,
+    pub stage: String,
 }
 
 /// The stored outcome of one background training run.

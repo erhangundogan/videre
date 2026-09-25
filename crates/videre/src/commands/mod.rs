@@ -1,4 +1,5 @@
 pub mod classify;
+pub mod cluster_settings;
 pub mod config;
 pub mod dedupe;
 pub mod embed;

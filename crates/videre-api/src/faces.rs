@@ -4,7 +4,7 @@
 
 use crate::error::{Error, Result};
 use crate::types::*;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::collections::{BTreeSet, HashMap};
 use videre_core::face_db::load_face_observations;
 use videre_core::face_learning::{
@@ -1065,6 +1065,28 @@ pub fn face_learning_status(conn: &Connection) -> Result<FaceLearningStatus> {
     };
     let waiting = state.status == videre_core::face_learning::LearningStatus::Waiting;
     let failed = state.status == videre_core::face_learning::LearningStatus::Failed;
+    videre_core::face_learning::ensure_profile_table(conn)?;
+    // Only the id and stage: parsing the whole stored profile would make the
+    // status fail on a profile this build cannot read.
+    let active_profile = conn
+        .query_row(
+            "SELECT id, stage FROM face_learning_profiles WHERE status = 'active' LIMIT 1",
+            [],
+            |row| {
+                Ok(ActiveProfile {
+                    profile_id: row.get(0)?,
+                    stage: row.get(1)?,
+                })
+            },
+        )
+        .optional()?;
+    let feedback_needed = state.feedback_needed.filter(|_| waiting);
+    let summary = learning_summary(
+        conn,
+        active_profile.as_ref(),
+        feedback_needed.as_deref(),
+        failed,
+    )?;
     Ok(FaceLearningStatus {
         generation: state.generation,
         trained_generation: state.trained_generation,
@@ -1074,9 +1096,84 @@ pub fn face_learning_status(conn: &Connection) -> Result<FaceLearningStatus> {
         // Each reported only in the state it describes: a path that moves the
         // state on without clearing a column never shows a stale message.
         last_error: state.last_error.filter(|_| failed),
-        feedback_needed: state.feedback_needed.filter(|_| waiting),
+        feedback_needed,
         pending_questions: pending_questions as usize,
+        active_profile,
+        summary,
     })
+}
+
+/// One sentence on what face learning contributes right now: the result the
+/// People toolbar shows instead of the training chatter.
+fn learning_summary(
+    conn: &Connection,
+    active: Option<&ActiveProfile>,
+    feedback_needed: Option<&str>,
+    failed: bool,
+) -> Result<String> {
+    if let Some(active) = active {
+        return Ok(format!(
+            "Learning: profile {} suggests names; grouping uses the settings above.",
+            active.profile_id
+        ));
+    }
+    if let Some(needed) = feedback_needed {
+        return Ok(format!("Learning: not used yet; {needed}."));
+    }
+    let rejected: i64 = conn.query_row(
+        "SELECT count(*) FROM face_learning_profiles WHERE status = 'rejected'",
+        [],
+        |row| row.get(0),
+    )?;
+    if rejected > 0 {
+        let latest: i64 = conn.query_row(
+            "SELECT max(id) FROM face_learning_profiles WHERE status = 'rejected'",
+            [],
+            |row| row.get(0),
+        )?;
+        let reason = rejection_reason(conn, latest)?
+            .map(|r| format!(" ({r})"))
+            .unwrap_or_default();
+        return Ok(format!(
+            "Learning: not used yet; {rejected} trained candidate(s) did not pass the quality checks{reason}. More confirmed names help."
+        ));
+    }
+    if failed {
+        return Ok(
+            "Learning: not used yet; the last training run failed and retries after new feedback."
+                .into(),
+        );
+    }
+    Ok("Learning: not used yet; naming people teaches it.".into())
+}
+
+/// Why profile `profile_id` was not promoted, from its first failing gate.
+pub fn rejection_reason(conn: &Connection, profile_id: i64) -> Result<Option<String>> {
+    let json: Option<String> = conn
+        .query_row(
+            "SELECT promotion_result_json FROM face_learning_profiles WHERE id = ?1",
+            [profile_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(json
+        .and_then(|json| {
+            serde_json::from_str::<Vec<videre_core::face_learning::GateFailure>>(&json).ok()
+        })
+        .and_then(|failures| failures.first().map(describe_gate_failure)))
+}
+
+/// `suggestion_precision_wilson_lower_bound` 0.44 against 0.70, as a person
+/// would read it.
+fn describe_gate_failure(failure: &videre_core::face_learning::GateFailure) -> String {
+    let gate = failure.gate.replace('_', " ");
+    match (failure.observed, failure.required) {
+        (Some(observed), Some(required)) => {
+            format!("{gate} {observed:.2}, needs {required:.2}")
+        }
+        _ => gate,
+    }
 }
 
 /// One journal entry plus read-time proof facts. `source_available` says
@@ -1612,6 +1709,60 @@ mod tests {
             assert_eq!(status.status, "stale");
             assert_eq!(status.last_error, None);
             assert_eq!(status.feedback_needed, None);
+        }
+
+        fn insert_profile(conn: &Connection, stage: &str, status: &str, gates: &str) {
+            videre_core::face_learning::ensure_profile_table(conn).unwrap();
+            conn.execute(
+                "INSERT INTO face_learning_profiles (
+                     artifact_version, embedding_model_id, feature_schema_version, model_kind,
+                     parameters, training_evidence_json, validation_report_json, stage, status,
+                     promotion_result_json, created_at
+                 ) VALUES (1, 'm', 1, 'logistic', X'00', '{}', '{}', ?1, ?2, ?3, 'now')",
+                rusqlite::params![stage, status, gates],
+            )
+            .unwrap();
+        }
+
+        #[test]
+        fn the_summary_says_learning_is_not_used_before_any_profile() {
+            let conn = learning_seed();
+            let status = face_learning_status(&conn).unwrap();
+            assert_eq!(status.active_profile, None);
+            assert_eq!(
+                status.summary,
+                "Learning: not used yet; naming people teaches it."
+            );
+        }
+
+        #[test]
+        fn the_summary_names_rejected_candidates_and_the_gate_they_missed() {
+            let conn = learning_seed();
+            let gates = r#"[{"dataset_key":"cluster_quality-fold-2","gate":"suggestion_precision","observed":0.8333,"required":0.85}]"#;
+            insert_profile(&conn, "suggestion", "rejected", gates);
+            insert_profile(&conn, "suggestion", "rejected", gates);
+            let status = face_learning_status(&conn).unwrap();
+            assert_eq!(
+                status.summary,
+                "Learning: not used yet; 2 trained candidate(s) did not pass the quality checks \
+                 (suggestion precision 0.83, needs 0.85). More confirmed names help."
+            );
+        }
+
+        #[test]
+        fn the_summary_names_the_active_profile() {
+            let conn = learning_seed();
+            insert_profile(&conn, "suggestion", "active", "[]");
+            let status = face_learning_status(&conn).unwrap();
+            let active = status.active_profile.expect("an active profile");
+            assert_eq!(active.stage, "suggestion");
+            assert_eq!(
+                status.summary,
+                format!(
+                    "Learning: profile {} suggests names; grouping uses the settings above.",
+                    active.profile_id
+                )
+            );
         }
 
         #[test]

@@ -184,7 +184,7 @@ These are the defaults every library starts from:
       "sort": { "field": "date", "dir": "desc" },
       "tile": { "rowHeight": 280, "colGap": 10, "rowGap": 10 }
     },
-    "people": { "align": "right" },
+    "people": { "align": "right", "learningUpdates": "hide", "reclusterOpen": false },
     "map": { "radiusKm": 0 }
   }
 }
@@ -199,6 +199,8 @@ These are the defaults every library starts from:
 | `routes.files.tile.colGap` | 0 to 100 | Space between tiles in a row, in pixels |
 | `routes.files.tile.rowGap` | 0 to 100 | Space between tile rows, in pixels |
 | `routes.people.align` | `right`, `top` | Where the People list sits on the People page |
+| `routes.people.learningUpdates` | `hide`, `show` | Whether the People page shows face learning's status strip and teaching notes; see [Face learning](#face-learning) |
+| `routes.people.reclusterOpen` | `true`, `false` | Whether the People page's Recluster row is open |
 | `routes.map.radiusKm` | 0 to 20000 | Radius a map location opens with, in km. `0` uses each place's own radius |
 | `routes.files.sort.field` | `date`, `name`, `size`, `rating`, `liked`, `type` | What the Library and Date grids are ordered by; see [Sorting](#sorting) |
 | `routes.files.sort.dir` | `asc`, `desc` | Which way that order runs |
@@ -258,11 +260,16 @@ scorers. Once a scorer passes the
 shipped gates, the People page asks bounded yes/no identity questions.
 Answering Yes names a cluster; No only teaches; Skip does neither.
 
-- Status is machine-readable at `GET /api/face-learning/status`; the page
-  shows it as up to date, feedback pending, training, waiting for more
-  feedback, or failed. When up to date, it also says whether the last trained
-  candidate was promoted to the profile in use or rejected by the quality
-  gates.
+- **Learning updates** in the People toolbar is **Hide** by default: the
+  status strip and the teaching notes after each action describe the
+  process, not a result, so they stay out of the way. Choose **Show** to see
+  them. The status is also machine-readable at
+  `GET /api/face-learning/status`, and training outcomes (promoted,
+  rejected with the check it missed, waiting for feedback) go to the gallery
+  log at the `info` level. Identity questions show either way: they are the
+  result.
+- The Recluster row (below) says in one line what learning contributes right
+  now: which profile suggests names, or that it is not used yet and why.
 - Training needs both kinds of feedback: faces that belong together (naming
   people) and groups that are wrong (dissolving a cluster). Until there is
   enough of each, the page shows what it is waiting for, such as *dissolve 2
@@ -275,9 +282,30 @@ Answering Yes names a cluster; No only teaches; Skip does neither.
 - Every action's evidence stays inspectable (per person, and in the teaching
   journal), and no raw embeddings ever appear in a payload.
 - Failed runs keep the previous profile. Promotion affects suggestions and
-  questions only; grouping itself still comes from the deterministic
-  pipeline until a future recluster integration. `videre faces --reset`
-  wipes all of it.
+  questions only; grouping comes from the clustering values below.
+  `videre faces --reset` wipes all of it.
+
+### Recluster
+
+**Recluster** in the People toolbar opens a row with the grouping values of
+[`videre faces`](/commands/faces/#clustering-parameters): `eps`, minimum group
+size, merge, attach, minimum face size and sharpness, with the two legacy
+gates under **More**. It starts from the values this library uses now.
+
+- **Preview** computes the grouping those values would produce and changes
+  nothing: how many groups, from how many unnamed faces, how many stay single
+  and how many the quality gates held out, next to the current numbers.
+- **Apply** regroups the unnamed faces and refreshes the identity questions,
+  so faces that now sit in a group can be asked about. Named faces never
+  move. It saves the values that differ from the defaults to
+  `.videre/gallery.json`, and from then on `videre faces` and `videre watch`
+  group this library with them (a `videre faces` flag still wins for that
+  run).
+- **Defaults** fills in the built-in values; apply them to drop the saved ones.
+
+Apply refuses while a `videre faces` or `videre watch` run is working on the
+library, and records its run like one, so [`videre status`](/commands/status/)
+shows it.
 
 ## Gallery, or a file you can keep
 

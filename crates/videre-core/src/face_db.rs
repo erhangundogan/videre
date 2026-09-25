@@ -479,17 +479,25 @@ fn bbox_min_side_option(bbox: &str) -> Option<f32> {
     }
 }
 
+/// Write a clustering pass's assignments in one transaction, so a failure
+/// leaves the previous grouping whole. A face named after the pass loaded
+/// its input (in the gallery, on another connection) is skipped: labeled
+/// faces never carry a machine cluster id.
 pub fn update_cluster_assignments(
     conn: &Connection,
     assignments: &[(i64, Option<i64>)],
 ) -> rusqlite::Result<()> {
-    for (face_id, cluster_id) in assignments {
-        conn.execute(
-            "UPDATE faces SET cluster_id = ?1 WHERE id = ?2",
-            rusqlite::params![cluster_id, face_id],
+    let tx = conn.unchecked_transaction()?;
+    {
+        let mut stmt = tx.prepare(
+            "UPDATE faces SET cluster_id = ?1
+              WHERE id = ?2 AND NOT (confirmed = 1 AND person_label IS NOT NULL)",
         )?;
+        for (face_id, cluster_id) in assignments {
+            stmt.execute(rusqlite::params![cluster_id, face_id])?;
+        }
     }
-    Ok(())
+    tx.commit()
 }
 
 pub fn hashes_with_faces(conn: &Connection) -> rusqlite::Result<Vec<String>> {
@@ -1001,6 +1009,36 @@ mod tests {
             })
             .unwrap();
         assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn a_face_labeled_after_clustering_keeps_no_cluster_id() {
+        // A recluster computes assignments from the unlabeled faces it loaded;
+        // one named in the gallery meanwhile must not receive a cluster id.
+        let conn = open();
+        conn.execute_batch(
+            "INSERT INTO people (name, full_name) VALUES ('elif', 'Elif');
+             INSERT INTO faces (id, hash, bbox, embedding) VALUES
+                 (1, 'h1', '0,0,10,10', X'00'), (2, 'h2', '0,0,10,10', X'00');",
+        )
+        .unwrap();
+        let assignments = [(1, Some(7)), (2, Some(7))];
+        conn.execute(
+            "UPDATE faces SET person_label = 'elif', confirmed = 1 WHERE id = 2",
+            [],
+        )
+        .unwrap();
+
+        update_cluster_assignments(&conn, &assignments).unwrap();
+
+        let cluster = |id: i64| -> Option<i64> {
+            conn.query_row("SELECT cluster_id FROM faces WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(cluster(1), Some(7));
+        assert_eq!(cluster(2), None, "a labeled face is never given a cluster");
     }
 
     #[test]

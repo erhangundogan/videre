@@ -242,7 +242,18 @@ test("opens a scanned MP4 in the lightbox", async ({ page, gallery }) => {
   expect(response.headers()["content-type"]).toMatch(/^video\/mp4/);
 });
 
+// The learning strip shows only when the library chose Learning updates:
+// Show (hidden by default), so the strip specs opt in first.
+async function showLearningUpdates(baseURL: string, request: import("@playwright/test").APIRequestContext) {
+  const r = await request.patch(`${baseURL}/api/settings`, {
+    headers: { "content-type": "application/merge-patch+json" },
+    data: JSON.stringify({ routes: { people: { learningUpdates: "show" } } })
+  });
+  expect(r.ok()).toBeTruthy();
+}
+
 test("face learning strip renders on the labeling route", async ({ page, gallery }) => {
+  await showLearningUpdates(gallery.baseURL, page.request);
   await page.goto(`${gallery.baseURL}/people`);
   const strip = page.locator("#learning-strip");
   await expect(strip).toBeVisible();
@@ -256,6 +267,7 @@ test("face learning strip renders on the labeling route", async ({ page, gallery
 });
 
 test("face learning strip says what feedback it is waiting for", async ({ page, gallery }) => {
+  await showLearningUpdates(gallery.baseURL, page.request);
   await page.route("**/api/face-learning/status", (route) =>
     route.fulfill({
       json: {

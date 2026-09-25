@@ -170,6 +170,33 @@ videre faces --workers 8               # parallel workers (default: 2x your CPU 
 videre faces --qlmanage-concurrency 6  # simultaneous HEIC conversions (default 6)
 ```
 
+### Clustering parameters
+
+The eight grouping values above (`--eps` through `--attach-sim`) can also be
+tuned from the gallery: the People page's **Recluster** control previews and
+applies them without leaving the page, and saves what differs from the
+defaults to the library's `.videre/gallery.json`. From then on each value
+comes from, in order:
+
+| run | first | then | then |
+|---|---|---|---|
+| `videre faces` (a detection run, `--recluster`, or `videre pipeline`) | its flag, when given | `gallery.json` | the default |
+| [`videre watch`](/commands/watch/)'s grouping pass | `gallery.json` | the default | |
+
+Per value: a saved `eps` changes only `eps`. When `gallery.json` supplies
+anything, the run says so in one line, and names a flag that overrode it:
+
+```
+Clustering with gallery settings: eps 0.7, min_cluster_size 2 (from .videre/gallery.json)
+Clustering flags override gallery settings: eps 0.65 (gallery.json has 0.7)
+```
+
+`--silent` keeps the line out of the terminal (it still reaches the log at the
+`info` level). A flag never changes `gallery.json`; to keep a value, apply it
+from the gallery. A `gallery.json` that cannot be read, or a value of the
+wrong type or out of range, is reported and the default is used instead, so a
+typo there never stops a faces run.
+
 ## Why some faces are ignored
 
 Before grouping, low-quality faces are held out. They come back as unassigned

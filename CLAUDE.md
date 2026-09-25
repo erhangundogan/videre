@@ -748,6 +748,9 @@ above.
 - Source-file decodes are orientation-correct -> `videre_core::image_decode`
 - `watch --prune` cannot override the guards -> `commands::prune::PruneArgs::for_watch_stage`
 - `videre locations` is a global recompute -> `commands::locations`
+- One clustering parameter set; flag > `gallery.json` `faces.clustering` >
+  built-in, per field (watch: no flag layer) -> `videre_ml::cluster_params`,
+  `commands::cluster_settings`, `gallery::recluster`
 - Undecodable files are skipped after two strikes -> `videre_core::decode_failures`
 - Errors logged once, at boundaries; per-command log layout and reader -> `videre_core::error_log`, `videre_core::error_kind`, `crates/videre/src/logging.rs`
 - File identity is the content key, metadata excluded -> `videre::content_key`
