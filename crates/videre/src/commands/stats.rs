@@ -117,37 +117,6 @@ fn run_text(ctx: &CommandContext) -> anyhow::Result<()> {
         );
     }
 
-    println!();
-    println!("Disk use:");
-    // Every location is derived from the selected library context, so a run
-    // reports only that library's own database, embeddings and locks plus the
-    // caches it uses, never another library's vectors or thumbnails.
-    let usage = videre_core::disk::usage_in(&ctx.library);
-    if usage.is_empty() {
-        println!("  nothing stored yet");
-    } else {
-        let total: u64 = usage.iter().map(|u| u.bytes).sum();
-        let rebuildable: u64 = usage
-            .iter()
-            .filter(|u| u.rebuildable)
-            .map(|u| u.bytes)
-            .sum();
-        for u in &usage {
-            println!(
-                "  {:18} {:>10}  {}",
-                u.label,
-                videre_core::disk::human_bytes(u.bytes),
-                if u.rebuildable { "(rebuildable)" } else { "" },
-            );
-        }
-        println!(
-            "  {:18} {:>10}  ({} of it rebuildable)",
-            "total",
-            videre_core::disk::human_bytes(total),
-            videre_core::disk::human_bytes(rebuildable),
-        );
-    }
-
     Ok(())
 }
 
@@ -161,5 +130,7 @@ fn run_json(ctx: &CommandContext) -> anyhow::Result<StatsJson> {
     Ok(StatsJson {
         schema_version: SCHEMA_VERSION,
         library,
+        by_type: videre_core::library_stats::by_type(&conn, usize::MAX)?,
+        disk_use: videre_core::disk::usage_in(&ctx.library),
     })
 }

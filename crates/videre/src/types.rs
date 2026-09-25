@@ -126,6 +126,10 @@ pub struct ScanJson {
 pub struct StatsJson {
     pub schema_version: u32,
     pub library: videre_core::library_stats::LibraryStats,
+    /// Every file type, largest first; the text output shows the top 12.
+    pub by_type: Vec<videre_core::library_stats::TypeBreakdown>,
+    /// What videre stores for this library, largest first.
+    pub disk_use: Vec<videre_core::disk::Usage>,
 }
 
 /// `videre status --json`: the shared status model, serialized as-is so the
