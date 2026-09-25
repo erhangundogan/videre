@@ -68,6 +68,11 @@ re-converted on demand, place names ship with videre, and the database journal i
 transient. The database and embeddings are not rebuildable - an embedding run
 takes hours, and the database cannot be recreated without rescanning.
 
+A `logs` row counts `.videre/logs/`, every command's log and its rotated
+copies. It is marked rebuildable because deleting it loses only history, never
+library data; how much it keeps is set by the log settings in
+[logging](/guides/logging-and-errors/).
+
 Note the proportions above: 703.7 MB of videre data describing 398.9 GB of
 photos, and only 95.6 MB of it disposable. **Embeddings dominate** because that
 library has three models prepared.
@@ -97,6 +102,13 @@ unfamiliar model still reports honestly - which is why the 1152-dimension
 The counts differ slightly between models (70588, 70587, 70588) because each run
 skipped whatever it could not decode at the time. A count below the library total
 is normal, not a sign of a failed run.
+
+## JSON output
+
+`--json` prints one object: `schema_version`, `library` (the totals, faces,
+marks and embeddings above), `by_type` (every type, not only the top 12 the
+text shows, each with `ext`, `mime`, `files` and `bytes`) and `disk_use` (each
+row with `label`, `path`, `bytes`, `files` and `rebuildable`).
 
 ## Numbers that look wrong but are not
 

@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 /// One thing taking up space, and whether losing it would cost anything.
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Usage {
     pub label: &'static str,
     pub path: PathBuf,
@@ -14,7 +15,8 @@ pub struct Usage {
     pub files: u64,
     /// True when deleting it costs only the time to rebuild. Thumbnails and
     /// HEIC conversions regenerate from the originals; embeddings take hours
-    /// and the database cannot be rebuilt at all without a rescan.
+    /// and the database cannot be rebuilt at all without a rescan. Logs count
+    /// as rebuildable: deleting them loses history, never library data.
     pub rebuildable: bool,
 }
 
@@ -94,6 +96,11 @@ pub fn usage_in(ctx: &crate::library::LibraryContext) -> Vec<Usage> {
     out.extend(row("thumbnails", ctx.cache.thumbnails.clone(), true));
     out.extend(row("places (shared)", ctx.cache.geo.clone(), true));
     out.extend(row("locks", ctx.paths.locks.clone(), true));
+    out.extend(row(
+        "logs",
+        ctx.paths.state.join(crate::error_log::LOGS_DIR),
+        true,
+    ));
     out.sort_by_key(|r| std::cmp::Reverse(r.bytes));
     out
 }
@@ -170,6 +177,27 @@ mod tests {
         assert!(labels.contains(&"thumbnails"));
         assert!(labels.contains(&"places (shared)"));
         assert!(!labels.contains(&"embeddings (other libraries)"));
+        assert!(!labels.contains(&"logs"), "an empty logs dir has no row");
+    }
+
+    #[test]
+    fn usage_counts_the_library_logs() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("library");
+        std::fs::create_dir(&root).unwrap();
+        let ctx = crate::library::LibraryContext::new(&root, &temp.path().join("cache")).unwrap();
+        let logs = ctx.paths.state.join(crate::error_log::LOGS_DIR);
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::write(logs.join("scan.log"), vec![0u8; 100]).unwrap();
+        std::fs::write(logs.join("scan.log.1"), vec![0u8; 50]).unwrap();
+
+        let usage = usage_in(&ctx);
+        let row = usage
+            .iter()
+            .find(|u| u.label == "logs")
+            .expect("a logs row");
+        assert_eq!((row.bytes, row.files), (150, 2));
+        assert!(row.rebuildable);
     }
 
     #[cfg(unix)]
