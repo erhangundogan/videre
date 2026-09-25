@@ -9,9 +9,11 @@
 //! Rendering a set a command just produced is the other half, and stays static:
 //! see `dedupe --html` and `search --html`.
 
+mod bulk;
 mod events;
 mod learning;
 mod recluster;
+mod refusal;
 mod rotate;
 mod server;
 pub(crate) mod settings;

@@ -288,6 +288,59 @@ curl -X POST \
 { "orientation": 6 }
 ```
 
+## Selections
+
+The selection bar's writes. Each takes `hashes`, 1 to 10,000 content hashes
+the library knows; an empty or oversized list answers `400
+{"error":"invalid_parameter","field":"hashes"}`, and one unknown hash refuses
+the whole request with `400 {"error":"unknown_hash"}`, so a stale page never
+believes it changed something. Marks and tags are per content hash, so every
+copy of a photo changes with it.
+
+### `POST /api/files/marks`
+
+The fields of `PATCH /api/files/{hash}` (`rating` 0 clears, `pick` and
+`label` `"none"` clear, `liked`), for every hash. `pick` toggles: asking for
+the pick every item already has clears it; the response's `pick` says which
+was applied. A body with no mark field answers `400 {"error":"no_change"}`.
+
+```bash
+curl -X POST "http://127.0.0.1:7878/api/files/marks" \
+  -H "content-type: application/json" -d '{"hashes":["aaaa…","bbbb…"],"rating":4,"liked":true}'
+```
+
+```json
+{ "updated": 2, "pick": null }
+```
+
+### `POST /api/files/tags`
+
+Adds `add` then removes `remove` on every hash. Tags are trimmed; blank ones
+are ignored.
+
+```json
+{ "hashes": ["aaaa…"], "add": ["İstanbul"], "remove": ["draft"] }
+```
+
+### `GET /api/tags`
+
+Every tag in the library with how many items carry it, most used first; the
+selection bar's tag suggestions.
+
+```json
+[{ "tag": "İstanbul", "count": 12 }]
+```
+
+### `POST /api/files/rotate`
+
+A quarter turn (`direction` `cw` or `ccw`) for every hash, as
+`POST /api/files/{hash}/rotate` does for one. Items that cannot carry an
+orientation (videos, RAW) are skipped and counted.
+
+```json
+{ "rotated": 10, "skipped": 2, "failed": 0 }
+```
+
 ## Dates, search and locations
 
 ### `GET /api/dates`
@@ -938,6 +991,10 @@ content-length: 0
 | `PATCH /api/files/{hash}` | Update marks on one file |
 | `GET /api/files/{hash}/raw` | Serve bytes for one library file |
 | `POST /api/files/{hash}/rotate` | Rotate one photo 90 degrees clockwise (EXIF) |
+| `POST /api/files/marks` | Set marks on a selection |
+| `POST /api/files/tags` | Add or remove tags on a selection |
+| `GET /api/tags` | List the library's tags with counts |
+| `POST /api/files/rotate` | Rotate a selection a quarter turn |
 | `GET /api/dates` | Read date buckets |
 | `GET /api/events` | List automatic travel trips and an empty reason when none qualify |
 | `GET /api/events/{key}/files` | Exact files of one trip |

@@ -68,6 +68,52 @@ test("People singletons select through the shared bar, with Shift ranges", async
   }
 });
 
+test("the bar's actions mark, tag and copy the selection", async ({ page, sortedGallery }) => {
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.goto(sortedGallery.baseURL);
+  await page.locator(".gallery-toolbar .select-toggle").first().click();
+  const cards = page.locator("#gallery .card[data-hash]");
+  await cards.nth(0).click();
+  await cards.nth(1).click({ modifiers: ["Shift"] });
+  const bar = page.locator("#file-sel-bar");
+  await expect(bar.locator(".sel-count")).toHaveText("2 selected");
+
+  await bar.locator('[data-sel-act="like"]').click();
+  await expect(bar.locator(".sel-result")).toHaveText("Liked 2 item(s)");
+
+  await bar.locator(".sel-rate").selectOption("4");
+  await expect(bar.locator(".sel-result")).toHaveText("Rated 2 item(s) ★★★★");
+
+  await bar.locator('[data-sel-act="keep"]').click();
+  await expect(bar.locator(".sel-result")).toHaveText("Marked 2 item(s) Keep");
+  await bar.locator('[data-sel-act="keep"]').click();
+  await expect(bar.locator(".sel-result")).toHaveText("Cleared Keep on 2 item(s)");
+
+  await bar.locator(".sel-tag").fill("İstanbul");
+  await bar.locator('[data-sel-act="tag"]').click();
+  await expect(bar.locator(".sel-result")).toHaveText("Tagged 2 item(s) with İstanbul");
+  const tags = await (await page.request.get(`${sortedGallery.baseURL}/api/tags`)).json();
+  expect(tags).toEqual([{ tag: "İstanbul", count: 2 }]);
+  await bar.locator(".sel-tag").fill("İstanbul");
+  await bar.locator('[data-sel-act="untag"]').click();
+  await expect(bar.locator(".sel-result")).toHaveText("Untagged 2 item(s) from İstanbul");
+
+  await bar.locator('[data-sel-act="copy"]').click();
+  await expect(bar.locator(".sel-result")).toHaveText("Copied 2 path(s)");
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copied.split("\n")).toHaveLength(2);
+
+  // Restore the fixture's marks (c_clip liked and unrated, a_alpha rated 5 and
+  // not liked): the library is shared with the sort specs, which order by them.
+  const hashes = await cards.evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.hash));
+  await page.request.post(`${sortedGallery.baseURL}/api/files/marks`, {
+    data: { hashes: [hashes[0]], liked: true, rating: 0 }
+  });
+  await page.request.post(`${sortedGallery.baseURL}/api/files/marks`, {
+    data: { hashes: [hashes[1]], liked: false, rating: 5 }
+  });
+});
+
 test("Clear in the selection bar empties the selection", async ({ page, sortedGallery }) => {
   await page.goto(sortedGallery.baseURL);
   await page.locator(".gallery-toolbar .select-toggle").first().click();

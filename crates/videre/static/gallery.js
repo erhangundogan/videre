@@ -1342,7 +1342,9 @@ function selectModeClick(e){
   if(!item||e.target.closest('button, [data-path]'))return false;
   e.preventDefault();e.stopPropagation();
   var sel=ensureFileSelection();
+  if(typeof selectionResult!=='undefined')selectionResult='';
   if(e.shiftKey)sel.extend(item.dataset.hash); else sel.toggle(item.dataset.hash);
+  if(typeof loadSelectionTags==='function')loadSelectionTags();
   return true;
 }
 
@@ -1386,3 +1388,131 @@ function toggleSelectMode(){ setSelectMode(!selectMode); }
     bar.appendChild(state);
   });
 })();
+
+// ---------- selection bar actions ----------
+// Marks, tags, rotation and copy paths for the selected items. The result of
+// the last action stays on the bar until the selection changes.
+var selectionResult='';
+var SELECTION_LABELS=['red','yellow','green','blue','purple'];
+
+function fileSelectionActions(){
+  var rate='<select class="sel-rate" aria-label="Rate" onchange="selectionRate(this)">'+
+    '<option value="">Rate</option>'+[1,2,3,4,5].map(function(n){return '<option value="'+n+'">'+'★'.repeat(n)+'</option>';}).join('')+
+    '<option value="0">Clear rating</option></select>';
+  var label='<select class="sel-label" aria-label="Label" onchange="selectionLabel(this)">'+
+    '<option value="">Label</option>'+SELECTION_LABELS.map(function(l){return '<option value="'+l+'">'+l+'</option>';}).join('')+
+    '<option value="none">No label</option></select>';
+  return '<button type="button" data-sel-act="like">Like</button>'+
+    '<button type="button" data-sel-act="unlike">Unlike</button>'+
+    '<button type="button" data-sel-act="keep">Keep</button>'+
+    '<button type="button" data-sel-act="reject">Reject</button>'+
+    rate+label+
+    '<input type="text" class="sel-tag" list="sel-tag-list" placeholder="Tag" aria-label="Tag">'+
+    '<datalist id="sel-tag-list"></datalist>'+
+    '<button type="button" data-sel-act="tag">Tag</button>'+
+    '<button type="button" data-sel-act="untag">Untag</button>'+
+    '<button type="button" data-sel-act="rotate-ccw" title="Rotate left" aria-label="Rotate left">&#10226;</button>'+
+    '<button type="button" data-sel-act="rotate-cw" title="Rotate right" aria-label="Rotate right">&#10227;</button>'+
+    '<button type="button" data-sel-act="copy">Copy paths</button>'+
+    (selectionResult?'<span class="sel-hint sel-result" role="status">'+escH(selectionResult)+'</span>':'');
+}
+
+function selectionPost(url,body){
+  return fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
+    .then(function(r){
+      return r.json().catch(function(){return {};}).then(function(j){
+        if(!r.ok)throw new Error(j.error==='library_busy'
+          ?'Another videre command is working on this library; try again when it finishes.'
+          :(j.field?(j.field+' is invalid'):(j.error||('failed ('+r.status+')'))));
+        return j;
+      });
+    });
+}
+
+function showSelectionResult(text){
+  selectionResult=text;
+  if(fileSelection)fileSelection.renderBar();
+  loadSelectionTags();
+}
+
+function selectionMarks(body,describe){
+  var hashes=fileSelection.list();
+  body.hashes=hashes;
+  selectionPost('/api/files/marks',body).then(function(j){
+    if(body.liked!==undefined)hashes.forEach(function(h){ syncLikedMeta(h,body.liked); });
+    showSelectionResult(describe(j,hashes.length));
+  }).catch(function(e){ showSelectionResult(e.message); });
+}
+function selectionRate(sel){
+  if(sel.value==='')return;
+  var n=Number(sel.value);
+  selectionMarks({rating:n},function(_,c){ return n?('Rated '+c+' item(s) '+'★'.repeat(n)):('Cleared the rating of '+c+' item(s)'); });
+}
+function selectionLabel(sel){
+  if(sel.value==='')return;
+  var l=sel.value;
+  selectionMarks({label:l},function(_,c){ return l==='none'?('Cleared the label of '+c+' item(s)'):('Labeled '+c+' item(s) '+l); });
+}
+
+function selectionTag(remove){
+  var input=document.querySelector('#file-sel-bar .sel-tag');
+  var tag=input?input.value.trim():'';
+  if(!tag){ showSelectionResult('Type a tag first.'); return; }
+  var hashes=fileSelection.list();
+  var body={hashes:hashes};
+  body[remove?'remove':'add']=[tag];
+  selectionPost('/api/files/tags',body).then(function(){
+    showSelectionResult((remove?'Untagged ':'Tagged ')+hashes.length+' item(s) '+(remove?'from ':'with ')+tag);
+  }).catch(function(e){ showSelectionResult(e.message); });
+}
+
+function selectionRotate(direction){
+  var hashes=fileSelection.list();
+  selectionPost('/api/files/rotate',{hashes:hashes,direction:direction}).then(function(j){
+    // Reload the turned thumbnails; the server has already dropped their cache.
+    hashes.forEach(function(h){
+      document.querySelectorAll('[data-hash="'+CSS.escape(h)+'"] img').forEach(function(img){
+        var src=img.getAttribute('src')||'';
+        img.src=src+(src.indexOf('?')<0?'?':'&')+'r='+Date.now();
+      });
+    });
+    var text='Rotated '+j.rotated+' item(s)';
+    if(j.skipped)text+=', skipped '+j.skipped+' that cannot be rotated (videos, RAW)';
+    if(j.failed)text+=', '+j.failed+' failed';
+    showSelectionResult(text);
+  }).catch(function(e){ showSelectionResult(e.message); });
+}
+
+function selectionCopyPaths(){
+  var rows={};
+  [galleryFiles,(typeof dateFiles!=='undefined'&&dateFiles)||[]].forEach(function(list){
+    (list||[]).forEach(function(f){ if(!rows[f.hash])rows[f.hash]=f.path; });
+  });
+  var paths=fileSelection.list().map(function(h){return rows[h];}).filter(Boolean);
+  copyPath(paths.join('\n'));
+  showSelectionResult('Copied '+paths.length+' path(s)');
+}
+
+function loadSelectionTags(){
+  var list=document.getElementById('sel-tag-list');
+  if(!list)return;
+  fetch('/api/tags').then(function(r){return r.ok?r.json():[];}).then(function(tags){
+    list.innerHTML=tags.map(function(t){return '<option value="'+escA(t.tag)+'">';}).join('');
+  }).catch(function(){});
+}
+
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('#file-sel-bar [data-sel-act]');
+  if(!btn||!fileSelection)return;
+  switch(btn.dataset.selAct){
+    case 'like': selectionMarks({liked:true},function(_,c){return 'Liked '+c+' item(s)';}); break;
+    case 'unlike': selectionMarks({liked:false},function(_,c){return 'Unliked '+c+' item(s)';}); break;
+    case 'keep': selectionMarks({pick:'keep'},function(j,c){return j.pick==='none'?('Cleared Keep on '+c+' item(s)'):('Marked '+c+' item(s) Keep');}); break;
+    case 'reject': selectionMarks({pick:'reject'},function(j,c){return j.pick==='none'?('Cleared Reject on '+c+' item(s)'):('Marked '+c+' item(s) Reject');}); break;
+    case 'tag': selectionTag(false); break;
+    case 'untag': selectionTag(true); break;
+    case 'rotate-ccw': selectionRotate('ccw'); break;
+    case 'rotate-cw': selectionRotate('cw'); break;
+    case 'copy': selectionCopyPaths(); break;
+  }
+});
