@@ -26,7 +26,7 @@ Private/local context may exist outside this repository, but it must not be quot
 
 - Build debug/test targets: make build-dev
 - Build release binary: make build
-- Format before committing: cargo fmt --all
+- Format before committing: make fmt (not bare `cargo fmt`, which skips files outside the module tree; see CLAUDE.md)
 - Check formatting: make fmt-check
 - Run tests: make test
 - Lint (list clippy warnings): make lint

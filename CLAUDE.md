@@ -95,16 +95,13 @@ which puts them in `/opt/homebrew/opt/rustup/bin` and links nothing into
 :warning: **The Makefile says `cargo +$(TOOLCHAIN)`, not bare `cargo`.** The
 channel is read out of `rust-toolchain.toml`, so the version is still written
 once. The `+` makes it explicit, so a non-shim `cargo` fails loudly rather than
-silently building with the wrong compiler. That machine is not hypothetical; it
-was this one until 2026-08-20.
+silently building with the wrong compiler.
 
 :warning: **Do not "fix" that to `rustup run <toolchain> cargo`.** It looks
 equivalent and is not: `rustup run` execs the right cargo but does **not** put
 the toolchain's bin on `PATH`, so cargo subcommands are not found and
-`rustup run 1.96.0 cargo fmt` dies with `no such command: fmt`. It was written
-that way first, appeared to work only because Homebrew's `cargo-fmt` was on
-`PATH`, and broke the moment Homebrew's Rust was removed. The full two-toolchain
-history is in `rust-toolchain.toml`'s own comment.
+`rustup run 1.96.0 cargo fmt` dies with `no such command: fmt`. The history is
+in `rust-toolchain.toml`'s own comment.
 
 :warning: **Format with `make fmt` and verify with `make fmt-check`, not bare
 `cargo fmt`.**
@@ -118,12 +115,9 @@ false pass" was wrong for exactly this reason: it does not format an unreachable
 file either, it just never looks at it.
 
 `make fmt` and `make fmt-check` enumerate the sources with `find crates` and hand
-each file to rustfmt directly, so coverage no longer depends on the module tree
-or on cargo's target discovery. Fixed 2026-08-31. This closed the whole class;
-whether the exact 2026-08-20 incident (a just-added `tests/*.rs`, normally its
-own target root) was this sub-case or a metadata-timing one was never pinned
-down, but the file-enumeration check does not touch that machinery at all. Never
-wrap the check in something that asserts success from an exit code alone.
+each file to rustfmt directly, so every file under `crates/` is checked
+whatever the module tree or cargo's target discovery says. Never wrap the check
+in something that asserts success from an exit code alone.
 
 :information_source: `make fmt-check` runs `rustup run $(TOOLCHAIN) rustfmt`.
 That is safe where `rustup run <toolchain> cargo fmt` is not (the warning above):
@@ -279,8 +273,7 @@ Clippy is gated in CI, on its own `clippy` job that runs
 `cargo clippy --workspace --all-targets -- -D warnings` (`make lint-check`;
 `make lint` is the same without `-D warnings`, for listing while you work). The
 job installs the pinned toolchain the same way the others do. A warning now
-fails the build, so the count that used to drift upward (18 when first counted,
-31 on 2026-08-16, ~37 by 2026-08-25) cannot climb again: every lint is either
+fails the build, so the lint count cannot climb: every lint is either
 fixed or given a justified `#[allow]` with a reason at its site. Two lints are
 allowed workspace-wide in the root `Cargo.toml` because they are subjective
 structural lints, not correctness ones (`type_complexity`,
@@ -337,15 +330,14 @@ and skips when they are not.
 
 ## Test coverage
 
-`cargo-llvm-cov` must be invoked through the rustup-managed toolchain
-explicitly, not plain `cargo llvm-cov`. This is one instance of the
-[two-toolchain problem](#warning-this-machine-has-two-rust-toolchains-and-path-picks-the-wrong-one)
-above: `llvm-tools-preview` installs only into a rustup toolchain, so mixing
-them pairs an LLVM-22 rustc with LLVM-21 coverage tools and produces
-incompatible profile data.
+`make coverage` (or `make coverage-html`) runs `cargo-llvm-cov` on the pinned
+toolchain, which needs `llvm-tools-preview` installed into it. A different
+toolchain pairs mismatched LLVM versions and produces incompatible profile
+data; the Makefile comment has the details.
 
 ```bash
-rustup run stable-aarch64-apple-darwin cargo llvm-cov --workspace --summary-only
+rustup component add llvm-tools-preview --toolchain <channel in rust-toolchain.toml>
+make coverage
 ```
 
 Read the per-file table as **unit-test coverage only**. Integration tests that
