@@ -18,7 +18,7 @@ jobs:
     name: create draft release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Create or reuse the draft release
         shell: bash
         env:
@@ -74,7 +74,7 @@ jobs:
     # 6 hours, which is how a queued job burned a night.
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Add the target
         shell: bash
@@ -88,7 +88,7 @@ jobs:
       #
       # NOTE: never replace this with `cargo check` on ARM64 Linux. `check`
       # passes even when `build` fails, because it skips codegen.
-      - uses: taiki-e/upload-rust-binary-action@v1
+      - uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1.30.2
         with:
           bin: videre
           target: ${{ matrix.target }}
@@ -130,7 +130,7 @@ jobs:
       # Fixtures live in the repo (they are `exclude`d from the crate package,
       # not from git), so checkout gives the smoke test real JPEG/MOV/MP4 to
       # work on without downloading anything.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Download the built artifact
         shell: bash
@@ -181,7 +181,7 @@ jobs:
     needs: smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Undraft
         shell: bash
         env:
