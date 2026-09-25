@@ -92,30 +92,9 @@ pub fn open_wal(path: &Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
     enable_foreign_keys(&conn)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
-    ensure_file_hashes_columns(&conn);
     crate::face_db::ensure_people_table(&conn);
     let _ = crate::marks::ensure_marks_table(&conn);
     Ok(conn)
-}
-
-/// Idempotent column migrations for `file_hashes`, run on every open.
-///
-/// It must be every open rather than only on write: readers query `mime`, and
-/// a library scanned before the column existed would otherwise fail with
-/// "no such column" on `dedupe`, `stats`, `search`, and the rest, until the
-/// user happened to re-scan. Errors (column already exists, or no table yet in
-/// a brand-new database) are ignored, the same pattern
-/// `location::ensure_location_column` and `face_db`'s `is_primary` use.
-///
-/// `open_wal` is only ever used for the main library database; per-model
-/// embedding databases go through `Connection::open` in `embeddings_db`.
-pub fn ensure_file_hashes_columns(conn: &Connection) {
-    let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN mime TEXT;");
-    // Video metadata, 0.14.0. NULL for images, and NULL for every row scanned
-    // before that release: an incremental scan keys on `mime IS NULL` and does
-    // not catch "scanned before these existed", so only a re-scan fills them.
-    let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN duration_secs REAL;");
-    let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN codec TEXT;");
 }
 
 /// Whether `name` exists as a table in `conn`, used by every reader that

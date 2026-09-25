@@ -86,10 +86,7 @@ const FILE_HASHES_COLUMNS: &[(&str, &str)] = &[
     ("xmp_sidecar_mtime", "TEXT"),
 ];
 
-/// The complete current `faces` schema, for the same add-missing treatment:
-/// `face_db` creates the table but swallows its own column migrations
-/// (deliberately, for the read paths they were written for), so the missing
-/// columns are added explicitly here where an error must be an error.
+/// The complete current `faces` schema, verified after preparation.
 const FACES_COLUMNS: &[(&str, &str)] = &[
     ("id", "INTEGER PRIMARY KEY"),
     ("hash", "TEXT NOT NULL"),
@@ -215,8 +212,6 @@ fn verify_schema(conn: &Connection) -> Result<()> {
     for (name, _) in FACES_COLUMNS {
         required.push(("faces", name));
     }
-    // classifications' legacy pre-model shape is dropped and rebuilt by its
-    // own helper, but the rebuild is still verified rather than assumed.
     required.push(("classifications", "model_id"));
     required.push(("classifications", "hash"));
     for (table, column) in &required {
@@ -319,7 +314,6 @@ fn prepare_schema(conn: &Connection) -> Result<()> {
     crate::decode_failures::ensure_table(conn)?;
     crate::face_learning::ensure_learning_tables(conn)?;
     crate::face_learning::ensure_question_tables(conn)?;
-    add_missing_columns(conn, "faces", FACES_COLUMNS)?;
     verify_schema(conn)?;
     Ok(())
 }

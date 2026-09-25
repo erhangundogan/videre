@@ -1,5 +1,4 @@
 use reverse_geocoder::ReverseGeocoder;
-use rusqlite::Connection;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -95,13 +94,6 @@ pub fn location_name_in(
     }
 }
 
-/// Idempotent migration: adds `file_hashes.location_name` if it doesn't
-/// already exist. Mirrors the `ALTER TABLE faces ADD COLUMN is_primary`
-/// pattern in face_db.rs, errors (column already exists) are ignored.
-pub fn ensure_location_column(conn: &Connection) {
-    let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN location_name TEXT");
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,21 +140,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(got.starts_with("Malmö"), "expected Malmö, got {got}");
-    }
-
-    #[test]
-    fn ensure_location_column_is_idempotent() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL);")
-            .unwrap();
-        crate::db::ensure_file_hashes_columns(&conn);
-        ensure_location_column(&conn);
-        ensure_location_column(&conn); // second call must not error
-        conn.execute(
-            "UPDATE file_hashes SET location_name = 'Paris, FR' WHERE path = 'x'",
-            [],
-        )
-        .unwrap();
     }
 
     #[test]

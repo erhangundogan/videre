@@ -1329,7 +1329,7 @@ mod tests {
                 (5,'h5','0,0,9,9',X'0000',NULL,NULL,0,0);",
         )
         .unwrap();
-        videre_core::db::ensure_file_hashes_columns(&conn);
+        videre_core::library_db::ensure_scan_schema(&conn).unwrap();
         conn
     }
 
@@ -1794,7 +1794,7 @@ mod tests {
         // ordering problem. Add enough of both to have an order at all, with
         // sizes deliberately not matching id order.
         conn.execute_batch(
-            // Columns named explicitly: `seed` runs ensure_file_hashes_columns,
+            // Columns named explicitly: `seed` runs ensure_scan_schema,
             // so the table has more than the two it was created with.
             "INSERT INTO file_hashes (hash, path) VALUES ('h6','/p/6.jpg'),('h7','/p/7.jpg'),
                 ('h8','/p/8.jpg'),('h9','/p/9.jpg'),('h10','/p/10.jpg');

@@ -201,13 +201,6 @@ pub fn ensure_location_clusters_table(conn: &Connection) -> rusqlite::Result<()>
     )
 }
 
-/// Idempotent: adds `file_hashes.location_cluster_id` if it doesn't already
-/// exist. Mirrors `location::ensure_location_column`'s pattern, errors
-/// (column already exists) are ignored.
-pub fn ensure_location_cluster_id_column(conn: &Connection) {
-    let _ = conn.execute_batch("ALTER TABLE file_hashes ADD COLUMN location_cluster_id INTEGER");
-}
-
 /// Index the GPS columns, so assigning photos to a cluster is a lookup rather
 /// than a table scan.
 ///
@@ -304,7 +297,6 @@ pub fn recompute_all(
     let tx = conn.unchecked_transaction()?;
 
     ensure_location_clusters_table(&tx)?;
-    ensure_location_cluster_id_column(&tx);
     ensure_gps_index(&tx);
 
     let coords: Vec<(f64, f64)> = {
@@ -511,8 +503,9 @@ mod tests {
     fn recompute_all_clusters_assigns_and_counts() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, gps_lat REAL, gps_lon REAL);
-             INSERT INTO file_hashes VALUES
+            "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, gps_lat REAL, gps_lon REAL,
+                location_cluster_id INTEGER);
+             INSERT INTO file_hashes (path, gps_lat, gps_lon) VALUES
                ('a', 52.5, 13.4), ('b', 52.5001, 13.4001), ('c', -33.87, 151.21);",
         )
         .unwrap();
@@ -537,7 +530,8 @@ mod tests {
     fn recompute_all_on_empty_gps_wipes_cleanly() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, gps_lat REAL, gps_lon REAL);",
+            "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, gps_lat REAL, gps_lon REAL,
+                location_cluster_id INTEGER);",
         )
         .unwrap();
         let cache = temp_cache();
@@ -735,26 +729,6 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         ensure_location_clusters_table(&conn).unwrap();
         ensure_location_clusters_table(&conn).unwrap(); // second call must not error
-    }
-
-    #[test]
-    fn ensure_location_cluster_id_column_is_idempotent() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL);")
-            .unwrap();
-        crate::db::ensure_file_hashes_columns(&conn);
-        conn.execute(
-            "INSERT INTO file_hashes (path, hash) VALUES ('x', 'h1')",
-            [],
-        )
-        .unwrap();
-        ensure_location_cluster_id_column(&conn);
-        ensure_location_cluster_id_column(&conn); // second call must not error
-        conn.execute(
-            "UPDATE file_hashes SET location_cluster_id = 1 WHERE path = 'x'",
-            [],
-        )
-        .unwrap();
     }
 
     #[test]

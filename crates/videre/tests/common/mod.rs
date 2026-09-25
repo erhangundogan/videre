@@ -177,8 +177,7 @@ pub fn permissions_are_enforced(unreadable_path: &Path) -> bool {
 /// Deliberately does **not** go through [`videre_bin`] and then share one
 /// process-global working directory. The whole point here is explicit
 /// per-child context: each command gets its own `--library`, cwd, HOME, and
-/// HF_HOME, and `VIDERE_HOME` is removed rather than inherited, so what a
-/// child sees is exactly what was configured and nothing ambient. Nothing in
+/// HF_HOME, so what a child sees is exactly what was configured. Nothing in
 /// this helper mutates the test process's own cwd or environment.
 pub struct TestLibrary {
     _temp: tempfile::TempDir,
@@ -212,15 +211,12 @@ impl TestLibrary {
     ///
     /// The child runs with `cwd = root`, a private `HOME`, and an `HF_HOME`
     /// inside that home, so no model cache is exposed by default and no real
-    /// user state is reachable. `VIDERE_HOME` is removed rather than pointed
-    /// somewhere: a child of this helper must not silently inherit the
-    /// process-global isolation dir either.
+    /// user state is reachable.
     pub fn cmd(&self) -> std::process::Command {
         let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_videre"));
         cmd.current_dir(&self.root)
             .env("HOME", &self.home)
-            .env("HF_HOME", self.home.join(".cache/huggingface"))
-            .env_remove("VIDERE_HOME");
+            .env("HF_HOME", self.home.join(".cache/huggingface"));
         cmd
     }
 

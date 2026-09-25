@@ -471,7 +471,6 @@ fn drain_pending(
             failed("faces table", e);
             return;
         }
-        videre_core::location::ensure_location_column(&conn);
         if args.faces
             && stage("faces", "faces stage", || run_faces_stage(args, ctx, &conn))
                 != Some(StageOutcome::Ran)
@@ -638,7 +637,6 @@ fn reconcile(args: &WatchArgs, ctx: &CommandContext) -> Result<ReconcileOutcome>
     }
     if args.faces || args.heic || args.location || args.prune || args.export_xmp {
         face_db::create_faces_table(&conn)?;
-        videre_core::location::ensure_location_column(&conn);
         if args.faces
             && stage("faces", "faces stage", || run_faces_stage(args, ctx, &conn))
                 != Some(StageOutcome::Ran)
