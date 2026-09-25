@@ -229,6 +229,39 @@ location and can:
 Copying `.videre/gallery.json` into another library's `.videre` folder works
 too.
 
+## Selecting
+
+**Select** in the toolbar of the Library, Date, Events and Map pages turns on
+select mode ("Select enabled"). While it is on:
+
+- a click on a photo or video selects it instead of opening it;
+- **Shift-click** selects everything between the last click and this one;
+- **Escape** clears the selection; **Select** again leaves select mode.
+
+As soon as something is selected, a bar along the bottom (the same one the
+People page uses for singletons) shows how many, and acts on all of them:
+
+| Action | Does |
+|---|---|
+| **Like** / **Unlike** | sets or clears the liked mark |
+| **Keep** / **Reject** | sets the pick; pressing it again when every item already has it clears it |
+| **Rate** | 1 to 5 stars, or clear |
+| **Label** | a colour label, or none |
+| **Tag** / **Untag** | the tag typed in the field, which suggests the library's tags |
+| **Rotate left / right** | photos only; videos and RAW files are skipped |
+| **Copy paths** | the selected files' paths, one per line |
+| **Delete…** | moves the files to the system Trash, after a confirmation |
+
+Marks and tags belong to the content, so every copy of a photo changes with
+it, exactly as with [`videre mark`](/commands/mark/) and
+[`videre tag`](/commands/tag/). Delete moves **every copy** of each selected
+item to the Trash (the confirmation counts them), and the library stops
+listing them at once; their marks, tags and faces stay until
+[`videre prune`](/commands/prune/). It waits until no other videre command or
+`watch` stage is working on the library.
+
+Select mode needs the running gallery: a static export has no Select button.
+
 ## Sorting
 
 In the toolbar on the Library and Date tabs, next to View, the **Sort**

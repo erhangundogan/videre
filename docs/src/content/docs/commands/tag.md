@@ -23,6 +23,9 @@ both in one run: removals apply first, then additions).
 | `--add <tag>` | Add this tag to every file in the selection |
 | `--remove <tag>` | Remove this tag from every file in the selection |
 
+The gallery tags and untags many photos at once: see
+[Selecting](/commands/gallery/#selecting).
+
 ## Choosing what to tag
 
 The selection flags narrow the library the same way `search` does: `--person`,

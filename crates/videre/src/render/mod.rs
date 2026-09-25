@@ -628,6 +628,13 @@ pub(crate) fn esc(s: &str) -> String {
 /// two cannot drift into looking like different products.
 pub(crate) const CHROME_CSS: &str = include_str!("../../static/chrome.css");
 
+/// The file-grid script, with the shared multi-select component ahead of it.
+pub(crate) const GALLERY_JS: &str = concat!(
+    include_str!("../../static/selection.js"),
+    "\n",
+    include_str!("../../static/gallery.js")
+);
+
 /// A hand-built JSON body as a response.
 ///
 /// These endpoints assemble JSON as a string rather than serialising a struct,
@@ -1254,7 +1261,7 @@ pub(crate) fn render(set: &RenderSet) -> String {
     let page = GalleryPage {
         chrome: CHROME_CSS,
         css: include_str!("../../static/gallery.css"),
-        js: include_str!("../../static/gallery.js"),
+        js: GALLERY_JS,
         justified_js: include_str!("../../static/justified-layout.js"),
         data: &data,
         // The header shows the library root, not the database file inside it.

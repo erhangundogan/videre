@@ -1494,7 +1494,12 @@ mod pages {
 
     pub const SETTINGS_PAGE_JS: &str = include_str!("../../../static/settings-page.js");
     pub const FACES_CSS: &str = include_str!("../../../static/faces.css");
-    pub const FACES_JS: &str = include_str!("../../../static/faces.js");
+    /// The People script, with the shared multi-select component ahead of it.
+    pub const FACES_JS: &str = concat!(
+        include_str!("../../../static/selection.js"),
+        "\n",
+        include_str!("../../../static/faces.js")
+    );
     pub const CLUSTER_CSS: &str = include_str!("../../../static/cluster.css");
     pub const CLUSTER_JS: &str = include_str!("../../../static/cluster.js");
     pub const PERSON_CSS: &str = include_str!("../../../static/person.css");
@@ -2008,7 +2013,7 @@ fn render_map(
         gallery_css: include_str!("../../../static/gallery.css"),
         css: pages::MAP_CSS,
         justified_js: include_str!("../../../static/justified-layout.js"),
-        gallery_js: include_str!("../../../static/gallery.js"),
+        gallery_js: crate::render::GALLERY_JS,
         js: pages::MAP_JS,
         basemap_style: pages::BASEMAP_STYLE,
         vendor_version: env!("CARGO_PKG_VERSION"),
@@ -2618,23 +2623,48 @@ async fn handle_rotate_file(
     State(state): State<Arc<AppState>>,
 ) -> Response {
     let ccw = query.dir.as_deref() == Some("ccw");
-    let path = {
-        let conn = match state.conn.lock() {
-            Ok(conn) => conn,
-            Err(e) => return poisoned(e).into_response(),
-        };
-        match conn
-            .query_row(
-                "SELECT path FROM file_hashes WHERE hash = ?1 LIMIT 1",
-                [&hash],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()
-        {
-            Ok(Some(path)) => path,
-            Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-            Err(e) => return internal(e).into_response(),
+    let hash_for_task = hash.clone();
+    let result = tokio::task::spawn_blocking(move || rotate_one(&state, &hash_for_task, ccw)).await;
+    match result {
+        Ok(Ok(RotateOutcome::Rotated(orientation))) => {
+            json_response(format!("{{\"orientation\":{orientation}}}"))
         }
+        Ok(Ok(RotateOutcome::NotFound)) => StatusCode::NOT_FOUND.into_response(),
+        Ok(Ok(RotateOutcome::Unsupported)) => (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "rotation is only supported for EXIF-bearing images",
+        )
+            .into_response(),
+        Ok(Err(e)) => internal(anyhow::anyhow!("rotate failed for {hash}: {e}")).into_response(),
+        Err(e) => internal(e).into_response(),
+    }
+}
+
+pub(super) enum RotateOutcome {
+    Rotated(u16),
+    NotFound,
+    /// Not an image that carries an EXIF orientation (videos, DNG, ...).
+    Unsupported,
+}
+
+/// Turn one photo a quarter turn: the EXIF orientation, its face geometry and
+/// its cached thumbnails. Blocking; shared by the lightbox's rotate and the
+/// selection bar's.
+pub(super) fn rotate_one(state: &AppState, hash: &str, ccw: bool) -> anyhow::Result<RotateOutcome> {
+    let path: Option<String> = {
+        let conn = state
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("the database connection lock is poisoned"))?;
+        conn.query_row(
+            "SELECT path FROM file_hashes WHERE hash = ?1 LIMIT 1",
+            [hash],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+    };
+    let Some(path) = path else {
+        return Ok(RotateOutcome::NotFound);
     };
     let ext = std::path::Path::new(&path)
         .extension()
@@ -2642,51 +2672,27 @@ async fn handle_rotate_file(
         .unwrap_or("")
         .to_lowercase();
     if !super::rotate::supports_exif_orientation(&ext) {
-        return (
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "rotation is only supported for EXIF-bearing images",
-        )
-            .into_response();
+        return Ok(RotateOutcome::Unsupported);
     }
-
-    let cache = state.context.library.cache.clone();
-    let hash_for_task = hash.clone();
-    let state_for_task = state.clone();
-    // EXIF read/write, the DB update and the cache sweep are blocking work.
-    let result = tokio::task::spawn_blocking(move || {
-        let source = std::path::Path::new(&path);
-        // The stored face bboxes/landmarks are in the display canvas as it
-        // decodes now; capture that canvas's dimensions before the turn so the
-        // geometry can be mapped onto the post-rotation canvas. Read them up
-        // front: the rotation bumps the EXIF the dimensions depend on.
-        let dims = super::rotate::current_display_dimensions(source);
-        let orientation = if ccw {
-            super::rotate::rotate_ccw_in_place(source, &ext)?
-        } else {
-            super::rotate::rotate_cw_in_place(source, &ext)?
-        };
-        // Turn the display-canvas face geometry with the photo, so a rotated
-        // photo's face crops stay on their faces and keep their people labels
-        // instead of cropping the pre-rotation region of the new canvas.
-        if let Some((display_w, display_h)) = dims {
-            rotate_faces_geometry(
-                &state_for_task,
-                &hash_for_task,
-                ccw,
-                display_w as i32,
-                display_h as i32,
-            );
-        }
-        invalidate_thumb_cache(&cache, &hash_for_task);
-        Ok::<u16, anyhow::Error>(orientation)
-    })
-    .await;
-
-    match result {
-        Ok(Ok(orientation)) => json_response(format!("{{\"orientation\":{orientation}}}")),
-        Ok(Err(e)) => internal(anyhow::anyhow!("rotate failed for {hash}: {e}")).into_response(),
-        Err(e) => internal(e).into_response(),
+    let source = std::path::Path::new(&path);
+    // The stored face bboxes/landmarks are in the display canvas as it
+    // decodes now; capture that canvas's dimensions before the turn so the
+    // geometry can be mapped onto the post-rotation canvas. Read them up
+    // front: the rotation bumps the EXIF the dimensions depend on.
+    let dims = super::rotate::current_display_dimensions(source);
+    let orientation = if ccw {
+        super::rotate::rotate_ccw_in_place(source, &ext)?
+    } else {
+        super::rotate::rotate_cw_in_place(source, &ext)?
+    };
+    // Turn the display-canvas face geometry with the photo, so a rotated
+    // photo's face crops stay on their faces and keep their people labels
+    // instead of cropping the pre-rotation region of the new canvas.
+    if let Some((display_w, display_h)) = dims {
+        rotate_faces_geometry(state, hash, ccw, display_w as i32, display_h as i32);
     }
+    invalidate_thumb_cache(&state.context.library.cache, hash);
+    Ok(RotateOutcome::Rotated(orientation))
 }
 
 /// Turn every face row for `hash` 90 degrees to
@@ -4043,6 +4049,11 @@ async fn serve_faces_async(
         // files / media
         .route("/api/files", get(handle_files))
         .route("/api/files/{hash}", patch(handle_set_mark))
+        .route("/api/files/marks", post(super::bulk::handle_marks))
+        .route("/api/files/tags", post(super::bulk::handle_tags))
+        .route("/api/files/rotate", post(super::bulk::handle_rotate))
+        .route("/api/files/delete", post(super::bulk::handle_delete))
+        .route("/api/tags", get(super::bulk::handle_list_tags))
         .route("/api/files/{hash}/raw", get(handle_raw_file))
         .route("/api/files/{hash}/rotate", post(handle_rotate_file))
         .route("/api/dates", get(handle_dates))
@@ -5089,5 +5100,345 @@ mod recluster_api_tests {
                 json!({ "error": "invalid_parameter", "field": "min_cluster_size" })
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod bulk_api_tests {
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::{header, Request};
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    /// A real library holding `files` (name, hash); photos are the tiny JPEG
+    /// fixture so rotate has an image to turn.
+    fn library(root: &Path, files: &[(&str, &str)]) -> Arc<AppState> {
+        let state = super::location_cluster_tests::gallery_state(root);
+        let disk = videre_core::library_db::initialize(&state.context.library).unwrap();
+        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tiny.jpg");
+        for (name, hash) in files {
+            let path = root.join(name);
+            std::fs::copy(fixture, &path).unwrap();
+            let ext = name.rsplit('.').next().unwrap();
+            disk.execute(
+                "INSERT INTO file_hashes (path, hash, ext) VALUES (?1, ?2, ?3)",
+                rusqlite::params![path.to_string_lossy(), hash, ext],
+            )
+            .unwrap();
+        }
+        drop(disk);
+        // The handlers use the server's shared connection: point it at the library.
+        *state.conn.lock().unwrap() =
+            videre_core::library_db::open_existing(&state.context.library).unwrap();
+        state
+    }
+
+    fn app(state: Arc<AppState>) -> Router {
+        Router::new()
+            .route("/api/files/marks", post(super::super::bulk::handle_marks))
+            .route("/api/files/tags", post(super::super::bulk::handle_tags))
+            .route("/api/files/rotate", post(super::super::bulk::handle_rotate))
+            .route("/api/tags", get(super::super::bulk::handle_list_tags))
+            .with_state(state)
+    }
+
+    async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(if method == "GET" {
+                        Body::empty()
+                    } else {
+                        Body::from(body.to_string())
+                    })
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    #[tokio::test]
+    async fn marks_apply_to_every_selected_item_and_keep_toggles() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = library(dir.path(), &[("a.jpg", "ha"), ("b.jpg", "hb")]);
+        let app = app(state.clone());
+        let (status, body) = call(
+            &app,
+            "POST",
+            "/api/files/marks",
+            json!({ "hashes": ["ha", "hb"], "rating": 4, "liked": true }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["updated"], 2);
+        {
+            let conn = state.conn.lock().unwrap();
+            for h in ["ha", "hb"] {
+                let m = videre_core::marks::get(&conn, h).unwrap();
+                assert_eq!((m.rating, m.liked), (Some(4), true));
+            }
+        }
+        let (_, first) = call(
+            &app,
+            "POST",
+            "/api/files/marks",
+            json!({ "hashes": ["ha", "hb"], "pick": "keep" }),
+        )
+        .await;
+        assert_eq!(first["pick"], "keep");
+        let (_, second) = call(
+            &app,
+            "POST",
+            "/api/files/marks",
+            json!({ "hashes": ["ha", "hb"], "pick": "keep" }),
+        )
+        .await;
+        assert_eq!(second["pick"], "none", "Keep on items all kept clears it");
+        let conn = state.conn.lock().unwrap();
+        assert_eq!(videre_core::marks::get(&conn, "ha").unwrap().pick, None);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_empty_or_changeless_request_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(library(dir.path(), &[("a.jpg", "ha")]));
+        let (s, b) = call(
+            &app,
+            "POST",
+            "/api/files/marks",
+            json!({ "hashes": ["ha", "nope"], "liked": true }),
+        )
+        .await;
+        assert_eq!(
+            (s, b["error"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("unknown_hash"))
+        );
+        let (s, b) = call(
+            &app,
+            "POST",
+            "/api/files/marks",
+            json!({ "hashes": [], "liked": true }),
+        )
+        .await;
+        assert_eq!(
+            (s, b["field"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("hashes"))
+        );
+        let (s, b) = call(
+            &app,
+            "POST",
+            "/api/files/marks",
+            json!({ "hashes": ["ha"] }),
+        )
+        .await;
+        assert_eq!(
+            (s, b["error"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("no_change"))
+        );
+        let (s, _) = call(
+            &app,
+            "POST",
+            "/api/files/rotate",
+            json!({ "hashes": ["ha"], "direction": "up" }),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn tags_add_and_remove_and_the_list_counts_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(library(dir.path(), &[("a.jpg", "ha"), ("b.jpg", "hb")]));
+        let (s, _) = call(
+            &app,
+            "POST",
+            "/api/files/tags",
+            json!({ "hashes": ["ha", "hb"], "add": [" İstanbul "] }),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        let (_, tags) = call(&app, "GET", "/api/tags", Value::Null).await;
+        assert_eq!(tags, json!([{ "tag": "İstanbul", "count": 2 }]));
+        call(
+            &app,
+            "POST",
+            "/api/files/tags",
+            json!({ "hashes": ["hb"], "remove": ["İstanbul"] }),
+        )
+        .await;
+        let (_, tags) = call(&app, "GET", "/api/tags", Value::Null).await;
+        assert_eq!(tags, json!([{ "tag": "İstanbul", "count": 1 }]));
+    }
+
+    #[tokio::test]
+    async fn rotate_turns_photos_and_skips_what_cannot_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app(library(dir.path(), &[("a.jpg", "ha"), ("clip.mp4", "hv")]));
+        let (s, b) = call(
+            &app,
+            "POST",
+            "/api/files/rotate",
+            json!({ "hashes": ["ha", "hv"], "direction": "cw" }),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{b}");
+        assert_eq!(b, json!({ "rotated": 1, "skipped": 1, "failed": 0 }));
+    }
+}
+
+#[cfg(test)]
+mod bulk_delete_tests {
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::{header, Request};
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    fn app(state: Arc<AppState>) -> Router {
+        Router::new()
+            .route("/api/files/delete", post(super::super::bulk::handle_delete))
+            .with_state(state)
+    }
+
+    /// `rows` are (file name, hash, create the file?): a missing file is one
+    /// the trash cannot move.
+    fn library(root: &Path, rows: &[(&str, &str, bool)]) -> Arc<AppState> {
+        let state = super::location_cluster_tests::gallery_state(root);
+        let disk = videre_core::library_db::initialize(&state.context.library).unwrap();
+        for (name, hash, exists) in rows {
+            let path = root.join(name);
+            if *exists {
+                std::fs::write(&path, b"x").unwrap();
+            }
+            disk.execute(
+                "INSERT INTO file_hashes (path, hash, ext) VALUES (?1, ?2, ?3)",
+                rusqlite::params![
+                    path.to_string_lossy(),
+                    hash,
+                    name.rsplit('.').next().unwrap()
+                ],
+            )
+            .unwrap();
+        }
+        drop(disk);
+        *state.conn.lock().unwrap() =
+            videre_core::library_db::open_existing(&state.context.library).unwrap();
+        state
+    }
+
+    async fn delete(app: &Router, body: Value) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/files/delete")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    fn rows(state: &AppState) -> i64 {
+        state
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT count(*) FROM file_hashes", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_dry_run_counts_every_copy_and_moves_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = library(
+            dir.path(),
+            &[
+                ("a.jpg", "ha", true),
+                ("a copy.jpg", "ha", true),
+                ("v.mp4", "hv", true),
+            ],
+        );
+        let (status, body) = delete(
+            &app(state.clone()),
+            json!({ "hashes": ["ha", "hv"], "dry_run": true }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body,
+            json!({ "items": 2, "files": 3, "photos": 1, "videos": 1, "extra_copies": 1 })
+        );
+        assert!(dir.path().join("a copy.jpg").exists());
+        assert_eq!(rows(&state), 3);
+    }
+
+    #[tokio::test]
+    async fn delete_trashes_files_forgets_rows_and_reports_what_it_could_not_move() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = library(
+            dir.path(),
+            &[("a.jpg", "ha", true), ("gone.jpg", "hg", false)],
+        );
+        let (status, body) = delete(
+            &app(state.clone()),
+            json!({ "hashes": ["ha", "hg"], "dry_run": false }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(!dir.path().join("a.jpg").exists(), "moved to the trash");
+        assert_eq!(body["trashed"], json!(["ha"]));
+        assert_eq!(body["failed"].as_array().unwrap().len(), 1);
+        let left: Vec<String> = {
+            let conn = state.conn.lock().unwrap();
+            let mut stmt = conn.prepare("SELECT hash FROM file_hashes").unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        assert_eq!(
+            left,
+            vec!["hg".to_string()],
+            "a file that did not move keeps its row"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_waits_for_the_library_to_be_free() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = library(dir.path(), &[("a.jpg", "ha", true)]);
+        let _other = videre_core::library_locks::try_activity(
+            &state.context.library,
+            videre_core::library_locks::ActivityMode::Shared,
+        )
+        .unwrap();
+        let (status, body) = delete(
+            &app(state.clone()),
+            json!({ "hashes": ["ha"], "dry_run": false }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"], "library_busy");
+        assert!(dir.path().join("a.jpg").exists());
     }
 }

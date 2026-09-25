@@ -164,7 +164,7 @@ let facesData = { people: [], clusters: [], singletons: [] };
         // so opening the photo gets its own control: a corner link that stops
         // the click from bubbling to the select handler. A singleton has no
         // detail page, so this is its only route to the full image.
-        thumb = `<div class="sel-zone" onclick="toggleSingleton(${selFaceId})" title="Click to select">`
+        thumb = `<div class="sel-zone" onclick="toggleSingleton(${selFaceId}, event)" title="Click to select, Shift-click for a range">`
           + `<div class="sel-check">&#10003;</div>`
           + `<a class="view-orig" href="/api/faces/${selFaceId}/original" target="_blank"`
           + ` title="Open original photo" onclick="event.stopPropagation()">&#128269;</a>`
@@ -227,48 +227,41 @@ let facesData = { people: [], clusters: [], singletons: [] };
       let ids = faceIds;
       const card = event.target.closest('.card');
       const selId = card && card.dataset.selId != null ? Number(card.dataset.selId) : null;
-      if (selId != null && selectedSingletons.has(selId) && selectedSingletons.size > 1) {
-        ids = Array.from(selectedSingletons);
+      if (selId != null && selection.has(String(selId)) && selection.size() > 1) {
+        ids = selection.list().map(Number);
       }
       event.dataTransfer.setData('application/json', JSON.stringify({ face_ids: ids }));
     }
 
-    // ---- singleton multi-select ----
-    let selectedSingletons = new Set();
+    // ---- singleton multi-select (the shared component in selection.js) ----
+    const selection = createSelection({
+      bar: 'sel-bar',
+      items: '.singleton-card[data-sel-id]',
+      keyOf: el => el.dataset.selId,
+      actions: () => '<button type="button" onclick="newPersonFromSelection()">New Person</button>',
+      hint: 'or drag any selected onto a person'
+    });
 
-    function toggleSingleton(faceId) {
-      if (selectedSingletons.has(faceId)) selectedSingletons.delete(faceId);
-      else selectedSingletons.add(faceId);
-      updateSelectionUI();
+    function toggleSingleton(faceId, event) {
+      if (event && event.shiftKey) selection.extend(String(faceId));
+      else selection.toggle(String(faceId));
     }
 
     function updateSelectionUI() {
-      document.querySelectorAll('.singleton-card').forEach(c => {
-        const id = c.dataset.selId != null ? Number(c.dataset.selId) : null;
-        c.classList.toggle('selected', id != null && selectedSingletons.has(id));
-      });
-      rebuildSelBar();
+      selection.paint();
+      selection.renderBar();
     }
 
     function rebuildSelBar() {
-      const bar = document.getElementById('sel-bar');
-      const n = selectedSingletons.size;
-      bar.classList.toggle('on', n > 0);
-      if (n === 0) { bar.innerHTML = ''; return; }
-      bar.innerHTML =
-        `<span class="sel-count">${n} selected</span>` +
-        `<button onclick="newPersonFromSelection()">New Person</button>` +
-        `<button onclick="clearSelection()">Clear</button>` +
-        `<span class="sel-hint">or drag any selected onto a person</span>`;
+      selection.renderBar();
     }
 
     function clearSelection() {
-      selectedSingletons.clear();
-      updateSelectionUI();
+      selection.clear();
     }
 
     function newPersonFromSelection() {
-      if (selectedSingletons.size === 0) return;
+      if (selection.size() === 0) return;
       const bar = document.getElementById('sel-bar');
       bar.innerHTML =
         `<input type="text" id="sel-np-input" placeholder="Person name" maxlength="${MAX_NAME_LEN}" list="people-list">` +
@@ -304,7 +297,7 @@ let facesData = { people: [], clusters: [], singletons: [] };
       if (!input) return;
       const label = sanitizeName(input.value);
       if (!label) return;
-      const ids = Array.from(selectedSingletons);
+      const ids = selection.list().map(Number);
       const r = await fetch('/api/people', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

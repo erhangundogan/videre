@@ -897,6 +897,7 @@ function buildEventsInitialView(){
 }
 // Event delegation: toggle, lightbox, copy. One listener for all dynamic content
 document.addEventListener('click',function(e){
+  if(selectModeClick(e))return;
   var lb=e.target.closest('[data-lb-url]');
   if(lb){e.preventDefault();e.stopPropagation();openTile(lb);return;}
   var cp=e.target.closest('[data-path]');
@@ -905,6 +906,10 @@ document.addEventListener('click',function(e){
   if(hdr){toggle(hdr.closest('.group').id);return;}
 });
 document.addEventListener('keydown',function(e){
+  if(e.key==='Escape'&&selectMode&&!document.getElementById('lb').classList.contains('on')){
+    if(fileSelection)fileSelection.clear();
+    return;
+  }
   if(e.key==='Escape'){closeLb();return;}
   if(!document.getElementById('lb').classList.contains('on'))return;
   if(e.key==='ArrowLeft'){e.preventDefault();lbStep(-1);}
@@ -1014,7 +1019,7 @@ function tileRatio(f){ return (f.w&&f.h) ? (f.w/f.h) : 1; }
 // layout computed. buildPreview already carries data-lb-url/-type/-meta, so the
 // lightbox and its nav keep working and DOM order stays file (row) order.
 function tileHtml(f,box){
-  return '<div class="tile" style="left:'+box.left+'px;top:'+box.top+'px;'+
+  return '<div class="tile" data-hash="'+escA(f.hash)+'" style="left:'+box.left+'px;top:'+box.top+'px;'+
     'width:'+box.width+'px;height:'+box.height+'px">'+buildPreview(f)+'</div>';
 }
 // Lay files out as justified rows inside container. Pure geometry over ratios,
@@ -1305,3 +1310,259 @@ window.addEventListener('load',function(){ if(viewMode()==='tile') renderCurrent
 render(true);
 if(typeof GVIEW!=='undefined'&&GVIEW==='events') buildEventsInitialView();
 else if(document.getElementById('dateGrid')) buildDateInitialView();
+
+// ---------- select mode ----------
+// A Select toggle in the file-grid toolbars (live server only: selections act
+// through the server). While on, a click on a card or tile selects it instead
+// of opening the lightbox, Shift-click selects the run from the last plain
+// click, and the shared selection bar (selection.js) carries the actions.
+// Items are keyed by content hash, like marks and tags.
+var SELECT_ITEMS='#gallery .card[data-hash], #gallery .tile[data-hash], '+
+  '#dateGrid .card[data-hash], #dateGrid .tile[data-hash]';
+var selectMode=false, fileSelection=null, selectObserver=null;
+
+function selectionActions(){ return typeof fileSelectionActions==='function'?fileSelectionActions():''; }
+
+function ensureFileSelection(){
+  if(fileSelection)return fileSelection;
+  fileSelection=createSelection({
+    bar:'file-sel-bar',
+    items:SELECT_ITEMS,
+    keyOf:function(el){ return el.dataset.hash; },
+    actions:selectionActions
+  });
+  return fileSelection;
+}
+
+// Handled here, before the lightbox: in select mode an item click selects.
+// Buttons and copy-path links inside a card keep their own behaviour.
+function selectModeClick(e){
+  if(!selectMode)return false;
+  var item=e.target.closest(SELECT_ITEMS);
+  if(!item||e.target.closest('button, [data-path]'))return false;
+  e.preventDefault();e.stopPropagation();
+  var sel=ensureFileSelection();
+  if(typeof selectionResult!=='undefined')selectionResult='';
+  if(e.shiftKey)sel.extend(item.dataset.hash); else sel.toggle(item.dataset.hash);
+  if(typeof loadSelectionTags==='function')loadSelectionTags();
+  return true;
+}
+
+function setSelectMode(on){
+  selectMode=!!on;
+  document.body.classList.toggle('select-mode',selectMode);
+  document.querySelectorAll('.select-toggle').forEach(function(b){
+    b.setAttribute('aria-pressed',selectMode?'true':'false');
+  });
+  document.querySelectorAll('.select-state').forEach(function(s){ s.hidden=!selectMode; });
+  var sel=ensureFileSelection();
+  if(!selectMode){ sel.clear(); if(selectObserver){selectObserver.disconnect();selectObserver=null;} return; }
+  // Grids re-render wholesale (Show more, List/Tile, sort, a new date); keep
+  // the selected look on whatever is drawn now.
+  var pending=false;
+  selectObserver=new MutationObserver(function(){
+    if(pending)return; pending=true;
+    requestAnimationFrame(function(){ pending=false; sel.paint(); });
+  });
+  ['gallery','dateGrid'].forEach(function(id){
+    var el=document.getElementById(id);
+    if(el)selectObserver.observe(el,{childList:true,subtree:true});
+  });
+}
+function toggleSelectMode(){ setSelectMode(!selectMode); }
+
+(function(){
+  if(!LIVE_SERVER)return;
+  document.querySelectorAll('.gallery-toolbar[data-files]').forEach(function(bar){
+    var b=document.createElement('button');
+    b.type='button';
+    b.className='select-toggle';
+    b.setAttribute('aria-pressed','false');
+    b.textContent='Select';
+    b.addEventListener('click',toggleSelectMode);
+    var state=document.createElement('span');
+    state.className='select-state';
+    state.hidden=true;
+    state.textContent='Select enabled';
+    bar.appendChild(b);
+    bar.appendChild(state);
+  });
+})();
+
+// ---------- selection bar actions ----------
+// Marks, tags, rotation and copy paths for the selected items. The result of
+// the last action stays on the bar until the selection changes.
+var selectionResult='';
+var SELECTION_LABELS=['red','yellow','green','blue','purple'];
+
+function fileSelectionActions(){
+  var rate='<select class="sel-rate" aria-label="Rate" onchange="selectionRate(this)">'+
+    '<option value="">Rate</option>'+[1,2,3,4,5].map(function(n){return '<option value="'+n+'">'+'★'.repeat(n)+'</option>';}).join('')+
+    '<option value="0">Clear rating</option></select>';
+  var label='<select class="sel-label" aria-label="Label" onchange="selectionLabel(this)">'+
+    '<option value="">Label</option>'+SELECTION_LABELS.map(function(l){return '<option value="'+l+'">'+l+'</option>';}).join('')+
+    '<option value="none">No label</option></select>';
+  return '<button type="button" data-sel-act="like">Like</button>'+
+    '<button type="button" data-sel-act="unlike">Unlike</button>'+
+    '<button type="button" data-sel-act="keep">Keep</button>'+
+    '<button type="button" data-sel-act="reject">Reject</button>'+
+    rate+label+
+    '<input type="text" class="sel-tag" list="sel-tag-list" placeholder="Tag" aria-label="Tag">'+
+    '<datalist id="sel-tag-list"></datalist>'+
+    '<button type="button" data-sel-act="tag">Tag</button>'+
+    '<button type="button" data-sel-act="untag">Untag</button>'+
+    '<button type="button" data-sel-act="rotate-ccw" title="Rotate left" aria-label="Rotate left">&#10226;</button>'+
+    '<button type="button" data-sel-act="rotate-cw" title="Rotate right" aria-label="Rotate right">&#10227;</button>'+
+    '<button type="button" data-sel-act="copy">Copy paths</button>'+
+    '<button type="button" data-sel-act="delete" class="sel-danger">Delete\u2026</button>'+
+    (selectionResult?'<span class="sel-hint sel-result" role="status">'+escH(selectionResult)+'</span>':'');
+}
+
+function selectionPost(url,body){
+  return fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
+    .then(function(r){
+      return r.json().catch(function(){return {};}).then(function(j){
+        if(!r.ok)throw new Error(j.error==='library_busy'
+          ?'Another videre command is working on this library; try again when it finishes.'
+          :(j.field?(j.field+' is invalid'):(j.error||('failed ('+r.status+')'))));
+        return j;
+      });
+    });
+}
+
+function showSelectionResult(text){
+  selectionResult=text;
+  if(fileSelection)fileSelection.renderBar();
+  loadSelectionTags();
+}
+
+function selectionMarks(body,describe){
+  var hashes=fileSelection.list();
+  body.hashes=hashes;
+  selectionPost('/api/files/marks',body).then(function(j){
+    if(body.liked!==undefined)hashes.forEach(function(h){ syncLikedMeta(h,body.liked); });
+    showSelectionResult(describe(j,hashes.length));
+  }).catch(function(e){ showSelectionResult(e.message); });
+}
+function selectionRate(sel){
+  if(sel.value==='')return;
+  var n=Number(sel.value);
+  selectionMarks({rating:n},function(_,c){ return n?('Rated '+c+' item(s) '+'★'.repeat(n)):('Cleared the rating of '+c+' item(s)'); });
+}
+function selectionLabel(sel){
+  if(sel.value==='')return;
+  var l=sel.value;
+  selectionMarks({label:l},function(_,c){ return l==='none'?('Cleared the label of '+c+' item(s)'):('Labeled '+c+' item(s) '+l); });
+}
+
+function selectionTag(remove){
+  var input=document.querySelector('#file-sel-bar .sel-tag');
+  var tag=input?input.value.trim():'';
+  if(!tag){ showSelectionResult('Type a tag first.'); return; }
+  var hashes=fileSelection.list();
+  var body={hashes:hashes};
+  body[remove?'remove':'add']=[tag];
+  selectionPost('/api/files/tags',body).then(function(){
+    showSelectionResult((remove?'Untagged ':'Tagged ')+hashes.length+' item(s) '+(remove?'from ':'with ')+tag);
+  }).catch(function(e){ showSelectionResult(e.message); });
+}
+
+function selectionRotate(direction){
+  var hashes=fileSelection.list();
+  selectionPost('/api/files/rotate',{hashes:hashes,direction:direction}).then(function(j){
+    // Reload the turned thumbnails; the server has already dropped their cache.
+    hashes.forEach(function(h){
+      document.querySelectorAll('[data-hash="'+CSS.escape(h)+'"] img').forEach(function(img){
+        var src=img.getAttribute('src')||'';
+        img.src=src+(src.indexOf('?')<0?'?':'&')+'r='+Date.now();
+      });
+    });
+    var text='Rotated '+j.rotated+' item(s)';
+    if(j.skipped)text+=', skipped '+j.skipped+' that cannot be rotated (videos, RAW)';
+    if(j.failed)text+=', '+j.failed+' failed';
+    showSelectionResult(text);
+  }).catch(function(e){ showSelectionResult(e.message); });
+}
+
+function selectionCopyPaths(){
+  var rows={};
+  [galleryFiles,(typeof dateFiles!=='undefined'&&dateFiles)||[]].forEach(function(list){
+    (list||[]).forEach(function(f){ if(!rows[f.hash])rows[f.hash]=f.path; });
+  });
+  var paths=fileSelection.list().map(function(h){return rows[h];}).filter(Boolean);
+  copyPath(paths.join('\n'));
+  showSelectionResult('Copied '+paths.length+' path(s)');
+}
+
+function loadSelectionTags(){
+  var list=document.getElementById('sel-tag-list');
+  if(!list)return;
+  fetch('/api/tags').then(function(r){return r.ok?r.json():[];}).then(function(tags){
+    list.innerHTML=tags.map(function(t){return '<option value="'+escA(t.tag)+'">';}).join('');
+  }).catch(function(){});
+}
+
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('#file-sel-bar [data-sel-act]');
+  if(!btn||!fileSelection)return;
+  switch(btn.dataset.selAct){
+    case 'like': selectionMarks({liked:true},function(_,c){return 'Liked '+c+' item(s)';}); break;
+    case 'unlike': selectionMarks({liked:false},function(_,c){return 'Unliked '+c+' item(s)';}); break;
+    case 'keep': selectionMarks({pick:'keep'},function(j,c){return j.pick==='none'?('Cleared Keep on '+c+' item(s)'):('Marked '+c+' item(s) Keep');}); break;
+    case 'reject': selectionMarks({pick:'reject'},function(j,c){return j.pick==='none'?('Cleared Reject on '+c+' item(s)'):('Marked '+c+' item(s) Reject');}); break;
+    case 'tag': selectionTag(false); break;
+    case 'untag': selectionTag(true); break;
+    case 'rotate-ccw': selectionRotate('ccw'); break;
+    case 'rotate-cw': selectionRotate('cw'); break;
+    case 'copy': selectionCopyPaths(); break;
+    case 'delete': selectionDelete(); break;
+  }
+});
+
+// Delete: count first (a dry run of the same request), say exactly what will
+// move, and only then move it. Files go to the system Trash, every copy of
+// each item.
+function selectionDelete(){
+  var hashes=fileSelection.list();
+  selectionPost('/api/files/delete',{hashes:hashes,dry_run:true}).then(function(c){
+    confirmDelete(c).then(function(ok){
+      if(!ok)return;
+      selectionPost('/api/files/delete',{hashes:hashes,dry_run:false}).then(function(r){
+        var gone={};
+        (r.trashed||[]).forEach(function(h){ gone[h]=true; });
+        var before=galleryFiles.length;
+        galleryFiles=galleryFiles.filter(function(f){ return !gone[f.hash]; });
+        // The next Show more pages from the server's shorter list.
+        gShown=Math.max(0,gShown-(before-galleryFiles.length));
+        if(typeof dateFiles!=='undefined'&&dateFiles)dateFiles=dateFiles.filter(function(f){ return !gone[f.hash]; });
+        renderCurrentMode();
+        fileSelection.remove(r.trashed||[]);
+        var text='Moved '+(r.trashed||[]).length+' item(s) to the Trash';
+        if(r.failed&&r.failed.length)text+='; '+r.failed.length+' file(s) could not be moved ('+r.failed[0].error+')';
+        showSelectionResult(text);
+      }).catch(function(e){ showSelectionResult(e.message); });
+    });
+  }).catch(function(e){ showSelectionResult(e.message); });
+}
+
+function confirmDelete(c){
+  return new Promise(function(resolve){
+    var parts=[];
+    if(c.photos)parts.push(c.photos+' photo'+(c.photos===1?'':'s'));
+    if(c.videos)parts.push(c.videos+' video'+(c.videos===1?'':'s'));
+    var copies=c.extra_copies?' and '+c.extra_copies+' extra cop'+(c.extra_copies===1?'y':'ies')+' of items with duplicates':'';
+    var d=document.createElement('dialog');
+    d.className='sel-confirm';
+    d.innerHTML='<h2>Move '+c.items+' item'+(c.items===1?'':'s')+' to the Trash?</h2>'+
+      '<p>'+c.files+' file'+(c.files===1?'':'s')+': '+escH(parts.join(', '))+copies+'.</p>'+
+      '<p>They go to the system Trash and can be restored from there. Their marks, tags and faces stay until <code>videre prune</code> clears data for missing files.</p>'+
+      '<div class="sel-confirm-actions"><button type="button" data-no autofocus>Cancel</button>'+
+      '<button type="button" data-yes class="primary">Move to Trash</button></div>';
+    document.body.appendChild(d);
+    function done(ok){ d.close(); d.remove(); resolve(ok); }
+    d.querySelector('[data-no]').addEventListener('click',function(){ done(false); });
+    d.querySelector('[data-yes]').addEventListener('click',function(){ done(true); });
+    d.addEventListener('cancel',function(e){ e.preventDefault(); done(false); });
+    d.showModal();
+  });
+}

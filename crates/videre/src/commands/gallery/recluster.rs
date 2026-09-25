@@ -8,6 +8,7 @@
 //! off the async workers, so a long pass does not hold the server's shared
 //! connection or stall other requests.
 
+use super::refusal::{failed, Refusal};
 use super::server::{guard_operation, internal, poisoned, settings_file, AppState};
 use crate::commands::cluster_settings;
 use axum::extract::State;
@@ -94,39 +95,6 @@ fn summary(
         saved: None,
         settings_error: None,
     }
-}
-
-/// Why a request was refused, turned into its response at the handler.
-enum Refusal {
-    BadParameter(&'static str),
-    Busy,
-    Status(StatusCode),
-}
-
-impl From<StatusCode> for Refusal {
-    fn from(status: StatusCode) -> Self {
-        Self::Status(status)
-    }
-}
-
-impl IntoResponse for Refusal {
-    fn into_response(self) -> Response {
-        match self {
-            Self::BadParameter(field) => (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "invalid_parameter", "field": field })),
-            )
-                .into_response(),
-            Self::Busy => {
-                (StatusCode::CONFLICT, Json(json!({ "error": "faces_busy" }))).into_response()
-            }
-            Self::Status(status) => status.into_response(),
-        }
-    }
-}
-
-fn failed<E: Into<anyhow::Error>>(e: E) -> Refusal {
-    Refusal::Status(internal(e))
 }
 
 /// A request's fields over the saved override over the built-in set.
@@ -224,9 +192,11 @@ fn apply(state: &AppState, params: ClusteringParameters) -> Result<ReclusterSumm
     // The same locks, in the same order, as watch's repair pass: the run's
     // identity, then activity, then the faces lock that detection and the
     // standalone command hold, so none of them can overlap this.
-    let _identity = try_command(library, "face-recluster").map_err(|_| Refusal::Busy)?;
-    let _activity = try_activity(library, ActivityMode::Shared).map_err(|_| Refusal::Busy)?;
-    let guard = try_command(library, "faces").map_err(|_| Refusal::Busy)?;
+    let _identity =
+        try_command(library, "face-recluster").map_err(|_| Refusal::Busy("faces_busy"))?;
+    let _activity =
+        try_activity(library, ActivityMode::Shared).map_err(|_| Refusal::Busy("faces_busy"))?;
+    let guard = try_command(library, "faces").map_err(|_| Refusal::Busy("faces_busy"))?;
     let conn = videre_core::library_db::open_existing(library).map_err(failed)?;
     let before = current_grouping(&conn).map_err(failed)?;
 
