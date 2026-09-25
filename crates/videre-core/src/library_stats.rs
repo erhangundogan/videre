@@ -134,6 +134,7 @@ pub fn compute_full_in(
 ///
 /// Grouped by extension rather than mime, with the mime shown alongside,
 /// because extension is what a user recognises and types into `--ext`.
+#[derive(Debug, Clone, Serialize)]
 pub struct TypeBreakdown {
     pub ext: String,
     pub mime: String,
@@ -178,7 +179,7 @@ mod tests {
             );",
         )
         .unwrap();
-        crate::db::ensure_file_hashes_columns(&conn);
+        crate::library_db::ensure_scan_schema(&conn).unwrap();
         conn
     }
 

@@ -579,14 +579,10 @@ conversions (HEIC, video) and the thumbnail/`original` caches are already
 upright pixels with no orientation tag; applying orientation again
 double-rotates.
 
-:warning: **`faces.oriented` marks which canvas a row's bbox/landmark are
-in**: NULL = raw sensor canvas (rows written before the fix), 1 = display
-canvas. Consumers that crop (face thumbnails) branch on it; old rows keep
-working through the legacy crop-then-orient branch, so partially repaired
-libraries render correctly without any migration. Rows written before the
-fix are not healed by upgrading: re-detect (`faces --reprocess`), re-embed
-(`embed --reprocess`), re-classify (`classify --reprocess`); see the
-troubleshooting docs for the recovery recipes.
+Every face row's bbox and landmark are on the display canvas, so face
+thumbnails decode upright and then crop. `faces.oriented` is written as 1 and
+nothing reads it: raw-canvas rows only existed in libraries older than schema
+3, which are refused.
 
 ### Logging goes through one tracing subscriber; errors are logged once
 
@@ -750,7 +746,6 @@ above.
 - Read timeout scales with size, stat timeout does not -> `videre_core::io_timeout::timeout_for_size`
 - Face clustering O(n^2) fixes (memory and time) -> `videre_core::face_cluster`
 - Source-file decodes are orientation-correct -> `videre_core::image_decode`
-- Detection canvas per row -> `faces.oriented`, `videre_core::face_db::FaceRow`
 - `watch --prune` cannot override the guards -> `commands::prune::PruneArgs::for_watch_stage`
 - `videre locations` is a global recompute -> `commands::locations`
 - One clustering parameter set; flag > `gallery.json` `faces.clustering` >

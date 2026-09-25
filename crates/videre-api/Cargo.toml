@@ -21,7 +21,6 @@ image = { version = "0.25", default-features = false, features = [
     "bmp",
     "tiff",
 ] }
-kamadak-exif = "0.5"
 anyhow = "1"
 tracing = "0.1"
 

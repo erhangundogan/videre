@@ -6,8 +6,10 @@ on:
   push:
     tags: ["v*"]
 
+# Read-only by default; each job that writes to the release says so. A job
+# added later starts with no write access unless it asks for it.
 permissions:
-  contents: write # required to upload release assets
+  contents: read
 
 jobs:
   # taiki-e/upload-rust-binary-action uploads *to an existing release*; pushing
@@ -16,9 +18,15 @@ jobs:
   # attempt. Created as a draft so a failing smoke job can stop it going public.
   create-release:
     name: create draft release
+    timeout-minutes: 10
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # creates the draft release
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # Nothing later in the job pushes or fetches with this token.
+          persist-credentials: false
       - name: Create or reuse the draft release
         shell: bash
         env:
@@ -70,11 +78,16 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write # uploads the archives to the draft release
     # Belt and braces: no build should take anywhere near this. The default is
     # 6 hours, which is how a queued job burned a night.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # Nothing later in the job pushes or fetches with this token.
+          persist-credentials: false
 
       - name: Add the target
         shell: bash
@@ -125,12 +138,20 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
+    # Write, although this job only downloads: the release is still a draft
+    # here, and the API shows drafts only to a token with write access. With
+    # read the download finds no release and the smoke test fails.
+    permissions:
+      contents: write
     timeout-minutes: 20
     steps:
       # Fixtures live in the repo (they are `exclude`d from the crate package,
       # not from git), so checkout gives the smoke test real JPEG/MOV/MP4 to
       # work on without downloading anything.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # Nothing later in the job pushes or fetches with this token.
+          persist-credentials: false
 
       - name: Download the built artifact
         shell: bash
@@ -178,10 +199,16 @@ jobs:
   # download that was never run.
   publish:
     name: publish the release
+    timeout-minutes: 10
     needs: smoke
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # undrafts the release
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # Nothing later in the job pushes or fetches with this token.
+          persist-credentials: false
       - name: Undraft
         shell: bash
         env:

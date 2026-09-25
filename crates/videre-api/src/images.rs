@@ -26,15 +26,8 @@ fn crop_face_square(img: &image::DynamicImage, bbox: [f32; 4]) -> image::Dynamic
         .resize_exact(140, 140, image::imageops::FilterType::Triangle)
 }
 
-/// Load, crop, and orientation-correct a face thumbnail.
-///
-/// `oriented` mirrors `faces.oriented` and says which canvas the bbox is in:
-///
-/// - `true`: the row was detected on the display canvas (every row written
-///   since the decode became orientation-correct). Decode upright, then crop.
-/// - `false` (every row written before the fix): the bbox is in the raw
-///   sensor canvas, so crop the raw decode first, then rotate the small
-///   square crop. Equivalent to the pre-fix behavior.
+/// Load, orientation-correct, and crop a face thumbnail. Face rows are
+/// detected on the display canvas, so the file is decoded upright first.
 ///
 /// bbox coordinates are stored in terms of the *full-size* decoded image
 /// (videre faces rescales detections back to original width/height before
@@ -48,12 +41,7 @@ fn crop_face_square(img: &image::DynamicImage, bbox: [f32; 4]) -> image::Dynamic
 /// `pub`: the static-page base64 thumbnail path (`face_thumb_b64` in
 /// `render`) also needs this exact crop+orientation logic, so it calls
 /// through here instead of keeping its own duplicate copy.
-pub fn make_face_thumb(
-    path: &str,
-    bbox: [f32; 4],
-    oriented: bool,
-    face_id: i64,
-) -> Option<image::DynamicImage> {
+pub fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image::DynamicImage> {
     let ext = std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
@@ -69,15 +57,7 @@ pub fn make_face_thumb(
     let decoded = match videre_core::io_timeout::run_with_timeout(
         videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
         move || {
-            if oriented {
-                videre_core::image_decode::decode_oriented_file(std::path::Path::new(&timeout_path))
-                    .map(|img| (img, None))
-            } else {
-                videre_core::image_decode::decode_raw_with_orientation(std::path::Path::new(
-                    &timeout_path,
-                ))
-                .map(|(img, o)| (img, Some(o)))
-            }
+            videre_core::image_decode::decode_oriented_file(std::path::Path::new(&timeout_path))
         },
     ) {
         Ok(Ok(img)) => img,
@@ -93,18 +73,7 @@ pub fn make_face_thumb(
             return None;
         }
     };
-    let (img, raw_canvas_orientation) = decoded;
-    let cropped = crop_face_square(&img, bbox);
-    match raw_canvas_orientation {
-        // Legacy row: the crop is still on the raw canvas; rotate the small
-        // square, exactly as the pre-fix code did.
-        Some(orientation) => {
-            let mut cropped = image::DynamicImage::ImageRgba8(cropped.to_rgba8());
-            cropped.apply_orientation(orientation);
-            Some(cropped)
-        }
-        None => Some(cropped),
-    }
+    Some(crop_face_square(&decoded, bbox))
 }
 
 /// Bounds a plain (non-HEIC) file read against a stale/disconnected mount
@@ -150,27 +119,22 @@ pub struct FaceLookup {
     pub bbox_json: String,
     pub file_path: String,
     pub hash: String,
-    /// Mirrors `faces.oriented`: which canvas `bbox_json` is in. `false`
-    /// (NULL in the DB) = legacy raw-canvas row written before the
-    /// orientation fix.
-    pub oriented: bool,
 }
 
 /// The cheap part of `face_image_bytes`: just the DB row. No image I/O.
 pub fn face_lookup(conn: &Connection, face_id: i64) -> Result<FaceLookup> {
-    let (bbox_json, file_path, hash, oriented): (String, String, String, i64) = conn
+    let (bbox_json, file_path, hash): (String, String, String) = conn
         .query_row(
-            "SELECT f.bbox, fh.path, f.hash, COALESCE(f.oriented, 0) FROM faces f \
+            "SELECT f.bbox, fh.path, f.hash FROM faces f \
              JOIN file_hashes fh ON f.hash = fh.hash WHERE f.id = ?1 LIMIT 1",
             [face_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .map_err(|_| Error::NotFound)?;
     Ok(FaceLookup {
         bbox_json,
         file_path,
         hash,
-        oriented: oriented != 0,
     })
 }
 
@@ -213,8 +177,7 @@ pub fn face_bytes_from_lookup(
         }
     }
 
-    let thumb = make_face_thumb(&lookup.file_path, bbox, lookup.oriented, face_id)
-        .ok_or(Error::NotFound)?;
+    let thumb = make_face_thumb(&lookup.file_path, bbox, face_id).ok_or(Error::NotFound)?;
     let mut buf = Vec::new();
     thumb
         .write_to(
@@ -344,19 +307,16 @@ pub fn original_image_bytes(
 mod tests {
     use super::*;
 
-    /// Both canvas branches must render the same upright face. The o6
-    /// fixture is the untagged original plus EXIF Orientation = 6, so:
-    /// - the oriented branch decodes it upright and crops with a bbox in
-    ///   display-canvas coordinates (center rotated: display center of a
-    ///   raw-centered bbox), while
-    /// - the legacy branch crops the raw canvas with the raw-canvas bbox and
-    ///   rotates the small square afterwards.
+    /// The crop comes from the upright image. The o6 fixture is the untagged
+    /// original plus EXIF Orientation = 6, so a display-canvas bbox must
+    /// render the same face as cropping the raw canvas and rotating the
+    /// square afterwards.
     ///
     /// Picking square bboxes centered on even coordinates makes the two
     /// regions pixel-identical after the integer rotation, so the crops must
     /// match exactly.
     #[test]
-    fn oriented_and_legacy_branches_render_the_same_upright_crop() {
+    fn a_face_thumbnail_is_cropped_from_the_upright_image() {
         let base = concat!(env!("CARGO_MANIFEST_DIR"), "/../videre/tests/fixtures");
         let tagged = format!("{base}/ai-generated-couple_o6.jpg");
 
@@ -379,15 +339,16 @@ mod tests {
             (display_center.1 + 200) as f32,
         ];
 
-        let legacy = make_face_thumb(&tagged, raw_bbox, false, 1).unwrap();
-        let oriented = make_face_thumb(&tagged, display_bbox, true, 1).unwrap();
-        assert_eq!(
-            (legacy.width(), legacy.height()),
-            (140, 140),
-            "both branches produce 140x140 thumbnails"
-        );
-        let a: Vec<u8> = legacy.to_rgb8().pixels().map(|p| p.0[0]).collect();
-        let b: Vec<u8> = oriented.to_rgb8().pixels().map(|p| p.0[0]).collect();
+        let (raw, orientation) =
+            videre_core::image_decode::decode_raw_with_orientation(std::path::Path::new(&tagged))
+                .unwrap();
+        let mut expected =
+            image::DynamicImage::ImageRgba8(crop_face_square(&raw, raw_bbox).to_rgba8());
+        expected.apply_orientation(orientation);
+        let thumb = make_face_thumb(&tagged, display_bbox, 1).unwrap();
+        assert_eq!((thumb.width(), thumb.height()), (140, 140));
+        let a: Vec<u8> = expected.to_rgb8().pixels().map(|p| p.0[0]).collect();
+        let b: Vec<u8> = thumb.to_rgb8().pixels().map(|p| p.0[0]).collect();
         let diff: u64 = a
             .iter()
             .zip(&b)
@@ -395,25 +356,8 @@ mod tests {
             .sum();
         assert!(
             diff < 1000,
-            "both branches must render the same upright face, sum |diff| = {diff}"
+            "the thumbnail must show the upright face, sum |diff| = {diff}"
         );
-    }
-
-    /// A row flagged oriented must not silently fall back to raw-canvas
-    /// cropping: the two bboxes above only produce the same crop because the
-    /// branches differ. A wrong flag must be visible as a wrong crop.
-    #[test]
-    fn the_oriented_flag_actually_changes_the_crop() {
-        let base = concat!(env!("CARGO_MANIFEST_DIR"), "/../videre/tests/fixtures");
-        let tagged = format!("{base}/ai-generated-couple_o6.jpg");
-        // The raw-canvas bbox fed to the oriented branch crops a rotated view
-        // of the same region, which for this asymmetric fixture differs.
-        let raw_bbox = [400.0, 572.0, 800.0, 972.0];
-        let as_legacy = make_face_thumb(&tagged, raw_bbox, false, 1).unwrap();
-        let as_oriented = make_face_thumb(&tagged, raw_bbox, true, 1).unwrap();
-        let a: Vec<u8> = as_legacy.to_rgb8().pixels().map(|p| p.0[0]).collect();
-        let b: Vec<u8> = as_oriented.to_rgb8().pixels().map(|p| p.0[0]).collect();
-        assert_ne!(a, b, "the flag must select between two different canvases");
     }
 
     #[test]
@@ -477,7 +421,6 @@ mod tests {
             bbox_json: "10,20,30,40".to_string(),
             file_path: temp.path().join("missing.jpg").to_string_lossy().into(),
             hash: "face-cache-hash".to_string(),
-            oriented: true,
         };
         let bbox = [10.0, 20.0, 40.0, 60.0];
         let cache_path = videre_core::thumb_cache::face_thumb_path_in(
@@ -507,7 +450,6 @@ mod tests {
                 bbox_json: bbox_json.to_string(),
                 file_path: temp.path().join("missing.jpg").to_string_lossy().into(),
                 hash: "bad-bbox-hash".to_string(),
-                oriented: false,
             };
             assert!(matches!(
                 face_bytes_from_lookup(&lookup, 1, &ctx.cache),

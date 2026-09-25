@@ -1,16 +1,12 @@
 use crate::types::FileRecord;
 use rusqlite::{params, Result};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-pub fn write_records(records: &[FileRecord], db_path: &Path) -> Result<()> {
+/// Write records to a database at a path, opening its own connection, for
+/// tests. Commands write through [`write_records_in`].
+#[cfg(test)]
+fn write_records(records: &[FileRecord], db_path: &std::path::Path) -> Result<()> {
     let conn = videre_core::db::open_wal(db_path)?;
-
-    // One implementation of the scan schema, in core: this used to own a
-    // duplicate of the DDL plus the swallowed-ALTER migrations, which is
-    // exactly the shape that drifts from the real schema. The core version
-    // inspects PRAGMA table_info and adds only the columns that are missing.
-    videre_core::library_db::ensure_scan_schema(&conn)?;
-
     write_records_to(&conn, records)
 }
 
@@ -84,14 +80,10 @@ fn write_records_to(conn: &rusqlite::Connection, records: &[FileRecord]) -> Resu
     Ok(())
 }
 
-/// Read every file_hashes row back as FileRecords (the inverse of write_records;
-/// used by consumers that need records without re-scanning the filesystem).
-/// Load every file record from a path, opening its own connection.
-///
-/// Retained for the still-inactive callers (MCP's duplicate tool) that hold no
-/// connection yet. Directory-local commands hold a validated connection already
-/// and use [`load_records_from`] instead, which never opens or creates a file.
-pub fn load_records(db_path: &Path) -> Result<Vec<FileRecord>> {
+/// Load every file record from a path, opening its own connection: the
+/// inverse of `write_records`, for tests.
+#[cfg(test)]
+fn load_records(db_path: &std::path::Path) -> Result<Vec<FileRecord>> {
     let conn = videre_core::db::open_wal(db_path)?;
     load_records_from(&conn)
 }
