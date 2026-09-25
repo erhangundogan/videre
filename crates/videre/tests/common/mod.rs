@@ -273,7 +273,30 @@ impl TestLibrary {
 
     /// Open the existing local database without creating one.
     pub fn conn(&self) -> rusqlite::Connection {
-        videre_core::library_db::open_existing(&self.context()).unwrap()
+        videre_core::library_db::open_existing(&self.context()).unwrap_or_else(|err| {
+            panic!(
+                "open existing test library failed: {err:#}; {}",
+                self.activity_lock_diagnostic()
+            )
+        })
+    }
+
+    /// Identify the disposable lock file after a failed test acquisition.
+    /// This stays in the test harness so production error paths do no extra I/O.
+    pub fn activity_lock_diagnostic(&self) -> String {
+        use std::os::unix::fs::MetadataExt;
+
+        let path = self.root.join(".videre/locks/activity.lock");
+        match std::fs::metadata(&path) {
+            Ok(meta) => format!(
+                "activity_lock={} dev={} ino={} nlink={}",
+                path.display(),
+                meta.dev(),
+                meta.ino(),
+                meta.nlink()
+            ),
+            Err(err) => format!("activity_lock={} metadata_error={err}", path.display()),
+        }
     }
 
     /// Open the existing local database, or `None` when another videre

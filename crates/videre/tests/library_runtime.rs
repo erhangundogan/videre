@@ -290,7 +290,65 @@ fn independent_libraries_run_exclusive_maintenance_at_the_same_time() {
     drop(library_db::initialize(&cb).unwrap());
 
     let ex_a = library_locks::try_activity(&ca, ActivityMode::Exclusive).unwrap();
-    let ex_b = library_locks::try_activity(&cb, ActivityMode::Exclusive).unwrap();
+    let ex_b = library_locks::try_activity(&cb, ActivityMode::Exclusive).unwrap_or_else(|err| {
+        panic!(
+            "independent libraries contended: {err:#}; a: {}; b: {}",
+            a.activity_lock_diagnostic(),
+            b.activity_lock_diagnostic()
+        )
+    });
     drop(ex_a);
     drop(ex_b);
+}
+
+#[test]
+#[ignore = "temporary macOS runner lock diagnostic"]
+fn diagnostic_probe_repeated_library_activity_locks() {
+    // The normal test above caught a CI flake once. Repeat its sequence and
+    // an open-after-initialize sequence without model weights or user data.
+    for attempt in 0..256 {
+        let a = TestLibrary::new();
+        let b = TestLibrary::new();
+        let ca = a.context();
+        let cb = b.context();
+        drop(
+            library_db::initialize(&ca)
+                .unwrap_or_else(|err| panic!("attempt {attempt}: initialize a: {err:#}")),
+        );
+        drop(
+            library_db::initialize(&cb)
+                .unwrap_or_else(|err| panic!("attempt {attempt}: initialize b: {err:#}")),
+        );
+
+        let ex_a =
+            library_locks::try_activity(&ca, ActivityMode::Exclusive).unwrap_or_else(|err| {
+                panic!(
+                    "attempt {attempt}: lock a: {err:#}; {}",
+                    a.activity_lock_diagnostic()
+                )
+            });
+        let ex_b =
+            library_locks::try_activity(&cb, ActivityMode::Exclusive).unwrap_or_else(|err| {
+                panic!(
+                    "attempt {attempt}: lock b: {err:#}; a: {}; b: {}",
+                    a.activity_lock_diagnostic(),
+                    b.activity_lock_diagnostic()
+                )
+            });
+        drop(ex_a);
+        drop(ex_b);
+
+        drop(library_db::open_existing(&ca).unwrap_or_else(|err| {
+            panic!(
+                "attempt {attempt}: reopen a: {err:#}; {}",
+                a.activity_lock_diagnostic()
+            )
+        }));
+        drop(library_db::open_existing(&cb).unwrap_or_else(|err| {
+            panic!(
+                "attempt {attempt}: reopen b: {err:#}; {}",
+                b.activity_lock_diagnostic()
+            )
+        }));
+    }
 }
