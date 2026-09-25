@@ -205,7 +205,7 @@ fn persist_training(
     deps: &LearningDeps,
     generation: u64,
     run: &TrainingRun,
-) -> Result<i64, String> {
+) -> Result<videre_api::TrainedProfileSummary, String> {
     let summary =
         videre_api::persist_trained_profile(conn, &deps.embedding_model_id, run, &deps.gates)
             .map_err(|e| e.to_string())?;
@@ -224,7 +224,7 @@ fn persist_training(
     // per row.
     mark_generation_trained(conn, generation, Some(summary.profile_id))
         .map_err(|e| e.to_string())?;
-    Ok(summary.profile_id)
+    Ok(summary)
 }
 
 /// One training cycle. The connection lock is held only in phases 1 and 3;
@@ -241,6 +241,7 @@ async fn run_cycle(deps: &LearningDeps) {
         return;
     };
     let generation = prepared.generation;
+    tracing::debug!("face learning: training generation {generation}");
     let snapshot = prepared.snapshot;
     let train = deps.train.clone();
     let config = deps.config.clone();
@@ -249,8 +250,21 @@ async fn run_cycle(deps: &LearningDeps) {
     let conn = deps.conn.lock().expect("learning connection poisoned");
     match trained {
         Ok(Ok(run)) => match persist_training(&conn, deps, generation, &run) {
-            Ok(profile_id) => {
-                tracing::debug!(generation, profile_id, "face learning: trained");
+            Ok(summary) if summary.promoted => {
+                tracing::info!(
+                    "face learning: generation {generation} promoted, profile {} in use",
+                    summary.profile_id
+                );
+            }
+            Ok(summary) => {
+                let reason = videre_api::rejection_reason(&conn, summary.profile_id)
+                    .ok()
+                    .flatten()
+                    .map(|r| format!(" ({r})"))
+                    .unwrap_or_default();
+                tracing::info!(
+                    "face learning: generation {generation} did not pass the quality checks{reason}; previous profile kept"
+                );
             }
             Err(error) => record_failure(&conn, generation, &error),
         },
@@ -258,7 +272,7 @@ async fn run_cycle(deps: &LearningDeps) {
             // Too little feedback yet is the normal state of a young library,
             // not a failure: the page asks for what is missing.
             Some(needed) => {
-                tracing::debug!(generation, %error, "face learning: waiting for feedback: {needed}");
+                tracing::info!("face learning: waiting for feedback: {needed}");
                 if let Err(write) = mark_training_waiting(&conn, generation, &needed) {
                     // The state stays training until the next start retires
                     // it; say why here, where the cause is known.
@@ -266,6 +280,15 @@ async fn run_cycle(deps: &LearningDeps) {
                         "face learning: could not record waiting for generation {generation}: {write}"
                     );
                 }
+            }
+            // A fit that does not converge is an expected outcome on little or
+            // lopsided feedback, handled by keeping the previous profile: worth
+            // a line, not a warning.
+            None if matches!(error, TrainingError::NonConvergence) => {
+                tracing::info!(
+                    "face learning: generation {generation} did not converge; previous profile kept, retries after new feedback"
+                );
+                let _ = mark_training_failed(&conn, generation, &error.to_string());
             }
             None => record_failure(&conn, generation, &error.to_string()),
         },

@@ -12,6 +12,7 @@ mod stats;
 mod types;
 
 pub use error::{Error, Result};
+pub use faces::rejection_reason;
 pub use faces::FaceLearningEventProof;
 pub use faces::{
     answer_question_with_learning, assign, assign_with_learning, cluster_detail, delete_person,
@@ -29,7 +30,7 @@ pub use label::sanitize_person_label;
 pub use pipeline_status::{pipeline_status, PipelineRunStatus};
 pub use stats::{library_stats, LibraryStats};
 pub use types::{
-    ClusterData, ClusterDetail, ClusterFaceData, FaceLearningStatus, FacesData,
+    ActiveProfile, ClusterData, ClusterDetail, ClusterFaceData, FaceLearningStatus, FacesData,
     LearningAcknowledgement, PersonData, PersonDetail, PersonFaceData, QuestionAnswerOutcome,
     SingletonData, TeachingContext, TrainedProfileSummary,
 };
