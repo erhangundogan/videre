@@ -20,7 +20,8 @@ A local-first tool for making sense of a folder full of photos and videos.
 - import from Google Takeout, Apple Photos, or a Lightroom catalog
 - browse it all in `videre gallery`, a local web UI with every file, duplicate
   review, a date drill-down, face clusters and people, a map view, and automatic
-  time-and-place events
+  time-and-place events, and select many photos at once to rate, tag, rotate or
+  move to the Trash
 - fix wrong file dates from the camera's own EXIF data
 - group photos by where they were taken
 
