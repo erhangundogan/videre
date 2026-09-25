@@ -891,7 +891,11 @@ fn run_recluster_stage(
                 }
                 return Ok(());
             }
-            let params = videre_ml::cluster_params::ClusteringParameters::default();
+            let params = super::cluster_settings::resolve_for_run(
+                &ctx.library.paths.state,
+                &videre_ml::cluster_params::PartialClusteringParameters::default(),
+                args.silent,
+            );
             let clustering = run_clustering(conn, &params, args.silent)?;
             videre_core::face_db::advance_recluster_watermark(conn)?;
             if !args.silent {

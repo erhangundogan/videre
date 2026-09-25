@@ -128,6 +128,33 @@ impl PartialClusteringParameters {
         }
     }
 
+    /// Overwrite the fields this sets, in another partial set.
+    pub fn apply_to_partial(&self, target: &mut Self) {
+        target.eps = self.eps.or(target.eps);
+        target.min_cluster_size = self.min_cluster_size.or(target.min_cluster_size);
+        target.merge_sim = self.merge_sim.or(target.merge_sim);
+        target.min_face_size = self.min_face_size.or(target.min_face_size);
+        target.max_generic_sim = self.max_generic_sim.or(target.max_generic_sim);
+        target.max_landmark_error = self.max_landmark_error.or(target.max_landmark_error);
+        target.min_blur = self.min_blur.or(target.min_blur);
+        target.attach_sim = self.attach_sim.or(target.attach_sim);
+    }
+
+    /// Copy one field, by the name [`fields`](Self::fields) gives it.
+    pub fn copy_field_to(&self, name: &str, target: &mut Self) {
+        match name {
+            "eps" => target.eps = self.eps,
+            "min_cluster_size" => target.min_cluster_size = self.min_cluster_size,
+            "merge_sim" => target.merge_sim = self.merge_sim,
+            "min_face_size" => target.min_face_size = self.min_face_size,
+            "max_generic_sim" => target.max_generic_sim = self.max_generic_sim,
+            "max_landmark_error" => target.max_landmark_error = self.max_landmark_error,
+            "min_blur" => target.min_blur = self.min_blur,
+            "attach_sim" => target.attach_sim = self.attach_sim,
+            _ => {}
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
     }

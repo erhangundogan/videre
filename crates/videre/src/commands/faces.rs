@@ -71,23 +71,23 @@ pub struct FacesArgs {
     #[arg(long)]
     silent: bool,
     /// Average-linkage cosine-distance radius (0 = identical, 2 = opposite). Default 0.6.
-    #[arg(long, default_value = "0.6")]
-    eps: f32,
+    #[arg(long)]
+    eps: Option<f32>,
     /// Minimum faces per cluster (below this, faces are left as singletons). Default 3.
-    #[arg(long, default_value = "3")]
-    min_cluster_size: usize,
+    #[arg(long)]
+    min_cluster_size: Option<usize>,
     /// Centroid-merge similarity: after clustering, clusters whose mean embeddings
     /// are at least this cosine-similar are merged (reunites one person's fragmented
     /// clusters). RAISE it to merge less and keep people apart, lower it to merge
     /// more. 1 = no merging at all, 0 = merge everything into one cluster.
     /// Default 0.35.
-    #[arg(long, default_value = "0.35")]
-    merge_sim: f32,
+    #[arg(long)]
+    merge_sim: Option<f32>,
     /// Minimum face size (smaller bbox side, px) to take part in clustering. Smaller
     /// faces embed poorly and pile into a mixed junk cluster, so they are held out as
     /// unassigned singletons. 0 disables the gate. Default 80.
-    #[arg(long, default_value = "80")]
-    min_face_size: f32,
+    #[arg(long)]
+    min_face_size: Option<f32>,
     /// Process at most N not-yet-scanned images this run, then stop. Resumable: each
     /// run records what it scanned (including images with no faces) and a rerun
     /// continues where it left off. Clustering is skipped on a limited run. Run
@@ -97,31 +97,31 @@ pub struct FacesArgs {
     /// Distinctiveness gate: faces whose embedding is more than this cosine-similar to
     /// the population-average face (occluded/profile/blurry/false detections) are held
     /// out of clustering. Lower = stricter. 1 disables. Default 0.4.
-    #[arg(long, default_value = "0.4")]
-    max_generic_sim: f32,
+    #[arg(long)]
+    max_generic_sim: Option<f32>,
 
     /// Alignment gate: faces whose 5 landmarks are further than this (RMS
     /// pixels, on the 112x112 ArcFace template) from being a face shape are
     /// held out of clustering. Raise to admit more, or set high to disable.
     /// Default 7. A held-out face becomes a singleton, which is a smaller error
     /// than a wrong group.
-    #[arg(long, default_value_t = videre_core::face_cluster::DEFAULT_MAX_LANDMARK_ERR)]
-    max_landmark_error: f32,
+    #[arg(long)]
+    max_landmark_error: Option<f32>,
 
     /// Second pass: after clustering, a leftover face joins the cluster holding
     /// its nearest face when that face is at least this similar. Average linkage
     /// asks a new photo to resemble the mean of a whole cluster, which a person
     /// photographed over many years will fail even when three members match it
     /// almost exactly. 1 disables the pass. Default 0.40.
-    #[arg(long, default_value_t = videre_core::face_cluster::DEFAULT_ATTACH_SIM)]
-    attach_sim: f32,
+    #[arg(long)]
+    attach_sim: Option<f32>,
 
     /// Sharpness gate: faces whose aligned crop has a Laplacian variance below
     /// this are held out of clustering. A crop too soft to read carries almost
     /// no identity, so such faces resemble each other rather than their owner.
     /// 0 disables. Default 80
-    #[arg(long, default_value_t = videre_core::face_cluster::DEFAULT_MIN_BLUR)]
-    min_blur: f32,
+    #[arg(long)]
+    min_blur: Option<f32>,
     /// Print per-stage timing (load/detect/align/embed/db_write, load split
     /// HEIC vs. other) averaged per image, after the run finishes. A tuning
     /// tool, not part of the normal summary. See
@@ -153,8 +153,10 @@ pub struct FacesArgs {
 }
 
 impl FacesArgs {
-    fn clustering(&self) -> videre_ml::cluster_params::ClusteringParameters {
-        videre_ml::cluster_params::ClusteringParameters {
+    /// The clustering flags given on the command line; the rest come from the
+    /// library's gallery settings or the built-in set (`cluster_settings`).
+    fn cluster_flags(&self) -> videre_ml::cluster_params::PartialClusteringParameters {
+        videre_ml::cluster_params::PartialClusteringParameters {
             eps: self.eps,
             min_cluster_size: self.min_cluster_size,
             merge_sim: self.merge_sim,
@@ -164,6 +166,14 @@ impl FacesArgs {
             min_blur: self.min_blur,
             attach_sim: self.attach_sim,
         }
+    }
+
+    fn clustering(&self, ctx: &CommandContext) -> videre_ml::cluster_params::ClusteringParameters {
+        super::cluster_settings::resolve_for_run(
+            &ctx.library.paths.state,
+            &self.cluster_flags(),
+            self.silent,
+        )
     }
 
     /// Pipeline-stage defaults: no selection, clap defaults for every knob,
@@ -286,7 +296,7 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
     if args.evaluate {
         validate_evaluation_arguments(&args)?;
         conn.execute_batch("PRAGMA query_only = ON")?;
-        let parameters = args.clustering();
+        let parameters = args.clustering(ctx);
         let report = videre_ml::evaluation::evaluate_current_clustering(&conn, &parameters)?;
         if args.json {
             println!("{}", serde_json::to_string_pretty(&report)?);
@@ -462,13 +472,14 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
         }
         // Skip detection; jump straight to clustering
         if !args.dry_run {
-            let clustering = run_clustering(&conn, &args.clustering(), args.silent)?;
+            let params = args.clustering(ctx);
+            let clustering = run_clustering(&conn, &params, args.silent)?;
             // This pass covered every face now in the table: record it, so
             // watch's watermark gate does not re-run the same repair the
             // standalone command just did.
             videre_core::face_db::advance_recluster_watermark(&conn)?;
             if !args.silent {
-                tracing::info!("{}", format_clustering_only_summary(clustering, args.eps));
+                tracing::info!("{}", format_clustering_only_summary(clustering, params.eps));
             }
         }
         return Ok(());
@@ -578,11 +589,15 @@ fn run_detection_and_clustering(
     // clustering is an O(n^2) whole-library step and re-running it after every
     // small chunk is wasted work. On a limited run, tell the user to cluster once
     // they've finished scanning.
-    let clustering = if !args.dry_run && args.limit.is_none() {
-        run_clustering(conn, &args.clustering(), args.silent)?
-    } else {
-        None
+    let params = (!args.dry_run && args.limit.is_none()).then(|| args.clustering(ctx));
+    let clustering = match &params {
+        Some(params) => run_clustering(conn, params, args.silent)?,
+        None => None,
     };
+    let eps = params.map_or(
+        videre_ml::cluster_params::ClusteringParameters::default().eps,
+        |p| p.eps,
+    );
     if !args.dry_run && args.limit.is_none() {
         // This pass covered every face now in the table: record it, so
         // watch's watermark gate does not re-run the same repair the
@@ -593,7 +608,7 @@ fn run_detection_and_clustering(
     if !args.silent {
         tracing::info!(
             "{}",
-            format_summary(&result, clustering, args.eps, started.elapsed())
+            format_summary(&result, clustering, eps, started.elapsed())
         );
         if args.limit.is_some() && !args.dry_run {
             let remaining = face_db::scanned_hashes(conn)?.len();
@@ -688,7 +703,9 @@ mod tests {
         let a = FacesArgs::for_pipeline(true);
         assert!(a.silent);
         assert_eq!(a.batch, 8);
-        assert_eq!(a.min_cluster_size, 3);
+        // No clustering flag is set, so the pipeline stage takes gallery.json or
+        // the built-in set, like a bare `videre faces`.
+        assert!(a.cluster_flags().is_empty());
     }
 
     #[test]
@@ -734,9 +751,13 @@ mod tests {
         .unwrap()
         .a;
         assert!(args.evaluate && args.json);
-        assert_eq!(args.eps, 0.1);
-        assert_eq!(args.min_cluster_size, 2);
-        assert_eq!(args.attach_sim, 1.0);
+        assert_eq!(args.eps, Some(0.1));
+        assert_eq!(args.min_cluster_size, Some(2));
+        assert_eq!(args.attach_sim, Some(1.0));
+        assert_eq!(
+            args.merge_sim, None,
+            "an unset flag defers to gallery.json or the default"
+        );
         assert!(Wrap::try_parse_from(["faces", "--json"]).is_err());
     }
 
