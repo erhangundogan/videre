@@ -153,6 +153,19 @@ pub struct FacesArgs {
 }
 
 impl FacesArgs {
+    fn clustering(&self) -> videre_ml::cluster_params::ClusteringParameters {
+        videre_ml::cluster_params::ClusteringParameters {
+            eps: self.eps,
+            min_cluster_size: self.min_cluster_size,
+            merge_sim: self.merge_sim,
+            min_face_size: self.min_face_size,
+            max_generic_sim: self.max_generic_sim,
+            max_landmark_error: self.max_landmark_error,
+            min_blur: self.min_blur,
+            attach_sim: self.attach_sim,
+        }
+    }
+
     /// Pipeline-stage defaults: no selection, clap defaults for every knob,
     /// silence controlled by the pipeline. Parsing an empty argv keeps
     /// defaults from drifting from the flag definitions.
@@ -273,16 +286,7 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
     if args.evaluate {
         validate_evaluation_arguments(&args)?;
         conn.execute_batch("PRAGMA query_only = ON")?;
-        let parameters = videre_ml::evaluation::ClusteringParameters {
-            eps: args.eps,
-            min_cluster_size: args.min_cluster_size,
-            merge_sim: args.merge_sim,
-            min_face_size: args.min_face_size,
-            max_generic_sim: args.max_generic_sim,
-            max_landmark_error: args.max_landmark_error,
-            min_blur: args.min_blur,
-            attach_sim: args.attach_sim,
-        };
+        let parameters = args.clustering();
         let report = videre_ml::evaluation::evaluate_current_clustering(&conn, &parameters)?;
         if args.json {
             println!("{}", serde_json::to_string_pretty(&report)?);
@@ -458,18 +462,7 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
         }
         // Skip detection; jump straight to clustering
         if !args.dry_run {
-            let clustering = run_clustering(
-                &conn,
-                args.eps,
-                args.min_cluster_size,
-                args.merge_sim,
-                args.min_face_size,
-                args.max_generic_sim,
-                args.max_landmark_error,
-                args.min_blur,
-                args.attach_sim,
-                args.silent,
-            )?;
+            let clustering = run_clustering(&conn, &args.clustering(), args.silent)?;
             // This pass covered every face now in the table: record it, so
             // watch's watermark gate does not re-run the same repair the
             // standalone command just did.
@@ -586,18 +579,7 @@ fn run_detection_and_clustering(
     // small chunk is wasted work. On a limited run, tell the user to cluster once
     // they've finished scanning.
     let clustering = if !args.dry_run && args.limit.is_none() {
-        run_clustering(
-            conn,
-            args.eps,
-            args.min_cluster_size,
-            args.merge_sim,
-            args.min_face_size,
-            args.max_generic_sim,
-            args.max_landmark_error,
-            args.min_blur,
-            args.attach_sim,
-            args.silent,
-        )?
+        run_clustering(conn, &args.clustering(), args.silent)?
     } else {
         None
     };
@@ -813,6 +795,7 @@ mod tests {
             total_faces: 187,
             clustered_faces: 152,
             cluster_count: 14,
+            held_out: 0,
         });
         let summary = format_summary(&result, clustering, 0.6, std::time::Duration::from_secs(41));
         assert_eq!(
@@ -833,6 +816,7 @@ mod tests {
             total_faces: 187,
             clustered_faces: 152,
             cluster_count: 14,
+            held_out: 0,
         });
         let summary = format_summary(&result, clustering, 0.6, std::time::Duration::from_secs(41));
         assert_eq!(
@@ -862,6 +846,7 @@ mod tests {
             total_faces: 187,
             clustered_faces: 152,
             cluster_count: 14,
+            held_out: 0,
         });
         let summary = format_clustering_only_summary(clustering, 0.6);
         assert_eq!(summary, "152/187 faces clustered into 14 people (eps=0.60)");

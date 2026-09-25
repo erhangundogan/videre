@@ -1,4 +1,5 @@
 pub mod classify;
+pub mod cluster_params;
 pub mod device;
 pub mod evaluation;
 pub mod face_align;
