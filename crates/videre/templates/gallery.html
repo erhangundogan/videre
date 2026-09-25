@@ -27,7 +27,7 @@
   <button type="button" class="lb-nav lb-next" id="lb-next" aria-label="Next" onclick="event.stopPropagation();lbStep(1)" hidden>&#8250;</button>
 </div>
 {% if show_header %}<div class="header"><p class="hmeta"><span class="hlabel">Library:</span> {{ library|safe }}</p><p class="hmeta"><span class="hlabel">Date:</span> {{ generated_at }}</p><p class="hmeta"><span class="hlabel">Files/Embedding Count:</span> {{ total_files }}/{% if let Some(n) = embedded %}{{ n }}{% else %}0{% endif %}</p></div>{% endif %}
-{% if has_groups %}<div class="gallery-toolbar"><label class="view-toggle">Sort by <select id="sort-select" onchange="sortGroups(this.value)"><option value="waste">Wasted space</option><option value="date-asc">Date kept (oldest first)</option><option value="date-desc">Date kept (newest first)</option></select></label><button onclick="expandAll()">Expand all</button><button onclick="collapseAll()">Collapse all</button><span class="info" id="shown-info">{{ duplicate_groups }} groups</span></div>
+{% if has_groups %}<div class="gallery-toolbar"><label class="view-toggle">Sort <select id="sort-select" onchange="sortGroups(this.value)"><option value="waste">Wasted space</option><option value="date-asc">Date kept (oldest first)</option><option value="date-desc">Date kept (newest first)</option></select></label><button onclick="expandAll()">Expand all</button><button onclick="collapseAll()">Collapse all</button><span class="info" id="shown-info">{{ duplicate_groups }} groups</span></div>
 <div class="groups" id="groups-container"></div>
 <div class="more-wrap"><button id="more-btn" onclick="showMore()"></button></div>
 {% endif %}{% if all_files_count.is_some() %}<div class="results-panel" id="results" style="display:none"></div>
