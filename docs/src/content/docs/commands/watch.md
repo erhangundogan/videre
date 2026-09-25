@@ -78,6 +78,11 @@ regroup. Until that pass, a brand-new face is detected but not yet assigned to
 a person. If you want it grouped immediately, run [`videre
 faces`](/commands/faces/), whose own regroup satisfies the same gate.
 
+The regroup uses the same grouping values as `videre faces`: the ones the
+gallery's People page saved for this library with **Recluster**, where it did,
+otherwise the defaults. It prints one line when saved values are in use; see
+[clustering parameters](/commands/faces/#clustering-parameters).
+
 Every tracked stage records a run in the pipeline table, so
 [`videre status`](/commands/status/) shows its last run and whether it
 succeeded. The location stage reports as **`location-names`**, deliberately

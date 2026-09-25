@@ -72,6 +72,13 @@ taken or refused, how long each `pipeline` and `watch` stage took, files
 skipped after repeated decode failures, and thumbnail cache hits and misses.
 Use it when reporting a problem; it grows quickly.
 
+For `videre gallery`, `info` also records what face learning concluded, which
+the People page keeps quiet about by default: a generation promoted to the
+profile in use, one that missed the quality checks (and which check), and what
+feedback it is waiting for. A training fit that does not converge is recorded
+there too; it is an expected outcome with little feedback and the previous
+profile stays in use, so it is not a warning.
+
 When a file reaches `log-max-size-mb` it is renamed to `.1` (the previous `.1`
 becomes `.2`, and so on) and a new file starts. At most `log-keep` rotated files
 are kept, and rotated files older than `log-max-age-days` are deleted the next
