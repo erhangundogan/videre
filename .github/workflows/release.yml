@@ -6,8 +6,10 @@ on:
   push:
     tags: ["v*"]
 
+# Read-only by default; each job that writes to the release says so. A job
+# added later starts with no write access unless it asks for it.
 permissions:
-  contents: write # required to upload release assets
+  contents: read
 
 jobs:
   # taiki-e/upload-rust-binary-action uploads *to an existing release*; pushing
@@ -17,6 +19,8 @@ jobs:
   create-release:
     name: create draft release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # creates the draft release
     steps:
       - uses: actions/checkout@v5
       - name: Create or reuse the draft release
@@ -70,6 +74,8 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write # uploads the archives to the draft release
     # Belt and braces: no build should take anywhere near this. The default is
     # 6 hours, which is how a queued job burned a night.
     timeout-minutes: 45
@@ -125,6 +131,11 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
+    # Write, although this job only downloads: the release is still a draft
+    # here, and the API shows drafts only to a token with write access. With
+    # read the download finds no release and the smoke test fails.
+    permissions:
+      contents: write
     timeout-minutes: 20
     steps:
       # Fixtures live in the repo (they are `exclude`d from the crate package,
@@ -180,6 +191,8 @@ jobs:
     name: publish the release
     needs: smoke
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # undrafts the release
     steps:
       - uses: actions/checkout@v5
       - name: Undraft
