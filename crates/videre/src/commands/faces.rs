@@ -61,7 +61,8 @@ pub struct FacesArgs {
     #[arg(long)]
     yes: bool,
     /// Regroup unassigned faces only. Labeled people are never moved; tuning
-    /// flags make experimentation safe
+    /// flags make experimentation safe. A tuning flag left unset takes the
+    /// value the gallery's Recluster saved, else its default
     #[arg(long)]
     recluster: bool,
     #[arg(long, default_value = "8")]
@@ -129,22 +130,15 @@ pub struct FacesArgs {
     profile: bool,
     /// Number of worker threads for face detection/embedding (each with its
     /// own ONNX sessions, intra-op-thread-capped so they don't collectively
-    /// oversubscribe the machine). Defaults to 2x available core count: real
-    /// profiling data showed HEIC file loading (via a qlmanage subprocess)
-    /// averages ~52x longer than non-HEIC loading and dominates the whole
-    /// per-image cost, so a flat 1:1 worker:core mapping
-    /// leaves CPU idle while many workers sit blocked on that subprocess,
-    /// oversubscribing keeps cores busy with other workers' CPU-bound
-    /// detect/embed work while some workers wait on I/O.
+    /// oversubscribe the machine). Default 2x the core count: loading a HEIC
+    /// through QuickLook takes far longer than detection, so extra workers
+    /// keep the cores busy while others wait on it.
     #[arg(long)]
     workers: Option<usize>,
     /// Max concurrent `qlmanage` subprocesses (HEIC decoding), process-wide.
-    /// Default 6 (raised from 3 after real profiling showed HEIC-heavy runs
-    /// leaving CPU idle under `--workers`'s default 2x-cores worker count).
-    /// Raising this further trades a known-safe default for an untested one:
-    /// QuickLook's thumbnail agent and the source drive's I/O may not
-    /// actually sustain more concurrent conversions, so treat higher values
-    /// as an experiment to re-measure with `--profile`, not a guaranteed win.
+    /// Default 6. Higher values are untested: QuickLook and the source drive
+    /// may not sustain more concurrent conversions, so measure with
+    /// `--profile` before relying on one.
     #[arg(long)]
     qlmanage_concurrency: Option<usize>,
 }
