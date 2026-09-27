@@ -89,13 +89,21 @@ pub fn run(args: EmbedArgs, ctx: &CommandContext) -> Result<()> {
         args.model.as_deref(),
     )?;
     let guard = videre_core::library_locks::try_command(&ctx.library, "embed")?;
-    // create: true here and nowhere else. embed is the only command allowed
-    // to bring a model database into existence; every reader errors instead,
-    // so a typo in --model never silently produces an empty library.
-    videre_core::embeddings_db::attach_in(&conn, &ctx.library, &model_id, true)?;
+    // embed is the only command allowed to bring a model database into
+    // existence, and it does so only once a model has loaded and there is
+    // work to write (inside run_embed, after Embedder::load). A failed load
+    // and a zero-work run both leave the embeddings directory untouched, so
+    // a typo in --model cannot leave an empty model behind for stats to list
+    // forever. The attach therefore lives inside track_in, where a failed
+    // create is recorded as a failed pipeline run, which it now genuinely is.
+    let db_existed = videre_core::embeddings_db::db_path_in(&ctx.library, &model_id)?.exists();
+    if db_existed {
+        // Today's ensure-schema-and-attach; on a missing file it must not run.
+        videre_core::embeddings_db::attach_in(&conn, &ctx.library, &model_id, true)?;
+    }
 
     videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "embed", || {
-        run_embed(&args, ctx, &conn, &model_id)
+        run_embed(&args, ctx, &conn, &model_id, db_existed)
     })
 }
 
@@ -105,6 +113,7 @@ fn run_embed(
     ctx: &CommandContext,
     conn: &rusqlite::Connection,
     model_id: &str,
+    db_existed: bool,
 ) -> Result<()> {
     embeddings::ensure_embeddings_index(conn)?;
     decode_failures::ensure_table(conn)?;
@@ -118,8 +127,17 @@ fn run_embed(
     } else {
         // Drop hashes this stage has already failed to decode enough times: they
         // would only re-pay the same multi-second timeout for the same
-        // guaranteed failure on every run.
-        let mut pending = embeddings::pending_images(conn, model_id)?;
+        // guaranteed failure on every run. The filter applies whether or not a
+        // store exists: a never-embedded library must not re-try a hash that
+        // already failed to threshold either.
+        let mut pending = if db_existed {
+            embeddings::pending_images(conn, model_id)?
+        } else {
+            // No store means nothing is embedded under this model, so the
+            // no-exclusion query is the same set without needing the emb
+            // attach the embedded-hash anti-join would require.
+            embeddings::embeddable_images(conn, model_id)?
+        };
         let failed = decode_failures::failed_hashes(
             conn,
             decode_failures::STAGE_EMBED,
@@ -166,6 +184,10 @@ fn run_embed(
         let started = std::time::Instant::now();
         let dev = device::best_device();
         let embedder = model::Embedder::load(dev.clone(), model_id)?;
+        if !db_existed {
+            // First creation point: the model loaded, so rows will be written.
+            videre_core::embeddings_db::attach_in(conn, &ctx.library, model_id, true)?;
+        }
 
         let progress = videre_core::progress::Progress::new(pending.len() as u64, args.silent);
 

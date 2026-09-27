@@ -43,6 +43,15 @@ fn add_embeddings(lib: &TestLibrary, hashes: &[&str]) {
     }
 }
 
+/// A schema-only per-model store, exactly what `videre embed` with a model
+/// that failed to load used to leave behind.
+fn add_empty_store(lib: &TestLibrary) -> std::path::PathBuf {
+    let conn = lib.conn();
+    videre_core::embeddings_db::attach_in(&conn, &lib.context(), MODEL, true).unwrap();
+    videre_core::embeddings_db::detach(&conn).unwrap();
+    videre_core::embeddings_db::db_path_in(&lib.context(), MODEL).unwrap()
+}
+
 fn row_exists(lib: &TestLibrary, path: &str) -> bool {
     lib.conn()
         .query_row(
@@ -449,4 +458,90 @@ fn prune_syncs_nothing_on_a_second_pass() {
         0,
         "and it must converge again afterwards"
     );
+}
+
+#[test]
+fn prune_removes_a_schema_only_model_database() {
+    let (lib, _a, _b, _phantom) = fixture_library();
+    let store = add_empty_store(&lib);
+
+    run_prune(&lib, false);
+
+    assert!(!store.exists(), "an empty model database must be removed");
+    // `stats` reads models straight from the directory, so removal is only
+    // proven done when the listing shrinks too.
+    let out = lib.cmd().arg("stats").output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("none; run"),
+        "stats must list no models after the sweep:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains(MODEL),
+        "the removed model must not be listed:\n{stdout}"
+    );
+}
+
+#[test]
+fn prune_keeps_a_model_database_that_still_has_rows() {
+    let (lib, _a, _b, _phantom) = fixture_library();
+    // 'haaa' is a live file_hashes row in the fixture, so the embedding is
+    // not an orphan and the sweep cannot empty the store.
+    add_embeddings(&lib, &["haaa"]);
+    let store = videre_core::embeddings_db::db_path_in(&lib.context(), MODEL).unwrap();
+
+    run_prune(&lib, false);
+
+    assert!(
+        store.exists(),
+        "a model database with rows must survive prune"
+    );
+    assert!(
+        embedding_exists(&lib, "haaa"),
+        "the live embedding must survive"
+    );
+}
+
+#[test]
+fn prune_leaves_a_corrupt_model_database_alone() {
+    let (lib, _a, _b, _phantom) = fixture_library();
+    let store = add_empty_store(&lib);
+    std::fs::write(&store, b"definitely not a sqlite database").unwrap();
+
+    let mut cmd = lib.cmd();
+    cmd.args(["prune", "--silent"]);
+    assert!(cmd.status().expect("failed to run videre prune").success());
+
+    // A database prune cannot read is not provably empty, so it is never
+    // deleted.
+    assert!(
+        store.exists(),
+        "a corrupt model database must be left in place"
+    );
+}
+
+#[test]
+fn prune_dry_run_reports_empty_model_databases_without_removing_them() {
+    let (lib, _a, _b, _phantom) = fixture_library();
+    let store = add_empty_store(&lib);
+
+    // Without --silent so the report is actually produced; both streams are
+    // searched because the process log's stream is a subscriber detail.
+    let out = lib.cmd().args(["prune", "--dry-run"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let printed = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        printed.contains(MODEL),
+        "the dry run must name the empty model database:\n{printed}"
+    );
+
+    assert!(store.exists(), "a dry run must not remove the database");
 }
