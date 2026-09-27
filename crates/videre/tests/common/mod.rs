@@ -14,6 +14,13 @@
 /// directory-local command tests.
 pub mod feature_fixture;
 
+pub mod model_test_support {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../videre-core/tests/support/model_test_support.rs"
+    ));
+}
+
 use std::path::{Path, PathBuf};
 
 /// Path to the `videre` binary under test.
@@ -48,88 +55,49 @@ pub fn videre_bin() -> PathBuf {
 /// own throwaway libraries, and per-binary state would hand each binary its
 /// own uncontended lock.
 ///
-/// Only contended on a cold cache; once the weights are present every holder
-/// releases almost immediately, so the cost on a warm machine is negligible.
-pub fn shared_cache_guard() -> impl Drop {
-    use fs2::FileExt;
-
-    let path = std::env::temp_dir().join("videre-test-model-cache.lock");
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(&path)
-        .expect("open shared model-cache lock");
-    file.lock_exclusive()
-        .expect("flock shared model-cache lock");
-
-    /// Releases the `flock` on drop. The OS also releases it if the test
-    /// process dies, so a panicking test cannot wedge the rest of the suite.
-    struct Guard(std::fs::File);
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            let _ = fs2::FileExt::unlock(&self.0);
-        }
-    }
-    Guard(file)
+/// Held through the model-backed operation, including on a warm cache, so no
+/// other test can read an incomplete download.
+pub fn shared_cache_guard() -> model_test_support::ModelCacheGuard {
+    model_test_support::ModelCacheGuard::acquire()
 }
 
-/// Root of the local Hugging Face cache, honouring `HF_HOME`.
+/// Finish any first-time face-model download before a timed watch/resume check.
+/// The caller holds the same guard through this command and the timed child.
+pub fn prepare_face_models(guard: &model_test_support::ModelCacheGuard) {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("sample_with_exif.jpg", "photo.jpg");
+    lib.scan();
+    let output = lib
+        .model_cmd(guard)
+        .args(["faces", "--workers", "1", "--silent"])
+        .output()
+        .expect("load face models before timed test");
+    assert!(
+        output.status.success(),
+        "face model preparation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Reap a model-backed child before its cache guard can be released on panic.
+pub struct KillOnDrop(pub std::process::Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if !matches!(self.0.try_wait(), Ok(Some(_))) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+}
+
+/// Root of the local Hugging Face cache, using the loader's environment order.
 ///
 /// Delegates to `videre_core::hf_cache`, which owns this knowledge because
 /// `videre-ml`'s own tests need the same check and a second copy would be free
 /// to drift.
 pub fn hf_cache_dir() -> PathBuf {
     videre_core::hf_cache::cache_dir()
-}
-
-/// InsightFace SCRFD detector and ArcFace recogniser, used by `videre faces`.
-pub fn face_models_cached() -> bool {
-    videre_core::hf_cache::repo_has("WePrompt/buffalo_l", &["det_10g.onnx", "w600k_r50.onnx"])
-}
-
-/// SigLIP weights for the resolved default model, used by `videre embed`.
-///
-/// Derives the repo from `DEFAULT_MODEL_ID` rather than hardcoding it, so
-/// changing the default model cannot silently make this always-false and skip
-/// the embed tests forever.
-pub fn siglip_cached() -> bool {
-    videre_core::hf_cache::siglip_ready(videre_core::embeddings::DEFAULT_MODEL_ID)
-}
-
-/// Whether the caller should return early, printing a loud reason if so.
-///
-/// Tests never download weights: that is the application's job, triggered by a
-/// real `videre embed` or `videre faces` run. A cold cache therefore skips.
-///
-/// Rust has no native skip, so a skipped test passes, which is a real risk of
-/// silently covering nothing. `VIDERE_TEST_REQUIRE_MODELS=1` turns the skip
-/// into a panic, and CI sets it after restoring its cache: a skip there means
-/// the cache silently stopped working, and the test would otherwise never run
-/// anywhere at all.
-pub fn skip_without_models(what: &str, cached: bool) -> bool {
-    if cached {
-        return false;
-    }
-    let cache = hf_cache_dir();
-    if std::env::var("VIDERE_TEST_REQUIRE_MODELS").as_deref() == Ok("1") {
-        panic!(
-            "VIDERE_TEST_REQUIRE_MODELS=1 but {what} weights are missing from {}. \
-             In CI this means the model cache was not restored.",
-            cache.display()
-        );
-    }
-    // Deliberately not `eprintln!`. libtest captures the print macros for
-    // tests that pass, and a skip passes, so an `eprintln!` here is invisible
-    // in a normal `cargo test` run and only appears under `--nocapture`. That
-    // is the opposite of loud, and it is the whole reason skipping is
-    // acceptable at all. Writing to fd 2 directly sidesteps the capture.
-    write_past_test_capture(&format!(
-        "SKIP: {what} weights are not cached in {}. \
-         Run `videre {what}` once to populate it; tests never download.\n",
-        cache.display()
-    ));
-    true
 }
 
 /// A child's stderr with third-party library noise removed.
@@ -216,7 +184,27 @@ impl TestLibrary {
         let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_videre"));
         cmd.current_dir(&self.root)
             .env("HOME", &self.home)
-            .env("HF_HOME", self.home.join(".cache/huggingface"));
+            .env("HF_HOME", self.home.join(".cache/huggingface"))
+            .env_remove("HF_HUB_CACHE")
+            .env_remove("HUGGINGFACE_HUB_CACHE");
+        cmd
+    }
+
+    /// A model-backed child using the developer's hub cache under the lock.
+    pub fn model_cmd(&self, _guard: &model_test_support::ModelCacheGuard) -> std::process::Command {
+        assert_eq!(
+            std::env::var("VIDERE_TEST_MODELS").as_deref(),
+            Ok("1"),
+            "model_cmd requires VIDERE_TEST_MODELS=1"
+        );
+        // Hub overrides may be relative to this test process's cwd. The
+        // child runs from the throwaway library, so pin that same location
+        // before constructing its command.
+        let hub = std::env::current_dir()
+            .expect("resolve parent working directory for model cache")
+            .join(hf_cache_dir());
+        let mut cmd = self.cmd();
+        cmd.env("HF_HUB_CACHE", hub);
         cmd
     }
 
@@ -290,17 +278,4 @@ impl TestLibrary {
     pub fn init_db(&self) -> rusqlite::Connection {
         videre_core::library_db::initialize(&self.context()).unwrap()
     }
-}
-
-/// Writes to the process's real stderr, bypassing libtest's output capture.
-///
-/// `ManuallyDrop` because dropping a `File` built from a borrowed fd would
-/// close fd 2 for the rest of the process.
-fn write_past_test_capture(msg: &str) {
-    use std::io::Write;
-    use std::os::fd::FromRawFd;
-
-    let mut stderr = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(2) });
-    let _ = stderr.write_all(msg.as_bytes());
-    let _ = stderr.flush();
 }

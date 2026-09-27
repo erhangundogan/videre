@@ -26,9 +26,9 @@ fn library() -> TestLibrary {
 /// explicitly vetoed as non-embeddable and carrying nothing to detect faces in.
 ///
 /// Needed because a library with a *real* image gives these commands genuine
-/// work, and genuine work means loading a model. Tests never download; this
-/// fixture is how that stays true while still exercising the "nothing to do"
-/// paths.
+/// work, and genuine work means loading a model. This model-free test must
+/// never download, even in the explicit model-test mode; the fixture still
+/// exercises the "nothing to do" paths.
 fn empty_library() -> TestLibrary {
     let lib = TestLibrary::new();
     std::fs::create_dir_all(lib.root.join("pics")).unwrap();

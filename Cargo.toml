@@ -26,12 +26,11 @@ too_many_arguments = "allow"
 # per-cache-key cost should. Net, ~600s was paid on most runs to save a test
 # that had never actually run on Linux until a download bug woke it.
 #
-# The real fix was upstream of both: that test skips when SigLIP weights are
-# absent, the warm-up step fetches them on macOS only, and the weights only
-# reached Linux because the argument sweep downloaded them (fixed in 0.15.6,
-# with the cache key salted to discard the artifact). With them gone the test
-# skips again in milliseconds and there is nothing to optimize for.
+# The real fix was upstream of both: CI now skips real-model tests regardless
+# of cache warmth and no longer has a model warm-up/cache step. Historically,
+# weights reached Linux because the argument sweep downloaded them (fixed in
+# 0.15.6, when the cache key was salted to discard the artifact). The CPU test
+# now runs only in an explicit local opt-in suite.
 #
 # So: do not add this back to make one inference test bearable. If a test needs
 # release-speed inference, run it in release, in its own job.
-

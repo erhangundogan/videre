@@ -22,16 +22,16 @@ use std::fs;
 /// The one file is a **`.dng` on purpose**. This file spawns `videre embed`
 /// and `videre classify` to check their argument handling, and with an
 /// embeddable file present both get past their "nothing to do" branch and load
-/// SigLIP - which downloads 777MB on a cold cache, breaking the invariant that
-/// tests never download. `.dng` is scanned and stored like any other file, so
+/// SigLIP - which could download 777MB on a cold cache, breaking the invariant
+/// that this model-free test never downloads. `.dng` is scanned and stored like any other file, so
 /// the row these tests need still exists, but it is explicitly vetoed as
 /// non-embeddable (it reports `image/tiff` yet cannot be decoded), so both
 /// commands return before loading any model.
 ///
-/// This is not hypothetical tidiness. With `a.jpg` here, CI's model cache
-/// picked up SigLIP weights it is not supposed to have on Linux, which made
-/// `cpu_batch_matches_single_image_baseline` stop skipping and start running
-/// for real - taking the Ubuntu job past 35 minutes.
+/// This is not hypothetical tidiness. Historically, with `a.jpg` here, CI's
+/// model cache picked up SigLIP weights on Linux, which woke
+/// `cpu_batch_matches_single_image_baseline` and took the Ubuntu job past 35
+/// minutes. CI now skips real-model tests regardless of cache warmth.
 fn library() -> TestLibrary {
     let lib = TestLibrary::new();
     fs::write(lib.root.join("a.dng"), b"a").unwrap();
@@ -370,7 +370,7 @@ fn sweeping_the_argument_surface_downloads_no_model_weights() {
         downloaded,
         0,
         "the argument sweep downloaded {downloaded} bytes of model weights into {}. \
-         Tests never download: give library() a file the model-backed commands \
+         This model-free test must never download: give library() a file the model-backed commands \
          will not process, rather than warming a cache as a side effect.",
         hf.display()
     );
