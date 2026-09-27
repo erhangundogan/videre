@@ -73,7 +73,7 @@ fn cache_lock_child() {
     if role == "follower" {
         fs::write(root.join("follower-ready"), "ready").unwrap();
     }
-    let _guard = ModelCacheGuard::acquire();
+    let _guard = ModelCacheGuard::acquire_at(&root.join("cache.lock"));
     let artifact = root.join("fake-model.bin");
     if role == "leader" {
         fs::write(root.join("leader-acquired"), "ready").unwrap();
@@ -136,7 +136,9 @@ fn model_child_environment_probe() {
     assert!(!plain_env.iter().any(|(name, value)| {
         (*name == "HF_HUB_CACHE" || *name == "HUGGINGFACE_HUB_CACHE") && value.is_some()
     }));
-    let guard = ModelCacheGuard::acquire();
+    // A private lock: this probe inspects a command and loads nothing, so it
+    // must not queue behind real model tests during an opt-in run.
+    let guard = ModelCacheGuard::acquire_at(&library.home.join("cache.lock"));
     let model = library.model_cmd(&guard);
     let env = model.get_envs().collect::<Vec<_>>();
     let expected_hub = std::env::current_dir()

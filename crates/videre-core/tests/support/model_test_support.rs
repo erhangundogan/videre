@@ -39,9 +39,15 @@ pub struct ModelCacheGuard(std::fs::File);
 
 impl ModelCacheGuard {
     pub fn acquire() -> Self {
+        Self::acquire_at(&std::env::temp_dir().join("videre-test-model-cache.lock"))
+    }
+
+    /// The same protocol on another lock file. Tests of the protocol itself use
+    /// their own, so a real model test holding the shared lock for minutes
+    /// cannot stall them.
+    pub fn acquire_at(path: &std::path::Path) -> Self {
         use fs2::FileExt;
 
-        let path = std::env::temp_dir().join("videre-test-model-cache.lock");
         let file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
