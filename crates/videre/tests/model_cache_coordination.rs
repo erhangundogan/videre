@@ -132,3 +132,34 @@ fn model_child_environment_probe() {
         *name == "HF_HOME" && value == &Some(library.home.join(".cache/huggingface").as_os_str())
     }));
 }
+
+#[test]
+fn failed_opt_in_loader_fails_without_a_success_marker() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "failed_model_loader_child"])
+        .env("VIDERE_TEST_FAKE_LOAD_FAILURE", "1")
+        .env("VIDERE_TEST_MODELS", "1")
+        .env("VIDERE_TEST_SUCCESS_MARKER", temp.path().join("success"))
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "opt-in loader failure must fail its test binary"
+    );
+    assert!(!temp.path().join("success").exists());
+}
+
+#[test]
+fn failed_model_loader_child() {
+    if std::env::var("VIDERE_TEST_FAKE_LOAD_FAILURE").as_deref() != Ok("1") {
+        return;
+    }
+    if common::model_test_support::skip_unless_model_tests_enabled("fake loader") {
+        return;
+    }
+    let marker = std::env::var("VIDERE_TEST_SUCCESS_MARKER").unwrap();
+    let missing_model = Path::new(&marker).with_file_name("missing-model.bin");
+    fs::read(missing_model).expect("opt-in model load");
+    fs::write(marker, "loaded").unwrap();
+}

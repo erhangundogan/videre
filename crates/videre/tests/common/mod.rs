@@ -70,57 +70,6 @@ pub fn hf_cache_dir() -> PathBuf {
     videre_core::hf_cache::cache_dir()
 }
 
-/// InsightFace SCRFD detector and ArcFace recogniser, used by `videre faces`.
-pub fn face_models_cached() -> bool {
-    videre_core::hf_cache::repo_has("WePrompt/buffalo_l", &["det_10g.onnx", "w600k_r50.onnx"])
-}
-
-/// SigLIP weights for the resolved default model, used by `videre embed`.
-///
-/// Derives the repo from `DEFAULT_MODEL_ID` rather than hardcoding it, so
-/// changing the default model cannot silently make this always-false and skip
-/// the embed tests forever.
-pub fn siglip_cached() -> bool {
-    videre_core::hf_cache::siglip_ready(videre_core::embeddings::DEFAULT_MODEL_ID)
-}
-
-/// Whether the caller should return early, printing a loud reason if so.
-///
-/// Tests never download weights: that is the application's job, triggered by a
-/// real `videre embed` or `videre faces` run. A cold cache therefore skips.
-///
-/// Rust has no native skip, so a skipped test passes. CI explicitly disables
-/// these model-backed tests and prints the reason. The old
-/// `VIDERE_TEST_REQUIRE_MODELS=1` check remains for local runs until the
-/// explicit local opt-in replaces this transitional cache gate.
-pub fn skip_without_models(what: &str, cached: bool) -> bool {
-    if model_test_support::skip_ci_model_test(what) {
-        return true;
-    }
-    if cached {
-        return false;
-    }
-    let cache = hf_cache_dir();
-    if std::env::var("VIDERE_TEST_REQUIRE_MODELS").as_deref() == Ok("1") {
-        panic!(
-            "VIDERE_TEST_REQUIRE_MODELS=1 but {what} weights are missing from {}. \
-             Run the model command once to populate that cache.",
-            cache.display()
-        );
-    }
-    // Deliberately not `eprintln!`. libtest captures the print macros for
-    // tests that pass, and a skip passes, so an `eprintln!` here is invisible
-    // in a normal `cargo test` run and only appears under `--nocapture`. That
-    // is the opposite of loud, and it is the whole reason skipping is
-    // acceptable at all. Writing to fd 2 directly sidesteps the capture.
-    model_test_support::write_past_test_capture(&format!(
-        "SKIP: {what} weights are not cached in {}. \
-         Run `videre {what}` once to populate it; tests never download.\n",
-        cache.display()
-    ));
-    true
-}
-
 /// A child's stderr with third-party library noise removed.
 ///
 /// ONNX Runtime is linked into every `videre` binary and initialises at

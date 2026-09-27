@@ -9,14 +9,20 @@ mod model_test_support {
 }
 
 #[test]
-fn ci_zero_disables_model_tests_independent_of_cache_state() {
-    // This decision must depend on the CI setting, not on cache contents.
-    assert!(model_test_support::ci_model_tests_disabled(Some("0")));
-}
-
-#[test]
-fn absent_or_nonzero_setting_does_not_change_the_local_suite_yet() {
-    assert!(!model_test_support::ci_model_tests_disabled(None));
-    assert!(!model_test_support::ci_model_tests_disabled(Some("1")));
-    assert!(!model_test_support::ci_model_tests_disabled(Some("yes")));
+fn final_policy_ignores_cache_warmth_and_requires_explicit_opt_in() {
+    for cache_is_warm in [false, true] {
+        assert!(
+            !model_test_support::parse_model_test_mode(None).unwrap(),
+            "warm={cache_is_warm}"
+        );
+        assert!(
+            !model_test_support::parse_model_test_mode(Some("0")).unwrap(),
+            "warm={cache_is_warm}"
+        );
+        assert!(
+            model_test_support::parse_model_test_mode(Some("1")).unwrap(),
+            "warm={cache_is_warm}"
+        );
+    }
+    assert!(model_test_support::parse_model_test_mode(Some("yes")).is_err());
 }

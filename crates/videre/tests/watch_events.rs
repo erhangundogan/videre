@@ -369,13 +369,14 @@ fn a_moved_in_directory_has_its_contents_scanned() {
 /// scan lock is separate), the faces stage is busy, and when the lock frees
 /// the retained batch is processed on the short backoff instead of waiting
 /// for the hourly maintenance pass. Needs the models for the final
-/// processing assertion, so it skips on a cold cache like the faces suites.
+/// processing assertion, so it needs explicit local model-test opt-in.
 #[test]
 fn a_batch_blocked_by_a_faces_run_retries_and_processes_when_free() {
     let lib = TestLibrary::new();
-    if common::skip_without_models("watch busy-faces retry", common::face_models_cached()) {
+    if common::model_test_support::skip_unless_model_tests_enabled("watch busy-faces retry") {
         return;
     }
+    let guard = common::shared_cache_guard();
     lib.cmd()
         .args(["config", "set", "watch-debounce-ms", "200"])
         .output()
@@ -394,7 +395,7 @@ fn a_batch_blocked_by_a_faces_run_retries_and_processes_when_free() {
     fs2::FileExt::lock_exclusive(&hold).unwrap();
 
     let mut child = lib
-        .cmd()
+        .model_cmd(&guard)
         .args(["watch", "--scan", "--faces", "--silent"])
         .spawn()
         .expect("spawn watch");

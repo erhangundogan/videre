@@ -2,7 +2,7 @@ mod common;
 use common::TestLibrary;
 // The model-backed helpers are only used by the macOS-gated embed tests below.
 #[cfg(target_os = "macos")]
-use common::{shared_cache_guard, siglip_cached, skip_without_models};
+use common::{model_test_support::skip_unless_model_tests_enabled, shared_cache_guard};
 use videre_core::decode_failures;
 
 /// A hash the embed decode has already failed on FAILURE_THRESHOLD times is
@@ -63,7 +63,7 @@ fn embed_skips_a_hash_recorded_as_failed_and_loads_no_model() {
 #[test]
 #[cfg(target_os = "macos")]
 fn embed_reprocess_clears_recorded_decode_failures() {
-    if skip_without_models("embed", siglip_cached()) {
+    if skip_unless_model_tests_enabled("embed reprocess") {
         return;
     }
     let _serial = shared_cache_guard();
@@ -83,7 +83,7 @@ fn embed_reprocess_clears_recorded_decode_failures() {
     };
 
     let embed = lib
-        .cmd()
+        .model_cmd(&_serial)
         .args(["embed", "--reprocess", "--silent"])
         .status()
         .expect("failed to run videre embed --reprocess");
@@ -108,7 +108,7 @@ fn embed_reprocess_clears_recorded_decode_failures() {
 #[test]
 #[cfg(target_os = "macos")]
 fn embed_records_and_then_skips_a_repeatedly_undecodable_file() {
-    if skip_without_models("embed", siglip_cached()) {
+    if skip_unless_model_tests_enabled("embed decode failures") {
         return;
     }
     let _serial = shared_cache_guard();
@@ -122,7 +122,7 @@ fn embed_records_and_then_skips_a_repeatedly_undecodable_file() {
         .expect("the corrupt file was scanned");
 
     let run = || {
-        lib.cmd()
+        lib.model_cmd(&_serial)
             .args(["embed", "--silent"])
             .status()
             .expect("failed to run videre embed")
@@ -170,7 +170,7 @@ fn model_store(lib: &TestLibrary) -> rusqlite::Connection {
 #[test]
 #[cfg(target_os = "macos")]
 fn embed_produces_an_embeddings_row_for_a_real_video() {
-    if skip_without_models("embed", siglip_cached()) {
+    if skip_unless_model_tests_enabled("embed video") {
         return;
     }
     let _serial = shared_cache_guard();
@@ -179,7 +179,7 @@ fn embed_produces_an_embeddings_row_for_a_real_video() {
     lib.scan();
 
     let embed = lib
-        .cmd()
+        .model_cmd(&_serial)
         .args(["embed", "--silent"])
         .status()
         .expect("failed to run videre embed");
@@ -214,7 +214,7 @@ fn embed_produces_an_embeddings_row_for_a_real_video() {
 #[test]
 #[cfg(target_os = "macos")]
 fn embed_skips_an_audio_only_video_without_calling_quicklook() {
-    if skip_without_models("embed", siglip_cached()) {
+    if skip_unless_model_tests_enabled("embed audio-only video") {
         return;
     }
     let _serial = shared_cache_guard();
@@ -227,7 +227,7 @@ fn embed_skips_an_audio_only_video_without_calling_quicklook() {
 
     let started = std::time::Instant::now();
     let out = lib
-        .cmd()
+        .model_cmd(&_serial)
         .arg("embed")
         .output()
         .expect("failed to run videre embed");

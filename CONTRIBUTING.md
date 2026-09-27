@@ -51,9 +51,11 @@ GitHub Actions runs the same Chromium suite for pull requests and pushes to
 
 Worth knowing before changing anything:
 
-- **Tests never download model weights.** Anything needing them either skips on
-  a cold cache or is structured so the model is never loaded. A test that pulls
-  weights slows every run for everyone.
+- **Normal tests and CI never download model weights.** Real inference skips
+  unless you explicitly run `VIDERE_TEST_MODELS=1 make test` locally. That
+  opt-in may download missing weights into your Hugging Face cache and fails
+  if download, loading, inference, or a model assertion fails. CI does not
+  exercise real inference, so run the opt-in suite before changing those paths.
 - **Behaviour changes update the docs in the same commit.** User-facing
   documentation lives in `docs/src/content/docs/` and is published at
   <https://docs.videre.sh>.

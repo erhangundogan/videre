@@ -4,7 +4,9 @@
 //! asserts a resumed run picks up correctly with no images permanently lost.
 
 mod common;
-use common::{face_models_cached, shared_cache_guard, skip_without_models, TestLibrary};
+use common::{
+    model_test_support::skip_unless_model_tests_enabled, shared_cache_guard, TestLibrary,
+};
 
 use rusqlite::Connection;
 use std::path::Path;
@@ -54,7 +56,7 @@ fn kill_mid_run_then_resume_processes_every_image_exactly_once() {
     // Held for the whole test, not just the first spawn: this one SIGKILLs its
     // child, and a concurrent first-time weights download in another test
     // binary would otherwise be the thing that dies half-written.
-    if skip_without_models("faces", face_models_cached()) {
+    if skip_unless_model_tests_enabled("faces resumability") {
         return;
     }
     let _serial = shared_cache_guard();
@@ -64,7 +66,7 @@ fn kill_mid_run_then_resume_processes_every_image_exactly_once() {
 
     // --workers 1: deterministic, strictly-incremental progress to poll against.
     let mut child = lib
-        .cmd()
+        .model_cmd(&_serial)
         .args(["faces", "--workers", "1", "--silent"])
         .spawn()
         .expect("failed to spawn videre faces");
@@ -101,7 +103,7 @@ fn kill_mid_run_then_resume_processes_every_image_exactly_once() {
 
     // Resume: a plain rerun should pick up exactly where it left off.
     let status = lib
-        .cmd()
+        .model_cmd(&_serial)
         .args(["faces", "--workers", "1", "--silent"])
         .status()
         .expect("failed to run resumed videre faces");

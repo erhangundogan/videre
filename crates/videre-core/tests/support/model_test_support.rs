@@ -1,18 +1,24 @@
 // Shared test-only controls for real-model tests in separate crates.
 
-/// The first rollout disables model tests only when CI explicitly sets `0`.
-/// Local behavior stays unchanged until the opt-in mode is implemented.
-pub fn ci_model_tests_disabled(raw: Option<&str>) -> bool {
-    raw == Some("0")
+/// Real inference is local opt-in, independent of cache warmth.
+pub fn parse_model_test_mode(raw: Option<&str>) -> Result<bool, String> {
+    match raw {
+        None | Some("0") => Ok(false),
+        Some("1") => Ok(true),
+        Some(value) => Err(format!(
+            "invalid VIDERE_TEST_MODELS={value:?}; use 0 (skip) or 1 (run)"
+        )),
+    }
 }
 
-/// Return early from a model test in CI, with a skip visible under libtest.
-pub fn skip_ci_model_test(name: &str) -> bool {
-    if !ci_model_tests_disabled(std::env::var("VIDERE_TEST_MODELS").ok().as_deref()) {
+/// Return early unless a developer explicitly requested real-model tests.
+pub fn skip_unless_model_tests_enabled(name: &str) -> bool {
+    let raw = std::env::var("VIDERE_TEST_MODELS").ok();
+    if parse_model_test_mode(raw.as_deref()).unwrap_or_else(|message| panic!("{message}")) {
         return false;
     }
     write_past_test_capture(&format!(
-        "SKIP: {name} needs real model weights; VIDERE_TEST_MODELS=0.\n"
+        "SKIP: {name} needs real model weights; run VIDERE_TEST_MODELS=1 make test locally.\n"
     ));
     true
 }

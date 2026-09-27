@@ -142,7 +142,7 @@ fn seed() -> Option<TestLibrary> {
 
 /// Written to fd 2 directly, not via `eprintln!`. libtest captures the print
 /// macros for tests that pass, and a skip passes, so an `eprintln!` here would
-/// only appear under `--nocapture`. Same reasoning as `skip_without_models`.
+/// only appear under `--nocapture`. Same reasoning as the model-test gate.
 fn skip_no_fixture() {
     use std::io::Write;
     let _ = std::io::stderr().write_all(
