@@ -64,5 +64,31 @@ test("a person's page keeps its controls in the toolbar", async ({ page, gallery
   expect(await page.evaluate(() => document.querySelector(".gallery-toolbar + main") !== null)).toBe(true);
 });
 
+test("a cluster's page keeps its title, count and actions in the shared toolbar", async ({ page, gallery }) => {
+  await page.goto(`${gallery.baseURL}/people/cluster/1`);
+  const bar = page.locator(".gallery-toolbar");
+  await expect(bar).toHaveCount(1);
+  await expect(bar.locator("a")).toContainText("Back to people");
+  await expect(bar.locator("strong")).toHaveText("Cluster 1");
+  for (const id of ["#face-count", "#person-input"]) {
+    await expect(bar.locator(id)).toHaveCount(1);
+  }
+  await expect(bar.getByRole("button", { name: "Assign cluster" })).toBeVisible();
+  await expect(bar.getByRole("button", { name: /Dissolve cluster/ })).toBeVisible();
+  expect(await page.evaluate(() => document.querySelector(".gallery-toolbar + main") !== null)).toBe(true);
+});
+
+test("toolbar controls look the same on every page", async ({ page, gallery }) => {
+  // One shared rule styles a toolbar's plain buttons: the Library's Select,
+  // the People Recluster toggle and a cluster's Dissolve all share its border.
+  const border = async (url: string, selector: string) => {
+    await page.goto(`${gallery.baseURL}${url}`);
+    return page.locator(`.gallery-toolbar ${selector}`).first().evaluate((el) => getComputedStyle(el).borderTopColor);
+  };
+  const library = await border("/", ".select-toggle");
+  expect(await border("/people", "#recluster-toggle")).toBe(library);
+  expect(await border("/people/cluster/1", "button.danger")).toBe(library);
+});
+
 declare function saveSetting(path: string, value: unknown): void;
 declare function sortEvents<T>(evs: T[]): T[];
