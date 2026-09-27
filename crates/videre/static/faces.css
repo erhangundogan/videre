@@ -97,7 +97,8 @@
 .labeling-main > h2:first-child, .people-section > h2:first-child { margin-top: 0; }
 
 /* People toolbar: the recluster row under the settings bar. */
-.toolbar-toggle[aria-expanded="true"] { background: #d4d4d8; border-color: #a1a1aa; }
+.toolbar-toggle{ border: 1px solid #2a2a33;background: #e9e9ed; }
+.toolbar-toggle[aria-expanded="true"] { background: #ccc; }
 .recluster-row { align-items: center; row-gap: 6px; }
 .recluster-row input[type=number] { width: 64px; font: inherit; padding: 3px 6px; border: 1px solid #2a2a33; border-radius: 6px; }
 .recluster-more { display: inline-flex; gap: 12px; align-items: center; }

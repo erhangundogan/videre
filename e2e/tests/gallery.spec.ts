@@ -224,6 +224,49 @@ test("rotate is offered for photos, rotates, and is hidden for video", async ({ 
   await expect(page.locator("#lb-rotate")).toBeHidden();
 });
 
+test("a rotated photo reopens and zooms from fresh URLs, not the browser cache", async ({
+  page,
+  gallery
+}) => {
+  await page.goto(gallery.baseURL);
+  const tile = page.locator("#gallery [data-lb-type='image']").first();
+  const img = page.locator("#lb-img");
+  // A tap on the image toggles zoom; dispatched on the element, as in the zoom
+  // test, because the tiny fixture sits under the lightbox controls.
+  const tapImage = () =>
+    img.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      const opts = { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, bubbles: true, pointerId: 1 };
+      el.dispatchEvent(new PointerEvent("pointerdown", opts));
+      el.dispatchEvent(new PointerEvent("pointerup", opts));
+    });
+
+  // Zoom once first, so the full-size original is in the browser cache too.
+  await tile.click();
+  await expect(img).toBeVisible();
+  await tapImage();
+  await expect(img).toHaveAttribute("src", /\/raw$/);
+  await page.keyboard.press("Escape");
+
+  await tile.click();
+  const rotated = page.waitForResponse(
+    (r) => /\/rotate$/.test(new URL(r.url()).pathname) && r.request().method() === "POST"
+  );
+  await page.locator("#lb-rotate").click();
+  expect((await rotated).status()).toBe(200);
+  await expect(page.locator("#lb-rotate")).toBeEnabled();
+  await page.keyboard.press("Escape");
+
+  // Reopening must not reuse the pre-rotation preview URL the tile was built with.
+  await expect(tile).toHaveAttribute("data-lb-url", /[?&]b=\d+/);
+  await tile.click();
+  await expect(img).toHaveAttribute("src", /[?&]b=\d+/);
+  // Nor may zooming reuse the pre-rotation original.
+  await expect(img).toBeVisible();
+  await tapImage();
+  await expect(img).toHaveAttribute("src", /\/raw\?b=\d+$/);
+});
+
 test("opens a scanned MP4 in the lightbox", async ({ page, gallery }) => {
   await page.goto(gallery.baseURL);
   const video = page.locator("#gallery [data-lb-type='video']");

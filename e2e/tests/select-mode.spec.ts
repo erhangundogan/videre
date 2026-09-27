@@ -140,6 +140,21 @@ test("delete asks first, Cancel keeps everything, confirm moves the item to the 
   await expect(page.locator("#gallery .card[data-hash]")).toHaveCount(1);
 });
 
+test("rotating a selection refreshes the URL its lightbox opens", async ({ page, sortedGallery }) => {
+  await page.goto(sortedGallery.baseURL);
+  const card = page.locator("#gallery .card[data-hash]").filter({ has: page.locator("[data-lb-type='image']") }).first();
+  const opener = card.locator("[data-lb-url]");
+  await page.locator(".gallery-toolbar .select-toggle").first().click();
+  await card.click();
+  const bar = page.locator("#file-sel-bar");
+  await bar.locator('[data-sel-act="rotate-cw"]').click();
+  await expect(bar.locator(".sel-result")).toHaveText(/^Rotated 1 item\(s\)/);
+  await expect(opener).toHaveAttribute("data-lb-url", /[?&]b=\d+/);
+  // Turn it back: the library is shared with the other specs.
+  await bar.locator('[data-sel-act="rotate-ccw"]').click();
+  await expect(bar.locator(".sel-result")).toHaveText(/^Rotated 1 item\(s\)/);
+});
+
 test("Clear in the selection bar empties the selection", async ({ page, sortedGallery }) => {
   await page.goto(sortedGallery.baseURL);
   await page.locator(".gallery-toolbar .select-toggle").first().click();

@@ -57,13 +57,14 @@ button.primary:hover{background:#2563eb;border-color:#2563eb}
 .sel-bar input[type=text]{width:160px}
 /* File grids in select mode: the same check badge, drawn by the item itself so
    every grid (list, tile, date, events, map) gets it from one rule. */
-.select-toggle[aria-pressed="true"]{background:#2a6db5;color:#fff;border-color:#2a6db5}
+.select-toggle{background:#e9e9ed;border:1px solid #2a2a33}
+.select-toggle[aria-pressed="true"]{background:#2a6db5;color:#fff;border-color:#ffffff}
 .select-state{font:500 13px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#2a6db5}
 body.select-mode .card[data-hash],body.select-mode .tile[data-hash]{cursor:pointer}
 body.select-mode .card[data-hash]{position:relative}
 body.select-mode .card[data-hash]::after,body.select-mode .tile[data-hash]::after{content:"";position:absolute;top:6px;right:6px;width:20px;height:20px;border-radius:50%;border:2px solid #fff;background:rgba(0,0,0,.25);box-shadow:0 1px 3px rgba(0,0,0,.3);z-index:5;opacity:0}
 body.select-mode .card[data-hash]:hover::after,body.select-mode .tile[data-hash]:hover::after{opacity:1}
-body.select-mode .card[data-hash].selected::after,body.select-mode .tile[data-hash].selected::after{content:"\2713";opacity:1;background:#2a6db5;border-color:#2a6db5;color:#fff;font-size:13px;line-height:20px;text-align:center}
+body.select-mode .card[data-hash].selected::after,body.select-mode .tile[data-hash].selected::after{content:"\2713";opacity:1;background:#2a6db5;border-color:#2a6db5;color:#fff;font-size:13px;line-height:16px;text-align:center}
 .sel-bar .sel-danger{color:#b91c1c}
 .sel-confirm{max-width:460px;border:none;border-radius:10px;padding:20px 22px;box-shadow:0 10px 40px rgba(0,0,0,.35);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 .sel-confirm h2{font-size:17px;margin:0 0 8px}
