@@ -183,30 +183,52 @@ fn run_embed(
 
         let started = std::time::Instant::now();
         let dev = device::best_device();
-        let embedder = model::Embedder::load(dev.clone(), model_id)?;
-        if !db_existed {
-            // First creation point: the model loaded, so rows will be written.
-            videre_core::embeddings_db::attach_in(conn, &ctx.library, model_id, true)?;
-        }
+        // A run that only fills missing fingerprints never needs the model,
+        // which costs seconds and memory to load. Such a run always has a
+        // store: an item is `embedded` only because the store holds its row.
+        let embedder = if pending.iter().any(|p| !p.embedded) {
+            let embedder = model::Embedder::load(dev.clone(), model_id)?;
+            if !db_existed {
+                // First creation point: the model loaded, so rows will be written.
+                videre_core::embeddings_db::attach_in(conn, &ctx.library, model_id, true)?;
+            }
+            Some(embedder)
+        } else {
+            None
+        };
+        let size = model::image_size_for(model_id);
 
         let progress = videre_core::progress::Progress::new(pending.len() as u64, args.silent);
 
         let mut done = 0usize;
+        let mut fingerprinted = 0usize;
         let mut failed = 0usize;
         for chunk in pending.chunks(chunk_size) {
             // Decode in parallel; a failure carries (hash, error) back so it can
             // be recorded serially below (the connection is not Sync, so no DB
             // write can happen inside the rayon closure).
-            type Decoded = std::result::Result<(String, candle_core::Tensor), (String, String)>;
+            // Each success also carries the near-duplicate fingerprint, taken
+            // from the decoded image before the model's resize.
+            type Decoded = std::result::Result<
+                (String, Option<candle_core::Tensor>, u64),
+                (String, String),
+            >;
             let outcomes: Vec<Decoded> = chunk
                 .par_iter()
                 .map(|p| {
-                    match preprocess::image_to_tensor(
-                        std::path::Path::new(&p.path),
-                        model::image_size_for(model_id),
-                        &candle_core::Device::Cpu, // decode on CPU, move to device in batch
-                    ) {
-                        Ok(t) => Ok((p.hash.clone(), t)),
+                    let decoded = preprocess::decode(std::path::Path::new(&p.path), size)
+                        .and_then(|img| {
+                            let phash = videre_core::image_decode::dhash(&img);
+                            // Already embedded: only the fingerprint was missing.
+                            if p.embedded {
+                                return Ok((None, phash));
+                            }
+                            // Decode on CPU, move to the device in batch.
+                            let t = preprocess::to_tensor(&img, size, &candle_core::Device::Cpu)?;
+                            Ok((Some(t), phash))
+                        });
+                    match decoded {
+                        Ok((t, phash)) => Ok((p.hash.clone(), t, phash)),
                         Err(e) => {
                             let reason = format!("{e:#}");
                             // The kind was attached where the cause was known.
@@ -218,9 +240,15 @@ fn run_embed(
                 .collect();
             let mut decoded: Vec<(String, candle_core::Tensor)> =
                 Vec::with_capacity(outcomes.len());
+            let mut phashes: Vec<(String, u64)> = Vec::with_capacity(outcomes.len());
             for outcome in outcomes {
                 match outcome {
-                    Ok(pair) => decoded.push(pair),
+                    Ok((hash, tensor, phash)) => {
+                        if let Some(t) = tensor {
+                            decoded.push((hash.clone(), t));
+                        }
+                        phashes.push((hash, phash));
+                    }
                     // Record the failure so a later run can skip it once it has
                     // failed FAILURE_THRESHOLD times.
                     Err((hash, err)) => {
@@ -233,7 +261,8 @@ fn run_embed(
                     }
                 }
             }
-            failed += chunk.len() - decoded.len();
+            failed += chunk.len() - phashes.len();
+            fingerprinted += phashes.len() - decoded.len();
 
             let mut rows: Vec<(String, Vec<u8>)> = Vec::with_capacity(decoded.len());
             for group in decoded.chunks(batch) {
@@ -241,16 +270,22 @@ fn run_embed(
                     .iter()
                     .map(|(_, t)| t.to_device(&dev))
                     .collect::<candle_core::Result<_>>()?;
-                let vecs = embedder.embed_images(&tensors)?;
+                let vecs = embedder
+                    .as_ref()
+                    .expect("the model loads whenever an item needs embedding")
+                    .embed_images(&tensors)?;
                 for ((hash, _), v) in group.iter().zip(vecs) {
                     rows.push((hash.clone(), vectors::to_f16_bytes(&v)));
                 }
             }
 
             embeddings::insert_embeddings(conn, model_id, &rows)?;
-            // A file that decoded and embedded is not failing: drop any earlier
-            // strike so a transient timeout never lingers toward the threshold.
-            for (hash, _) in &rows {
+            // Its own transaction: a crash between the two leaves `phash` NULL,
+            // which the next run's pending query picks up again.
+            embeddings::set_phashes(conn, &phashes)?;
+            // A file that decoded is not failing: drop any earlier strike so a
+            // transient timeout never lingers toward the threshold.
+            for (hash, _) in &phashes {
                 let _ = decode_failures::clear(conn, hash, decode_failures::STAGE_EMBED);
             }
             done += rows.len();
@@ -260,7 +295,10 @@ fn run_embed(
         progress.finish();
 
         if !args.silent {
-            tracing::info!("{}", format_summary(done, failed, started.elapsed()));
+            tracing::info!(
+                "{}",
+                format_summary(done, fingerprinted, failed, started.elapsed())
+            );
         }
         Ok(())
     })?;
@@ -271,15 +309,25 @@ fn run_embed(
 /// finishes. Not `pub(crate)` (unlike `videre faces`'s equivalent
 /// `format_summary`): nothing outside this file calls it, `videre embed`
 /// has no `videre watch` stage equivalent that shares this logic.
-fn format_summary(done: usize, failed: usize, elapsed: std::time::Duration) -> String {
+fn format_summary(
+    done: usize,
+    fingerprinted: usize,
+    failed: usize,
+    elapsed: std::time::Duration,
+) -> String {
+    let added = if fingerprinted > 0 {
+        format!(", {fingerprinted} fingerprint(s) added")
+    } else {
+        String::new()
+    };
     if failed > 0 {
         format!(
-            "{done} image(s) embedded, {failed} skipped, done in {}s",
+            "{done} image(s) embedded{added}, {failed} skipped, done in {}s",
             elapsed.as_secs()
         )
     } else {
         format!(
-            "{done} image(s) embedded, done in {}",
+            "{done} image(s) embedded{added}, done in {}",
             videre_core::progress::human_duration(elapsed)
         )
     }
@@ -322,13 +370,22 @@ mod tests {
 
     #[test]
     fn format_summary_no_skips() {
-        let summary = format_summary(234, 0, std::time::Duration::from_secs(41));
+        let summary = format_summary(234, 0, 0, std::time::Duration::from_secs(41));
         assert_eq!(summary, "234 image(s) embedded, done in 41s");
     }
 
     #[test]
+    fn format_summary_reports_fingerprint_only_work() {
+        let summary = format_summary(0, 12, 0, std::time::Duration::from_secs(41));
+        assert_eq!(
+            summary,
+            "0 image(s) embedded, 12 fingerprint(s) added, done in 41s"
+        );
+    }
+
+    #[test]
     fn format_summary_with_skips() {
-        let summary = format_summary(230, 4, std::time::Duration::from_secs(41));
+        let summary = format_summary(230, 0, 4, std::time::Duration::from_secs(41));
         assert_eq!(summary, "230 image(s) embedded, 4 skipped, done in 41s");
     }
 
