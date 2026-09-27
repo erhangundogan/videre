@@ -15,9 +15,9 @@ pub fn image_to_tensor(path: &Path, size: usize, device: &Device) -> Result<Tens
         .unwrap_or_default();
 
     let img = if ext == "heic" {
-        decode_via_quicklook(path, size, "embed-heic")?
+        videre_core::heic::decode_via_quicklook(path, "embed-heic", Some((size * 2) as u32))?
     } else if ext == "mov" || ext == "mp4" {
-        decode_via_quicklook(path, size, "embed-video")?
+        videre_core::heic::decode_via_quicklook(path, "embed-video", Some((size * 2) as u32))?
     } else {
         let timeout_path = path.to_path_buf();
         videre_core::io_timeout::run_with_timeout(videre_core::io_timeout::DEFAULT_IO_TIMEOUT, move || {
