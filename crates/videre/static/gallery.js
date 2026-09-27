@@ -467,15 +467,28 @@ function bustUrl(url,token){
   if(clean.indexOf('b='+token.split('=')[1])>=0)return clean;
   return clean+(clean.indexOf('?')>=0?'&':'?')+token;
 }
-// Refresh every on-page thumbnail for one hash after its orientation changed,
-// so the grid tile turns with the lightbox rather than lagging until reload.
+// The latest orientation token per hash, so the full-size original loaded on
+// zoom is fetched fresh after a rotation too.
+var rotatedTokens={};
+// Refresh every on-page URL for one hash after its orientation changed: the
+// thumbnails, so the grid tile turns with the lightbox, and the URLs a tile
+// opens the lightbox or the original with. The browser keeps an image per URL,
+// so reopening a tile with its pre-rotation URL showed the old render.
 function refreshTilesFor(hash,token){
+  rotatedTokens[hash]=token;
   var needle='/api/files/'+encodeURIComponent(hash)+'/raw';
   var imgs=document.querySelectorAll('img');
   for(var i=0;i<imgs.length;i++){
     if(imgs[i].id==='lb-img')continue;
     if(imgs[i].src&&imgs[i].src.indexOf(needle)>=0)imgs[i].src=bustUrl(imgs[i].src,token);
   }
+  document.querySelectorAll('[data-lb-url]').forEach(function(el){
+    if(el.dataset.lbUrl.indexOf(needle)>=0)el.dataset.lbUrl=bustUrl(el.dataset.lbUrl,token);
+  });
+  document.querySelectorAll('a[href]').forEach(function(a){
+    var href=a.getAttribute('href');
+    if(href.indexOf(needle)>=0)a.setAttribute('href',bustUrl(href,token));
+  });
 }
 // Rotate the open photo 90 clockwise. The click is debounced: the button is
 // disabled while the request is in flight, so a rapid double-click cannot queue
@@ -492,7 +505,9 @@ function rotateLb(dir){
     .then(function(r){ if(!r.ok)throw new Error('rotate failed'); return r.json(); })
     .then(function(){
       var token='b='+Date.now();
-      document.getElementById('lb-img').src=bustUrl(lbCurrent.url,token);
+      lbCurrent.url=bustUrl(lbCurrent.url,token);
+      // Zoomed in on the original: refetch that, not the preview.
+      document.getElementById('lb-img').src=lbz.full?bustUrl(lbFullUrl(lbCurrent.hash),token):lbCurrent.url;
       refreshTilesFor(lbCurrent.hash,token);
     })
     .catch(function(){})
@@ -526,7 +541,11 @@ function lbResetZoom(){
 function lbLoadFull(){
   if(lbz.full||!lbCurrent||!lbCurrent.hash)return;
   lbz.full=true;
-  lbImg().src='/api/files/'+encodeURIComponent(lbCurrent.hash)+'/raw';
+  lbImg().src=lbFullUrl(lbCurrent.hash);
+}
+function lbFullUrl(hash){
+  var url='/api/files/'+encodeURIComponent(hash)+'/raw';
+  return rotatedTokens[hash]?bustUrl(url,rotatedTokens[hash]):url;
 }
 function lbClampPan(){
   var img=lbImg(), stage=img.closest('.lb-stage');
@@ -1498,13 +1517,10 @@ function selectionTag(remove){
 function selectionRotate(direction){
   var hashes=fileSelection.list();
   selectionPost('/api/files/rotate',{hashes:hashes,direction:direction}).then(function(j){
-    // Reload the turned thumbnails; the server has already dropped their cache.
-    hashes.forEach(function(h){
-      document.querySelectorAll('[data-hash="'+CSS.escape(h)+'"] img').forEach(function(img){
-        var src=img.getAttribute('src')||'';
-        img.src=src+(src.indexOf('?')<0?'?':'&')+'r='+Date.now();
-      });
-    });
+    // Reload the turned thumbnails and the URLs their lightbox opens; the
+    // server has already dropped their cache.
+    var token='b='+Date.now();
+    hashes.forEach(function(h){ refreshTilesFor(h,token); });
     var text='Rotated '+j.rotated+' item(s)';
     if(j.skipped)text+=', skipped '+j.skipped+' that cannot be rotated (videos, RAW)';
     if(j.failed)text+=', '+j.failed+' failed';
