@@ -286,6 +286,17 @@ const ICON_PIN='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strok
 // Heart for the like toggle. One path; the CSS decides outline vs filled red by
 // the button's `liked` class (fill:none + stroke, or fill:red).
 const ICON_HEART='<svg viewBox="0 0 24 24" stroke-linejoin="round" stroke-linecap="round"><path d="M12 21C12 21 3 14.5 3 8.5 3 5.42 5.42 3 8.5 3c1.74 0 3.41 0.81 4.5 2.09C14.09 3.81 15.76 3 17.5 3 20.58 3 23 5.42 23 8.5 23 14.5 12 21 12 21Z" transform="translate(-1 0)"/></svg>';
+// Selection bar icons: Feather (https://feathericons.com), MIT License,
+// Copyright (c) 2013-2023 Cole Bemis. 24px viewBox, stroked in currentColor.
+function selIcon(d){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+d+'</svg>'; }
+const ICON_STAR=selIcon('<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>');
+const ICON_LABEL=selIcon('<path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/>');
+const ICON_TAG=selIcon('<path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>');
+const ICON_FLAG=selIcon('<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>');
+const ICON_ROT_L=selIcon('<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>');
+const ICON_ROT_R=selIcon('<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>');
+const ICON_MORE=selIcon('<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>');
+const ICON_TRASH=selIcon('<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>');
 function renderMetaPanel(meta){
   const el = document.getElementById('lbMeta');
   // Shown under the media. The left column carries the file facts; a right
@@ -380,6 +391,9 @@ function toggleLbLike(btn){
 function syncLikedMeta(hash, liked){
   if(typeof galleryFiles!=='undefined'){
     galleryFiles.forEach(function(f){ if(f.hash===hash) f.liked=liked; });
+  }
+  if(typeof dateFiles!=='undefined'&&dateFiles){
+    dateFiles.forEach(function(f){ if(f.hash===hash) f.liked=liked; });
   }
   document.querySelectorAll('[data-lb-meta]').forEach(function(el){
     try{
@@ -1389,7 +1403,6 @@ function selectModeClick(e){
   if(!item||e.target.closest('button, [data-path]'))return false;
   e.preventDefault();e.stopPropagation();
   var sel=ensureFileSelection();
-  if(typeof selectionResult!=='undefined')selectionResult='';
   if(e.shiftKey)sel.extend(item.dataset.hash); else sel.toggle(item.dataset.hash);
   if(typeof loadSelectionTags==='function')loadSelectionTags();
   return true;
@@ -1439,31 +1452,97 @@ function toggleSelectMode(){ setSelectMode(!selectMode); }
 // ---------- selection bar actions ----------
 // Marks, tags, rotation and copy paths for the selected items. The result of
 // the last action stays on the bar until the selection changes.
-var selectionResult='';
 var SELECTION_LABELS=['red','yellow','green','blue','purple'];
 
-function fileSelectionActions(){
-  var rate='<select class="sel-rate" aria-label="Rate" onchange="selectionRate(this)">'+
-    '<option value="">Rate</option>'+[1,2,3,4,5].map(function(n){return '<option value="'+n+'">'+'★'.repeat(n)+'</option>';}).join('')+
-    '<option value="0">Clear rating</option></select>';
-  var label='<select class="sel-label" aria-label="Label" onchange="selectionLabel(this)">'+
-    '<option value="">Label</option>'+SELECTION_LABELS.map(function(l){return '<option value="'+l+'">'+l+'</option>';}).join('')+
-    '<option value="none">No label</option></select>';
-  return '<button type="button" data-sel-act="like">Like</button>'+
-    '<button type="button" data-sel-act="unlike">Unlike</button>'+
-    '<button type="button" data-sel-act="keep">Keep</button>'+
-    '<button type="button" data-sel-act="reject">Reject</button>'+
-    rate+label+
-    '<input type="text" class="sel-tag" list="sel-tag-list" placeholder="Tag" aria-label="Tag">'+
-    '<datalist id="sel-tag-list"></datalist>'+
-    '<button type="button" data-sel-act="tag">Tag</button>'+
-    '<button type="button" data-sel-act="untag">Untag</button>'+
-    '<button type="button" data-sel-act="rotate-ccw" title="Rotate left" aria-label="Rotate left">&#10226;</button>'+
-    '<button type="button" data-sel-act="rotate-cw" title="Rotate right" aria-label="Rotate right">&#10227;</button>'+
-    '<button type="button" data-sel-act="copy">Copy paths</button>'+
-    '<button type="button" data-sel-act="delete" class="sel-danger">Delete\u2026</button>'+
-    (selectionResult?'<span class="sel-hint sel-result" role="status">'+escH(selectionResult)+'</span>':'');
+// Whether every selected item is liked, from the rows this page loaded. Decides
+// the heart's state: a click then unlikes all rather than likes all.
+function selectionAllLiked(){
+  var liked={};
+  [typeof galleryFiles!=='undefined'?galleryFiles:[],(typeof dateFiles!=='undefined'&&dateFiles)||[]].forEach(function(list){
+    (list||[]).forEach(function(f){ if(!(f.hash in liked))liked[f.hash]=!!f.liked; });
+  });
+  var hs=fileSelection?fileSelection.list():[];
+  return hs.length>0&&hs.every(function(h){ return liked[h]; });
 }
+
+function fileSelectionActions(){
+  var all=selectionAllLiked();
+  var heart='<button type="button" class="sel-icon sel-heart" data-sel-act="like" aria-pressed="'+all+'" '+
+    'title="'+(all?'Unlike':'Like')+'" aria-label="'+(all?'Unlike':'Like')+'">'+ICON_HEART+'</button>';
+  var more=selPopButton('more',ICON_MORE,'More',
+    '<button type="button" role="menuitem" data-sel-act="copy" aria-label="Copy paths">Copy paths</button>');
+  return heart+selectionMarkControls()+
+    '<span class="sel-sep" aria-hidden="true"></span>'+
+    '<button type="button" class="sel-icon" data-sel-act="rotate-ccw" title="Rotate left" aria-label="Rotate left">'+ICON_ROT_L+'</button>'+
+    '<button type="button" class="sel-icon" data-sel-act="rotate-cw" title="Rotate right" aria-label="Rotate right">'+ICON_ROT_R+'</button>'+
+    more+
+    '<span class="sel-sep" aria-hidden="true"></span>'+
+    '<button type="button" class="sel-icon sel-danger" data-sel-act="delete" title="Delete" aria-label="Delete">'+ICON_TRASH+'</button>';
+}
+// Rate, label, tag and flag, each a small menu.
+var LABEL_COLOURS={red:'#dc2626',yellow:'#eab308',green:'#16a34a',blue:'#2563eb',purple:'#9333ea'};
+function selectionMarkControls(){
+  var stars=[1,2,3,4,5].map(function(n){
+    return '<button type="button" role="menuitem" data-sel-act="rate" data-value="'+n+'" aria-label="'+n+' star'+(n>1?'s':'')+'" title="'+n+'">'+'★'.repeat(n)+'</button>';
+  }).join('')+'<button type="button" role="menuitem" data-sel-act="rate" data-value="0" aria-label="Clear rating">Clear</button>';
+  var dots=SELECTION_LABELS.map(function(l){
+    return '<button type="button" role="menuitem" class="sel-dot" data-sel-act="label" data-value="'+l+'" aria-label="'+l+'" title="'+l+'" style="background:'+LABEL_COLOURS[l]+'"></button>';
+  }).join('')+'<button type="button" role="menuitem" data-sel-act="label" data-value="none" aria-label="No label">None</button>';
+  var tag='<input type="text" class="sel-tag" list="sel-tag-list" placeholder="Tag" aria-label="Tag">'+
+    '<datalist id="sel-tag-list"></datalist>'+
+    '<button type="button" data-sel-act="tag" aria-label="Add tag">Add</button>'+
+    '<button type="button" data-sel-act="untag" aria-label="Remove tag">Remove</button>';
+  var flag='<button type="button" role="menuitem" data-sel-act="keep" aria-label="Keep">Keep</button>'+
+    '<button type="button" role="menuitem" data-sel-act="reject" aria-label="Reject">Reject</button>'+
+    '<button type="button" role="menuitem" data-sel-act="pick-clear" aria-label="Clear pick">Clear</button>';
+  return selPopButton('rate',ICON_STAR,'Rate',stars)+
+    selPopButton('label',ICON_LABEL,'Label',dots)+
+    selPopButton('tag',ICON_TAG,'Tag',tag)+
+    selPopButton('flag',ICON_FLAG,'Keep or reject',flag);
+}
+
+// One small menu at a time, opened upward from its button on the bar.
+var openPopName=null;
+function selPopButton(name,icon,title,body){
+  return '<span class="sel-pop-wrap"><button type="button" class="sel-icon" data-sel-pop="'+name+'" title="'+title+'" aria-label="'+title+'" aria-haspopup="true" aria-expanded="false">'+icon+'</button>'+
+    '<div class="sel-pop" data-pop="'+name+'" role="menu" hidden>'+body+'</div></span>';
+}
+function openSelPop(name){
+  closeSelPop(false);
+  var bar=document.getElementById('file-sel-bar');
+  var pop=bar&&bar.querySelector('.sel-pop[data-pop="'+name+'"]');
+  if(!pop)return;
+  pop.hidden=false;
+  bar.querySelector('[data-sel-pop="'+name+'"]').setAttribute('aria-expanded','true');
+  openPopName=name;
+  if(name==='tag')loadSelectionTags();
+  var first=pop.querySelector('input, button');
+  if(first)first.focus();
+}
+function closeSelPop(returnFocus){
+  if(!openPopName)return;
+  var bar=document.getElementById('file-sel-bar');
+  var btn=bar&&bar.querySelector('[data-sel-pop="'+openPopName+'"]');
+  var pop=bar&&bar.querySelector('.sel-pop[data-pop="'+openPopName+'"]');
+  if(pop)pop.hidden=true;
+  if(btn){ btn.setAttribute('aria-expanded','false'); if(returnFocus)btn.focus(); }
+  openPopName=null;
+}
+// Enter in the tag field adds the tag.
+document.addEventListener('keydown',function(e){
+  if(e.key==='Enter'&&e.target.closest&&e.target.closest('#file-sel-bar .sel-tag')){
+    e.preventDefault(); closeSelPop(false); selectionTag(false);
+  }
+});
+// Escape closes an open menu before select mode sees it, so the selection stays.
+document.addEventListener('keydown',function(e){
+  if(e.key==='Escape'&&openPopName){ e.stopImmediatePropagation(); closeSelPop(true); }
+},true);
+document.addEventListener('click',function(e){
+  var t=e.target.closest('#file-sel-bar [data-sel-pop]');
+  if(t){ var n=t.dataset.selPop; if(openPopName===n)closeSelPop(true); else openSelPop(n); return; }
+  if(openPopName&&!e.target.closest('#file-sel-bar .sel-pop'))closeSelPop(false);
+});
 
 function selectionPost(url,body){
   return fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
@@ -1477,28 +1556,37 @@ function selectionPost(url,body){
     });
 }
 
+// The last action's result, shown briefly above the bar. A toast rather than
+// bar content, so the bar never changes width or re-renders under an open menu.
 function showSelectionResult(text){
-  selectionResult=text;
-  if(fileSelection)fileSelection.renderBar();
-  loadSelectionTags();
+  var t=document.getElementById('sel-toast');
+  if(!t){
+    t=document.createElement('div');
+    t.id='sel-toast';
+    t.setAttribute('role','status');
+    document.body.appendChild(t);
+  }
+  t.textContent=text;
+  t.hidden=false;
+  clearTimeout(showSelectionResult.timer);
+  showSelectionResult.timer=setTimeout(function(){ t.hidden=true; },4000);
 }
 
 function selectionMarks(body,describe){
   var hashes=fileSelection.list();
   body.hashes=hashes;
   selectionPost('/api/files/marks',body).then(function(j){
-    if(body.liked!==undefined)hashes.forEach(function(h){ syncLikedMeta(h,body.liked); });
+    if(body.liked!==undefined){
+      hashes.forEach(function(h){ syncLikedMeta(h,body.liked); });
+      fileSelection.renderBar();
+    }
     showSelectionResult(describe(j,hashes.length));
   }).catch(function(e){ showSelectionResult(e.message); });
 }
-function selectionRate(sel){
-  if(sel.value==='')return;
-  var n=Number(sel.value);
+function selectionRate(n){
   selectionMarks({rating:n},function(_,c){ return n?('Rated '+c+' item(s) '+'★'.repeat(n)):('Cleared the rating of '+c+' item(s)'); });
 }
-function selectionLabel(sel){
-  if(sel.value==='')return;
-  var l=sel.value;
+function selectionLabel(l){
   selectionMarks({label:l},function(_,c){ return l==='none'?('Cleared the label of '+c+' item(s)'):('Labeled '+c+' item(s) '+l); });
 }
 
@@ -1549,11 +1637,17 @@ function loadSelectionTags(){
 document.addEventListener('click',function(e){
   var btn=e.target.closest('#file-sel-bar [data-sel-act]');
   if(!btn||!fileSelection)return;
+  closeSelPop(false);
   switch(btn.dataset.selAct){
-    case 'like': selectionMarks({liked:true},function(_,c){return 'Liked '+c+' item(s)';}); break;
-    case 'unlike': selectionMarks({liked:false},function(_,c){return 'Unliked '+c+' item(s)';}); break;
+    case 'like':
+      var unlike=selectionAllLiked();
+      selectionMarks({liked:!unlike},function(_,c){return (unlike?'Unliked ':'Liked ')+c+' item(s)';});
+      break;
     case 'keep': selectionMarks({pick:'keep'},function(j,c){return j.pick==='none'?('Cleared Keep on '+c+' item(s)'):('Marked '+c+' item(s) Keep');}); break;
     case 'reject': selectionMarks({pick:'reject'},function(j,c){return j.pick==='none'?('Cleared Reject on '+c+' item(s)'):('Marked '+c+' item(s) Reject');}); break;
+    case 'rate': selectionRate(Number(btn.dataset.value)); break;
+    case 'label': selectionLabel(btn.dataset.value); break;
+    case 'pick-clear': selectionMarks({pick:'none'},function(_,c){return 'Cleared the pick of '+c+' item(s)';}); break;
     case 'tag': selectionTag(false); break;
     case 'untag': selectionTag(true); break;
     case 'rotate-ccw': selectionRotate('ccw'); break;
