@@ -493,6 +493,14 @@ mod tests {
 mod batch_correctness_tests {
     use super::*;
 
+    #[cfg(not(target_os = "macos"))]
+    mod model_test_support {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../videre-core/tests/support/model_test_support.rs"
+        ));
+    }
+
     /// How to fill the synthetic images a sweep embeds.
     ///
     /// This distinction is load-bearing. The original corruption was
@@ -870,8 +878,8 @@ mod batch_correctness_tests {
     /// because CPU inference is slow: this pays one forward pass per image
     /// sampled, not per image in the batch.
     ///
-    /// Skips loudly when weights are not cached, matching the policy that
-    /// tests never download; CI warms the cache in an explicit step.
+    /// Skips loudly unless real-model tests are explicitly enabled locally.
+    /// An opted-in cold run may download weights; CI never warms this cache.
     ///
     /// **Not compiled on macOS**, deliberately. CPU inference is slow, and on a
     /// shared GitHub macOS runner this single test pushed the job from 4m18s to
@@ -883,14 +891,12 @@ mod batch_correctness_tests {
     #[test]
     #[cfg(not(target_os = "macos"))]
     fn cpu_batch_matches_single_image_baseline() {
-        if !videre_core::hf_cache::siglip_ready(MODEL_ID) {
-            eprintln!(
-                "SKIP cpu_batch_matches_single_image_baseline: {MODEL_ID} weights are not in {}. \
-                 Run `videre embed` once to populate it; tests never download.",
-                videre_core::hf_cache::cache_dir().display()
-            );
+        if model_test_support::skip_unless_model_tests_enabled(
+            "cpu_batch_matches_single_image_baseline",
+        ) {
             return;
         }
+        let _guard = model_test_support::ModelCacheGuard::acquire();
 
         let embedder = Embedder::load(candle_core::Device::Cpu, MODEL_ID).unwrap();
         let size = image_size_for(MODEL_ID);

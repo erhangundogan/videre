@@ -4,15 +4,22 @@
 //! `videre search --person` then finds the photo.
 //!
 //! Needs the face models, so it is gated exactly like the other faces
-//! integration tests: it skips on a cold cache and holds the shared-cache lock.
+//! integration tests: it runs only on explicit opt-in and holds the shared-cache lock.
 
 mod common;
-use common::{face_models_cached, shared_cache_guard, skip_without_models, TestLibrary};
+use common::{
+    model_test_support::{skip_unless_model_tests_enabled, ModelCacheGuard},
+    shared_cache_guard, TestLibrary,
+};
 
 use std::path::Path;
 
-fn run(lib: &TestLibrary, args: &[&str]) {
-    let out = lib.cmd().args(args).output().expect("run videre");
+fn run(lib: &TestLibrary, args: &[&str], guard: Option<&ModelCacheGuard>) {
+    let mut cmd = match guard {
+        Some(guard) => lib.model_cmd(guard),
+        None => lib.cmd(),
+    };
+    let out = cmd.args(args).output().expect("run videre");
     assert!(
         out.status.success(),
         "videre {args:?} failed:\n{}",
@@ -41,17 +48,21 @@ fn write_region_sidecar(photo: &Path, name: &str, bbox: &str, iw: f64, ih: f64) 
 
 #[test]
 fn imports_a_face_name_from_an_xmp_region() {
-    let _serial = shared_cache_guard();
-    if skip_without_models("faces xmp read-back", face_models_cached()) {
+    if skip_unless_model_tests_enabled("faces xmp read-back") {
         return;
     }
+    let serial = shared_cache_guard();
 
     let lib = TestLibrary::new();
     let photo = lib.copy_fixture("ai-generated-couple.jpg", "photos/couple.jpg");
 
     // Scan (width/height come from the image header) and detect faces.
-    run(&lib, &["scan", "--silent"]);
-    run(&lib, &["faces", "--min-cluster-size", "1", "--silent"]);
+    run(&lib, &["scan", "--silent"], None);
+    run(
+        &lib,
+        &["faces", "--min-cluster-size", "1", "--silent"],
+        Some(&serial),
+    );
 
     // Read a detected face's bbox and the image dimensions, so the region we
     // write overlaps a real face regardless of the model's exact output.
@@ -85,6 +96,7 @@ fn imports_a_face_name_from_an_xmp_region() {
             "file",
             "--silent",
         ],
+        Some(&serial),
     );
 
     // The imported name is now searchable, and lands on a confirmed face.

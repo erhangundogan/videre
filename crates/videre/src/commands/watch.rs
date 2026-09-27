@@ -351,7 +351,7 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
         },
     );
     // Test-only bounded exit: registration plus one startup pass then stop.
-    // Same category as VIDERE_TEST_REQUIRE_MODELS; never documented as a knob.
+    // Test-only control, never documented as a user-facing knob.
     if std::env::var_os("VIDERE_WATCH_ONCE").is_some() {
         return Ok(());
     }

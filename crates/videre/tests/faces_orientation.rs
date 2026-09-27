@@ -9,7 +9,9 @@
 //! leaving the owner's faces as unassigned singletons.
 
 mod common;
-use common::{face_models_cached, shared_cache_guard, skip_without_models, TestLibrary};
+use common::{
+    model_test_support::skip_unless_model_tests_enabled, shared_cache_guard, TestLibrary,
+};
 
 use rusqlite::Connection;
 use std::path::Path;
@@ -52,7 +54,7 @@ fn face_rows(db: &Path, hash: &str) -> Vec<(String, i64)> {
 
 #[test]
 fn orientation6_fixture_detects_on_the_display_canvas() {
-    if skip_without_models("faces", face_models_cached()) {
+    if skip_unless_model_tests_enabled("faces orientation") {
         return;
     }
     let _serial = shared_cache_guard();
@@ -60,7 +62,7 @@ fn orientation6_fixture_detects_on_the_display_canvas() {
     let db = lib.db();
 
     let out = lib
-        .cmd()
+        .model_cmd(&_serial)
         .args(["faces", "--workers", "1", "--silent"])
         .output()
         .expect("failed to run videre faces");

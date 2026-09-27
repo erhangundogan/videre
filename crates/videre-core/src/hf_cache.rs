@@ -1,115 +1,93 @@
-//! Where Hugging Face weights land locally, and whether they are already there.
+//! Where Hugging Face weights land locally.
 //!
 //! Both SigLIP (`videre embed`) and InsightFace (`videre faces`) resolve their
 //! weights through hf-hub into this cache. Note it is **not** `~/.cache/ort/`,
-//! which `CLAUDE.md` claimed for months and which has never existed; a check
-//! written against that path reports "cold" forever.
+//! which `CLAUDE.md` claimed for months and which has never existed.
 //!
-//! This lives in `videre-core` rather than in a test helper because three
-//! callers need it: the integration-test harness, `videre-ml`'s own tests, and
-//! anything that wants to avoid triggering a multi-hundred-megabyte download as
-//! a side effect. hf-hub 1.0.0 exposes no offline switch, so the check has to
-//! be ours.
+//! The opt-in model tests pass this path to model-backed children, so it must
+//! resolve exactly as the pinned hf-hub loader does, or a child would download
+//! into a different cache than the one the test process shares.
 
 use std::path::PathBuf;
 
-/// Root of the local Hugging Face hub cache, honouring `HF_HOME`.
+/// Root of the local Hugging Face hub cache, using the pinned loader's order.
 pub fn cache_dir() -> PathBuf {
-    if let Ok(home) = std::env::var("HF_HOME") {
+    cache_dir_from(|key| std::env::var(key).ok())
+}
+
+/// Resolve the cache without mutating process environment in parallel tests.
+pub fn cache_dir_from(get: impl Fn(&str) -> Option<String>) -> PathBuf {
+    if let Some(cache) = get("HF_HUB_CACHE") {
+        return PathBuf::from(cache);
+    }
+    if let Some(cache) = get("HUGGINGFACE_HUB_CACHE") {
+        return PathBuf::from(cache);
+    }
+    if let Some(home) = get("HF_HOME") {
         return PathBuf::from(home).join("hub");
     }
-    let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_default();
-    home.join(".cache").join("huggingface").join("hub")
-}
-
-/// Whether every one of `files` is present in some snapshot of `repo`.
-///
-/// Checks the files themselves rather than the repo directory: an interrupted
-/// download leaves the directory in place with the weights missing, and that
-/// state must read as cold or the caller proceeds into a failure.
-///
-/// The snapshot hash is globbed rather than pinned, since it changes whenever
-/// the upstream repo is updated.
-pub fn repo_has(repo: &str, files: &[&str]) -> bool {
-    let snapshots = cache_dir()
-        .join(format!("models--{}", repo.replace('/', "--")))
-        .join("snapshots");
-    let Ok(entries) = std::fs::read_dir(&snapshots) else {
-        return false;
-    };
-    entries
-        .filter_map(Result::ok)
-        .any(|snap| files.iter().all(|f| snap.path().join(f).exists()))
-}
-
-/// Whether a SigLIP model has enough cached to run inference.
-///
-/// Weights are checked by extension rather than by name: a model may ship one
-/// `model.safetensors` or a sharded set, and requiring a specific filename
-/// would report a perfectly usable cache as cold.
-pub fn siglip_ready(model_id: &str) -> bool {
-    if !repo_has(model_id, &["config.json", "tokenizer.json"]) {
-        return false;
+    if let Some(xdg) = get("XDG_CACHE_HOME") {
+        return PathBuf::from(xdg).join("huggingface/hub");
     }
-    let snapshots = cache_dir()
-        .join(format!("models--{}", model_id.replace('/', "--")))
-        .join("snapshots");
-    let Ok(entries) = std::fs::read_dir(&snapshots) else {
-        return false;
-    };
-    entries.filter_map(Result::ok).any(|snap| {
-        std::fs::read_dir(snap.path())
-            .map(|files| {
-                files.filter_map(Result::ok).any(|f| {
-                    f.path()
-                        .extension()
-                        .is_some_and(|e| e.eq_ignore_ascii_case("safetensors"))
-                })
-            })
-            .unwrap_or(false)
-    })
+    let home = get("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    home.join(".cache").join("huggingface").join("hub")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn from_pairs(pairs: &[(&str, &str)]) -> PathBuf {
+        cache_dir_from(|key| {
+            pairs
+                .iter()
+                .find(|(name, _)| *name == key)
+                .map(|(_, value)| (*value).to_string())
+        })
+    }
+
     #[test]
-    fn hf_home_overrides_the_default_location() {
-        // Not using std::env::set_var: tests share a process and run in
-        // parallel, so mutating the environment here would race every other
-        // test's getenv. Asserts the shape of the default instead.
-        let d = cache_dir();
-        assert!(
-            d.ends_with("hub"),
-            "cache dir should end in hub, got {}",
-            d.display()
+    fn hub_cache_follows_hf_hub_environment_precedence() {
+        assert_eq!(
+            from_pairs(&[
+                ("HF_HUB_CACHE", "/one"),
+                ("HUGGINGFACE_HUB_CACHE", "/two"),
+                ("HF_HOME", "/three"),
+                ("XDG_CACHE_HOME", "/four"),
+                ("HOME", "/five"),
+            ]),
+            PathBuf::from("/one")
         );
-    }
-
-    #[test]
-    fn a_missing_repo_is_not_cached() {
-        assert!(!repo_has(
-            "definitely/not-a-real-model-xyz",
-            &["config.json"]
-        ));
-        assert!(!siglip_ready("definitely/not-a-real-model-xyz"));
-    }
-
-    #[test]
-    fn a_repo_directory_without_the_files_is_not_cached() {
-        // The interrupted-download shape: directory present, weights absent.
-        // Must read as cold, or the caller proceeds into a failure.
-        let tmp = std::env::temp_dir().join(format!("videre-hf-probe-{}", std::process::id()));
-        let snap = tmp
-            .join("hub")
-            .join("models--fake--repo")
-            .join("snapshots")
-            .join("abc123");
-        std::fs::create_dir_all(&snap).unwrap();
-        // Verified via the same path-building logic rather than by setting
-        // HF_HOME, for the parallelism reason above.
-        assert!(!snap.join("config.json").exists());
-        let _ = std::fs::remove_dir_all(&tmp);
+        assert_eq!(
+            from_pairs(&[
+                ("HUGGINGFACE_HUB_CACHE", "/two"),
+                ("HF_HOME", "/three"),
+                ("XDG_CACHE_HOME", "/four"),
+                ("HOME", "/five"),
+            ]),
+            PathBuf::from("/two")
+        );
+        assert_eq!(
+            from_pairs(&[
+                ("HF_HOME", "/three"),
+                ("XDG_CACHE_HOME", "/four"),
+                ("HOME", "/five"),
+            ]),
+            PathBuf::from("/three/hub")
+        );
+        assert_eq!(
+            from_pairs(&[("XDG_CACHE_HOME", "/four"), ("HOME", "/five")]),
+            PathBuf::from("/four/huggingface/hub")
+        );
+        assert_eq!(
+            from_pairs(&[("HOME", "/five")]),
+            PathBuf::from("/five/.cache/huggingface/hub")
+        );
+        assert_eq!(
+            from_pairs(&[]),
+            PathBuf::from("/tmp/.cache/huggingface/hub")
+        );
     }
 }

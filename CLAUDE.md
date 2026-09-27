@@ -172,8 +172,10 @@ server), `rmcp` + `schemars` (MCP), `ureq` (forward geocoding, the only network
 call).
 
 Face models are InsightFace buffalo_l, fetched from `WePrompt/buffalo_l` into
-`~/.cache/huggingface/hub/` honouring `HF_HOME`. **Not** `~/.cache/ort/`, which
-this file claimed for months and which has never existed.
+the Hugging Face hub cache (normally `~/.cache/huggingface/hub/`, with
+`HF_HUB_CACHE`, `HUGGINGFACE_HUB_CACHE`, `HF_HOME`, and `XDG_CACHE_HOME`
+overrides). **Not** `~/.cache/ort/`, which this file claimed for months and
+which has never existed.
 
 ## Platform support
 
@@ -224,50 +226,41 @@ directly. The workspace was reformatted to zero drift on 2026-08-09 and the
 `src/` files into a test-only commit and nothing caught it, because formatting
 changes are invisible to the test suite.
 
-**Tests never download model weights.** That is the application's job. Nine
-tests need weights (`faces_resumability`, `faces_orientation` and
-`faces_xmp_readback`, plus `embed.rs`'s four and `pipeline.rs`'s two on macOS);
-each calls `common::skip_without_models` and returns early on a cold cache.
-`faces_pipeline` is deliberately *not* gated, because `commands/faces.rs`
-returns at the `to_process.is_empty()` branch before loading anything; a
-regression guard runs the binary against a fresh `HF_HOME` and asserts nothing
-was downloaded, so moving that model load earlier fails loudly instead of
-quietly adding a 200MB download to every cold CI run.
+**Normal tests and CI are model-free.** `VIDERE_TEST_MODELS` unset or `0`
+visibly skips real inference even when a developer's cache is warm. Run
+`VIDERE_TEST_MODELS=1 make test` locally to exercise the model-backed tests;
+missing weights may download into the developer's Hugging Face hub cache.
+Download, load, inference, and assertion failures then fail the suite. CI
+neither restores nor warms model weights, and points Hub requests at an
+unreachable local endpoint so an ungated fetch fails instead of downloading.
+CI's green result does not prove real inference works.
 
-Rust has no native skip, so a skipped test passes. Two things stop that becoming
-silent coverage loss. The skip message writes to fd 2 directly rather than via
-`eprintln!`, because libtest captures the print macros for passing tests and the
-message would otherwise appear only under `--nocapture`. And
-`VIDERE_TEST_REQUIRE_MODELS=1` turns a cold-cache skip into a panic; CI sets it
-after restoring its cache, so a cache that silently stops working fails the
-build rather than disabling those tests.
+Rust has no native skip, so the gate writes its reason directly to fd 2, where
+it remains visible under libtest capture. An invalid `VIDERE_TEST_MODELS` value
+is an error, not an implicit skip or opt-in. `faces_pipeline` remains in the
+normal suite because its empty-work path returns before loading a model;
+its regression guard asserts that no weights appeared in the private cache.
 
-CI caches `~/.cache/huggingface` keyed on `face_models.rs` and `embeddings.rs`,
-so changing the model invalidates it rather than reusing weights for a different
-one.
+Each real-model test holds one cross-process cache lock through model use.
+`TestLibrary::model_cmd(&guard)` passes only the resolved hub-cache path to a
+model-backed child; normal `cmd()` keeps the child cache private. The cache path
+matches the pinned loader's precedence: `HF_HUB_CACHE`, then
+`HUGGINGFACE_HUB_CACHE`, `HF_HOME/hub`, `XDG_CACHE_HOME/huggingface/hub`, then
+`HOME/.cache/huggingface/hub`. This allows one local download while preventing
+another test process from reading a half-written file.
 
-:warning: **A test that downloads does not just break "tests never download",
-it changes which *other* tests run**, because the cached weights wake a test
-that skips on a cold cache. The guard is the `.dng` in that test library:
-scanned and stored like anything else but explicitly vetoed as non-embeddable,
-so `embed` and `classify` return before loading a model; `HF_HOME` points into
-the test's temp dir and a guard asserts the sweep leaves it at zero bytes. The
-incident that taught this (SigLIP woken via `argument_robustness.rs`, the Ubuntu
-job creeping to 35 minutes) is documented in the root `Cargo.toml` comment.
+:warning: **A model-free test must remain model-free even during opt-in.** The
+`.dng` fixture in `argument_robustness.rs` is scanned but vetoed as
+non-embeddable, so the command returns before loading weights. The test's
+private `HF_HOME` and zero-byte assertion guard that path. This fixture fixed
+the historical CI download that pushed Ubuntu past 35 minutes; the normal
+suite no longer wakes other model tests merely by warming a cache.
 
 :warning: **Do not set `[profile.dev.package."*"] opt-level = 3` to speed up the
 test build.** It was tried and reverted: release-grade codegen in every test
 build made Ubuntu's Build step ~4x worse overall, and deleting the cached model
 that caused the slow test beat optimizing the work. The measurements and the
 `do not add this back` reasoning live in the root `Cargo.toml` comment.
-
-The salt in the model cache key (`hf-v2-`) exists because the key hashes
-`face_models.rs` and `embeddings.rs`, neither of which changed, so the poisoned
-cache would otherwise be restored forever.
-
-The remaining hole is that this test skips silently rather than calling
-`skip_without_models`, so `VIDERE_TEST_REQUIRE_MODELS=1` - which exists to turn
-exactly this into a failure - never fires for it.
 
 Clippy is gated in CI, on its own `clippy` job that runs
 `cargo clippy --workspace --all-targets -- -D warnings` (`make lint-check`;
@@ -311,12 +304,11 @@ exactly what was configured. Writing a test against a copy of a real library
 by path requires re-scanning the copy: a database whose rows point outside
 the library root is refused by the library guard.
 
-**Every test spawning `videre embed` or `videre faces` must hold
-`shared_cache_guard()`.** Those children resolve weights through the same
-Hugging Face cache, which is not safe for two simultaneous first-time readers.
-It has to be a *file* lock: cargo runs each test file as its own process in
-parallel, so the racing readers are usually in different processes, which no
-`Mutex` can see. Only contended on a cold cache.
+**Every test that can load a real model must hold the shared `ModelCacheGuard`
+through use.** A model-backed child must use `model_cmd(&guard)`; model-free
+children stay on `cmd()`. It has to be a *file* lock: cargo runs test files in
+parallel processes, which no `Mutex` can coordinate. The conservative guard
+serializes model tests even on a warm cache.
 
 `stderr_without_library_noise` filters library chatter before asserting on
 stderr. ONNX Runtime initialises at startup even for subcommands that never

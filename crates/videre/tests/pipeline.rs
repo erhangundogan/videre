@@ -1,12 +1,15 @@
 mod common;
 use common::TestLibrary;
 use std::io::Write;
-use std::process::{Output, Stdio};
+use std::process::{Command, Output, Stdio};
 
 /// Run `videre pipeline <args>` against this library, optionally feeding stdin.
 /// Mirrors the spawn idiom used by the other integration tests.
 fn run_pipeline(lib: &TestLibrary, args: &[&str], stdin_input: Option<&str>) -> Output {
-    let mut cmd = lib.cmd();
+    run_pipeline_with(lib.cmd(), args, stdin_input)
+}
+
+fn run_pipeline_with(mut cmd: Command, args: &[&str], stdin_input: Option<&str>) -> Output {
     cmd.arg("pipeline").args(args);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -127,14 +130,14 @@ fn one_run_classifies_the_embeddings_it_just_produced() {
     // single reading taken before embed would mark classify "up to date" and
     // skip it. Needs SigLIP for embed + classify; faces and locations are
     // skipped to keep the model set to one.
-    let _guard = common::shared_cache_guard();
-    if common::skip_without_models("embed", common::siglip_cached()) {
+    if common::model_test_support::skip_unless_model_tests_enabled("pipeline embed/classify") {
         return;
     }
+    let guard = common::shared_cache_guard();
     let lib = TestLibrary::new();
     lib.copy_fixture("tiny.jpg", "a.jpg");
-    let out = run_pipeline(
-        &lib,
+    let out = run_pipeline_with(
+        lib.model_cmd(&guard),
         &["--yes", "--skip", "faces,locations", "--json"],
         None,
     );
@@ -157,14 +160,18 @@ fn one_run_classifies_the_embeddings_it_just_produced() {
 #[test]
 #[cfg(target_os = "macos")]
 fn yes_runs_embed_when_models_are_available() {
-    let _guard = common::shared_cache_guard();
-    if common::skip_without_models("embed", common::siglip_cached()) {
+    if common::model_test_support::skip_unless_model_tests_enabled("pipeline embed") {
         return;
     }
+    let guard = common::shared_cache_guard();
     let lib = TestLibrary::new();
     lib.copy_fixture("tiny.jpg", "a.jpg");
     lib.scan();
-    let out = run_pipeline(&lib, &["--skip", "faces,classify,locations", "--yes"], None);
+    let out = run_pipeline_with(
+        lib.model_cmd(&guard),
+        &["--skip", "faces,classify,locations", "--yes"],
+        None,
+    );
     assert!(
         out.status.success(),
         "yes-run should succeed:\nstderr: {}",

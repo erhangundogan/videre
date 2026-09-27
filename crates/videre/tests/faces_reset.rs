@@ -246,14 +246,14 @@ fn plain_faces_dry_run_writes_nothing() {
 /// A real dry-run over eligible files must not touch pipeline state either:
 /// track_in upserts the faces run row the moment detection is entered, and
 /// the round-3 guard on table creation did not cover it. Needs the models
-/// (detection actually runs), so it skips on a cold cache like the other
-/// faces suites.
+/// (detection actually runs), so it needs explicit local model-test opt-in.
 #[test]
 fn plain_faces_dry_run_writes_no_pipeline_row() {
     let lib = seeded();
-    if common::skip_without_models("faces dry-run tracking", common::face_models_cached()) {
+    if common::model_test_support::skip_unless_model_tests_enabled("faces dry-run tracking") {
         return;
     }
+    let guard = common::shared_cache_guard();
     // A second image whose hash is NOT in the faces skip set, so detection
     // actually starts and reaches the run tracking under test. (The seeded
     // face row marks 'abc123' as already done.)
@@ -274,7 +274,7 @@ fn plain_faces_dry_run_writes_no_pipeline_row() {
         .unwrap();
     }
     let out = lib
-        .cmd()
+        .model_cmd(&guard)
         .args(["faces", "--dry-run", "--silent", "--min-cluster-size", "1"])
         .stdin(std::process::Stdio::null())
         .output()
@@ -418,11 +418,12 @@ fn reset_reaches_libraries_with_rows_but_no_markers() {
 #[test]
 fn reset_with_yes_wipes_and_starts_over() {
     let lib = seeded();
-    if common::skip_without_models("faces reset rebuild", common::face_models_cached()) {
+    if common::model_test_support::skip_unless_model_tests_enabled("faces reset rebuild") {
         return;
     }
+    let guard = common::shared_cache_guard();
     let out = lib
-        .cmd()
+        .model_cmd(&guard)
         .args([
             "faces",
             "--reset",

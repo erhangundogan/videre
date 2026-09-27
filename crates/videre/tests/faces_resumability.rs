@@ -4,11 +4,33 @@
 //! asserts a resumed run picks up correctly with no images permanently lost.
 
 mod common;
-use common::{face_models_cached, shared_cache_guard, skip_without_models, TestLibrary};
+use common::{
+    model_test_support::skip_unless_model_tests_enabled, shared_cache_guard, KillOnDrop,
+    TestLibrary,
+};
 
 use rusqlite::Connection;
 use std::path::Path;
 use std::time::{Duration, Instant};
+
+#[test]
+fn child_guard_reaps_a_process_when_a_progress_check_exits_early() {
+    let child = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .expect("start a model-free long-running child");
+    let pid = child.id();
+    drop(KillOnDrop(child));
+    let alive = std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("probe child liveness");
+    assert!(
+        !alive.success(),
+        "child must be killed and reaped on unwind"
+    );
+}
 
 /// Populates the library with `n` `file_hashes` rows, each a distinct fake hash
 /// pointing at its own copy of the real `sample_with_exif.jpg` fixture under the
@@ -54,20 +76,22 @@ fn kill_mid_run_then_resume_processes_every_image_exactly_once() {
     // Held for the whole test, not just the first spawn: this one SIGKILLs its
     // child, and a concurrent first-time weights download in another test
     // binary would otherwise be the thing that dies half-written.
-    if skip_without_models("faces", face_models_cached()) {
+    if skip_unless_model_tests_enabled("faces resumability") {
         return;
     }
     let _serial = shared_cache_guard();
+    common::prepare_face_models(&_serial);
     const N: usize = 10;
     let lib = fixture_library(N);
     let db = lib.db();
 
     // --workers 1: deterministic, strictly-incremental progress to poll against.
-    let mut child = lib
-        .cmd()
-        .args(["faces", "--workers", "1", "--silent"])
-        .spawn()
-        .expect("failed to spawn videre faces");
+    let mut child = KillOnDrop(
+        lib.model_cmd(&_serial)
+            .args(["faces", "--workers", "1", "--silent"])
+            .spawn()
+            .expect("failed to spawn videre faces"),
+    );
 
     let deadline = Instant::now() + Duration::from_secs(60);
     let killed_at = loop {
@@ -85,8 +109,8 @@ fn kill_mid_run_then_resume_processes_every_image_exactly_once() {
         std::thread::sleep(Duration::from_millis(20));
     };
 
-    child.kill().expect("failed to SIGKILL videre faces");
-    child.wait().expect("failed to reap killed process");
+    child.0.kill().expect("failed to SIGKILL videre faces");
+    child.0.wait().expect("failed to reap killed process");
 
     let after_kill = scanned_count(&db);
     assert!(after_kill > 0, "expected some progress to survive the kill");
@@ -101,7 +125,7 @@ fn kill_mid_run_then_resume_processes_every_image_exactly_once() {
 
     // Resume: a plain rerun should pick up exactly where it left off.
     let status = lib
-        .cmd()
+        .model_cmd(&_serial)
         .args(["faces", "--workers", "1", "--silent"])
         .status()
         .expect("failed to run resumed videre faces");
