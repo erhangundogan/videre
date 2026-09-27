@@ -3674,7 +3674,7 @@ struct RawFileQuery {
 /// so a client can't request arbitrary paths off the filesystem.
 ///
 /// HEIC is converted to JPEG on demand via QuickLook (same
-/// `videre_core::heic::heic_via_quicklook` helper used elsewhere), one file per request,
+/// `videre_core::heic::decode_via_quicklook` helper used elsewhere), one file per request,
 /// lazily as the browser requests each thumbnail/lightbox image, NOT
 /// eagerly for the whole report up front, which is what made server mode
 /// unusably slow on a collection with many HEIC files before this endpoint
@@ -3814,7 +3814,7 @@ async fn handle_raw_file(
             // `size` doubles as the qlmanage render cap: when Some, this
             // caller downscales to it below anyway; when None, the caller
             // wants the true original (no downscale applied), which is
-            // exactly heic_via_quicklook(..., None)'s full-resolution
+            // exactly decode_via_quicklook(..., None)'s full-resolution
             // behavior too. See its safety note.
             let img = videre_core::heic::decode_via_quicklook(
                 std::path::Path::new(&path),

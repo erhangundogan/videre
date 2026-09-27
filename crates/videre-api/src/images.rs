@@ -35,7 +35,7 @@ fn crop_face_square(img: &image::DynamicImage, bbox: [f32; 4]) -> image::Dynamic
 /// the same dimensions used at detection time.
 ///
 /// For HEIC: videre faces converts via QuickLook (see
-/// `videre_core::heic::heic_via_quicklook`), which already applies correct
+/// `videre_core::heic::decode_via_quicklook`), which already applies correct
 /// rotation, so no separate orientation step is needed.
 ///
 /// `pub`: the static-page base64 thumbnail path (`face_thumb_b64` in

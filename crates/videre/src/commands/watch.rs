@@ -951,7 +951,7 @@ fn run_heic_stage(
         // size. None (full resolution), not Some(n): the same decode also
         // seeds the `original_path` cache below, which detection's bbox
         // coordinates depend on being full resolution. See the safety note
-        // on heic_via_quicklook. This means this call site does NOT get
+        // on decode_via_quicklook. This means this call site does NOT get
         // lever-2a's render-size-cap treatment other watch-adjacent callers
         // do; the two levers are in tension here and full-res wins because
         // avoiding a second full qlmanage decode during `videre faces` is

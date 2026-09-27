@@ -5,10 +5,10 @@
 //! `image` crate's decoder and applying it.
 //!
 //! :warning: **Never call these on files videre itself produced.** QuickLook
-//! conversions (`videre_core::heic`, `videre_ml::preprocess::
-//! decode_via_quicklook`) and the thumbnail/`original` caches are already
-//! upright pixels with no orientation tag; running them through here would
-//! double-rotate. HEIC and video therefore do not route through this module.
+//! conversions (`videre_core::heic::decode_via_quicklook`) and the
+//! thumbnail/`original` caches are already upright pixels with no
+//! orientation tag; running them through here would double-rotate. HEIC and
+//! video therefore do not route through this module.
 
 use std::path::Path;
 
