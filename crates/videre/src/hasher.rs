@@ -311,8 +311,6 @@ fn hash_open_file(path: &Path, file: File) -> io::Result<FileRecord> {
     })
 }
 
-use image::imageops::{resize, FilterType};
-
 pub fn compute_dhash(path: &Path, mime: Option<&str>) -> Option<u64> {
     let ext = path
         .extension()
@@ -341,17 +339,7 @@ pub fn compute_dhash(path: &Path, mime: Option<&str>) -> Option<u64> {
     } else {
         videre_core::image_decode::decode_oriented_file(path).ok()?
     };
-    // dHash: resize to 9x8, compare adjacent pixels in each row → 64 bits
-    let small = resize(&img.to_luma8(), 9, 8, FilterType::Lanczos3);
-    let mut hash: u64 = 0;
-    for row in 0..8u32 {
-        for col in 0..8u32 {
-            let left = small.get_pixel(col, row)[0];
-            let right = small.get_pixel(col + 1, row)[0];
-            hash = (hash << 1) | if left > right { 1 } else { 0 };
-        }
-    }
-    Some(hash)
+    Some(videre_core::image_decode::dhash(&img))
 }
 
 /// Compute a perceptual hash without reopening the validated original path.
@@ -385,16 +373,7 @@ pub fn compute_dhash_in(
     } else {
         videre_core::image_decode::decode_oriented_reader(BufReader::new(file)).ok()?
     };
-    let small = resize(&image.to_luma8(), 9, 8, FilterType::Lanczos3);
-    let mut hash = 0u64;
-    for row in 0..8u32 {
-        for col in 0..8u32 {
-            let left = small.get_pixel(col, row)[0];
-            let right = small.get_pixel(col + 1, row)[0];
-            hash = (hash << 1) | u64::from(left > right);
-        }
-    }
-    Some(hash)
+    Some(videre_core::image_decode::dhash(&image))
 }
 
 pub fn hamming(a: u64, b: u64) -> u32 {
@@ -439,6 +418,20 @@ mod tests {
         assert_eq!(
             tagged, rotated_hash,
             "the tagged file must hash its display canvas, not its raw canvas"
+        );
+    }
+
+    #[test]
+    fn dhash_value_is_pinned_for_a_jpeg_fixture() {
+        let base = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+        let got = compute_dhash(
+            std::path::Path::new(&format!("{base}/ai-generated-couple.jpg")),
+            Some("image/jpeg"),
+        )
+        .unwrap();
+        assert_eq!(
+            got, 0x68c9_d51c_3a32_5948,
+            "pinned dHash; any change breaks stored fingerprints"
         );
     }
 
