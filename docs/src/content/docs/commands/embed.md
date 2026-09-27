@@ -97,6 +97,12 @@ Preparing a second model does not disturb the first, and switching between them
 invalidates nothing. That makes it practical to try a larger model on a real
 library and keep the old vectors until you are convinced.
 
+The per-model database is created only when embedding actually starts: a model
+that fails to download or load, or a run with nothing left to embed, leaves no
+file behind. Anything [stats](/commands/stats/) lists as a model therefore has
+a real embedding pass behind it, and one that failed mid-flight is cleaned up
+by the next [prune](/commands/prune/).
+
 Be aware of the cost before starting: a second model means a second full pass
 over every image, plus its own download (1.4 GB for
 [`siglip2-base-patch16-384`](https://huggingface.co/google/siglip2-base-patch16-384),
