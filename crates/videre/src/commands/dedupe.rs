@@ -280,7 +280,11 @@ fn run_dedupe_text(args: &DedupeArgs, conn: &rusqlite::Connection) -> anyhow::Re
 
     if args.similar {
         let similar = videre::output::find_similar_groups(&records, 10);
-        if !args.silent && !similar.is_empty() {
+        if !args.silent && records.iter().all(|r| r.phash.is_none()) {
+            tracing::info!(
+                "No near-duplicate fingerprints yet: run videre embed to compute them."
+            );
+        } else if !args.silent && !similar.is_empty() {
             tracing::info!(
                 "{} visually similar group(s) found: review with videre dedupe --html before deleting.",
                 similar.len()

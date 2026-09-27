@@ -110,6 +110,14 @@ fn dedupe_similar_reports_empty_when_no_phash_data() {
         .as_array()
         .expect("similar_groups key must be present (an array) with --similar");
     assert!(similar.is_empty());
+
+    // The text report says where the fingerprints come from.
+    let out = lib.cmd().args(["dedupe", "--similar"]).output().unwrap();
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("videre embed"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]

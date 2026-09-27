@@ -53,8 +53,9 @@ happen. Group members share their pixels but not always their metadata, so you
 are reviewing **which path survives**, which matters most when one copy is on a
 drive you think of as the backup, and whose dates and location survive with it.
 
-Near-duplicates from [`scan --similar`](/commands/scan/) appear here for
-eyeballing, and deliberately never in `dedupe`'s pipeable output.
+Near-duplicates found by [`dedupe --similar`](/commands/dedupe/) (fingerprints
+from [`embed`](/commands/embed/)) appear here for eyeballing, and deliberately
+never in `dedupe`'s pipeable output.
 
 ## Naming people
 

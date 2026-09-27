@@ -10,7 +10,6 @@ that library. Run this first. Other commands read the database it creates.
 ```bash
 cd ~/Photos
 videre scan                    # scan the current directory (only new and changed files)
-videre scan --similar          # also prepare near-duplicate matching
 videre scan --force            # re-read and re-hash every file
 videre scan --silent           # suppress progress output
 videre scan --json             # print one JSON summary object
@@ -52,15 +51,14 @@ detected type, and available media metadata. Photo metadata includes capture
 date, GPS coordinates, and dimensions. Video metadata can also include capture
 date, GPS coordinates, dimensions, duration, and codec.
 
-Scan does not prepare semantic search or detect faces. Run
-[`videre embed`](/commands/embed/) and [`videre faces`](/commands/faces/)
+Scan does not prepare semantic search, near-duplicate fingerprints or faces.
+Run [`videre embed`](/commands/embed/) and [`videre faces`](/commands/faces/)
 separately for those features.
 
 ## Incremental by default
 
 Scan skips a file whose recorded row is already current: the same size and
-modification time as the last scan, with its type already identified (and a
-perceptual hash already present when `--similar` is used). New files, and files
+modification time as the last scan, with its type already identified. New files, and files
 that changed since the last scan, are processed; everything else costs a cheap
 `stat`, not a re-read. So re-scanning a large library that has barely changed is
 fast, and re-running is always safe.
@@ -80,15 +78,13 @@ deprecation notice.
 A file whose bytes were read but whose type could not be identified gets an
 explicit sentinel, so it counts as complete and is not re-read on every scan.
 
-## `--similar`
+## `--similar` (deprecated)
 
-`--similar` computes a perceptual fingerprint used by
-[`videre dedupe --similar`](/commands/dedupe/) to find media that looks alike
-without being byte-identical.
-
-This requires image decoding, so it is slower than a normal scan. HEIC and
-video poster frames use QuickLook and are available on macOS. Files that cannot
-be decoded still keep their normal scan record without a perceptual hash.
+`--similar` is deprecated and does nothing.
+[`videre embed`](/commands/embed/) computes the near-duplicate fingerprint that
+[`videre dedupe --similar`](/commands/dedupe/) reads, from the decode it already
+does. It is still accepted so existing scripts do not error, printing a
+deprecation notice.
 
 ## Reading marks from XMP
 
