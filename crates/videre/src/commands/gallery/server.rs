@@ -1535,14 +1535,79 @@ mod pages {
     pub const PMTILES_JS: &str = include_str!("../../../static/pmtiles.js");
 }
 
-pub(super) fn api_status(e: videre_api::Error) -> StatusCode {
-    match e {
+/// A failed gallery request: its status and, when known, why. The reason is
+/// sent as `{"error": ...}` for the page to show, and kept in a response
+/// extension so `log_rejections` can write it to the gallery log.
+pub(super) struct ApiError {
+    status: StatusCode,
+    message: Option<String>,
+}
+
+/// The reason attached to a rejected response, read by `log_rejections`.
+#[derive(Clone)]
+struct RejectionReason(String);
+
+impl From<StatusCode> for ApiError {
+    fn from(status: StatusCode) -> Self {
+        ApiError {
+            status,
+            message: None,
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> axum::response::Response {
+        match self.message {
+            Some(message) => {
+                let mut response = (
+                    self.status,
+                    Json(serde_json::json!({ "error": message.clone() })),
+                )
+                    .into_response();
+                response.extensions_mut().insert(RejectionReason(message));
+                response
+            }
+            None => self.status.into_response(),
+        }
+    }
+}
+
+pub(super) fn api_error(e: videre_api::Error) -> ApiError {
+    let status = match &e {
         videre_api::Error::NotFound => StatusCode::NOT_FOUND,
         videre_api::Error::Invalid | videre_api::Error::Rejected(_) => StatusCode::BAD_REQUEST,
         videre_api::Error::Conflict => StatusCode::CONFLICT,
         videre_api::Error::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
-        e @ (videre_api::Error::Db(_) | videre_api::Error::Other(_)) => internal(e),
+        videre_api::Error::Db(_) | videre_api::Error::Other(_) => return internal(e).into(),
+    };
+    ApiError {
+        status,
+        message: Some(e.to_string()),
     }
+}
+
+/// Every rejected request (4xx) leaves a warning in the gallery log with its
+/// method, route, status and, when the handler gave one, its reason. Server
+/// errors (5xx) are logged where they happen (`internal`), so they are skipped
+/// here rather than logged twice.
+pub(super) async fn log_rejections(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    let response = next.run(request).await;
+    if response.status().is_client_error() {
+        let reason = response
+            .extensions()
+            .get::<RejectionReason>()
+            .map(|r| format!(": {}", r.0))
+            .unwrap_or_default();
+        let error = anyhow::anyhow!("{method} {path} -> {}{reason}", response.status().as_u16());
+        videre_core::error_log::report(tracing::Level::WARN, &error, None);
+    }
+    response
 }
 
 /// A poisoned connection lock: a handler panicked while holding it. The
@@ -3220,18 +3285,18 @@ async fn handle_events_key(
 
 async fn handle_get_faces(
     State(state): State<Arc<AppState>>,
-) -> Result<AxumJson<FacesData>, StatusCode> {
+) -> Result<AxumJson<FacesData>, ApiError> {
     let conn = state.conn.lock().map_err(poisoned)?;
     videre_api::faces_list(&conn)
         .map(AxumJson)
-        .map_err(api_status)
+        .map_err(api_error)
 }
 
 async fn handle_assign(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(name): axum::extract::Path<String>,
     AxumJson(req): AxumJson<AssignFacesBody>,
-) -> Result<Json<videre_api::LearningAcknowledgement>, StatusCode> {
+) -> Result<Json<videre_api::LearningAcknowledgement>, ApiError> {
     let acknowledgement = {
         let conn = state.conn.lock().map_err(poisoned)?;
         let context = teaching_context(&conn, &state);
@@ -3249,7 +3314,7 @@ async fn handle_assign(
         } else {
             videre_api::new_person_with_learning(&conn, &req.face_ids, &name, &context)
         };
-        result.map_err(api_status)?
+        result.map_err(api_error)?
     };
     if let Some(learning) = &state.learning {
         learning.notify();
@@ -3283,7 +3348,7 @@ async fn handle_set_mark(
 async fn handle_new_person(
     State(state): State<Arc<AppState>>,
     AxumJson(req): AxumJson<NewPersonRequest>,
-) -> Result<Json<videre_api::LearningAcknowledgement>, StatusCode> {
+) -> Result<Json<videre_api::LearningAcknowledgement>, ApiError> {
     let acknowledgement = {
         let conn = state.conn.lock().map_err(poisoned)?;
         videre_api::new_person_with_learning(
@@ -3292,7 +3357,7 @@ async fn handle_new_person(
             &req.name,
             &teaching_context(&conn, &state),
         )
-        .map_err(api_status)?
+        .map_err(api_error)?
     };
     if let Some(learning) = &state.learning {
         learning.notify();
@@ -3313,11 +3378,11 @@ pub(super) fn teaching_context(conn: &Connection, state: &AppState) -> videre_ap
 async fn handle_remove_face(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<i64>,
-) -> Result<Json<videre_api::LearningAcknowledgement>, StatusCode> {
+) -> Result<Json<videre_api::LearningAcknowledgement>, ApiError> {
     let acknowledgement = {
         let conn = state.conn.lock().map_err(poisoned)?;
         videre_api::remove_face_with_learning(&conn, id, &teaching_context(&conn, &state))
-            .map_err(api_status)?
+            .map_err(api_error)?
     };
     if let Some(learning) = &state.learning {
         learning.notify();
@@ -3328,11 +3393,11 @@ async fn handle_remove_face(
 async fn handle_delete_person(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(name): axum::extract::Path<String>,
-) -> Result<Json<videre_api::LearningAcknowledgement>, StatusCode> {
+) -> Result<Json<videre_api::LearningAcknowledgement>, ApiError> {
     let acknowledgement = {
         let conn = state.conn.lock().map_err(poisoned)?;
         videre_api::delete_person_with_learning(&conn, &name)
-            .map_err(api_status)?
+            .map_err(api_error)?
             .unwrap_or_else(|| videre_api::LearningAcknowledgement {
                 generation: videre_core::face_learning::learning_state(&conn)
                     .map(|state| state.generation)
@@ -3351,21 +3416,21 @@ async fn handle_set_full_name(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(name): axum::extract::Path<String>,
     AxumJson(req): AxumJson<SetFullNameBody>,
-) -> Result<StatusCode, StatusCode> {
+) -> Result<StatusCode, ApiError> {
     let conn = state.conn.lock().map_err(poisoned)?;
     videre_api::set_full_name(&conn, &name, &req.full_name)
         .map(|_| StatusCode::OK)
-        .map_err(api_status)
+        .map_err(api_error)
 }
 
 async fn handle_dissolve_cluster(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<i64>,
-) -> Result<Json<videre_api::LearningAcknowledgement>, StatusCode> {
+) -> Result<Json<videre_api::LearningAcknowledgement>, ApiError> {
     let acknowledgement = {
         let conn = state.conn.lock().map_err(poisoned)?;
         videre_api::dissolve_cluster_with_learning(&conn, id, &teaching_context(&conn, &state))
-            .map_err(api_status)?
+            .map_err(api_error)?
     };
     if let Some(learning) = &state.learning {
         learning.notify();
@@ -3377,21 +3442,21 @@ async fn handle_set_primary(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<i64>,
     AxumJson(req): AxumJson<SetPrimaryBody>,
-) -> Result<StatusCode, StatusCode> {
+) -> Result<StatusCode, ApiError> {
     let conn = state.conn.lock().map_err(poisoned)?;
     videre_api::set_primary(&conn, id, &req.person_label)
         .map(|_| StatusCode::OK)
-        .map_err(api_status)
+        .map_err(api_error)
 }
 
 async fn handle_search_person(
     State(state): State<Arc<AppState>>,
     Query(q): Query<PersonSearchQuery>,
-) -> Result<AxumJson<Vec<String>>, StatusCode> {
+) -> Result<AxumJson<Vec<String>>, ApiError> {
     let conn = state.conn.lock().map_err(poisoned)?;
     videre_api::search_person(&conn, &q.name)
         .map(AxumJson)
-        .map_err(api_status)
+        .map_err(api_error)
 }
 
 async fn handle_quit(State(state): State<Arc<AppState>>) -> StatusCode {
@@ -3427,11 +3492,11 @@ async fn handle_cluster_page(
 async fn handle_cluster_api(
     axum::extract::Path(cluster_id): axum::extract::Path<i64>,
     State(state): State<Arc<AppState>>,
-) -> Result<AxumJson<ClusterDetail>, StatusCode> {
+) -> Result<AxumJson<ClusterDetail>, ApiError> {
     let conn = state.conn.lock().map_err(poisoned)?;
     videre_api::cluster_detail(&conn, cluster_id)
         .map(AxumJson)
-        .map_err(api_status)
+        .map_err(api_error)
 }
 
 async fn handle_person_page(State(state): State<Arc<AppState>>) -> axum::response::Html<String> {
@@ -3452,11 +3517,11 @@ async fn handle_person_page(State(state): State<Arc<AppState>>) -> axum::respons
 async fn handle_person_api(
     axum::extract::Path(name): axum::extract::Path<String>,
     State(state): State<Arc<AppState>>,
-) -> Result<AxumJson<PersonDetail>, StatusCode> {
+) -> Result<AxumJson<PersonDetail>, ApiError> {
     let conn = state.conn.lock().map_err(poisoned)?;
     videre_api::person_detail(&conn, &name)
         .map(AxumJson)
-        .map_err(api_status)
+        .map_err(api_error)
 }
 
 async fn handle_face_image(
@@ -4169,7 +4234,9 @@ async fn serve_faces_async(
         .route("/events", get(handle_events))
         .route("/smart", get(handle_not_yet));
 
-    let app = router.with_state(state);
+    let app = router
+        .layer(axum::middleware::from_fn(log_rejections))
+        .with_state(state);
 
     let requested = format!("127.0.0.1:{}", opts.port);
     // Bind synchronously so an occupied port can be skipped, then hand the
@@ -4929,6 +4996,90 @@ mod settings_api_tests {
         assert_eq!(
             get_settings(&app_two).await["effective"]["routes"]["files"]["view"],
             "tile"
+        );
+    }
+}
+
+#[cfg(test)]
+mod rejection_tests {
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::{header, Request};
+    use tower::ServiceExt;
+
+    #[derive(Clone, Default)]
+    struct Buf(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Buf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Cluster 7 holds faces 3 and 4; the server has a model id, so naming
+    /// reaches the face checks.
+    fn state(root: &Path) -> Arc<AppState> {
+        let mut state = Arc::try_unwrap(location_cluster_tests::gallery_state(root))
+            .ok()
+            .expect("a fresh state has one owner");
+        state.model_id = "test/model".to_owned();
+        {
+            let conn = state.conn.lock().unwrap();
+            videre_core::library_db::ensure_scan_schema(&conn).unwrap();
+            videre_core::face_db::create_faces_table(&conn).unwrap();
+            conn.execute_batch(
+                "INSERT INTO faces (id,hash,bbox,embedding,cluster_id) VALUES
+                    (3,'h3','0,0,9,9',X'0000',7),(4,'h4','0,0,9,9',X'0000',7);",
+            )
+            .unwrap();
+        }
+        Arc::new(state)
+    }
+
+    #[tokio::test]
+    async fn a_rejected_request_returns_its_reason_and_is_logged() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = Router::new()
+            .route("/api/people", post(handle_new_person))
+            .layer(axum::middleware::from_fn(log_rejections))
+            .with_state(state(temp.path()));
+        let buf = Buf::default();
+        let w = buf.clone();
+        let _log = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(move || w.clone())
+                .finish(),
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/people")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"face_ids":[3],"name":"Bob"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert!(
+            body["error"].as_str().unwrap().contains("cluster 7"),
+            "{body}"
+        );
+        let logged = String::from_utf8_lossy(&buf.0.lock().unwrap()).to_string();
+        assert!(
+            logged.contains("WARN")
+                && logged.contains("POST /api/people -> 400")
+                && logged.contains("cluster 7"),
+            "{logged}"
         );
     }
 }

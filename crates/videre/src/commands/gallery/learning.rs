@@ -24,7 +24,7 @@ use videre_core::face_learning::{
     TrainingError, TrainingRun, TrainingSnapshot,
 };
 
-use super::server::{api_status, AppState};
+use super::server::{api_error, ApiError, AppState};
 
 /// How long arriving notifications are coalesced before a cycle starts.
 const DEBOUNCE: Duration = Duration::from_millis(1_500);
@@ -304,18 +304,18 @@ fn record_failure(conn: &Connection, generation: u64, error: &str) {
 /// GET /api/face-learning/status
 pub(crate) async fn handle_learning_status(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<videre_api::FaceLearningStatus>, StatusCode> {
+) -> Result<Json<videre_api::FaceLearningStatus>, ApiError> {
     let conn = state.conn.lock().map_err(poisoned)?;
     videre_api::face_learning_status(&conn)
         .map(Json)
-        .map_err(api_status)
+        .map_err(api_error)
 }
 
 /// GET /api/face-learning/questions?limit=N
 pub(crate) async fn handle_learning_questions(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Result<Json<Vec<videre_core::face_learning::StoredQuestion>>, StatusCode> {
+) -> Result<Json<Vec<videre_core::face_learning::StoredQuestion>>, ApiError> {
     let limit = params
         .get("limit")
         .and_then(|limit| limit.parse::<usize>().ok())
@@ -324,7 +324,7 @@ pub(crate) async fn handle_learning_questions(
     let conn = state.conn.lock().map_err(poisoned)?;
     videre_api::pending_identity_questions(&conn, limit)
         .map(Json)
-        .map_err(api_status)
+        .map_err(api_error)
 }
 
 #[derive(serde::Deserialize)]
@@ -338,18 +338,17 @@ pub(crate) async fn handle_learning_answer(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<i64>,
     Json(body): Json<QuestionAnswerBody>,
-) -> Result<Json<videre_api::QuestionAnswerOutcome>, StatusCode> {
+) -> Result<Json<videre_api::QuestionAnswerOutcome>, ApiError> {
     let answer = match body.answer.as_str() {
         "yes" | "Yes" => videre_core::face_learning::QuestionAnswer::Yes,
         "no" | "No" => videre_core::face_learning::QuestionAnswer::No,
         "skip" | "Skip" => videre_core::face_learning::QuestionAnswer::Skip,
-        _ => return Err(StatusCode::BAD_REQUEST),
+        _ => return Err(StatusCode::BAD_REQUEST.into()),
     };
     let outcome = {
         let conn = state.conn.lock().map_err(poisoned)?;
         let context = super::server::teaching_context(&conn, &state);
-        videre_api::answer_question_with_learning(&conn, id, answer, &context)
-            .map_err(api_status)?
+        videre_api::answer_question_with_learning(&conn, id, answer, &context).map_err(api_error)?
     };
     if let Some(learning) = &state.learning {
         learning.notify();
@@ -361,7 +360,7 @@ pub(crate) async fn handle_learning_answer(
 pub(crate) async fn handle_learning_events(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Result<Json<Vec<videre_api::FaceLearningEventProof>>, StatusCode> {
+) -> Result<Json<Vec<videre_api::FaceLearningEventProof>>, ApiError> {
     let limit = params
         .get("limit")
         .and_then(|limit| limit.parse::<usize>().ok())
@@ -373,19 +372,19 @@ pub(crate) async fn handle_learning_events(
     let conn = state.conn.lock().map_err(poisoned)?;
     videre_api::face_learning_events(&conn, limit, before, Some(&state.model_id))
         .map(Json)
-        .map_err(api_status)
+        .map_err(api_error)
 }
 
 /// GET /api/face-learning/events/{id}
 pub(crate) async fn handle_learning_event_detail(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<i64>,
-) -> Result<Json<videre_api::FaceLearningEventProof>, StatusCode> {
+) -> Result<Json<videre_api::FaceLearningEventProof>, ApiError> {
     let conn = state.conn.lock().map_err(poisoned)?;
     match videre_api::face_learning_event(&conn, id, Some(&state.model_id)) {
         Ok(Some(event)) => Ok(Json(event)),
-        Ok(None) => Err(StatusCode::NOT_FOUND),
-        Err(error) => Err(api_status(error)),
+        Ok(None) => Err(StatusCode::NOT_FOUND.into()),
+        Err(error) => Err(api_error(error)),
     }
 }
 
