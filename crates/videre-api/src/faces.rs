@@ -46,10 +46,14 @@ fn immediate_transaction<T>(conn: &Connection, operation: impl FnOnce() -> Resul
 }
 
 fn face_states(conn: &Connection, face_ids: &[i64]) -> Result<Vec<FaceState>> {
-    if face_ids.is_empty()
-        || face_ids.iter().copied().collect::<BTreeSet<_>>().len() != face_ids.len()
-    {
+    if face_ids.is_empty() {
         return Err(Error::Invalid);
+    }
+    let mut seen = BTreeSet::new();
+    if let Some(repeat) = face_ids.iter().find(|id| !seen.insert(**id)) {
+        return Err(Error::Rejected(format!(
+            "the request lists face {repeat} more than once"
+        )));
     }
     let mut ids = face_ids.to_vec();
     ids.sort_unstable();
@@ -453,24 +457,36 @@ fn assign_in_transaction(
 
 fn validate_teaching_subject(conn: &Connection, face_ids: &[i64]) -> Result<Vec<FaceState>> {
     let states = face_states(conn, face_ids)?;
-    if states
+    if let Some(state) = states
         .iter()
-        .any(|state| state.confirmed || state.person_label.is_some())
+        .find(|state| state.confirmed || state.person_label.is_some())
     {
-        return Err(Error::Invalid);
+        return Err(Error::Rejected(format!(
+            "face {} is already named or confirmed",
+            state.id
+        )));
     }
-    if states.len() == 1 && states[0].cluster_id.is_some() {
-        return Err(Error::Invalid);
+    if let (1, Some(cluster_id)) = (states.len(), states[0].cluster_id) {
+        return Err(Error::Rejected(format!(
+            "face {} belongs to cluster {cluster_id}; assign the cluster or remove the face from it first",
+            states[0].id
+        )));
     }
     if states.len() > 1 {
-        let cluster_id = states[0].cluster_id.ok_or(Error::Invalid)?;
+        let cluster_id = states[0]
+            .cluster_id
+            .ok_or_else(|| Error::Rejected("the faces are not in a cluster".into()))?;
+        let members = unassigned_cluster_ids(conn, cluster_id)?;
         if states
             .iter()
             .any(|state| state.cluster_id != Some(cluster_id))
-            || unassigned_cluster_ids(conn, cluster_id)?
-                != states.iter().map(|state| state.id).collect::<Vec<_>>()
+            || members != states.iter().map(|state| state.id).collect::<Vec<_>>()
         {
-            return Err(Error::Invalid);
+            return Err(Error::Rejected(format!(
+                "the request lists {} face(s), cluster {cluster_id} has {} unassigned face(s)",
+                states.len(),
+                members.len()
+            )));
         }
     }
     Ok(states)
@@ -1448,6 +1464,35 @@ mod tests {
                 embedding_model_id: "buffalo_l/w600k_r50.onnx".to_owned(),
                 active_profile_id: None,
             }
+        }
+
+        #[test]
+        fn a_repeated_face_is_rejected_with_a_reason() {
+            let conn = seed();
+            let err = new_person_with_learning(&conn, &[3, 3, 4], "Bob", &context()).unwrap_err();
+            assert_eq!(err.to_string(), "the request lists face 3 more than once");
+        }
+
+        #[test]
+        fn a_partial_cluster_is_rejected_with_the_counts() {
+            let conn = seed();
+            conn.execute(
+                "INSERT INTO faces (id,hash,bbox,embedding,cluster_id) VALUES (6,'h5','1,1,9,9',X'0000',7)",
+                [],
+            )
+            .unwrap();
+            let err = new_person_with_learning(&conn, &[3, 4], "Bob", &context()).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "the request lists 2 face(s), cluster 7 has 3 unassigned face(s)"
+            );
+        }
+
+        #[test]
+        fn a_named_face_is_rejected_with_a_reason() {
+            let conn = seed();
+            let err = new_person_with_learning(&conn, &[1], "Bob", &context()).unwrap_err();
+            assert_eq!(err.to_string(), "face 1 is already named or confirmed");
         }
 
         fn embedding(x: u16, y: u16) -> Vec<u8> {

@@ -1538,7 +1538,7 @@ mod pages {
 pub(super) fn api_status(e: videre_api::Error) -> StatusCode {
     match e {
         videre_api::Error::NotFound => StatusCode::NOT_FOUND,
-        videre_api::Error::Invalid => StatusCode::BAD_REQUEST,
+        videre_api::Error::Invalid | videre_api::Error::Rejected(_) => StatusCode::BAD_REQUEST,
         videre_api::Error::Conflict => StatusCode::CONFLICT,
         videre_api::Error::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
         e @ (videre_api::Error::Db(_) | videre_api::Error::Other(_)) => internal(e),
