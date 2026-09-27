@@ -1,6 +1,8 @@
 use crate::io_timeout::{wait_with_timeout, WaitOutcome};
 use crate::semaphore::Semaphore;
+use anyhow::Context as _;
 use image::DynamicImage;
+use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -60,6 +62,116 @@ pub fn qlmanage_semaphore() -> &'static Semaphore {
         let max = resolve_qlmanage_concurrency(QLMANAGE_CONCURRENCY_OVERRIDE.get().copied());
         Semaphore::new(max)
     })
+}
+
+/// Convert an image or video file to a `DynamicImage` via QuickLook
+/// (`qlmanage -t`). The one QuickLook decode path in the workspace: HEIC
+/// photos (the `image` crate cannot decode HEIC) and video poster frames
+/// (QuickLook generates one the same way it does for HEIC) decode here,
+/// from every crate.
+///
+/// `sips -s format jpeg` copies the raw sensor-buffer pixels unrotated for
+/// HEIC files where the camera encoded rotation via the HEIF `irot`
+/// transform box rather than a classic EXIF Orientation tag, the same
+/// rotation Finder/Preview/Photos apply via QuickLook. Using `sips` would
+/// produce sideways images (or, for dupe-faces, detect faces and compute
+/// bounding boxes against the wrongly oriented image).
+///
+/// `tag` disambiguates concurrent/repeated conversions of the same path for
+/// different purposes (e.g. a 240px thumbnail vs a 1200px lightbox version,
+/// or a HEIC conversion next to a video conversion of a same-named file) so
+/// their temp-directory names don't collide.
+///
+/// `max_size` caps `qlmanage -s`'s longest-side render size. `qlmanage -s`
+/// only ever caps, never upscales, so `None` (rendered as `10000`,
+/// comfortably above any real photo's native resolution) means "give me the
+/// native/full resolution", the only safe choice for callers whose output
+/// pixels must stay in the same coordinate space as something already
+/// stored (face detection bboxes, face-thumbnail crops) or that need true
+/// full quality (serving the original image). `Some(n)` is only safe for
+/// callers that immediately downscale the result themselves anyway (report
+/// thumbnails, gallery posters, the embed path's double-the-tensor-size
+/// renders); for them, requesting a smaller render up front avoids qlmanage
+/// decoding/resizing/PNG-encoding pixels that get thrown away moments
+/// later. Do NOT pass `Some` for the face-detection or face-thumbnail-crop
+/// call sites: detection's bbox coordinates are stored in terms of whatever
+/// image size detection ran on (see `face_detect.rs`), so shrinking that
+/// decode would silently corrupt every later full-res thumbnail crop and
+/// the `--min-face-size` quality gate, which measures bbox size in that
+/// same (assumed-full-res) space.
+///
+/// Video wall time does not scale with file size (one seek, one frame):
+/// timed against the 5 largest real videos of a real library (2.3-5.7GB)
+/// on 2026-08-01, all poster extractions finished in 0.22-0.36s, so the 20s
+/// ceiling has ~50-90x headroom even for the largest real files measured.
+pub fn decode_via_quicklook(
+    path: &Path,
+    tag: &str,
+    max_size: Option<u32>,
+) -> anyhow::Result<DynamicImage> {
+    if !cfg!(target_os = "macos") {
+        // Long explanation once per run; short typed reason per file. The
+        // warning has already fired by the time the caller sees this error.
+        warn_quicklook_unavailable_once();
+        return Err(anyhow::anyhow!("needs macOS QuickLook (`qlmanage`)")
+            .context(crate::error_kind::ErrorKind::QuicklookUnavailable));
+    }
+    // `qlmanage -t` does not fail on a container with no video track, it
+    // hangs. Extension-gated so HEIC, which shares this function, is
+    // untouched, and placed before the semaphore so a skipped file never
+    // holds a permit. See `video_probe` for the measurement behind this.
+    let probe_ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase());
+    if matches!(probe_ext.as_deref(), Some("mov") | Some("mp4"))
+        && !crate::video_probe::has_video_track(path)
+    {
+        anyhow::bail!("no video track (audio-only file); skipped without calling QuickLook");
+    }
+    // A scratch directory of this call's own, removed when `scratch` drops,
+    // so simultaneous decodes of one file cannot delete each other's output
+    // (the gallery requesting an uncached video poster twice at once once
+    // got a 404 when a shared, path-named directory made that possible).
+    let scratch = tempfile::Builder::new()
+        .prefix(&format!("videre_ql_{tag}_"))
+        .tempdir()
+        .context("create qlmanage temp dir")?;
+    let out_dir = scratch.path();
+    let _permit = qlmanage_semaphore().acquire();
+    let size_arg = max_size.unwrap_or(10000).to_string();
+    let mut child = std::process::Command::new("qlmanage")
+        .args(["-t", "-s", &size_arg, "-o"])
+        .arg(out_dir)
+        .arg(path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("run qlmanage (requires macOS)")?;
+    let outcome = wait_with_timeout(&mut child, QLMANAGE_TIMEOUT);
+    if outcome == WaitOutcome::TimedOut {
+        // Warn as well as erroring: callers that swallow errors (the scan
+        // side) must still see this in the log.
+        tracing::warn!(
+            "qlmanage timed out after {}s converting {} (file may be unreachable - is its drive disconnected?); skipping",
+            QLMANAGE_TIMEOUT.as_secs(),
+            path.display()
+        );
+    }
+    anyhow::ensure!(
+        outcome != WaitOutcome::TimedOut,
+        "qlmanage timed out after {}s decoding {} (file may be unreachable - is its drive connected?)",
+        QLMANAGE_TIMEOUT.as_secs(),
+        path.display()
+    );
+    anyhow::ensure!(
+        outcome == WaitOutcome::Success,
+        "qlmanage failed for {}",
+        path.display()
+    );
+    let file_name = path.file_name().context("path has no file name")?;
+    let out_file = out_dir.join(format!("{}.png", file_name.to_string_lossy()));
+    image::open(&out_file).with_context(|| format!("decode qlmanage output for {}", path.display()))
 }
 
 /// Convert a HEIC file to a `DynamicImage` via QuickLook (`qlmanage -t`).
@@ -199,6 +311,41 @@ mod tests {
             .filter(|ok| *ok)
             .count();
         assert_eq!(ok, 4, "every simultaneous conversion must produce an image");
+    }
+
+    /// An audio-only mov/mp4 must be rejected before `qlmanage` is spawned:
+    /// qlmanage does not fail on such containers, it hangs until
+    /// QLMANAGE_TIMEOUT (20s). Reached across crates the same way the
+    /// simultaneous-conversions test above reaches red_1s.mp4.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn an_audio_only_video_is_rejected_before_quicklook_is_called() {
+        let audio_only = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../videre/tests/fixtures/audio_only.mov"
+        );
+        let err = decode_via_quicklook(Path::new(audio_only), "audio-only-test", None).unwrap_err();
+        assert!(
+            err.to_string().contains("no video track"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    /// Off macOS the shared decoder fails with the typed
+    /// QuicklookUnavailable kind, so pipeline runs record the real reason
+    /// and callers that swallow the error have already seen the long
+    /// once-per-process warning.
+    #[test]
+    fn without_quicklook_the_decode_fails_with_the_quicklook_unavailable_kind() {
+        if cfg!(target_os = "macos") {
+            return;
+        }
+        let err =
+            decode_via_quicklook(Path::new("/nonexistent.mov"), "kind-test", None).unwrap_err();
+        assert_eq!(
+            crate::error_kind::ErrorKind::in_chain(&err),
+            Some(crate::error_kind::ErrorKind::QuicklookUnavailable)
+        );
     }
 
     #[test]
