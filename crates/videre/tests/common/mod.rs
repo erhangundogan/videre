@@ -55,33 +55,13 @@ pub fn videre_bin() -> PathBuf {
 /// own throwaway libraries, and per-binary state would hand each binary its
 /// own uncontended lock.
 ///
-/// Only contended on a cold cache; once the weights are present every holder
-/// releases almost immediately, so the cost on a warm machine is negligible.
-pub fn shared_cache_guard() -> impl Drop {
-    use fs2::FileExt;
-
-    let path = std::env::temp_dir().join("videre-test-model-cache.lock");
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(&path)
-        .expect("open shared model-cache lock");
-    file.lock_exclusive()
-        .expect("flock shared model-cache lock");
-
-    /// Releases the `flock` on drop. The OS also releases it if the test
-    /// process dies, so a panicking test cannot wedge the rest of the suite.
-    struct Guard(std::fs::File);
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            let _ = fs2::FileExt::unlock(&self.0);
-        }
-    }
-    Guard(file)
+/// Held through the model-backed operation, including on a warm cache, so no
+/// other test can read an incomplete download.
+pub fn shared_cache_guard() -> model_test_support::ModelCacheGuard {
+    model_test_support::ModelCacheGuard::acquire()
 }
 
-/// Root of the local Hugging Face cache, honouring `HF_HOME`.
+/// Root of the local Hugging Face cache, using the loader's environment order.
 ///
 /// Delegates to `videre_core::hf_cache`, which owns this knowledge because
 /// `videre-ml`'s own tests need the same check and a second copy would be free
@@ -225,7 +205,22 @@ impl TestLibrary {
         let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_videre"));
         cmd.current_dir(&self.root)
             .env("HOME", &self.home)
-            .env("HF_HOME", self.home.join(".cache/huggingface"));
+            .env("HF_HOME", self.home.join(".cache/huggingface"))
+            .env_remove("HF_HUB_CACHE")
+            .env_remove("HUGGINGFACE_HUB_CACHE");
+        cmd
+    }
+
+    /// A model-backed child using the developer's hub cache under the lock.
+    pub fn model_cmd(&self, _guard: &model_test_support::ModelCacheGuard) -> std::process::Command {
+        assert_eq!(
+            std::env::var("VIDERE_TEST_MODELS").as_deref(),
+            Ok("1"),
+            "model_cmd requires VIDERE_TEST_MODELS=1"
+        );
+        let hub = hf_cache_dir();
+        let mut cmd = self.cmd();
+        cmd.env("HF_HUB_CACHE", hub);
         cmd
     }
 

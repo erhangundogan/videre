@@ -27,3 +27,29 @@ pub fn write_past_test_capture(msg: &str) {
     let _ = stderr.write_all(msg.as_bytes());
     let _ = stderr.flush();
 }
+
+/// Cross-process lock for a shared developer model cache.
+pub struct ModelCacheGuard(std::fs::File);
+
+impl ModelCacheGuard {
+    pub fn acquire() -> Self {
+        use fs2::FileExt;
+
+        let path = std::env::temp_dir().join("videre-test-model-cache.lock");
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(path)
+            .expect("open shared model-cache lock");
+        file.lock_exclusive()
+            .expect("flock shared model-cache lock");
+        Self(file)
+    }
+}
+
+impl Drop for ModelCacheGuard {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.0);
+    }
+}
