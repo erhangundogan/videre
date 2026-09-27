@@ -318,10 +318,14 @@ pub fn cluster_detail(conn: &Connection, cluster_id: i64) -> Result<ClusterDetai
     // Same unlabeled filter the cluster card uses: the page a card opens
     // must show the population the card counted. A labeled face can hold no
     // cluster id any more; the filter stays so the two queries cannot drift.
+    // One path per face: a photo with two identical copies has one set of
+    // faces, and listing each twice made the page post ids the cluster check
+    // rejects.
     let mut stmt = conn.prepare(
-        "SELECT f.id, f.hash, fh.path FROM faces f \
+        "SELECT f.id, f.hash, MIN(fh.path) FROM faces f \
          JOIN file_hashes fh ON f.hash = fh.hash \
          WHERE f.cluster_id = ?1 AND (f.confirmed = 0 OR f.person_label IS NULL) \
+         GROUP BY f.id \
          ORDER BY f.id",
     )?;
     let faces = stmt
@@ -343,10 +347,12 @@ pub fn person_detail(conn: &Connection, name: &str) -> Result<PersonDetail> {
     // working across the migration without a redirect table.
     let name = videre_core::person::normalize(name).unwrap_or_else(|| name.to_string());
     let name = name.as_str();
+    // One path per face, as in `cluster_detail`.
     let mut stmt = conn.prepare(
-        "SELECT f.id, f.hash, fh.path, f.is_primary FROM faces f \
+        "SELECT f.id, f.hash, MIN(fh.path), f.is_primary FROM faces f \
          JOIN file_hashes fh ON f.hash = fh.hash \
          WHERE f.person_label = ?1 AND f.confirmed = 1 \
+         GROUP BY f.id \
          ORDER BY f.is_primary DESC, f.id",
     )?;
     let faces = stmt
@@ -2016,6 +2022,41 @@ mod tests {
         assert_eq!(p.faces.len(), 2);
         assert!(p.faces[0].is_primary, "primary sorts first and is flagged");
         assert!(!p.faces[1].is_primary);
+    }
+
+    /// A photo stored at two byte-identical paths has one set of faces.
+    fn seed_with_a_second_path_for(hash: &str) -> Connection {
+        let conn = seed();
+        conn.execute_batch(
+            "ALTER TABLE file_hashes RENAME TO file_hashes_old;
+             CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT);
+             INSERT INTO file_hashes (path, hash) SELECT path, hash FROM file_hashes_old;
+             DROP TABLE file_hashes_old;",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash) VALUES (?1, ?2)",
+            rusqlite::params![format!("/copy/{hash}.jpg"), hash],
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn detail_pages_list_a_face_once_when_its_photo_has_two_paths() {
+        let conn = seed_with_a_second_path_for("h3");
+        let c = cluster_detail(&conn, 7).unwrap();
+        assert_eq!(
+            c.faces.iter().map(|f| f.face_id).collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+        let conn = seed_with_a_second_path_for("h1");
+        let p = person_detail(&conn, "Alice").unwrap();
+        assert_eq!(
+            p.faces.iter().map(|f| f.face_id).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert!(p.faces[0].is_primary);
     }
 
     #[test]
