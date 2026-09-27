@@ -158,6 +158,11 @@ fn embed_records_and_then_skips_a_repeatedly_undecodable_file() {
 }
 
 /// Open the per-model embedding store for this library directly.
+///
+/// Only the macOS-gated tests below still open the store (the offline tests
+/// assert its absence instead), so the helper carries the same gate; without
+/// it the Linux build sees an unused function.
+#[cfg(target_os = "macos")]
 fn model_store(lib: &TestLibrary) -> rusqlite::Connection {
     let path = videre_core::embeddings_db::db_path_in(
         &lib.context(),
