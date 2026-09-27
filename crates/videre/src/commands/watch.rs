@@ -956,8 +956,8 @@ fn run_heic_stage(
         // do; the two levers are in tension here and full-res wins because
         // avoiding a second full qlmanage decode during `videre faces` is
         // the bigger saving of the two.
-        match videre_core::heic::heic_via_quicklook(&path, "watch", None) {
-            Some(img) => {
+        match videre_core::heic::decode_via_quicklook(std::path::Path::new(&path), "watch", None) {
+            Ok(img) => {
                 if need_original {
                     let tmp_path = videre_core::thumb_cache::original_tmp_path_in(cache, &hash);
                     let final_path = videre_core::thumb_cache::original_path_in(cache, &hash);
@@ -988,7 +988,7 @@ fn run_heic_stage(
                     }
                 }
             }
-            None => {
+            Err(_) => {
                 if need_240 {
                     failed += 1;
                 }

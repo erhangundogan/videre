@@ -328,16 +328,17 @@ pub fn compute_dhash(path: &Path, mime: Option<&str>) -> Option<u64> {
     let img = if videre_core::mime_probe::is_video_mime(mime) {
         // Poster-frame dHash: decode the same QuickLook poster-frame `videre embed`
         // already uses for SigLIP, then run the identical dHash algorithm on it.
-        // 64px is plenty of source resolution since we immediately resize to 9x8.
-        videre_ml::preprocess::decode_via_quicklook(path, 64, "scan-similar-video").ok()?
+        // -s 128 is the embed path's double-the-target-size convention for a
+        // 64px target; plenty of source resolution since we resize to 9x8 next.
+        videre_core::heic::decode_via_quicklook(path, "scan-similar-video", Some(128)).ok()?
     } else if mime == "image/heic" {
         // The `image` crate cannot decode HEIC, so it goes through the same
         // QuickLook conversion `embed` and `faces` already use. 64px is ample
         // when the next step resizes to 9x8, and keeps the conversion cheap.
-        // `heic_via_quicklook` keys its scratch directory on path *and* tag and
-        // deletes it afterwards, so a small conversion here cannot disturb the
-        // larger ones other commands depend on.
-        videre_core::heic::heic_via_quicklook(path.to_str()?, "scan-similar-heic", Some(64))?
+        // The decoder gives each call its own scratch directory, so a small
+        // conversion here cannot disturb the larger ones other commands
+        // depend on.
+        videre_core::heic::decode_via_quicklook(path, "scan-similar-heic", Some(64)).ok()?
     } else {
         videre_core::image_decode::decode_oriented_file(path).ok()?
     };
@@ -373,14 +374,11 @@ pub fn compute_dhash_in(
     let image = if videre_core::mime_probe::is_video_mime(mime) || mime == "image/heic" {
         let staged = videre_core::library_io::staged_copy(ctx, &file, path.extension()?).ok()?;
         if videre_core::mime_probe::is_video_mime(mime) {
-            videre_ml::preprocess::decode_via_quicklook(staged.path(), 64, "scan-similar-video")
+            videre_core::heic::decode_via_quicklook(staged.path(), "scan-similar-video", Some(128))
                 .ok()?
         } else {
-            videre_core::heic::heic_via_quicklook(
-                staged.path().to_str()?,
-                "scan-similar-heic",
-                Some(64),
-            )?
+            videre_core::heic::decode_via_quicklook(staged.path(), "scan-similar-heic", Some(64))
+                .ok()?
         }
     } else {
         videre_core::image_decode::decode_oriented_reader(BufReader::new(file)).ok()?

@@ -572,7 +572,12 @@ fn heic_to_b64(path: &str, max_px: u32) -> Option<String> {
     // decode/resize/PNG-encode work. See the safety note on
     // heic_via_quicklook for why this is only safe when the result is
     // downscaled by the caller anyway.
-    let img = videre_core::heic::heic_via_quicklook(path, &format!("b64_{max_px}"), Some(max_px))?;
+    let img = videre_core::heic::decode_via_quicklook(
+        std::path::Path::new(path),
+        &format!("b64_{max_px}"),
+        Some(max_px),
+    )
+    .ok()?;
     let img = if img.width() > max_px || img.height() > max_px {
         img.resize(max_px, max_px, image::imageops::FilterType::Triangle)
     } else {

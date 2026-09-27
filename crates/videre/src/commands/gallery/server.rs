@@ -3816,11 +3816,12 @@ async fn handle_raw_file(
             // wants the true original (no downscale applied), which is
             // exactly heic_via_quicklook(..., None)'s full-resolution
             // behavior too. See its safety note.
-            let img = videre_core::heic::heic_via_quicklook(
-                &path,
+            let img = videre_core::heic::decode_via_quicklook(
+                std::path::Path::new(&path),
                 &format!("raw{}", size.unwrap_or(0)),
                 size,
-            )?;
+            )
+            .ok()?;
             let img = match size {
                 Some(max_px) if img.width() > max_px || img.height() > max_px => {
                     img.resize(max_px, max_px, image::imageops::FilterType::Triangle)
@@ -3840,8 +3841,12 @@ async fn handle_raw_file(
             // baked into the image videre serves. Cached so later tile requests
             // for the same content reuse it instead of re-running QuickLook.
             let px = size.unwrap();
-            let img =
-                videre_core::heic::heic_via_quicklook(&path, &format!("vposter{px}"), Some(px))?;
+            let img = videre_core::heic::decode_via_quicklook(
+                std::path::Path::new(&path),
+                &format!("vposter{px}"),
+                Some(px),
+            )
+            .ok()?;
             let img = if img.width() > px || img.height() > px {
                 img.resize(px, px, image::imageops::FilterType::Triangle)
             } else {
