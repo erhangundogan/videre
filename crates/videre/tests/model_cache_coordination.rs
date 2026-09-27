@@ -108,6 +108,24 @@ fn model_child_keeps_private_home_but_shares_only_hub_cache() {
 }
 
 #[test]
+fn relative_hub_override_is_absolutized_before_child_changes_directory() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "model_child_environment_probe"])
+        .current_dir(temp.path())
+        .env("VIDERE_TEST_MODEL_ENV_PROBE", "1")
+        .env("VIDERE_TEST_MODELS", "1")
+        .env("HF_HUB_CACHE", "relative-hub")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn model_child_environment_probe() {
     if std::env::var("VIDERE_TEST_MODEL_ENV_PROBE").as_deref() != Ok("1") {
         return;
@@ -121,7 +139,9 @@ fn model_child_environment_probe() {
     let guard = ModelCacheGuard::acquire();
     let model = library.model_cmd(&guard);
     let env = model.get_envs().collect::<Vec<_>>();
-    let expected_hub = videre_core::hf_cache::cache_dir();
+    let expected_hub = std::env::current_dir()
+        .unwrap()
+        .join(videre_core::hf_cache::cache_dir());
     assert!(env.iter().any(|(name, value)| {
         *name == "HF_HUB_CACHE" && value == &Some(expected_hub.as_os_str())
     }));

@@ -5,12 +5,32 @@
 
 mod common;
 use common::{
-    model_test_support::skip_unless_model_tests_enabled, shared_cache_guard, TestLibrary,
+    model_test_support::skip_unless_model_tests_enabled, shared_cache_guard, KillOnDrop,
+    TestLibrary,
 };
 
 use rusqlite::Connection;
 use std::path::Path;
 use std::time::{Duration, Instant};
+
+#[test]
+fn child_guard_reaps_a_process_when_a_progress_check_exits_early() {
+    let child = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .expect("start a model-free long-running child");
+    let pid = child.id();
+    drop(KillOnDrop(child));
+    let alive = std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("probe child liveness");
+    assert!(
+        !alive.success(),
+        "child must be killed and reaped on unwind"
+    );
+}
 
 /// Populates the library with `n` `file_hashes` rows, each a distinct fake hash
 /// pointing at its own copy of the real `sample_with_exif.jpg` fixture under the
@@ -60,16 +80,18 @@ fn kill_mid_run_then_resume_processes_every_image_exactly_once() {
         return;
     }
     let _serial = shared_cache_guard();
+    common::prepare_face_models(&_serial);
     const N: usize = 10;
     let lib = fixture_library(N);
     let db = lib.db();
 
     // --workers 1: deterministic, strictly-incremental progress to poll against.
-    let mut child = lib
-        .model_cmd(&_serial)
-        .args(["faces", "--workers", "1", "--silent"])
-        .spawn()
-        .expect("failed to spawn videre faces");
+    let mut child = KillOnDrop(
+        lib.model_cmd(&_serial)
+            .args(["faces", "--workers", "1", "--silent"])
+            .spawn()
+            .expect("failed to spawn videre faces"),
+    );
 
     let deadline = Instant::now() + Duration::from_secs(60);
     let killed_at = loop {
@@ -87,8 +109,8 @@ fn kill_mid_run_then_resume_processes_every_image_exactly_once() {
         std::thread::sleep(Duration::from_millis(20));
     };
 
-    child.kill().expect("failed to SIGKILL videre faces");
-    child.wait().expect("failed to reap killed process");
+    child.0.kill().expect("failed to SIGKILL videre faces");
+    child.0.wait().expect("failed to reap killed process");
 
     let after_kill = scanned_count(&db);
     assert!(after_kill > 0, "expected some progress to survive the kill");

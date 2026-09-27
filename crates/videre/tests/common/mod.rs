@@ -61,6 +61,36 @@ pub fn shared_cache_guard() -> model_test_support::ModelCacheGuard {
     model_test_support::ModelCacheGuard::acquire()
 }
 
+/// Finish any first-time face-model download before a timed watch/resume check.
+/// The caller holds the same guard through this command and the timed child.
+pub fn prepare_face_models(guard: &model_test_support::ModelCacheGuard) {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("sample_with_exif.jpg", "photo.jpg");
+    lib.scan();
+    let output = lib
+        .model_cmd(guard)
+        .args(["faces", "--workers", "1", "--silent"])
+        .output()
+        .expect("load face models before timed test");
+    assert!(
+        output.status.success(),
+        "face model preparation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Reap a model-backed child before its cache guard can be released on panic.
+pub struct KillOnDrop(pub std::process::Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if !matches!(self.0.try_wait(), Ok(Some(_))) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+}
+
 /// Root of the local Hugging Face cache, using the loader's environment order.
 ///
 /// Delegates to `videre_core::hf_cache`, which owns this knowledge because
@@ -167,7 +197,12 @@ impl TestLibrary {
             Ok("1"),
             "model_cmd requires VIDERE_TEST_MODELS=1"
         );
-        let hub = hf_cache_dir();
+        // Hub overrides may be relative to this test process's cwd. The
+        // child runs from the throwaway library, so pin that same location
+        // before constructing its command.
+        let hub = std::env::current_dir()
+            .expect("resolve parent working directory for model cache")
+            .join(hf_cache_dir());
         let mut cmd = self.cmd();
         cmd.env("HF_HUB_CACHE", hub);
         cmd

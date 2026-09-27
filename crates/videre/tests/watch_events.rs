@@ -377,6 +377,7 @@ fn a_batch_blocked_by_a_faces_run_retries_and_processes_when_free() {
         return;
     }
     let guard = common::shared_cache_guard();
+    common::prepare_face_models(&guard);
     lib.cmd()
         .args(["config", "set", "watch-debounce-ms", "200"])
         .output()
@@ -394,11 +395,12 @@ fn a_batch_blocked_by_a_faces_run_retries_and_processes_when_free() {
         .unwrap();
     fs2::FileExt::lock_exclusive(&hold).unwrap();
 
-    let mut child = lib
-        .model_cmd(&guard)
-        .args(["watch", "--scan", "--faces", "--silent"])
-        .spawn()
-        .expect("spawn watch");
+    let mut child = common::KillOnDrop(
+        lib.model_cmd(&guard)
+            .args(["watch", "--scan", "--faces", "--silent"])
+            .spawn()
+            .expect("spawn watch"),
+    );
     std::thread::sleep(Duration::from_millis(700));
     lib.copy_fixture("sample_with_exif.jpg", "dropped.jpg");
 
@@ -456,8 +458,8 @@ fn a_batch_blocked_by_a_faces_run_retries_and_processes_when_free() {
         }
         std::thread::sleep(Duration::from_millis(300));
     }
-    let _ = child.kill();
-    let _ = child.wait();
+    let _ = child.0.kill();
+    let _ = child.0.wait();
     assert!(
         processed,
         "the retained batch must be processed once the lock frees"

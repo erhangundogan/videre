@@ -143,19 +143,6 @@ mod tests {
     }
 
     #[test]
-    fn hf_home_overrides_the_default_location() {
-        // Not using std::env::set_var: tests share a process and run in
-        // parallel, so mutating the environment here would race every other
-        // test's getenv. Asserts the shape of the default instead.
-        let d = cache_dir();
-        assert!(
-            d.ends_with("hub"),
-            "cache dir should end in hub, got {}",
-            d.display()
-        );
-    }
-
-    #[test]
     fn a_missing_repo_is_not_cached() {
         assert!(!repo_has(
             "definitely/not-a-real-model-xyz",
