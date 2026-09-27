@@ -32,6 +32,12 @@ const personName = decodeURIComponent(window.location.pathname.split('/').pop())
     // Set by the page before this script runs; see person.html.
     const FACES_UI_ENABLED = window.FACES_UI_ENABLED === true;
     const MAX_NAME_LEN = 60;
+
+    // A failed request's reason from the server, else the page's own words.
+    async function failureText(response, fallback) {
+      const body = await response.json().catch(() => null);
+      return 'Error: ' + ((body && body.error) || fallback);
+    }
     let facesData = [];
 
 // After an action that removes what this page was showing, go back to the
@@ -131,7 +137,7 @@ function peopleHome() {
 
     async function removeFace(faceId) {
       const r = await fetch(`/api/faces/${faceId}`, { method: 'DELETE' });
-      if (!r.ok) { document.getElementById('status').textContent = 'Error: remove failed'; return; }
+      if (!r.ok) { document.getElementById('status').textContent = await failureText(r, 'remove failed'); return; }
       document.getElementById(`card-${faceId}`)?.remove();
       facesData = facesData.filter(f => f.face_id !== faceId);
       document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
@@ -142,7 +148,7 @@ function peopleHome() {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ person_label: personName })
       });
-      if (!r.ok) { document.getElementById('status').textContent = 'Error: set default failed'; return; }
+      if (!r.ok) { document.getElementById('status').textContent = await failureText(r, 'set default failed'); return; }
       // Move the flag locally and re-render so the badge and disabled state
       // follow, without a full round-trip; the labeling page picks up the new
       // primary on its next load.
