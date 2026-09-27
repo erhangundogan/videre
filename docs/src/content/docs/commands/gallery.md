@@ -245,16 +245,19 @@ select mode ("Select enabled"). While it is on:
 As soon as something is selected, a bar along the bottom (the same one the
 People page uses for singletons) shows how many, and acts on all of them:
 
-| Action | Does |
+| Control | Does |
 |---|---|
-| **Like** / **Unlike** | sets or clears the liked mark |
-| **Keep** / **Reject** | sets the pick; pressing it again when every item already has it clears it |
-| **Rate** | 1 to 5 stars, or clear |
-| **Label** | a colour label, or none |
-| **Tag** / **Untag** | the tag typed in the field, which suggests the library's tags |
+| **Heart** | likes every selected item; when all are already liked, unlikes them |
+| **Star** | 1 to 5 stars, or clear the rating |
+| **Colour** | a colour label, or none |
+| **Tag** | adds or removes the tag typed in the field, which suggests the library's tags; Enter adds |
+| **Flag** | Keep or Reject; choosing one every item already has clears it, and Clear removes either |
 | **Rotate left / right** | photos only; videos and RAW files are skipped |
-| **Copy paths** | the selected files' paths, one per line |
-| **Delete…** | moves the files to the system Trash, after a confirmation |
+| **More** (⋯) | Copy paths: the selected files' paths, one per line |
+| **Delete** (trash, last) | moves the files to the system Trash, after a confirmation |
+
+Each action's result appears briefly above the bar. Escape closes an open menu
+first, then clears the selection.
 
 Marks and tags belong to the content, so every copy of a photo changes with
 it, exactly as with [`videre mark`](/commands/mark/) and
