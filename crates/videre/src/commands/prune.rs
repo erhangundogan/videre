@@ -322,7 +322,15 @@ pub(crate) fn run_prune(
     //
     // In dry-run mode the file_hashes rows were not deleted yet, so counts
     // reflect only pre-existing orphans and are a lower bound.
+    //
+    // A store the sweep leaves with no rows at all is removed with the file:
+    // a schema-only database is what an embed with a failed model used to
+    // leave behind, and stats would otherwise list the phantom forever. Safe
+    // because prune holds the exclusive activity lease, so no writer can
+    // re-create rows between the count and the removal.
     let mut orphans = 0usize;
+    let mut empty_models = 0usize;
+    let mut empty_model_names: Vec<String> = Vec::new();
     for model_id in videre_core::embeddings_db::list_models_in(library).unwrap_or_default() {
         if videre_core::embeddings_db::attach_in(conn, library, &model_id, false).is_err() {
             continue;
@@ -346,11 +354,57 @@ pub(crate) fn run_prune(
             )
             .unwrap_or(0)
         };
+        orphans += removed;
+        // Rows left after the sweep: zero means the file holds nothing.
+        // A count that cannot be read is not proof of emptiness, so a corrupt
+        // store is skipped and warned about, never deleted.
+        let remaining: Option<i64> = conn
+            .query_row("SELECT COUNT(*) FROM emb.embeddings", [], |r| r.get(0))
+            .ok();
         let _ = videre_core::embeddings_db::detach(conn);
         if !args.silent && removed > 0 {
             tracing::info!("removed {removed} orphan embedding(s) ({model_id})");
         }
-        orphans += removed;
+        if let Some(0) = remaining {
+            let Ok(path) = videre_core::embeddings_db::db_path_in(library, &model_id) else {
+                continue;
+            };
+            if args.dry_run {
+                empty_model_names.push(model_id.clone());
+            } else {
+                match std::fs::remove_file(&path) {
+                    Ok(()) => {
+                        // Crash leftovers; a clean detach normally removes them.
+                        for suffix in ["-wal", "-shm"] {
+                            let _ =
+                                std::fs::remove_file(path.with_extension(format!("db{suffix}")));
+                        }
+                        empty_models += 1;
+                        if !args.silent {
+                            tracing::info!("removed empty model database ({model_id})");
+                        }
+                    }
+                    Err(e) => {
+                        report_failure(
+                            videre_core::error_kind::from_io(e),
+                            format!("removing empty model database {}", path.display()),
+                            &path.display().to_string(),
+                        );
+                        errors += 1;
+                    }
+                }
+            }
+        } else if remaining.is_none() {
+            tracing::warn!(
+                "could not count rows in the {model_id} model database; leaving it in place"
+            );
+        }
+    }
+    if !args.silent && !empty_model_names.is_empty() {
+        tracing::info!(
+            "[dry-run] would remove empty model database(s): {}",
+            empty_model_names.join(", ")
+        );
     }
 
     // Remove orphan marks: a mark whose photo is gone from every path. Same
@@ -444,6 +498,26 @@ pub(crate) fn run_prune(
         } else {
             String::new()
         };
+        let (model_count, model_names) = if args.dry_run {
+            (empty_model_names.len(), empty_model_names.join(", "))
+        } else {
+            (empty_models, String::new())
+        };
+        let model_note = if model_count > 0 {
+            let qualifier = if args.dry_run {
+                " (lower bound; actual may be higher after removals)"
+            } else {
+                ""
+            };
+            let names = if model_names.is_empty() {
+                String::new()
+            } else {
+                format!(": {model_names}")
+            };
+            format!(", {model_count} empty model database(s) {action} removed{names}{qualifier}")
+        } else {
+            String::new()
+        };
         let cache_note = if cache_orphans > 0 {
             let qualifier = if args.dry_run {
                 " (lower bound; actual may be higher after removals)"
@@ -455,7 +529,7 @@ pub(crate) fn run_prune(
             String::new()
         };
         tracing::info!(
-            "{total} row(s) checked: {removed} {action} removed, {synced} {action} synced, {errors} error(s){orphan_note}{cache_note}."
+            "{total} row(s) checked: {removed} {action} removed, {synced} {action} synced, {errors} error(s){orphan_note}{model_note}{cache_note}."
         );
     }
 
