@@ -1389,7 +1389,6 @@ function selectModeClick(e){
   if(!item||e.target.closest('button, [data-path]'))return false;
   e.preventDefault();e.stopPropagation();
   var sel=ensureFileSelection();
-  if(typeof selectionResult!=='undefined')selectionResult='';
   if(e.shiftKey)sel.extend(item.dataset.hash); else sel.toggle(item.dataset.hash);
   if(typeof loadSelectionTags==='function')loadSelectionTags();
   return true;
@@ -1439,7 +1438,6 @@ function toggleSelectMode(){ setSelectMode(!selectMode); }
 // ---------- selection bar actions ----------
 // Marks, tags, rotation and copy paths for the selected items. The result of
 // the last action stays on the bar until the selection changes.
-var selectionResult='';
 var SELECTION_LABELS=['red','yellow','green','blue','purple'];
 
 function fileSelectionActions(){
@@ -1461,8 +1459,7 @@ function fileSelectionActions(){
     '<button type="button" data-sel-act="rotate-ccw" title="Rotate left" aria-label="Rotate left">&#10226;</button>'+
     '<button type="button" data-sel-act="rotate-cw" title="Rotate right" aria-label="Rotate right">&#10227;</button>'+
     '<button type="button" data-sel-act="copy">Copy paths</button>'+
-    '<button type="button" data-sel-act="delete" class="sel-danger">Delete\u2026</button>'+
-    (selectionResult?'<span class="sel-hint sel-result" role="status">'+escH(selectionResult)+'</span>':'');
+    '<button type="button" data-sel-act="delete" class="sel-danger">Delete\u2026</button>';
 }
 
 function selectionPost(url,body){
@@ -1477,10 +1474,20 @@ function selectionPost(url,body){
     });
 }
 
+// The last action's result, shown briefly above the bar. A toast rather than
+// bar content, so the bar never changes width or re-renders under an open menu.
 function showSelectionResult(text){
-  selectionResult=text;
-  if(fileSelection)fileSelection.renderBar();
-  loadSelectionTags();
+  var t=document.getElementById('sel-toast');
+  if(!t){
+    t=document.createElement('div');
+    t.id='sel-toast';
+    t.setAttribute('role','status');
+    document.body.appendChild(t);
+  }
+  t.textContent=text;
+  t.hidden=false;
+  clearTimeout(showSelectionResult.timer);
+  showSelectionResult.timer=setTimeout(function(){ t.hidden=true; },4000);
 }
 
 function selectionMarks(body,describe){

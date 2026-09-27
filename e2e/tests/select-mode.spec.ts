@@ -79,29 +79,36 @@ test("the bar's actions mark, tag and copy the selection", async ({ page, sorted
   await expect(bar.locator(".sel-count")).toHaveText("2 selected");
 
   await bar.locator('[data-sel-act="like"]').click();
-  await expect(bar.locator(".sel-result")).toHaveText("Liked 2 item(s)");
+  await expect(page.locator("#sel-toast")).toHaveText("Liked 2 item(s)");
 
   await bar.locator(".sel-rate").selectOption("4");
-  await expect(bar.locator(".sel-result")).toHaveText("Rated 2 item(s) ★★★★");
+  await expect(page.locator("#sel-toast")).toHaveText("Rated 2 item(s) ★★★★");
 
   await bar.locator('[data-sel-act="keep"]').click();
-  await expect(bar.locator(".sel-result")).toHaveText("Marked 2 item(s) Keep");
+  await expect(page.locator("#sel-toast")).toHaveText("Marked 2 item(s) Keep");
   await bar.locator('[data-sel-act="keep"]').click();
-  await expect(bar.locator(".sel-result")).toHaveText("Cleared Keep on 2 item(s)");
+  await expect(page.locator("#sel-toast")).toHaveText("Cleared Keep on 2 item(s)");
 
   await bar.locator(".sel-tag").fill("İstanbul");
   await bar.locator('[data-sel-act="tag"]').click();
-  await expect(bar.locator(".sel-result")).toHaveText("Tagged 2 item(s) with İstanbul");
+  await expect(page.locator("#sel-toast")).toHaveText("Tagged 2 item(s) with İstanbul");
   const tags = await (await page.request.get(`${sortedGallery.baseURL}/api/tags`)).json();
   expect(tags).toEqual([{ tag: "İstanbul", count: 2 }]);
   await bar.locator(".sel-tag").fill("İstanbul");
   await bar.locator('[data-sel-act="untag"]').click();
-  await expect(bar.locator(".sel-result")).toHaveText("Untagged 2 item(s) from İstanbul");
+  await expect(page.locator("#sel-toast")).toHaveText("Untagged 2 item(s) from İstanbul");
 
   await bar.locator('[data-sel-act="copy"]').click();
-  await expect(bar.locator(".sel-result")).toHaveText("Copied 2 path(s)");
+  await expect(page.locator("#sel-toast")).toHaveText("Copied 2 path(s)");
   const copied = await page.evaluate(() => navigator.clipboard.readText());
   expect(copied.split("\n")).toHaveLength(2);
+
+  // The result is a toast, not bar content: the bar keeps its width.
+  const width = (await bar.boundingBox())!.width;
+  await bar.locator('[data-sel-act="keep"]').click();
+  await expect(page.locator("#sel-toast")).toBeVisible();
+  expect((await bar.boundingBox())!.width).toBe(width);
+  await bar.locator('[data-sel-act="keep"]').click();
 
   // Restore the fixture's marks (c_clip liked and unrated, a_alpha rated 5 and
   // not liked): the library is shared with the sort specs, which order by them.
@@ -148,11 +155,11 @@ test("rotating a selection refreshes the URL its lightbox opens", async ({ page,
   await card.click();
   const bar = page.locator("#file-sel-bar");
   await bar.locator('[data-sel-act="rotate-cw"]').click();
-  await expect(bar.locator(".sel-result")).toHaveText(/^Rotated 1 item\(s\)/);
+  await expect(page.locator("#sel-toast")).toHaveText(/^Rotated 1 item\(s\)/);
   await expect(opener).toHaveAttribute("data-lb-url", /[?&]b=\d+/);
   // Turn it back: the library is shared with the other specs.
   await bar.locator('[data-sel-act="rotate-ccw"]').click();
-  await expect(bar.locator(".sel-result")).toHaveText(/^Rotated 1 item\(s\)/);
+  await expect(page.locator("#sel-toast")).toHaveText(/^Rotated 1 item\(s\)/);
 });
 
 test("Clear in the selection bar empties the selection", async ({ page, sortedGallery }) => {
