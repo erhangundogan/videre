@@ -14,6 +14,13 @@
 /// directory-local command tests.
 pub mod feature_fixture;
 
+pub mod model_test_support {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../videre-core/tests/support/model_test_support.rs"
+    ));
+}
+
 use std::path::{Path, PathBuf};
 
 /// Path to the `videre` binary under test.
@@ -102,12 +109,14 @@ pub fn siglip_cached() -> bool {
 /// Tests never download weights: that is the application's job, triggered by a
 /// real `videre embed` or `videre faces` run. A cold cache therefore skips.
 ///
-/// Rust has no native skip, so a skipped test passes, which is a real risk of
-/// silently covering nothing. `VIDERE_TEST_REQUIRE_MODELS=1` turns the skip
-/// into a panic, and CI sets it after restoring its cache: a skip there means
-/// the cache silently stopped working, and the test would otherwise never run
-/// anywhere at all.
+/// Rust has no native skip, so a skipped test passes. CI explicitly disables
+/// these model-backed tests and prints the reason. The old
+/// `VIDERE_TEST_REQUIRE_MODELS=1` check remains for local runs until the
+/// explicit local opt-in replaces this transitional cache gate.
 pub fn skip_without_models(what: &str, cached: bool) -> bool {
+    if model_test_support::skip_ci_model_test(what) {
+        return true;
+    }
     if cached {
         return false;
     }
@@ -115,7 +124,7 @@ pub fn skip_without_models(what: &str, cached: bool) -> bool {
     if std::env::var("VIDERE_TEST_REQUIRE_MODELS").as_deref() == Ok("1") {
         panic!(
             "VIDERE_TEST_REQUIRE_MODELS=1 but {what} weights are missing from {}. \
-             In CI this means the model cache was not restored.",
+             Run the model command once to populate that cache.",
             cache.display()
         );
     }
@@ -124,7 +133,7 @@ pub fn skip_without_models(what: &str, cached: bool) -> bool {
     // in a normal `cargo test` run and only appears under `--nocapture`. That
     // is the opposite of loud, and it is the whole reason skipping is
     // acceptable at all. Writing to fd 2 directly sidesteps the capture.
-    write_past_test_capture(&format!(
+    model_test_support::write_past_test_capture(&format!(
         "SKIP: {what} weights are not cached in {}. \
          Run `videre {what}` once to populate it; tests never download.\n",
         cache.display()
@@ -290,17 +299,4 @@ impl TestLibrary {
     pub fn init_db(&self) -> rusqlite::Connection {
         videre_core::library_db::initialize(&self.context()).unwrap()
     }
-}
-
-/// Writes to the process's real stderr, bypassing libtest's output capture.
-///
-/// `ManuallyDrop` because dropping a `File` built from a borrowed fd would
-/// close fd 2 for the rest of the process.
-fn write_past_test_capture(msg: &str) {
-    use std::io::Write;
-    use std::os::fd::FromRawFd;
-
-    let mut stderr = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(2) });
-    let _ = stderr.write_all(msg.as_bytes());
-    let _ = stderr.flush();
 }

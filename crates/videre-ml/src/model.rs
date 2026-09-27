@@ -493,6 +493,14 @@ mod tests {
 mod batch_correctness_tests {
     use super::*;
 
+    #[cfg(not(target_os = "macos"))]
+    mod model_test_support {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../videre-core/tests/support/model_test_support.rs"
+        ));
+    }
+
     /// How to fill the synthetic images a sweep embeds.
     ///
     /// This distinction is load-bearing. The original corruption was
@@ -883,6 +891,9 @@ mod batch_correctness_tests {
     #[test]
     #[cfg(not(target_os = "macos"))]
     fn cpu_batch_matches_single_image_baseline() {
+        if model_test_support::skip_ci_model_test("cpu_batch_matches_single_image_baseline") {
+            return;
+        }
         if !videre_core::hf_cache::siglip_ready(MODEL_ID) {
             eprintln!(
                 "SKIP cpu_batch_matches_single_image_baseline: {MODEL_ID} weights are not in {}. \
