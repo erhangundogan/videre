@@ -16,6 +16,45 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.44.0] - 2026-09-27
+
+### Added
+
+- **Sort on the Events and Map pages.** Map sorts its photos by date, name,
+  size, rating, liked or type; the Events overview sorts events by date,
+  number of files, length or name. Each page keeps its own choice in
+  `gallery.json`.
+
+### Changed
+
+- **A tidier selection bar.** The bar that acts on a selection now shows the
+  count and Clear, then icon buttons: a heart that likes every selected item,
+  or unlikes them all when all are already liked; small menus for rating,
+  colour label, tag, and keep or reject; rotate left and right; a More menu
+  with Copy paths; and Delete last. Results appear briefly above the bar.
+- **One settings bar on every page.** A person's page and a cluster's page now
+  carry their back link, title, face count and actions in the same toolbar as
+  the other pages, and toolbar buttons, links and fields look the same
+  everywhere.
+- **The Similar images panel sits under the toolbar**, and its button reads
+  Close.
+- **A rejected gallery request says why.** The People pages show the reason,
+  and every rejected request is written to the gallery log as a warning with
+  its route and reason.
+
+### Fixed
+
+- **Assigning a cluster failed** when one of its photos had a byte-identical
+  copy elsewhere in the library: the cluster and person pages listed that
+  photo's faces twice, and the assignment was refused. Each face is now listed
+  once.
+- **A rotated photo showed unrotated** when its lightbox was reopened or zoomed,
+  because the page reused the image it had fetched before the rotation.
+  Rotating from the selection bar had the same problem.
+- **`embed` with a model that cannot load, or with nothing to do, left an empty
+  model database** that `stats` listed as a model. It is now created only once
+  a model has loaded and there is work to write, and `prune` removes empty ones.
+
 ## [0.43.0] - 2026-09-25
 
 ### Added
@@ -2374,7 +2413,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.43.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.44.0...HEAD
+[0.44.0]: https://github.com/erhangundogan/videre/compare/v0.43.0...v0.44.0
 [0.43.0]: https://github.com/erhangundogan/videre/compare/v0.42.1...v0.43.0
 [0.42.1]: https://github.com/erhangundogan/videre/compare/v0.42.0...v0.42.1
 [0.42.0]: https://github.com/erhangundogan/videre/compare/v0.41.0...v0.42.0
