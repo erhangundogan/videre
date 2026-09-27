@@ -47,6 +47,9 @@ videre prune --dry-run
    [model](/reference/models/)
 4. Deletes [cached thumbnails](/guides/caches/#thumbnail-cache) whose photo is
    gone
+5. Removes any [model database](/reference/models/) the sweep has left with no
+   embeddings at all, typically one an interrupted or failed `videre embed`
+   left behind
 
 Steps 3 and 4 are the reason to prune at all rather than ignoring stale rows:
 they are what actually reclaims disk space.
@@ -64,7 +67,9 @@ still in use by the surviving copy.
 :::note[`--dry-run` undercounts orphans]
 The orphan counts in a dry run only include entries that are *already* orphaned,
 not the ones the pending row deletions would create. The real run usually
-reclaims more than the preview suggests. Row counts are exact.
+reclaims more than the preview suggests. Row counts are exact. The same lower
+bound applies to empty model databases: one whose only embeddings are about to
+be orphaned still counts as non-empty in the preview.
 :::
 
 ## If a drive is not plugged in, prune leaves it alone

@@ -9,7 +9,10 @@ use videre_core::decode_failures;
 /// dropped from the pending set, so `videre embed` never re-attempts it. Because
 /// that is the only file, the pending set is empty and embed loads no model,
 /// which is why this test needs no weights and is not macOS-gated: it proves the
-/// wiring (the skip), not the embedding.
+/// wiring (the skip), not the embedding. It also asserts the stronger half of
+/// that wiring: a run with nothing to do must not create the model database
+/// either, so a failed or unnecessary embed never leaves an empty store for
+/// `stats` to list.
 #[test]
 fn embed_skips_a_hash_recorded_as_failed_and_loads_no_model() {
     let lib = TestLibrary::new();
@@ -18,7 +21,7 @@ fn embed_skips_a_hash_recorded_as_failed_and_loads_no_model() {
 
     // The scanned file's content hash, then record two decode failures for it
     // (FAILURE_THRESHOLD), the state a genuinely-undecodable file reaches.
-    let hash: String = {
+    {
         let conn = lib.conn();
         let hash: String = conn
             .query_row("SELECT hash FROM file_hashes LIMIT 1", [], |r| r.get(0))
@@ -26,8 +29,7 @@ fn embed_skips_a_hash_recorded_as_failed_and_loads_no_model() {
         decode_failures::ensure_table(&conn).unwrap();
         decode_failures::record(&conn, &hash, decode_failures::STAGE_EMBED, "timed out").unwrap();
         decode_failures::record(&conn, &hash, decode_failures::STAGE_EMBED, "timed out").unwrap();
-        hash
-    };
+    }
 
     let embed = lib
         .cmd()
@@ -39,18 +41,16 @@ fn embed_skips_a_hash_recorded_as_failed_and_loads_no_model() {
         "embed should exit cleanly with nothing to do"
     );
 
-    // The file was skipped, so no embedding was written for it.
-    let store = model_store(&lib);
-    let embedded: i64 = store
-        .query_row(
-            "SELECT COUNT(*) FROM embeddings WHERE hash = ?1",
-            [&hash],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(
-        embedded, 0,
-        "a failed-and-skipped hash must not be embedded"
+    // Nothing was embedded, and a never-embedded library has no store at all:
+    // creating one for a run that wrote nothing is the bug this asserts gone.
+    let store_path = videre_core::embeddings_db::db_path_in(
+        &lib.context(),
+        videre_core::embeddings::DEFAULT_MODEL_ID,
+    )
+    .unwrap();
+    assert!(
+        !store_path.exists(),
+        "a zero-work embed must not create the model database"
     );
 }
 
@@ -158,6 +158,11 @@ fn embed_records_and_then_skips_a_repeatedly_undecodable_file() {
 }
 
 /// Open the per-model embedding store for this library directly.
+///
+/// Only the macOS-gated tests below still open the store (the offline tests
+/// assert its absence instead), so the helper carries the same gate; without
+/// it the Linux build sees an unused function.
+#[cfg(target_os = "macos")]
 fn model_store(lib: &TestLibrary) -> rusqlite::Connection {
     let path = videre_core::embeddings_db::db_path_in(
         &lib.context(),
@@ -241,5 +246,107 @@ fn embed_skips_an_audio_only_video_without_calling_quicklook() {
     assert!(
         elapsed < std::time::Duration::from_secs(300),
         "embed took {elapsed:?}, suspiciously close to a qlmanage timeout"
+    );
+}
+
+/// A model id that passes the owner/name shape but cannot load must fail the
+/// run and leave no model database behind: the store is only created once a
+/// model has loaded and there is work to write. HF_ENDPOINT is pinned to the
+/// discard port, where the connect fails immediately and retries burn about a
+/// second; nothing is downloaded and no real cache is reachable because the
+/// test library's private HF_HOME is empty.
+#[test]
+fn embed_with_a_model_that_cannot_load_leaves_no_model_database() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "photo.jpg");
+    lib.scan();
+
+    let embed = lib
+        .cmd()
+        .args(["embed", "--model", "videre-tests/no-such-model", "--silent"])
+        .env("HF_ENDPOINT", "http://127.0.0.1:9")
+        .output()
+        .expect("failed to run videre embed");
+    assert!(
+        !embed.status.success(),
+        "a model that cannot load must fail the run"
+    );
+
+    let embeddings_dir = lib.root.join(".videre/embeddings");
+    let left_behind = std::fs::read_dir(&embeddings_dir)
+        .map(|entries| entries.filter_map(|e| e.ok()).count())
+        .unwrap_or(0);
+    assert_eq!(
+        left_behind,
+        0,
+        "a failed load must leave no model database in {}",
+        embeddings_dir.display()
+    );
+
+    // `stats` reads its model list straight from the directory, so the store's
+    // absence is only confirmed when the listing has no models either.
+    let stats = lib.cmd().arg("stats").output().unwrap();
+    assert!(stats.status.success(), "stats runs cleanly");
+    let stdout = String::from_utf8_lossy(&stats.stdout);
+    assert!(
+        stdout.contains("none; run"),
+        "stats must list no models after the failed embed:\n{stdout}"
+    );
+}
+
+/// A store that already exists is not embed's to remove: a zero-work run must
+/// leave it exactly as it was. Removing empty stores is prune's job, and this
+/// test pins that boundary so cleanup never drifts into embed.
+#[test]
+fn embed_with_zero_work_keeps_an_existing_model_database() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "photo.jpg");
+    lib.scan();
+
+    // The store as a previous successful embed would have left it: schema
+    // only, no rows.
+    let ctx = lib.context();
+    {
+        let conn = lib.conn();
+        videre_core::embeddings_db::attach_in(
+            &conn,
+            &ctx,
+            videre_core::embeddings::DEFAULT_MODEL_ID,
+            true,
+        )
+        .unwrap();
+        videre_core::embeddings_db::detach(&conn).unwrap();
+    }
+    let store_path =
+        videre_core::embeddings_db::db_path_in(&ctx, videre_core::embeddings::DEFAULT_MODEL_ID)
+            .unwrap();
+    assert!(store_path.exists(), "the test created the store");
+
+    // Push the photo past the decode-failure threshold so the run has zero
+    // work (the same trick as the test above).
+    let hash: String = {
+        let conn = lib.conn();
+        conn.query_row("SELECT hash FROM file_hashes LIMIT 1", [], |r| r.get(0))
+            .expect("the scanned photo has a hash")
+    };
+    {
+        let conn = lib.conn();
+        decode_failures::ensure_table(&conn).unwrap();
+        decode_failures::record(&conn, &hash, decode_failures::STAGE_EMBED, "timed out").unwrap();
+        decode_failures::record(&conn, &hash, decode_failures::STAGE_EMBED, "timed out").unwrap();
+    }
+
+    let embed = lib
+        .cmd()
+        .args(["embed", "--silent"])
+        .status()
+        .expect("failed to run videre embed");
+    assert!(
+        embed.success(),
+        "embed should exit cleanly with nothing to do"
+    );
+    assert!(
+        store_path.exists(),
+        "a zero-work embed must not remove an existing model database"
     );
 }
