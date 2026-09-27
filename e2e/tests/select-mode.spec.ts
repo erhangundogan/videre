@@ -78,37 +78,65 @@ test("the bar's actions mark, tag and copy the selection", async ({ page, sorted
   const bar = page.locator("#file-sel-bar");
   await expect(bar.locator(".sel-count")).toHaveText("2 selected");
 
-  await bar.locator('[data-sel-act="like"]').click();
+  // Cards 0 and 1: one liked (c_clip), one not, so the heart offers Like.
+  const heart = bar.locator('[data-sel-act="like"]');
+  await expect(heart).toHaveAttribute("aria-pressed", "false");
+  await expect(heart).toHaveCSS("background-color", "rgb(42, 109, 181)");
+  await heart.click();
   await expect(page.locator("#sel-toast")).toHaveText("Liked 2 item(s)");
+  await expect(heart).toHaveAttribute("aria-pressed", "true");
+  await expect(heart).toHaveCSS("background-color", "rgb(255, 255, 255)");
+  await heart.click();
+  await expect(page.locator("#sel-toast")).toHaveText("Unliked 2 item(s)");
+  await expect(heart).toHaveAttribute("aria-pressed", "false");
 
-  await bar.locator(".sel-rate").selectOption("4");
+  await bar.locator('[data-sel-pop="rate"]').click();
+  await bar.locator('[data-sel-act="rate"][data-value="4"]').click();
   await expect(page.locator("#sel-toast")).toHaveText("Rated 2 item(s) ★★★★");
+  await expect(bar.locator('.sel-pop[data-pop="rate"]')).toBeHidden();
 
+  await bar.locator('[data-sel-pop="label"]').click();
+  await bar.locator('[data-sel-act="label"][data-value="green"]').click();
+  await expect(page.locator("#sel-toast")).toHaveText("Labeled 2 item(s) green");
+  await bar.locator('[data-sel-pop="label"]').click();
+  await bar.locator('[data-sel-act="label"][data-value="none"]').click();
+  await expect(page.locator("#sel-toast")).toHaveText("Cleared the label of 2 item(s)");
+
+  await bar.locator('[data-sel-pop="flag"]').click();
   await bar.locator('[data-sel-act="keep"]').click();
   await expect(page.locator("#sel-toast")).toHaveText("Marked 2 item(s) Keep");
-  await bar.locator('[data-sel-act="keep"]').click();
-  await expect(page.locator("#sel-toast")).toHaveText("Cleared Keep on 2 item(s)");
+  await bar.locator('[data-sel-pop="flag"]').click();
+  await bar.locator('[data-sel-act="pick-clear"]').click();
+  await expect(page.locator("#sel-toast")).toHaveText("Cleared the pick of 2 item(s)");
 
+  await bar.locator('[data-sel-pop="tag"]').click();
+  await expect(bar.locator(".sel-tag")).toBeFocused();
   await bar.locator(".sel-tag").fill("İstanbul");
-  await bar.locator('[data-sel-act="tag"]').click();
+  await page.keyboard.press("Enter");
   await expect(page.locator("#sel-toast")).toHaveText("Tagged 2 item(s) with İstanbul");
   const tags = await (await page.request.get(`${sortedGallery.baseURL}/api/tags`)).json();
   expect(tags).toEqual([{ tag: "İstanbul", count: 2 }]);
+  await bar.locator('[data-sel-pop="tag"]').click();
   await bar.locator(".sel-tag").fill("İstanbul");
   await bar.locator('[data-sel-act="untag"]').click();
   await expect(page.locator("#sel-toast")).toHaveText("Untagged 2 item(s) from İstanbul");
 
+  // Copy paths lives in the More menu.
+  await bar.locator('[data-sel-pop="more"]').click();
   await bar.locator('[data-sel-act="copy"]').click();
   await expect(page.locator("#sel-toast")).toHaveText("Copied 2 path(s)");
+  await expect(bar.locator('.sel-pop[data-pop="more"]')).toBeHidden();
   const copied = await page.evaluate(() => navigator.clipboard.readText());
   expect(copied.split("\n")).toHaveLength(2);
 
   // The result is a toast, not bar content: the bar keeps its width.
   const width = (await bar.boundingBox())!.width;
+  await bar.locator('[data-sel-pop="flag"]').click();
   await bar.locator('[data-sel-act="keep"]').click();
   await expect(page.locator("#sel-toast")).toBeVisible();
   expect((await bar.boundingBox())!.width).toBe(width);
-  await bar.locator('[data-sel-act="keep"]').click();
+  await bar.locator('[data-sel-pop="flag"]').click();
+  await bar.locator('[data-sel-act="pick-clear"]').click();
 
   // Restore the fixture's marks (c_clip liked and unrated, a_alpha rated 5 and
   // not liked): the library is shared with the sort specs, which order by them.
@@ -160,6 +188,40 @@ test("rotating a selection refreshes the URL its lightbox opens", async ({ page,
   // Turn it back: the library is shared with the other specs.
   await bar.locator('[data-sel-act="rotate-ccw"]').click();
   await expect(page.locator("#sel-toast")).toHaveText(/^Rotated 1 item\(s\)/);
+});
+
+test("the selection bar fits one line, Delete sits last, and menus close on Escape or outside", async ({
+  page,
+  sortedGallery
+}) => {
+  await page.setViewportSize({ width: 800, height: 700 });
+  await page.goto(sortedGallery.baseURL);
+  await page.locator(".gallery-toolbar .select-toggle").first().click();
+  await page.locator("#gallery .card[data-hash]").first().click();
+  const bar = page.locator("#file-sel-bar");
+  const box = (await bar.boundingBox())!;
+  expect(box.height).toBeLessThan(60);
+  const del = (await bar.locator('[data-sel-act="delete"]').boundingBox())!;
+  const clear = (await bar.locator("[data-sel-clear]").boundingBox())!;
+  expect(del.x).toBeGreaterThan(clear.x);
+  const pops = await bar.locator("[data-sel-pop]").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.selPop));
+  expect(pops).toEqual(["rate", "label", "tag", "flag", "more"]);
+  await expect(bar.locator(":scope > select, :scope > input")).toHaveCount(0);
+  for (const b of await bar.locator("button[data-sel-act], button[data-sel-pop]").all()) {
+    await expect(b).toHaveAttribute("aria-label", /.+/);
+  }
+
+  const more = bar.locator('[data-sel-pop="more"]');
+  await more.click();
+  await expect(more).toHaveAttribute("aria-expanded", "true");
+  await page.keyboard.press("Escape");
+  await expect(bar.locator('.sel-pop[data-pop="more"]')).toBeHidden();
+  await expect(more).toBeFocused();
+  // Escape closed only the menu; the selection is still there.
+  await expect(bar).toHaveClass(/on/);
+  await more.click();
+  await page.locator(".secnav").first().click({ position: { x: 1, y: 1 } });
+  await expect(bar.locator('.sel-pop[data-pop="more"]')).toBeHidden();
 });
 
 test("Clear in the selection bar empties the selection", async ({ page, sortedGallery }) => {
