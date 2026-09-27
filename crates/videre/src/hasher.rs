@@ -311,71 +311,6 @@ fn hash_open_file(path: &Path, file: File) -> io::Result<FileRecord> {
     })
 }
 
-pub fn compute_dhash(path: &Path, mime: Option<&str>) -> Option<u64> {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase())
-        .unwrap_or_default();
-
-    let mime = videre_core::mime_probe::effective_mime(mime, &ext)?;
-    if !videre_core::mime_probe::PHASH_MIMES.contains(&mime) {
-        return None;
-    }
-
-    let img = if videre_core::mime_probe::is_video_mime(mime) {
-        // Poster-frame dHash: decode the same QuickLook poster-frame `videre embed`
-        // already uses for SigLIP, then run the identical dHash algorithm on it.
-        // 64px is plenty of source resolution since we immediately resize to 9x8.
-        videre_ml::preprocess::decode_via_quicklook(path, 64, "scan-similar-video").ok()?
-    } else if mime == "image/heic" {
-        // The `image` crate cannot decode HEIC, so it goes through the same
-        // QuickLook conversion `embed` and `faces` already use. 64px is ample
-        // when the next step resizes to 9x8, and keeps the conversion cheap.
-        // `heic_via_quicklook` keys its scratch directory on path *and* tag and
-        // deletes it afterwards, so a small conversion here cannot disturb the
-        // larger ones other commands depend on.
-        videre_core::heic::heic_via_quicklook(path.to_str()?, "scan-similar-heic", Some(64))?
-    } else {
-        videre_core::image_decode::decode_oriented_file(path).ok()?
-    };
-    Some(videre_core::image_decode::dhash(&img))
-}
-
-/// Compute a perceptual hash without reopening the validated original path.
-pub fn compute_dhash_in(
-    ctx: &videre_core::library::LibraryContext,
-    path: &Path,
-    mime: Option<&str>,
-) -> Option<u64> {
-    let ext = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(str::to_lowercase)
-        .unwrap_or_default();
-    let mime = videre_core::mime_probe::effective_mime(mime, &ext)?;
-    if !videre_core::mime_probe::PHASH_MIMES.contains(&mime) {
-        return None;
-    }
-    let file = videre_core::library_io::open_media(ctx, path).ok()?;
-    let image = if videre_core::mime_probe::is_video_mime(mime) || mime == "image/heic" {
-        let staged = videre_core::library_io::staged_copy(ctx, &file, path.extension()?).ok()?;
-        if videre_core::mime_probe::is_video_mime(mime) {
-            videre_ml::preprocess::decode_via_quicklook(staged.path(), 64, "scan-similar-video")
-                .ok()?
-        } else {
-            videre_core::heic::heic_via_quicklook(
-                staged.path().to_str()?,
-                "scan-similar-heic",
-                Some(64),
-            )?
-        }
-    } else {
-        videre_core::image_decode::decode_oriented_reader(BufReader::new(file)).ok()?
-    };
-    Some(videre_core::image_decode::dhash(&image))
-}
-
 pub fn hamming(a: u64, b: u64) -> u32 {
     (a ^ b).count_ones()
 }
@@ -390,6 +325,13 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    /// The near-duplicate fingerprint as embed computes it for an image file.
+    fn file_dhash(path: &std::path::Path) -> u64 {
+        videre_core::image_decode::dhash(
+            &videre_core::image_decode::decode_oriented_file(path).unwrap(),
+        )
+    }
 
     #[test]
     fn dhash_is_orientation_invariant() {
@@ -409,12 +351,10 @@ mod tests {
             .unwrap();
         fs::write(&rotated_path, &png).unwrap();
 
-        let tagged = compute_dhash(
-            std::path::Path::new(&format!("{base}/ai-generated-couple_o6.jpg")),
-            Some("image/jpeg"),
-        )
-        .unwrap();
-        let rotated_hash = compute_dhash(&rotated_path, Some("image/png")).unwrap();
+        let tagged = file_dhash(std::path::Path::new(&format!(
+            "{base}/ai-generated-couple_o6.jpg"
+        )));
+        let rotated_hash = file_dhash(&rotated_path);
         assert_eq!(
             tagged, rotated_hash,
             "the tagged file must hash its display canvas, not its raw canvas"
@@ -424,11 +364,9 @@ mod tests {
     #[test]
     fn dhash_value_is_pinned_for_a_jpeg_fixture() {
         let base = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
-        let got = compute_dhash(
-            std::path::Path::new(&format!("{base}/ai-generated-couple.jpg")),
-            Some("image/jpeg"),
-        )
-        .unwrap();
+        let got = file_dhash(std::path::Path::new(&format!(
+            "{base}/ai-generated-couple.jpg"
+        )));
         assert_eq!(
             got, 0x68c9_d51c_3a32_5948,
             "pinned dHash; any change breaks stored fingerprints"
@@ -473,68 +411,6 @@ mod tests {
         let ra = hash_file(&a).unwrap();
         let rb = hash_file(&b).unwrap();
         assert_ne!(ra.hash, rb.hash);
-    }
-
-    #[test]
-    fn dhash_same_image_returns_same_hash() {
-        let dir = tempdir().unwrap();
-        let img = image::RgbImage::from_pixel(64, 64, image::Rgb([128u8, 64, 32]));
-        let path_a = dir.path().join("a.png");
-        let path_b = dir.path().join("b.png");
-        img.save(&path_a).unwrap();
-        img.save(&path_b).unwrap();
-
-        let ha = compute_dhash(&path_a, None);
-        let hb = compute_dhash(&path_b, None);
-        assert!(ha.is_some());
-        assert_eq!(ha, hb);
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn dhash_real_mp4_returns_a_hash() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("clip.mp4");
-        std::fs::copy("tests/fixtures/red_1s.mp4", &path).unwrap();
-        let hash = compute_dhash(&path, None);
-        assert!(
-            hash.is_some(),
-            "expected a dHash computed from the video's poster-frame"
-        );
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn dhash_same_mp4_copied_twice_returns_same_hash() {
-        let dir = tempdir().unwrap();
-        let path_a = dir.path().join("a.mp4");
-        let path_b = dir.path().join("b.mp4");
-        std::fs::copy("tests/fixtures/red_1s.mp4", &path_a).unwrap();
-        std::fs::copy("tests/fixtures/red_1s.mp4", &path_b).unwrap();
-
-        let ha = compute_dhash(&path_a, None);
-        let hb = compute_dhash(&path_b, None);
-        assert!(ha.is_some());
-        assert_eq!(
-            ha, hb,
-            "identical video content must produce identical poster-frame dHash"
-        );
-    }
-
-    #[test]
-    fn dhash_unsupported_ext_returns_none() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("notes.txt");
-        std::fs::write(&path, b"plain text, not a supported extension").unwrap();
-        assert!(compute_dhash(&path, None).is_none());
-    }
-
-    #[test]
-    fn dhash_garbage_mov_bytes_returns_none_not_panic() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("video.mov");
-        std::fs::write(&path, b"not a real video").unwrap();
-        assert!(compute_dhash(&path, None).is_none());
     }
 
     #[test]

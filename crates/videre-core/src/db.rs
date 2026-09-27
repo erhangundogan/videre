@@ -22,21 +22,14 @@ pub struct RowSig {
     pub size_bytes: u64,
     pub modified_at: Option<String>,
     pub has_mime: bool,
-    pub has_phash: bool,
 }
 
 /// True when the stored row is current for the requested work, so the file can
 /// be skipped without reading it: unchanged (same size and mtime) AND complete
-/// (a known mime, and a phash when `--similar` needs one). A file the walk sees
+/// (a known mime). A file the walk sees
 /// but cannot stat, or a row with no stored mtime, is never current.
-pub fn is_current(
-    sig: &RowSig,
-    cur_size: u64,
-    cur_mtime: Option<&str>,
-    want_similar: bool,
-) -> bool {
+pub fn is_current(sig: &RowSig, cur_size: u64, cur_mtime: Option<&str>) -> bool {
     sig.has_mime
-        && (!want_similar || sig.has_phash)
         && sig.size_bytes == cur_size
         && cur_mtime.is_some()
         && sig.modified_at.as_deref() == cur_mtime
@@ -48,10 +41,8 @@ pub fn stored_signatures(conn: &Connection) -> rusqlite::Result<HashMap<String, 
     if !table_exists(conn, "file_hashes")? {
         return Ok(HashMap::new());
     }
-    let mut stmt = conn.prepare(
-        "SELECT path, size_bytes, modified_at, mime IS NOT NULL, phash IS NOT NULL \
-         FROM file_hashes",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT path, size_bytes, modified_at, mime IS NOT NULL FROM file_hashes")?;
     let rows = stmt.query_map([], |r| {
         Ok((
             r.get::<_, String>(0)?,
@@ -59,7 +50,6 @@ pub fn stored_signatures(conn: &Connection) -> rusqlite::Result<HashMap<String, 
                 size_bytes: r.get::<_, Option<i64>>(1)?.unwrap_or(0) as u64,
                 modified_at: r.get::<_, Option<String>>(2)?,
                 has_mime: r.get::<_, bool>(3)?,
-                has_phash: r.get::<_, bool>(4)?,
             },
         ))
     })?;
@@ -145,36 +135,22 @@ mod tests {
             size_bytes: 10,
             modified_at: Some("2024-01-01T00:00:00+00:00".to_string()),
             has_mime: true,
-            has_phash: false,
         };
         let m = base.modified_at.as_deref();
-        // unchanged + known mime, not asking for similar -> current (skip)
-        assert!(is_current(&base, 10, m, false));
+        // unchanged + known mime -> current (skip)
+        assert!(is_current(&base, 10, m));
         // size differs -> not current
-        assert!(!is_current(&base, 11, m, false));
+        assert!(!is_current(&base, 11, m));
         // mtime differs -> not current
-        assert!(!is_current(
-            &base,
-            10,
-            Some("2024-02-02T00:00:00+00:00"),
-            false
-        ));
+        assert!(!is_current(&base, 10, Some("2024-02-02T00:00:00+00:00")));
         // missing mtime on disk -> not current
-        assert!(!is_current(&base, 10, None, false));
+        assert!(!is_current(&base, 10, None));
         // mime unknown -> not current even if unchanged (backfill mime)
         let no_mime = RowSig {
             has_mime: false,
             ..base.clone()
         };
-        assert!(!is_current(&no_mime, 10, m, false));
-        // --similar with no phash -> not current (backfill phash)
-        assert!(!is_current(&base, 10, m, true));
-        // --similar with phash present -> current
-        let with_phash = RowSig {
-            has_phash: true,
-            ..base.clone()
-        };
-        assert!(is_current(&with_phash, 10, m, true));
+        assert!(!is_current(&no_mime, 10, m));
     }
 
     #[test]
@@ -189,7 +165,7 @@ mod tests {
         .unwrap();
         let sigs = stored_signatures(&conn).unwrap();
         assert_eq!(sigs["a.jpg"].size_bytes, 10);
-        assert!(sigs["a.jpg"].has_mime && !sigs["a.jpg"].has_phash);
+        assert!(sigs["a.jpg"].has_mime);
         assert!(!sigs["b.dng"].has_mime);
     }
 

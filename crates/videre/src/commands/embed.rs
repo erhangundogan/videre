@@ -209,15 +209,13 @@ fn run_embed(
             // write can happen inside the rayon closure).
             // Each success also carries the near-duplicate fingerprint, taken
             // from the decoded image before the model's resize.
-            type Decoded = std::result::Result<
-                (String, Option<candle_core::Tensor>, u64),
-                (String, String),
-            >;
+            type Decoded =
+                std::result::Result<(String, Option<candle_core::Tensor>, u64), (String, String)>;
             let outcomes: Vec<Decoded> = chunk
                 .par_iter()
                 .map(|p| {
-                    let decoded = preprocess::decode(std::path::Path::new(&p.path), size)
-                        .and_then(|img| {
+                    let decoded =
+                        preprocess::decode(std::path::Path::new(&p.path), size).and_then(|img| {
                             let phash = videre_core::image_decode::dhash(&img);
                             // Already embedded: only the fingerprint was missing.
                             if p.embedded {

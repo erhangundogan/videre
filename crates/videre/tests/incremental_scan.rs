@@ -64,20 +64,19 @@ fn an_unchanged_row_missing_mime_is_still_processed() {
 }
 
 #[test]
-fn similar_reprocesses_an_unchanged_file_that_has_no_phash() {
+fn a_forced_rescan_keeps_the_fingerprint() {
     let lib = TestLibrary::new();
     lib.copy_fixture("tiny.jpg", "a.jpg");
-    scan_processed(&lib, &[]); // no phash yet
-    assert_eq!(
-        scan_processed(&lib, &["--similar"]),
-        1,
-        "phash backfill for an unchanged file"
-    );
-    assert_eq!(
-        scan_processed(&lib, &["--similar"]),
-        0,
-        "now current for --similar"
-    );
+    scan_processed(&lib, &[]);
+    lib.conn()
+        .execute("UPDATE file_hashes SET phash = 42", [])
+        .unwrap();
+    assert_eq!(scan_processed(&lib, &["--force"]), 1);
+    let phash: Option<i64> = lib
+        .conn()
+        .query_row("SELECT phash FROM file_hashes", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(phash, Some(42), "an unchanged file keeps its fingerprint");
 }
 
 #[test]

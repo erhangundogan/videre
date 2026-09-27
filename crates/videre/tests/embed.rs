@@ -390,7 +390,10 @@ fn embed_backfills_a_missing_fingerprint_without_loading_the_model() {
         .conn()
         .query_row("SELECT phash FROM file_hashes", [], |r| r.get(0))
         .unwrap();
-    assert!(phash.is_some(), "the decode-only pass must store a fingerprint");
+    assert!(
+        phash.is_some(),
+        "the decode-only pass must store a fingerprint"
+    );
     assert!(
         !lib.home.join(".cache/huggingface").exists(),
         "a fingerprint-only run must not load the model"

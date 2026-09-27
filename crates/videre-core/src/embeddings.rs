@@ -333,7 +333,10 @@ mod tests {
         insert_embeddings(
             &conn,
             "test-model",
-            &[("h1".to_string(), vec![0u8; 4]), ("h3".to_string(), vec![0u8; 4])],
+            &[
+                ("h1".to_string(), vec![0u8; 4]),
+                ("h3".to_string(), vec![0u8; 4]),
+            ],
         )
         .unwrap();
         set_phashes(&conn, &[("h3".to_string(), 7)]).unwrap();
