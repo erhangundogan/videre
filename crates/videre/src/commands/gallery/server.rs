@@ -1455,6 +1455,7 @@ mod pages {
     #[template(path = "cluster.html")]
     pub struct Cluster {
         pub settings_script: String,
+        pub chrome: &'static str,
         pub css: &'static str,
         pub js: &'static str,
         pub cluster_id: i64,
@@ -3412,6 +3413,7 @@ async fn handle_cluster_page(
     use askama::Template;
     let page = pages::Cluster {
         settings_script: page_settings(&state).await,
+        chrome: CHROME_CSS,
         css: pages::CLUSTER_CSS,
         js: pages::CLUSTER_JS,
         cluster_id,

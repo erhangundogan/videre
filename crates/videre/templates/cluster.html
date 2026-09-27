@@ -3,25 +3,24 @@
 <head>
   <meta charset="UTF-8">
   <title>Cluster {{ cluster_id }}</title>
+  <style>{{ chrome|safe }}</style>
   <style>{{ css|safe }}</style>
 </head>
 <body>
   {% include "nav.html" %}
-  <main style="padding: 24px 32px">
-    <div class="toolbar">
-      <a href="{{ back_href }}">&larr; {{ back_label }}</a>
-      <strong>Cluster {{ cluster_id }}</strong>
-      <span id="face-count" style="color:#555;font-size:13px"></span>
-      <span id="status"></span>
-    </div>
-
-    <div class="assign-bar">
-      <strong>Assign all to:</strong>
+  <div class="gallery-toolbar">
+    <a href="{{ back_href }}">&larr; {{ back_label }}</a>
+    <strong>Cluster {{ cluster_id }}</strong>
+    <span id="face-count"></span>
+    <span id="status"></span>
+    <label class="view-toggle">Assign all to
       <input type="text" id="person-input" placeholder="Person name" maxlength="60" list="people-list">
-      <datalist id="people-list"></datalist>
-      <button class="primary" onclick="assignAll()">Assign cluster</button>
-      <button class="danger" onclick="dissolveCluster()" style="margin-left:auto">Dissolve cluster (wrong grouping)</button>
-    </div>
+    </label>
+    <datalist id="people-list"></datalist>
+    <button class="primary" onclick="assignAll()">Assign cluster</button>
+    <button class="danger toolbar-end" onclick="dissolveCluster()">Dissolve cluster (wrong grouping)</button>
+  </div>
+  <main style="padding: 24px 32px">
 
     <div id="faces-grid" class="grid"></div>
 
