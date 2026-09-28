@@ -45,12 +45,10 @@ pub fn find_duplicate_groups(records: &[FileRecord]) -> Vec<DuplicateGroup> {
     groups
 }
 
-/// Prints REMOVE candidates to stdout, one path per line: ready for piping.
-/// The first file in each group (oldest date = likely original) is kept; the rest are printed.
 /// The removable copies: every group's non-kept files (`files[1..]`; `files[0]`
-/// is the KEEP the sort already chose). Shared by `print_losers` and by `dedupe
-/// --remove`, so what is printed and what is deleted are one set and the kept
-/// copy is never a candidate for removal.
+/// is the KEEP the sort already chose). Shared by `dedupe`'s printed list and
+/// by `dedupe --remove`, so what is printed and what is deleted are one set and
+/// the kept copy is never a candidate for removal.
 pub fn loser_paths(groups: &[DuplicateGroup]) -> Vec<&str> {
     groups
         .iter()
@@ -58,10 +56,17 @@ pub fn loser_paths(groups: &[DuplicateGroup]) -> Vec<&str> {
         .collect()
 }
 
-pub fn print_losers(groups: &[DuplicateGroup]) {
-    for path in loser_paths(groups) {
-        println!("{path}");
-    }
+/// Google Takeout edits beside their originals, as `(kept original, removed
+/// edit)` paths, sorted by the edit. See `crate::takeout_names`.
+pub fn edited_losers(records: &[FileRecord]) -> Vec<(String, String)> {
+    let rows: Vec<(&str, &str)> = records
+        .iter()
+        .map(|r| (r.path.as_str(), r.hash.as_str()))
+        .collect();
+    crate::takeout_names::edited_pairs(&rows)
+        .into_iter()
+        .map(|pair| (pair.original.to_string(), pair.edit.to_string()))
+        .collect()
 }
 
 /// A fingerprint with almost no set bits (or almost nothing but set bits)

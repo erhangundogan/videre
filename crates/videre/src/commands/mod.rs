@@ -61,7 +61,7 @@ pub(crate) fn build_find_duplicates(
     include_similar: bool,
 ) -> anyhow::Result<videre::types::FindDuplicatesJson> {
     let conn = videre_core::db::open_wal(db)?;
-    build_find_duplicates_from(&conn, include_similar)
+    build_find_duplicates_from(&conn, include_similar, false)
 }
 
 /// The connection-based twin, for directory-local commands that already hold a
@@ -69,6 +69,7 @@ pub(crate) fn build_find_duplicates(
 pub(crate) fn build_find_duplicates_from(
     conn: &rusqlite::Connection,
     include_similar: bool,
+    include_edited: bool,
 ) -> anyhow::Result<videre::types::FindDuplicatesJson> {
     let records = videre::sqlite_output::load_records_from(conn)?;
     let total_files = records.len();
@@ -82,11 +83,18 @@ pub(crate) fn build_find_duplicates_from(
             .map(videre::types::SimilarGroupJson::from)
             .collect()
     });
+    let edited_pairs = include_edited.then(|| {
+        videre::output::edited_losers(&records)
+            .into_iter()
+            .map(|(kept, removed)| videre::types::EditedPairJson { kept, removed })
+            .collect()
+    });
     Ok(videre::types::FindDuplicatesJson {
         schema_version: videre::types::SCHEMA_VERSION,
         total_files,
         duplicate_groups,
         similar_groups,
+        edited_pairs,
     })
 }
 
