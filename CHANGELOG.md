@@ -16,6 +16,30 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.46.0] - 2026-09-28
+
+### Changed
+
+- **Face learning is off by default.** Turn it on for a library with
+  `"faces": { "learning": true }` in `.videre/gallery.json`. Off, naming,
+  moving and dissolving work the same but record no teaching evidence, no
+  training runs, and the People page asks no identity questions. Evidence
+  recorded earlier is kept, and training resumes from it when learning is
+  turned back on.
+- **The People toolbar no longer has a Learning updates control.** The
+  option is now `faces.learningUpdates` in `gallery.json`, replacing
+  `routes.people.learningUpdates`; a saved value under the old key is
+  ignored.
+- **Face learning trains 10 seconds after the last teaching action**, rather
+  than 1.5 seconds after the first, so a burst of naming trains once.
+
+### Fixed
+
+- **Naming a person froze the gallery while face learning trained.** Pages,
+  thumbnails and the learning status could wait up to a minute on a library
+  with a person of thousands of faces. Training now runs on its own database
+  connection and never holds up a request.
+
 ## [0.45.0] - 2026-09-28
 
 ### Changed
@@ -2441,7 +2465,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.45.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.46.0...HEAD
+[0.46.0]: https://github.com/erhangundogan/videre/compare/v0.45.0...v0.46.0
 [0.45.0]: https://github.com/erhangundogan/videre/compare/v0.44.0...v0.45.0
 [0.44.0]: https://github.com/erhangundogan/videre/compare/v0.43.0...v0.44.0
 [0.43.0]: https://github.com/erhangundogan/videre/compare/v0.42.1...v0.43.0
