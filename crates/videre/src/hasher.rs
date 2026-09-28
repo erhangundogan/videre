@@ -162,11 +162,9 @@ pub fn hash_file(path: &Path) -> io::Result<FileRecord> {
     videre_core::io_timeout::run_with_timeout_for_path_detailed(path, move || {
         hash_file_inner(&owned)
     })
-    .unwrap_or_else(|timed_out| {
-        Err(io::Error::new(
-            io::ErrorKind::TimedOut,
-            timed_out.describe(path),
-        ))
+    .unwrap_or_else(|failure| {
+        let message = failure.describe(path);
+        Err(io::Error::new(failure.into_io_error().kind(), message))
     })
 }
 
@@ -181,31 +179,14 @@ pub fn hash_file_in(
         videre_core::io_timeout::STAT_TIMEOUT,
         move || stat_file.metadata().map(|metadata| metadata.len()),
     )
-    .map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::TimedOut,
-            format!(
-                "could not read {} after the filesystem timeout",
-                path.display()
-            ),
-        )
-    })??;
+    .map_err(videre_core::io_timeout::IoRunError::into_io_error)??;
     let budget = videre_core::io_timeout::timeout_for_size(
         size,
         videre_core::io_timeout::min_read_rate_mb_s(),
     );
     let owned = path.to_path_buf();
     videre_core::io_timeout::run_with_timeout(budget, move || hash_open_file(&owned, file))
-        .map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!(
-                    "timed out reading {} after {}s",
-                    path.display(),
-                    budget.as_secs()
-                ),
-            )
-        })?
+        .map_err(videre_core::io_timeout::IoRunError::into_io_error)?
 }
 
 fn hash_file_inner(path: &Path) -> io::Result<FileRecord> {
