@@ -6,6 +6,7 @@ use videre_core::library_config::{self, ConfigKey};
 const CONFIG_KEYS: &[&str] = &[
     "model",
     "read-rate",
+    "io-workers",
     "xmp",
     "export-xmp-on-watch",
     "watch-debounce-ms",
@@ -54,6 +55,7 @@ fn config_key(key: &str) -> ConfigKey {
     match key {
         "model" => ConfigKey::Model,
         "read-rate" => ConfigKey::ReadRate,
+        "io-workers" => ConfigKey::IoWorkers,
         "xmp" => ConfigKey::Xmp,
         "export-xmp-on-watch" => ConfigKey::ExportXmpOnWatch,
         "watch-debounce-ms" => ConfigKey::WatchDebounceMs,
@@ -92,6 +94,7 @@ fn config_value(key: &str, value: String) -> Result<(ConfigKey, toml::Value)> {
             let mb_s = i64::try_from(mb_s).context("read-rate is too large")?;
             toml::Value::Integer(mb_s)
         }
+        ConfigKey::IoWorkers => whole_number(name, &value, "workers")?,
         ConfigKey::ExportXmpOnWatch => {
             let on: bool = value.parse().map_err(|_| {
                 anyhow::anyhow!("export-xmp-on-watch must be true or false, got {value:?}")
@@ -134,6 +137,13 @@ fn show(ctx: &CommandContext) -> Result<()> {
         None => println!(
             "read-rate:     {} MB/s (default)",
             videre_core::io_timeout::MIN_READ_RATE_MB_S_DEFAULT
+        ),
+    }
+    match config.max_io_workers {
+        Some(max) => println!("io-workers:    {max}"),
+        None => println!(
+            "io-workers:    {} (default)",
+            videre_core::io_timeout::worker_stats().maximum
         ),
     }
     println!("xmp:           {}", xmp_name(config.xmp_precedence));

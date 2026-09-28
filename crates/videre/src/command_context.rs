@@ -55,6 +55,9 @@ impl CommandContext {
         if let Some(rate) = library.settings.min_read_rate_mb_s {
             videre_core::io_timeout::set_min_read_rate_mb_s(rate);
         }
+        if let Some(maximum) = library.settings.max_io_workers {
+            videre_core::io_timeout::set_max_io_workers(maximum);
+        }
         Ok(Self {
             library: Arc::new(library),
             invocation_dir,

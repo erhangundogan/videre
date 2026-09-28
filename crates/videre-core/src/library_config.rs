@@ -108,6 +108,8 @@ pub struct LibraryConfig {
     /// size; `None` means the built-in default applies
     /// (`io_timeout::MIN_READ_RATE_MB_S_DEFAULT`).
     pub min_read_rate_mb_s: Option<u64>,
+    /// Maximum process-local helper I/O workers; absent uses the built-in ceiling.
+    pub max_io_workers: Option<usize>,
     /// Debounce window for watch's event coalescing, in ms; `None` means the
     /// built-in default (`WATCH_DEBOUNCE_MS_DEFAULT`).
     pub watch_debounce_ms: Option<u64>,
@@ -133,6 +135,7 @@ impl Default for LibraryConfig {
             xmp_precedence: XmpPrecedence::default(),
             export_xmp_on_watch: false,
             min_read_rate_mb_s: None,
+            max_io_workers: None,
             watch_debounce_ms: None,
             log_level: LogLevel::default(),
             log_format: LogFormat::default(),
@@ -154,6 +157,8 @@ pub enum ConfigKey {
     Model,
     /// `min_read_rate_mb_s`, a positive integer or absent.
     ReadRate,
+    /// `max_io_workers`, from 1 through 256 or absent.
+    IoWorkers,
     /// `xmp_precedence`, one of the spellings `XmpPrecedence::parse` knows.
     Xmp,
     /// `export_xmp_on_watch`, a boolean.
@@ -178,6 +183,7 @@ impl ConfigKey {
         match self {
             ConfigKey::Model => "default_model",
             ConfigKey::ReadRate => "min_read_rate_mb_s",
+            ConfigKey::IoWorkers => "max_io_workers",
             ConfigKey::Xmp => "xmp_precedence",
             ConfigKey::ExportXmpOnWatch => "export_xmp_on_watch",
             ConfigKey::WatchDebounceMs => "watch_debounce_ms",
@@ -291,6 +297,18 @@ fn read_rate_setting(table: &toml::Table, file: &Path) -> Result<Option<u64>> {
     int_setting(table, file, "min_read_rate_mb_s", 1)
 }
 
+fn io_workers_setting(table: &toml::Table, file: &Path) -> Result<Option<usize>> {
+    let value = int_setting(table, file, "max_io_workers", 1)?;
+    if let Some(n) = value {
+        anyhow::ensure!(
+            n <= 256,
+            "malformed config {}: max_io_workers must be at most 256, got {n}",
+            file.display()
+        );
+    }
+    Ok(value.map(|n| n as usize))
+}
+
 /// Read `watch_debounce_ms`: absent, or a positive integer. Zero is rejected
 /// rather than clamped: a zero debounce window would fire a stage run per
 /// raw event, which is the storm coalescing exists to prevent.
@@ -351,6 +369,7 @@ fn config_from_table(table: &toml::Table, file: &Path) -> Result<LibraryConfig> 
         xmp_precedence,
         export_xmp_on_watch: bool_setting(table, file, "export_xmp_on_watch", false)?,
         min_read_rate_mb_s: read_rate_setting(table, file)?,
+        max_io_workers: io_workers_setting(table, file)?,
         watch_debounce_ms: debounce_setting(table, file)?,
         log_level: LogLevel::parse(&string_setting(
             table,
@@ -415,6 +434,7 @@ fn validate_value(key: ConfigKey, value: &toml::Value) -> Result<()> {
     match (key, value) {
         (ConfigKey::Model, toml::Value::String(s)) => validate_model_id(s),
         (ConfigKey::ReadRate, toml::Value::Integer(n)) if *n > 0 => Ok(()),
+        (ConfigKey::IoWorkers, toml::Value::Integer(n)) if (1..=256).contains(n) => Ok(()),
         (ConfigKey::Xmp, toml::Value::String(s)) => XmpPrecedence::parse(s).map(|_| ()),
         (ConfigKey::ExportXmpOnWatch, toml::Value::Boolean(_)) => Ok(()),
         (ConfigKey::WatchDebounceMs, toml::Value::Integer(n)) if *n > 0 => Ok(()),
@@ -441,6 +461,9 @@ fn validate_value(key: ConfigKey, value: &toml::Value) -> Result<()> {
         (ConfigKey::ReadRate, toml::Value::Integer(n)) => {
             bail!("min_read_rate_mb_s must be greater than 0, got {n}")
         }
+        (ConfigKey::IoWorkers, toml::Value::Integer(n)) => {
+            bail!("max_io_workers must be from 1 to 256, got {n}")
+        }
         (ConfigKey::WatchDebounceMs, toml::Value::Integer(n)) => {
             bail!("watch_debounce_ms must be greater than 0, got {n}")
         }
@@ -449,6 +472,10 @@ fn validate_value(key: ConfigKey, value: &toml::Value) -> Result<()> {
         }
         (ConfigKey::ReadRate, other) => bail!(
             "min_read_rate_mb_s must be an integer, got {}",
+            other.type_str()
+        ),
+        (ConfigKey::IoWorkers, other) => bail!(
+            "max_io_workers must be an integer, got {}",
             other.type_str()
         ),
         (ConfigKey::WatchDebounceMs, other) => {
@@ -649,6 +676,29 @@ mod tests {
             std::fs::write(&ctx.paths.config, body).unwrap();
         }
         (temp, ctx)
+    }
+
+    #[test]
+    fn io_workers_accepts_boundaries_and_rejects_bad_values_without_editing() {
+        for (body, expected) in [
+            ("max_io_workers = 1\n", 1usize),
+            ("max_io_workers = 256\n", 256usize),
+        ] {
+            let (_temp, ctx) = library_with_config(body);
+            assert_eq!(load(&ctx.paths).unwrap().max_io_workers, Some(expected));
+        }
+        for body in [
+            "max_io_workers = 0\n",
+            "max_io_workers = 257\n",
+            "max_io_workers = \"many\"\n",
+        ] {
+            let (_temp, ctx) = library_with_config(body);
+            assert!(load(&ctx.paths).is_err(), "{body}");
+        }
+        let (_temp, ctx) = library_with_config("max_io_workers = 1\n");
+        let before = std::fs::read(&ctx.paths.config).unwrap();
+        assert!(edit(&ctx, ConfigKey::IoWorkers, Some(toml::Value::Integer(257))).is_err());
+        assert_eq!(std::fs::read(&ctx.paths.config).unwrap(), before);
     }
 
     #[test]

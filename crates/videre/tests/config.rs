@@ -133,6 +133,28 @@ fn read_rate_roundtrips_and_invalid_values_preserve_prior_bytes() {
 }
 
 #[test]
+fn io_workers_roundtrips_and_invalid_values_preserve_prior_bytes() {
+    let library = TestLibrary::new();
+    assert!(run(&library, &["config", "set", "io-workers", "1"])
+        .status
+        .success());
+    let before = config_text(&library);
+    assert!(before.contains("max_io_workers = 1"), "{before}");
+    let shown = run(&library, &["config"]);
+    assert!(String::from_utf8_lossy(&shown.stdout).contains("io-workers:    1"));
+    for value in ["0", "257", "many"] {
+        assert!(!run(&library, &["config", "set", "io-workers", value])
+            .status
+            .success());
+        assert_eq!(config_text(&library), before);
+    }
+    assert!(run(&library, &["config", "unset", "io-workers"])
+        .status
+        .success());
+    assert!(!config_text(&library).contains("max_io_workers"));
+}
+
+#[test]
 fn watch_debounce_ms_roundtrips_and_invalid_values_preserve_prior_bytes() {
     let library = TestLibrary::new();
     assert!(
