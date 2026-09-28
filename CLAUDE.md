@@ -332,9 +332,13 @@ rustup component add llvm-tools-preview --toolchain <channel in rust-toolchain.t
 make coverage
 ```
 
-Read the per-file table as **unit-test coverage only**. Integration tests that
-spawn `videre_bin()` as a child process are not instrumented, so command modules
-show artificially low numbers despite being well covered.
+Integration tests that spawn `videre_bin()` **are** counted: cargo-llvm-cov
+instruments the child, which writes its profile when it exits. So a child must
+exit, not be killed. :warning: SIGKILL skips that write, and when the gallery
+tests stopped their server with `kill()`, `gallery/server.rs` read 77% although
+the tests request nearly every route; stopping it through `/api/quit`
+(`common::stop_gallery`) read 89%. The Playwright suite (`e2e/`) is not part
+of `make coverage`.
 
 ## Invariants and measured findings
 
@@ -750,6 +754,9 @@ above.
 - Undecodable files are skipped after two strikes -> `videre_core::decode_failures`
 - Face learning never uses `AppState.conn`: its own connection and thread,
   off unless `gallery.json` sets `faces.learning` -> `gallery::learning` (module doc)
+- Never open the library database through `std::fs`: closing any descriptor
+  on it drops every SQLite lock the process holds, and another process then
+  deletes the WAL under a live connection -> `videre_core::library_db::is_sqlite_file`
 - Errors logged once, at boundaries; per-command log layout and reader -> `videre_core::error_log`, `videre_core::error_kind`, `crates/videre/src/logging.rs`
 - File identity is the content key, metadata excluded -> `videre::content_key`
 - Face IDs are never reused (schema 4); prune keeps the journal and withdraws

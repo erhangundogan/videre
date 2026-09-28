@@ -91,6 +91,46 @@ impl Drop for KillOnDrop {
     }
 }
 
+/// Stop a `videre gallery` child the way the UI's Quit button does, and fall
+/// back to a kill only if it has not exited within a few seconds.
+///
+/// :warning: Not a bare `kill()`. SIGKILL skips process exit, so an
+/// instrumented child never writes its coverage profile, and `make coverage`
+/// then reported most of the gallery server as untested although these
+/// tests request nearly every route.
+pub fn stop_gallery(child: &mut std::process::Child, port: u16) {
+    use std::io::{Read, Write};
+    if matches!(child.try_wait(), Ok(Some(_))) {
+        return;
+    }
+    // A child stopped right after spawning may not be listening yet.
+    let connect_by = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port));
+    while stream.is_err()
+        && std::time::Instant::now() < connect_by
+        && matches!(child.try_wait(), Ok(None))
+    {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        stream = std::net::TcpStream::connect(("127.0.0.1", port));
+    }
+    if let Ok(mut stream) = stream {
+        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+        let _ = stream.write_all(
+            b"POST /api/quit HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        let _ = stream.read_to_end(&mut Vec::new());
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// Root of the local Hugging Face cache, using the loader's environment order.
 ///
 /// Delegates to `videre_core::hf_cache`, which owns this knowledge because

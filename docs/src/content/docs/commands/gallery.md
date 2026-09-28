@@ -68,7 +68,7 @@ people or location data yet.
 
 | Path | What you get |
 |------|--------------|
-| `/` | Every file, with a **Similar** button on each card once the library has embeddings |
+| `/` | Every file, with a **Similar** button on each card once the library has embeddings (the grid under the map has it too) |
 | `/duplicates` | Duplicate groups, the same review `dedupe --html` writes, plus Google Takeout edits beside their originals ([`dedupe --edited`](/commands/dedupe/#google-photos-edits---edited)) |
 | `/people` | Face groups, and naming them |
 | `/date` | A Year / Month / Day drill-down |
@@ -84,12 +84,17 @@ the top of every page, so you switch between them without touching the address
 bar. The reserved routes are deliberately not in it; each one appears when it
 renders something. At the right of the strip is a **search** box: type a
 natural-language query and it ranks the library semantically on the Library page,
-the same ranking the **Similar** button uses. It appears only when the library
-has embeddings to rank against.
+the same ranking the **Similar** button uses. It appears on every section when
+the library has embeddings to rank against, and on none when it has not.
 
 The tall library header (the database path and the scanned-file counts) shows on
 the Library page and on a static export; the other sections drop it, since the strip
-already says where you are.
+already says where you are. The Duplicates page keeps a header of its own while it
+has duplicates: the number of duplicate groups, the files in them, and the space
+the extra copies take.
+
+A liked file wears a red heart at the bottom left of its thumbnail. It only
+shows the state: the heart in the lightbox is the one that likes and unlikes.
 
 The Map view begins with clusters grouped by continent. Zoom in to see each
 location cluster, then click one to open an addressable drill-down. Route names
