@@ -1825,6 +1825,24 @@ struct MarkBody {
     liked: Option<bool>,
 }
 
+impl AppState {
+    /// Whether face learning is on for this library (`faces.learning`),
+    /// read from `gallery.json` on each call.
+    pub(super) fn learning_enabled(&self) -> bool {
+        super::settings::face_learning_enabled(&self.context.library.paths.state)
+    }
+
+    /// Tell the learning worker a teaching mutation committed. Only while
+    /// learning is on; off, the mutation recorded nothing to train on.
+    pub(super) fn notify_learning(&self) {
+        if let Some(learning) = &self.learning {
+            if self.learning_enabled() {
+                learning.notify();
+            }
+        }
+    }
+}
+
 pub(crate) struct AppState {
     pub(super) conn: Arc<Mutex<Connection>>,
     events_cache: Mutex<Option<EventsCacheEntry>>,
@@ -3316,9 +3334,7 @@ async fn handle_assign(
         };
         result.map_err(api_error)?
     };
-    if let Some(learning) = &state.learning {
-        learning.notify();
-    }
+    state.notify_learning();
     Ok(Json(acknowledgement))
 }
 
@@ -3359,9 +3375,7 @@ async fn handle_new_person(
         )
         .map_err(api_error)?
     };
-    if let Some(learning) = &state.learning {
-        learning.notify();
-    }
+    state.notify_learning();
     Ok(Json(acknowledgement))
 }
 
@@ -3372,6 +3386,7 @@ pub(super) fn teaching_context(conn: &Connection, state: &AppState) -> videre_ap
             .ok()
             .flatten()
             .map(|profile| profile.id),
+        record: state.learning_enabled(),
     }
 }
 
@@ -3384,9 +3399,7 @@ async fn handle_remove_face(
         videre_api::remove_face_with_learning(&conn, id, &teaching_context(&conn, &state))
             .map_err(api_error)?
     };
-    if let Some(learning) = &state.learning {
-        learning.notify();
-    }
+    state.notify_learning();
     Ok(Json(acknowledgement))
 }
 
@@ -3406,9 +3419,7 @@ async fn handle_delete_person(
                 message_key: "person_deleted_without_learning".into(),
             })
     };
-    if let Some(learning) = &state.learning {
-        learning.notify();
-    }
+    state.notify_learning();
     Ok(Json(acknowledgement))
 }
 
@@ -3432,9 +3443,7 @@ async fn handle_dissolve_cluster(
         videre_api::dissolve_cluster_with_learning(&conn, id, &teaching_context(&conn, &state))
             .map_err(api_error)?
     };
-    if let Some(learning) = &state.learning {
-        learning.notify();
-    }
+    state.notify_learning();
     Ok(Json(acknowledgement))
 }
 
@@ -4104,10 +4113,19 @@ async fn serve_faces_async(
         }
     }
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    // Two connections share the database now, so each waits briefly on the
+    // other's write rather than failing at once.
+    conn.busy_timeout(super::learning::BUSY_TIMEOUT)?;
     let conn = Arc::new(Mutex::new(conn));
-    let learning = opts.serve_faces_ui.then(|| {
-        super::learning::spawn(super::learning::LearningDeps {
-            conn: conn.clone(),
+    let learning = if opts.serve_faces_ui {
+        // Its own connection and thread: training never holds the one every
+        // request shares.
+        let engine = videre_core::db::open_wal(db)?;
+        engine.busy_timeout(super::learning::BUSY_TIMEOUT)?;
+        let state_dir = opts.context.library.paths.state.clone();
+        Some(super::learning::spawn(super::learning::LearningDeps {
+            conn: engine,
+            enabled: Arc::new(move || super::settings::face_learning_enabled(&state_dir)),
             embedding_model_id: opts.model_id.clone(),
             config: videre_core::face_learning::TrainingConfig::default(),
             gates: videre_core::face_learning::PromotionGates::shipped(),
@@ -4115,8 +4133,10 @@ async fn serve_faces_async(
             train: Arc::new(|snapshot, config, gates| {
                 videre_core::face_learning::train_and_select_candidate(snapshot, config, gates)
             }),
-        })
-    });
+        })?)
+    } else {
+        None
+    };
     let state = Arc::new(AppState {
         learning,
         conn,

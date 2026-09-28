@@ -114,11 +114,16 @@ fn requested(
 pub(crate) async fn handle_cluster_params(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Value>, StatusCode> {
-    let learning = {
+    // Off, learning contributes nothing, and the row says nothing about it.
+    let learning = if state.learning_enabled() {
         let conn = state.conn.lock().map_err(poisoned)?;
-        videre_api::face_learning_status(&conn)
-            .map(|s| s.summary)
-            .unwrap_or_default()
+        Some(
+            videre_api::face_learning_status(&conn)
+                .map(|s| s.summary)
+                .unwrap_or_default(),
+        )
+    } else {
+        None
     };
     let state_dir = state.context.library.paths.state.clone();
     tokio::task::spawn_blocking(move || {
@@ -236,6 +241,9 @@ fn apply(state: &AppState, params: ClusteringParameters) -> Result<ReclusterSumm
         }
     }
     // New groups and singletons are new subjects for the identity questions.
+    if !state.learning_enabled() {
+        return Ok(result);
+    }
     match state.conn.lock() {
         Ok(conn) => {
             if let Err(e) = videre_api::refresh_identity_questions(

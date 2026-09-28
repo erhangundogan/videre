@@ -1182,9 +1182,19 @@ fn browsing_the_gallery_touches_no_model_cache() {
     );
 }
 
+/// Face learning is off unless `gallery.json` turns it on.
+fn enable_learning(lib: &TestLibrary) {
+    std::fs::write(
+        lib.root.join(".videre/gallery.json"),
+        r#"{"faces":{"learning":true}}"#,
+    )
+    .unwrap();
+}
+
 #[test]
 fn face_learning_resources_serve_from_a_fresh_library() {
     let lib = fixture();
+    enable_learning(&lib);
     let server = Server::start(&lib);
 
     assert!(
@@ -1248,6 +1258,7 @@ fn teaching_mutations_return_acknowledgements_and_advance_the_generation() {
         )
         .unwrap();
     }
+    enable_learning(&lib);
     let server = Server::start(&lib);
 
     let (status, body) = server.send(
@@ -1318,6 +1329,7 @@ fn face_learning_boundary_only_user_mutations_change_faces() {
         )
         .unwrap();
     }
+    enable_learning(&lib);
     let server = Server::start(&lib);
 
     let face_rows =
@@ -1360,7 +1372,8 @@ fn face_learning_boundary_only_user_mutations_change_faces() {
     // for more feedback on this tiny evidence; either way it must not touch
     // faces). A worker that
     // never settles fails the test instead of letting it pass unobserved.
-    let deadline = Instant::now() + Duration::from_secs(20);
+    // Training starts after a 10 s quiet window.
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let (_, status_body) = server.get("/api/face-learning/status");
         let settled = status_body.contains("\"status\":\"current\"")
@@ -1391,5 +1404,188 @@ fn face_learning_boundary_only_user_mutations_change_faces() {
                 assert_eq!(was, is, "no other face row may move");
             }
         }
+    }
+}
+
+/// Learning is off by default: naming works the same and records nothing,
+/// and the learning resources say so.
+#[test]
+fn face_learning_is_off_by_default() {
+    let lib = fixture();
+    {
+        let conn = lib.init_db();
+        let mut embedding = Vec::new();
+        embedding.extend_from_slice(&half::f16::from_f32(1.0).to_le_bytes());
+        embedding.extend_from_slice(&half::f16::from_f32(0.0).to_le_bytes());
+        conn.execute(
+            "UPDATE faces SET embedding = ?1, cluster_id = NULL",
+            rusqlite::params![embedding],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
+             VALUES ('abc123', '0,0,50,50', ?1, NULL, 0)",
+            rusqlite::params![embedding],
+        )
+        .unwrap();
+    }
+    let server = Server::start(&lib);
+
+    let (status, body) = server.send(
+        "PUT",
+        "/api/people/ozgur_demirtas/faces",
+        "{\"face_ids\":[2]}",
+    );
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"event_ids\":[]"), "{body}");
+    assert!(body.contains("\"message_key\":\"learning_off\""), "{body}");
+    let named: Option<String> = lib
+        .conn()
+        .query_row("SELECT person_label FROM faces WHERE id = 2", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        named.as_deref(),
+        Some("ozgur_demirtas"),
+        "the name is stored"
+    );
+    let events: i64 = lib
+        .conn()
+        .query_row("SELECT count(*) FROM face_learning_events", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(events, 0, "nothing is recorded while learning is off");
+
+    let (status, body) = server.get("/api/face-learning/status");
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"enabled\":false"), "{body}");
+    assert!(body.contains("\"generation\":0"), "{body}");
+
+    let (status, body) = server.get("/api/face-learning/questions");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body.trim(), "[]", "{body}");
+
+    let (status, body) = server.send(
+        "POST",
+        "/api/face-learning/questions/1/answer",
+        "{\"answer\":\"yes\"}",
+    );
+    assert_eq!(status, 503, "{body}");
+
+    let (status, body) = server.get("/api/faces/cluster-params");
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"learning\":null"), "{body}");
+}
+
+/// A 512-dim f16 embedding near `center`, as the faces table stores one.
+/// Deterministic noise, so the run is repeatable.
+fn face_embedding(center: usize, seed: u64) -> Vec<u8> {
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    let mut values = [0f32; 512];
+    for value in values.iter_mut() {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        *value = ((state >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 0.2;
+    }
+    values[center] += 1.0;
+    let norm = values.iter().map(|v| v * v).sum::<f32>().sqrt();
+    values
+        .iter()
+        .flat_map(|v| half::f16::from_f32(v / norm).to_le_bytes())
+        .collect()
+}
+
+/// The freeze this change fixed: a training run on a person with many faces
+/// spent seconds building its snapshot while holding the connection every
+/// request shares, so the whole gallery stopped answering. Learning on, one
+/// person large enough that the build takes seconds, a cluster named: every
+/// request keeps answering quickly while the run is in progress.
+#[test]
+fn a_training_run_never_holds_up_requests() {
+    const PERSON_FACES: u64 = 400;
+    let lib = fixture();
+    {
+        let conn = lib.init_db();
+        conn.execute(
+            "UPDATE faces SET embedding = ?1, cluster_id = NULL",
+            rusqlite::params![face_embedding(0, 0)],
+        )
+        .unwrap();
+        conn.execute_batch("BEGIN").unwrap();
+        for seed in 1..PERSON_FACES {
+            conn.execute(
+                "INSERT INTO faces (hash, bbox, embedding, person_label, confirmed, det_score, blur)
+                 VALUES ('abc123', '0,0,50,50', ?1, 'ozgur_demirtas', 1, 0.9, 600.0)",
+                rusqlite::params![face_embedding(0, seed)],
+            )
+            .unwrap();
+        }
+        // A new person's cluster, named below.
+        for seed in 0..3 {
+            conn.execute(
+                "INSERT INTO faces (hash, bbox, embedding, cluster_id, confirmed, det_score, blur)
+                 VALUES ('abc123', '0,0,50,50', ?1, 77, 0, 0.9, 600.0)",
+                rusqlite::params![face_embedding(1, 10_000 + seed)],
+            )
+            .unwrap();
+        }
+        conn.execute_batch("COMMIT").unwrap();
+    }
+    let cluster: Vec<i64> = {
+        let conn = lib.conn();
+        let mut statement = conn
+            .prepare("SELECT id FROM faces WHERE cluster_id = 77 ORDER BY id")
+            .unwrap();
+        let ids = statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<i64>, _>>()
+            .unwrap();
+        ids
+    };
+    enable_learning(&lib);
+    let server = Server::start(&lib);
+
+    let (status, body) = server.send(
+        "POST",
+        "/api/people",
+        &format!("{{\"name\":\"Şebnem\",\"face_ids\":{cluster:?}}}"),
+    );
+    assert_eq!(status, 200, "{body}");
+
+    let mut saw_training = false;
+    let mut slowest = Duration::ZERO;
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        for path in ["/api/faces", "/api/face-learning/status"] {
+            let began = Instant::now();
+            let (status, body) = server.get(path);
+            let took = began.elapsed();
+            assert_eq!(status, 200, "{path}: {body}");
+            slowest = slowest.max(took);
+            assert!(
+                took < Duration::from_millis(500),
+                "{path} took {took:?} while learning ran"
+            );
+            if path.ends_with("status") {
+                if body.contains("\"status\":\"training\"") {
+                    saw_training = true;
+                } else if saw_training && !body.contains("\"status\":\"stale\"") {
+                    // Settled after a run we watched.
+                    eprintln!("slowest response during training: {slowest:?}");
+                    return;
+                }
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "training never ran or never settled (saw training: {saw_training})"
+        );
+        std::thread::sleep(Duration::from_millis(50));
     }
 }

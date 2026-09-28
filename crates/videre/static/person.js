@@ -6,6 +6,9 @@ const personName = decodeURIComponent(window.location.pathname.split('/').pop())
     (function loadLearningHistory() {
       const section = document.getElementById('learning-history');
       if (!section) return;
+      // Off unless the library turned face learning on in gallery.json.
+      if (typeof settingOneOf !== 'function'
+          || settingOneOf('faces.learning', [true, false]) !== true) return;
       fetch('/api/face-learning/events?limit=200').then(function(r) {
         if (!r.ok) return [];
         return r.json();

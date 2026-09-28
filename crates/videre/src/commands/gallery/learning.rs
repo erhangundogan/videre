@@ -1,23 +1,34 @@
 //! Background face-learning worker for the gallery.
 //!
-//! One coordinator task owns training for the whole server: teaching
-//! mutations notify it after commit, it debounces bursts, then runs at most
-//! one training cycle at a time with at most one queued follow-up. The cycle
-//! loads the immutable training snapshot under the connection lock, releases
-//! the lock for the CPU-bound fit, then relocks to persist, promote, and
-//! refresh the pending questions. A failed cycle preserves the prior active
-//! profile and marks the learning state failed for a later retry. A cycle
-//! that finds too little feedback to train on is not a failure: it marks the
-//! state waiting, with what the People page should ask for.
+//! One coordinator owns training for the whole server, on its own OS thread
+//! (`videre-learning`) and its own database connection. It never touches the
+//! gallery's shared connection: a training run can take a minute of CPU on a
+//! large library, and holding the shared connection for that long stalled
+//! every request. WAL lets this connection read and write beside the
+//! gallery's and beside `videre watch`.
+//!
+//! Teaching mutations notify it after commit. It waits until no notification
+//! has arrived for a quiet window, then runs at most one cycle at a time with
+//! at most one queued follow-up. A cycle marks the state training, reads its
+//! inputs in one short read transaction, builds the snapshot and fits with
+//! nothing held, then persists, promotes, and refreshes the pending questions
+//! in short write transactions. A failed cycle preserves the prior active
+//! profile and marks the learning state failed for a later retry. A cycle that
+//! finds too little feedback to train on is not a failure: it marks the state
+//! waiting, with what the People page should ask for. A busy database is not a
+//! failure either: the cycle is retried after the next quiet window.
+//!
+//! Learning is off unless the library's `gallery.json` sets `faces.learning`;
+//! the setting is read before every cycle, so off means no cycle runs at all.
 
 use super::server::poisoned;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
 use rusqlite::Connection;
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
 use videre_core::face_learning::{
     ensure_learning_tables, learning_state, mark_generation_trained, mark_training_failed,
     mark_training_started, mark_training_waiting, QuestionSelectionConfig, TrainingConfig,
@@ -26,8 +37,14 @@ use videre_core::face_learning::{
 
 use super::server::{api_error, ApiError, AppState};
 
-/// How long arriving notifications are coalesced before a cycle starts.
-const DEBOUNCE: Duration = Duration::from_millis(1_500);
+/// How long the coordinator waits after the last notification before a
+/// cycle starts. A cycle costs about a minute of one core on a large library
+/// however little changed, and naming actions come seconds apart.
+const QUIET: Duration = Duration::from_secs(10);
+
+/// How long a connection waits on a lock the other connection holds. Set on
+/// both the gallery's and the engine's, since they now share the database.
+pub(crate) const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, PartialEq)]
 enum CoordinatorMessage {
@@ -40,7 +57,7 @@ enum CoordinatorMessage {
 /// mutation.
 #[derive(Clone)]
 pub struct LearningCoordinator {
-    tx: mpsc::UnboundedSender<CoordinatorMessage>,
+    tx: mpsc::Sender<CoordinatorMessage>,
 }
 
 impl LearningCoordinator {
@@ -53,15 +70,18 @@ impl LearningCoordinator {
     }
 }
 
-/// Everything the coordinator loop needs. The trainer closure is injectable
-/// so the mechanics (debounce, single-flight, recovery, lock release) are
-/// testable without model work.
+/// Everything the coordinator needs. The trainer closure and the enabled
+/// check are injectable so the mechanics (quiet window, single-flight,
+/// recovery, busy retry) are testable without model work or a settings file.
 pub struct LearningDeps {
-    pub conn: Arc<Mutex<Connection>>,
+    /// The engine's own connection, never the gallery's.
+    pub conn: Connection,
     pub embedding_model_id: String,
     pub config: TrainingConfig,
     pub gates: videre_core::face_learning::PromotionGates,
     pub questions: QuestionSelectionConfig,
+    /// Whether learning is on for this library, asked before every cycle.
+    pub enabled: Arc<dyn Fn() -> bool + Send + Sync>,
     #[allow(clippy::type_complexity)]
     pub train: Arc<
         dyn Fn(
@@ -76,44 +96,61 @@ pub struct LearningDeps {
 
 /// Start the coordinator. Also performs startup recovery: a state left in
 /// training by a previous process, or a stale generation, trains right away.
-pub fn spawn(deps: LearningDeps) -> LearningCoordinator {
-    spawn_with(deps, DEBOUNCE)
+pub fn spawn(deps: LearningDeps) -> std::io::Result<LearningCoordinator> {
+    spawn_with(deps, QUIET)
 }
 
-pub fn spawn_with(deps: LearningDeps, debounce: Duration) -> LearningCoordinator {
-    let (tx, rx) = mpsc::unbounded_channel();
-    tokio::spawn(run(deps, debounce, rx));
-    LearningCoordinator { tx }
+pub fn spawn_with(deps: LearningDeps, quiet: Duration) -> std::io::Result<LearningCoordinator> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("videre-learning".into())
+        .spawn(move || run(deps, quiet, rx))?;
+    Ok(LearningCoordinator { tx })
 }
 
-async fn run(
-    deps: LearningDeps,
-    debounce: Duration,
-    mut rx: mpsc::UnboundedReceiver<CoordinatorMessage>,
-) {
+#[derive(Debug, PartialEq)]
+enum Cycle {
+    Done,
+    /// The database was busy; nothing was recorded as failed, try again.
+    Busy,
+}
+
+fn run(deps: LearningDeps, quiet: Duration, rx: mpsc::Receiver<CoordinatorMessage>) {
     // Startup recovery of stale work.
-    if needs_training(&deps) {
-        run_cycle(&deps).await;
-    }
-    while let Some(message) = rx.recv().await {
-        if message == CoordinatorMessage::Shutdown {
-            break;
+    let mut retry = (deps.enabled)() && needs_training(&deps) && run_cycle(&deps) == Cycle::Busy;
+    loop {
+        if !retry {
+            match rx.recv() {
+                Ok(CoordinatorMessage::Train) => {}
+                Ok(CoordinatorMessage::Shutdown) | Err(_) => return,
+            }
         }
-        tokio::time::sleep(debounce).await;
-        while rx.try_recv().is_ok() {
-            // Coalesced into the cycle below.
+        // Wait until no notification has arrived for `quiet`; everything
+        // that arrives meanwhile is coalesced into the one cycle below.
+        loop {
+            match rx.recv_timeout(quiet) {
+                Ok(CoordinatorMessage::Train) => continue,
+                Ok(CoordinatorMessage::Shutdown) | Err(RecvTimeoutError::Disconnected) => return,
+                Err(RecvTimeoutError::Timeout) => break,
+            }
         }
-        run_cycle(&deps).await;
+        retry = (deps.enabled)() && run_cycle(&deps) == Cycle::Busy;
     }
+}
+
+/// Whether an error is SQLite reporting a lock held elsewhere past the busy
+/// timeout. The learning store turns errors into text, so the text is what is
+/// left to tell a busy database from a real failure.
+fn is_busy(error: &str) -> bool {
+    error.contains("database is locked") || error.contains("database table is locked")
 }
 
 fn needs_training(deps: &LearningDeps) -> bool {
-    let conn = deps.conn.lock().expect("learning connection poisoned");
-    match learning_state(&conn) {
+    match learning_state(&deps.conn) {
         Ok(state) => {
             state.status == videre_core::face_learning::LearningStatus::Training
                 || state.generation > state.trained_generation
-                || retry_on_new_build(&conn, &state)
+                || retry_on_new_build(&deps.conn, &state)
         }
         Err(_) => false,
     }
@@ -152,46 +189,56 @@ fn note_build(conn: &Connection) {
 
 struct PreparedCycle {
     generation: u64,
-    snapshot: TrainingSnapshot,
+    inputs: videre_api::TrainingInputs,
 }
 
-/// Phase 1, under the lock: flip the state to training and load the immutable
-/// snapshot for generation G. A legitimately empty library (no events beyond
-/// generation 0) is skipped without touching state; real failures mark the
-/// state failed while the lock is still held.
-fn prepare_training(conn: &Connection, deps: &LearningDeps) -> Result<Option<PreparedCycle>, ()> {
-    ensure_learning_tables(conn).map_err(|_| ())?;
-    let state = learning_state(conn).map_err(|_| ())?;
+/// A failed step of phase 1: busy asks for a retry, anything else ends the
+/// cycle (the caller has already recorded it where that is possible).
+fn busy_or_done(error: impl std::fmt::Display) -> Cycle {
+    if is_busy(&error.to_string()) {
+        Cycle::Busy
+    } else {
+        Cycle::Done
+    }
+}
+
+/// Phase 1, short: flip the state to training and read the inputs for
+/// generation G in one read transaction. A legitimately empty library (no
+/// events beyond generation 0) is skipped without touching state; real
+/// failures mark the state failed, a busy database only asks for a retry.
+fn prepare_training(deps: &LearningDeps) -> Result<Option<PreparedCycle>, Cycle> {
+    let conn = &deps.conn;
+    ensure_learning_tables(conn).map_err(busy_or_done)?;
+    let state = learning_state(conn).map_err(busy_or_done)?;
     if state.status == videre_core::face_learning::LearningStatus::Training {
-        // A previous process died mid-run; retire the stale run first.
+        // A previous process died mid-run, or a run here was cut short by a
+        // busy database; retire the stale run first.
         let interrupted = state.training_generation.unwrap_or(state.generation);
         mark_training_failed(conn, interrupted as u64, "training was interrupted")
-            .map_err(|_| ())?;
+            .map_err(busy_or_done)?;
     }
-    let state = learning_state(conn).map_err(|_| ())?;
+    let state = learning_state(conn).map_err(busy_or_done)?;
     if state.generation <= state.trained_generation && !retry_on_new_build(conn, &state) {
         return Ok(None);
     }
     let state = mark_training_started(conn).map_err(|error| {
-        let _ = mark_training_failed(conn, state.generation, &error.to_string());
+        let cycle = busy_or_done(&error);
+        if cycle == Cycle::Done {
+            let _ = mark_training_failed(conn, state.generation, &error.to_string());
+        }
+        cycle
     })?;
     let generation = state.generation;
-    let snapshot = load_snapshot(conn, deps, generation).map_err(|error| {
-        record_failure(conn, generation, &error);
-        note_build(conn);
-    })?;
-    Ok(Some(PreparedCycle {
-        generation,
-        snapshot,
-    }))
-}
-
-fn load_snapshot(
-    conn: &Connection,
-    deps: &LearningDeps,
-    generation: u64,
-) -> Result<TrainingSnapshot, String> {
-    videre_api::load_training_snapshot(conn, &deps.embedding_model_id, generation, &deps.config)
+    let inputs =
+        videre_api::load_training_inputs(conn, &deps.embedding_model_id).map_err(|error| {
+            let cycle = busy_or_done(&error);
+            if cycle == Cycle::Done {
+                record_failure(conn, generation, &error.to_string());
+                note_build(conn);
+            }
+            cycle
+        })?;
+    Ok(Some(PreparedCycle { generation, inputs }))
 }
 
 /// Persist a trained candidate: insert, promote through the shipped gates,
@@ -224,29 +271,26 @@ fn persist_training(
     Ok(summary)
 }
 
-/// One training cycle. The connection lock is held only in phases 1 and 3;
-/// the fit itself runs on the snapshot without it.
-async fn run_cycle(deps: &LearningDeps) {
-    let prepared = {
-        let conn = deps.conn.lock().expect("learning connection poisoned");
-        match prepare_training(&conn, deps) {
-            Ok(prepared) => prepared,
-            Err(()) => return,
-        }
+/// One training cycle: a short read, the slow build and fit with nothing
+/// held, then short writes.
+fn run_cycle(deps: &LearningDeps) -> Cycle {
+    let prepared = match prepare_training(deps) {
+        Ok(Some(prepared)) => prepared,
+        Ok(None) => return Cycle::Done,
+        Err(cycle) => return cycle,
     };
-    let Some(prepared) = prepared else {
-        return;
-    };
+    let conn = &deps.conn;
     let generation = prepared.generation;
     tracing::debug!("face learning: training generation {generation}");
-    let snapshot = prepared.snapshot;
-    let train = deps.train.clone();
-    let config = deps.config.clone();
-    let gates = deps.gates.clone();
-    let trained = tokio::task::spawn_blocking(move || train(&snapshot, &config, &gates)).await;
-    let conn = deps.conn.lock().expect("learning connection poisoned");
+    let trained = videre_api::build_training_inputs(
+        &prepared.inputs,
+        generation,
+        &deps.embedding_model_id,
+        &deps.config,
+    )
+    .map(|snapshot| (deps.train)(&snapshot, &deps.config, &deps.gates));
     match trained {
-        Ok(Ok(run)) => match persist_training(&conn, deps, generation, &run) {
+        Ok(Ok(run)) => match persist_training(conn, deps, generation, &run) {
             Ok(summary) if summary.promoted => {
                 tracing::info!(
                     "face learning: generation {generation} promoted, profile {} in use",
@@ -254,7 +298,7 @@ async fn run_cycle(deps: &LearningDeps) {
                 );
             }
             Ok(summary) => {
-                let reason = videre_api::rejection_reason(&conn, summary.profile_id)
+                let reason = videre_api::rejection_reason(conn, summary.profile_id)
                     .ok()
                     .flatten()
                     .map(|r| format!(" ({r})"))
@@ -263,14 +307,18 @@ async fn run_cycle(deps: &LearningDeps) {
                     "face learning: generation {generation} did not pass the quality checks{reason}; previous profile kept"
                 );
             }
-            Err(error) => record_failure(&conn, generation, &error),
+            Err(error) if is_busy(&error) => return Cycle::Busy,
+            Err(error) => record_failure(conn, generation, &error),
         },
         Ok(Err(error)) => match error.feedback_needed(&deps.config) {
             // Too little feedback yet is the normal state of a young library,
             // not a failure: the page asks for what is missing.
             Some(needed) => {
                 tracing::info!("face learning: waiting for feedback: {needed}");
-                if let Err(write) = mark_training_waiting(&conn, generation, &needed) {
+                if let Err(write) = mark_training_waiting(conn, generation, &needed) {
+                    if is_busy(&write.to_string()) {
+                        return Cycle::Busy;
+                    }
                     // The state stays training until the next start retires
                     // it; say why here, where the cause is known.
                     tracing::warn!(
@@ -285,13 +333,14 @@ async fn run_cycle(deps: &LearningDeps) {
                 tracing::info!(
                     "face learning: generation {generation} did not converge; previous profile kept, retries after new feedback"
                 );
-                let _ = mark_training_failed(&conn, generation, &error.to_string());
+                let _ = mark_training_failed(conn, generation, &error.to_string());
             }
-            None => record_failure(&conn, generation, &error.to_string()),
+            None => record_failure(conn, generation, &error.to_string()),
         },
-        Err(join_error) => record_failure(&conn, generation, &join_error.to_string()),
+        Err(error) => record_failure(conn, generation, &error),
     }
-    note_build(&conn);
+    note_build(conn);
+    Cycle::Done
 }
 
 /// A training run that really failed: kept in the state for the page, and
@@ -305,8 +354,10 @@ fn record_failure(conn: &Connection, generation: u64, error: &str) {
 pub(crate) async fn handle_learning_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<videre_api::FaceLearningStatus>, ApiError> {
+    let enabled = state.learning_enabled();
     let conn = state.conn.lock().map_err(poisoned)?;
     videre_api::face_learning_status(&conn)
+        .map(|status| if enabled { status } else { status.turned_off() })
         .map(Json)
         .map_err(api_error)
 }
@@ -321,6 +372,10 @@ pub(crate) async fn handle_learning_questions(
         .and_then(|limit| limit.parse::<usize>().ok())
         .unwrap_or(8)
         .clamp(1, 50);
+    // Off, nothing is asked: the stored page stays for when it is on again.
+    if !state.learning_enabled() {
+        return Ok(Json(Vec::new()));
+    }
     let conn = state.conn.lock().map_err(poisoned)?;
     videre_api::pending_identity_questions(&conn, limit)
         .map(Json)
@@ -345,14 +400,15 @@ pub(crate) async fn handle_learning_answer(
         "skip" | "Skip" => videre_core::face_learning::QuestionAnswer::Skip,
         _ => return Err(StatusCode::BAD_REQUEST.into()),
     };
+    if !state.learning_enabled() {
+        return Err(StatusCode::SERVICE_UNAVAILABLE.into());
+    }
     let outcome = {
         let conn = state.conn.lock().map_err(poisoned)?;
         let context = super::server::teaching_context(&conn, &state);
         videre_api::answer_question_with_learning(&conn, id, answer, &context).map_err(api_error)?
     };
-    if let Some(learning) = &state.learning {
-        learning.notify();
-    }
+    state.notify_learning();
     Ok(Json(outcome))
 }
 
@@ -392,6 +448,7 @@ pub(crate) async fn handle_learning_event_detail(
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::Mutex;
 
     use videre_core::face_learning::{
         CalibrationModel, LogisticModel, LogisticScorer, MEMBERSHIP_FEATURE_NAMES,
@@ -405,8 +462,13 @@ mod tests {
     /// Faces 10 and 11 sit in cluster 1; faces 12 and 13 confirm alice, so a
     /// snapshot can always be built and the injected trainer decides whether
     /// training succeeds.
-    fn library() -> Arc<Mutex<Connection>> {
-        let conn = Connection::open_in_memory().unwrap();
+    ///
+    /// File-backed in WAL mode, as a library is: the engine opens its own
+    /// connection to it, and the returned one plays the gallery's.
+    fn library() -> (tempfile::TempDir, Arc<Mutex<Connection>>) {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = Connection::open(dir.path().join("hashes.db")).unwrap();
+        conn.pragma_update(None, "journal_mode", "WAL").unwrap();
         // Foreign keys on, and labels referencing people, as the library
         // schema will enforce.
         conn.execute_batch(
@@ -437,7 +499,19 @@ mod tests {
             )
             .unwrap();
         }
-        Arc::new(Mutex::new(conn))
+        (dir, Arc::new(Mutex::new(conn)))
+    }
+
+    /// The engine's own connection to the same database file.
+    fn engine_connection(conn: &Arc<Mutex<Connection>>, busy: Duration) -> Connection {
+        let path = conn.lock().unwrap().path().unwrap().to_owned();
+        let engine = Connection::open(path).unwrap();
+        engine.busy_timeout(busy).unwrap();
+        engine
+    }
+
+    fn start(deps: LearningDeps, quiet: Duration) -> LearningCoordinator {
+        spawn_with(deps, quiet).unwrap()
     }
 
     fn make_deps(
@@ -452,7 +526,8 @@ mod tests {
             + 'static,
     ) -> LearningDeps {
         LearningDeps {
-            conn,
+            conn: engine_connection(&conn, BUSY_TIMEOUT),
+            enabled: Arc::new(|| true),
             embedding_model_id: "arcface/test".into(),
             config: TrainingConfig::default(),
             gates: videre_core::face_learning::PromotionGates::shipped(),
@@ -666,11 +741,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_notification_trains_one_cycle_and_marks_the_state_current() {
-        let conn = library();
+        let (_dir, conn) = library();
         make_generation_pending(&conn.lock().unwrap());
         let trained = Arc::new(AtomicUsize::new(0));
         let counter = trained.clone();
-        let coordinator = spawn_with(
+        let coordinator = start(
             make_deps(conn.clone(), move |_, _, _| {
                 counter.fetch_add(1, AtomicOrdering::SeqCst);
                 Ok(stub_run())
@@ -705,11 +780,11 @@ mod tests {
 
     #[tokio::test]
     async fn bursts_coalesce_into_a_single_cycle() {
-        let conn = library();
+        let (_dir, conn) = library();
         make_generation_pending(&conn.lock().unwrap());
         let trained = Arc::new(AtomicUsize::new(0));
         let counter = trained.clone();
-        let coordinator = spawn_with(
+        let coordinator = start(
             make_deps(conn.clone(), move |_, _, _| {
                 counter.fetch_add(1, AtomicOrdering::SeqCst);
                 Ok(stub_run())
@@ -739,11 +814,11 @@ mod tests {
 
     #[tokio::test]
     async fn failure_marks_failed_and_a_retry_recovers() {
-        let conn = library();
+        let (_dir, conn) = library();
         make_generation_pending(&conn.lock().unwrap());
         let calls = Arc::new(AtomicUsize::new(0));
         let counter = calls.clone();
-        let coordinator = spawn_with(
+        let coordinator = start(
             make_deps(conn.clone(), move |_, _, _| {
                 if counter.fetch_add(1, AtomicOrdering::SeqCst) == 0 {
                     Err(TrainingError::NonConvergence)
@@ -823,7 +898,7 @@ mod tests {
 
     #[tokio::test]
     async fn too_little_feedback_waits_instead_of_failing() {
-        let conn = library();
+        let (_dir, conn) = library();
         make_generation_pending(&conn.lock().unwrap());
         let calls = Arc::new(AtomicUsize::new(0));
         let counter = calls.clone();
@@ -843,7 +918,7 @@ mod tests {
         };
         let trainer = Arc::new(trainer);
         let first = trainer.clone();
-        let coordinator = spawn_with(
+        let coordinator = start(
             make_deps(conn.clone(), move |s, c, g| first(s, c, g)),
             Duration::from_millis(20),
         );
@@ -872,7 +947,7 @@ mod tests {
         // changed.
         let spawn_again = || {
             let again = trainer.clone();
-            spawn_with(
+            start(
                 make_deps(conn.clone(), move |s, c, g| again(s, c, g)),
                 Duration::from_millis(20),
             )
@@ -948,14 +1023,17 @@ mod tests {
         );
     }
 
+    /// The freeze this module exists to prevent: while a run is in progress
+    /// the gallery's connection writes and reads the state at once, and the
+    /// state says training.
     #[tokio::test]
-    async fn the_connection_lock_is_free_while_the_trainer_runs() {
-        let conn = library();
+    async fn the_gallery_connection_is_free_while_the_trainer_runs() {
+        let (_dir, conn) = library();
         make_generation_pending(&conn.lock().unwrap());
         let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
         let release = Arc::new(std::sync::Mutex::new(false));
         let release_for_trainer = release.clone();
-        let _coordinator = spawn_with(
+        let _coordinator = start(
             make_deps(conn.clone(), move |_, _, _| {
                 started_tx.send(()).unwrap();
                 while !*release_for_trainer.lock().unwrap() {
@@ -966,39 +1044,110 @@ mod tests {
             Duration::from_millis(500),
         );
         // Startup recovery alone triggers the cycle: the state is stale.
-        // Poll without blocking so the current-thread runtime can drive the
-        // coordinator task.
-        let mut started = false;
-        for _ in 0..2000 {
-            if started_rx.try_recv().is_ok() {
-                started = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+        started_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("trainer must start");
+        {
+            let gallery = conn.lock().unwrap();
+            gallery.busy_timeout(Duration::from_millis(100)).unwrap();
+            let began = std::time::Instant::now();
+            gallery
+                .execute_batch(
+                    "BEGIN IMMEDIATE;
+                     UPDATE faces SET cluster_id = 2 WHERE id = 10;
+                     COMMIT;",
+                )
+                .expect("a naming write must not wait for training");
+            let status = videre_api::face_learning_status(&gallery).unwrap();
+            assert!(
+                began.elapsed() < Duration::from_millis(100),
+                "{:?}",
+                began.elapsed()
+            );
+            assert_eq!(status.status, "training");
         }
-        assert!(started, "trainer must start");
-        let probe = conn.try_lock();
-        assert!(
-            probe.is_ok(),
-            "the snapshot lock must be released during the fit"
-        );
         *release.lock().unwrap() = true;
-        drop(probe);
-        for _ in 0..2000 {
-            let done = {
-                let conn = conn.lock().unwrap();
-                learning_status(&conn).2 == "current"
-            };
-            if done {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+        wait_for_status(&conn, "current").await;
+    }
+
+    #[tokio::test]
+    async fn a_cycle_starts_only_after_notifications_stop() {
+        let (_dir, conn) = library();
+        let trained = Arc::new(std::sync::Mutex::new(None::<std::time::Instant>));
+        let at = trained.clone();
+        let coordinator = start(
+            make_deps(conn.clone(), move |_, _, _| {
+                *at.lock().unwrap() = Some(std::time::Instant::now());
+                Ok(stub_run())
+            }),
+            Duration::from_millis(150),
+        );
+        // Past startup recovery, which found nothing to train.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        make_generation_pending(&conn.lock().unwrap());
+        let mut last = std::time::Instant::now();
+        for _ in 0..4 {
+            coordinator.notify();
+            last = std::time::Instant::now();
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
+        wait_for_status(&conn, "current").await;
+        let ran = trained.lock().unwrap().expect("one cycle ran");
+        assert!(
+            ran >= last + Duration::from_millis(150),
+            "the cycle must wait for the quiet window after the last notification"
+        );
+    }
+
+    #[tokio::test]
+    async fn with_learning_off_nothing_runs_or_changes() {
+        let (_dir, conn) = library();
+        make_generation_pending(&conn.lock().unwrap());
+        let before = learning_status(&conn.lock().unwrap());
+        let trained = Arc::new(AtomicUsize::new(0));
+        let counter = trained.clone();
+        let mut deps = make_deps(conn.clone(), move |_, _, _| {
+            counter.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(stub_run())
+        });
+        deps.enabled = Arc::new(|| false);
+        let coordinator = start(deps, Duration::from_millis(10));
+        coordinator.notify();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(trained.load(AtomicOrdering::SeqCst), 0);
+        assert_eq!(learning_status(&conn.lock().unwrap()), before);
+    }
+
+    /// A write the gallery holds past the engine's busy timeout is not a
+    /// failure: nothing is recorded as failed, and the cycle runs again.
+    #[tokio::test]
+    async fn a_busy_database_is_retried_not_failed() {
+        let (_dir, conn) = library();
+        make_generation_pending(&conn.lock().unwrap());
+        conn.lock()
+            .unwrap()
+            .execute_batch("BEGIN IMMEDIATE;")
+            .unwrap();
+        let mut deps = make_deps(conn.clone(), |_, _, _| Ok(stub_run()));
+        deps.conn = engine_connection(&conn, Duration::from_millis(50));
+        let _coordinator = start(deps, Duration::from_millis(100));
+        // Startup recovery runs into the held write.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        {
+            let gallery = conn.lock().unwrap();
+            let state = learning_state(&gallery).unwrap();
+            assert_eq!(
+                state.last_error, None,
+                "busy must not be recorded as a failure"
+            );
+            gallery.execute_batch("COMMIT;").unwrap();
+        }
+        wait_for_status(&conn, "current").await;
     }
 
     #[tokio::test]
     async fn startup_recovers_a_run_interrupted_by_a_previous_process() {
-        let conn = library();
+        let (_dir, conn) = library();
         {
             let conn = conn.lock().unwrap();
             conn.execute(
@@ -1010,7 +1159,7 @@ mod tests {
         }
         let trained = Arc::new(AtomicUsize::new(0));
         let counter = trained.clone();
-        let _coordinator = spawn_with(
+        let _coordinator = start(
             make_deps(conn.clone(), move |_, _, _| {
                 counter.fetch_add(1, AtomicOrdering::SeqCst);
                 Ok(stub_run())
@@ -1035,12 +1184,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_rejected_candidate_keeps_the_active_profiles_questions() {
-        let conn = library();
+        let (_dir, conn) = library();
         make_generation_pending(&conn.lock().unwrap());
         seed_active_profile_and_questions(&conn.lock().unwrap());
         // The stub run here carries too few datasets for the shipped gates:
         // training succeeds, promotion rejects.
-        let coordinator = spawn_with(
+        let coordinator = start(
             make_deps(conn.clone(), |_, _, _| Ok(rejected_run())),
             Duration::from_millis(10),
         );
@@ -1085,7 +1234,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_question_refresh_fails_the_cycle_and_recovers() {
-        let conn = library();
+        let (_dir, conn) = library();
         make_generation_pending(&conn.lock().unwrap());
         seed_active_profile_and_questions(&conn.lock().unwrap());
         // Any supersede of a pending question aborts, so the refresh step of
@@ -1101,7 +1250,7 @@ mod tests {
             .unwrap();
         let trained = Arc::new(AtomicUsize::new(0));
         let counter = trained.clone();
-        let coordinator = spawn_with(
+        let coordinator = start(
             make_deps(conn.clone(), move |_, _, _| {
                 counter.fetch_add(1, AtomicOrdering::SeqCst);
                 Ok(stub_run())
@@ -1229,12 +1378,11 @@ mod tests {
             ),
         ];
         for (name, trainer, settled, candidate) in outcomes {
-            let conn = library();
+            let (_dir, conn) = library();
             make_generation_pending(&conn.lock().unwrap());
             seed_active_profile_and_questions(&conn.lock().unwrap());
             let before = face_snapshot(&conn.lock().unwrap());
-            let coordinator =
-                spawn_with(make_deps(conn.clone(), trainer), Duration::from_millis(10));
+            let coordinator = start(make_deps(conn.clone(), trainer), Duration::from_millis(10));
             coordinator.notify();
             for _ in 0..2000 {
                 if learning_status(&conn.lock().unwrap()).2 == settled {

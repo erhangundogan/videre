@@ -1,5 +1,6 @@
 {
   "resume": { "route": "/" },
+  "faces": { "learning": false, "learningUpdates": false },
   "routes": {
     "files": {
       "view": "tile",
@@ -8,7 +9,7 @@
       "tile": { "rowHeight": 280, "colGap": 10, "rowGap": 10 }
     },
     "events": { "sort": { "field": "date", "dir": "desc" } },
-    "people": { "align": "right", "learningUpdates": "hide", "reclusterOpen": false },
+    "people": { "align": "right", "reclusterOpen": false },
     "map": { "radiusKm": 0, "sort": { "field": "date", "dir": "desc" } }
   }
 }

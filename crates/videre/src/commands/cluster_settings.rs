@@ -201,9 +201,11 @@ mod tests {
 
     #[test]
     fn saved_fields_apply_one_by_one() {
-        let s = from_settings(
-            &json!({ "faces": { "clustering": { "eps": 0.7, "min_cluster_size": 2 } } }),
-        );
+        let s = from_settings(&json!({ "faces": {
+                "learning": true,
+                "learningUpdates": false,
+                "clustering": { "eps": 0.7, "min_cluster_size": 2 }
+            } }));
         assert!(s.warnings.is_empty(), "{:?}", s.warnings);
         assert_eq!(s.partial, partial(Some(0.7), Some(2)));
         let r = resolve(&PartialClusteringParameters::default(), &s.partial);

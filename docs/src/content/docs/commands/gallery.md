@@ -177,6 +177,7 @@ These are the defaults every library starts from:
 ```json
 {
   "resume": { "route": "/" },
+  "faces": { "learning": false, "learningUpdates": false },
   "routes": {
     "files": {
       "view": "tile",
@@ -185,7 +186,7 @@ These are the defaults every library starts from:
       "tile": { "rowHeight": 280, "colGap": 10, "rowGap": 10 }
     },
     "events": { "sort": { "field": "date", "dir": "desc" } },
-    "people": { "align": "right", "learningUpdates": "hide", "reclusterOpen": false },
+    "people": { "align": "right", "reclusterOpen": false },
     "map": { "radiusKm": 0, "sort": { "field": "date", "dir": "desc" } }
   }
 }
@@ -194,13 +195,14 @@ These are the defaults every library starts from:
 | Setting | Values | What it does |
 |---|---|---|
 | `resume.route` | a page path | The page the gallery reopens at. Saved as you move around; see below |
+| `faces.learning` | `true`, `false` | Whether face learning runs for this library; see [Face learning](#face-learning) |
+| `faces.learningUpdates` | `true`, `false` | Whether the People page shows face learning's status strip and teaching notes, while learning is on |
 | `routes.files.view` | `tile`, `list` | The file view on the Library, Date, Events and Map grids |
 | `routes.files.pageSize` | a whole number, 1 to 500 | How many files the Library and Map grids load at a time, and with each **Show more** |
 | `routes.files.tile.rowHeight` | 80 to 1000 | Target height of a tile row, in pixels |
 | `routes.files.tile.colGap` | 0 to 100 | Space between tiles in a row, in pixels |
 | `routes.files.tile.rowGap` | 0 to 100 | Space between tile rows, in pixels |
 | `routes.people.align` | `right`, `top` | Where the People list sits on the People page |
-| `routes.people.learningUpdates` | `hide`, `show` | Whether the People page shows face learning's status strip and teaching notes; see [Face learning](#face-learning) |
 | `routes.people.reclusterOpen` | `true`, `false` | Whether the People page's Recluster row is open |
 | `routes.map.radiusKm` | 0 to 20000 | Radius a map location opens with, in km. `0` uses each place's own radius |
 | `routes.files.sort.field` | `date`, `name`, `size`, `rating`, `liked`, `type` | What the Library and Date grids and an event's files are ordered by; see [Sorting](#sorting) |
@@ -295,7 +297,20 @@ page keeps its own Sort by control.
 
 ## Face learning
 
-The People page teaches the gallery: naming clusters, moving faces, and
+Face learning is **off by default**. Turn it on for a library in
+`.videre/gallery.json`:
+
+```json
+{ "faces": { "learning": true } }
+```
+
+Off, naming, moving and dissolving work exactly the same but record no
+teaching evidence, no training runs, and the People page asks no identity
+questions. Evidence recorded while it was on is kept, and training resumes
+from it when it is turned back on. The change applies without restarting the
+gallery.
+
+When on, the People page teaches the gallery: naming clusters, moving faces, and
 dissolving bad groups write durable teaching evidence where there is a
 comparison to record (an action with nothing to compare against records
 none), and a background worker turns that evidence into small interpretable
@@ -303,14 +318,17 @@ scorers. Once a scorer passes the
 shipped gates, the People page asks bounded yes/no identity questions.
 Answering Yes names a cluster; No only teaches; Skip does neither.
 
-- **Learning updates** in the People toolbar is **Hide** by default: the
-  status strip and the teaching notes after each action describe the
-  process, not a result, so they stay out of the way. Choose **Show** to see
-  them. The status is also machine-readable at
+- The status strip and the teaching notes after each action are hidden by
+  default: they describe the process, not a result, so they stay out of the
+  way. Set `"learningUpdates": true` beside `"learning"` to see them. The
+  status is also machine-readable at
   `GET /api/face-learning/status`, and training outcomes (promoted,
   rejected with the check it missed, waiting for feedback) go to the gallery
   log at the `info` level. Identity questions show either way: they are the
   result.
+- Training runs in the background on its own database connection, ten
+  seconds after the last teaching action, so browsing and naming never wait
+  for it.
 - The Recluster row (below) says in one line what learning contributes right
   now: which profile suggests names, or that it is not used yet and why.
 - Training needs both kinds of feedback: faces that belong together (naming

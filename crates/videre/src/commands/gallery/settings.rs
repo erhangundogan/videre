@@ -255,6 +255,12 @@ const RESUME_MAX: usize = 2048;
 /// detour, not a place to come back to.
 const NOT_RESUMABLE: &[&str] = &["/api/", "/tiles/", "/vendor/"];
 
+/// Whether face learning runs for this library (`faces.learning`). Read from
+/// disk on each call, so a hand edit applies without a restart.
+pub(crate) fn face_learning_enabled(state_dir: &Path) -> bool {
+    snapshot(&path(state_dir)).effective["faces"]["learning"].as_bool() == Some(true)
+}
+
 /// The route to reopen the gallery at: the saved one when it is a safe local
 /// page, otherwise `/`. The client saves whatever it is on; this is the one
 /// place that decides whether it is fit to hand to a browser.
@@ -422,6 +428,17 @@ mod tests {
         let s = default_page_script(true);
         assert!(s.contains("VIDERE_SETTINGS_LIVE=true"), "{s}");
         assert!(s.contains("VIDERE_SETTINGS_ERROR=null"), "{s}");
+    }
+
+    #[test]
+    fn face_learning_is_off_unless_set_true() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = path(dir.path());
+        assert!(!face_learning_enabled(dir.path()));
+        std::fs::write(&p, r#"{"faces":{"learning":true}}"#).unwrap();
+        assert!(face_learning_enabled(dir.path()));
+        std::fs::write(&p, r#"{"faces":{"learning":"yes"}}"#).unwrap();
+        assert!(!face_learning_enabled(dir.path()));
     }
 
     #[test]

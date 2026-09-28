@@ -736,6 +736,8 @@ above.
   built-in, per field (watch: no flag layer) -> `videre_ml::cluster_params`,
   `commands::cluster_settings`, `gallery::recluster`
 - Undecodable files are skipped after two strikes -> `videre_core::decode_failures`
+- Face learning never uses `AppState.conn`: its own connection and thread,
+  off unless `gallery.json` sets `faces.learning` -> `gallery::learning` (module doc)
 - Errors logged once, at boundaries; per-command log layout and reader -> `videre_core::error_log`, `videre_core::error_kind`, `crates/videre/src/logging.rs`
 - File identity is the content key, metadata excluded -> `videre::content_key`
 - Offline map basemap: one shared PMTiles archive per machine, downloaded once
