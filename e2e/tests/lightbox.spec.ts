@@ -103,3 +103,39 @@ test("the metadata panel names the file and gives its size", async ({ page, sort
   await expect(panel.locator(".lb-row a.lb-link").first()).toHaveAttribute("href", "/date/2021/08/10");
   await expect(panel).toContainText(/\d+(\.\d+)?\s?(B|KB)/);
 });
+
+// c_clip.mp4 is the sorted library's one liked item.
+for (const view of ["tile", "list"] as const) {
+  test(`a liked item wears a heart in ${view} view, which the lightbox heart changes`, async ({
+    page,
+    sortedGallery
+  }) => {
+    await writeSettings(sortedGallery, { routes: { files: { view } } });
+    await page.goto(sortedGallery.baseURL);
+    const item = (name: string) =>
+      page.locator(`#gallery [data-hash]`).filter({
+        has: page.locator(`[data-lb-meta*='"name":"${name}"']`)
+      });
+    await expect(item("c_clip.mp4").locator(".liked-badge")).toHaveCount(1);
+    await expect(item("a_alpha.jpg").locator(".liked-badge")).toHaveCount(0);
+    await expect(page.locator("#gallery .liked-badge")).toHaveCount(1);
+
+    // The badge takes no clicks: one on it opens the item, it likes nothing.
+    await item("c_clip.mp4").locator(".liked-badge").click({ force: true });
+    await expect(page.locator("#lb")).toHaveClass(/on/);
+    await expect(shownName(page)).toHaveText("c_clip.mp4");
+    await expect(page.locator(".lb-like")).toHaveClass(/liked/);
+    await page.keyboard.press("Escape");
+
+    // The lightbox heart likes a_alpha and its thumbnail follows; unliking
+    // takes the badge away again.
+    await item("a_alpha.jpg").locator("[data-lb-url]").click();
+    await expect(shownName(page)).toHaveText("a_alpha.jpg");
+    await page.locator(".lb-like").click();
+    await expect(page.locator(".lb-like")).toHaveClass(/liked/);
+    await expect(item("a_alpha.jpg").locator(".liked-badge")).toHaveCount(1);
+    await page.locator(".lb-like").click();
+    await expect(page.locator(".lb-like")).not.toHaveClass(/liked/);
+    await expect(item("a_alpha.jpg").locator(".liked-badge")).toHaveCount(0);
+  });
+}

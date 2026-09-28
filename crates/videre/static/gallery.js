@@ -405,6 +405,13 @@ function syncLikedMeta(hash, liked){
       if(m && m.hash===hash){ m.liked=liked; el.dataset.lbMeta=JSON.stringify(m); }
     }catch(e){}
   });
+  document.querySelectorAll('.tile[data-hash="'+hash+'"],.card[data-hash="'+hash+'"]').forEach(function(el){
+    var host=likedBadgeHost(el);
+    if(!host)return;
+    var badge=host.querySelector('.liked-badge');
+    if(liked&&!badge)host.insertAdjacentHTML('beforeend',likedBadge({liked:true}));
+    else if(!liked&&badge)badge.remove();
+  });
 }
 var lbIndex=-1;      // index of the open item among the currently visible tiles
 var lbLoading=false; // guards the auto-paginate load so it fires once
@@ -1067,6 +1074,9 @@ function similarBtn(hash){
   // The Similar search ranks against embeddings; with none, it can only fail,
   // so offer no button rather than one that returns "Search failed".
   if(typeof HAS_EMBEDDINGS!=='undefined'&&!HAS_EMBEDDINGS)return '';
+  // Results draw into #results (Files and Map); a page without it would
+  // throw on the answer, so it offers no button.
+  if(!document.getElementById('results'))return '';
   return '<button class="similar-btn" data-similar="'+escA(hash)+'">Similar</button>';
 }
 // ---- Tile view (justified rows) --------------------------------------------
@@ -1085,7 +1095,17 @@ function tileRatio(f){ return (f.w&&f.h) ? (f.w/f.h) : 1; }
 // lightbox and its nav keep working and DOM order stays file (row) order.
 function tileHtml(f,box){
   return '<div class="tile" data-hash="'+escA(f.hash)+'" style="left:'+box.left+'px;top:'+box.top+'px;'+
-    'width:'+box.width+'px;height:'+box.height+'px">'+buildPreview(f)+'</div>';
+    'width:'+box.width+'px;height:'+box.height+'px">'+buildPreview(f)+likedBadge(f)+'</div>';
+}
+// A liked item's red heart, bottom left over its thumbnail. Display only: it
+// takes no clicks (the thumbnail under it still opens the lightbox), and the
+// lightbox heart is the one that changes it.
+function likedBadge(f){
+  return f.liked?'<span class="liked-badge" title="Liked" aria-label="Liked">'+ICON_HEART+'</span>':'';
+}
+// Where an item's badge sits: over a tile, or over a list card's preview.
+function likedBadgeHost(el){
+  return el.classList.contains('card')?el.querySelector('.card-preview'):el;
 }
 // Lay files out as justified rows inside container. Pure geometry over ratios,
 // so re-running it on append or resize is cheap.
@@ -1153,7 +1173,7 @@ function buildCard(f){
         : (HASH_FILES[f.hash] ? HASH_FILES[f.hash].length : 1);
   var copies = n>1 ? '<span class="copies">x'+n+'</span>' : '';
   return '<div class="card" data-hash="'+escA(f.hash)+'">'+copies+
-    buildPreview(f)+
+    '<span class="card-preview">'+buildPreview(f)+likedBadge(f)+'</span>'+
     '<div class="card-meta" title="'+escA(f.path)+'">'+escH(fname)+'</div>'+
     '<div class="card-meta">'+fmtB(f.size)+(bestDateJs(f)?' &middot; '+escH(bestDateJs(f)):'')+'</div>'+
     similarBtn(f.hash)+

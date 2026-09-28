@@ -22,6 +22,36 @@ test("with stored vectors the nav search box is offered", async ({ page, searchG
   await expect(page.locator(".secnav-search")).toBeVisible();
 });
 
+test("the nav search box is offered in every section, not only Library and Map", async ({
+  page,
+  searchGallery
+}) => {
+  for (const path of ["/", "/date", "/duplicates", "/events", "/map"]) {
+    await page.goto(`${searchGallery.baseURL}${path}`);
+    await expect(page.locator(".secnav-search"), path).toBeVisible();
+  }
+});
+
+test("Similar works on the grid under the map", async ({ page, searchGallery }) => {
+  await preferListView(searchGallery);
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  await page.goto(`${searchGallery.baseURL}/map`);
+  const card = page.locator("#gallery .card", { hasText: "çiçek.jpg" });
+  await card.locator(".similar-btn").click();
+  await expect(page.locator("#results .results-head h2")).toHaveText("Similar images");
+  await expect(resultNames(page)).toHaveText(["bahçe.jpg", "deniz.jpg"]);
+  expect(errors).toEqual([]);
+});
+
+test("a page with nowhere to show results offers no Similar button", async ({ page, searchGallery }) => {
+  await preferListView(searchGallery);
+  await page.goto(`${searchGallery.baseURL}/date/2021`);
+  // Present, not visible: a large preview may still be rendering.
+  await expect(page.locator("#dateGrid [data-lb-url]")).not.toHaveCount(0);
+  await expect(page.locator(".similar-btn")).toHaveCount(0);
+});
+
 test("Similar ranks the closest file first and leaves out the example", async ({ page, searchGallery }) => {
   await preferListView(searchGallery);
   await page.goto(searchGallery.baseURL);

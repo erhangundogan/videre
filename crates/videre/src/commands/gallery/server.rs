@@ -2421,11 +2421,10 @@ fn render_live_with_date(
         View::All
     };
     let faces_by_hash = videre_core::face_db::labeled_faces_by_hash(&conn).unwrap_or_default();
-    let embedded = if all {
-        query_embedded_count(&conn, &state.model_id)
-    } else {
-        None
-    };
+    // Every section, not just the Files page: the nav search box is on all of
+    // them and gates on this, so leaving it None hid the box on Date and
+    // Duplicates in a library that can search.
+    let embedded = query_embedded_count(&conn, &state.model_id);
     let db_path = conn.path().map(|p| p.to_string()).unwrap_or_default();
     drop(conn);
     let set = RenderSet {
@@ -3250,6 +3249,8 @@ fn render_live_events(
     let conn = state.conn.lock().unwrap();
     let stats = query_stats(&conn);
     let faces_by_hash = videre_core::face_db::labeled_faces_by_hash(&conn).unwrap_or_default();
+    // For the nav search box, as on every other section.
+    let embedded = query_embedded_count(&conn, &state.model_id);
     let db_path = conn.path().map(|p| p.to_string()).unwrap_or_default();
     drop(conn);
     let set = RenderSet {
@@ -3265,7 +3266,7 @@ fn render_live_events(
             live: true,
             heic: state.report_heic,
             heic_original: state.report_heic_original,
-            embedded: None,
+            embedded,
             db_path,
             date_filter_json: "null".to_string(),
             event_json: event_json.to_string(),
