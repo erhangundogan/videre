@@ -61,6 +61,13 @@ such as a decode fix in videre. See
 Adding photos later works the same way. Run [`videre scan`](/commands/scan/) to
 pick them up, then `videre embed` again to cover only the new ones.
 
+## Near-duplicate fingerprints
+
+Embed also stores each file's near-duplicate fingerprint, which
+[`videre dedupe --similar`](/commands/dedupe/) reads. Files embedded before this
+was added get theirs on the next run, decoded and hashed without loading the
+model; the summary line counts them as fingerprints added.
+
 ## What gets skipped
 
 | Type | Embedded? |

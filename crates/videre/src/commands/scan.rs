@@ -8,7 +8,9 @@ use videre::{
 
 #[derive(clap::Args)]
 pub struct ScanArgs {
-    /// Also compute and store perceptual hashes for near-duplicate detection
+    /// Deprecated and ignored: `videre embed` now computes the near-duplicate
+    /// fingerprint from the decode it already does. Accepted (with a
+    /// deprecation notice) only so existing scripts do not error.
     #[arg(long)]
     similar: bool,
 
@@ -119,6 +121,11 @@ fn run_inner(args: &ScanArgs, ctx: &CommandContext) -> anyhow::Result<ScanJson> 
             Ok((records, skipped))
         })?;
 
+    if args.similar && !args.silent {
+        tracing::info!(
+            "note: --similar is deprecated and has no effect; videre embed computes near-duplicate fingerprints."
+        );
+    }
     if args.retry_incomplete && !args.silent {
         tracing::info!(
             "note: --retry-incomplete is deprecated and has no effect; scan is incremental by default."
@@ -158,12 +165,11 @@ fn gather_records(
     } else {
         videre_core::db::stored_signatures(conn).unwrap_or_default()
     };
-    let want_similar = args.similar;
     let all_paths = scanner::scan(&ctx.library.paths.root);
     let walked = all_paths.len();
     let paths: Vec<_> = all_paths
         .into_iter()
-        .filter(|path| videre::incremental::needs_processing(&sigs, path, want_similar))
+        .filter(|path| videre::incremental::needs_processing(&sigs, path))
         .collect();
     let progress = videre_core::progress::Progress::new(paths.len() as u64, args.silent);
 
@@ -185,37 +191,7 @@ fn gather_records(
     progress.finish();
     let skipped = paths.len() - records.len();
 
-    let records = if args.similar {
-        if !args.silent {
-            tracing::info!("Computing perceptual hashes for {} file(s)", records.len());
-        }
-        apply_phashes(ctx, records, args.silent)
-    } else {
-        records
-    };
     (records, skipped, walked)
-}
-
-fn apply_phashes(
-    ctx: &CommandContext,
-    records: Vec<videre::types::FileRecord>,
-    silent: bool,
-) -> Vec<videre::types::FileRecord> {
-    let progress = videre_core::progress::Progress::new(records.len() as u64, silent);
-    let out = records
-        .into_par_iter()
-        .map(|mut record| {
-            record.phash = hasher::compute_dhash_in(
-                &ctx.library,
-                std::path::Path::new(&record.path),
-                record.mime.as_deref(),
-            );
-            progress.tick();
-            record
-        })
-        .collect();
-    progress.finish();
-    out
 }
 
 fn format_write_summary(written: usize, skipped: usize, destination: &str) -> String {

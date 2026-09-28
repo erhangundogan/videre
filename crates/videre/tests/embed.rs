@@ -350,3 +350,75 @@ fn embed_with_zero_work_keeps_an_existing_model_database() {
         "a zero-work embed must not remove an existing model database"
     );
 }
+
+/// An already-embedded file without a fingerprint gets one from a decode-only
+/// pass. The model is never loaded: the child's private HF cache stays absent,
+/// and in CI a load would also fail against the closed HF_ENDPOINT. Model-free,
+/// so it uses `cmd()` and runs on every platform without the opt-in.
+#[test]
+fn embed_backfills_a_missing_fingerprint_without_loading_the_model() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "photo.jpg");
+    lib.scan();
+    {
+        let conn = lib.conn();
+        let hash: String = conn
+            .query_row("SELECT hash FROM file_hashes LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        videre_core::embeddings_db::attach_in(
+            &conn,
+            &lib.context(),
+            videre_core::embeddings::DEFAULT_MODEL_ID,
+            true,
+        )
+        .unwrap();
+        videre_core::embeddings::insert_embeddings(
+            &conn,
+            videre_core::embeddings::DEFAULT_MODEL_ID,
+            &[(hash, vec![0u8; 4])],
+        )
+        .unwrap();
+    }
+
+    let out = lib.cmd().arg("embed").output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let phash: Option<i64> = lib
+        .conn()
+        .query_row("SELECT phash FROM file_hashes", [], |r| r.get(0))
+        .unwrap();
+    assert!(
+        phash.is_some(),
+        "the decode-only pass must store a fingerprint"
+    );
+    assert!(
+        !lib.home.join(".cache/huggingface").exists(),
+        "a fingerprint-only run must not load the model"
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn embed_stores_a_fingerprint_with_each_embedding() {
+    if skip_unless_model_tests_enabled("embed fingerprint") {
+        return;
+    }
+    let guard = shared_cache_guard();
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "photo.jpg");
+    lib.scan();
+    assert!(lib
+        .model_cmd(&guard)
+        .args(["embed", "--silent"])
+        .status()
+        .unwrap()
+        .success());
+    let phash: Option<i64> = lib
+        .conn()
+        .query_row("SELECT phash FROM file_hashes", [], |r| r.get(0))
+        .unwrap();
+    assert!(phash.is_some());
+}

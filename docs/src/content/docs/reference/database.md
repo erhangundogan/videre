@@ -53,7 +53,7 @@ upgraded: remove its `.videre` directory and run `videre scan`.
 | `hash` | Identity of the file's content: BLAKE3 over the file with its metadata left out (EXIF, XMP, comments and similar). The same image with different metadata shares one hash |
 | `meta_hash` | BLAKE3 over the metadata alone; changes when only metadata does. NULL for a file whose format is not parsed, whose `hash` is then the whole file's |
 | `mime` | Detected from the file's leading bytes, not its name |
-| `phash` | Perceptual fingerprint, only with [`scan --similar`](/commands/scan/). NULL otherwise |
+| `phash` | Near-duplicate fingerprint (64-bit dHash), written by [`embed`](/commands/embed/). NULL until then, and again after the file's content changes |
 | `exif_date` | Camera-local, no timezone. `0000-*` values are discarded as absent |
 | `location_name` | Filled in lazily, not by `scan`. See [`watch --location`](/commands/watch/) |
 | `location_cluster_id` | Set by [`videre locations`](/commands/locations/) |

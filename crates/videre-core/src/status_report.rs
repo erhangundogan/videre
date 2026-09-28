@@ -57,7 +57,12 @@ fn faces_eligible_hashes(conn: &Connection) -> Result<Vec<String>> {
 /// Embed stage: outstanding under the active model of everything eligible.
 fn embed_coverage(conn: &Connection, embed_model: &str) -> Result<StageCoverage> {
     let total = crate::embeddings::embeddable_images(conn, embed_model)?.len() as i64;
-    let pending = crate::embeddings::pending_images(conn, embed_model)?;
+    // Only files that still need an embedding count as embed work; a missing
+    // fingerprint alone is filled without the model.
+    let pending: Vec<_> = crate::embeddings::pending_images(conn, embed_model)?
+        .into_iter()
+        .filter(|p| !p.embedded)
+        .collect();
     // Files embed has given up decoding are still pending (never embedded), so
     // separate them out: they are not work embed will do.
     let failed = crate::decode_failures::failed_hashes(

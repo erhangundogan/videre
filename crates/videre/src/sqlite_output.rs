@@ -44,7 +44,9 @@ fn write_records_to(conn: &rusqlite::Connection, records: &[FileRecord]) -> Resu
                 modified_at = excluded.modified_at,
                 ext = excluded.ext,
                 mime = excluded.mime,
-                phash = excluded.phash,
+                phash = CASE WHEN file_hashes.hash = excluded.hash
+                             THEN COALESCE(excluded.phash, file_hashes.phash)
+                             ELSE excluded.phash END,
                 exif_date = excluded.exif_date,
                 gps_lat = excluded.gps_lat,
                 gps_lon = excluded.gps_lon,
@@ -174,6 +176,25 @@ mod tests {
         assert_eq!(loaded[0].exif_date.as_deref(), Some("2019-06-01T10:00:00"));
         assert_eq!(loaded[0].gps_lat, Some(48.85));
         assert_eq!(loaded[0].width, Some(100));
+    }
+
+    #[test]
+    fn rescanning_keeps_the_fingerprint_until_the_content_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("hashes.db");
+        let mut first = rec("/a.jpg", "h1");
+        first.phash = Some(42);
+        write_records(std::slice::from_ref(&first), &db).unwrap();
+
+        let mut same = rec("/a.jpg", "h1");
+        same.phash = None;
+        write_records(std::slice::from_ref(&same), &db).unwrap();
+        assert_eq!(load_records(&db).unwrap()[0].phash, Some(42));
+
+        let mut changed = rec("/a.jpg", "h2");
+        changed.phash = None;
+        write_records(std::slice::from_ref(&changed), &db).unwrap();
+        assert_eq!(load_records(&db).unwrap()[0].phash, None);
     }
 
     #[test]

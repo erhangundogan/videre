@@ -80,7 +80,7 @@ videre scan                         <- everything starts here
 | the similarity button in [`gallery`](/commands/gallery/) | [`embed`](/commands/embed/) |
 | [`gallery`](/commands/gallery/) | [`faces`](/commands/faces/) |
 | names shown in [`gallery`](/commands/gallery/) | [`faces`](/commands/faces/) **and** naming done |
-| [`dedupe --similar`](/commands/dedupe/) | [`scan --similar`](/commands/scan/) |
+| [`dedupe --similar`](/commands/dedupe/) | [`embed`](/commands/embed/) |
 | [`locations`](/commands/locations/) | GPS in your photos (from `scan`) |
 
 The manual naming step is easy to overlook. `videre faces` groups faces but
@@ -140,8 +140,9 @@ videre dedupe --remove                # move the copies to the trash, once you a
 videre prune                          # reclaim database rows and derived data
 ```
 
-Add `--similar` to `scan` and `dedupe` if you also want near-duplicates, which
-are reported for review only and never included in the delete list.
+Add `--similar` to `dedupe` if you also want near-duplicates (it needs
+`videre embed`), which are reported for review only and never included in the
+delete list.
 
 ### Turn on search later
 

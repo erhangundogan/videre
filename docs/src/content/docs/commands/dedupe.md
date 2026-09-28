@@ -142,8 +142,8 @@ Look-alike groups are deliberately kept out of stdout, so piping into a delete
 command can never act on a mere resemblance. They appear in the summary on
 stderr and in [`videre dedupe --html`](/commands/dedupe/), where you can look at them.
 
-This needs a prior [`videre scan --similar`](/commands/scan/) to have computed
-the fingerprints.
+This needs a prior [`videre embed`](/commands/embed/), which computes the
+fingerprints alongside the embeddings.
 
 ### What counts as alike
 
