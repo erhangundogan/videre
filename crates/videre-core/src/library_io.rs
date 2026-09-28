@@ -390,6 +390,12 @@ pub struct StagedCopy {
     name: OsString,
     #[allow(dead_code)]
     held: File,
+    /// Still on the worker that made it: the caller has not received it.
+    /// Dropped there, the caller timed out, and removal happens directly on
+    /// that worker, whose filesystem just answered, rather than through a
+    /// second bounded worker the pool may refuse (at `io-workers 1` the
+    /// dropping worker holds the only permit).
+    on_worker: bool,
 }
 
 impl StagedCopy {
@@ -400,7 +406,11 @@ impl StagedCopy {
 
 impl Drop for StagedCopy {
     fn drop(&mut self) {
-        discard_temporary(&self.parent, &self.name, &self.path);
+        if self.on_worker {
+            let _ = unlinkat(&self.parent, &self.name, AtFlags::empty());
+        } else {
+            discard_temporary(&self.parent, &self.name, &self.path);
+        }
     }
 }
 
@@ -410,19 +420,7 @@ impl Drop for StagedCopy {
 /// The source is the held file from [`open_media`], never a path revalidated
 /// by name, so the bytes copied are exactly the bytes validation anchored.
 pub fn staged_copy(ctx: &LibraryContext, source: &File, extension: &OsStr) -> Result<StagedCopy> {
-    ctx.ensure_root_identity()?;
     let scratch = &ctx.paths.state;
-    let dir = anchored_directory(ctx, scratch)?;
-    let mut name = OsString::from(format!(
-        ".videre-stage-{}-{}",
-        std::process::id(),
-        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    if !extension.is_empty() {
-        name.push(".");
-        name.push(extension);
-    }
-    let path = scratch.join(&name);
     // The copy reads the whole original, so its budget scales with size the
     // way every whole-file read in io_timeout does, never the constant that
     // fits metadata-sized work: a healthy multi-GB original on a slow but
@@ -436,27 +434,66 @@ pub fn staged_copy(ctx: &LibraryContext, source: &File, extension: &OsStr) -> Re
             .map(|meta| timeout_for_size(meta.len(), min_read_rate_mb_s()))
             .unwrap_or(STAT_TIMEOUT)
     };
-    let open_name = name.clone();
+    staged_copy_with_budget_and_hook(ctx, source, extension, budget, || {})
+}
+
+/// [`staged_copy`] with its budget given and a hook run on the worker once
+/// the copy is complete, so a test can hold a finished copy past the
+/// caller's deadline.
+///
+/// The worker builds the self-removing [`StagedCopy`] itself before handing
+/// it back. When the caller has already timed out, the runner drops the
+/// unsent value on that worker, and the drop removes the copy there: no
+/// cleanup is ever attempted from the timed-out caller, which may be facing
+/// a dead mount.
+fn staged_copy_with_budget_and_hook(
+    ctx: &LibraryContext,
+    source: &File,
+    extension: &OsStr,
+    budget: std::time::Duration,
+    after_copy: impl FnOnce() + Send + 'static,
+) -> Result<StagedCopy> {
+    ctx.ensure_root_identity()?;
+    let scratch = &ctx.paths.state;
+    let dir = anchored_directory(ctx, scratch)?;
+    let mut name = OsString::from(format!(
+        ".videre-stage-{}-{}",
+        std::process::id(),
+        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    if !extension.is_empty() {
+        name.push(".");
+        name.push(extension);
+    }
+    let path = scratch.join(&name);
     let dup_dir = dupe(&dir, scratch)?;
     let mut read = dupe(source, scratch)?;
-    let held = bounded_op(&path, "stage", budget, move || {
+    let worker_path = path.clone();
+    let mut staged = bounded_op(&path, "stage", budget, move || {
         let oflags =
             OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
         let mode = Mode::from_bits(0o600).expect("a plain permission triplet is always valid");
-        let mut held = File::from(openat(&dup_dir, &open_name, oflags, mode)?);
+        let mut held = File::from(openat(&dup_dir, &name, oflags, mode)?);
+        // From here the copy exists, so it is owned by a value that removes
+        // it on every exit: an error below, or a caller that stopped waiting.
+        let mut staged = StagedCopy {
+            path: worker_path,
+            parent: dup_dir,
+            name,
+            held: held.try_clone()?,
+            on_worker: true,
+        };
         // Rewind so the copy is the whole original, whatever position a
         // previous reader left the shared handle at.
         std::io::Seek::seek(&mut read, std::io::SeekFrom::Start(0))?;
         std::io::copy(&mut read, &mut held)?;
         held.sync_all()?;
-        Ok(held)
+        after_copy();
+        staged.held = held;
+        Ok(staged)
     })?;
-    Ok(StagedCopy {
-        path,
-        parent: dir,
-        name,
-        held,
-    })
+    staged.on_worker = false;
+    Ok(staged)
 }
 
 /// Duplicate a handle for a bounded operation's owned closure, naming the
@@ -923,5 +960,41 @@ mod tests {
         let path = staged.path.clone();
         drop(staged);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn timed_out_staged_copy_removes_late_scratch_file() {
+        let (_temp, ctx) = library();
+        std::fs::write(ctx.paths.root.join("late.dng"), b"raw-ish").unwrap();
+        let confined = open_media(&ctx, &ctx.paths.root.join("late.dng")).unwrap();
+        std::fs::create_dir(&ctx.paths.state).unwrap();
+        let (copied_tx, copied_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let result = staged_copy_with_budget_and_hook(
+            &ctx,
+            &confined,
+            OsStr::new("dng"),
+            std::time::Duration::from_millis(50),
+            move || {
+                copied_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            },
+        );
+        assert!(copied_rx.try_recv().is_ok(), "copy must finish before timeout");
+        assert!(result.is_err(), "caller must time out while worker waits");
+        let staged_files = || {
+            std::fs::read_dir(&ctx.paths.state)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with(".videre-stage-"))
+                .count()
+        };
+        assert_eq!(staged_files(), 1);
+        release_tx.send(()).unwrap();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while staged_files() != 0 && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(staged_files(), 0, "late worker must clean its own copy");
     }
 }
