@@ -45,17 +45,6 @@ pub fn find_duplicate_groups(records: &[FileRecord]) -> Vec<DuplicateGroup> {
     groups
 }
 
-/// The removable copies: every group's non-kept files (`files[1..]`; `files[0]`
-/// is the KEEP the sort already chose). Shared by `dedupe`'s printed list and
-/// by `dedupe --remove`, so what is printed and what is deleted are one set and
-/// the kept copy is never a candidate for removal.
-pub fn loser_paths(groups: &[DuplicateGroup]) -> Vec<&str> {
-    groups
-        .iter()
-        .flat_map(|group| group.files.iter().skip(1).map(|f| f.path.as_str()))
-        .collect()
-}
-
 /// Google Takeout edits beside their originals, as `(kept original, removed
 /// edit)` paths, sorted by the edit. See `crate::takeout_names`.
 pub fn edited_losers(records: &[FileRecord]) -> Vec<(String, String)> {
@@ -148,24 +137,6 @@ mod tests {
     use crate::types::FileRecord;
     use std::fs;
     use tempfile::tempdir;
-
-    #[test]
-    fn loser_paths_returns_every_non_kept_file_including_spaced_paths() {
-        let g = DuplicateGroup {
-            hash: "h".into(),
-            files: vec![
-                make_record("/lib/Google Photos/keep.jpg", "h"),
-                make_record("/lib/Google Photos/copy 1.jpg", "h"),
-                make_record("/lib/copy 2.jpg", "h"),
-            ],
-        };
-        let losers = loser_paths(std::slice::from_ref(&g));
-        assert_eq!(
-            losers,
-            vec!["/lib/Google Photos/copy 1.jpg", "/lib/copy 2.jpg"]
-        );
-        assert!(!losers.contains(&"/lib/Google Photos/keep.jpg"));
-    }
 
     fn make_record(path: &str, hash: &str) -> FileRecord {
         FileRecord {

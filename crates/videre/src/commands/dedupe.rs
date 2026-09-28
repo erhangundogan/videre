@@ -246,8 +246,9 @@ impl Removals {
 /// `--remove`: videre moves the duplicate copies to the system trash itself.
 /// Safe by default: refuses on a missing library volume, refuses an implausibly
 /// large deletion without --force, confirms unless --yes, and `--dry-run` only
-/// previews. Operates only on the losers `loser_paths` computes, so the kept
-/// copy per group is never removed.
+/// previews. Operates only on what `Removals` computes, which is also what
+/// the report prints: an exact group's kept copy is never removed, and an edit
+/// goes only while its original is on disk.
 fn run_remove(
     args: &DedupeArgs,
     ctx: &CommandContext,
@@ -256,6 +257,19 @@ fn run_remove(
     let records = videre::sqlite_output::load_records_from(conn)
         .map_err(|e| anyhow::anyhow!("reading the library database: {e}"))?;
     let total = records.len();
+    let volume_missing = || {
+        anyhow::anyhow!(
+            "library root {:?} is not available (is the drive connected?); removed nothing",
+            ctx.library.paths.root
+        )
+    };
+    // Missing-volume refusal: never read "the files are gone" as "everything is
+    // a duplicate to remove". With --edited it comes before anything is
+    // counted, because pairing checks each original on disk: a detached drive
+    // would otherwise empty the set and report "Nothing to remove."
+    if args.edited && !ctx.library.paths.root.is_dir() {
+        return Err(volume_missing());
+    }
     let removals = Removals::collect(&records, args.edited);
     let losers = removals.all();
 
@@ -270,13 +284,9 @@ fn run_remove(
         return Ok(0);
     }
 
-    // Missing-volume refusal: never read "the files are gone" as "everything is
-    // a duplicate to remove". Check before the guard and before any deletion.
+    // Check before the guard and before any deletion.
     if !ctx.library.paths.root.is_dir() {
-        anyhow::bail!(
-            "library root {:?} is not available (is the drive connected?); removed nothing",
-            ctx.library.paths.root
-        );
+        return Err(volume_missing());
     }
 
     // Bulk-deletion guard, shared with prune: an implausibly large share of the

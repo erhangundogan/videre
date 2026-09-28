@@ -166,6 +166,10 @@ edit are not moved to its original; name them again there if you need to.
 
 `--json --edited` adds `edited_pairs`, each `{"kept": ..., "removed": ...}`.
 
+The pairs come from the last scan, and so do `--json`, `--html` and the
+gallery's Duplicates page. Removal checks the disk again: an edit whose
+original has gone since that scan is kept, since it is now the only copy.
+
 ## `--similar` is review-only
 
 Look-alike groups are deliberately kept out of stdout, so piping into a delete
