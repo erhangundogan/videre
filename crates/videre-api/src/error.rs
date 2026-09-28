@@ -6,6 +6,9 @@ pub enum Error {
     NotFound,
     /// Caller-supplied input was rejected (e.g. an empty label after sanitizing).
     Invalid,
+    /// Caller-supplied input was rejected for a stated reason, which the
+    /// gallery logs and shows (e.g. a face list that is not the cluster's).
+    Rejected(String),
     /// The thing being mutated changed underneath the caller (stale question,
     /// moved face, different active profile). Retry with fresh state.
     Conflict,
@@ -74,6 +77,7 @@ impl std::fmt::Display for Error {
         match self {
             Error::NotFound => write!(f, "not found"),
             Error::Invalid => write!(f, "invalid input"),
+            Error::Rejected(msg) => write!(f, "{msg}"),
             Error::Conflict => write!(f, "stale state, refetch and retry"),
             Error::Db(e) => write!(f, "database error: {e}"),
             Error::Unavailable(msg) => write!(f, "library unavailable: {msg}"),
@@ -94,6 +98,7 @@ mod tests {
     fn display_matches_each_variant() {
         assert_eq!(Error::NotFound.to_string(), "not found");
         assert_eq!(Error::Invalid.to_string(), "invalid input");
+        assert_eq!(Error::Rejected("why".into()).to_string(), "why");
         assert_eq!(
             Error::Unavailable("root gone".to_string()).to_string(),
             "library unavailable: root gone"

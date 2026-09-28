@@ -15,6 +15,12 @@ const clusterId = window.CLUSTER_ID;
     let mainData = { people: [] };
     const MAX_NAME_LEN = 60;
 
+    // A failed request's reason from the server, else the page's own words.
+    async function failureText(response, fallback) {
+      const body = await response.json().catch(() => null);
+      return 'Error: ' + ((body && body.error) || fallback);
+    }
+
     // Trim, collapse internal whitespace, strip control/bidi-spoofing
     // characters, and cap length by code point (not UTF-16 code unit) so a
     // pasted wall of text or a spoofed name can't stretch card layout,
@@ -85,7 +91,7 @@ const clusterId = window.CLUSTER_ID;
 
     async function removeFace(faceId) {
       const r = await fetch(`/api/faces/${faceId}`, { method: 'DELETE' });
-      if (!r.ok) { document.getElementById('status').textContent = 'Error: remove failed'; return; }
+      if (!r.ok) { document.getElementById('status').textContent = await failureText(r, 'remove failed'); return; }
       document.getElementById(`card-${faceId}`)?.remove();
       facesData = facesData.filter(f => f.face_id !== faceId);
       document.getElementById('face-count').textContent = `${facesData.length} face(s)`;
@@ -99,7 +105,7 @@ const clusterId = window.CLUSTER_ID;
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ face_ids: faceIds, name: label })
       });
-      if (!r.ok) { document.getElementById('status').textContent = 'Error: assign failed'; return; }
+      if (!r.ok) { document.getElementById('status').textContent = await failureText(r, 'assign failed'); return; }
       document.getElementById('status').textContent = `Assigned ${faceIds.length} face(s) to "${label}"`;
       setTimeout(() => { window.location.href = peopleHome(); }, 800);
     }
@@ -128,7 +134,7 @@ const clusterId = window.CLUSTER_ID;
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ face_ids: [faceId] })
       });
-      if (!r.ok) { document.getElementById('status').textContent = 'Error: assign failed'; return; }
+      if (!r.ok) { document.getElementById('status').textContent = await failureText(r, 'assign failed'); return; }
       closeAssignModal();
       document.getElementById(`card-${faceId}`)?.remove();
       facesData = facesData.filter(f => f.face_id !== faceId);
@@ -149,7 +155,7 @@ const clusterId = window.CLUSTER_ID;
     async function dissolveCluster() {
       if (!confirm(`Dissolve cluster ${clusterId}? Its ${facesData.length} face(s) will become unassigned singletons (not deleted).`)) return;
       const r = await fetch(`/api/clusters/${clusterId}`, { method: 'DELETE' });
-      if (!r.ok) { document.getElementById('status').textContent = 'Error: dissolve failed'; return; }
+      if (!r.ok) { document.getElementById('status').textContent = await failureText(r, 'dissolve failed'); return; }
       const ack = await r.json().catch(() => null);
       // The teaching note is a learning update, shown only when the library
       // chose to see those (People toolbar, Learning updates).

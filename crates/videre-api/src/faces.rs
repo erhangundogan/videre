@@ -46,10 +46,14 @@ fn immediate_transaction<T>(conn: &Connection, operation: impl FnOnce() -> Resul
 }
 
 fn face_states(conn: &Connection, face_ids: &[i64]) -> Result<Vec<FaceState>> {
-    if face_ids.is_empty()
-        || face_ids.iter().copied().collect::<BTreeSet<_>>().len() != face_ids.len()
-    {
+    if face_ids.is_empty() {
         return Err(Error::Invalid);
+    }
+    let mut seen = BTreeSet::new();
+    if let Some(repeat) = face_ids.iter().find(|id| !seen.insert(**id)) {
+        return Err(Error::Rejected(format!(
+            "the request lists face {repeat} more than once"
+        )));
     }
     let mut ids = face_ids.to_vec();
     ids.sort_unstable();
@@ -318,10 +322,14 @@ pub fn cluster_detail(conn: &Connection, cluster_id: i64) -> Result<ClusterDetai
     // Same unlabeled filter the cluster card uses: the page a card opens
     // must show the population the card counted. A labeled face can hold no
     // cluster id any more; the filter stays so the two queries cannot drift.
+    // One path per face: a photo with two identical copies has one set of
+    // faces, and listing each twice made the page post ids the cluster check
+    // rejects.
     let mut stmt = conn.prepare(
-        "SELECT f.id, f.hash, fh.path FROM faces f \
+        "SELECT f.id, f.hash, MIN(fh.path) FROM faces f \
          JOIN file_hashes fh ON f.hash = fh.hash \
          WHERE f.cluster_id = ?1 AND (f.confirmed = 0 OR f.person_label IS NULL) \
+         GROUP BY f.id \
          ORDER BY f.id",
     )?;
     let faces = stmt
@@ -343,10 +351,12 @@ pub fn person_detail(conn: &Connection, name: &str) -> Result<PersonDetail> {
     // working across the migration without a redirect table.
     let name = videre_core::person::normalize(name).unwrap_or_else(|| name.to_string());
     let name = name.as_str();
+    // One path per face, as in `cluster_detail`.
     let mut stmt = conn.prepare(
-        "SELECT f.id, f.hash, fh.path, f.is_primary FROM faces f \
+        "SELECT f.id, f.hash, MIN(fh.path), f.is_primary FROM faces f \
          JOIN file_hashes fh ON f.hash = fh.hash \
          WHERE f.person_label = ?1 AND f.confirmed = 1 \
+         GROUP BY f.id \
          ORDER BY f.is_primary DESC, f.id",
     )?;
     let faces = stmt
@@ -447,24 +457,36 @@ fn assign_in_transaction(
 
 fn validate_teaching_subject(conn: &Connection, face_ids: &[i64]) -> Result<Vec<FaceState>> {
     let states = face_states(conn, face_ids)?;
-    if states
+    if let Some(state) = states
         .iter()
-        .any(|state| state.confirmed || state.person_label.is_some())
+        .find(|state| state.confirmed || state.person_label.is_some())
     {
-        return Err(Error::Invalid);
+        return Err(Error::Rejected(format!(
+            "face {} is already named or confirmed",
+            state.id
+        )));
     }
-    if states.len() == 1 && states[0].cluster_id.is_some() {
-        return Err(Error::Invalid);
+    if let (1, Some(cluster_id)) = (states.len(), states[0].cluster_id) {
+        return Err(Error::Rejected(format!(
+            "face {} belongs to cluster {cluster_id}; assign the cluster or remove the face from it first",
+            states[0].id
+        )));
     }
     if states.len() > 1 {
-        let cluster_id = states[0].cluster_id.ok_or(Error::Invalid)?;
+        let cluster_id = states[0]
+            .cluster_id
+            .ok_or_else(|| Error::Rejected("the faces are not in a cluster".into()))?;
+        let members = unassigned_cluster_ids(conn, cluster_id)?;
         if states
             .iter()
             .any(|state| state.cluster_id != Some(cluster_id))
-            || unassigned_cluster_ids(conn, cluster_id)?
-                != states.iter().map(|state| state.id).collect::<Vec<_>>()
+            || members != states.iter().map(|state| state.id).collect::<Vec<_>>()
         {
-            return Err(Error::Invalid);
+            return Err(Error::Rejected(format!(
+                "the request lists {} face(s), cluster {cluster_id} has {} unassigned face(s)",
+                states.len(),
+                members.len()
+            )));
         }
     }
     Ok(states)
@@ -1444,6 +1466,35 @@ mod tests {
             }
         }
 
+        #[test]
+        fn a_repeated_face_is_rejected_with_a_reason() {
+            let conn = seed();
+            let err = new_person_with_learning(&conn, &[3, 3, 4], "Bob", &context()).unwrap_err();
+            assert_eq!(err.to_string(), "the request lists face 3 more than once");
+        }
+
+        #[test]
+        fn a_partial_cluster_is_rejected_with_the_counts() {
+            let conn = seed();
+            conn.execute(
+                "INSERT INTO faces (id,hash,bbox,embedding,cluster_id) VALUES (6,'h5','1,1,9,9',X'0000',7)",
+                [],
+            )
+            .unwrap();
+            let err = new_person_with_learning(&conn, &[3, 4], "Bob", &context()).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "the request lists 2 face(s), cluster 7 has 3 unassigned face(s)"
+            );
+        }
+
+        #[test]
+        fn a_named_face_is_rejected_with_a_reason() {
+            let conn = seed();
+            let err = new_person_with_learning(&conn, &[1], "Bob", &context()).unwrap_err();
+            assert_eq!(err.to_string(), "face 1 is already named or confirmed");
+        }
+
         fn embedding(x: u16, y: u16) -> Vec<u8> {
             [x.to_le_bytes(), y.to_le_bytes()].concat()
         }
@@ -2016,6 +2067,41 @@ mod tests {
         assert_eq!(p.faces.len(), 2);
         assert!(p.faces[0].is_primary, "primary sorts first and is flagged");
         assert!(!p.faces[1].is_primary);
+    }
+
+    /// A photo stored at two byte-identical paths has one set of faces.
+    fn seed_with_a_second_path_for(hash: &str) -> Connection {
+        let conn = seed();
+        conn.execute_batch(
+            "ALTER TABLE file_hashes RENAME TO file_hashes_old;
+             CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT);
+             INSERT INTO file_hashes (path, hash) SELECT path, hash FROM file_hashes_old;
+             DROP TABLE file_hashes_old;",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash) VALUES (?1, ?2)",
+            rusqlite::params![format!("/copy/{hash}.jpg"), hash],
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn detail_pages_list_a_face_once_when_its_photo_has_two_paths() {
+        let conn = seed_with_a_second_path_for("h3");
+        let c = cluster_detail(&conn, 7).unwrap();
+        assert_eq!(
+            c.faces.iter().map(|f| f.face_id).collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+        let conn = seed_with_a_second_path_for("h1");
+        let p = person_detail(&conn, "Alice").unwrap();
+        assert_eq!(
+            p.faces.iter().map(|f| f.face_id).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert!(p.faces[0].is_primary);
     }
 
     #[test]
