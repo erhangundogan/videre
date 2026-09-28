@@ -951,15 +951,19 @@ mod progress_tests {
     fn one_byte_keeps_a_read_alive_past_old_total_budget() {
         for declared_size in [1_000_000_u64, 100_000_000_000_u64] {
             let pool = Arc::new(IoWorkerPool::new(1));
-            let result = run_with_progress_timeout_in(&pool, Duration::from_millis(40), move |h| {
-                let mut reader = h.wrap(Cursor::new([1_u8; 6]));
-                let mut byte = [0];
-                for _ in 0..6 {
-                    reader.read_exact(&mut byte).unwrap();
-                    thread::sleep(Duration::from_millis(15));
-                }
-                (declared_size, byte[0])
-            });
+            // The stream (10 x 30 ms) outlasts the idle window twice over,
+            // while each gap stays a fifth of it: margin enough for a loaded
+            // CI runner's scheduling, which ate the earlier 15-of-40 ms.
+            let result =
+                run_with_progress_timeout_in(&pool, Duration::from_millis(150), move |h| {
+                    let mut reader = h.wrap(Cursor::new([1_u8; 10]));
+                    let mut byte = [0];
+                    for _ in 0..10 {
+                        reader.read_exact(&mut byte).unwrap();
+                        thread::sleep(Duration::from_millis(30));
+                    }
+                    (declared_size, byte[0])
+                });
             assert!(matches!(result, Ok((size, 1)) if size == declared_size));
         }
     }
