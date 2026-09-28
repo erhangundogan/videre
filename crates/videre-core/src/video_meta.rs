@@ -353,16 +353,6 @@ pub fn read(path: &Path) -> VideoMeta {
     .unwrap_or_default()
 }
 
-/// Read metadata from an already-confined file handle.
-pub fn read_file(file: std::fs::File) -> VideoMeta {
-    crate::io_timeout::run_with_timeout(crate::io_timeout::DEFAULT_IO_TIMEOUT, move || {
-        read_file_inner(file)
-    })
-    .ok()
-    .flatten()
-    .unwrap_or_default()
-}
-
 /// Parse a reader already guarded by an outer progress-aware I/O worker.
 /// This must not start a nested timeout worker when the configured limit is 1.
 pub fn read_file_in_progress<R: std::io::Read + std::io::Seek>(reader: &mut R) -> VideoMeta {
