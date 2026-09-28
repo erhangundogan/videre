@@ -190,7 +190,10 @@ fn prune_preserves_faces_while_a_duplicate_path_survives() {
 #[test]
 fn dry_run_previews_face_lower_bound_without_writes() {
     let (lib, _, _, _) = fixture_library();
+    // Orphaned only once the pending row deletion runs: not counted.
     seed_face(&lib, "hphantom");
+    // Already orphaned (no indexed path): counted.
+    seed_face(&lib, "hnopath");
     let db = lib.db();
     let before = common::feature_fixture::snapshot_database(&db);
     let out = lib.cmd().args(["prune", "--dry-run"]).output().unwrap();
@@ -200,7 +203,10 @@ fn dry_run_previews_face_lower_bound_without_writes() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(common::feature_fixture::snapshot_database(&db), before);
-    assert!(String::from_utf8_lossy(&out.stderr).contains("lower bound"));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("1 orphan face(s) (1 labeled)"), "{stderr}");
+    assert!(stderr.contains("lower bound"), "{stderr}");
+    assert!(!stderr.contains("retired"), "nothing was retired: {stderr}");
 
     let conn = lib.conn();
     conn.execute_batch("DROP TABLE faces;

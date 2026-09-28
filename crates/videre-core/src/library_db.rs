@@ -874,8 +874,18 @@ pub fn open_existing(ctx: &LibraryContext) -> Result<Connection> {
         validate_row_containment(ctx, &conn)?;
         drop(conn);
         drop(activity);
-        let _exclusive = crate::library_locks::try_activity(ctx, ActivityMode::Exclusive)?;
-        let _init = crate::library_locks::try_init(ctx)?;
+        // Locks refuse rather than wait, so a videre still running in this
+        // library (an older `watch` or gallery) stops the upgrade: say so.
+        let upgrade_blocked = || {
+            format!(
+                "the library at {} needs a one-time upgrade to schema 4, which needs \
+                 every other videre command in it stopped first; stop them and retry",
+                ctx.paths.root.display()
+            )
+        };
+        let _exclusive = crate::library_locks::try_activity(ctx, ActivityMode::Exclusive)
+            .with_context(upgrade_blocked)?;
+        let _init = crate::library_locks::try_init(ctx).with_context(upgrade_blocked)?;
         crate::library_locks::verify_state(ctx)?;
         let conn = open_existing_conn(ctx)?;
         require_supported_library(&conn, &ctx.paths.db)?;
@@ -1021,6 +1031,26 @@ mod tests {
             )
             .unwrap()
             .contains("AUTOINCREMENT"));
+    }
+
+    /// Another videre still at work in the library (here, a held shared
+    /// lease) blocks the upgrade; the refusal says why and changes nothing.
+    #[test]
+    fn a_busy_library_explains_the_pending_upgrade() {
+        let (_temp, ctx) = library();
+        let conn = initialize(&ctx).unwrap();
+        make_v3(&conn);
+        drop(conn);
+        let _other = crate::library_locks::try_activity(&ctx, ActivityMode::Shared).unwrap();
+        let error = open_existing(&ctx).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("one-time upgrade to schema 4"),
+            "{error:#}"
+        );
+        assert_eq!(
+            user_version(&open_without_create(&ctx.paths.db).unwrap()).unwrap(),
+            3
+        );
     }
 
     #[test]

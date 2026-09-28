@@ -562,21 +562,43 @@ pub(crate) fn run_prune(
         } else {
             String::new()
         };
+        // Only what happened, like the other notes: most prunes touch no face.
         let face_note = face_report.map_or_else(String::new, |report| {
+            let learning = &report.learning;
+            let mut parts = Vec::new();
+            if report.faces > 0 {
+                parts.push(format!(
+                    "{} orphan face(s) ({} labeled)",
+                    report.faces, report.labeled_faces
+                ));
+            }
+            if report.scanned_hashes > 0 {
+                parts.push(format!("{} face scan marker(s)", report.scanned_hashes));
+            }
+            if learning.events_invalidated > 0 {
+                parts.push(format!(
+                    "{} learning event(s) invalidated",
+                    learning.events_invalidated
+                ));
+            }
+            if learning.questions_superseded > 0 {
+                parts.push(format!(
+                    "{} question(s) superseded",
+                    learning.questions_superseded
+                ));
+            }
+            if learning.profile_retired {
+                parts.push("the active learned profile retired".to_owned());
+            }
+            if parts.is_empty() {
+                return String::new();
+            }
             let qualifier = if args.dry_run {
                 " (lower bound; actual may be higher after removals)"
             } else {
                 ""
             };
-            format!(
-                ", {} orphan face(s), {} labeled face(s), {} face scan marker(s) {action} pruned; {} learning event(s) invalidated, {} question(s) superseded, active profile retired: {}{qualifier}",
-                report.faces,
-                report.labeled_faces,
-                report.scanned_hashes,
-                report.learning.events_invalidated,
-                report.learning.questions_superseded,
-                report.learning.profile_retired,
-            )
+            format!(", {} {action} pruned{qualifier}", parts.join(", "))
         });
         tracing::info!(
             "{total} row(s) checked: {removed} {action} removed, {synced} {action} synced, {errors} error(s){face_note}{orphan_note}{model_note}{cache_note}."
