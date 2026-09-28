@@ -12,6 +12,7 @@ videre dedupe --remove --dry-run       # show what --remove would trash
 videre dedupe --remove                 # move the copies to the trash (asks first)
 videre dedupe --remove --yes           # ...without the confirmation prompt
 videre dedupe --similar                # also report look-alike groups (review only)
+videre dedupe --edited --remove        # Google Takeout: trash the -edited copies, keep the originals
 videre --library ~/Photos dedupe       # select a different library
 videre dedupe --json                   # print one JSON object instead
 ```
@@ -135,6 +136,39 @@ chosen, especially across [multiple scanned folders](/guides/multiple-libraries/
 
 If two copies have identical dates, the choice between them is arbitrary.
 :::
+
+## Google Photos edits: `--edited`
+
+Google Takeout exports every photo you edited in Google Photos twice: the
+original, `IMG_1.jpg`, and Google's render of the edit, `IMG_1-edited.jpg`,
+side by side in the same folder. The bytes differ, so they are not exact
+duplicates, and a crop or filter can put them past `--similar` too. In one real
+export a fifth of all files were such edits.
+
+`--edited` pairs them by name: a file named `<name>-edited.<ext>` (or
+`<name>-edited(1).<ext>`, with Google's counter) whose original
+`<name>.<ext>` is in the same folder. The **original is kept** and the edit is
+listed for removal, since the original is the file the camera wrote and the
+edit is Google's re-encoded copy of it.
+
+```bash
+videre dedupe --edited --html             # review the pairs side by side
+videre dedupe --edited --remove --dry-run # list the edits that would go
+videre dedupe --edited --remove           # trash them (asks first)
+```
+
+With `--remove`, the edits go the same way exact duplicates do: to the trash,
+after a confirmation, followed by the database clean-up. They do not count
+toward the implausibly-large-deletion check, so no `--force` is needed: a pair
+exists only when both files are in the library, so a large number of them is
+what a Takeout export looks like, not a sign of a mistake. Faces named on an
+edit are not moved to its original; name them again there if you need to.
+
+`--json --edited` adds `edited_pairs`, each `{"kept": ..., "removed": ...}`.
+
+The pairs come from the last scan, and so do `--json`, `--html` and the
+gallery's Duplicates page. Removal checks the disk again: an edit whose
+original has gone since that scan is kept, since it is now the only copy.
 
 ## `--similar` is review-only
 

@@ -69,6 +69,32 @@ fn run_dedupe_html(lib: &TestLibrary) -> String {
     std::fs::read_to_string(&out).unwrap()
 }
 
+/// `dedupe --html` shows Google Takeout edit pairs only with `--edited`.
+#[test]
+fn dedupe_html_shows_edit_pairs_only_with_edited() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "Photos/IMG_1.jpg");
+    lib.copy_fixture("sample_with_exif.jpg", "Photos/IMG_1-edited.jpg");
+    lib.scan();
+    let html = run_dedupe_html(&lib);
+    assert!(
+        !html.contains("\"edited\":true"),
+        "no pairs without --edited"
+    );
+
+    let out = lib.context().paths.root.join("edited.html");
+    let status = lib
+        .cmd()
+        .args(["dedupe", "--edited", "--html"])
+        .arg(&out)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let html = std::fs::read_to_string(&out).unwrap();
+    assert!(html.contains("\"edited\":true"), "the pair is shown");
+    assert!(html.contains("IMG_1-edited.jpg"));
+}
+
 /// `videre search --html`, the other static page. Renders a flat list rather
 /// than duplicate groups.
 fn run_search_html(lib: &TestLibrary, query: &str) -> String {

@@ -1589,3 +1589,20 @@ fn a_training_run_never_holds_up_requests() {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+/// The duplicates page shows a Google Takeout edit beside its original, the
+/// original first (it is the one kept).
+#[test]
+fn duplicates_page_shows_google_photos_edit_pairs() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "Photos from 2015/IMG_1.jpg");
+    lib.copy_fixture("sample_with_exif.jpg", "Photos from 2015/IMG_1-edited.jpg");
+    lib.scan();
+    let server = Server::start(&lib);
+    let (status, body) = server.get("/duplicates");
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"edited\":true"), "{body}");
+    let original = body.find("IMG_1.jpg").expect("original listed");
+    let edit = body.find("IMG_1-edited.jpg").expect("edit listed");
+    assert!(original < edit, "the kept original comes first");
+}

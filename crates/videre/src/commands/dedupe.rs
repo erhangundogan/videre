@@ -38,6 +38,12 @@ pub struct DedupeArgs {
     #[arg(long)]
     force: bool,
 
+    /// Also pair Google Takeout edits with their originals (`a-edited.jpg`
+    /// beside `a.jpg` in one folder). With --remove, the edits go to the
+    /// trash and the originals stay.
+    #[arg(long)]
+    edited: bool,
+
     /// Print duplicate paths NUL-delimited instead of newline-delimited, so
     /// `videre dedupe --print0 | xargs -0 trash` is safe for paths with spaces.
     #[arg(long)]
@@ -88,6 +94,7 @@ fn write_html(
     ctx: &CommandContext,
     conn: &rusqlite::Connection,
     arg: Option<&std::path::Path>,
+    edited: bool,
 ) -> anyhow::Result<()> {
     let db = &ctx.library.paths.db;
     // A bare --html targets a page beside the selected database; an explicit
@@ -105,7 +112,12 @@ fn write_html(
         }
     };
     let groups = crate::render::query_groups(conn);
-    crate::render::write_static_page(conn, &output, &groups, None)
+    let edited_groups = if edited {
+        crate::render::query_edited_groups(conn)
+    } else {
+        Vec::new()
+    };
+    crate::render::write_static_page(conn, &output, &groups, &edited_groups, None)
 }
 
 fn run_text(args: DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
@@ -150,30 +162,93 @@ fn run_text(args: DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     }
 
     if let Some(arg) = args.html.as_ref() {
-        write_html(ctx, &conn, arg.as_deref())?;
+        write_html(ctx, &conn, arg.as_deref(), args.edited)?;
     }
     Ok(())
 }
 
 /// Write the removable loser paths to stdout, NUL-delimited when `print0` so a
 /// `| xargs -0` consumer is safe for paths containing spaces, else one per line.
-fn print_losers_delimited(groups: &[videre::types::DuplicateGroup], print0: bool) {
+fn print_paths_delimited(paths: &[std::path::PathBuf], print0: bool) {
     use std::io::Write;
-    if !print0 {
-        videre::output::print_losers(groups);
-        return;
-    }
     let mut out = std::io::stdout().lock();
-    for path in videre::output::loser_paths(groups) {
-        let _ = write!(out, "{path}\0");
+    for path in paths {
+        let _ = if print0 {
+            write!(out, "{}\0", path.display())
+        } else {
+            writeln!(out, "{}", path.display())
+        };
+    }
+}
+
+/// What a run removes: the exact-duplicate losers, then, with `--edited`,
+/// each Google Takeout edit not already among them. Kept apart because only
+/// the exact losers count toward the bulk-deletion guard: an edit is paired
+/// only when its original is in the library too, so a large count is what a
+/// Takeout export looks like, not a sign of a mistake.
+struct Removals {
+    exact: Vec<std::path::PathBuf>,
+    edits: Vec<std::path::PathBuf>,
+}
+
+impl Removals {
+    /// The two decisions are made together, not side by side:
+    ///
+    /// - An edit goes only while its original is still on disk. The pairing
+    ///   comes from rows, and an original deleted since the last scan would
+    ///   otherwise leave the edit as the only file, then take that too.
+    /// - An exact group keeps its first file that is not itself an edit being
+    ///   removed. Exact dedupe alone may keep an edit (the oldest copy), and
+    ///   removing that edit as well would leave its content with no copy.
+    fn collect(records: &[videre::types::FileRecord], edited: bool) -> Removals {
+        use std::path::{Path, PathBuf};
+        let edits: Vec<PathBuf> = if edited {
+            videre::output::edited_losers(records)
+                .into_iter()
+                .filter(|(original, _)| Path::new(original).exists())
+                .map(|(_, edit)| PathBuf::from(edit))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let going: std::collections::HashSet<&Path> = edits.iter().map(PathBuf::as_path).collect();
+        let mut exact = Vec::new();
+        for group in videre::output::find_duplicate_groups(records) {
+            let paths: Vec<&Path> = group.files.iter().map(|f| Path::new(&f.path)).collect();
+            // Every copy is an edit whose original stays: all of them go.
+            let keeper = paths.iter().position(|p| !going.contains(p));
+            for (i, path) in paths.into_iter().enumerate() {
+                if Some(i) != keeper && !going.contains(path) {
+                    exact.push(path.to_path_buf());
+                }
+            }
+        }
+        Removals { exact, edits }
+    }
+
+    fn all(&self) -> Vec<std::path::PathBuf> {
+        self.exact.iter().chain(&self.edits).cloned().collect()
+    }
+
+    /// `3 exact duplicate(s) and 2 Google Photos edit(s)`, leaving out a zero part.
+    fn describe(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.exact.is_empty() {
+            parts.push(format!("{} exact duplicate(s)", self.exact.len()));
+        }
+        if !self.edits.is_empty() {
+            parts.push(format!("{} Google Photos edit(s)", self.edits.len()));
+        }
+        parts.join(" and ")
     }
 }
 
 /// `--remove`: videre moves the duplicate copies to the system trash itself.
 /// Safe by default: refuses on a missing library volume, refuses an implausibly
 /// large deletion without --force, confirms unless --yes, and `--dry-run` only
-/// previews. Operates only on the losers `loser_paths` computes, so the kept
-/// copy per group is never removed.
+/// previews. Operates only on what `Removals` computes, which is also what
+/// the report prints: an exact group's kept copy is never removed, and an edit
+/// goes only while its original is on disk.
 fn run_remove(
     args: &DedupeArgs,
     ctx: &CommandContext,
@@ -182,54 +257,66 @@ fn run_remove(
     let records = videre::sqlite_output::load_records_from(conn)
         .map_err(|e| anyhow::anyhow!("reading the library database: {e}"))?;
     let total = records.len();
-    let groups = videre::output::find_duplicate_groups(&records);
-    let losers: Vec<std::path::PathBuf> = videre::output::loser_paths(&groups)
-        .into_iter()
-        .map(std::path::PathBuf::from)
-        .collect();
+    let volume_missing = || {
+        anyhow::anyhow!(
+            "library root {:?} is not available (is the drive connected?); removed nothing",
+            ctx.library.paths.root
+        )
+    };
+    // Missing-volume refusal: never read "the files are gone" as "everything is
+    // a duplicate to remove". With --edited it comes before anything is
+    // counted, because pairing checks each original on disk: a detached drive
+    // would otherwise empty the set and report "Nothing to remove."
+    if args.edited && !ctx.library.paths.root.is_dir() {
+        return Err(volume_missing());
+    }
+    let removals = Removals::collect(&records, args.edited);
+    let losers = removals.all();
 
     if losers.is_empty() {
         if !args.silent {
-            tracing::info!("No exact duplicates to remove.");
+            if args.edited {
+                tracing::info!("Nothing to remove.");
+            } else {
+                tracing::info!("No exact duplicates to remove.");
+            }
         }
         return Ok(0);
     }
 
-    // Missing-volume refusal: never read "the files are gone" as "everything is
-    // a duplicate to remove". Check before the guard and before any deletion.
+    // Check before the guard and before any deletion.
     if !ctx.library.paths.root.is_dir() {
-        anyhow::bail!(
-            "library root {:?} is not available (is the drive connected?); removed nothing",
-            ctx.library.paths.root
-        );
+        return Err(volume_missing());
     }
 
     // Bulk-deletion guard, shared with prune: an implausibly large share of the
     // library is more likely a wrong selection or a mounting accident.
-    if !args.force && super::is_bulk_delete(losers.len(), total) {
+    // Only exact duplicates count: see `Removals`.
+    let exact = removals.exact.len();
+    if !args.force && super::is_bulk_delete(exact, total) {
         tracing::warn!(
             "refusing to remove {} of {} file(s) ({:.0}% of the library): \
              that is more likely a mistake than real duplicates.",
-            losers.len(),
+            exact,
             total,
-            (losers.len() as f64 / total.max(1) as f64) * 100.0
+            (exact as f64 / total.max(1) as f64) * 100.0
         );
         tracing::warn!("  nothing was removed; re-run with --force if this is intended");
         return Ok(0);
     }
 
     if args.dry_run {
-        print_losers_delimited(&groups, args.print0);
+        print_paths_delimited(&losers, args.print0);
         if !args.silent {
-            tracing::info!("{} file(s) would be moved to the trash.", losers.len());
+            tracing::info!("{} would be moved to the trash.", removals.describe());
         }
         return Ok(0);
     }
 
     if !args.yes
         && !super::confirm(&format!(
-            "This will move {} duplicate file(s) to the trash. Continue?",
-            losers.len()
+            "This will move {} to the trash. Continue?",
+            removals.describe()
         ))?
     {
         tracing::info!("Aborted; nothing was removed.");
@@ -265,6 +352,7 @@ fn run_dedupe_text(args: &DedupeArgs, conn: &rusqlite::Connection) -> anyhow::Re
         .map_err(|e| anyhow::anyhow!("reading the library database: {e}"))?;
 
     let groups = videre::output::find_duplicate_groups(&records);
+    let removals = Removals::collect(&records, args.edited);
     if !args.silent {
         if groups.is_empty() {
             tracing::info!("No exact duplicates found.");
@@ -275,8 +363,15 @@ fn run_dedupe_text(args: &DedupeArgs, conn: &rusqlite::Connection) -> anyhow::Re
                 groups.iter().map(|g| g.files.len() - 1).sum::<usize>()
             );
         }
+        if args.edited {
+            tracing::info!(
+                "{} edited pair(s), {} Google Photos edit(s) to remove.",
+                videre::output::edited_losers(&records).len(),
+                removals.edits.len()
+            );
+        }
     }
-    print_losers_delimited(&groups, args.print0);
+    print_paths_delimited(&removals.all(), args.print0);
 
     if args.similar {
         let similar = videre::output::find_similar_groups(&records, 10);
@@ -304,6 +399,6 @@ fn run_json(
     )?;
     let guard = videre_core::library_locks::try_command(&ctx.library, "dedupe")?;
     videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "dedupe", || {
-        super::build_find_duplicates_from(&conn, args.similar)
+        super::build_find_duplicates_from(&conn, args.similar, args.edited)
     })
 }
