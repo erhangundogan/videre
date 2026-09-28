@@ -28,19 +28,18 @@ pub fn decode(path: &Path, size: usize) -> Result<image::DynamicImage> {
         videre_core::heic::decode_via_quicklook(path, "embed-video", Some((size * 2) as u32))?
     } else {
         let timeout_path = path.to_path_buf();
-        videre_core::io_timeout::run_with_timeout(videre_core::io_timeout::DEFAULT_IO_TIMEOUT, move || {
-            // Orientation-aware decode: the tensor must describe the photo as
-            // a person sees it, not the sensor canvas (see
-            // `videre_core::image_decode` for why HEIC never reaches here).
-            videre_core::image_decode::decode_oriented_file(&timeout_path)
-        })
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "timed out reading {} after {}s (file may be unreachable - is its drive connected?)",
-                path.display(),
-                videre_core::io_timeout::DEFAULT_IO_TIMEOUT.as_secs()
-            )
-            .context(videre_core::error_kind::ErrorKind::SourceUnavailable)
+        videre_core::io_timeout::run_with_timeout(
+            videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
+            move || {
+                // Orientation-aware decode: the tensor must describe the photo as
+                // a person sees it, not the sensor canvas (see
+                // `videre_core::image_decode` for why HEIC never reaches here).
+                videre_core::image_decode::decode_oriented_file(&timeout_path)
+            },
+        )
+        .map_err(|e| {
+            videre_core::error_kind::from_io(e.into_io_error())
+                .context(format!("could not read {}", path.display()))
         })?
         .map_err(|e| {
             videre_core::error_kind::from_image(e).context(format!("decode {}", path.display()))

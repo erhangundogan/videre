@@ -105,6 +105,18 @@ fn needs_sync(stored: Option<&str>, current: &str) -> bool {
     stored != Some(current)
 }
 
+fn missing_row_removable(
+    evidence: videre_core::io_timeout::AbsenceEvidence,
+    prune_unreachable: bool,
+) -> bool {
+    use videre_core::io_timeout::AbsenceEvidence;
+    match evidence {
+        AbsenceEvidence::ParentPresent => true,
+        AbsenceEvidence::ParentMissing => prune_unreachable,
+        AbsenceEvidence::Unknown => false,
+    }
+}
+
 pub fn run(args: PruneArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     if args.dry_run && !args.silent {
         tracing::info!("Dry run: no changes will be made to the database.");
@@ -178,6 +190,7 @@ pub(crate) fn run_prune(
     // report is "these 2 directories are gone", not 12,431 identical lines.
     let mut unreachable_dirs: std::collections::BTreeSet<String> = Default::default();
     let mut unreachable = 0usize;
+    let mut unknown_absence = 0usize;
     // Consecutive, not cumulative: a few unreadable files should not abort an
     // otherwise good run, but a systemically failing drive should stop at once
     // instead of printing one line per row.
@@ -195,24 +208,80 @@ pub(crate) fn run_prune(
     let mut planned: Vec<(&String, Fate)> = Vec::with_capacity(paths.len());
 
     for (path, stored_mtime) in &paths {
-        match std::fs::metadata(path) {
-            Err(_) => {
+        let stat_path = std::path::PathBuf::from(path);
+        let stat = videre_core::io_timeout::run_with_timeout(
+            videre_core::io_timeout::STAT_TIMEOUT,
+            move || std::fs::metadata(stat_path),
+        );
+        match stat {
+            Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                 // A missing file is only a deletion if its parent is still
                 // there. Parent gone means the directory, or the whole volume,
                 // is gone: keep the row. Deleting it would additionally orphan
                 // its embedding and cached thumbnail, which is hours of
                 // recompute against minutes to re-scan the row.
                 let p = std::path::Path::new(path);
-                if !videre_core::io_timeout::absence_is_trustworthy(p) && !args.prune_unreachable {
-                    if let Some(parent) = p.parent() {
-                        unreachable_dirs.insert(parent.display().to_string());
+                let evidence = videre_core::io_timeout::absence_evidence(p);
+                if !missing_row_removable(evidence, args.prune_unreachable) {
+                    if evidence == videre_core::io_timeout::AbsenceEvidence::Unknown {
+                        errors += 1;
+                        unknown_absence += 1;
+                        consecutive += 1;
+                        if first_error.is_none() {
+                            first_error = Some(format!(
+                                "checking parent directory for {path}: filesystem result unknown"
+                            ));
+                        }
+                        if consecutive >= MAX_CONSECUTIVE_ERRORS {
+                            abort_on_repeated_errors(consecutive, errors, total, &first_error);
+                            return Ok(errors);
+                        }
+                    } else {
+                        if let Some(parent) = p.parent() {
+                            unreachable_dirs.insert(parent.display().to_string());
+                        }
+                        unreachable += 1;
+                        consecutive = 0;
                     }
-                    unreachable += 1;
                     continue;
                 }
                 planned.push((path, Fate::Remove));
             }
-            Ok(meta) => match meta.modified() {
+            Ok(Err(error)) => {
+                if first_error.is_none() {
+                    first_error = Some(format!("checking {path}: {error}"));
+                }
+                report_failure(
+                    videre_core::error_kind::from_io(error),
+                    format!("checking {path}"),
+                    path,
+                );
+                errors += 1;
+                consecutive += 1;
+                if consecutive >= MAX_CONSECUTIVE_ERRORS {
+                    abort_on_repeated_errors(consecutive, errors, total, &first_error);
+                    return Ok(errors);
+                }
+                continue;
+            }
+            Err(error) => {
+                if first_error.is_none() {
+                    first_error = Some(format!("checking {path}: {error}"));
+                }
+                report_failure(
+                    videre_core::error_kind::from_io(error.into_io_error()),
+                    format!("checking {path}"),
+                    path,
+                );
+                errors += 1;
+                consecutive += 1;
+                if consecutive >= MAX_CONSECUTIVE_ERRORS {
+                    abort_on_repeated_errors(consecutive, errors, total, &first_error);
+                    return Ok(errors);
+                }
+                continue;
+            }
+            Ok(Ok(meta)) => match meta.modified() {
                 // Only a row whose stored value actually differs is a sync.
                 // This used to push a Sync unconditionally, so a run on an
                 // unchanged library rewrote every row with the value already
@@ -636,6 +705,11 @@ pub(crate) fn run_prune(
         });
         tracing::info!("  run with --prune-unreachable to remove them anyway");
     }
+    if unknown_absence > 0 {
+        tracing::warn!(
+            "{unknown_absence} row(s) kept because their parent directory could not be checked; retry when I/O is available"
+        );
+    }
 
     Ok(errors)
 }
@@ -643,6 +717,18 @@ pub(crate) fn run_prune(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_parent_never_authorizes_removal_even_with_override() {
+        assert!(!missing_row_removable(
+            videre_core::io_timeout::AbsenceEvidence::Unknown,
+            true
+        ));
+        assert!(missing_row_removable(
+            videre_core::io_timeout::AbsenceEvidence::ParentMissing,
+            true
+        ));
+    }
 
     /// An unchanged row must not be synced. This is the whole of BUG:21: the
     /// classifier used to push a Sync for every file that existed, so the count

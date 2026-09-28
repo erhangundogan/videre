@@ -85,6 +85,36 @@ fn exif_fields_are_populated_from_a_confined_original() {
 }
 
 #[test]
+fn io_workers_one_keeps_video_metadata_during_scan() {
+    let library = TestLibrary::new();
+    library.copy_fixture("content_key/testsrc_dated.mp4", "dated.mp4");
+    let configured = library
+        .cmd()
+        .args(["config", "set", "io-workers", "1"])
+        .output()
+        .unwrap();
+    assert!(configured.status.success());
+    let output = scan(&library, &["--silent"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("worker limit"));
+    let row: (Option<String>, Option<f64>, Option<String>) = library
+        .conn()
+        .query_row(
+            "SELECT exif_date, duration_secs, codec FROM file_hashes WHERE ext = 'mp4'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert!(row.0.is_some(), "video date is missing");
+    assert!(row.1.is_some_and(|seconds| seconds > 0.0));
+    assert!(row.2.is_some(), "video codec is missing");
+}
+
+#[test]
 fn repeated_scan_upserts_instead_of_duplicating_rows() {
     let library = TestLibrary::new();
     let path = library.copy_fixture("tiny.jpg", "image.jpg");
@@ -155,6 +185,13 @@ fn unreadable_files_are_skipped_and_reported() {
         .query_row("SELECT count(*) FROM file_hashes", [], |row| row.get(0))
         .unwrap();
     assert_eq!(count, 1);
+    std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(scan(&library, &["--silent"]).status.success());
+    let count: i64 = library
+        .conn()
+        .query_row("SELECT count(*) FROM file_hashes", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 2, "the skipped path must remain retryable");
 }
 
 #[test]

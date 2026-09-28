@@ -741,7 +741,12 @@ above.
 - Model loads inside `with_work`, never before -> `videre_core::work`
 - Person identity vs display name -> `videre_core::person`
 - Search predicates shared by CLI and MCP -> `videre_core::query`
-- Read timeout scales with size, stat timeout does not -> `videre_core::io_timeout::timeout_for_size`
+- Hashing has a no-progress deadline only, never a total or size-derived one:
+  any nonzero read refreshes it -> `videre_core::io_timeout::run_with_progress_timeout`
+- Other whole-file read timeouts scale with size, the stat timeout does not -> `videre_core::io_timeout::timeout_for_size`
+- One I/O worker holds one permit from before spawn until its closure exits,
+  timed out or not; a full pool refuses (capacity), never reported as a dead
+  drive, and prune treats it as unknown -> `videre_core::io_timeout` (`IoWorkerPool`)
 - Face clustering O(n^2) fixes (memory and time) -> `videre_core::face_cluster`
 - Location clustering has no n*n matrix: cells first, then sparse average
   linkage -> `videre_core::location_cluster::cluster_by_distance`

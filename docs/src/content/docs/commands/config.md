@@ -11,6 +11,7 @@ cd ~/Photos
 videre config
 videre config set model google/siglip-base-patch16-224
 videre config set read-rate 10
+videre config set io-workers 64
 videre config set xmp file
 videre config set export-xmp-on-watch true
 videre config set watch-debounce-ms 500
@@ -36,6 +37,7 @@ db:            /Users/you/Photos/.videre/hashes.db
 jsonl:         /Users/you/Photos/.videre/hashes.jsonl
 model:         google/siglip-base-patch16-224
 read-rate:     20 MB/s (default)
+io-workers:    40 (default)
 xmp:           db
 export-xmp-on-watch: off
 watch-debounce-ms: 1500 ms (default)
@@ -56,6 +58,7 @@ log-max-age-days: 30 days
 | `jsonl` | Fixed JSONL snapshot path |
 | `model` | Effective embedding and search model |
 | `read-rate` | Assumed minimum read speed used for large-file timeouts |
+| `io-workers` | Maximum concurrent helper I/O workers in this process |
 | `xmp` | Effective XMP precedence for ingest |
 | `export-xmp-on-watch` | Whether watch exports XMP each cycle |
 | `watch-debounce-ms` | How long watch lets file changes settle before processing |
@@ -75,6 +78,7 @@ are responsible for initializing a library database.
 |---|---|---|
 | `model` | `default_model` | A supported `owner/model` identifier |
 | `read-rate` | `min_read_rate_mb_s` | A positive whole number in MB/s |
+| `io-workers` | `max_io_workers` | A whole number from 1 through 256 |
 | `xmp` | `xmp_precedence` | `db`, `file`, or `newest` |
 | `export-xmp-on-watch` | `export_xmp_on_watch` | `true` or `false` |
 | `watch-debounce-ms` | `watch_debounce_ms` | A positive whole number of milliseconds |
@@ -101,6 +105,12 @@ watch_debounce_ms = 1500
 ```
 
 Setting or unsetting one key preserves the others and any unknown tables.
+
+`io-workers` limits helper threads that may remain blocked on an unresponsive
+drive. The built-in default is four times the reported CPU count, with a floor
+of 32 and a ceiling of 128, so the displayed default varies by computer. A
+worker keeps its slot until it actually exits, even when its caller has timed
+out. The limit applies to this videre process, not other running processes.
 
 `watch-debounce-ms` is how long [`videre watch`](/commands/watch/) lets file
 changes settle before processing them as one batch. Lower it for the fastest

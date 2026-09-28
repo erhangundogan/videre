@@ -72,6 +72,26 @@ single transaction, measured at about 8 minutes on a 70,000 file library, and
 holds the write lock throughout. A concurrent `watch` write will wait. Run it
 when nothing else needs to write.
 
+## Slow and unresponsive drives
+
+A long job on a slow drive is not cut short. Hashing a file has no total time
+limit: as long as bytes keep arriving, however slowly, the read continues. A
+file is skipped only when its read returns nothing for 20 seconds, or when its
+metadata does not answer within five seconds. A skipped file is not marked as
+done, so the next run, or the next [`watch`](/commands/watch/) cycle, tries it
+again. There is no promise of a fixed total scan time on a slow drive.
+
+A read that the operating system never returns cannot be cancelled. videre
+stops waiting for it, but the helper thread stays blocked until the drive
+answers, and keeps its place among the process's
+[`io-workers`](/commands/config/). When every place is held by a stuck read,
+new files are refused rather than queued behind them: videre warns once that
+the I/O worker pool is saturated, skips the affected files so they are retried
+later, and says on exit how many were refused. A refusal is reported as its
+own condition, never as the drive timing out, and
+[`prune`](/commands/prune/) treats it as "unknown", so it never deletes a row
+because a file could not be checked.
+
 ## Interrupting
 
 Ctrl-C is safe on every long-running command. None of them can leave the

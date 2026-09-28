@@ -82,11 +82,8 @@ pub fn make_face_thumb(
             tracing::warn!("face thumbnail unavailable for {path}: {e}; skipping");
             return None;
         }
-        Err(_) => {
-            tracing::warn!(
-                "timed out reading {path} for face thumbnail \
-                 (file may be unreachable - is its drive connected?); skipping"
-            );
+        Err(e) => {
+            tracing::warn!("face thumbnail unavailable for {path}: {e}; skipping");
             return None;
         }
     };
@@ -103,12 +100,7 @@ fn read_with_timeout(path: &str) -> std::io::Result<Vec<u8>> {
         videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
         move || std::fs::read(&owned),
     )
-    .unwrap_or_else(|_| {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            format!("timed out reading {path} (file may be unreachable - is its drive connected?)"),
-        ))
-    })
+    .unwrap_or_else(|e| Err(e.into_io_error()))
 }
 
 pub fn mime_for_ext(ext: &str) -> &'static str {

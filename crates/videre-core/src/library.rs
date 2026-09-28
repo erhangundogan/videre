@@ -159,13 +159,21 @@ where
         Ok(Err(e)) => {
             Err(crate::error_kind::from_io(e).context(format!("{} {}", op, path.display())))
         }
-        Err(io_timeout::TimedOut) => Err(anyhow::anyhow!(
+        Err(io_timeout::IoRunError::Capacity { active, limit }) => {
+            Err(crate::error_kind::from_io(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                format!("I/O worker limit reached ({active}/{limit} active)"),
+            ))
+            .context(format!("{} {}", op, path.display())))
+        }
+        Err(io_timeout::IoRunError::Deadline(d)) => Err(anyhow::anyhow!(
             "could not {} {} after {}s (the drive did not respond - is it connected?)",
             op,
             path.display(),
-            budget.as_secs()
+            d.as_secs()
         )
         .context(crate::error_kind::ErrorKind::SourceUnavailable)),
+        Err(e) => Err(anyhow::Error::new(e).context(format!("{} {}", op, path.display()))),
     }
 }
 

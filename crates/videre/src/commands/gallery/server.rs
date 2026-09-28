@@ -3897,11 +3897,8 @@ async fn handle_raw_file(
                     tracing::warn!("raw file unavailable for {path}: {e}; skipping");
                     return None;
                 }
-                Err(_) => {
-                    tracing::warn!(
-                        "timed out reading {path} \
-                         (file may be unreachable - is its drive connected?); skipping"
-                    );
+                Err(e) => {
+                    tracing::warn!("raw file unavailable for {path}: {e}; skipping");
                     return None;
                 }
             };

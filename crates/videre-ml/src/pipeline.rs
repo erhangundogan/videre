@@ -865,7 +865,7 @@ fn load_image(
         &videre_core::library::CachePaths,
     >,
 ) -> anyhow::Result<image::DynamicImage> {
-    use videre_core::error_kind::{from_image, ErrorKind};
+    use videre_core::error_kind::from_image;
     if path.to_lowercase().ends_with(".heic") {
         #[cfg(target_os = "macos")]
         {
@@ -893,20 +893,20 @@ fn load_image(
         return Err(anyhow::anyhow!(
             "HEIC decoding is only supported on macOS: {path} (hash {hash})"
         )
-        .context(ErrorKind::QuicklookUnavailable));
+        .context(videre_core::error_kind::ErrorKind::QuicklookUnavailable));
     }
     let timeout_path = std::path::PathBuf::from(path);
-    videre_core::io_timeout::run_with_timeout(videre_core::io_timeout::DEFAULT_IO_TIMEOUT, move || {
-        // Orientation-aware: detection must see the photo as a person sees
-        // it, not the sensor canvas (see `videre_core::image_decode`).
-        videre_core::image_decode::decode_oriented_file(&timeout_path)
-    })
-    .map_err(|_| {
-        anyhow::anyhow!(
-            "timed out reading {path} after {}s (file may be unreachable - is its drive connected?)",
-            videre_core::io_timeout::DEFAULT_IO_TIMEOUT.as_secs()
-        )
-        .context(ErrorKind::SourceUnavailable)
+    videre_core::io_timeout::run_with_timeout(
+        videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
+        move || {
+            // Orientation-aware: detection must see the photo as a person sees
+            // it, not the sensor canvas (see `videre_core::image_decode`).
+            videre_core::image_decode::decode_oriented_file(&timeout_path)
+        },
+    )
+    .map_err(|e| {
+        videre_core::error_kind::from_io(e.into_io_error())
+            .context(format!("could not read {path}"))
     })?
     .map_err(|e| from_image(e).context(format!("could not read {path}")))
 }

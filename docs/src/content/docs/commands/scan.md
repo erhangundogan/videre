@@ -141,11 +141,9 @@ problem.
 
 **Reading a file's bytes is the expensive part.** A first scan, a changed
 file, or a `--force` pass reads every byte; on external drives and network
-shares disk speed usually dominates. Set a lower local read-rate assumption for
-a slower mount:
-
-```bash
-videre config set read-rate 5
-```
-
-See [tuning](/guides/tuning/#slow-drives-and-large-files) for details.
+shares disk speed usually dominates. Hashing has no total time limit. It
+continues as long as bytes arrive, even for a very large or slow file, and
+skips a file after 20 seconds without read progress. The initial file stat
+has a separate five-second limit. `read-rate` does not control hashing;
+it still applies to other size-bounded file reads. See
+[tuning](/guides/tuning/#slow-drives-and-large-files) for details.

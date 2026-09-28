@@ -15,28 +15,31 @@ lives.
 
 | Symptom | Look at |
 |---|---|
-| scan skips large files on a slow drive | [`read-rate`](#slow-drives-and-large-files) |
+| scan skips files because reads stop progressing | [Slow drives and large files](#slow-drives-and-large-files) |
 | face detection is slower than expected | [`--workers`, `--profile`](#face-detection) |
 | an interrupted run loses too much work | [`--chunk`](#how-often-work-is-committed) |
 | embedding a big library takes too long | [`--batch`, `VIDERE_EMBED_DTYPE`](#embedding) |
 
 ## Slow drives and large files
 
-Reading a file is bounded by a timeout, so a disconnected drive cannot hang a
-scan forever. That bound **scales with file size** rather than being constant: a
-multi-gigabyte video legitimately takes longer to read than a photo, and a fixed
-ceiling cannot tell a large file from a stalled one.
+Hashing has a 20-second **no-progress** window, not a total deadline. A file
+can take hours if bytes keep arriving; a read that stops returning bytes for
+20 seconds is skipped and can be retried. Even a very slow trickle counts as
+progress. Before hashing, file metadata is checked under a separate five-second
+limit, so a stalled stat cannot start a long read.
 
-The size itself is read first, under a short separate timeout. That ordering is
-the safety property: a dead mount fails there, and the read is never started.
-
-The assumed floor rate is 20 MB/s. On a mount slower than that, healthy files
-get reported as unreachable - and because size does not change, the *same* files
-fail on every run, which by definition are your longest videos:
+`read-rate` no longer controls hashing. It still scales the total timeout for
+other whole-file operations, such as XMP and log reads. Lower it if those
+operations time out on a healthy slow mount:
 
 ```bash
 videre config set read-rate 5
 ```
+
+`io-workers` is a separate safety limit on helper threads. If a kernel read
+does not return after the caller times out, its thread keeps a slot until the
+read finishes. Increase the limit only if a healthy workload is exhausting it;
+the default is four times the CPU count, clamped to 32 through 128.
 
 ## Face detection
 

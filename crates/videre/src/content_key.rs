@@ -656,6 +656,46 @@ fn heic<F: Read + Seek>(f: &mut F, len: u64) -> Option<Vec<Span>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progress_reader_covers_parsed_and_fallback_hash_reads() {
+        struct Slow<R>(R);
+        impl<R: Read> Read for Slow<R> {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                let take = buf.len().min(128);
+                self.0.read(&mut buf[..take])
+            }
+        }
+        impl<R: Seek> Seek for Slow<R> {
+            fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+                self.0.seek(pos)
+            }
+        }
+        let jpeg = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/tiny.jpg"
+        ))
+        .unwrap();
+        // Each 128-byte read waits 50 ms, a twentieth of the idle window,
+        // which a loaded macOS runner's stalls did not respect at tighter
+        // margins; each input as a whole outlasts the window (asserted
+        // below), so only reads refreshing the handle can finish it.
+        let idle = std::time::Duration::from_secs(1);
+        for (bytes, format) in [(jpeg, Some(Format::Jpeg)), (vec![7_u8; 4096], None)] {
+            let expected = keys(&mut io::Cursor::new(&bytes), bytes.len() as u64, format).unwrap();
+            let started = std::time::Instant::now();
+            let got = videre_core::io_timeout::run_with_progress_timeout(idle, move |progress| {
+                let len = bytes.len() as u64;
+                let mut reader = progress.wrap(Slow(io::Cursor::new(bytes)));
+                keys(&mut reader, len, format)
+            })
+            .unwrap()
+            .unwrap();
+            assert_eq!(got, expected);
+            assert!(started.elapsed() > idle, "the read must outlast the window");
+        }
+    }
     use std::io::Cursor;
 
     fn keys_of(bytes: &[u8], format: Format) -> Keys {

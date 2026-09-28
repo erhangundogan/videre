@@ -91,7 +91,7 @@ fn extract_gps(exif: &exif::Exif, coord_tag: Tag, ref_tag: Tag, negative_ref: u8
     }
 }
 
-fn extract_exif_file(mut file: File) -> ExifData {
+fn extract_exif_file<R: Read + Seek>(mut file: R) -> ExifData {
     let mut result = ExifData::default();
     if file.seek(SeekFrom::Start(0)).is_err() {
         return result;
@@ -152,22 +152,22 @@ fn extract_exif(path: &Path) -> ExifData {
 /// macOS rather than fail fast) turns into a returned error instead of
 /// hanging the scan forever on one file.
 pub fn hash_file(path: &Path) -> io::Result<FileRecord> {
+    // Preserve the bounded, stat-first guard before opening a possibly stale
+    // mount. The file size no longer sets a total hashing deadline.
     let owned = path.to_path_buf();
-    // The timeout that was applied comes back with the failure. It used to be
-    // re-derived here by calling std::fs::metadata **unbounded** on the path
-    // that had just timed out - and on a stale mount metadata is precisely the
-    // call that never returns, so the error handler hung in the one scenario
-    // this whole subsystem exists to survive. Nothing in this error path may
-    // touch the filesystem.
-    videre_core::io_timeout::run_with_timeout_for_path_detailed(path, move || {
-        hash_file_inner(&owned)
+    videre_core::io_timeout::run_with_timeout(videre_core::io_timeout::STAT_TIMEOUT, move || {
+        std::fs::metadata(owned).map(|_| ())
     })
-    .unwrap_or_else(|timed_out| {
-        Err(io::Error::new(
-            io::ErrorKind::TimedOut,
-            timed_out.describe(path),
-        ))
-    })
+    .map_err(videre_core::io_timeout::IoRunError::into_io_error)??;
+    let owned = path.to_path_buf();
+    videre_core::io_timeout::run_with_progress_timeout(
+        videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
+        move |progress| {
+            let file = File::open(&owned)?;
+            hash_open_file(&owned, file, &progress)
+        },
+    )
+    .map_err(videre_core::io_timeout::IoRunError::into_io_error)?
 }
 
 /// Hash one original through the selected library's pinned I/O boundary.
@@ -177,42 +177,23 @@ pub fn hash_file_in(
 ) -> io::Result<FileRecord> {
     let file = videre_core::library_io::open_media(ctx, path).map_err(io::Error::other)?;
     let stat_file = file.try_clone()?;
-    let size = videre_core::io_timeout::run_with_timeout(
-        videre_core::io_timeout::STAT_TIMEOUT,
-        move || stat_file.metadata().map(|metadata| metadata.len()),
-    )
-    .map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::TimedOut,
-            format!(
-                "could not read {} after the filesystem timeout",
-                path.display()
-            ),
-        )
-    })??;
-    let budget = videre_core::io_timeout::timeout_for_size(
-        size,
-        videre_core::io_timeout::min_read_rate_mb_s(),
-    );
+    videre_core::io_timeout::run_with_timeout(videre_core::io_timeout::STAT_TIMEOUT, move || {
+        stat_file.metadata().map(|_| ())
+    })
+    .map_err(videre_core::io_timeout::IoRunError::into_io_error)??;
     let owned = path.to_path_buf();
-    videre_core::io_timeout::run_with_timeout(budget, move || hash_open_file(&owned, file))
-        .map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!(
-                    "timed out reading {} after {}s",
-                    path.display(),
-                    budget.as_secs()
-                ),
-            )
-        })?
+    videre_core::io_timeout::run_with_progress_timeout(
+        videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
+        move |progress| hash_open_file(&owned, file, &progress),
+    )
+    .map_err(videre_core::io_timeout::IoRunError::into_io_error)?
 }
 
-fn hash_file_inner(path: &Path) -> io::Result<FileRecord> {
-    hash_open_file(path, File::open(path)?)
-}
-
-fn hash_open_file(path: &Path, file: File) -> io::Result<FileRecord> {
+fn hash_open_file(
+    path: &Path,
+    file: File,
+    progress: &videre_core::io_timeout::ProgressHandle,
+) -> io::Result<FileRecord> {
     let metadata = file.metadata()?;
     let size_bytes = metadata.len();
     let created_at = metadata.created().ok().map(system_time_to_iso);
@@ -220,11 +201,11 @@ fn hash_open_file(path: &Path, file: File) -> io::Result<FileRecord> {
 
     // The first bytes identify the type; the content key is then computed
     // with that type's metadata left out (see `content_key`).
-    let mut file = file;
+    let mut reader = progress.wrap(file.try_clone()?);
     let mut head = vec![0u8; 65536];
     let mut read = 0;
     while read < head.len() {
-        let n = file.read(&mut head[read..])?;
+        let n = reader.read(&mut head[read..])?;
         if n == 0 {
             break;
         }
@@ -246,12 +227,12 @@ fn hash_open_file(path: &Path, file: File) -> io::Result<FileRecord> {
         .to_lowercase();
     let format = videre_core::mime_probe::effective_mime(mime.as_deref(), &ext)
         .and_then(crate::content_key::Format::for_mime);
-    let keys = crate::content_key::keys(&mut file, size_bytes, format)?;
+    let keys = crate::content_key::keys(&mut reader, size_bytes, format)?;
 
     let mut meta = match videre_core::mime_probe::effective_mime(mime.as_deref(), &ext) {
         Some(m) if videre_core::mime_probe::EXIF_MIMES.contains(&m) => file
             .try_clone()
-            .map(extract_exif_file)
+            .map(|f| extract_exif_file(progress.wrap(f)))
             .unwrap_or_default()
             .into(),
         // QuickTime atoms are not EXIF, so `EXIF_MIMES` is deliberately not
@@ -259,7 +240,7 @@ fn hash_open_file(path: &Path, file: File) -> io::Result<FileRecord> {
         // unpick. See `videre_core::video_meta`.
         Some(m) if videre_core::mime_probe::is_video_mime(m) => file
             .try_clone()
-            .map(videre_core::video_meta::read_file)
+            .map(|f| videre_core::video_meta::read_file_in_progress(&mut progress.wrap(f)))
             .unwrap_or_default()
             .into(),
         _ => ExtractedMeta::default(),
@@ -274,7 +255,8 @@ fn hash_open_file(path: &Path, file: File) -> io::Result<FileRecord> {
     let is_video = videre_core::mime_probe::effective_mime(mime.as_deref(), &ext)
         .is_some_and(videre_core::mime_probe::is_video_mime);
     if !is_video && (meta.width.is_none() || meta.height.is_none()) {
-        if let Ok(mut image_file) = file.try_clone() {
+        if let Ok(image_file) = file.try_clone() {
+            let mut image_file = progress.wrap(image_file);
             let dimensions = image_file
                 .seek(SeekFrom::Start(0))
                 .ok()
@@ -290,6 +272,8 @@ fn hash_open_file(path: &Path, file: File) -> io::Result<FileRecord> {
             }
         }
     }
+
+    progress.check_cancelled()?;
 
     Ok(FileRecord {
         path: path.to_string_lossy().to_string(),
@@ -385,6 +369,45 @@ mod tests {
         assert_eq!(record.size_bytes, 11);
         assert!(!record.hash.is_empty());
         assert_eq!(record.path, path.to_string_lossy());
+    }
+
+    #[test]
+    fn hash_entry_points_preserve_content_and_metadata_keys() {
+        let base = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures"));
+        let library_dir = tempdir().unwrap();
+        let root = library_dir.path().join("photos");
+        fs::create_dir(&root).unwrap();
+        let library =
+            videre_core::library::LibraryContext::new(&root, &library_dir.path().join("cache"))
+                .unwrap();
+        for relative in [
+            "sample_with_exif.jpg",
+            "content_key/tiny.heic",
+            "content_key/testsrc_dated.mp4",
+            "corrupt.jpg",
+        ] {
+            let path = base.join(relative);
+            let mut raw = File::open(&path).unwrap();
+            let len = raw.metadata().unwrap().len();
+            let head = {
+                let mut head = [0u8; 65536];
+                let n = raw.read(&mut head).unwrap();
+                head[..n].to_vec()
+            };
+            let ext = path.extension().and_then(|s| s.to_str()).unwrap();
+            let mime = videre_core::mime_probe::sniff(&head);
+            let format = videre_core::mime_probe::effective_mime(mime, ext)
+                .and_then(crate::content_key::Format::for_mime);
+            let expected = crate::content_key::keys(&mut raw, len, format).unwrap();
+            let actual = hash_file(&path).unwrap();
+            assert_eq!(actual.hash, expected.content, "{relative}");
+            assert_eq!(actual.meta_hash, expected.meta, "{relative}");
+            let confined_path = root.join(path.file_name().unwrap());
+            fs::copy(&path, &confined_path).unwrap();
+            let confined = hash_file_in(&library, &confined_path).unwrap();
+            assert_eq!(confined.hash, expected.content, "{relative}");
+            assert_eq!(confined.meta_hash, expected.meta, "{relative}");
+        }
     }
 
     #[test]
