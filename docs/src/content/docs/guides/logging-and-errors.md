@@ -72,8 +72,9 @@ taken or refused, how long each `pipeline` and `watch` stage took, files
 skipped after repeated decode failures, and thumbnail cache hits and misses.
 Use it when reporting a problem; it grows quickly.
 
-For `videre gallery`, `info` also records what face learning concluded, which
-the People page keeps quiet about by default: a generation promoted to the
+For `videre gallery` with face learning on, `info` also records what it
+concluded, which the People page keeps quiet about by default: a generation
+promoted to the
 profile in use, one that missed the quality checks (and which check), and what
 feedback it is waiting for. A training fit that does not converge is recorded
 there too; it is an expected outcome with little feedback and the previous

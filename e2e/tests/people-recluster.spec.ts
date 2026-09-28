@@ -22,28 +22,29 @@ async function openLibrary(libraryRoot: string): Promise<Db | undefined> {
   return db;
 }
 
-test("learning updates are hidden by default and shown on request", async ({ page, gallery }) => {
-  const statusCalls: string[] = [];
+test("face learning is off by default and turned on in gallery.json", async ({ page, gallery }) => {
+  const learningCalls: string[] = [];
   page.on("request", (r) => {
-    if (r.url().includes("/api/face-learning/status")) statusCalls.push(r.url());
+    if (r.url().includes("/api/face-learning/")) learningCalls.push(r.url());
   });
   await page.goto(`${gallery.baseURL}/people`);
-  const select = page.locator("#learning-updates-select");
-  await expect(select).toHaveValue("hide");
+  // No learning control in the toolbar, in any state.
+  await expect(page.locator(".gallery-toolbar").first()).not.toContainText("Learning");
   await page.waitForTimeout(500);
   await expect(page.locator("#learning-strip")).toBeHidden();
-  expect(statusCalls, "no status polling while updates are hidden").toHaveLength(0);
+  await page.goto(`${gallery.baseURL}/people/person/nobody`);
+  await page.waitForTimeout(300);
+  expect(learningCalls, "no learning request while learning is off").toHaveLength(0);
 
-  await select.selectOption("show");
+  const r = await page.request.patch(`${gallery.baseURL}/api/settings`, {
+    headers: { "content-type": "application/merge-patch+json" },
+    data: JSON.stringify({ faces: { learning: true, learningUpdates: true } })
+  });
+  expect(r.ok()).toBeTruthy();
+  await page.goto(`${gallery.baseURL}/people`);
   await expect(page.locator("#learning-strip")).toBeVisible();
-  expect(statusCalls.length).toBeGreaterThan(0);
-
-  // Saved for the library: a reload keeps it.
-  await expect
-    .poll(async () => (await (await page.request.get(`${gallery.baseURL}/api/settings`)).json()).effective.routes.people.learningUpdates)
-    .toBe("show");
-  await page.reload();
-  await expect(page.locator("#learning-updates-select")).toHaveValue("show");
+  expect(learningCalls.length).toBeGreaterThan(0);
+  await expect(page.locator(".gallery-toolbar").first()).not.toContainText("Learning");
 });
 
 test("recluster previews without writing and applies from the toolbar", async ({ page, gallery }) => {
@@ -69,7 +70,8 @@ test("recluster previews without writing and applies from the toolbar", async ({
     await page.locator("#recluster-toggle").click();
     await expect(row).toBeVisible();
     await expect(page.locator('#recluster-row input[data-param="eps"]')).toHaveValue("0.6");
-    await expect(page.locator("#recluster-learning")).toContainText("Learning:");
+    // Learning is off by default, so the row says nothing about it.
+    await expect(page.locator("#recluster-learning")).toHaveText("");
 
     await page.locator("#recluster-preview").click();
     await expect(page.locator("#recluster-result")).toContainText("Preview: 1 group from 3 of 4 unnamed faces");

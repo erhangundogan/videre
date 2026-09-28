@@ -158,9 +158,10 @@ const clusterId = window.CLUSTER_ID;
       if (!r.ok) { document.getElementById('status').textContent = await failureText(r, 'dissolve failed'); return; }
       const ack = await r.json().catch(() => null);
       // The teaching note is a learning update, shown only when the library
-      // chose to see those (People toolbar, Learning updates).
+      // turned learning and its updates on in gallery.json.
       const showUpdates = typeof settingOneOf === 'function'
-        && settingOneOf('routes.people.learningUpdates', ['hide', 'show']) === 'show';
+        && settingOneOf('faces.learning', [true, false]) === true
+        && settingOneOf('faces.learningUpdates', [true, false]) === true;
       const taught = showUpdates && ack && Array.isArray(ack.event_ids) && ack.event_ids.length;
       document.getElementById('status').textContent = 'Cluster dissolved'
         + (taught ? '; the negative example was recorded' : '');

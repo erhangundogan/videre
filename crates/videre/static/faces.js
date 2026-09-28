@@ -419,24 +419,21 @@ let facesData = { people: [], clusters: [], singletons: [] };
       });
     }
 
-    // Learning updates (the status strip and these toasts) are off unless the
-    // library chose to show them: they describe the process, and the result,
-    // a question card, shows either way.
-    function learningUpdatesShown() {
-      return settingOneOf('routes.people.learningUpdates', ['hide', 'show']) === 'show';
+    // Face learning runs only when the library's gallery.json turns it on
+    // (`faces.learning`); off, the page never asks the learning API anything.
+    function learningOn() {
+      return settingOneOf('faces.learning', [true, false]) === true;
     }
 
-    function setLearningUpdates(value) {
-      saveSetting('routes.people.learningUpdates', value === 'show' ? 'show' : 'hide');
-      applyLearningUpdates();
+    // Learning updates (the status strip and these toasts) are off unless the
+    // library chose to show them (`faces.learningUpdates`): they describe the
+    // process, and the result, a question card, shows either way.
+    function learningUpdatesShown() {
+      return learningOn() && settingOneOf('faces.learningUpdates', [true, false]) === true;
     }
-    window.setLearningUpdates = setLearningUpdates;
 
     function applyLearningUpdates() {
-      const shown = learningUpdatesShown();
-      const select = document.getElementById('learning-updates-select');
-      if (select) select.value = shown ? 'show' : 'hide';
-      if (shown) {
+      if (learningUpdatesShown()) {
         refreshLearning();
       } else {
         const strip = document.getElementById('learning-strip');
@@ -561,8 +558,10 @@ let facesData = { people: [], clusters: [], singletons: [] };
       if (btn) btn.addEventListener('click', function() { answerQuestion(answer); });
     });
     applyLearningUpdates();
-    loadQuestion();
-    setInterval(refreshLearning, 10000);
+    if (learningOn()) {
+      loadQuestion();
+      setInterval(refreshLearning, 10000);
+    }
 
     // ---------- recluster ----------
     // The row under the settings bar: tune the grouping values, preview what

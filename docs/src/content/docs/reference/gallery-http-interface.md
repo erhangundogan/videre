@@ -676,7 +676,9 @@ content-length: 0
 Replaces the set of faces assigned to a person. Teaching mutations return
 a learning acknowledgement: the generation the action produced and the
 ids of the durable evidence rows written for it. The background worker
-uses that generation to decide when to retrain.
+uses that generation to decide when to retrain. While face learning is off
+(the default), the faces change the same way, nothing is recorded,
+`event_ids` is empty and `message_key` is `learning_off`.
 
 ```bash
 curl -i -X PUT "http://127.0.0.1:7878/api/people/ayse_yilmaz/faces" \
@@ -705,7 +707,7 @@ built-in values. Only unlabeled faces are regrouped; named faces never move.
 
 The parameters a recluster would use now, what the library has saved, the
 built-in values, any problem reading the saved ones, and the face learning
-summary.
+summary (`null` while face learning is off).
 
 ```bash
 curl "http://127.0.0.1:7878/api/faces/cluster-params"
@@ -771,6 +773,13 @@ background and asks bounded Yes/No/Skip identity questions. The
 resources below expose that state. Payloads carry scalar features and
 provenance only; embeddings never leave the library.
 
+Face learning is off unless the library's `gallery.json` sets
+`faces.learning` to `true` (see
+[Face learning](/commands/gallery/#face-learning)). While it is off, the
+status reports `"enabled": false`, the questions list is always empty,
+answering a question returns `503 Service Unavailable`, and the journal
+stays readable.
+
 ### `GET /api/face-learning/status`
 
 Returns the background training state and pending question count.
@@ -781,6 +790,7 @@ curl "http://127.0.0.1:7878/api/face-learning/status"
 
 ```json
 {
+  "enabled": true,
   "generation": 3,
   "trained_generation": 3,
   "status": "current",
@@ -801,7 +811,8 @@ feedback it is waiting for, or how many trained candidates missed the
 quality checks and the first check they missed).
 
 `status` is one of `current`, `stale` (feedback has arrived since the
-last run), `training`, `waiting`, or `failed` (the last run failed; the
+last run), `training` (a run is in progress; the status answers at once
+either way), `waiting`, or `failed` (the last run failed; the
 active profile stays as it is and `last_error` says why).
 
 `waiting` means the last run found too little feedback to train on, which
