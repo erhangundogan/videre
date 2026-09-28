@@ -97,6 +97,265 @@ fn run_prune(lib: &TestLibrary, dry_run: bool) {
     assert!(cmd.status().expect("failed to run videre prune").success());
 }
 
+fn seed_face(lib: &TestLibrary, hash: &str) -> i64 {
+    let conn = lib.conn();
+    conn.execute(
+        "INSERT INTO people(name,full_name) VALUES('isil','Işıl') ON CONFLICT DO NOTHING",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO faces(hash,bbox,embedding,person_label,confirmed) VALUES(?1,'0,0,1,1',X'00','isil',1)", [hash]).unwrap();
+    conn.execute(
+        "INSERT OR IGNORE INTO faces_scanned(hash) VALUES(?1)",
+        [hash],
+    )
+    .unwrap();
+    conn.last_insert_rowid()
+}
+
+#[test]
+fn prune_removes_orphan_faces_and_keeps_person_name() {
+    let (lib, _, _, phantom) = fixture_library();
+    let face_id = seed_face(&lib, "hphantom");
+    let conn = lib.conn();
+    conn.execute("INSERT INTO face_learning_events(id,action_kind,decision_kind,outcome,embedding_model_id,feature_schema_version,feature_snapshot_json,support_count)
+        VALUES(1,'assign_face','membership','positive','test',1,'{}',0)", []).unwrap();
+    conn.execute("INSERT INTO face_learning_event_faces(event_id,face_id,role,ordinal) VALUES(1,?1,'subject',0)", [face_id]).unwrap();
+    drop(conn);
+    let out = lib.cmd().arg("prune").output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!row_exists(&lib, &phantom));
+    let conn = lib.conn();
+    assert!(videre_api::faces_list(&conn).unwrap().people.is_empty());
+    let detail = videre_api::person_detail(&conn, "Işıl").unwrap();
+    assert_eq!(detail.full_name, "Işıl");
+    assert!(detail.faces.is_empty());
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM faces_scanned WHERE hash='hphantom'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT invalidation_reason FROM face_learning_events WHERE id=1",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "source_face_pruned"
+    );
+    let output = String::from_utf8_lossy(&out.stderr);
+    assert!(output.contains("orphan face"), "{output}");
+    assert!(!output.contains("Işıl"));
+}
+
+#[test]
+fn prune_preserves_faces_while_a_duplicate_path_survives() {
+    let (lib, a, _, phantom) = fixture_library();
+    let conn = lib.conn();
+    conn.execute(
+        "UPDATE file_hashes SET hash='haaa' WHERE path=?1",
+        [&phantom],
+    )
+    .unwrap();
+    drop(conn);
+    seed_face(&lib, "haaa");
+    run_prune(&lib, false);
+    assert_eq!(
+        lib.conn()
+            .query_row("SELECT count(*) FROM faces WHERE hash='haaa'", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    std::fs::remove_file(a).unwrap();
+    run_prune(&lib, false);
+    assert_eq!(
+        lib.conn()
+            .query_row("SELECT count(*) FROM faces WHERE hash='haaa'", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn dry_run_previews_face_lower_bound_without_writes() {
+    let (lib, _, _, _) = fixture_library();
+    seed_face(&lib, "hphantom");
+    let db = lib.db();
+    let before = common::feature_fixture::snapshot_database(&db);
+    let out = lib.cmd().args(["prune", "--dry-run"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(common::feature_fixture::snapshot_database(&db), before);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("lower bound"));
+
+    let conn = lib.conn();
+    conn.execute_batch("DROP TABLE faces;
+        CREATE TABLE faces(id INTEGER PRIMARY KEY, hash TEXT NOT NULL, bbox TEXT NOT NULL,
+        landmark TEXT, embedding BLOB NOT NULL, cluster_id INTEGER, person_label TEXT,
+        confirmed INTEGER DEFAULT 0, is_primary INTEGER DEFAULT 0, det_score REAL, blur REAL, oriented INTEGER,
+        FOREIGN KEY(person_label) REFERENCES people(name) ON DELETE RESTRICT ON UPDATE RESTRICT);
+        PRAGMA user_version=3;
+        PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+    drop(conn);
+    let before = std::fs::read(&db).unwrap();
+    let out = lib.cmd().args(["prune", "--dry-run"]).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("videre scan"));
+    assert_eq!(std::fs::read(&db).unwrap(), before);
+}
+
+#[test]
+fn unreachable_and_bulk_guard_protect_faces() {
+    let lib = TestLibrary::new();
+    let root = lib.context().paths.root;
+    let gone_dir = root.join("unmounted");
+    std::fs::create_dir(&gone_dir).unwrap();
+    let unreachable = gone_dir.join("photo.jpg");
+    let conn = lib.init_db();
+    for id in 0..101 {
+        let path = root.join(format!("missing-{id}.jpg"));
+        conn.execute(
+            "INSERT INTO file_hashes(path,hash) VALUES(?1,?2)",
+            rusqlite::params![path.to_str().unwrap(), format!("h{id}")],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "INSERT INTO file_hashes(path,hash) VALUES(?1,'protected')",
+        [unreachable.to_str().unwrap()],
+    )
+    .unwrap();
+    drop(conn);
+    seed_face(&lib, "h0");
+    seed_face(&lib, "protected");
+    std::fs::remove_dir(&gone_dir).unwrap();
+    let out = lib.cmd().args(["prune", "--silent"]).output().unwrap();
+    assert!(out.status.success());
+    assert_eq!(
+        lib.conn()
+            .query_row("SELECT count(*) FROM faces", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    let out = lib
+        .cmd()
+        .args(["prune", "--silent", "--force"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(
+        lib.conn()
+            .query_row("SELECT hash FROM faces", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "protected"
+    );
+    let out = lib
+        .cmd()
+        .args(["prune", "--silent", "--prune-unreachable"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(
+        lib.conn()
+            .query_row("SELECT count(*) FROM faces", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn failed_file_row_delete_protects_faces() {
+    let (lib, _, _, phantom) = fixture_library();
+    seed_face(&lib, "hphantom");
+    lib.conn()
+        .execute_batch(
+            "CREATE TRIGGER abort_file_delete BEFORE DELETE ON file_hashes
+        WHEN OLD.hash='hphantom' BEGIN SELECT RAISE(ABORT,'injected delete failure'); END;",
+        )
+        .unwrap();
+    let out = lib.cmd().args(["prune", "--silent"]).output().unwrap();
+    assert!(!out.status.success());
+    assert!(row_exists(&lib, &phantom));
+    assert_eq!(
+        lib.conn()
+            .query_row(
+                "SELECT count(*) FROM faces WHERE hash='hphantom'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn prune_cleanup_error_exits_nonzero_then_recovers() {
+    let (lib, _, _, phantom) = fixture_library();
+    let face_id = seed_face(&lib, "hphantom");
+    let conn = lib.conn();
+    conn.execute("INSERT INTO face_learning_events(id,action_kind,decision_kind,outcome,embedding_model_id,feature_schema_version,feature_snapshot_json,support_count)
+        VALUES(1,'assign_face','membership','positive','test',1,'{}',0)", []).unwrap();
+    conn.execute("INSERT INTO face_learning_event_faces(event_id,face_id,role,ordinal) VALUES(1,?1,'subject',0)", [face_id]).unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER abort_learning_change BEFORE UPDATE ON face_learning_state
+        BEGIN SELECT RAISE(ABORT,'injected learning failure'); END;",
+    )
+    .unwrap();
+    drop(conn);
+    let out = lib.cmd().args(["prune", "--silent"]).output().unwrap();
+    assert!(!out.status.success());
+    assert!(!row_exists(&lib, &phantom));
+    let conn = lib.conn();
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM faces WHERE hash='hphantom'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row("SELECT eligible FROM face_learning_events", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    conn.execute_batch("DROP TRIGGER abort_learning_change")
+        .unwrap();
+    drop(conn);
+    let out = lib.cmd().args(["prune", "--silent"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        lib.conn()
+            .query_row(
+                "SELECT count(*) FROM faces WHERE hash='hphantom'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+}
+
 #[test]
 fn pruning_a_does_not_remove_b_models_or_cache() {
     let a = TestLibrary::new();

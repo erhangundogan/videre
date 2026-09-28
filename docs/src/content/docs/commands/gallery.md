@@ -266,7 +266,9 @@ it, exactly as with [`videre mark`](/commands/mark/) and
 [`videre tag`](/commands/tag/). Delete moves **every copy** of each selected
 item to the Trash (the confirmation counts them), and the library stops
 listing them at once; their marks, tags and faces stay until
-[`videre prune`](/commands/prune/). It waits until no other videre command or
+[`videre prune`](/commands/prune/). Prune also withdraws face-learning evidence
+that depended on those faces, while keeping the historical journal and person
+names. It waits until no other videre command or
 `watch` stage is working on the library.
 
 Select mode needs the running gallery: a static export has no Select button.

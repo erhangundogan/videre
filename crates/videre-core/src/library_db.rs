@@ -117,6 +117,7 @@ const REQUIRED_TABLES: &[&str] = &[
     "pipeline_runs",
     "face_learning_events",
     "face_learning_event_faces",
+    "face_learning_profiles",
     "face_learning_questions",
     "face_learning_question_faces",
 ];
@@ -323,6 +324,7 @@ fn prepare_schema(conn: &Connection) -> Result<()> {
     crate::pipeline_runs::ensure_pipeline_runs_table(conn)?;
     crate::decode_failures::ensure_table(conn)?;
     crate::face_learning::ensure_learning_tables(conn)?;
+    crate::face_learning::ensure_profile_table(conn)?;
     crate::face_learning::ensure_question_tables(conn)?;
     verify_schema(conn)?;
     Ok(())
@@ -372,6 +374,7 @@ fn upgrade_v3_to_v4(conn: &Connection) -> Result<()> {
             [max_id],
         )?;
         conn.execute("INSERT INTO sqlite_sequence(name,seq) SELECT 'faces',?1 WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name='faces')", [max_id])?;
+        crate::face_learning::ensure_profile_table(conn)?;
         let violations: i64 =
             conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
                 row.get(0)
