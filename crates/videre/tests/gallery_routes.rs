@@ -75,8 +75,7 @@ struct Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        self.child.kill().ok();
-        self.child.wait().ok();
+        common::stop_gallery(&mut self.child, self.port);
     }
 }
 
@@ -748,8 +747,7 @@ fn port_zero_announces_the_port_it_actually_bound() {
     });
 
     let connected = TcpStream::connect(("127.0.0.1", port)).is_ok();
-    child.kill().ok();
-    child.wait().ok();
+    common::stop_gallery(&mut child, port);
 
     assert_ne!(port, 0, "announced port 0, which cannot be connected to");
     assert!(
@@ -1605,4 +1603,155 @@ fn duplicates_page_shows_google_photos_edit_pairs() {
     let original = body.find("IMG_1.jpg").expect("original listed");
     let edit = body.find("IMG_1-edited.jpg").expect("edit listed");
     assert!(original < edit, "the kept original comes first");
+}
+
+// ---- people and faces over HTTP -------------------------------------------
+
+fn json(body: &str) -> serde_json::Value {
+    serde_json::from_str(body).unwrap_or_else(|e| panic!("not JSON ({e}): {body}"))
+}
+
+/// The fixture's person with two named faces (1 and 4), plus an unassigned
+/// cluster 7 of two faces. Named faces carry no cluster id, as labeling
+/// leaves them.
+fn people_fixture() -> TestLibrary {
+    let lib = fixture();
+    let conn = lib.init_db();
+    conn.execute_batch(
+        "UPDATE faces SET cluster_id = NULL WHERE id = 1;
+         INSERT INTO faces (id, hash, bbox, embedding, cluster_id, person_label, confirmed)
+           VALUES (2, 'abc123', '0,0,50,50', X'0000', 7, NULL, 0),
+                  (3, 'abc123', '60,0,50,50', X'0000', 7, NULL, 0),
+                  (4, 'abc123', '0,60,50,50', X'0000', NULL, 'ozgur_demirtas', 1);",
+    )
+    .unwrap();
+    lib
+}
+
+#[test]
+fn a_person_is_read_renamed_and_given_a_primary_face_over_http() {
+    let lib = people_fixture();
+    let server = Server::start(&lib);
+
+    // Any spelling of the name reaches the same person.
+    let (status, body) = server.get("/api/people/%C3%96zg%C3%BCr%20Demirta%C5%9F");
+    assert_eq!(status, 200, "{body}");
+    let person = json(&body);
+    assert_eq!(person["label"], "ozgur_demirtas", "{body}");
+    assert_eq!(person["full_name"], "Özgür", "{body}");
+    assert_eq!(person["faces"].as_array().unwrap().len(), 2, "{body}");
+
+    let (status, body) = server.send(
+        "PATCH",
+        "/api/people/ozgur_demirtas",
+        r#"{"full_name":"Özi"}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    let (_, body) = server.get("/api/people/ozgur_demirtas");
+    assert_eq!(json(&body)["full_name"], "Özi", "{body}");
+
+    // The primary face is listed first and flagged.
+    let (status, body) = server.send(
+        "PATCH",
+        "/api/faces/4",
+        r#"{"person_label":"ozgur_demirtas"}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    let (_, body) = server.get("/api/people/ozgur_demirtas");
+    let faces = json(&body)["faces"].clone();
+    assert_eq!(faces[0]["face_id"], 4, "{body}");
+    assert_eq!(faces[0]["is_primary"], true, "{body}");
+    assert_eq!(faces[1]["is_primary"], false, "{body}");
+
+    // A person search resolves the display name as typed, whatever its case,
+    // to the identity behind it; "Özi" does not normalize to that identity,
+    // so only the display-name match can find it. A partial name is no match.
+    let (status, body) = server.get("/api/people?name=%C3%B6zi");
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("a.jpg"), "{body}");
+    let (_, body) = server.get("/api/people?name=ozgur");
+    assert_eq!(json(&body), serde_json::json!([]), "{body}");
+}
+
+#[test]
+fn faces_leave_people_and_clusters_dissolve_over_http() {
+    let lib = people_fixture();
+    let server = Server::start(&lib);
+
+    let (status, body) = server.get("/api/clusters/7");
+    assert_eq!(status, 200, "{body}");
+    let ids: Vec<i64> = json(&body)["faces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["face_id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(ids, [2, 3], "{body}");
+
+    let (status, body) = server.send("DELETE", "/api/clusters/7", "");
+    assert_eq!(status, 200, "{body}");
+    let (_, body) = server.get("/api/clusters/7");
+    assert_eq!(json(&body)["faces"], serde_json::json!([]), "{body}");
+    // Dissolving an empty cluster is a missing one, not a silent success.
+    let (status, _) = server.send("DELETE", "/api/clusters/7", "");
+    assert_eq!(status, 404);
+
+    let (status, body) = server.send("DELETE", "/api/faces/1", "");
+    assert_eq!(status, 200, "{body}");
+    let (_, body) = server.get("/api/people/ozgur_demirtas");
+    let faces = json(&body)["faces"].clone();
+    assert_eq!(faces.as_array().unwrap().len(), 1, "{body}");
+    assert_eq!(faces[0]["face_id"], 4, "{body}");
+
+    let (status, body) = server.send("DELETE", "/api/people/ozgur_demirtas", "");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(json(&body)["message_key"], "person_removed", "{body}");
+    let (_, body) = server.get("/api/people/ozgur_demirtas");
+    assert_eq!(json(&body)["faces"], serde_json::json!([]), "{body}");
+
+    // A second delete finds nobody and says so.
+    let (status, body) = server.send("DELETE", "/api/people/ozgur_demirtas", "");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        json(&body)["message_key"],
+        "person_deleted_without_learning",
+        "{body}"
+    );
+}
+
+#[test]
+fn marks_are_set_and_cleared_over_http() {
+    let lib = fixture();
+    let server = Server::start(&lib);
+    let marks = |lib: &TestLibrary| -> (Option<i64>, Option<String>, i64) {
+        lib.conn()
+            .query_row(
+                "SELECT rating, label, liked FROM marks WHERE hash = 'abc123'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+    };
+
+    let (status, body) = server.send(
+        "PATCH",
+        "/api/files/abc123",
+        r#"{"rating":4,"label":"green","liked":true}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(marks(&lib), (Some(4), Some("green".into()), 1));
+
+    // Only the fields present change; rating 0 and label "none" clear.
+    let (status, body) = server.send(
+        "PATCH",
+        "/api/files/abc123",
+        r#"{"rating":0,"label":"none"}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(marks(&lib), (None, None, 1));
+
+    // An empty change is accepted and writes nothing.
+    let (status, body) = server.send("PATCH", "/api/files/abc123", "{}");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(marks(&lib), (None, None, 1));
 }

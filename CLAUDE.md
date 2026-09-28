@@ -332,9 +332,13 @@ rustup component add llvm-tools-preview --toolchain <channel in rust-toolchain.t
 make coverage
 ```
 
-Read the per-file table as **unit-test coverage only**. Integration tests that
-spawn `videre_bin()` as a child process are not instrumented, so command modules
-show artificially low numbers despite being well covered.
+Integration tests that spawn `videre_bin()` **are** counted: cargo-llvm-cov
+instruments the child, which writes its profile when it exits. So a child must
+exit, not be killed. :warning: SIGKILL skips that write, and when the gallery
+tests stopped their server with `kill()`, `gallery/server.rs` read 77% although
+the tests request nearly every route; stopping it through `/api/quit`
+(`common::stop_gallery`) read 89%. The Playwright suite (`e2e/`) is not part
+of `make coverage`.
 
 ## Invariants and measured findings
 
