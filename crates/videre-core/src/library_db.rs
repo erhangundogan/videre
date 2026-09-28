@@ -14,10 +14,10 @@
 //! An existing database is checked before it is trusted: it must carry the
 //! SQLite header, and if it has tables of its own but no `file_hashes` it is
 //! somebody else's database and is refused unchanged. Its schema version
-//! must be exactly this build's: a newer one needs a newer videre, and an
-//! older one identified files differently, so it is refused with the
-//! instruction to rebuild it by scanning. Nothing is migrated, and every
-//! refusal leaves the file untouched. A fresh database's required tables and
+//! must be supported by this build: schema 3 is upgraded once under exclusive
+//! locks to preserve monotonic face IDs, while older content-key schemas are
+//! refused with an instruction to rebuild. Every refusal leaves the file
+//! untouched. A fresh database's required tables and
 //! columns are verified after preparation, so a helper that swallowed an
 //! error cannot produce a false ready marker.
 //!
@@ -40,11 +40,10 @@ use std::path::{Component, Path};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-/// The schema version this build writes and understands. 3 identifies files
-/// by their content key (`videre::content_key`); a library with any other
-/// version is refused, because keys stored by an older videre were computed
-/// over whole files and match nothing a scan produces now.
-const SCHEMA_VERSION: i64 = 3;
+/// Schema 3 introduced the metadata-independent content key. Version 4 makes
+/// face IDs monotonic so retained learning provenance cannot refer to a
+/// different face after pruning.
+const SCHEMA_VERSION: i64 = 4;
 
 /// The first sixteen bytes of every SQLite database file. A library
 /// candidate without them is not a SQLite file, whatever its name.
@@ -118,6 +117,7 @@ const REQUIRED_TABLES: &[&str] = &[
     "pipeline_runs",
     "face_learning_events",
     "face_learning_event_faces",
+    "face_learning_profiles",
     "face_learning_questions",
     "face_learning_question_faces",
 ];
@@ -219,6 +219,17 @@ fn verify_schema(conn: &Connection) -> Result<()> {
             bail!("required column {table}.{column} is missing after schema preparation");
         }
     }
+    let faces_sql: String = conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='faces'",
+        [],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        faces_sql
+            .to_ascii_uppercase()
+            .contains("INTEGER PRIMARY KEY AUTOINCREMENT"),
+        "faces.id must use AUTOINCREMENT"
+    );
     Ok(())
 }
 
@@ -313,6 +324,7 @@ fn prepare_schema(conn: &Connection) -> Result<()> {
     crate::pipeline_runs::ensure_pipeline_runs_table(conn)?;
     crate::decode_failures::ensure_table(conn)?;
     crate::face_learning::ensure_learning_tables(conn)?;
+    crate::face_learning::ensure_profile_table(conn)?;
     crate::face_learning::ensure_question_tables(conn)?;
     verify_schema(conn)?;
     Ok(())
@@ -324,6 +336,70 @@ fn user_version(conn: &Connection) -> Result<i64> {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("read the library schema version")?;
     Ok(version)
+}
+
+/// Rebuild the only table whose row-ID policy changes. Historical journal and
+/// question references deliberately have no face FK, so reserve their maximum
+/// too. A failed copy or FK check rolls the entire version change back.
+fn upgrade_v3_to_v4(conn: &Connection) -> Result<()> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = (|| -> Result<()> {
+        anyhow::ensure!(
+            user_version(conn)? == 3,
+            "expected schema 3 for face ID upgrade"
+        );
+        let max_id: i64 = conn
+            .query_row(
+                "SELECT MAX(id) FROM (
+                SELECT id FROM faces
+                UNION ALL SELECT face_id FROM face_learning_event_faces
+                UNION ALL SELECT face_id FROM face_learning_question_faces
+                UNION ALL SELECT representative_face_id FROM face_learning_questions
+             )",
+                [],
+                |row| row.get::<_, Option<i64>>(0),
+            )?
+            .unwrap_or(0);
+        conn.execute_batch("ALTER TABLE faces RENAME TO faces_v3_old;")?;
+        conn.execute_batch(&crate::face_db::faces_ddl_for("faces", false))?;
+        conn.execute_batch(
+            "INSERT INTO faces
+             (id,hash,bbox,landmark,embedding,cluster_id,person_label,confirmed,is_primary,det_score,blur,oriented)
+             SELECT id,hash,bbox,landmark,embedding,cluster_id,person_label,confirmed,is_primary,det_score,blur,oriented
+             FROM faces_v3_old;
+             DROP TABLE faces_v3_old;",
+        )?;
+        conn.execute(
+            "UPDATE sqlite_sequence SET seq = MAX(seq, ?1) WHERE name = 'faces'",
+            [max_id],
+        )?;
+        conn.execute("INSERT INTO sqlite_sequence(name,seq) SELECT 'faces',?1 WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name='faces')", [max_id])?;
+        crate::face_learning::ensure_profile_table(conn)?;
+        let violations: i64 =
+            conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })?;
+        anyhow::ensure!(
+            violations == 0,
+            "schema upgrade found {violations} foreign key violation(s)"
+        );
+        verify_schema(conn)?;
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => match conn.execute_batch("COMMIT") {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error).context("commit schema 4 upgrade")
+            }
+        },
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(error.context("upgrade library face IDs to schema 4"))
+        }
+    }
 }
 
 /// Whether the file begins with the SQLite header. The caller has already
@@ -549,6 +625,12 @@ fn require_current(ctx: &LibraryContext, conn: &Connection) -> Result<()> {
     if version > SCHEMA_VERSION {
         return Err(newer_schema(ctx, version));
     }
+    if version == 3 {
+        return Err(anyhow::anyhow!(
+            "the library at {} uses schema 3; run `videre scan` or another writable command to upgrade face IDs before opening it read-only",
+            ctx.paths.root.display()
+        ).context(crate::error_kind::ErrorKind::LibrarySchema));
+    }
     if version < SCHEMA_VERSION || !schema_complete(conn)? {
         return Err(anyhow::anyhow!(
             "the library at {} was created by an older videre, which identified files differently; \
@@ -745,6 +827,11 @@ pub fn initialize(ctx: &LibraryContext) -> Result<Connection> {
         }
         DbFile::Present => {
             let conn = open_existing_conn(ctx)?;
+            if user_version(&conn)? == 3 {
+                require_supported_library(&conn, &ctx.paths.db)?;
+                validate_row_containment(ctx, &conn)?;
+                upgrade_v3_to_v4(&conn)?;
+            }
             open_prepared(ctx, &conn)?;
             conn
         }
@@ -756,12 +843,14 @@ pub fn initialize(ctx: &LibraryContext) -> Result<Connection> {
 /// Open the library's existing database, creating nothing: no database, no
 /// lock file, not even the locks directory.
 ///
-/// The open holds the activity lock shared, long enough to inspect and
-/// validate the library; long-lived readers take their own shared activity
-/// lock around their work.
+/// The open normally holds the activity lock shared while inspecting the
+/// library. A schema-3 database needs one upgrade: release that lock, then
+/// take activity-exclusive and init locks before reopening and migrating.
+/// This is a writable handle even when called by a read-oriented command;
+/// [`open_existing_read_only`] never takes this path.
 pub fn open_existing(ctx: &LibraryContext) -> Result<Connection> {
     crate::library_locks::verify_state(ctx)?;
-    let _activity = crate::library_locks::try_activity(ctx, ActivityMode::Shared)?;
+    let activity = crate::library_locks::try_activity(ctx, ActivityMode::Shared)?;
     crate::library_locks::reject_redirect(&ctx.paths.config, "the library config")?;
     crate::library_locks::reject_dir_redirect(&ctx.paths.embeddings, "the embeddings directory")?;
     match inspect_db_file(ctx)? {
@@ -777,8 +866,36 @@ pub fn open_existing(ctx: &LibraryContext) -> Result<Connection> {
             ctx.paths.db.display()
         ),
     }
-    // Every refusal below leaves the file exactly as it was.
+    // Every refusal below leaves the file exactly as it was, except for the
+    // one supported schema upgrade.
     let conn = open_existing_conn(ctx)?;
+    if user_version(&conn)? == 3 {
+        require_supported_library(&conn, &ctx.paths.db)?;
+        validate_row_containment(ctx, &conn)?;
+        drop(conn);
+        drop(activity);
+        // Locks refuse rather than wait, so a videre still running in this
+        // library (an older `watch` or gallery) stops the upgrade: say so.
+        let upgrade_blocked = || {
+            format!(
+                "the library at {} needs a one-time upgrade to schema 4, which needs \
+                 every other videre command in it stopped first; stop them and retry",
+                ctx.paths.root.display()
+            )
+        };
+        let _exclusive = crate::library_locks::try_activity(ctx, ActivityMode::Exclusive)
+            .with_context(upgrade_blocked)?;
+        let _init = crate::library_locks::try_init(ctx).with_context(upgrade_blocked)?;
+        crate::library_locks::verify_state(ctx)?;
+        let conn = open_existing_conn(ctx)?;
+        require_supported_library(&conn, &ctx.paths.db)?;
+        validate_row_containment(ctx, &conn)?;
+        if user_version(&conn)? == 3 {
+            upgrade_v3_to_v4(&conn)?;
+        }
+        open_prepared(ctx, &conn)?;
+        return Ok(conn);
+    }
     open_prepared(ctx, &conn)?;
     Ok(conn)
 }
@@ -815,6 +932,165 @@ pub fn open_existing_read_only(ctx: &LibraryContext) -> Result<Connection> {
 mod tests {
     use crate::db::enable_foreign_keys;
 
+    fn make_v3(conn: &Connection) {
+        conn.execute_batch("DROP TABLE faces;").unwrap();
+        let ddl = crate::face_db::faces_ddl_for("faces", false)
+            .replace("INTEGER PRIMARY KEY AUTOINCREMENT", "INTEGER PRIMARY KEY");
+        conn.execute_batch(&ddl).unwrap();
+        conn.pragma_update(None, "user_version", 3).unwrap();
+    }
+
+    #[test]
+    fn v3_upgrade_preserves_faces_and_reserves_historical_ids() {
+        let (_temp, ctx) = library();
+        let conn = initialize(&ctx).unwrap();
+        make_v3(&conn);
+        conn.execute_batch(
+            "INSERT INTO people(name,full_name) VALUES('isil','Işıl');
+             INSERT INTO faces(id,hash,bbox,embedding,person_label,confirmed)
+                 VALUES(7,'h','0,0,1,1',X'00','isil',1);
+             INSERT INTO face_learning_events
+                 (id,action_kind,decision_kind,outcome,embedding_model_id,feature_schema_version,feature_snapshot_json,support_count)
+                 VALUES(1,'assign','user','accepted','test',1,'{}',0);
+             INSERT INTO face_learning_event_faces(event_id,face_id,role,ordinal)
+                 VALUES(1,80,'subject',0);
+             INSERT INTO face_learning_questions
+                 (id,status,target_identity,profile_id,model_kind,representative_face_id,cluster_id,evidence_revision,evidence_json)
+                 VALUES(1,'pending','isil',1,'test',90,1,'rev','{}');",
+        ).unwrap();
+        drop(conn);
+
+        let conn = open_existing(&ctx).unwrap();
+        assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
+        assert!(conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name='faces'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap()
+            .contains("AUTOINCREMENT"));
+        assert_eq!(
+            conn.query_row("SELECT person_label FROM faces WHERE id=7", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "isil"
+        );
+        let seq: i64 = conn
+            .query_row(
+                "SELECT seq FROM sqlite_sequence WHERE name='faces'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(seq >= 90, "historical ID was not reserved: {seq}");
+        conn.execute(
+            "INSERT INTO faces(hash,bbox,embedding) VALUES('next','0,0,1,1',X'00')",
+            [],
+        )
+        .unwrap();
+        assert!(conn.last_insert_rowid() > 90);
+        assert!(conn
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query([])
+            .unwrap()
+            .next()
+            .unwrap()
+            .is_none());
+        drop(conn);
+        assert_eq!(
+            user_version(&open_existing(&ctx).unwrap()).unwrap(),
+            SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn v3_upgrade_rolls_back_on_failure() {
+        let (_temp, ctx) = library();
+        let conn = initialize(&ctx).unwrap();
+        make_v3(&conn);
+        conn.execute_batch("PRAGMA foreign_keys=OFF;
+            INSERT INTO faces(id,hash,bbox,embedding,person_label) VALUES(5,'bad','0,0,1,1',X'00','absent');
+            PRAGMA foreign_keys=ON;").unwrap();
+        drop(conn);
+        assert!(open_existing(&ctx).is_err());
+        let conn = open_without_create(&ctx.paths.db).unwrap();
+        assert_eq!(user_version(&conn).unwrap(), 3);
+        assert_eq!(
+            conn.query_row("SELECT person_label FROM faces WHERE id=5", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "absent"
+        );
+        assert!(!conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name='faces'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap()
+            .contains("AUTOINCREMENT"));
+    }
+
+    /// Another videre still at work in the library (here, a held shared
+    /// lease) blocks the upgrade; the refusal says why and changes nothing.
+    #[test]
+    fn a_busy_library_explains_the_pending_upgrade() {
+        let (_temp, ctx) = library();
+        let conn = initialize(&ctx).unwrap();
+        make_v3(&conn);
+        drop(conn);
+        let _other = crate::library_locks::try_activity(&ctx, ActivityMode::Shared).unwrap();
+        let error = open_existing(&ctx).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("one-time upgrade to schema 4"),
+            "{error:#}"
+        );
+        assert_eq!(
+            user_version(&open_without_create(&ctx.paths.db).unwrap()).unwrap(),
+            3
+        );
+    }
+
+    #[test]
+    fn read_only_v3_refuses_without_writing() {
+        let (_temp, ctx) = library();
+        let conn = initialize(&ctx).unwrap();
+        make_v3(&conn);
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .unwrap();
+        drop(conn);
+        let before = std::fs::read(&ctx.paths.db).unwrap();
+        let error = open_existing_read_only(&ctx).unwrap_err();
+        assert!(format!("{error:#}").contains("videre scan"), "{error:#}");
+        assert_eq!(std::fs::read(&ctx.paths.db).unwrap(), before);
+        assert_eq!(
+            user_version(&open_without_create(&ctx.paths.db).unwrap()).unwrap(),
+            3
+        );
+    }
+
+    #[test]
+    fn fresh_v4_face_ids_never_reuse_deleted_max() {
+        let (_temp, ctx) = library();
+        let conn = initialize(&ctx).unwrap();
+        conn.execute(
+            "INSERT INTO faces(hash,bbox,embedding) VALUES('first','0,0,1,1',X'00')",
+            [],
+        )
+        .unwrap();
+        let first = conn.last_insert_rowid();
+        conn.execute("DELETE FROM faces WHERE id=?1", [first])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO faces(hash,bbox,embedding) VALUES('next','0,0,1,1',X'00')",
+            [],
+        )
+        .unwrap();
+        assert!(conn.last_insert_rowid() > first);
+    }
+
     #[test]
     fn complete_schema_requires_declared_foreign_keys_not_only_columns() {
         let conn = Connection::open_in_memory().unwrap();
@@ -822,7 +1098,7 @@ mod tests {
         conn.execute_batch(
             "DROP TABLE faces;
              CREATE TABLE faces (
-                 id INTEGER PRIMARY KEY,
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                  hash TEXT NOT NULL,
                  bbox TEXT NOT NULL,
                  embedding BLOB NOT NULL

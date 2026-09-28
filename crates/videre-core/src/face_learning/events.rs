@@ -139,6 +139,7 @@ impl EventFaceRole {
 pub enum InvalidationReason {
     PersonRemoved,
     MissingRequiredContext,
+    SourceFacePruned,
 }
 
 impl InvalidationReason {
@@ -146,6 +147,7 @@ impl InvalidationReason {
         match value {
             "person_removed" => Ok(Self::PersonRemoved),
             "missing_required_context" => Ok(Self::MissingRequiredContext),
+            "source_face_pruned" => Ok(Self::SourceFacePruned),
             other => Err(LearningEventError::InvalidStoredValue(format!(
                 "unknown invalidation reason {other}"
             ))),
@@ -582,43 +584,18 @@ pub fn invalidate_exact_identity_in_transaction(
     } else {
         0
     };
-    if invalidated > 0 || superseded > 0 {
+    if invalidated > 0 {
+        // Evidence was withdrawn: a run in progress trained on it, so clear
+        // its marker as prune does. Its promotion fence then rejects it and
+        // the next cycle trains without this person's evidence.
         conn.execute(
             "UPDATE face_learning_state
-             SET generation = generation + 1,
-                 status = CASE WHEN status = 'training' THEN 'training' ELSE 'stale' END,
-                 last_error = CASE WHEN status = 'training' THEN last_error ELSE NULL END
+             SET generation = generation + 1, status = 'stale',
+                 training_generation = NULL, feedback_needed = NULL, last_error = NULL
              WHERE id = 1",
             [],
         )?;
-    }
-    nonnegative_u64(
-        conn.query_row(
-            "SELECT generation FROM face_learning_state WHERE id = 1",
-            [],
-            |row| row.get(0),
-        )?,
-        "generation",
-    )
-}
-
-pub fn invalidate_identity_in_transaction(
-    conn: &Connection,
-    identity: &str,
-) -> Result<u64, LearningEventError> {
-    if conn.is_autocommit() {
-        return Err(LearningEventError::TransactionRequired);
-    }
-    let identity = crate::person::normalize(identity).ok_or_else(|| {
-        LearningEventError::InvalidEvent("identity to invalidate is empty".to_owned())
-    })?;
-    let changed = conn.execute(
-        "UPDATE face_learning_events
-         SET eligible = 0, invalidation_reason = 'person_removed'
-         WHERE target_identity = ?1 AND eligible = 1",
-        [&identity],
-    )?;
-    if changed > 0 {
+    } else if superseded > 0 {
         conn.execute(
             "UPDATE face_learning_state
              SET generation = generation + 1,

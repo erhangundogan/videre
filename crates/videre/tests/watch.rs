@@ -156,6 +156,34 @@ fn prune_stage_removes_stale_rows() {
 }
 
 #[test]
+fn watch_prune_uses_same_face_sweep() {
+    let lib = TestLibrary::new();
+    seed(&lib, "hash, ext", "'hgone', 'jpg'");
+    let conn = lib.conn();
+    conn.execute(
+        "INSERT INTO faces(hash,bbox,embedding) VALUES('hgone','0,0,1,1',X'00')",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO faces_scanned(hash) VALUES('hgone')", [])
+        .unwrap();
+    drop(conn);
+    watch_once(&lib, &["--prune"]);
+    let conn = lib.conn();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM faces", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM faces_scanned", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
 fn default_stages_do_not_include_prune() {
     let lib = TestLibrary::new();
     seed(&lib, "hash, ext", "'hgone', 'jpg'"); // a.jpg does not exist on disk
