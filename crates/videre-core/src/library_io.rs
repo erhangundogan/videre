@@ -980,13 +980,21 @@ mod tests {
                 release_rx.recv().unwrap();
             },
         );
-        assert!(copied_rx.try_recv().is_ok(), "copy must finish before timeout");
+        assert!(
+            copied_rx.try_recv().is_ok(),
+            "copy must finish before timeout"
+        );
         assert!(result.is_err(), "caller must time out while worker waits");
         let staged_files = || {
             std::fs::read_dir(&ctx.paths.state)
                 .unwrap()
                 .filter_map(Result::ok)
-                .filter(|entry| entry.file_name().to_string_lossy().starts_with(".videre-stage-"))
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".videre-stage-")
+                })
                 .count()
         };
         assert_eq!(staged_files(), 1);
