@@ -1,5 +1,6 @@
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
@@ -165,10 +166,21 @@ impl IoWorkerPool {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 state.capacity_refusals = state.capacity_refusals.saturating_add(1);
-                return Err(IoRunError::Capacity {
-                    active: state.active,
-                    limit: state.maximum,
-                });
+                let active = state.active;
+                let limit = state.maximum;
+                let error = IoRunError::Capacity { active, limit };
+                let timed_out_active = state.timed_out_active;
+                drop(state);
+                static WARNED: AtomicBool = AtomicBool::new(false);
+                if !WARNED.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(
+                        active,
+                        limit,
+                        timed_out_active,
+                        "I/O worker pool is saturated; later files will be retried"
+                    );
+                }
+                return Err(error);
             }
             let (next, _) = self
                 .available
@@ -562,16 +574,58 @@ pub fn wait_with_timeout(child: &mut std::process::Child, timeout: Duration) -> 
 /// A path with no parent (`/`, or a bare relative name) also returns `false`,
 /// since there is nothing to corroborate the absence against.
 pub fn absence_is_trustworthy(path: &Path) -> bool {
+    absence_is_trustworthy_in(global_pool(), path)
+}
+
+fn absence_is_trustworthy_in(pool: &Arc<IoWorkerPool>, path: &Path) -> bool {
+    absence_evidence_in(pool, path) == AbsenceEvidence::ParentPresent
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbsenceEvidence {
+    ParentPresent,
+    ParentMissing,
+    Unknown,
+}
+
+/// Distinguishes a confirmed missing parent from a stat that could not run.
+/// Only the former may be overridden by `prune --prune-unreachable`.
+pub fn absence_evidence(path: &Path) -> AbsenceEvidence {
+    absence_evidence_in(global_pool(), path)
+}
+
+fn absence_evidence_in(pool: &Arc<IoWorkerPool>, path: &Path) -> AbsenceEvidence {
     let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) else {
-        return false;
+        return AbsenceEvidence::Unknown;
     };
     let parent = parent.to_path_buf();
-    run_with_timeout(DEFAULT_IO_TIMEOUT, move || parent.is_dir()).unwrap_or(false)
+    match run_with_timeout_in(pool, STAT_TIMEOUT, move || std::fs::metadata(parent)) {
+        Ok(Ok(meta)) if meta.is_dir() => AbsenceEvidence::ParentPresent,
+        Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            AbsenceEvidence::ParentMissing
+        }
+        _ => AbsenceEvidence::Unknown,
+    }
 }
 
 #[cfg(test)]
 mod absence_tests {
     use super::*;
+
+    #[test]
+    fn saturated_parent_check_is_unknown_not_absent() {
+        let pool = Arc::new(IoWorkerPool::new(1));
+        let held = pool.acquire().unwrap();
+        assert!(!absence_is_trustworthy_in(
+            &pool,
+            Path::new("/a/possibly-present.jpg")
+        ));
+        assert_eq!(
+            absence_evidence_in(&pool, Path::new("/a/possibly-present.jpg")),
+            AbsenceEvidence::Unknown
+        );
+        drop(held);
+    }
 
     fn tmp(name: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("videre-absence-{}-{name}", std::process::id()));

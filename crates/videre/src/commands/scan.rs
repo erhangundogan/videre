@@ -176,14 +176,11 @@ fn gather_records(
     let records: Vec<_> = paths
         .par_iter()
         .filter_map(|path| {
-            let result = hasher::hash_file_in(&ctx.library, path)
-                .map_err(|error| {
-                    progress.skip(
-                        &path.display().to_string(),
-                        videre_core::error_kind::from_io(error),
-                    )
-                })
-                .ok();
+            let result = record_or_skip(
+                hasher::hash_file_in(&ctx.library, path),
+                &progress,
+                &path.display().to_string(),
+            );
             progress.tick();
             result
         })
@@ -194,10 +191,41 @@ fn gather_records(
     (records, skipped, walked)
 }
 
+fn record_or_skip<T>(
+    result: std::io::Result<T>,
+    progress: &videre_core::progress::Progress,
+    path: &str,
+) -> Option<T> {
+    match result {
+        Ok(record) => Some(record),
+        Err(error) => {
+            progress.skip(path, videre_core::error_kind::from_io(error));
+            None
+        }
+    }
+}
+
 fn format_write_summary(written: usize, skipped: usize, destination: &str) -> String {
     if skipped > 0 {
         format!("Wrote {written} record(s) to {destination} ({skipped} skipped)")
     } else {
         format!("Wrote {written} record(s) to {destination}")
+    }
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+
+    #[test]
+    fn capacity_refusal_is_skipped_without_a_record() {
+        let progress = videre_core::progress::Progress::new(1, true);
+        let error = videre_core::io_timeout::IoRunError::Capacity {
+            active: 1,
+            limit: 1,
+        }
+        .into_io_error();
+        let result: Option<u8> = record_or_skip(Err(error), &progress, "photo.jpg");
+        assert!(result.is_none());
     }
 }

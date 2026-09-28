@@ -223,18 +223,42 @@ fn with_ctx_or(
     on_capture_error: impl FnOnce(anyhow::Error) -> anyhow::Result<()>,
     run: impl FnOnce(&command_context::CommandContext) -> anyhow::Result<()>,
 ) -> i32 {
+    let before = videre_core::io_timeout::worker_stats();
     match command_context::CommandContext::capture(library) {
         Ok(ctx) => {
             // Held until the result is reported, so the final error is in the
             // log before the writers flush on drop.
             let _log = logging::install(&ctx.library, command);
-            finish(run(&ctx))
+            let code = finish(run(&ctx));
+            if let Some(summary) = worker_summary(before, videre_core::io_timeout::worker_stats()) {
+                tracing::warn!("{summary}");
+            }
+            code
         }
         Err(e) => {
             logging::install_terminal_only();
-            finish(on_capture_error(e))
+            let code = finish(on_capture_error(e));
+            if let Some(summary) = worker_summary(before, videre_core::io_timeout::worker_stats()) {
+                tracing::warn!("{summary}");
+            }
+            code
         }
     }
+}
+
+fn worker_summary(
+    before: videre_core::io_timeout::IoWorkerStats,
+    after: videre_core::io_timeout::IoWorkerStats,
+) -> Option<String> {
+    let refusals = after
+        .capacity_refusals
+        .saturating_sub(before.capacity_refusals);
+    (refusals > 0).then(|| {
+        format!(
+            "{refusals} I/O worker capacity refusal(s); affected files were skipped and can be retried. Active workers: {}/{} ({} timed out)",
+            after.active, after.maximum, after.timed_out_active
+        )
+    })
 }
 
 /// Report a command's outcome once, through the logging layers (the terminal
@@ -256,5 +280,26 @@ fn finish(result: anyhow::Result<()>) -> i32 {
             videre_core::error_log::report(tracing::Level::ERROR, &e, None);
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod worker_summary_tests {
+    use super::*;
+
+    #[test]
+    fn worker_summary_reports_only_new_refusals() {
+        let stats = videre_core::io_timeout::IoWorkerStats {
+            active: 1,
+            maximum: 1,
+            timed_out_active: 1,
+            capacity_refusals: 4,
+        };
+        assert!(worker_summary(stats, stats).is_none());
+        let later = videre_core::io_timeout::IoWorkerStats {
+            capacity_refusals: 5,
+            ..stats
+        };
+        assert!(worker_summary(stats, later).unwrap().contains("1"));
     }
 }
