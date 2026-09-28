@@ -169,6 +169,73 @@ pub fn decode_via_quicklook(
     image::open(&out_file).with_context(|| format!("decode qlmanage output for {}", path.display()))
 }
 
+/// Encode `jpeg` into the library's cached original for `hash`, atomically:
+/// every writer gets its own temporary file (`atomic_file::publish`), so two
+/// concurrent savers in one gallery process can never rename a half-written
+/// entry into place. Best-effort: a failure is logged and reported, never
+/// fatal to the decode the bytes came from.
+pub fn publish_cached_original(
+    cache: &crate::library::CachePaths,
+    hash: &str,
+    jpeg: &[u8],
+) -> bool {
+    let destination = crate::thumb_cache::original_path_in(cache, hash);
+    let written = crate::atomic_file::publish(&destination, |file| {
+        use std::io::Write as _;
+        file.write_all(jpeg).map_err(Into::into)
+    });
+    if let Err(error) = written {
+        tracing::warn!("could not cache the full-resolution original for {hash}: {error:#}");
+        return false;
+    }
+    true
+}
+
+/// Full-resolution HEIC decode for a library context: the cached original
+/// (`thumb_cache::original_path_in`) when it is there, opened under the I/O
+/// timeout; a fresh `decode_via_quicklook` render otherwise. A render is
+/// published back to the cache, so the first request for a hash pays for it
+/// and the rest read it: five faces on one photo render once, not five
+/// times. `cache` `None`: render only. A missing, corrupt, or stale entry
+/// is replaced by the render that follows it. The published entry is the
+/// same upright, full-resolution QuickLook output the bbox geometry
+/// expects; open it with plain `image::open`, never
+/// `image_decode::decode_oriented_file` (double rotation).
+pub fn decode_fullres_cached(
+    path: &Path,
+    tag: &str,
+    cache: Option<(&crate::library::CachePaths, &str)>,
+) -> anyhow::Result<DynamicImage> {
+    if let Some((cache, hash)) = cache {
+        let cached = crate::thumb_cache::original_path_in(cache, hash);
+        let opened =
+            crate::io_timeout::run_with_timeout(crate::io_timeout::DEFAULT_IO_TIMEOUT, move || {
+                image::open(&cached)
+            });
+        if let Ok(Ok(img)) = opened {
+            return Ok(img);
+        }
+    }
+    // A QuickLook timeout is the caller's to log: the two callers either
+    // swallow the error (`make_face_thumb`, via `warn_if_timeout`) or
+    // propagate it to a worker that logs it (`load_image`), and calling it
+    // here as well would log a detection timeout twice.
+    let img = decode_via_quicklook(path, tag, None)?;
+    if let Some((cache, hash)) = cache {
+        let mut jpeg = Vec::new();
+        if img
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpeg),
+                image::ImageFormat::Jpeg,
+            )
+            .is_ok()
+        {
+            publish_cached_original(cache, hash, &jpeg);
+        }
+    }
+    Ok(img)
+}
+
 /// `qlmanage -t` writes `<file name>.png`, byte for byte. Built as an OS
 /// string so a file name that is not valid UTF-8 still finds its output.
 fn quicklook_output_name(file_name: &std::ffi::OsStr) -> std::ffi::OsString {
@@ -216,6 +283,26 @@ fn quicklook_unavailable() -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_published_original_opens_as_a_jpeg() {
+        let temp = tempfile::tempdir().unwrap();
+        let ctx =
+            crate::library::LibraryContext::new(temp.path(), &temp.path().join("cache")).unwrap();
+        let img = image::RgbImage::from_pixel(2, 2, image::Rgb([255, 0, 0]));
+        let mut jpeg = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpeg),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+
+        assert!(publish_cached_original(&ctx.cache, "pub-test", &jpeg));
+        let opened =
+            image::open(crate::thumb_cache::original_path_in(&ctx.cache, "pub-test")).unwrap();
+        assert_eq!((opened.width(), opened.height()), (2, 2));
+    }
 
     #[test]
     fn the_quicklook_warning_carries_its_kind_and_the_full_explanation() {

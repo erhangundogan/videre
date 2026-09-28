@@ -598,7 +598,10 @@ fn heic_to_b64(path: &str, max_px: u32) -> Option<String> {
 /// the static export where thumbnails must be embedded inline rather than
 /// served as raw bytes (that's what handle_face_image does instead).
 fn face_thumb_b64(path: &str, bbox: [f32; 4], face_id: i64) -> Option<String> {
-    let thumb = videre_api::make_face_thumb(path, bbox, face_id)?;
+    // No CachePaths in static-page rendering, so the cached-original read is
+    // off here; an export is built once, a cost its page build already
+    // accepts.
+    let thumb = videre_api::make_face_thumb(path, bbox, face_id, None)?;
     let mut buf = Vec::new();
     thumb
         .write_to(

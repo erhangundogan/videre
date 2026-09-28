@@ -43,7 +43,10 @@ later requests remain direct cache reads.
 The full-resolution copies are what make it large. They exist because
 [`videre faces`](/commands/faces/) needs full resolution to place face boxes,
 and reusing one is roughly 70x faster than decoding again (~108 ms against
-~7.6 s).
+~7.6 s). Face crops on the People pages reuse the same decode rather than
+rendering the photo again for every face, and `videre faces` writes each HEIC
+it detects into the cache as it goes, so the copies exist even where
+[`watch --heic`](/commands/watch/) never ran.
 
 ### Managing it
 
