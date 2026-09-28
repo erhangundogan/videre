@@ -192,22 +192,37 @@ struct Removals {
 }
 
 impl Removals {
+    /// The two decisions are made together, not side by side:
+    ///
+    /// - An edit goes only while its original is still on disk. The pairing
+    ///   comes from rows, and an original deleted since the last scan would
+    ///   otherwise leave the edit as the only file, then take that too.
+    /// - An exact group keeps its first file that is not itself an edit being
+    ///   removed. Exact dedupe alone may keep an edit (the oldest copy), and
+    ///   removing that edit as well would leave its content with no copy.
     fn collect(records: &[videre::types::FileRecord], edited: bool) -> Removals {
-        let groups = videre::output::find_duplicate_groups(records);
-        let exact: Vec<std::path::PathBuf> = videre::output::loser_paths(&groups)
-            .into_iter()
-            .map(std::path::PathBuf::from)
-            .collect();
-        let edits = if edited {
-            let seen: std::collections::HashSet<&std::path::PathBuf> = exact.iter().collect();
+        use std::path::{Path, PathBuf};
+        let edits: Vec<PathBuf> = if edited {
             videre::output::edited_losers(records)
                 .into_iter()
-                .map(|(_, edit)| std::path::PathBuf::from(edit))
-                .filter(|edit| !seen.contains(edit))
+                .filter(|(original, _)| Path::new(original).exists())
+                .map(|(_, edit)| PathBuf::from(edit))
                 .collect()
         } else {
             Vec::new()
         };
+        let going: std::collections::HashSet<&Path> = edits.iter().map(PathBuf::as_path).collect();
+        let mut exact = Vec::new();
+        for group in videre::output::find_duplicate_groups(records) {
+            let paths: Vec<&Path> = group.files.iter().map(|f| Path::new(&f.path)).collect();
+            // Every copy is an edit whose original stays: all of them go.
+            let keeper = paths.iter().position(|p| !going.contains(p));
+            for (i, path) in paths.into_iter().enumerate() {
+                if Some(i) != keeper && !going.contains(path) {
+                    exact.push(path.to_path_buf());
+                }
+            }
+        }
         Removals { exact, edits }
     }
 

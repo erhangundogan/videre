@@ -277,3 +277,54 @@ fn edited_pairs_do_not_trip_the_bulk_guard() {
         "{stderr}"
     );
 }
+
+/// The original went missing after the last scan: its row still pairs with
+/// the edit, but the edit is now the only file on disk and must stay.
+#[test]
+fn an_edit_whose_original_is_gone_from_disk_is_kept() {
+    let (lib, original, edit) = lib_with_edited_pair();
+    std::fs::remove_file(&original).unwrap();
+    let out = dedupe(&lib, &["--edited", "--remove", "--dry-run"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("IMG_1-edited.jpg"), "{stdout}");
+
+    let out = lib
+        .cmd()
+        .args(["dedupe", "--edited", "--remove", "--yes"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(edit.exists(), "the only remaining file was removed");
+}
+
+/// `A.jpg` has the same content as `B-edited.jpg`, and the edit is the older
+/// copy, so exact dedupe alone would keep the edit and remove `A.jpg`. The
+/// edit goes as an edit, so `A.jpg` must be the copy that survives.
+#[test]
+fn an_edit_kept_by_exact_dedupe_does_not_take_its_copy_with_it() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "Photos/B.jpg");
+    let edit = lib.copy_fixture("sample_with_exif.jpg", "Photos/B-edited.jpg");
+    let copy = lib.copy_fixture("sample_with_exif.jpg", "Album/A.jpg");
+    filetime::set_file_mtime(&edit, filetime::FileTime::from_unix_time(1_000_000_000, 0)).unwrap();
+    filetime::set_file_mtime(&copy, filetime::FileTime::from_unix_time(1_600_000_000, 0)).unwrap();
+    lib.scan();
+    // Exact dedupe on its own keeps the older edit.
+    let out = dedupe(&lib, &[]);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("Album/A.jpg"),
+        "fixture: the edit must be the exact group's keeper"
+    );
+
+    let out = dedupe(&lib, &["--edited", "--remove", "--dry-run"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Photos/B-edited.jpg"), "{stdout}");
+    assert!(
+        !stdout.contains("Album/A.jpg"),
+        "a copy must survive: {stdout}"
+    );
+}
