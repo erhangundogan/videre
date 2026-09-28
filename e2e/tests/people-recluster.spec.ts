@@ -100,3 +100,34 @@ test("recluster previews without writing and applies from the toolbar", async ({
     db!.close();
   }
 });
+
+// Another process writing beside the gallery (a `videre watch` cycle) must
+// stay visible after the gallery opens the library a second time, as a
+// recluster preview does. That second open used to read the database header
+// through a plain file handle, whose close dropped the gallery's SQLite
+// locks; the other process, closing next, took itself for the last user and
+// deleted the WAL under the gallery, which then read a frozen snapshot.
+test("another process's writes stay visible after a recluster preview", async ({
+  page,
+  isolatedGallery: gallery
+}) => {
+  const faces = async () => (await (await page.request.get(`${gallery.baseURL}/api/faces`)).json()).singletons.length;
+  const writer = await openLibrary(gallery.libraryRoot);
+  writer!.prepare(
+    `INSERT INTO faces (hash, bbox, embedding, blur) VALUES
+       ('r1', '0,0,100,100', X'${unitEmbedding(0)}', 500.0),
+       ('r2', '0,0,100,100', X'${unitEmbedding(0)}', 500.0),
+       ('r3', '0,0,100,100', X'${unitEmbedding(0)}', 500.0),
+       ('r4', '0,0,100,100', X'${unitEmbedding(1)}', 500.0)`
+  ).run();
+  expect(await faces()).toBe(4);
+
+  const preview = await page.request.post(`${gallery.baseURL}/api/faces/recluster/preview`, { data: {} });
+  expect(preview.ok()).toBeTruthy();
+  writer!.close();
+
+  const next = await openLibrary(gallery.libraryRoot);
+  next!.prepare("INSERT INTO faces (hash, bbox, embedding) VALUES ('p1', '0,0,50,50', X'0000')").run();
+  next!.close();
+  expect(await faces(), "the gallery no longer sees other writers").toBe(5);
+});

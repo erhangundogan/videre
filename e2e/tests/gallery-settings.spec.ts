@@ -95,6 +95,24 @@ test("a fractional page size falls back to the default instead of emptying the g
   await expect(page.locator("#gallery [data-lb-url]").first()).toBeVisible();
 });
 
+test("the tile row height comes from gallery.json, and an out-of-range one is ignored", async ({ page, gallery }) => {
+  const path = join(gallery.libraryRoot, ".videre", "gallery.json");
+  const firstTileHeight = async (tile: object) => {
+    await writeFile(path, JSON.stringify({ routes: { files: { view: "tile", tile } } }));
+    await page.goto(gallery.baseURL);
+    const first = page.locator("#gallery .tile").first();
+    await expect(first).toBeVisible();
+    return (await first.boundingBox())!.height;
+  };
+  const short = await firstTileHeight({ rowHeight: 100 });
+  const tall = await firstTileHeight({ rowHeight: 400 });
+  expect(tall).toBeGreaterThan(short * 2);
+  // 5 is below the 80px floor, so the default 280 applies.
+  const fallback = await firstTileHeight({ rowHeight: 5 });
+  const byDefault = await firstTileHeight({});
+  expect(fallback).toBeCloseTo(byDefault, 0);
+});
+
 test("an unreadable settings file shows a banner and is never overwritten", async ({ page, gallery }) => {
   const path = join(gallery.libraryRoot, ".videre", "gallery.json");
   await writeFile(path, "{oops");

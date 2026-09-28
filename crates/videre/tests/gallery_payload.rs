@@ -188,8 +188,7 @@ struct Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        self.child.kill().ok();
-        self.child.wait().ok();
+        common::stop_gallery(&mut self.child, self.port);
     }
 }
 

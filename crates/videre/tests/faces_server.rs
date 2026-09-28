@@ -75,8 +75,7 @@ fn gallery_starts_and_keeps_serving() {
         .expect("failed to spawn videre gallery");
     std::thread::sleep(std::time::Duration::from_millis(300));
     let still_running = child.try_wait().unwrap().is_none();
-    child.kill().ok();
-    child.wait().ok();
+    common::stop_gallery(&mut child, 7893);
     assert!(
         still_running,
         "videre gallery should still be serving, not have exited"

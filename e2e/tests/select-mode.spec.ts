@@ -224,6 +224,56 @@ test("the selection bar fits one line, Delete sits last, and menus close on Esca
   await expect(bar.locator('.sel-pop[data-pop="more"]')).toBeHidden();
 });
 
+async function selectedNames(page: import("@playwright/test").Page): Promise<string[]> {
+  return page.$$eval("#gallery .card.selected > div.card-meta:first-of-type", (els) =>
+    els.map((e) => (e.textContent || "").trim()).sort()
+  );
+}
+
+test("the selection is kept by item across a sort change", async ({ page, sortedGallery }) => {
+  await page.goto(sortedGallery.baseURL);
+  await page.locator(".gallery-toolbar .select-toggle").first().click();
+  const cards = page.locator("#gallery .card[data-hash]");
+  await expect(cards).toHaveCount(3);
+  await cards.filter({ hasText: "a_alpha.jpg" }).click();
+  await cards.filter({ hasText: "c_clip.mp4" }).click();
+  expect(await selectedNames(page)).toEqual(["a_alpha.jpg", "c_clip.mp4"]);
+
+  // The grid is rebuilt in a new order; the same two items stay selected.
+  const refetched = page.waitForResponse((r) => r.url().includes("sort=size"));
+  await page.locator(".sort-select").first().selectOption("size");
+  await refetched;
+  await expect(page.locator("#file-sel-bar .sel-count")).toHaveText("2 selected");
+  await expect(page.locator("#gallery .card.selected")).toHaveCount(2);
+  expect(await selectedNames(page)).toEqual(["a_alpha.jpg", "c_clip.mp4"]);
+});
+
+test("a Shift range works backwards too", async ({ page, sortedGallery }) => {
+  await page.goto(sortedGallery.baseURL);
+  await page.locator(".gallery-toolbar .select-toggle").first().click();
+  const cards = page.locator("#gallery .card[data-hash]");
+  await cards.nth(2).click();
+  await cards.nth(0).click({ modifiers: ["Shift"] });
+  await expect(page.locator("#file-sel-bar .sel-count")).toHaveText("3 selected");
+});
+
+test("Reject marks the selection and the pick clears again", async ({ page, sortedGallery }) => {
+  await page.goto(sortedGallery.baseURL);
+  await page.locator(".gallery-toolbar .select-toggle").first().click();
+  const cards = page.locator("#gallery .card[data-hash]");
+  await cards.nth(0).click();
+  await cards.nth(1).click({ modifiers: ["Shift"] });
+  const bar = page.locator("#file-sel-bar");
+
+  await bar.locator('[data-sel-pop="flag"]').click();
+  await bar.locator('[data-sel-act="reject"]').click();
+  await expect(page.locator("#sel-toast")).toHaveText("Marked 2 item(s) Reject");
+
+  await bar.locator('[data-sel-pop="flag"]').click();
+  await bar.locator('[data-sel-act="pick-clear"]').click();
+  await expect(page.locator("#sel-toast")).toHaveText("Cleared the pick of 2 item(s)");
+});
+
 test("Clear in the selection bar empties the selection", async ({ page, sortedGallery }) => {
   await page.goto(sortedGallery.baseURL);
   await page.locator(".gallery-toolbar .select-toggle").first().click();
