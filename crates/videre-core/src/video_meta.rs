@@ -15,7 +15,7 @@
 //! `io_timeout` bounding whose timeout could *not* be size-scaled, since
 //! reading a header is not proportional to file length.
 
-use std::io::{Seek, SeekFrom};
+use std::io::SeekFrom;
 use std::path::Path;
 
 /// Everything worth taking from a container.
@@ -363,7 +363,13 @@ pub fn read_file(file: std::fs::File) -> VideoMeta {
     .unwrap_or_default()
 }
 
-fn read_file_inner(mut file: std::fs::File) -> Option<VideoMeta> {
+/// Parse a reader already guarded by an outer progress-aware I/O worker.
+/// This must not start a nested timeout worker when the configured limit is 1.
+pub fn read_file_in_progress<R: std::io::Read + std::io::Seek>(reader: &mut R) -> VideoMeta {
+    read_file_inner(reader).unwrap_or_default()
+}
+
+fn read_file_inner<R: std::io::Read + std::io::Seek>(mut file: R) -> Option<VideoMeta> {
     let end = file.seek(SeekFrom::End(0)).ok()?;
     file.seek(SeekFrom::Start(0)).ok()?;
     crate::video_probe::read_moov(&mut file, end).map(|moov| from_moov(&moov))
@@ -372,12 +378,43 @@ fn read_file_inner(mut file: std::fs::File) -> Option<VideoMeta> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Cursor, Read, Seek};
 
     fn bx(typ: &[u8; 4], payload: &[u8]) -> Vec<u8> {
         let mut v = ((payload.len() + 8) as u32).to_be_bytes().to_vec();
         v.extend_from_slice(typ);
         v.extend_from_slice(payload);
         v
+    }
+
+    #[test]
+    fn video_metadata_refreshes_an_outer_progress_window() {
+        struct Slow<R>(R);
+        impl<R: Read> Read for Slow<R> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                std::thread::sleep(std::time::Duration::from_millis(12));
+                self.0.read(buf)
+            }
+        }
+        impl<R: Seek> Seek for Slow<R> {
+            fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+                self.0.seek(pos)
+            }
+        }
+        let mut mvhd = vec![0u8; 4];
+        mvhd.extend_from_slice(&0u32.to_be_bytes());
+        mvhd.extend_from_slice(&0u32.to_be_bytes());
+        mvhd.extend_from_slice(&1000u32.to_be_bytes());
+        mvhd.extend_from_slice(&2500u32.to_be_bytes());
+        let bytes = bx(b"moov", &bx(b"mvhd", &mvhd));
+        let result = crate::io_timeout::run_with_progress_timeout(
+            std::time::Duration::from_millis(20),
+            move |progress| {
+                let mut reader = progress.wrap(Slow(Cursor::new(bytes)));
+                read_file_in_progress(&mut reader)
+            },
+        );
+        assert_eq!(result.unwrap().duration_secs, Some(2.5));
     }
 
     #[test]
