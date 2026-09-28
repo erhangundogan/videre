@@ -662,8 +662,8 @@ mod tests {
         struct Slow<R>(R);
         impl<R: Read> Read for Slow<R> {
             fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-                let take = buf.len().min(64);
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                let take = buf.len().min(128);
                 self.0.read(&mut buf[..take])
             }
         }
@@ -677,23 +677,23 @@ mod tests {
             "/tests/fixtures/tiny.jpg"
         ))
         .unwrap();
-        // Each 64-byte read waits 10 ms, a fifteenth of the idle window, and
-        // both inputs take several windows in total (the fallback is 64
-        // reads), so only reads refreshing the handle can finish them. The
-        // earlier 3-of-20 ms margin did not survive a loaded CI runner.
+        // Each 128-byte read waits 50 ms, a twentieth of the idle window,
+        // which a loaded macOS runner's stalls did not respect at tighter
+        // margins; each input as a whole outlasts the window (asserted
+        // below), so only reads refreshing the handle can finish it.
+        let idle = std::time::Duration::from_secs(1);
         for (bytes, format) in [(jpeg, Some(Format::Jpeg)), (vec![7_u8; 4096], None)] {
             let expected = keys(&mut io::Cursor::new(&bytes), bytes.len() as u64, format).unwrap();
-            let got = videre_core::io_timeout::run_with_progress_timeout(
-                std::time::Duration::from_millis(150),
-                move |progress| {
-                    let len = bytes.len() as u64;
-                    let mut reader = progress.wrap(Slow(io::Cursor::new(bytes)));
-                    keys(&mut reader, len, format)
-                },
-            )
+            let started = std::time::Instant::now();
+            let got = videre_core::io_timeout::run_with_progress_timeout(idle, move |progress| {
+                let len = bytes.len() as u64;
+                let mut reader = progress.wrap(Slow(io::Cursor::new(bytes)));
+                keys(&mut reader, len, format)
+            })
             .unwrap()
             .unwrap();
             assert_eq!(got, expected);
+            assert!(started.elapsed() > idle, "the read must outlast the window");
         }
     }
     use std::io::Cursor;

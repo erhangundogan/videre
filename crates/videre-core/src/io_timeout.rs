@@ -951,20 +951,26 @@ mod progress_tests {
     fn one_byte_keeps_a_read_alive_past_old_total_budget() {
         for declared_size in [1_000_000_u64, 100_000_000_000_u64] {
             let pool = Arc::new(IoWorkerPool::new(1));
-            // The stream (10 x 30 ms) outlasts the idle window twice over,
-            // while each gap stays a fifth of it: margin enough for a loaded
-            // CI runner's scheduling, which ate the earlier 15-of-40 ms.
-            let result =
-                run_with_progress_timeout_in(&pool, Duration::from_millis(150), move |h| {
-                    let mut reader = h.wrap(Cursor::new([1_u8; 10]));
-                    let mut byte = [0];
-                    for _ in 0..10 {
-                        reader.read_exact(&mut byte).unwrap();
-                        thread::sleep(Duration::from_millis(30));
-                    }
-                    (declared_size, byte[0])
-                });
+            // Each gap is a twentieth of the idle window, which a loaded macOS
+            // runner's scheduling stalls did not respect at 15-of-40 or
+            // 30-of-150 ms; the stream as a whole outlasts the window, so it
+            // finishes only because every read refreshed it.
+            let idle = Duration::from_secs(1);
+            let started = Instant::now();
+            let result = run_with_progress_timeout_in(&pool, idle, move |h| {
+                let mut reader = h.wrap(Cursor::new([1_u8; 30]));
+                let mut byte = [0];
+                for _ in 0..30 {
+                    reader.read_exact(&mut byte).unwrap();
+                    thread::sleep(Duration::from_millis(50));
+                }
+                (declared_size, byte[0])
+            });
             assert!(matches!(result, Ok((size, 1)) if size == declared_size));
+            assert!(
+                started.elapsed() > idle,
+                "the stream must outlast the window"
+            );
         }
     }
 

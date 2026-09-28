@@ -381,9 +381,14 @@ mod tests {
     fn video_metadata_refreshes_an_outer_progress_window() {
         struct Slow<R>(R);
         impl<R: Read> Read for Slow<R> {
+            // One byte per read, a twentieth of the idle window apart: the
+            // whole parse outlasts the window, so it finishes only because
+            // every read refreshed it, and a loaded CI runner's stalls fit
+            // inside each gap's margin.
             fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-                std::thread::sleep(std::time::Duration::from_millis(12));
-                self.0.read(buf)
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                let take = buf.len().min(1);
+                self.0.read(&mut buf[..take])
             }
         }
         impl<R: Seek> Seek for Slow<R> {
@@ -397,14 +402,17 @@ mod tests {
         mvhd.extend_from_slice(&1000u32.to_be_bytes());
         mvhd.extend_from_slice(&2500u32.to_be_bytes());
         let bytes = bx(b"moov", &bx(b"mvhd", &mvhd));
-        let result = crate::io_timeout::run_with_progress_timeout(
-            std::time::Duration::from_millis(20),
-            move |progress| {
-                let mut reader = progress.wrap(Slow(Cursor::new(bytes)));
-                read_file_in_progress(&mut reader)
-            },
-        );
+        let idle = std::time::Duration::from_secs(1);
+        let started = std::time::Instant::now();
+        let result = crate::io_timeout::run_with_progress_timeout(idle, move |progress| {
+            let mut reader = progress.wrap(Slow(Cursor::new(bytes)));
+            read_file_in_progress(&mut reader)
+        });
         assert_eq!(result.unwrap().duration_secs, Some(2.5));
+        assert!(
+            started.elapsed() > idle,
+            "the parse must outlast the window"
+        );
     }
 
     #[test]
