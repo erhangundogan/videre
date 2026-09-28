@@ -55,7 +55,7 @@ pub fn faces_ddl_for(table: &str, if_not_exists: bool) -> String {
     let exists = if if_not_exists { "IF NOT EXISTS " } else { "" };
     format!(
         "CREATE TABLE {exists}{table} (
-            id            INTEGER PRIMARY KEY,
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
             hash          TEXT NOT NULL,
             bbox          TEXT NOT NULL,
             landmark      TEXT,
