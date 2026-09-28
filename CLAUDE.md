@@ -739,6 +739,8 @@ above.
 - Search predicates shared by CLI and MCP -> `videre_core::query`
 - Read timeout scales with size, stat timeout does not -> `videre_core::io_timeout::timeout_for_size`
 - Face clustering O(n^2) fixes (memory and time) -> `videre_core::face_cluster`
+- Location clustering has no n*n matrix: cells first, then sparse average
+  linkage -> `videre_core::location_cluster::cluster_by_distance`
 - Source-file decodes are orientation-correct -> `videre_core::image_decode`
 - `watch --prune` cannot override the guards -> `commands::prune::PruneArgs::for_watch_stage`
 - `videre locations` is a global recompute -> `commands::locations`
