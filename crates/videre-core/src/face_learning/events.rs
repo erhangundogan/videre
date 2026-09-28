@@ -139,6 +139,7 @@ impl EventFaceRole {
 pub enum InvalidationReason {
     PersonRemoved,
     MissingRequiredContext,
+    SourceFacePruned,
 }
 
 impl InvalidationReason {
@@ -146,6 +147,7 @@ impl InvalidationReason {
         match value {
             "person_removed" => Ok(Self::PersonRemoved),
             "missing_required_context" => Ok(Self::MissingRequiredContext),
+            "source_face_pruned" => Ok(Self::SourceFacePruned),
             other => Err(LearningEventError::InvalidStoredValue(format!(
                 "unknown invalidation reason {other}"
             ))),
