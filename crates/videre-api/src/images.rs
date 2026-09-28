@@ -34,20 +34,47 @@ fn crop_face_square(img: &image::DynamicImage, bbox: [f32; 4]) -> image::Dynamic
 /// writing to the DB), so the thumbnail must be cropped from an image of
 /// the same dimensions used at detection time.
 ///
-/// For HEIC: videre faces converts via QuickLook (see
+/// For HEIC: when `original` names a cache and hash and the cached
+/// full-resolution original exists (`thumb_cache::original_path_in`, written
+/// by `watch --heic` and the faces-original endpoint), it is opened
+/// directly. It is the same upright QuickLook decode a fresh conversion
+/// gives, at cache speed. Otherwise videre converts via QuickLook (see
 /// `videre_core::heic::decode_via_quicklook`), which already applies correct
 /// rotation, so no separate orientation step is needed.
 ///
 /// `pub`: the static-page base64 thumbnail path (`face_thumb_b64` in
 /// `render`) also needs this exact crop+orientation logic, so it calls
 /// through here instead of keeping its own duplicate copy.
-pub fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image::DynamicImage> {
+pub fn make_face_thumb(
+    path: &str,
+    bbox: [f32; 4],
+    face_id: i64,
+    original: Option<(&videre_core::library::CachePaths, &str)>,
+) -> Option<image::DynamicImage> {
     let ext = std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
     if ext == "heic" {
+        if let Some((cache, hash)) = original {
+            // A cached original is upright, untagged QuickLook output of the
+            // same full resolution the bbox expects, so it crops identically
+            // to a fresh decode. Plain `image::open`, never
+            // `image_decode::decode_oriented_file`: re-orienting
+            // videre-produced pixels double-rotates (see the image_decode
+            // module doc). Any failure falls through to a fresh decode.
+            let cached = videre_core::thumb_cache::original_path_in(cache, hash);
+            if cached.is_file() {
+                let cached_path = cached.clone();
+                if let Ok(Ok(img)) = videre_core::io_timeout::run_with_timeout(
+                    videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
+                    move || image::open(&cached_path),
+                ) {
+                    return Some(crop_face_square(&img, bbox));
+                }
+            }
+        }
         // None: bbox is stored relative to a full-res decode. See the
         // safety note on decode_via_quicklook.
         let img = videre_core::heic::decode_via_quicklook(
@@ -183,7 +210,13 @@ pub fn face_bytes_from_lookup(
         }
     }
 
-    let thumb = make_face_thumb(&lookup.file_path, bbox, face_id).ok_or(Error::NotFound)?;
+    let thumb = make_face_thumb(
+        &lookup.file_path,
+        bbox,
+        face_id,
+        Some((cache, &lookup.hash)),
+    )
+    .ok_or(Error::NotFound)?;
     let mut buf = Vec::new();
     thumb
         .write_to(
@@ -356,7 +389,7 @@ mod tests {
         let mut expected =
             image::DynamicImage::ImageRgba8(crop_face_square(&raw, raw_bbox).to_rgba8());
         expected.apply_orientation(orientation);
-        let thumb = make_face_thumb(&tagged, display_bbox, 1).unwrap();
+        let thumb = make_face_thumb(&tagged, display_bbox, 1, None).unwrap();
         assert_eq!((thumb.width(), thumb.height()), (140, 140));
         let a: Vec<u8> = expected.to_rgb8().pixels().map(|p| p.0[0]).collect();
         let b: Vec<u8> = thumb.to_rgb8().pixels().map(|p| p.0[0]).collect();
@@ -564,5 +597,64 @@ mod tests {
         assert_eq!(lookup.file_path, "/no/such/file.jpg");
         assert_eq!(lookup.hash, "h1");
         assert_eq!(lookup.bbox_json, "0,0,10,10");
+    }
+
+    /// With the cached full-resolution original present, the crop is produced
+    /// from it without rendering the HEIC: the source path below does not
+    /// exist, so QuickLook could not have produced anything. Before the
+    /// cache-first read this failed on every platform (Linux bails inside
+    /// `decode_via_quicklook`; macOS `qlmanage` fails on the missing file).
+    #[test]
+    fn a_cached_original_feeds_the_face_crop_without_quicklook() {
+        let temp = tempfile::tempdir().unwrap();
+        let ctx =
+            videre_core::library::LibraryContext::new(temp.path(), &temp.path().join("cache"))
+                .unwrap();
+        let hash = format!("face-crop-original-{}", std::process::id());
+        let cached = videre_core::thumb_cache::original_path_in(&ctx.cache, &hash);
+        std::fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        let img = image::RgbImage::from_pixel(2, 2, image::Rgb([255, 0, 0]));
+        image::DynamicImage::ImageRgb8(img).save(&cached).unwrap();
+
+        let thumb = make_face_thumb(
+            "/nonexistent/should-not-be-read.heic",
+            [0.0, 0.0, 2.0, 2.0],
+            1,
+            Some((&ctx.cache, &hash)),
+        )
+        .unwrap();
+        assert_eq!((thumb.width(), thumb.height()), (140, 140));
+        assert!(
+            thumb
+                .to_rgb8()
+                .pixels()
+                .all(|p| p.0[0] >= 200 && p.0[1] <= 64 && p.0[2] <= 64),
+            "the crop must show the cached original's pixels (JPEG round-trip shifts them a little)"
+        );
+    }
+
+    /// A corrupt cached original is skipped like a missing one: the fallback
+    /// decodes the (here nonexistent) source, fails, and the crop is `None`
+    /// with no panic. Linux bails in `decode_via_quicklook`; macOS `qlmanage`
+    /// fails on the missing file, but only after its own timeout, so this is
+    /// the slow test of the two there.
+    #[test]
+    fn a_corrupt_cached_original_is_skipped_not_fatal() {
+        let temp = tempfile::tempdir().unwrap();
+        let ctx =
+            videre_core::library::LibraryContext::new(temp.path(), &temp.path().join("cache"))
+                .unwrap();
+        let hash = format!("face-crop-corrupt-{}", std::process::id());
+        let cached = videre_core::thumb_cache::original_path_in(&ctx.cache, &hash);
+        std::fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        std::fs::write(&cached, b"not a jpeg").unwrap();
+
+        assert!(make_face_thumb(
+            "/nonexistent/should-not-be-read.heic",
+            [0.0, 0.0, 2.0, 2.0],
+            1,
+            Some((&ctx.cache, &hash)),
+        )
+        .is_none());
     }
 }
