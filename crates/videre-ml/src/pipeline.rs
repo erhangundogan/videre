@@ -243,6 +243,11 @@ fn run_face_pipeline_impl(
         detect_errors: 0,
     };
 
+    // Set by the collector when a write fails with a systemic disk error:
+    // every worker checks it before starting new work, so the run stops
+    // detecting instead of burning hours on a volume that cannot save.
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
     std::thread::scope(|scope| -> Result<()> {
         let (tx, rx) = std::sync::mpsc::channel::<WorkerMsg>();
 
@@ -255,6 +260,7 @@ fn run_face_pipeline_impl(
             .iter()
             .map(|partition| {
                 let tx = tx.clone();
+                let stop = stop.clone();
                 let det_path = det_path.clone();
                 let rec_path = rec_path.clone();
                 let progress = &progress;
@@ -264,6 +270,11 @@ fn run_face_pipeline_impl(
                     let mut embedder = face_embed::FaceEmbedder::new(&rec_path, intra_threads)?;
 
                     for chunk in partition.chunks(batch) {
+                        // The collector hit a fatal disk error: the rest of
+                        // this library must not be loaded and detected.
+                        if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                            return Ok(local_profile);
+                        }
                         struct ChunkEntry {
                             hash: String,
                             detections: Vec<face_detect::Detection>,
@@ -277,6 +288,9 @@ fn run_face_pipeline_impl(
                         let mut chunk_crops: Vec<image::RgbImage> = Vec::new();
 
                         for (path, hash) in chunk {
+                            if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                                return Ok(local_profile);
+                            }
                             let load_start = std::time::Instant::now();
                             let img = match load_image(path, hash, cache) {
                                 Ok(i) => i,
@@ -285,10 +299,15 @@ fn run_face_pipeline_impl(
                                     // The kind was attached where the cause
                                     // was known (drive, permission, decode).
                                     progress.skip(path, e);
-                                    let _ = tx.send(WorkerMsg::DecodeError {
-                                        hash: hash.clone(),
-                                        error,
-                                    });
+                                    if tx
+                                        .send(WorkerMsg::DecodeError {
+                                            hash: hash.clone(),
+                                            error,
+                                        })
+                                        .is_err()
+                                    {
+                                        return Ok(local_profile);
+                                    }
                                     progress.tick();
                                     continue;
                                 }
@@ -312,7 +331,9 @@ fn run_face_pipeline_impl(
                                 Ok(d) => d,
                                 Err(e) => {
                                     progress.skip(path, anyhow::anyhow!("detect failed: {e}"));
-                                    let _ = tx.send(WorkerMsg::ImageError);
+                                    if tx.send(WorkerMsg::ImageError).is_err() {
+                                        return Ok(local_profile);
+                                    }
                                     progress.tick();
                                     continue;
                                 }
@@ -322,7 +343,9 @@ fn run_face_pipeline_impl(
                             }
 
                             if detections.is_empty() {
-                                let _ = tx.send(WorkerMsg::NoFace { hash: hash.clone() });
+                                if tx.send(WorkerMsg::NoFace { hash: hash.clone() }).is_err() {
+                                    return Ok(local_profile);
+                                }
                                 progress.tick();
                                 continue;
                             }
@@ -419,10 +442,15 @@ fn run_face_pipeline_impl(
                                     }
                                 })
                                 .collect();
-                            let _ = tx.send(WorkerMsg::Faces {
-                                hash: entry.hash.clone(),
-                                rows,
-                            });
+                            if tx
+                                .send(WorkerMsg::Faces {
+                                    hash: entry.hash.clone(),
+                                    rows,
+                                })
+                                .is_err()
+                            {
+                                return Ok(local_profile);
+                            }
                         }
                     }
                     Ok(local_profile)
@@ -431,64 +459,14 @@ fn run_face_pipeline_impl(
             .collect();
         drop(tx); // coordinator's own handle - workers hold the rest, channel closes once all clones drop
 
-        for msg in rx {
-            apply_worker_msg_counts(&mut result, &msg);
-            match msg {
-                WorkerMsg::Faces { hash, rows } => {
-                    if !dry_run {
-                        let write_start = std::time::Instant::now();
-                        let write_result =
-                            videre_core::face_db::replace_faces_for_hash(conn, &hash, &rows);
-                        if let Some(p) = profile.as_deref_mut() {
-                            p.db_write += write_start.elapsed();
-                        }
-                        match write_result {
-                            Ok(()) => {
-                                let _ = videre_core::face_db::mark_scanned(conn, &hash);
-                                // Decoded successfully: drop any earlier strike so
-                                // a transient timeout never lingers.
-                                let _ = videre_core::decode_failures::clear(
-                                    conn,
-                                    &hash,
-                                    videre_core::decode_failures::STAGE_FACES,
-                                );
-                            }
-                            Err(e) => {
-                                videre_core::error_log::report(
-                                    tracing::Level::ERROR,
-                                    &anyhow::anyhow!("write failed {hash}: {e}"),
-                                    None,
-                                );
-                                result.write_errors += 1;
-                            }
-                        }
-                    }
-                }
-                WorkerMsg::NoFace { hash } => {
-                    if !dry_run {
-                        let _ = videre_core::face_db::mark_scanned(conn, &hash);
-                        let _ = videre_core::decode_failures::clear(
-                            conn,
-                            &hash,
-                            videre_core::decode_failures::STAGE_FACES,
-                        );
-                    }
-                }
-                WorkerMsg::DecodeError { hash, error } => {
-                    if !dry_run {
-                        // Record the decode failure so a later run can skip it
-                        // once it has failed FAILURE_THRESHOLD times.
-                        let _ = videre_core::decode_failures::record(
-                            conn,
-                            &hash,
-                            videre_core::decode_failures::STAGE_FACES,
-                            &error,
-                        );
-                    }
-                }
-                WorkerMsg::ImageError | WorkerMsg::EmbedBatchError { .. } => {}
-            }
-        }
+        collect_face_messages(
+            conn,
+            rx,
+            &mut result,
+            profile.as_deref_mut(),
+            dry_run,
+            &stop,
+        )?;
 
         // Join every worker, propagating both a thread panic and the
         // worker's own Result<ProfileStats> error, and merge each worker's
@@ -506,6 +484,103 @@ fn run_face_pipeline_impl(
 
     progress.finish();
     Ok(result)
+}
+
+/// Consume worker messages until the channel closes or a systemic disk
+/// error stops the run. Setting `stop` here is what makes the workers quit
+/// loading and detecting the rest of the library: they check it before
+/// every chunk and image, and their sends fail once this receiver drops.
+fn collect_face_messages(
+    conn: &rusqlite::Connection,
+    rx: std::sync::mpsc::Receiver<WorkerMsg>,
+    result: &mut FacesRunResult,
+    mut profile: Option<&mut ProfileStats>,
+    dry_run: bool,
+    stop: &std::sync::atomic::AtomicBool,
+) -> anyhow::Result<()> {
+    for msg in rx {
+        apply_worker_msg_counts(result, &msg);
+        if let Err(e) = record_face_message(conn, msg, result, profile.as_deref_mut(), dry_run) {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+/// Handle one worker message's database side: the faces write for a hash,
+/// the scanned markers, the decode-failure strikes. Non-IO write failures
+/// are logged and counted (`write_errors`) and the run goes on; a systemic
+/// disk failure stops the run at the first one, with one message, because
+/// every further write on a failing volume would fail the same way.
+fn record_face_message(
+    conn: &rusqlite::Connection,
+    msg: WorkerMsg,
+    result: &mut FacesRunResult,
+    profile: Option<&mut ProfileStats>,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    match msg {
+        WorkerMsg::Faces { hash, rows } => {
+            if !dry_run {
+                let write_start = std::time::Instant::now();
+                let write_result = videre_core::face_db::replace_faces_for_hash(conn, &hash, &rows);
+                if let Some(p) = profile {
+                    p.db_write += write_start.elapsed();
+                }
+                match write_result {
+                    Ok(()) => {
+                        let _ = videre_core::face_db::mark_scanned(conn, &hash);
+                        // Decoded successfully: drop any earlier strike so
+                        // a transient timeout never lingers.
+                        let _ = videre_core::decode_failures::clear(
+                            conn,
+                            &hash,
+                            videre_core::decode_failures::STAGE_FACES,
+                        );
+                    }
+                    Err(e) => {
+                        let e = anyhow::Error::new(e);
+                        if videre_core::error_kind::is_fatal_io_error(&e) {
+                            return Err(e.context(
+                                "the library volume is failing (disk I/O error); stopped at the first failed write",
+                            ));
+                        }
+                        videre_core::error_log::report(
+                            tracing::Level::ERROR,
+                            &anyhow::anyhow!("write failed {hash}: {e:#}"),
+                            None,
+                        );
+                        result.write_errors += 1;
+                    }
+                }
+            }
+        }
+        WorkerMsg::NoFace { hash } => {
+            if !dry_run {
+                let _ = videre_core::face_db::mark_scanned(conn, &hash);
+                let _ = videre_core::decode_failures::clear(
+                    conn,
+                    &hash,
+                    videre_core::decode_failures::STAGE_FACES,
+                );
+            }
+        }
+        WorkerMsg::DecodeError { hash, error } => {
+            if !dry_run {
+                // Record the decode failure so a later run can skip it
+                // once it has failed FAILURE_THRESHOLD times.
+                let _ = videre_core::decode_failures::record(
+                    conn,
+                    &hash,
+                    videre_core::decode_failures::STAGE_FACES,
+                    &error,
+                );
+            }
+        }
+        WorkerMsg::ImageError | WorkerMsg::EmbedBatchError { .. } => {}
+    }
+    Ok(())
 }
 
 pub struct ClusteringResult {
@@ -1412,5 +1487,100 @@ mod tests {
             (1543, 1200),
             "tagged file must decode to the rotated display canvas"
         );
+    }
+
+    fn faces_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        videre_core::db::enable_foreign_keys(&conn).unwrap();
+        videre_core::face_db::ensure_people_table(&conn);
+        videre_core::face_db::create_faces_table(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn a_fatal_write_error_stops_the_first_time() {
+        let conn = faces_conn();
+        // The read-only trick `prune --dry-run` uses: writes now fail with
+        // SQLITE_READONLY, one of the fatal codes.
+        conn.pragma_update(None, "query_only", true).unwrap();
+        let mut result = FacesRunResult {
+            total_faces: 0,
+            write_errors: 0,
+            images_processed: 0,
+            detect_errors: 0,
+        };
+        let msg = || WorkerMsg::Faces {
+            hash: "h1".into(),
+            rows: vec![sample_face_row("h1")],
+        };
+        let error = record_face_message(&conn, msg(), &mut result, None, false).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("the library volume is failing"),
+            "{error:#}"
+        );
+        // The caller breaks on the first Err, so a second attempt never
+        // happens in a real run; the helper is honest if asked again.
+        assert!(record_face_message(&conn, msg(), &mut result, None, false).is_err());
+        assert_eq!(result.write_errors, 0, "a fatal stop is not a counted skip");
+    }
+
+    /// The loop-level bar the spec set: N queued messages, exactly one
+    /// stop. The first fatal write returns Err and raises the workers'
+    /// stop flag; the rest of the queue is left unconsumed, which the
+    /// message counter proves (only the first was applied).
+    #[test]
+    fn the_collector_stops_consuming_at_the_first_fatal_write() {
+        let conn = faces_conn();
+        conn.pragma_update(None, "query_only", true).unwrap();
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let (tx, rx) = std::sync::mpsc::channel();
+        for _ in 0..4 {
+            tx.send(WorkerMsg::Faces {
+                hash: "h1".into(),
+                rows: vec![sample_face_row("h1")],
+            })
+            .unwrap();
+        }
+        drop(tx);
+        let mut result = FacesRunResult {
+            total_faces: 0,
+            write_errors: 0,
+            images_processed: 0,
+            detect_errors: 0,
+        };
+        let error = collect_face_messages(&conn, rx, &mut result, None, false, &stop).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("the library volume is failing"),
+            "{error:#}"
+        );
+        assert!(
+            stop.load(std::sync::atomic::Ordering::Relaxed),
+            "the workers' stop flag is raised"
+        );
+        assert_eq!(
+            result.images_processed, 1,
+            "messages after the first are left unconsumed"
+        );
+        assert_eq!(result.write_errors, 0, "a fatal stop is not a counted skip");
+    }
+
+    #[test]
+    fn a_non_io_write_error_is_still_a_counted_skip() {
+        let conn = faces_conn();
+        let mut result = FacesRunResult {
+            total_faces: 0,
+            write_errors: 0,
+            images_processed: 0,
+            detect_errors: 0,
+        };
+        let mut row = sample_face_row("h1");
+        row.person_label = Some("absent".into());
+        // The label foreign key fails: per-item logic, not a disk fault.
+        let msg = WorkerMsg::Faces {
+            hash: "h1".into(),
+            rows: vec![row],
+        };
+        record_face_message(&conn, msg, &mut result, None, false).unwrap();
+        assert_eq!(result.write_errors, 1);
     }
 }
