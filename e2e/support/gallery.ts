@@ -137,7 +137,12 @@ type SeedFile = {
   mark?: string[];
 };
 
-async function startGalleryWith(seed: SeedFile[]): Promise<ManagedGallery> {
+// `prepare` runs after the scan and marks and before the server starts, for
+// state the server reads only at startup (an embeddings database).
+async function startGalleryWith(
+  seed: SeedFile[],
+  prepare?: (libraryRoot: string) => Promise<void>
+): Promise<ManagedGallery> {
   const binary = await binaryPath();
   const libraryRoot = await mkdtemp(join(tmpdir(), "videre-e2e-"));
   // Isolate the cache: videre derives its cache (thumbnails and the shared geo
@@ -162,6 +167,9 @@ async function startGalleryWith(seed: SeedFile[]): Promise<ManagedGallery> {
       if (file.mark) {
         await run(binary, ["--library", libraryRoot, "mark", ...file.mark], env);
       }
+    }
+    if (prepare) {
+      await prepare(libraryRoot);
     }
 
     const port = await freePort();
@@ -194,6 +202,52 @@ async function startGallery(): Promise<ManagedGallery> {
   ]);
 }
 
+// IEEE 754 half precision, little-endian: how videre stores a vector.
+function f16Bytes(values: number[]): Uint8Array {
+  const out = new Uint8Array(values.length * 2);
+  const f32 = new Float32Array(1);
+  const u32 = new Uint32Array(f32.buffer);
+  values.forEach((value, i) => {
+    f32[0] = value;
+    const bits = u32[0];
+    const sign = (bits >>> 16) & 0x8000;
+    const exponent = ((bits >>> 23) & 0xff) - 127 + 15;
+    const mantissa = (bits >>> 13) & 0x3ff;
+    const half = value === 0 ? sign : exponent <= 0 ? sign : sign | (exponent << 10) | mantissa;
+    out[i * 2] = half & 0xff;
+    out[i * 2 + 1] = half >>> 8;
+  });
+  return out;
+}
+
+// Vectors for the search library, by file name: çiçek is the example, bahçe
+// is close to it and deniz is far, so a similarity ranking has one right
+// answer and no model is needed to produce it.
+const SEARCH_VECTORS: Record<string, number[]> = {
+  "çiçek.jpg": [1, 0, 0, 0],
+  "bahçe.jpg": [0.9, 0.1, 0, 0],
+  "deniz.jpg": [0, 1, 0, 0]
+};
+
+async function seedSearchEmbeddings(libraryRoot: string): Promise<void> {
+  const { DatabaseSync } = await import("node:sqlite");
+  const library = new DatabaseSync(join(libraryRoot, ".videre", "hashes.db"), { readOnly: true });
+  const rows = library.prepare("SELECT path, hash FROM file_hashes").all() as { path: string; hash: string }[];
+  library.close();
+  const model = "google/siglip-base-patch16-224";
+  await mkdir(join(libraryRoot, ".videre", "embeddings"), { recursive: true });
+  const store = new DatabaseSync(join(libraryRoot, ".videre", "embeddings", "google--siglip-base-patch16-224.db"));
+  store.exec(
+    "CREATE TABLE IF NOT EXISTS embeddings (hash TEXT PRIMARY KEY, model_id TEXT NOT NULL, embedding BLOB NOT NULL)"
+  );
+  const insert = store.prepare("INSERT OR REPLACE INTO embeddings VALUES (?, ?, ?)");
+  for (const row of rows) {
+    const vector = SEARCH_VECTORS[row.path.split("/").pop() ?? ""];
+    if (vector) insert.run(row.hash, model, f16Bytes(vector));
+  }
+  store.close();
+}
+
 // Save List as the library's view, for specs that count list-view `.card`s.
 // Written to the settings file directly, the way a hand edit would be, so the
 // next page load picks it up.
@@ -216,9 +270,34 @@ async function withDefaultSettings(session: GallerySession): Promise<GallerySess
 }
 
 export const test = base.extend<
-  { gallery: GallerySession; sortedGallery: GallerySession; isolatedGallery: GallerySession },
-  { galleryServer: GallerySession; sortedGalleryServer: GallerySession }
+  {
+    gallery: GallerySession;
+    sortedGallery: GallerySession;
+    isolatedGallery: GallerySession;
+    searchGallery: GallerySession;
+  },
+  { galleryServer: GallerySession; sortedGalleryServer: GallerySession; searchGalleryServer: GallerySession }
 >({
+  searchGalleryServer: [async ({}, use) => {
+    // Three distinct images (marks and vectors are keyed by content) with
+    // Turkish names, plus stored vectors, so the search box and Similar are on.
+    const session = await startGalleryWith(
+      [
+        { name: "çiçek.jpg", fixture: "tiny.jpg" },
+        { name: "bahçe.jpg", fixture: "ai-generated-couple.jpg" },
+        { name: "deniz.jpg", fixture: "sample_with_exif.jpg" }
+      ],
+      seedSearchEmbeddings
+    );
+    try {
+      await use(session);
+    } finally {
+      await stopGallery(session);
+    }
+  }, { scope: "worker" }],
+  searchGallery: async ({ searchGalleryServer }, use) => {
+    await use(await withDefaultSettings(searchGalleryServer));
+  },
   galleryServer: [async ({}, use) => {
     const session = await startGallery();
     try {

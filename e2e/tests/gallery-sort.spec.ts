@@ -1,4 +1,6 @@
-import { expect, preferListView, test } from "../support/gallery";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { expect, preferListView, test, type GallerySession } from "../support/gallery";
 import type { Page } from "@playwright/test";
 
 // These specs read list-view cards; Tile is the default view, so save List.
@@ -135,4 +137,43 @@ test("the date view has the control and the duplicates page does not", async ({
   // Sort by select is id="sort-select", distinct from the class-only control.)
   await page.goto(`${sortedGallery.baseURL}/duplicates`);
   await expect(page.locator(".sort-select")).toHaveCount(0);
+});
+
+// Written to the settings file directly, the way a hand edit would be. Keeps
+// the List view the beforeEach chose, since these read list cards.
+async function writeFileSettings(gallery: GallerySession, files: object): Promise<void> {
+  await writeFile(
+    join(gallery.libraryRoot, ".videre", "gallery.json"),
+    JSON.stringify({ routes: { files: { view: "list", ...files } } })
+  );
+}
+
+test("a sort written in gallery.json orders the first load", async ({ page, sortedGallery }) => {
+  await writeFileSettings(sortedGallery, { sort: { field: "size", dir: "desc" } });
+  await page.goto(sortedGallery.baseURL);
+  await expect(page.locator("#gallery .card")).toHaveCount(3);
+  expect(await allCards(page)).toEqual(["b_beta.jpg", "a_alpha.jpg", "c_clip.mp4"]);
+  await expect(page.locator(".sort-select").first()).toHaveValue("size");
+  await expect(page.locator(".sort-dir-btn").first()).toHaveAttribute("aria-pressed", "true");
+});
+
+test("an unknown sort in gallery.json falls back to date descending", async ({ page, sortedGallery }) => {
+  await writeFileSettings(sortedGallery, { sort: { field: "colour", dir: "sideways" } });
+  await page.goto(sortedGallery.baseURL);
+  await expect(page.locator("#gallery .card")).toHaveCount(3);
+  expect(await allCards(page)).toEqual(["c_clip.mp4", "a_alpha.jpg", "b_beta.jpg"]);
+  await expect(page.locator(".sort-select").first()).toHaveValue("date");
+});
+
+test("the order holds across Show more pages", async ({ page, sortedGallery }) => {
+  await writeFileSettings(sortedGallery, { pageSize: 1, sort: { field: "name", dir: "asc" } });
+  await page.goto(sortedGallery.baseURL);
+  await expect(page.locator("#gallery .card")).toHaveCount(1);
+  const more = page.locator("#gallery-more");
+  await more.click();
+  await expect(page.locator("#gallery .card")).toHaveCount(2);
+  await more.click();
+  await expect(page.locator("#gallery .card")).toHaveCount(3);
+  expect(await allCards(page)).toEqual(["a_alpha.jpg", "b_beta.jpg", "c_clip.mp4"]);
+  await expect(more).toBeHidden();
 });
