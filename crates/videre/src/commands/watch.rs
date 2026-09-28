@@ -143,6 +143,13 @@ fn block_timeout(
     }
 }
 
+/// The wake backoff for a pending batch or owed rescan: the io backoff
+/// when it has grown past the pending-retry cadence, that cadence
+/// otherwise. Pure, so the combination is unit-testable.
+fn combined_backoff(io_backoff: Duration) -> Duration {
+    io_backoff.max(PENDING_RETRY_BACKOFF)
+}
+
 /// The backoff between wakes after a cycle hit a systemic disk error:
 /// start at the pending-retry cadence, double, and never exceed the
 /// maintenance cadence - the failing volume is retried hourly, not
@@ -334,28 +341,39 @@ mod scheduler_tests {
     }
 
     #[test]
-    fn an_io_backoff_wakes_no_sooner_than_itself_but_never_blocks_pending_work() {
-        // The wake takes the larger of the pending and io backoffs (the
-        // call site combines them): a backing-off volume does not wake
-        // every 2 s, and pending work still wakes on its own backoff.
+    fn the_wake_takes_the_longer_of_the_io_and_pending_backoffs() {
+        assert_eq!(combined_backoff(Duration::ZERO), PENDING_RETRY_BACKOFF);
         assert_eq!(
-            block_timeout(
-                false,
-                Duration::ZERO,
-                Duration::from_secs(3600),
-                Duration::from_secs(60),
-            ),
+            combined_backoff(Duration::from_secs(60)),
             Duration::from_secs(60)
         );
-        assert_eq!(
-            block_timeout(
-                true,
-                Duration::ZERO,
-                Duration::from_secs(3600),
-                Duration::ZERO,
-            ),
-            Duration::from_secs(3600)
+        // Through the wake rule with pending work: the io backoff holds.
+        let t = block_timeout(
+            false,
+            Duration::ZERO,
+            Duration::from_secs(3600),
+            combined_backoff(Duration::from_secs(60)),
         );
+        assert_eq!(t, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn a_drain_open_failure_enters_the_backoff_only_for_disk_errors() {
+        let cantopen = anyhow::Error::new(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+            None,
+        ));
+        let mut io_backoff = Duration::ZERO;
+        note_drain_open_failure(&mut io_backoff, &cantopen);
+        assert_eq!(io_backoff, PENDING_RETRY_BACKOFF);
+
+        let busy = anyhow::Error::new(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+            None,
+        ));
+        let mut io_backoff = Duration::ZERO;
+        note_drain_open_failure(&mut io_backoff, &busy);
+        assert_eq!(io_backoff, Duration::ZERO);
     }
 }
 
@@ -435,13 +453,21 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
     }
 
     loop {
+        // Backing off a failing volume: hold for the cadence, letting
+        // arriving events queue in the channel, then drain once at the
+        // deadline. Everything below runs with the backoff cleared or due,
+        // so an event storm cannot hit the volume ahead of the cadence.
+        if !io_backoff.is_zero() {
+            std::thread::sleep(io_backoff);
+            drain_pending(args, ctx, &mut pending, &mut io_backoff);
+        }
         // A pending batch, an owed rescan, or the maintenance deadline: each
         // buys its own short wake instead of an idle block.
         let timeout = block_timeout(
             pending.is_empty() && !rescan_owed,
             last_maintenance.elapsed(),
             maintenance,
-            io_backoff.max(PENDING_RETRY_BACKOFF),
+            combined_backoff(io_backoff),
         );
         match rx.recv_timeout(timeout) {
             Ok(Ok(batch)) => {
@@ -509,6 +535,15 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
     }
 }
 
+/// A drain whose database will not open is the failing-volume case when
+/// the error is a disk error: enter the backoff and keep the batch for
+/// the deadline. Other open failures keep today's log-and-drop behavior.
+fn note_drain_open_failure(io_backoff: &mut Duration, e: &anyhow::Error) {
+    if videre_core::error_kind::is_fatal_io_error(e) {
+        enter_io_backoff(io_backoff);
+    }
+}
+
 /// Try to process everything pending as one batch. If the scan stage was
 /// busy (another command holds the lock), the set is kept for the next
 /// backoff tick; on success it is cleared. Downstream stages self-scope
@@ -533,6 +568,7 @@ fn drain_pending(
     let conn = match videre_core::library_db::open_existing(&ctx.library) {
         Ok(c) => c,
         Err(e) => {
+            note_drain_open_failure(io_backoff, &e);
             failed("open", e);
             return;
         }
