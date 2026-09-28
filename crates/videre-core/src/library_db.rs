@@ -35,7 +35,6 @@ use crate::library::{bounded_op, root_cause_is_not_found, LibraryContext};
 use crate::library_locks::ActivityMode;
 use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
-use std::io::Read;
 use std::path::{Component, Path};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -44,10 +43,6 @@ use std::time::Duration;
 /// face IDs monotonic so retained learning provenance cannot refer to a
 /// different face after pruning.
 const SCHEMA_VERSION: i64 = 4;
-
-/// The first sixteen bytes of every SQLite database file. A library
-/// candidate without them is not a SQLite file, whatever its name.
-const SQLITE_MAGIC: [u8; 16] = *b"SQLite format 3\0";
 
 /// How long every open waits for a concurrent writer before failing, so two
 /// videre processes on one library surface as a bounded error rather than
@@ -402,27 +397,62 @@ fn upgrade_v3_to_v4(conn: &Connection) -> Result<()> {
     }
 }
 
-/// Whether the file begins with the SQLite header. The caller has already
-/// handled existence and size; this is the supported-library check that
-/// comes before anything else reads the file as a library.
+/// Whether the file is a SQLite database. The caller has already handled
+/// existence and size; this is the supported-library check that comes before
+/// anything else reads the file as a library.
+///
+/// :warning: Asked of SQLite, never read through a `std::fs::File`. POSIX
+/// record locks belong to the process, so closing *any* descriptor on the
+/// database drops every SQLite lock the process holds on it. The gallery keeps
+/// a connection open for its lifetime and opens the library again (recluster,
+/// learning); a header read there cost the gallery its locks, the next other
+/// process to close the library took itself for the last user and deleted the
+/// WAL under it, and the gallery read a frozen snapshot from then on, writing
+/// into a WAL no longer on disk. SQLite's own closes wait for the process's
+/// other connections. `immutable=1` takes no lock and reads no WAL: page 1
+/// alone carries the header, and reading it is where SQLite says NOTADB.
 fn is_sqlite_file(path: &Path) -> Result<bool> {
-    let owned = path.to_path_buf();
-    match bounded_op(path, "read", STAT_TIMEOUT, move || {
-        let mut file = std::fs::File::open(&owned)?;
-        let mut header = [0u8; 16];
+    use rusqlite::OpenFlags;
+    let uri = immutable_uri(path);
+    bounded_op(path, "read", STAT_TIMEOUT, move || {
+        let not_a_database =
+            |e: &rusqlite::Error| e.sqlite_error_code() == Some(rusqlite::ErrorCode::NotADatabase);
+        let conn = Connection::open_with_flags(
+            &uri,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_URI
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(std::io::Error::other)?;
         // A file shorter than the header is not a database either; the
         // mismatch is folded into the answer rather than surfaced as an
         // error, because the caller's question is exactly "is this one?".
-        match file.read_exact(&mut header) {
-            Ok(()) => Ok(Some(header)),
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
-            Err(e) => Err(e),
+        match conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| {
+            r.get::<_, i64>(0)
+        }) {
+            Ok(_) => Ok(true),
+            Err(e) if not_a_database(&e) => Ok(false),
+            Err(e) => Err(std::io::Error::other(e)),
         }
-    }) {
-        Ok(Some(header)) => Ok(header == SQLITE_MAGIC),
-        Ok(None) => Ok(false),
-        Err(e) => Err(e),
+    })
+}
+
+/// `file:` URI for `path` with `immutable=1`, every byte outside the
+/// unreserved set percent-encoded, so spaces, `?`, `#`, `%` and non-ASCII
+/// names (a library under `~/Fotoğraflar`) reach SQLite unchanged.
+fn immutable_uri(path: &Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+    let mut uri = String::from("file:");
+    for &b in path.as_os_str().as_bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'.' | b'_' | b'~') {
+            uri.push(b as char);
+        } else {
+            uri.push_str(&format!("%{b:02X}"));
+        }
     }
+    uri.push_str("?immutable=1");
+    uri
 }
 
 /// What an inspection of the database file found.
@@ -1240,6 +1270,36 @@ mod tests {
     use crate::library::LibraryContext;
     use crate::library_locks;
     use rusqlite::params;
+
+    #[test]
+    fn the_sqlite_probe_reads_any_path_and_says_no_to_other_files() {
+        let temp = tempfile::tempdir().unwrap();
+        // Spaces, URI metacharacters and Turkish letters, all of which the
+        // `file:` URI has to carry through unchanged.
+        // Canonical, as a library's paths are: the probe refuses symlinks,
+        // and macOS keeps temp directories under the /var symlink.
+        let dir = temp
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("Fotoğraflar ?#% İzmir");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let db = dir.join("hashes.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE t (n INTEGER);")
+            .unwrap();
+        assert!(is_sqlite_file(&db).unwrap());
+        drop(conn);
+
+        let garbage = dir.join("garbage.db");
+        std::fs::write(&garbage, vec![b'x'; 4096]).unwrap();
+        assert!(!is_sqlite_file(&garbage).unwrap());
+
+        let short = dir.join("short.db");
+        std::fs::write(&short, b"SQLite").unwrap();
+        assert!(!is_sqlite_file(&short).unwrap());
+    }
 
     #[test]
     fn migration_adds_xmp_sidecar_mtime_to_an_older_file_hashes() {
