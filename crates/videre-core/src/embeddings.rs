@@ -88,6 +88,9 @@ pub fn validate_model_id(id: &str) -> anyhow::Result<()> {
 pub struct PendingImage {
     pub hash: String,
     pub path: String,
+    /// Already embedded under this model: only its near-duplicate
+    /// fingerprint is missing, so embed decodes and hashes it without the model.
+    pub embedded: bool,
 }
 
 /// Create the index the embedding joins depend on.
@@ -101,8 +104,10 @@ pub fn ensure_embeddings_index(conn: &Connection) -> Result<()> {
     conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_file_hashes_hash ON file_hashes(hash);")
 }
 
-/// Unique hashes that are embeddable but not yet embedded under `model_id`;
-/// one representative path per hash (MIN(path) keeps it deterministic).
+/// Unique hashes that are embeddable and either not yet embedded under
+/// `model_id` (`embedded: false`) or embedded but missing their near-duplicate
+/// fingerprint (`embedded: true`); one representative path per hash (MIN(path)
+/// keeps it deterministic).
 pub fn pending_images(conn: &Connection, model_id: &str) -> Result<Vec<PendingImage>> {
     images_for_model(conn, model_id, false)
 }
@@ -136,15 +141,19 @@ fn images_for_model(
     // and querying them as pending forever is the bug fixed 2026-08-01.
     // Both lists are compile-time constants, so inlining them is safe; the
     // model id stays a bound parameter.
-    let skip_embedded = if include_embedded {
-        String::new()
+    let is_embedded = "EXISTS (SELECT 1 FROM emb.embeddings e
+                    WHERE e.hash = file_hashes.hash AND e.model_id = ?1)";
+    let (embedded_col, skip_embedded) = if include_embedded {
+        // --reprocess re-embeds everything, so nothing counts as embedded.
+        ("0".to_string(), String::new())
     } else {
-        "AND NOT EXISTS (SELECT 1 FROM emb.embeddings e
-                           WHERE e.hash = file_hashes.hash AND e.model_id = ?1)"
-            .to_string()
+        (
+            format!("MAX({is_embedded})"),
+            format!("AND (NOT {is_embedded} OR phash IS NULL)"),
+        )
     };
     let sql = format!(
-        "SELECT hash, MIN(path) FROM file_hashes
+        "SELECT hash, MIN(path), {embedded_col} FROM file_hashes
          WHERE lower(COALESCE(ext, '')) != 'dng'
            AND (mime IN ({mimes}) OR (mime IS NULL AND lower(ext) IN ({exts})))
            {skip_embedded}
@@ -156,6 +165,7 @@ fn images_for_model(
         Ok(PendingImage {
             hash: row.get(0)?,
             path: row.get(1)?,
+            embedded: row.get::<_, bool>(2)?,
         })
     };
     // The NOT EXISTS clause carries the only parameter; the reprocess query
@@ -166,6 +176,19 @@ fn images_for_model(
         stmt.query_map(params![model_id], map_row)?
     };
     rows.collect()
+}
+
+/// Store near-duplicate fingerprints by content hash, so every path holding
+/// that content gets one. Written by `videre embed` from its own decode.
+pub fn set_phashes(conn: &Connection, items: &[(String, u64)]) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    {
+        let mut stmt = tx.prepare("UPDATE file_hashes SET phash = ?1 WHERE hash = ?2")?;
+        for (hash, phash) in items {
+            stmt.execute(params![*phash as i64, hash])?;
+        }
+    }
+    tx.commit()
 }
 
 /// Upsert a batch of (hash, f16 blob) rows inside one transaction.
@@ -302,15 +325,44 @@ mod tests {
     }
 
     #[test]
-    fn pending_images_excludes_already_embedded() {
+    fn pending_images_returns_embedded_rows_only_when_their_fingerprint_is_missing() {
         let conn = test_db_attached("emb_already");
         insert_file(&conn, "/a/1.jpg", "h1", "jpg");
         insert_file(&conn, "/a/2.jpg", "h2", "jpg");
-        insert_embeddings(&conn, "test-model", &[("h1".to_string(), vec![0u8; 4])]).unwrap();
+        insert_file(&conn, "/a/3.jpg", "h3", "jpg");
+        insert_embeddings(
+            &conn,
+            "test-model",
+            &[
+                ("h1".to_string(), vec![0u8; 4]),
+                ("h3".to_string(), vec![0u8; 4]),
+            ],
+        )
+        .unwrap();
+        set_phashes(&conn, &[("h3".to_string(), 7)]).unwrap();
 
         let pending = pending_images(&conn, "test-model").unwrap();
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].hash, "h2");
+        let got: Vec<(&str, bool)> = pending
+            .iter()
+            .map(|p| (p.hash.as_str(), p.embedded))
+            .collect();
+        assert_eq!(got, vec![("h1", true), ("h2", false)]);
+    }
+
+    #[test]
+    fn set_phashes_writes_every_path_with_that_content() {
+        let conn = test_db_attached("emb_setphash");
+        insert_file(&conn, "/a/1.jpg", "h1", "jpg");
+        insert_file(&conn, "/b/1.jpg", "h1", "jpg");
+        set_phashes(&conn, &[("h1".to_string(), u64::MAX)]).unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_hashes WHERE phash = -1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 2);
     }
 
     #[test]
@@ -318,6 +370,7 @@ mod tests {
         let conn = test_db_attached("emb_modelaware");
         insert_file(&conn, "/a/1.jpg", "h1", "jpg");
         insert_embeddings(&conn, "a", &[("h1".to_string(), vec![0u8; 4])]).unwrap();
+        set_phashes(&conn, &[("h1".to_string(), 7)]).unwrap();
 
         // Embedded under model "a": nothing pending for "a" ...
         assert!(pending_images(&conn, "a").unwrap().is_empty());
@@ -383,9 +436,10 @@ mod tests {
         )
         .unwrap();
         insert_embeddings(&conn, "m", &[("h1".to_string(), vec![0u8; 4])]).unwrap();
+        set_phashes(&conn, &[("h1".to_string(), 7)]).unwrap();
         assert!(
             pending_images(&conn, "m").unwrap().is_empty(),
-            "a fully embedded library has no pending work"
+            "a fully embedded and fingerprinted library has no pending work"
         );
         let all = embeddable_images(&conn, "m").unwrap();
         assert_eq!(all.len(), 1, "reprocess must see the embedded hash again");

@@ -286,15 +286,21 @@ fn unidentifiable_files_receive_a_sentinel_and_are_not_retried() {
 }
 
 #[test]
-fn similar_mode_stores_a_perceptual_hash() {
+fn similar_is_deprecated_and_stores_no_fingerprint() {
     let library = TestLibrary::new();
     library.copy_fixture("tiny.jpg", "image.jpg");
-    assert!(scan(&library, &["--silent", "--similar"]).status.success());
+    let out = scan(&library, &["--similar"]);
+    assert!(out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("--similar is deprecated"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let phash: Option<i64> = library
         .conn()
         .query_row("SELECT phash FROM file_hashes", [], |row| row.get(0))
         .unwrap();
-    assert!(phash.is_some());
+    assert!(phash.is_none());
 }
 
 #[test]

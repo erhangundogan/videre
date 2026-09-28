@@ -2,7 +2,7 @@ mod common;
 use common::TestLibrary;
 
 /// Scan this library, having written its files under the root. `extra` passes
-/// through additional scan flags (e.g. `--similar`).
+/// through additional scan flags.
 fn scan(lib: &TestLibrary, extra: &[&str]) {
     let status = lib
         .cmd()
@@ -11,6 +11,29 @@ fn scan(lib: &TestLibrary, extra: &[&str]) {
         .status()
         .expect("failed to run videre scan");
     assert!(status.success(), "scan step failed");
+}
+
+/// Store fingerprints computed exactly as `videre embed` computes them, so the
+/// grouping is tested without loading the model.
+#[cfg(target_os = "macos")]
+fn fingerprint(lib: &TestLibrary) {
+    let conn = lib.conn();
+    let size = videre_ml::model::image_size_for(videre_core::embeddings::DEFAULT_MODEL_ID);
+    let rows: Vec<(String, String)> = conn
+        .prepare("SELECT hash, path FROM file_hashes")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let items: Vec<(String, u64)> = rows
+        .into_iter()
+        .map(|(hash, path)| {
+            let img = videre_ml::preprocess::decode(std::path::Path::new(&path), size).unwrap();
+            (hash, videre_core::image_decode::dhash(&img))
+        })
+        .collect();
+    videre_core::embeddings::set_phashes(&conn, &items).unwrap();
 }
 
 /// Run `dedupe` in this library with the given extra flags, returning its output.
@@ -77,7 +100,7 @@ fn dedupe_similar_reports_empty_when_no_phash_data() {
     let lib = TestLibrary::new();
     std::fs::write(lib.root.join("a.jpg"), b"content one").unwrap();
     std::fs::write(lib.root.join("b.jpg"), b"content two").unwrap();
-    // scanned WITHOUT --similar: no phash data in the db
+    // no embed run: no fingerprints in the db
     scan(&lib, &[]);
 
     let out = dedupe(&lib, &["--similar", "--json"]);
@@ -87,6 +110,14 @@ fn dedupe_similar_reports_empty_when_no_phash_data() {
         .as_array()
         .expect("similar_groups key must be present (an array) with --similar");
     assert!(similar.is_empty());
+
+    // The text report says where the fingerprints come from.
+    let out = lib.cmd().args(["dedupe", "--similar"]).output().unwrap();
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("videre embed"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
@@ -104,7 +135,8 @@ fn dedupe_similar_groups_a_video_and_its_recompressed_variant() {
     let lib = TestLibrary::new();
     lib.copy_fixture("testsrc_1s.mp4", "a.mp4");
     lib.copy_fixture("testsrc_1s_recompressed.mp4", "b.mp4");
-    scan(&lib, &["--similar"]);
+    scan(&lib, &[]);
+    fingerprint(&lib);
 
     let out = dedupe(&lib, &["--similar", "--json"]);
     assert!(
@@ -156,7 +188,8 @@ fn dedupe_similar_does_not_group_two_visually_different_videos() {
     let lib = TestLibrary::new();
     lib.copy_fixture("red_1s.mp4", "a.mp4");
     lib.copy_fixture("testsrc_1s.mp4", "b.mp4");
-    scan(&lib, &["--similar"]);
+    scan(&lib, &[]);
+    fingerprint(&lib);
 
     let out = dedupe(&lib, &["--similar", "--json"]);
     assert!(

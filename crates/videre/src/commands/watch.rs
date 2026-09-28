@@ -1209,11 +1209,11 @@ fn run_scan_stage(
             }
             // Incremental in both modes: a spurious event on an unchanged
             // file hashes nothing, exactly like an unchanged file in a full
-            // walk. `--similar` is not a watch concept, so no phash.
+            // walk.
             let sigs = videre_core::db::stored_signatures(conn).unwrap_or_default();
             let paths: Vec<_> = paths
                 .into_iter()
-                .filter(|p| videre::incremental::needs_processing(&sigs, p, false))
+                .filter(|p| videre::incremental::needs_processing(&sigs, p))
                 .collect();
             let records: Vec<types::FileRecord> = paths
                 .par_iter()

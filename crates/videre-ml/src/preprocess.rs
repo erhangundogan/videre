@@ -8,6 +8,14 @@ use candle_core::{DType, Device, Tensor};
 use std::path::Path;
 
 pub fn image_to_tensor(path: &Path, size: usize, device: &Device) -> Result<Tensor> {
+    to_tensor(&decode(path, size)?, size, device)
+}
+
+/// The photo as a person sees it, decoded for a `size`-pixel model input:
+/// HEIC and video through QuickLook at twice that size, everything else
+/// through the orientation-aware `image` decode at full resolution. Embed also
+/// takes the near-duplicate fingerprint from this image, before any resize.
+pub fn decode(path: &Path, size: usize) -> Result<image::DynamicImage> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -38,7 +46,11 @@ pub fn image_to_tensor(path: &Path, size: usize, device: &Device) -> Result<Tens
             videre_core::error_kind::from_image(e).context(format!("decode {}", path.display()))
         })?
     };
+    Ok(img)
+}
 
+/// A decoded image as a SigLIP input tensor: `size`x`size`, CHW, in [-1, 1].
+pub fn to_tensor(img: &image::DynamicImage, size: usize, device: &Device) -> Result<Tensor> {
     let img = img
         .resize_exact(
             size as u32,
@@ -58,6 +70,32 @@ pub fn image_to_tensor(path: &Path, size: usize, device: &Device) -> Result<Tens
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn embed_source_dhash_stays_within_the_similarity_threshold_of_the_64px_one() {
+        // Fingerprints stored by the old `scan --similar` path came from a 64px
+        // QuickLook render; embed now hashes its own, larger render. They must
+        // stay within dedupe's 10-bit threshold of each other, or keeping the
+        // stored values would split existing near-duplicate groups.
+        use videre_core::image_decode::dhash;
+        let base = concat!(env!("CARGO_MANIFEST_DIR"), "/../videre/tests/fixtures");
+        let heic = std::path::Path::new(base).join("content_key/tiny.heic");
+        let video = std::path::Path::new(base).join("testsrc_1s.mp4");
+        // The old scan renders: HEIC capped at 64px, video at 128px (its
+        // double-the-64px-target convention).
+        let old_heic =
+            videre_core::heic::decode_via_quicklook(&heic, "test-old-heic", Some(64)).unwrap();
+        let old_video =
+            videre_core::heic::decode_via_quicklook(&video, "test-old-video", Some(128)).unwrap();
+        for size in [224, 384] {
+            for (name, path, old) in [("heic", &heic, &old_heic), ("video", &video, &old_video)] {
+                let new = decode(path, size).unwrap();
+                let bits = (dhash(old) ^ dhash(&new)).count_ones();
+                assert!(bits <= 10, "{name} at {size}: {bits} bits apart");
+            }
+        }
+    }
+
     use super::*;
     use candle_core::Device;
 

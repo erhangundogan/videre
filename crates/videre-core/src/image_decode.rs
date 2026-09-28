@@ -79,6 +79,28 @@ fn decode_decoder<D: ImageDecoder>(
     Ok((img, orientation))
 }
 
+/// 64-bit difference hash of a decoded image: greyscale, Lanczos3 down to
+/// 9x8, one bit per left-greater-than-right comparison along each row. This is
+/// the near-duplicate fingerprint stored in `file_hashes.phash`; changing any
+/// step changes every stored value, so it lives in exactly one place.
+pub fn dhash(image: &image::DynamicImage) -> u64 {
+    let small = image::imageops::resize(
+        &image.to_luma8(),
+        9,
+        8,
+        image::imageops::FilterType::Lanczos3,
+    );
+    let mut hash = 0u64;
+    for row in 0..8u32 {
+        for col in 0..8u32 {
+            let left = small.get_pixel(col, row)[0];
+            let right = small.get_pixel(col + 1, row)[0];
+            hash = (hash << 1) | u64::from(left > right);
+        }
+    }
+    hash
+}
+
 fn apply(
     mut img: image::DynamicImage,
     orientation: image::metadata::Orientation,
@@ -147,6 +169,16 @@ mod tests {
     fn top_left_is_white(img: &image::DynamicImage) -> bool {
         let rgb = img.to_rgb8();
         rgb.get_pixel(0, 0)[0] > 128
+    }
+
+    #[test]
+    fn dhash_of_a_flat_image_is_zero() {
+        let flat = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            32,
+            32,
+            image::Rgb([90, 90, 90]),
+        ));
+        assert_eq!(dhash(&flat), 0);
     }
 
     #[test]
