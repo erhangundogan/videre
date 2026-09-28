@@ -102,6 +102,20 @@ characters, so `photo.jpg.supplemental-metadata.json` can arrive as
 `photo.jpg.suppl.json` or even `photo.jpg.s.json`. Import handles those, plus
 `(1)` duplicate counters and `-edited` versions.
 
+Google Photos exports every photo you edited twice, `IMG_1.jpg` and
+`IMG_1-edited.jpg`. When the export has such pairs, import counts them and its
+closing hint adds the two commands that deal with them:
+
+```text
+Next:
+  videre scan ~/Takeout/Google Photos
+  videre dedupe --edited --html     # review 3763 photo(s) Google Photos exported twice
+  videre dedupe --edited --remove   # keep the originals, trash the edits
+```
+
+`--json` reports the count as `edited_pairs`. See
+[`dedupe --edited`](/commands/dedupe/#google-photos-edits---edited).
+
 Point it at whichever level you have: the folder you extracted into, the
 `Takeout/` folder, or `Google Photos/` itself all work.
 

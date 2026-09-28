@@ -46,6 +46,10 @@ are in the `.json` files sitting beside them, and nothing else reads those.
 **Photos appear several times.** A photo in three albums is exported three
 times, so a 40 GB library can extract to considerably more.
 
+**Edited photos appear twice.** Every photo you edited in Google Photos comes
+as the original, `IMG_1.jpg`, and Google's render of the edit,
+`IMG_1-edited.jpg`, side by side.
+
 videre fixes both.
 
 ## 4. Restore the real dates
@@ -114,6 +118,20 @@ dedupe --html` first to review, or preview with `--remove --dry-run`. Prefer
 `--remove` over a `| xargs trash` pipe, which splits Takeout paths on their
 spaces. See [cautions](/reference/cautions/).
 :::
+
+### Then the edited copies
+
+The `-edited` renders are not byte-identical to their originals, so the step
+above leaves them. `videre import` counts them and says so; remove them with:
+
+```bash
+videre dedupe --edited --html         # each original beside its edit
+videre dedupe --edited --remove       # keep the originals, trash the edits
+```
+
+The original is kept because it is the file the camera wrote; the edit is
+Google's re-encoded copy. Faces you named on an edit are not moved to its
+original. See [`dedupe --edited`](/commands/dedupe/#google-photos-edits---edited).
 
 ## 7. Make it searchable
 

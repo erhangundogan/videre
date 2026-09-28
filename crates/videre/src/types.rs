@@ -101,6 +101,16 @@ pub struct FindDuplicatesJson {
     pub duplicate_groups: Vec<DupGroupJson>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub similar_groups: Option<Vec<SimilarGroupJson>>,
+    /// Google Takeout edits beside their originals, with `dedupe --edited`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edited_pairs: Option<Vec<EditedPairJson>>,
+}
+
+/// A Google Takeout edit and its original: the original is kept.
+#[derive(Debug, Serialize)]
+pub struct EditedPairJson {
+    pub kept: String,
+    pub removed: String,
 }
 
 /// Where `scan --json` wrote records: `"sqlite"` or `"jsonl"`, and the resolved path.
@@ -302,6 +312,7 @@ mod tests {
             total_files: 3,
             duplicate_groups: vec![],
             similar_groups: None,
+            edited_pairs: None,
         };
         let json = serde_json::to_string(&doc).unwrap();
         assert!(json.starts_with("{\"schema_version\":1"));
@@ -318,6 +329,7 @@ mod tests {
                 hash: "phash:00000000000000ff".to_string(),
                 files: vec![rec("/x.jpg", "111"), rec("/y.jpg", "222")],
             }]),
+            edited_pairs: None,
         };
         let json = serde_json::to_string(&doc).unwrap();
         assert!(json.contains("\"similar_groups\""));
@@ -335,6 +347,7 @@ mod tests {
             total_files: 3,
             duplicate_groups: vec![],
             similar_groups: None,
+            edited_pairs: None,
         };
         let json = serde_json::to_string(&doc).unwrap();
         assert!(json.starts_with("{\"schema_version\":1"));
@@ -351,6 +364,7 @@ mod tests {
                 hash: "phash:00000000000000ff".to_string(),
                 files: vec![rec("/x.jpg", "111"), rec("/y.jpg", "222")],
             }]),
+            edited_pairs: None,
         };
         let json = serde_json::to_string(&doc).unwrap();
         assert!(json.contains("\"similar_groups\""));

@@ -220,8 +220,12 @@ function buildGroup(g,idx){
   return '<div class="group" id="g'+idx+'">'+
     '<div class="group-header">'+
     '<span class="arrow">&#9654;</span>'+
-    '<code class="hash">'+escH(g.hash)+'</code>'+
-    '<span class="group-meta">'+g.files.length+' copies &middot; '+fmtB(g.files[0].size)+' each</span>'+
+    // A Google Takeout pair: the original (kept, first) and Google's edit.
+    (g.edited
+      ? '<span class="hash">edited in Google Photos</span>'+
+        '<span class="group-meta">original and edit</span>'
+      : '<code class="hash">'+escH(g.hash)+'</code>'+
+        '<span class="group-meta">'+g.files.length+' copies &middot; '+fmtB(g.files[0].size)+' each</span>')+
     '<span class="waste">&minus;'+fmtB(g.waste)+' wasted</span>'+
     '</div>'+
     '<div class="group-body">'+

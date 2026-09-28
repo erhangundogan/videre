@@ -69,7 +69,7 @@ people or location data yet.
 | Path | What you get |
 |------|--------------|
 | `/` | Every file, with a **Similar** button on each card once the library has embeddings |
-| `/duplicates` | Duplicate groups, the same review `dedupe --html` writes |
+| `/duplicates` | Duplicate groups, the same review `dedupe --html` writes, plus Google Takeout edits beside their originals ([`dedupe --edited`](/commands/dedupe/#google-photos-edits---edited)) |
 | `/people` | Face groups, and naming them |
 | `/date` | A Year / Month / Day drill-down |
 | `/date/2024`, `/date/2024/09`, `/date/2024/09/26` | The media of that year, month, or day, each with its item count |

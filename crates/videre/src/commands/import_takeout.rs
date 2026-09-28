@@ -237,13 +237,13 @@ pub(crate) fn match_sidecar_detailed(index: &SidecarIndex, file_name: &str) -> S
     if let Some((base, n)) = split_counter(file_name) {
         attempt!(try_counter_forms(index, &base, &n));
         attempt!(try_forms(index, &base));
-        if let Some(edited) = strip_edited(&base) {
+        if let Some(edited) = videre::takeout_names::original_name(&base) {
             attempt!(try_forms(index, &edited));
         }
     }
 
     // An `-edited` render has no sidecar of its own; the original's applies.
-    if let Some(edited) = strip_edited(file_name) {
+    if let Some(edited) = videre::takeout_names::original_name(file_name) {
         attempt!(try_forms(index, &edited));
     }
 
@@ -304,13 +304,6 @@ fn split_counter(file_name: &str) -> Option<(String, String)> {
         return None;
     }
     Some((join_extension(before.trim_end(), ext), digits.to_string()))
-}
-
-/// `a-edited.jpg` -> `a.jpg`.
-fn strip_edited(file_name: &str) -> Option<String> {
-    let (stem, ext) = split_extension(file_name);
-    let base = stem.strip_suffix("-edited")?;
-    Some(join_extension(base, ext))
 }
 
 fn split_extension(file_name: &str) -> (&str, Option<&str>) {
