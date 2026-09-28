@@ -360,10 +360,11 @@ file, so a one-off timeout from contention still retries; two do.
 `videre faces --reset` clears those records along with everything else.
 
 **A failing library volume stops the run.** An unreadable *file* is skipped as
-above, but a disk-level write failure (the drive disconnecting, a full disk)
-stops `videre faces` at the first failed write with one message instead of one
-error per photo. Everything already committed is safe; re-run when the drive is
-healthy and it continues.
+above, and a drive whose files cannot be read at all keeps skipping them on
+every run. What stops `videre faces` at the first failed write, with one
+message instead of one error per photo, is a disk-level *write* failure: a
+full disk, or a database gone read-only. Everything already committed is
+safe; re-run when the drive is healthy and it continues.
 
 **Detection is not perfect.** Faces in profile, heavily shadowed, or very small
 are often missed entirely, and no amount of retuning brings them back, since
