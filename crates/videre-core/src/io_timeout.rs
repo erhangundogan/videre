@@ -1,3 +1,4 @@
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
@@ -296,6 +297,127 @@ where
             Err(IoRunError::Deadline(timeout))
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => Err(IoRunError::Disconnected),
+    }
+}
+
+struct ProgressState {
+    last_read: Instant,
+    cancelled: bool,
+}
+
+/// Shares one read-progress clock across every reader in a hashing operation.
+#[derive(Clone)]
+pub struct ProgressHandle {
+    state: Arc<Mutex<ProgressState>>,
+}
+
+impl ProgressHandle {
+    pub fn wrap<R: Read + Seek>(&self, inner: R) -> ProgressReader<R> {
+        ProgressReader {
+            inner,
+            progress: self.clone(),
+        }
+    }
+
+    pub fn check_cancelled(&self) -> std::io::Result<()> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.cancelled {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "hash operation was cancelled after no read progress",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn read_progressed(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.last_read = Instant::now();
+    }
+}
+
+/// A reader that reports actual bytes received, not elapsed time or file size.
+pub struct ProgressReader<R> {
+    inner: R,
+    progress: ProgressHandle,
+}
+
+impl<R: Read + Seek> Read for ProgressReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.progress.check_cancelled()?;
+        let count = self.inner.read(buf)?;
+        if count > 0 {
+            self.progress.read_progressed();
+        }
+        Ok(count)
+    }
+}
+
+impl<R: Read + Seek> Seek for ProgressReader<R> {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.progress.check_cancelled()?;
+        self.inner.seek(pos)
+    }
+}
+
+pub fn run_with_progress_timeout<T, F>(idle: Duration, f: F) -> Result<T, IoRunError>
+where
+    F: FnOnce(ProgressHandle) -> T + Send + 'static,
+    T: Send + 'static,
+{
+    run_with_progress_timeout_in(global_pool(), idle, f)
+}
+
+fn run_with_progress_timeout_in<T, F>(
+    pool: &Arc<IoWorkerPool>,
+    idle: Duration,
+    f: F,
+) -> Result<T, IoRunError>
+where
+    F: FnOnce(ProgressHandle) -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let permit = pool.acquire()?;
+    let lifecycle = Arc::clone(&permit.lifecycle);
+    let progress = ProgressHandle {
+        state: Arc::new(Mutex::new(ProgressState {
+            last_read: Instant::now(),
+            cancelled: false,
+        })),
+    };
+    let observer = progress.clone();
+    let (tx, rx) = mpsc::channel();
+    thread::Builder::new()
+        .name("videre-io-progress".into())
+        .spawn(move || {
+            let _permit = permit;
+            let _ = tx.send(f(progress));
+        })
+        .map_err(IoRunError::Spawn)?;
+
+    loop {
+        let left = {
+            let state = observer.state.lock().unwrap_or_else(|e| e.into_inner());
+            idle.saturating_sub(state.last_read.elapsed())
+        };
+        match rx.recv_timeout(left) {
+            Ok(value) => return Ok(value),
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(IoRunError::Disconnected),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let mut state = observer.state.lock().unwrap_or_else(|e| e.into_inner());
+                if state.last_read.elapsed() < idle {
+                    continue;
+                }
+                if let Ok(value) = rx.try_recv() {
+                    return Ok(value);
+                }
+                state.cancelled = true;
+                drop(state);
+                WorkerPermit::mark_timed_out(&lifecycle, pool);
+                return Err(IoRunError::NoProgress(idle));
+            }
+        }
     }
 }
 
@@ -763,5 +885,99 @@ mod timeout_reporting_tests {
         let message = err.describe(path);
         assert!(message.contains("worker limit"), "{message}");
         assert!(!message.contains("drive did not respond"), "{message}");
+    }
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+    use std::io::{Cursor, Read, Seek};
+
+    #[test]
+    fn one_byte_keeps_a_read_alive_past_old_total_budget() {
+        for declared_size in [1_000_000_u64, 100_000_000_000_u64] {
+            let pool = Arc::new(IoWorkerPool::new(1));
+            let result = run_with_progress_timeout_in(&pool, Duration::from_millis(40), move |h| {
+                let mut reader = h.wrap(Cursor::new([1_u8; 6]));
+                let mut byte = [0];
+                for _ in 0..6 {
+                    reader.read_exact(&mut byte).unwrap();
+                    thread::sleep(Duration::from_millis(15));
+                }
+                (declared_size, byte[0])
+            });
+            assert!(matches!(result, Ok((size, 1)) if size == declared_size));
+        }
+    }
+
+    #[test]
+    fn no_bytes_for_idle_window_times_out() {
+        let pool = Arc::new(IoWorkerPool::new(1));
+        let (release_tx, release_rx) = mpsc::channel();
+        let result = run_with_progress_timeout_in(&pool, Duration::from_millis(20), move |_h| {
+            release_rx.recv().unwrap();
+        });
+        assert!(matches!(result, Err(IoRunError::NoProgress(_))));
+        assert_eq!(pool.stats().timed_out_active, 1);
+        release_tx.send(()).unwrap();
+    }
+
+    #[test]
+    fn zero_byte_eof_does_not_refresh_progress() {
+        let pool = Arc::new(IoWorkerPool::new(1));
+        let (release_tx, release_rx) = mpsc::channel();
+        let result = run_with_progress_timeout_in(&pool, Duration::from_millis(20), move |h| {
+            let mut reader = h.wrap(Cursor::new([]));
+            assert_eq!(reader.read(&mut [0]).unwrap(), 0);
+            release_rx.recv().unwrap();
+        });
+        assert!(matches!(result, Err(IoRunError::NoProgress(_))));
+        release_tx.send(()).unwrap();
+    }
+
+    #[test]
+    fn cancelled_reader_stops_before_next_read_or_seek() {
+        let pool = Arc::new(IoWorkerPool::new(1));
+        let (release_tx, release_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let result = run_with_progress_timeout_in(&pool, Duration::from_millis(20), move |h| {
+            let mut reader = h.wrap(Cursor::new([1_u8; 2]));
+            release_rx.recv().unwrap();
+            let read = reader.read(&mut [0]).unwrap_err().kind();
+            let seek = reader.seek(std::io::SeekFrom::Start(0)).unwrap_err().kind();
+            result_tx.send((read, seek)).unwrap();
+        });
+        assert!(matches!(result, Err(IoRunError::NoProgress(_))));
+        release_tx.send(()).unwrap();
+        let (read, seek) = result_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(read, std::io::ErrorKind::TimedOut);
+        assert_eq!(seek, std::io::ErrorKind::TimedOut);
+    }
+
+    #[test]
+    fn completion_at_idle_deadline_has_one_result_and_releases_permit() {
+        let pool = Arc::new(IoWorkerPool::new(1));
+        for _ in 0..20 {
+            let (release_tx, release_rx) = mpsc::channel();
+            let caller_pool = Arc::clone(&pool);
+            let caller = thread::spawn(move || {
+                run_with_progress_timeout_in(&caller_pool, Duration::from_millis(5), move |_h| {
+                    let _ = release_rx.recv_timeout(Duration::from_millis(5));
+                    9
+                })
+            });
+            thread::sleep(Duration::from_millis(5));
+            let _ = release_tx.send(());
+            let result = caller.join().unwrap();
+            assert!(matches!(result, Ok(9) | Err(IoRunError::NoProgress(_))));
+            for _ in 0..100 {
+                if pool.stats().active == 0 {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+            assert_eq!(pool.stats().active, 0);
+            assert_eq!(pool.stats().timed_out_active, 0);
+        }
     }
 }
