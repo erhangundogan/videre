@@ -249,25 +249,39 @@ fn persist_training(
     deps: &LearningDeps,
     generation: u64,
     run: &TrainingRun,
-) -> Result<videre_api::TrainedProfileSummary, String> {
-    let summary =
-        videre_api::persist_trained_profile(conn, &deps.embedding_model_id, run, &deps.gates)
-            .map_err(|e| e.to_string())?;
+) -> Result<videre_api::TrainedProfileSummary, videre_api::Error> {
+    let summary = videre_api::persist_trained_profile(
+        conn,
+        &deps.embedding_model_id,
+        run,
+        &deps.gates,
+        generation,
+    )?;
     // The pending question page was built against the still-active profile,
     // so it is refreshed only when this run actually promoted. Rebuilding it
     // after a rejection would supersede those questions with identical ones
     // and leave the page empty.
     if summary.promoted {
-        videre_api::refresh_identity_questions(conn, &deps.questions)
-            .map_err(|e| format!("question refresh failed: {e}"))?;
+        videre_api::refresh_identity_questions(conn, &deps.questions).map_err(|error| {
+            videre_api::Error::Other(format!("question refresh failed: {error}"))
+        })?;
     }
     // Marked trained only after the refresh succeeded, so a refresh failure
     // leaves the state failed and the next notification retrains the
     // generation instead of stranding stale questions behind a current
     // status. A retry inserts a fresh candidate row; promotion history stays
     // per row.
-    mark_generation_trained(conn, generation, Some(summary.profile_id))
-        .map_err(|e| e.to_string())?;
+    mark_generation_trained(conn, generation, Some(summary.profile_id)).map_err(|error| {
+        if learning_state(conn).is_ok_and(|state| {
+            state.generation != generation
+                || state.status != videre_core::face_learning::LearningStatus::Training
+                || state.training_generation != Some(generation)
+        }) {
+            videre_api::Error::Conflict
+        } else {
+            error.into()
+        }
+    })?;
     Ok(summary)
 }
 
@@ -307,8 +321,9 @@ fn run_cycle(deps: &LearningDeps) -> Cycle {
                     "face learning: generation {generation} did not pass the quality checks{reason}; previous profile kept"
                 );
             }
-            Err(error) if is_busy(&error) => return Cycle::Busy,
-            Err(error) => record_failure(conn, generation, &error),
+            Err(videre_api::Error::Conflict) => return Cycle::Busy,
+            Err(error) if is_busy(&error.to_string()) => return Cycle::Busy,
+            Err(error) => record_failure(conn, generation, &error.to_string()),
         },
         Ok(Err(error)) => match error.feedback_needed(&deps.config) {
             // Too little feedback yet is the normal state of a young library,
@@ -545,6 +560,59 @@ mod tests {
             [],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn prune_during_fit_retries_without_reactivating_old_evidence() {
+        let (_dir, gallery) = library();
+        {
+            let conn = gallery.lock().unwrap();
+            make_generation_pending(&conn);
+            let features = videre_core::face_learning::FeatureVector {
+                schema_version: videre_core::face_learning::FEATURE_SCHEMA_VERSION,
+                values: MEMBERSHIP_FEATURE_NAMES
+                    .iter()
+                    .map(|name| ((*name).to_owned(), 0.0))
+                    .collect(),
+            }
+            .to_canonical_json()
+            .unwrap();
+            conn.execute(
+                "INSERT INTO face_learning_events
+                 (id,action_kind,decision_kind,outcome,embedding_model_id,feature_schema_version,feature_snapshot_json,support_count)
+                 VALUES(1,'assign_face','membership','positive','arcface/test',1,?1,0)",
+                [features],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO face_learning_event_faces(event_id,face_id,role,ordinal)
+                 VALUES(1,10,'subject',0)",
+                [],
+            )
+            .unwrap();
+        }
+        let during_fit = gallery.clone();
+        let deps = make_deps(gallery.clone(), move |snapshot, _, _| {
+            assert_eq!(snapshot.generation, 1);
+            let conn = during_fit.lock().unwrap();
+            conn.execute_batch("BEGIN IMMEDIATE; DELETE FROM faces WHERE id=10;")
+                .unwrap();
+            videre_core::face_learning::reconcile_missing_face_sources_in_transaction(&conn)
+                .unwrap();
+            conn.execute_batch("COMMIT").unwrap();
+            Ok(stub_run())
+        });
+        assert_eq!(run_cycle(&deps), Cycle::Busy);
+        {
+            let conn = gallery.lock().unwrap();
+            assert_eq!(
+                conn.query_row("SELECT count(*) FROM face_learning_profiles", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+            assert_eq!(learning_state(&conn).unwrap().generation, 2);
+        }
+        assert_eq!(prepare_training(&deps).unwrap().unwrap().generation, 2);
     }
 
     fn stub_report() -> videre_core::face_learning::ValidationReport {

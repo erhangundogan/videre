@@ -1363,7 +1363,9 @@ pub fn persist_trained_profile(
     embedding_model_id: &str,
     run: &videre_core::face_learning::TrainingRun,
     gates: &videre_core::face_learning::PromotionGates,
+    expected_generation: u64,
 ) -> Result<TrainedProfileSummary> {
+    let expected_generation = i64::try_from(expected_generation).map_err(|_| Error::Invalid)?;
     let validation = match run.comparison.selected {
         videre_core::face_learning::CandidateKind::Logistic => &run.logistic_validation,
         videre_core::face_learning::CandidateKind::Additive => &run.additive_validation,
@@ -1378,12 +1380,28 @@ pub fn persist_trained_profile(
         validation_report: validation.clone(),
         stage: videre_core::face_learning::ProfileStage::Suggestion,
     };
-    let profile_id = videre_core::face_learning::insert_candidate(conn, &profile)?;
-    let outcome = videre_core::face_learning::evaluate_and_promote(conn, profile_id, gates)?;
-    Ok(TrainedProfileSummary {
-        profile_id,
-        model_kind: profile.model_kind,
-        promoted: outcome == videre_core::face_learning::PromotionOutcome::Promoted,
+    immediate_transaction(conn, || {
+        let (generation, status, training_generation): (i64, String, Option<i64>) = conn
+            .query_row(
+                "SELECT generation,status,training_generation FROM face_learning_state WHERE id=1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        if generation != expected_generation
+            || status != "training"
+            || training_generation != Some(expected_generation)
+        {
+            return Err(Error::Conflict);
+        }
+        let profile_id = videre_core::face_learning::insert_candidate(conn, &profile)?;
+        let outcome = videre_core::face_learning::evaluate_and_promote_in_transaction(
+            conn, profile_id, gates,
+        )?;
+        Ok(TrainedProfileSummary {
+            profile_id,
+            model_kind: profile.model_kind,
+            promoted: outcome == videre_core::face_learning::PromotionOutcome::Promoted,
+        })
     })
 }
 
@@ -1428,6 +1446,81 @@ pub fn set_primary(conn: &Connection, face_id: i64, person_label: &str) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_generation_cannot_insert_or_promote_a_profile() {
+        use videre_core::face_learning::{
+            CalibrationModel, CandidateComparison, CandidateKind, LogisticModel, LogisticScorer,
+            ModelBundle, TrainingEvidenceCounts, TrainingRun, ValidationReport,
+        };
+        let conn = seed();
+        conn.execute(
+            "UPDATE face_learning_state SET generation=1, status='training', training_generation=1",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE face_learning_state SET generation=2, status='stale', training_generation=NULL",
+            [],
+        )
+        .unwrap();
+        let scorer = LogisticScorer {
+            model: LogisticModel {
+                feature_names: vec!["x".into()],
+                means: vec![0.0],
+                scales: vec![1.0],
+                intercept: 0.0,
+                weights: vec![0.0],
+                l2: 1.0,
+                positive_class_weight: 1.0,
+            },
+            calibration: CalibrationModel {
+                intercept: 0.0,
+                slope: 1.0,
+            },
+            threshold: 0.5,
+        };
+        let report = ValidationReport {
+            protocol_version: 1,
+            evidence_schema_version: 1,
+            feature_schema_version: 1,
+            datasets: Vec::new(),
+        };
+        let run = TrainingRun {
+            selected: ModelBundle::Logistic {
+                artifact_version: 1,
+                embedding_model_id: "test".into(),
+                feature_schema_version: 1,
+                membership: scorer.clone(),
+                cluster_quality: scorer,
+            },
+            logistic_validation: report.clone(),
+            additive_validation: report,
+            comparison: CandidateComparison {
+                selected: CandidateKind::Logistic,
+                logistic_passes: false,
+                additive_passes: false,
+                additive_gain: 0.0,
+                folds_agree: true,
+                additive_regressions: Vec::new(),
+            },
+            evidence_counts: TrainingEvidenceCounts {
+                positive_pairs: 0,
+                negative_pairs: 0,
+                explicit_negative_pairs: 0,
+            },
+        };
+        assert!(matches!(
+            persist_trained_profile(&conn, "test", &run, &Default::default(), 1),
+            Err(Error::Conflict)
+        ));
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM face_learning_profiles", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
 
     #[test]
     fn assign_detaches_the_face_from_its_cluster() {
