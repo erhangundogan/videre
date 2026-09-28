@@ -219,10 +219,13 @@ pub fn prune_orphan_face_state(conn: &Connection) -> anyhow::Result<OrphanFaceRe
         })
     })();
     match result {
-        Ok(report) => {
-            conn.execute_batch("COMMIT")?;
-            Ok(report)
-        }
+        Ok(report) => match conn.execute_batch("COMMIT") {
+            Ok(()) => Ok(report),
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error.into())
+            }
+        },
         Err(error) => {
             let _ = conn.execute_batch("ROLLBACK");
             Err(error)
@@ -814,6 +817,45 @@ mod tests {
         conn.execute_batch("DROP TRIGGER abort_learning_change")
             .unwrap();
         assert_eq!(prune_orphan_face_state(&conn).unwrap().faces, 1);
+    }
+
+    #[test]
+    fn sweep_commit_failure_rolls_back_and_closes_transaction() {
+        let conn = orphan_open();
+        conn.execute(
+            "INSERT INTO faces(hash,bbox,embedding) VALUES('lost','0,0,1,1',X'00')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO faces_scanned(hash) VALUES('lost')", [])
+            .unwrap();
+        conn.execute_batch(
+            "CREATE TABLE commit_guard(person TEXT REFERENCES people(name) DEFERRABLE INITIALLY DEFERRED);
+             CREATE TRIGGER inject_deferred_violation AFTER DELETE ON faces
+             BEGIN INSERT INTO commit_guard(person) VALUES('missing'); END;",
+        ).unwrap();
+        assert!(prune_orphan_face_state(&conn).is_err());
+        assert!(
+            conn.is_autocommit(),
+            "a failed COMMIT must not leave the cleanup transaction open"
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM faces", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM faces_scanned", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM commit_guard", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 
     fn open() -> Connection {

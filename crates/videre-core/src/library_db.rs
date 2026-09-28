@@ -388,9 +388,13 @@ fn upgrade_v3_to_v4(conn: &Connection) -> Result<()> {
         Ok(())
     })();
     match result {
-        Ok(()) => conn
-            .execute_batch("COMMIT")
-            .context("commit schema 4 upgrade"),
+        Ok(()) => match conn.execute_batch("COMMIT") {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error).context("commit schema 4 upgrade")
+            }
+        },
         Err(error) => {
             let _ = conn.execute_batch("ROLLBACK");
             Err(error.context("upgrade library face IDs to schema 4"))
@@ -976,16 +980,14 @@ mod tests {
         )
         .unwrap();
         assert!(conn.last_insert_rowid() > 90);
-        assert_eq!(
-            conn.prepare("PRAGMA foreign_key_check")
-                .unwrap()
-                .query([])
-                .unwrap()
-                .next()
-                .unwrap()
-                .is_none(),
-            true
-        );
+        assert!(conn
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query([])
+            .unwrap()
+            .next()
+            .unwrap()
+            .is_none());
         drop(conn);
         assert_eq!(
             user_version(&open_existing(&ctx).unwrap()).unwrap(),
