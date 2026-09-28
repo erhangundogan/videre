@@ -84,9 +84,10 @@ impl PartialOrd for HeapEntry {
     }
 }
 
-/// A cell's side as a share of the clustering radius. Coordinates closer
-/// than this are one point to the clustering: at the default 15km that is
-/// 1.5km, well below "which city" granularity. Measured on 25,000 synthetic
+/// A cell's side as a share of the clustering radius. Coordinates in one
+/// cell are one point to the clustering, so points up to a cell diagonal
+/// apart always share a cluster: at the default 15km that is about 2.1km,
+/// well below "which city" granularity. Measured on 25,000 synthetic
 /// coordinates around three fully covered city hubs: radius/20 took 3.4s and
 /// 630MB, radius/10 190ms and 48MB, for nearly the same clusters.
 const CELL_DIVISOR: f64 = 10.0;
@@ -875,8 +876,9 @@ mod tests {
 
     /// GPS-shaped fixtures: city hubs with scatter (Istanbul, Berlin,
     /// Tromsø at 69.6N), a chain of points 9km apart that average linkage
-    /// must not string into one cluster at 15km, and a pair either side of
-    /// the antimeridian.
+    /// must not string into one cluster at 15km, a pair either side of the
+    /// antimeridian, and high-latitude pairs where a degree of longitude is
+    /// short (84N, and 89.9N across the pole).
     fn gps_fixture(seed: u64) -> Vec<(f64, f64)> {
         let mut state = seed;
         let mut points = Vec::new();
@@ -890,6 +892,7 @@ mod tests {
         }
         points.push((-16.5, 179.99));
         points.push((-16.5, -179.99));
+        points.extend([(84.0, 10.0), (84.0, 11.5), (89.9, 0.0), (89.9, 180.0)]);
         points
     }
 
@@ -916,9 +919,7 @@ mod tests {
 
     #[test]
     fn within_radius_pairs_finds_exactly_the_brute_force_pairs() {
-        let mut points = gps_fixture(7);
-        // High latitudes, where a degree of longitude is short.
-        points.extend([(84.0, 10.0), (84.0, 11.5), (89.9, 0.0), (89.9, 180.0)]);
+        let points = gps_fixture(7);
         for radius in [1.0, 15.0, 500.0] {
             let mut expected = Vec::new();
             for i in 0..points.len() {
