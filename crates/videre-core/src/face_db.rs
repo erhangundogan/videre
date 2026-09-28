@@ -1,5 +1,5 @@
 use half::f16;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashMap;
 
 #[derive(Clone)]
@@ -55,7 +55,7 @@ pub fn faces_ddl_for(table: &str, if_not_exists: bool) -> String {
     let exists = if if_not_exists { "IF NOT EXISTS " } else { "" };
     format!(
         "CREATE TABLE {exists}{table} (
-            id            INTEGER PRIMARY KEY,
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
             hash          TEXT NOT NULL,
             bbox          TEXT NOT NULL,
             landmark      TEXT,
@@ -118,6 +118,119 @@ pub fn create_faces_scanned_table(conn: &Connection) -> rusqlite::Result<()> {
             scanned_at  TEXT DEFAULT (datetime('now'))
         );",
     )
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OrphanFaceReport {
+    pub faces: usize,
+    pub labeled_faces: usize,
+    pub scanned_hashes: usize,
+    pub learning: crate::face_learning::PrunedLearning,
+}
+
+/// Count only state that is orphaned in the current index. A caller planning
+/// to remove file rows must label these counts as a lower bound.
+pub fn preview_orphan_face_state(conn: &Connection) -> anyhow::Result<OrphanFaceReport> {
+    let (faces, labeled_faces): (i64, i64) = conn.query_row(
+        "SELECT count(*), count(*) FILTER (WHERE confirmed = 1 AND person_label IS NOT NULL)
+         FROM faces WHERE NOT EXISTS
+             (SELECT 1 FROM file_hashes AS file WHERE file.hash = faces.hash)",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let scanned_hashes: i64 = conn.query_row(
+        "SELECT count(*) FROM faces_scanned AS scanned WHERE NOT EXISTS
+             (SELECT 1 FROM file_hashes AS file WHERE file.hash = scanned.hash)",
+        [],
+        |row| row.get(0),
+    )?;
+    let events_invalidated: i64 = conn.query_row(
+        "SELECT count(*) FROM face_learning_events AS event
+         WHERE event.eligible = 1 AND EXISTS (
+             SELECT 1 FROM face_learning_event_faces AS source
+             WHERE source.event_id = event.id AND NOT EXISTS (
+                 SELECT 1 FROM faces AS face JOIN file_hashes AS file ON file.hash = face.hash
+                 WHERE face.id = source.face_id
+             )
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let active_profile: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM face_learning_profiles WHERE status='active'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let questions_superseded: i64 = conn.query_row(
+        "SELECT count(*) FROM face_learning_questions AS question
+         WHERE question.status = 'pending' AND (
+             (?1 > 0 AND question.profile_id = ?2)
+             OR NOT EXISTS (
+                 SELECT 1 FROM faces AS face JOIN file_hashes AS file ON file.hash = face.hash
+                 WHERE face.id = question.representative_face_id
+             )
+             OR EXISTS (
+                 SELECT 1 FROM face_learning_question_faces AS source
+                 WHERE source.question_id = question.id AND NOT EXISTS (
+                     SELECT 1 FROM faces AS face JOIN file_hashes AS file ON file.hash = face.hash
+                     WHERE face.id = source.face_id
+                 )
+             )
+         )",
+        rusqlite::params![events_invalidated, active_profile],
+        |row| row.get(0),
+    )?;
+    Ok(OrphanFaceReport {
+        faces: usize::try_from(faces)?,
+        labeled_faces: usize::try_from(labeled_faces)?,
+        scanned_hashes: usize::try_from(scanned_hashes)?,
+        learning: crate::face_learning::PrunedLearning {
+            events_invalidated: usize::try_from(events_invalidated)?,
+            questions_superseded: usize::try_from(questions_superseded)?,
+            profile_retired: events_invalidated > 0 && active_profile.is_some(),
+        },
+    })
+}
+
+/// Remove derived face state after file-row deletion, then reconcile retained
+/// learning history in the same transaction. A later prune can retry safely.
+pub fn prune_orphan_face_state(conn: &Connection) -> anyhow::Result<OrphanFaceReport> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = (|| -> anyhow::Result<OrphanFaceReport> {
+        let preview = preview_orphan_face_state(conn)?;
+        let faces = conn.execute(
+            "DELETE FROM faces WHERE NOT EXISTS
+                 (SELECT 1 FROM file_hashes AS file WHERE file.hash = faces.hash)",
+            [],
+        )?;
+        let scanned_hashes = conn.execute(
+            "DELETE FROM faces_scanned WHERE NOT EXISTS
+                 (SELECT 1 FROM file_hashes AS file WHERE file.hash = faces_scanned.hash)",
+            [],
+        )?;
+        let learning = crate::face_learning::reconcile_missing_face_sources_in_transaction(conn)?;
+        Ok(OrphanFaceReport {
+            faces,
+            labeled_faces: preview.labeled_faces,
+            scanned_hashes,
+            learning,
+        })
+    })();
+    match result {
+        Ok(report) => match conn.execute_batch("COMMIT") {
+            Ok(()) => Ok(report),
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error.into())
+            }
+        },
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
 }
 
 /// The highest `faces.id` covered by the last completed global recluster,
@@ -553,6 +666,197 @@ fn make_embedding(vals: &[f32]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn orphan_open() -> Connection {
+        let conn = open();
+        crate::library_db::ensure_scan_schema(&conn).unwrap();
+        crate::face_learning::ensure_question_tables(&conn).unwrap();
+        conn
+    }
+
+    fn seed_orphan_event(conn: &Connection, face_id: i64) {
+        crate::face_learning::ensure_question_tables(conn).unwrap();
+        crate::face_learning::ensure_profile_table(conn).unwrap();
+        conn.execute(
+            "INSERT INTO face_learning_events
+             (action_kind,decision_kind,outcome,embedding_model_id,feature_schema_version,feature_snapshot_json,support_count)
+             VALUES('assign_face','membership','positive','test',1,'{}',0)",
+            [],
+        ).unwrap();
+        conn.execute("INSERT INTO face_learning_event_faces(event_id,face_id,role,ordinal) VALUES(1,?1,'subject',0)", [face_id]).unwrap();
+    }
+
+    #[test]
+    fn orphan_sweep_preserves_duplicate_hash_and_people() {
+        let conn = orphan_open();
+        seed_person(&conn, "isil");
+        conn.execute_batch(
+            "INSERT INTO file_hashes(path,hash) VALUES('/one','shared'),('/two','shared'),('/three','lost');
+             INSERT INTO faces(hash,bbox,embedding,person_label,confirmed) VALUES
+                ('shared','0,0,1,1',X'00','isil',1),('lost','0,0,1,1',X'00','isil',1);
+             INSERT INTO faces_scanned(hash) VALUES('shared'),('lost');",
+        ).unwrap();
+        conn.execute("DELETE FROM file_hashes WHERE path='/one'", [])
+            .unwrap();
+        assert_eq!(prune_orphan_face_state(&conn).unwrap().faces, 0);
+        conn.execute("DELETE FROM file_hashes WHERE path='/three'", [])
+            .unwrap();
+        let first = prune_orphan_face_state(&conn).unwrap();
+        assert_eq!(
+            (first.faces, first.labeled_faces, first.scanned_hashes),
+            (1, 1, 1)
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM people", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        conn.execute("DELETE FROM file_hashes WHERE path='/two'", [])
+            .unwrap();
+        assert_eq!(prune_orphan_face_state(&conn).unwrap().faces, 1);
+    }
+
+    #[test]
+    fn orphan_marker_without_faces_is_removed() {
+        let conn = orphan_open();
+        conn.execute("INSERT INTO faces_scanned(hash) VALUES('empty')", [])
+            .unwrap();
+        let report = prune_orphan_face_state(&conn).unwrap();
+        assert_eq!((report.faces, report.scanned_hashes), (0, 1));
+    }
+
+    #[test]
+    fn preview_is_read_only_and_lower_bound() {
+        let conn = orphan_open();
+        conn.execute_batch(
+            "INSERT INTO file_hashes(path,hash) VALUES('/one','still'),('/two','orphan');
+             INSERT INTO faces(hash,bbox,embedding) VALUES('still','0,0,1,1',X'00'),('orphan','0,0,1,1',X'00');",
+        ).unwrap();
+        conn.execute("DELETE FROM file_hashes WHERE path='/two'", [])
+            .unwrap();
+        let before: Vec<(i64, String)> = conn
+            .prepare("SELECT id,hash FROM faces ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let preview = preview_orphan_face_state(&conn).unwrap();
+        assert_eq!(preview.faces, 1);
+        let after: Vec<(i64, String)> = conn
+            .prepare("SELECT id,hash FROM faces ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(before, after);
+        conn.execute("DELETE FROM file_hashes WHERE path='/one'", [])
+            .unwrap();
+        assert_eq!(prune_orphan_face_state(&conn).unwrap().faces, 2);
+    }
+
+    #[test]
+    fn sweep_reconciles_preexisting_missing_provenance() {
+        let conn = orphan_open();
+        seed_orphan_event(&conn, 77);
+        let report = prune_orphan_face_state(&conn).unwrap();
+        assert_eq!(report.faces, 0);
+        assert_eq!(report.learning.events_invalidated, 1);
+        assert_eq!(
+            conn.query_row(
+                "SELECT invalidation_reason FROM face_learning_events",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "source_face_pruned"
+        );
+    }
+
+    #[test]
+    fn sweep_failure_rolls_back_face_and_learning_changes() {
+        let conn = orphan_open();
+        conn.execute(
+            "INSERT INTO faces(id,hash,bbox,embedding) VALUES(7,'lost','0,0,1,1',X'00')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO faces_scanned(hash) VALUES('lost')", [])
+            .unwrap();
+        seed_orphan_event(&conn, 7);
+        conn.execute_batch(
+            "CREATE TRIGGER abort_learning_change BEFORE UPDATE ON face_learning_state
+            BEGIN SELECT RAISE(ABORT, 'injected learning failure'); END;",
+        )
+        .unwrap();
+        assert!(prune_orphan_face_state(&conn).is_err());
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM faces", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM faces_scanned", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row("SELECT eligible FROM face_learning_events", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row("SELECT generation FROM face_learning_state", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        conn.execute_batch("DROP TRIGGER abort_learning_change")
+            .unwrap();
+        assert_eq!(prune_orphan_face_state(&conn).unwrap().faces, 1);
+    }
+
+    #[test]
+    fn sweep_commit_failure_rolls_back_and_closes_transaction() {
+        let conn = orphan_open();
+        conn.execute(
+            "INSERT INTO faces(hash,bbox,embedding) VALUES('lost','0,0,1,1',X'00')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO faces_scanned(hash) VALUES('lost')", [])
+            .unwrap();
+        conn.execute_batch(
+            "CREATE TABLE commit_guard(person TEXT REFERENCES people(name) DEFERRABLE INITIALLY DEFERRED);
+             CREATE TRIGGER inject_deferred_violation AFTER DELETE ON faces
+             BEGIN INSERT INTO commit_guard(person) VALUES('missing'); END;",
+        ).unwrap();
+        assert!(prune_orphan_face_state(&conn).is_err());
+        assert!(
+            conn.is_autocommit(),
+            "a failed COMMIT must not leave the cleanup transaction open"
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM faces", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM faces_scanned", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM commit_guard", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
 
     fn open() -> Connection {
         let conn = Connection::open_in_memory().unwrap();

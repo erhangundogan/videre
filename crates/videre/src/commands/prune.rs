@@ -110,6 +110,23 @@ pub fn run(args: PruneArgs, ctx: &CommandContext) -> anyhow::Result<()> {
         tracing::info!("Dry run: no changes will be made to the database.");
     }
 
+    // A preview has no pipeline-run record and uses a true read-only handle.
+    // Query-only additionally catches any accidental write in the sweep.
+    if args.dry_run {
+        let conn = videre_core::library_db::open_existing_read_only(&ctx.library)?;
+        let _activity = videre_core::library_locks::try_activity(
+            &ctx.library,
+            videre_core::library_locks::ActivityMode::Exclusive,
+        )?;
+        conn.pragma_update(None, "query_only", true)?;
+        let errors = run_prune(&args, &ctx.library, &conn)?;
+        return if errors > 0 {
+            Err(crate::exit::Exit::code(1).into())
+        } else {
+            Ok(())
+        };
+    }
+
     // Prune takes the library's exclusive activity lease: it removes rows and
     // sweeps orphaned embeddings and cache entries, so it must not overlap any
     // other operation in this library (an embed writing the very rows it is
@@ -313,6 +330,23 @@ pub(crate) fn run_prune(
             }
         }
     }
+
+    let face_report = match if args.dry_run {
+        videre_core::face_db::preview_orphan_face_state(conn)
+    } else {
+        videre_core::face_db::prune_orphan_face_state(conn)
+    } {
+        Ok(report) => Some(report),
+        Err(error) => {
+            report_failure(
+                error,
+                "cleaning up orphan faces and face learning".to_owned(),
+                &library.paths.db.display().to_string(),
+            );
+            errors += 1;
+            None
+        }
+    };
 
     // Remove orphan embeddings from every model database, not just one.
     // Each model is attached, swept, and detached in turn rather than joined
@@ -528,8 +562,46 @@ pub(crate) fn run_prune(
         } else {
             String::new()
         };
+        // Only what happened, like the other notes: most prunes touch no face.
+        let face_note = face_report.map_or_else(String::new, |report| {
+            let learning = &report.learning;
+            let mut parts = Vec::new();
+            if report.faces > 0 {
+                parts.push(format!(
+                    "{} orphan face(s) ({} labeled)",
+                    report.faces, report.labeled_faces
+                ));
+            }
+            if report.scanned_hashes > 0 {
+                parts.push(format!("{} face scan marker(s)", report.scanned_hashes));
+            }
+            if learning.events_invalidated > 0 {
+                parts.push(format!(
+                    "{} learning event(s) invalidated",
+                    learning.events_invalidated
+                ));
+            }
+            if learning.questions_superseded > 0 {
+                parts.push(format!(
+                    "{} question(s) superseded",
+                    learning.questions_superseded
+                ));
+            }
+            if learning.profile_retired {
+                parts.push("the active learned profile retired".to_owned());
+            }
+            if parts.is_empty() {
+                return String::new();
+            }
+            let qualifier = if args.dry_run {
+                " (lower bound; actual may be higher after removals)"
+            } else {
+                ""
+            };
+            format!(", {} {action} pruned{qualifier}", parts.join(", "))
+        });
         tracing::info!(
-            "{total} row(s) checked: {removed} {action} removed, {synced} {action} synced, {errors} error(s){orphan_note}{model_note}{cache_note}."
+            "{total} row(s) checked: {removed} {action} removed, {synced} {action} synced, {errors} error(s){face_note}{orphan_note}{model_note}{cache_note}."
         );
     }
 

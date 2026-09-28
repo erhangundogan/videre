@@ -59,7 +59,7 @@ pub fn register_haversine_sql_function(conn: &Connection) -> rusqlite::Result<()
     )
 }
 
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashMap};
 
 struct HeapEntry {
     dist: f64,
@@ -84,6 +84,14 @@ impl PartialOrd for HeapEntry {
     }
 }
 
+/// A cell's side as a share of the clustering radius. Coordinates in one
+/// cell are one point to the clustering, so points up to a cell diagonal
+/// apart always share a cluster: at the default 15km that is about 2.1km,
+/// well below "which city" granularity. Measured on 25,000 synthetic
+/// coordinates around three fully covered city hubs: radius/20 took 3.4s and
+/// 630MB, radius/10 190ms and 48MB, for nearly the same clusters.
+const CELL_DIVISOR: f64 = 10.0;
+
 /// Average-linkage agglomerative clustering of `(lat, lon)` points by
 /// haversine distance, same philosophy as `face_cluster.rs`'s
 /// `agglomerate_average` (repeatedly merge the two closest clusters, where
@@ -91,75 +99,185 @@ impl PartialOrd for HeapEntry {
 /// member pair) but with no quality gate and no held-out singletons: every
 /// point ends up in some cluster, since a GPS coordinate is always valid
 /// data. Returns the member index-lists of every resulting cluster.
+///
+/// :warning: There is no n*n distance matrix, and there must not be one
+/// again. A personal library concentrates around home cities: on one
+/// measured library a fifth of all coordinate pairs were within the default
+/// radius, and at 26,744 coordinates the old dense matrix claimed 5.3GB up
+/// front and froze machines. So coordinates are first snapped into cells of
+/// side `radius / CELL_DIVISOR` (5,644 coordinates became 273 cells), and the
+/// cells are clustered as weighted points, keeping only the distances of
+/// pairs within the radius.
 pub fn cluster_by_distance(points: &[(f64, f64)], radius_km: f64) -> Vec<Vec<usize>> {
-    cluster_by_distance_reporting(points, radius_km, |_, _| {})
-}
-
-/// `cluster_by_distance`, calling `on_row(done, total)` as the distance matrix
-/// is filled.
-///
-/// The matrix build is the slow phase and it used to run silently. At 26,744
-/// coordinates it is ~357 million haversine calls behind a
-/// `vec![vec![0.0; n]; n]` allocation of about 5.7GB, and a caller that printed
-/// "clustering..." and then said nothing for a minute was indistinguishable
-/// from a hang - which is exactly how this was reported.
-///
-/// Reported per outer row rather than per pair: n callbacks instead of n^2/2,
-/// so the reporting cannot itself become the cost.
-pub fn cluster_by_distance_reporting<F>(
-    points: &[(f64, f64)],
-    radius_km: f64,
-    mut on_row: F,
-) -> Vec<Vec<usize>>
-where
-    F: FnMut(usize, usize),
-{
-    let n = points.len();
-    if n == 0 {
+    if points.is_empty() {
         return Vec::new();
     }
+    let cells = snap_cells(points, radius_km);
+    let weights: Vec<f64> = cells.members.iter().map(|m| m.len() as f64).collect();
+    agglomerate(&cells.centroids, &weights, radius_km)
+        .into_iter()
+        .map(|group| {
+            group
+                .into_iter()
+                .flat_map(|cell| cells.members[cell].iter().copied())
+                .collect()
+        })
+        .collect()
+}
 
-    let mut dist: Vec<Vec<f64>> = vec![vec![0.0; n]; n];
-    let mut heap: BinaryHeap<HeapEntry> = BinaryHeap::new();
-    for i in 0..n {
-        on_row(i, n);
-        for j in (i + 1)..n {
-            let d = haversine_km(points[i].0, points[i].1, points[j].0, points[j].1);
-            dist[i][j] = d;
-            dist[j][i] = d;
+/// Coordinates snapped into cells: each cell's position is its members'
+/// unweighted mean (as `centroid` computes it), and its members are indices
+/// into the input.
+struct Cells {
+    centroids: Vec<(f64, f64)>,
+    members: Vec<Vec<usize>>,
+}
+
+/// Latitude bands of height `side`, and within a band longitude cells as
+/// wide as `side` at the band's poleward edge, so no cell is wider than
+/// `side` anywhere in it. A non-positive (or non-finite) radius snaps
+/// nothing: each distinct coordinate is its own cell.
+fn snap_cells(points: &[(f64, f64)], radius_km: f64) -> Cells {
+    let side_km = radius_km / CELL_DIVISOR;
+    let height = (side_km / EARTH_RADIUS_KM).to_degrees();
+    let snap = side_km > 0.0 && height.is_finite();
+    let mut index: HashMap<(i64, i64), usize> = HashMap::new();
+    let mut members: Vec<Vec<usize>> = Vec::new();
+    for (p, &(lat, lon)) in points.iter().enumerate() {
+        let key = if snap {
+            let band = (lat / height).floor();
+            let edge = (band * height).abs().max(((band + 1.0) * height).abs());
+            let cos = edge.min(90.0).to_radians().cos();
+            let column = if cos < 1e-6 {
+                0.0
+            } else {
+                (lon / (height / cos)).floor()
+            };
+            (band as i64, column as i64)
+        } else {
+            (lat.to_bits() as i64, lon.to_bits() as i64)
+        };
+        let cell = *index.entry(key).or_insert_with(|| {
+            members.push(Vec::new());
+            members.len() - 1
+        });
+        members[cell].push(p);
+    }
+    let centroids = members.iter().map(|m| centroid(points, m)).collect();
+    Cells { centroids, members }
+}
+
+/// Every pair of `points` within `radius_km`, as `(lower index, higher
+/// index, distance)`. Candidates come from a latitude-sorted sweep: a pair
+/// within the radius differs in latitude by at most `r / R`, and since
+/// `hav(d) >= cos(lat1) cos(lat2) hav(dlon)`, in longitude by at most
+/// `2 asin(sin(r / 2R) / cos(max |lat|))` (the whole circle near the poles),
+/// wrapping the antimeridian. Every candidate is confirmed with
+/// `haversine_km`; the bounds can only let extra candidates through.
+fn within_radius_pairs(points: &[(f64, f64)], radius_km: f64) -> Vec<(usize, usize, f64)> {
+    const SLACK_DEG: f64 = 1e-9;
+    let mut order: Vec<usize> = (0..points.len()).collect();
+    order.sort_by(|&a, &b| points[a].0.total_cmp(&points[b].0));
+    let max_dlat = (radius_km / EARTH_RADIUS_KM).to_degrees() + SLACK_DEG;
+    let whole_circle = radius_km >= std::f64::consts::PI * EARTH_RADIUS_KM;
+    let half_angle_sin = (radius_km / (2.0 * EARTH_RADIUS_KM)).sin();
+    let mut pairs = Vec::new();
+    for (a, &i) in order.iter().enumerate() {
+        let (lat_i, lon_i) = points[i];
+        for &j in &order[a + 1..] {
+            let (lat_j, lon_j) = points[j];
+            if lat_j - lat_i > max_dlat {
+                break;
+            }
+            let cos = lat_i.abs().max(lat_j.abs()).min(90.0).to_radians().cos();
+            let max_dlon = if whole_circle || half_angle_sin >= cos {
+                180.0
+            } else {
+                (2.0 * (half_angle_sin / cos).asin()).to_degrees() + SLACK_DEG
+            };
+            let mut dlon = (lon_j - lon_i).abs() % 360.0;
+            if dlon > 180.0 {
+                dlon = 360.0 - dlon;
+            }
+            if dlon > max_dlon {
+                continue;
+            }
+            let d = haversine_km(lat_i, lon_i, lat_j, lon_j);
             if d <= radius_km {
-                heap.push(HeapEntry { dist: d, i, j });
+                pairs.push((i.min(j), i.max(j), d));
             }
         }
     }
+    pairs
+}
 
-    let mut members: Vec<Vec<usize>> = (0..n).map(|i| vec![i]).collect();
-    let mut alive = vec![true; n];
+/// The weighted average-linkage distance between two groups of points,
+/// computed from the points: what the merge recurrence yields, for a pair
+/// whose distance was never stored.
+fn mean_distance(points: &[(f64, f64)], weights: &[f64], a: &[usize], b: &[usize]) -> f64 {
+    let mut sum = 0.0;
+    let mut weight = 0.0;
+    for &p in a {
+        for &q in b {
+            let w = weights[p] * weights[q];
+            sum += w * haversine_km(points[p].0, points[p].1, points[q].0, points[q].1);
+            weight += w;
+        }
+    }
+    sum / weight
+}
+
+/// Average linkage over weighted points, each starting as a cluster of size
+/// `weights[p]`. `rows[i]` holds `i`'s distance to every alive cluster within
+/// the radius, and only those, symmetrically. That is enough: a pair absent
+/// from both merging clusters' rows is farther than the radius from both, and
+/// the merged distance, a weighted average of the two, stays farther.
+fn agglomerate(points: &[(f64, f64)], weights: &[f64], radius_km: f64) -> Vec<Vec<usize>> {
+    let n = points.len();
+    let mut rows: Vec<Option<HashMap<usize, f64>>> = (0..n).map(|_| Some(HashMap::new())).collect();
+    let mut heap: BinaryHeap<HeapEntry> = BinaryHeap::new();
+    for (i, j, d) in within_radius_pairs(points, radius_km) {
+        rows[i].as_mut().expect("alive").insert(j, d);
+        rows[j].as_mut().expect("alive").insert(i, d);
+        heap.push(HeapEntry { dist: d, i, j });
+    }
+    let mut members: Vec<Vec<usize>> = (0..n).map(|p| vec![p]).collect();
+    let mut sizes: Vec<f64> = weights.to_vec();
 
     while let Some(HeapEntry { dist: d, i, j }) = heap.pop() {
-        if !alive[i] || !alive[j] {
+        // Dead (either side merged away) or stale (superseded by a later
+        // distance for the same pair): the stored value no longer matches.
+        if rows[i].as_ref().and_then(|row| row.get(&j)) != Some(&d) {
             continue;
         }
-        if dist[i][j] != d {
-            continue; // stale: superseded by a fresher push after i or j absorbed another cluster
-        }
-        if d > radius_km {
-            break;
-        }
-
-        let size_i = members[i].len() as f64;
-        let size_j = members[j].len() as f64;
-        let moved = std::mem::take(&mut members[j]);
-        members[i].extend(moved);
-        alive[j] = false;
-        for k in 0..n {
-            if k == i || k == j || !alive[k] {
-                continue;
-            }
-            let new_d = (size_i * dist[i][k] + size_j * dist[j][k]) / (size_i + size_j);
-            if new_d != dist[i][k] {
-                dist[i][k] = new_d;
-                dist[k][i] = new_d;
+        let row_i = rows[i].take().expect("alive");
+        let row_j = rows[j].take().expect("alive");
+        let (size_i, size_j) = (sizes[i], sizes[j]);
+        let mut others: Vec<usize> = row_i
+            .keys()
+            .chain(row_j.keys())
+            .copied()
+            .filter(|&k| k != i && k != j)
+            .collect();
+        others.sort_unstable();
+        others.dedup();
+        let mut merged: HashMap<usize, f64> = HashMap::new();
+        for k in others {
+            let d_ik = row_i
+                .get(&k)
+                .copied()
+                .unwrap_or_else(|| mean_distance(points, weights, &members[i], &members[k]));
+            let d_jk = row_j
+                .get(&k)
+                .copied()
+                .unwrap_or_else(|| mean_distance(points, weights, &members[j], &members[k]));
+            let new_d = (size_i * d_ik + size_j * d_jk) / (size_i + size_j);
+            let row_k = rows[k].as_mut().expect("a neighbour is alive");
+            row_k.remove(&i);
+            row_k.remove(&j);
+            if new_d <= radius_km {
+                row_k.insert(i, new_d);
+                merged.insert(k, new_d);
                 heap.push(HeapEntry {
                     dist: new_d,
                     i: i.min(k),
@@ -167,10 +285,14 @@ where
                 });
             }
         }
+        let moved = std::mem::take(&mut members[j]);
+        members[i].extend(moved);
+        sizes[i] = size_i + size_j;
+        rows[i] = Some(merged);
     }
 
     (0..n)
-        .filter(|&r| alive[r])
+        .filter(|&r| rows[r].is_some())
         .map(|r| std::mem::take(&mut members[r]))
         .collect()
 }
@@ -324,29 +446,17 @@ pub fn recompute_all(
         return Ok(Vec::new());
     }
 
-    // The clustering maths is sub-second; the cost is the per-coordinate UPDATE
-    // below, unindexable and run once per distinct coordinate. On a 70k-file
-    // library that is thousands of full-table updates and minutes, during which
-    // the command otherwise prints nothing and reads as a hang.
+    // The clustering maths is sub-second (see `cluster_by_distance`); the cost
+    // is the per-coordinate UPDATE below, run once per distinct coordinate,
+    // which has its own progress.
     if !quiet {
         tracing::info!(
             "Clustering {} distinct coordinate(s) at radius {}km...",
             coords.len(),
             radius_km
         );
-        // The matrix build dominates: ~n^2/2 haversine calls behind an n*n*8
-        // byte allocation.
-        let gb = (coords.len() as f64).powi(2) * 8.0 / 1_073_741_824.0;
-        if gb >= 1.0 {
-            tracing::info!("Building the distance matrix (~{gb:.1}GB, this is the slow part)");
-        }
     }
-
-    let matrix = crate::progress::Progress::new_counting(coords.len() as u64, quiet, "coordinates");
-    let member_groups = cluster_by_distance_reporting(&coords, radius_km, |_, _| {
-        matrix.tick();
-    });
-    matrix.finish();
+    let member_groups = cluster_by_distance(&coords, radius_km);
 
     if !quiet {
         tracing::info!(
@@ -690,6 +800,213 @@ mod tests {
         let points = vec![(48.8566, 2.3522), (51.5074, -0.1278)];
         let clusters = cluster_by_distance(&points, 10_000.0);
         assert_eq!(clusters.len(), 1);
+    }
+
+    /// The algorithm this module used before cells and sparse rows: a dense
+    /// n*n matrix, kept as the oracle `agglomerate` must agree with.
+    fn dense_reference(points: &[(f64, f64)], radius_km: f64) -> Vec<Vec<usize>> {
+        let n = points.len();
+        let mut dist: Vec<Vec<f64>> = vec![vec![0.0; n]; n];
+        let mut heap: BinaryHeap<HeapEntry> = BinaryHeap::new();
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let d = haversine_km(points[i].0, points[i].1, points[j].0, points[j].1);
+                dist[i][j] = d;
+                dist[j][i] = d;
+                if d <= radius_km {
+                    heap.push(HeapEntry { dist: d, i, j });
+                }
+            }
+        }
+        let mut members: Vec<Vec<usize>> = (0..n).map(|i| vec![i]).collect();
+        let mut alive = vec![true; n];
+        while let Some(HeapEntry { dist: d, i, j }) = heap.pop() {
+            if !alive[i] || !alive[j] {
+                continue;
+            }
+            if dist[i][j] != d {
+                continue;
+            }
+            if d > radius_km {
+                break;
+            }
+            let size_i = members[i].len() as f64;
+            let size_j = members[j].len() as f64;
+            let moved = std::mem::take(&mut members[j]);
+            members[i].extend(moved);
+            alive[j] = false;
+            for k in 0..n {
+                if k == i || k == j || !alive[k] {
+                    continue;
+                }
+                let new_d = (size_i * dist[i][k] + size_j * dist[j][k]) / (size_i + size_j);
+                if new_d != dist[i][k] {
+                    dist[i][k] = new_d;
+                    dist[k][i] = new_d;
+                    heap.push(HeapEntry {
+                        dist: new_d,
+                        i: i.min(k),
+                        j: i.max(k),
+                    });
+                }
+            }
+        }
+        (0..n)
+            .filter(|&r| alive[r])
+            .map(|r| std::mem::take(&mut members[r]))
+            .collect()
+    }
+
+    /// Order-free form of a partition, so two can be compared.
+    fn canonical(mut partition: Vec<Vec<usize>>) -> Vec<Vec<usize>> {
+        for group in &mut partition {
+            group.sort_unstable();
+        }
+        partition.sort();
+        partition
+    }
+
+    /// Deterministic noise in `[-1, 1)`.
+    fn noise(state: &mut u64) -> f64 {
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((*state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    }
+
+    /// GPS-shaped fixtures: city hubs with scatter (Istanbul, Berlin,
+    /// Tromsø at 69.6N), a chain of points 9km apart that average linkage
+    /// must not string into one cluster at 15km, a pair either side of the
+    /// antimeridian, and high-latitude pairs where a degree of longitude is
+    /// short (84N, and 89.9N across the pole).
+    fn gps_fixture(seed: u64) -> Vec<(f64, f64)> {
+        let mut state = seed;
+        let mut points = Vec::new();
+        for (lat, lon, count) in [(41.01, 28.98, 60), (52.52, 13.405, 40), (69.65, 18.96, 20)] {
+            for _ in 0..count {
+                points.push((lat + noise(&mut state) * 0.2, lon + noise(&mut state) * 0.3));
+            }
+        }
+        for step in 0..12 {
+            points.push((38.0 + noise(&mut state) * 0.001, 27.0 + step as f64 * 0.103));
+        }
+        points.push((-16.5, 179.99));
+        points.push((-16.5, -179.99));
+        points.extend([(84.0, 10.0), (84.0, 11.5), (89.9, 0.0), (89.9, 180.0)]);
+        points
+    }
+
+    #[test]
+    fn sparse_linkage_matches_the_dense_matrix() {
+        for seed in [1, 2, 3] {
+            let points = gps_fixture(seed);
+            let weights = vec![1.0; points.len()];
+            for radius in [1.0, 15.0, 50.0, 10_000.0] {
+                assert_eq!(
+                    canonical(agglomerate(&points, &weights, radius)),
+                    canonical(dense_reference(&points, radius)),
+                    "seed {seed}, radius {radius}km"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_chain_is_not_strung_into_one_cluster() {
+        let chain: Vec<(f64, f64)> = (0..12).map(|s| (38.0, 27.0 + s as f64 * 0.103)).collect();
+        assert!(cluster_by_distance(&chain, 15.0).len() > 1);
+    }
+
+    #[test]
+    fn within_radius_pairs_finds_exactly_the_brute_force_pairs() {
+        let points = gps_fixture(7);
+        for radius in [1.0, 15.0, 500.0] {
+            let mut expected = Vec::new();
+            for i in 0..points.len() {
+                for j in (i + 1)..points.len() {
+                    let d = haversine_km(points[i].0, points[i].1, points[j].0, points[j].1);
+                    if d <= radius {
+                        expected.push((i, j));
+                    }
+                }
+            }
+            let mut found: Vec<(usize, usize)> = within_radius_pairs(&points, radius)
+                .into_iter()
+                .map(|(i, j, _)| (i, j))
+                .collect();
+            found.sort_unstable();
+            assert_eq!(found, expected, "radius {radius}km");
+        }
+    }
+
+    #[test]
+    fn nearby_coordinates_share_a_cell_and_distant_ones_do_not() {
+        // ~10m apart, then ~2km apart, at radius 15 (1.5km cells).
+        let cells = snap_cells(&[(41.0, 29.0), (41.00009, 29.0), (41.018, 29.0)], 15.0);
+        let cell_of = |p: usize| cells.members.iter().position(|m| m.contains(&p));
+        assert_eq!(cell_of(0), cell_of(1));
+        assert_ne!(cell_of(0), cell_of(2));
+    }
+
+    #[test]
+    fn a_cell_stays_within_about_its_side() {
+        for lat in [0.0, 45.0, 70.0] {
+            let points: Vec<(f64, f64)> = (0..200)
+                .map(|k| {
+                    (
+                        lat + (k % 20) as f64 * 0.0007,
+                        10.0 + (k / 20) as f64 * 0.0011,
+                    )
+                })
+                .collect();
+            let cells = snap_cells(&points, 15.0);
+            for (cell, members) in cells.members.iter().enumerate() {
+                let (clat, clon) = cells.centroids[cell];
+                for &p in members {
+                    let d = haversine_km(points[p].0, points[p].1, clat, clon);
+                    let side = 15.0 / CELL_DIVISOR;
+                    assert!(d <= side * 1.5, "{d}km from its cell at latitude {lat}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_zero_radius_snaps_nothing() {
+        let cells = snap_cells(&[(1.0, 1.0), (1.0, 1.0), (1.0, 1.0000001)], 0.0);
+        assert_eq!(cells.members, vec![vec![0, 1], vec![2]]);
+        assert_eq!(
+            cluster_by_distance(&[(1.0, 1.0), (1.0, 1.0000001)], 0.0).len(),
+            2
+        );
+    }
+
+    /// Scale check, run by hand: `cargo test -p videre-core --release --lib
+    /// clusters_a_large_library_quickly -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn clusters_a_large_library_quickly() {
+        let mut state = 42;
+        let mut points = Vec::new();
+        for (lat, lon) in [(41.01, 28.98), (52.52, 13.405), (40.71, -74.0)] {
+            for _ in 0..5_833 {
+                points.push((
+                    lat + noise(&mut state) * 0.18,
+                    lon + noise(&mut state) * 0.24,
+                ));
+            }
+        }
+        for _ in 0..7_500 {
+            points.push((noise(&mut state) * 70.0, noise(&mut state) * 180.0));
+        }
+        let started = std::time::Instant::now();
+        let clusters = cluster_by_distance(&points, DEFAULT_CLUSTER_RADIUS_KM);
+        eprintln!(
+            "{} coordinates -> {} clusters in {:?}",
+            points.len(),
+            clusters.len(),
+            started.elapsed()
+        );
     }
 
     #[test]
