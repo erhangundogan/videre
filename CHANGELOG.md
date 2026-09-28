@@ -16,6 +16,61 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.47.0] - 2026-09-28
+
+### Upgrading
+
+- **A library upgrades itself to schema 4 the first time a writable command
+  opens it**, such as `videre scan`. Face IDs are never reused after this,
+  so the learning journal can keep referring to faces that were pruned.
+  Stop every other videre command running in the library first; the upgrade
+  refuses while one holds it. An older videre cannot open an upgraded
+  library.
+
+### Added
+
+- **`videre dedupe --edited` finds Google Takeout's edited copies.** Takeout
+  exports every edited photo twice, `IMG_1.jpg` and `IMG_1-edited.jpg`, and
+  the bytes differ, so dedupe never paired them. `--edited` pairs them by
+  name in the same folder; with `--remove` the edits go to the trash and the
+  originals stay. An edit is removed only when its original is on disk, and
+  edits do not count toward the bulk-deletion guard, so no `--force` is
+  needed. `--json --edited` adds `edited_pairs`.
+- **A Takeout import counts the edited pairs** and its "Next:" hint
+  suggests the `dedupe --edited` commands.
+- **The gallery's duplicates page and `dedupe --html --edited`** show each
+  original beside its edit.
+
+### Changed
+
+- **`videre prune` removes the faces and face-scan markers of files no
+  longer in the library.** Person names and the learning journal stay;
+  evidence from removed faces stops counting for training, questions about
+  them are withdrawn, and a learned profile trained on them is retired. A
+  dry run reports these counts too.
+- **`videre locations` groups nearby coordinates into small cells first**,
+  a tenth of the radius across (1.5km at the default 15km), and
+  coordinates in one cell always share a place. Existing place assignments may shift slightly
+  on the next recompute.
+- **`videre faces` keeps each HEIC's full-resolution decode in the
+  thumbnail cache** as it detects, which the People pages then reuse. The
+  cache grows by one full-resolution copy per HEIC processed, as it already
+  did with `watch --heic`.
+
+### Fixed
+
+- **`videre locations` could freeze the machine on a large library.** It
+  built a distance table over every pair of coordinates, about 5GB at 27,000
+  coordinates. It now needs tens of MB and finishes in well under a second
+  on the same library size.
+- **Face crops on the People pages rendered a HEIC photo once per face.** A
+  photo with five faces cost five QuickLook renders, several seconds each.
+  The crops now read the cached full-resolution decode, and a photo is
+  rendered at most once.
+- **Face learning could promote a profile trained on faces that were
+  deleted or changed while it trained.** Promotion now checks the training
+  run is still current.
+
 ## [0.46.0] - 2026-09-28
 
 ### Changed
@@ -2465,7 +2520,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.46.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.47.0...HEAD
+[0.47.0]: https://github.com/erhangundogan/videre/compare/v0.46.0...v0.47.0
 [0.46.0]: https://github.com/erhangundogan/videre/compare/v0.45.0...v0.46.0
 [0.45.0]: https://github.com/erhangundogan/videre/compare/v0.44.0...v0.45.0
 [0.44.0]: https://github.com/erhangundogan/videre/compare/v0.43.0...v0.44.0
