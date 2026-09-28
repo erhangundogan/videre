@@ -794,39 +794,19 @@ fn load_image(
     if path.to_lowercase().ends_with(".heic") {
         #[cfg(target_os = "macos")]
         {
-            // `videre watch --heic` may have already cached a full-resolution
-            // decode for this hash (`thumb_cache::original_path_in`), reuse it
-            // instead of paying for a second qlmanage subprocess. Detection's
-            // bbox coordinates are stored relative to whatever image
-            // detection ran on, so this cached JPEG must be a full-res
-            // decode too (which `watch --heic` guarantees. See
-            // `run_heic_stage`), not one of the smaller 240/1200px
-            // thumbnails. With no library cache in scope, or when the cache
-            // has not been populated for this hash yet, falls back to a fresh
-            // full-res qlmanage decode, so detection works correctly even if
-            // `watch --heic` never ran.
-            if let Some(cached_path) =
-                cache.map(|c| videre_core::thumb_cache::original_path_in(c, hash))
-            {
-                if cached_path.exists() {
-                    let timeout_path = cached_path.clone();
-                    let result = videre_core::io_timeout::run_with_timeout(
-                        videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
-                        move || image::open(&timeout_path),
-                    );
-                    if let Ok(Ok(img)) = result {
-                        return Ok(img);
-                    }
-                    // Cached file missing/corrupt/timed out: fall through to a
-                    // fresh decode rather than failing outright.
-                }
-            }
-            // QuickLook does not say why it failed, so no kind is claimed;
-            // the context keeps whatever cause the decode did report.
-            return videre_core::heic::decode_via_quicklook(
+            // The shared decode-with-cache helper: reads the library's
+            // cached full-resolution original for this hash, renders and
+            // publishes one otherwise. The published entry is a full-res
+            // decode, which detection's bbox coordinates require (see
+            // `run_heic_stage`); publishing here means `videre faces` seeds
+            // the cache too, so the crops the People pages ask for next
+            // never render the photo again. QuickLook does not say why it
+            // failed, so no kind is claimed; the context keeps whatever
+            // cause the decode did report.
+            return videre_core::heic::decode_fullres_cached(
                 std::path::Path::new(path),
                 "faces",
-                None,
+                cache.map(|c| (c, hash)),
             )
             .map_err(|e| {
                 e.context(format!(

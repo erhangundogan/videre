@@ -34,13 +34,12 @@ fn crop_face_square(img: &image::DynamicImage, bbox: [f32; 4]) -> image::Dynamic
 /// writing to the DB), so the thumbnail must be cropped from an image of
 /// the same dimensions used at detection time.
 ///
-/// For HEIC: when `original` names a cache and hash and the cached
-/// full-resolution original exists (`thumb_cache::original_path_in`, written
-/// by `watch --heic` and the faces-original endpoint), it is opened
-/// directly. It is the same upright QuickLook decode a fresh conversion
-/// gives, at cache speed. Otherwise videre converts via QuickLook (see
-/// `videre_core::heic::decode_via_quicklook`), which already applies correct
-/// rotation, so no separate orientation step is needed.
+/// For HEIC: decoding goes through
+/// `videre_core::heic::decode_fullres_cached`, which reads the library's
+/// cached full-resolution original when it exists and otherwise renders via
+/// QuickLook (see `videre_core::heic::decode_via_quicklook`) and publishes
+/// that render to the cache. Both give upright pixels with correct rotation
+/// applied, so no separate orientation step is needed.
 ///
 /// `pub`: the static-page base64 thumbnail path (`face_thumb_b64` in
 /// `render`) also needs this exact crop+orientation logic, so it calls
@@ -57,32 +56,16 @@ pub fn make_face_thumb(
         .unwrap_or("")
         .to_lowercase();
     if ext == "heic" {
-        if let Some((cache, hash)) = original {
-            // A cached original is upright, untagged QuickLook output of the
-            // same full resolution the bbox expects, so it crops identically
-            // to a fresh decode. Plain `image::open`, never
-            // `image_decode::decode_oriented_file`: re-orienting
-            // videre-produced pixels double-rotates (see the image_decode
-            // module doc). Any failure falls through to a fresh decode.
-            let cached = videre_core::thumb_cache::original_path_in(cache, hash);
-            if cached.is_file() {
-                let cached_path = cached.clone();
-                if let Ok(Ok(img)) = videre_core::io_timeout::run_with_timeout(
-                    videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
-                    move || image::open(&cached_path),
-                ) {
-                    return Some(crop_face_square(&img, bbox));
-                }
-            }
-        }
+        // The cached-original read and the render's publish-back live in the
+        // core helper, shared with detection and the faces-original
+        // endpoint, so every HEIC render for this hash happens once.
         // None: bbox is stored relative to a full-res decode. See the
         // safety note on decode_via_quicklook.
-        let img = videre_core::heic::decode_via_quicklook(
+        let img = videre_core::heic::decode_fullres_cached(
             std::path::Path::new(path),
             &format!("thumb{face_id}"),
-            None,
+            original,
         )
-        .inspect_err(videre_core::heic::warn_if_timeout)
         .ok()?;
         return Some(crop_face_square(&img, bbox));
     }
@@ -297,7 +280,9 @@ pub fn original_bytes_from_lookup(
             return Ok(("image/jpeg", bytes));
         }
         // None: this serves the true original image, so it must stay at
-        // full resolution.
+        // full resolution. The render is published atomically, shared with
+        // the crop path and detection, so a concurrent save can never tear
+        // the cached entry.
         let img = videre_core::heic::decode_via_quicklook(
             std::path::Path::new(file_path),
             &format!("orig{face_id}"),
@@ -311,14 +296,7 @@ pub fn original_bytes_from_lookup(
             image::ImageFormat::Jpeg,
         )
         .map_err(|_| Error::NotFound)?;
-        let final_path = videre_core::thumb_cache::original_path_in(cache, hash);
-        if let Some(parent) = final_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let tmp = final_path.with_extension(format!("tmp{}", std::process::id()));
-        if std::fs::write(&tmp, &buf).is_ok() {
-            let _ = std::fs::rename(&tmp, &final_path);
-        }
+        videre_core::heic::publish_cached_original(cache, hash, &buf);
         Ok(("image/jpeg", buf))
     } else {
         let bytes = read_with_timeout(file_path).map_err(|e| {
@@ -656,5 +634,32 @@ mod tests {
             Some((&ctx.cache, &hash)),
         )
         .is_none());
+    }
+
+    /// After a fallback render the full-resolution original is in the cache:
+    /// the first crop pays for the QuickLook render and the photo's other
+    /// crops read it. macOS only: the fallback is a real QuickLook render of
+    /// the committed `tiny.heic` fixture.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_fallback_render_publishes_the_cached_original() {
+        let temp = tempfile::tempdir().unwrap();
+        let ctx =
+            videre_core::library::LibraryContext::new(temp.path(), &temp.path().join("cache"))
+                .unwrap();
+        let heic = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../videre/tests/fixtures/content_key/tiny.heic"
+        );
+        let hash = format!("face-crop-publish-{}", std::process::id());
+
+        let thumb =
+            make_face_thumb(heic, [0.0, 0.0, 200.0, 200.0], 1, Some((&ctx.cache, &hash))).unwrap();
+        assert_eq!((thumb.width(), thumb.height()), (140, 140));
+
+        let cached = videre_core::thumb_cache::original_path_in(&ctx.cache, &hash);
+        assert!(cached.is_file(), "the render was not published: {cached:?}");
+        let opened = image::open(&cached).unwrap();
+        assert!(opened.width() > 0);
     }
 }
