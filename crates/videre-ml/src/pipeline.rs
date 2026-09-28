@@ -433,14 +433,11 @@ fn run_face_pipeline_impl(
 
         for msg in rx {
             apply_worker_msg_counts(&mut result, &msg);
-            if let Err(e) =
-                record_face_message(conn, msg, &mut result, profile.as_deref_mut(), dry_run)
-            {
-                // The volume is failing: stop consuming, stop writing. The
-                // enclosing thread::scope still joins every worker, whose
-                // sends are already `let _ =` against a dropped receiver.
-                return Err(e);
-            }
+            // A fatal disk error inside makes the run stop here: the volume
+            // is failing, so stop consuming, stop writing. The enclosing
+            // thread::scope still joins every worker, whose sends are
+            // already `let _ =` against a dropped receiver.
+            record_face_message(conn, msg, &mut result, profile.as_deref_mut(), dry_run)?;
         }
 
         // Join every worker, propagating both a thread panic and the
@@ -470,7 +467,7 @@ fn record_face_message(
     conn: &rusqlite::Connection,
     msg: WorkerMsg,
     result: &mut FacesRunResult,
-    mut profile: Option<&mut ProfileStats>,
+    profile: Option<&mut ProfileStats>,
     dry_run: bool,
 ) -> anyhow::Result<()> {
     match msg {
@@ -478,7 +475,7 @@ fn record_face_message(
             if !dry_run {
                 let write_start = std::time::Instant::now();
                 let write_result = videre_core::face_db::replace_faces_for_hash(conn, &hash, &rows);
-                if let Some(p) = profile.as_deref_mut() {
+                if let Some(p) = profile {
                     p.db_write += write_start.elapsed();
                 }
                 match write_result {
