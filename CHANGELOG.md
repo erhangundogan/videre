@@ -16,6 +16,45 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.48.0] - 2026-09-28
+
+### Added
+
+- **`videre config set io-workers N`** (1 to 256) limits how many helper
+  threads a videre process keeps for file reads that may block on an
+  unresponsive drive. The default is four times the CPU count, clamped to
+  32 through 128.
+
+### Changed
+
+- **Hashing no longer has a total time limit.** A large file on a slow but
+  working drive keeps hashing as long as bytes arrive, however slowly; a
+  file is skipped only when its read returns nothing for 20 seconds, or its
+  metadata does not answer within five. `read-rate` no longer affects
+  hashing; it still scales the other whole-file reads, such as XMP sidecars.
+- **A full or read-only library stops `videre faces` at the first failed
+  write**, with one message, instead of one error per photo while it keeps
+  detecting the rest of the library.
+- **`videre watch` backs off a failing library volume.** After a disk-level
+  write error, retries slow from every few seconds to at most the hourly
+  maintenance pass, and file events wait for the next retry. The daemon stays
+  up, and one clean cycle restores the normal cadence.
+- **For crate users:** `videre_core::io_timeout::run_with_timeout` returns
+  `Result<T, IoRunError>`, which says whether a call hit its deadline, stopped
+  making progress, or was refused because every worker was busy.
+  `TimedOutAfter` is replaced by `PathIoError`, and `video_meta::read_file` is
+  removed (`read_file_in_progress` is its general form).
+
+### Fixed
+
+- **A stuck drive could pile up blocked threads without limit.** Each timed
+  out read left its thread behind. Workers are now bounded per process; when
+  every one is held by a stuck read, new files are refused, warned about once,
+  and counted on exit, never reported as the drive timing out. `prune` treats
+  a refusal as unknown and never deletes a row on it.
+- **A staged copy that finished after its caller gave up was left in the
+  library's state directory.** It now removes itself.
+
 ## [0.47.1] - 2026-09-28
 
 ### Added
@@ -2543,7 +2582,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.47.1...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.48.0...HEAD
+[0.48.0]: https://github.com/erhangundogan/videre/compare/v0.47.1...v0.48.0
 [0.47.1]: https://github.com/erhangundogan/videre/compare/v0.47.0...v0.47.1
 [0.47.0]: https://github.com/erhangundogan/videre/compare/v0.46.0...v0.47.0
 [0.46.0]: https://github.com/erhangundogan/videre/compare/v0.45.0...v0.46.0
