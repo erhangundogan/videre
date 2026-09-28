@@ -312,6 +312,7 @@ mod tests {
             total_files: 3,
             duplicate_groups: vec![],
             similar_groups: None,
+            edited_pairs: None,
         };
         let json = serde_json::to_string(&doc).unwrap();
         assert!(json.starts_with("{\"schema_version\":1"));
@@ -328,6 +329,7 @@ mod tests {
                 hash: "phash:00000000000000ff".to_string(),
                 files: vec![rec("/x.jpg", "111"), rec("/y.jpg", "222")],
             }]),
+            edited_pairs: None,
         };
         let json = serde_json::to_string(&doc).unwrap();
         assert!(json.contains("\"similar_groups\""));
@@ -345,6 +347,7 @@ mod tests {
             total_files: 3,
             duplicate_groups: vec![],
             similar_groups: None,
+            edited_pairs: None,
         };
         let json = serde_json::to_string(&doc).unwrap();
         assert!(json.starts_with("{\"schema_version\":1"));
@@ -361,6 +364,7 @@ mod tests {
                 hash: "phash:00000000000000ff".to_string(),
                 files: vec![rec("/x.jpg", "111"), rec("/y.jpg", "222")],
             }]),
+            edited_pairs: None,
         };
         let json = serde_json::to_string(&doc).unwrap();
         assert!(json.contains("\"similar_groups\""));

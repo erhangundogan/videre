@@ -913,7 +913,7 @@ mod files_sort_tests {
             crate::render::query_all_files(&conn)
         };
         let conn = state.conn.lock().unwrap();
-        crate::render::write_static_page(&conn, &out, &[], Some(&rows)).unwrap();
+        crate::render::write_static_page(&conn, &out, &[], &[], Some(&rows)).unwrap();
         let html = std::fs::read_to_string(&out).unwrap();
         assert!(html.contains("var ALLFILES=["), "{html}");
         assert!(html.contains("\"rating\":5"), "{html}");
@@ -2397,6 +2397,13 @@ fn render_live_with_date(
     } else {
         Vec::new()
     };
+    // The duplicates page always shows Google Takeout edit pairs: it has no
+    // flags, and a library without Takeout names has none.
+    let edited_groups = if with_groups {
+        crate::render::query_edited_groups(&conn)
+    } else {
+        Vec::new()
+    };
     // `all_files` and `keep_files` came from different queries; the view picks
     // one. `with_groups`, `all` and `by_date` are mutually exclusive per route.
     let items = if all {
@@ -2425,6 +2432,7 @@ fn render_live_with_date(
         stats,
         items,
         groups,
+        edited_groups,
         faces_by_hash,
         // Live pages inline no rows, so the marks map is never read.
         marks_by_hash: Default::default(),
@@ -3248,6 +3256,7 @@ fn render_live_events(
         stats,
         items: Vec::new(),
         groups: Vec::new(),
+        edited_groups: Vec::new(),
         faces_by_hash,
         marks_by_hash: Default::default(),
         nav: Some(Section::Events),

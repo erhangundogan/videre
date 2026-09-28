@@ -812,13 +812,20 @@ pub(crate) fn file_to_json_with_faces(
 
 fn group_to_json(
     group: &[FileRow],
+    edited: bool,
     heic: bool,
     heic_original: bool,
     faces_by_hash: &videre_core::face_db::LabeledFacesByHash,
     live: bool,
 ) -> String {
     let hash_prefix = &group[0].hash[..group[0].hash.len().min(8)];
-    let waste = group[0].size_bytes * (group.len() as i64 - 1);
+    // An edited pair frees the edit's own size; an exact group frees the
+    // kept size once per extra copy.
+    let waste = if edited {
+        group[1..].iter().map(|f| f.size_bytes).sum()
+    } else {
+        group[0].size_bytes * (group.len() as i64 - 1)
+    };
     let keep_date = best_date(&group[0]);
     let date_json = if keep_date.is_empty() {
         "null".to_string()
@@ -841,8 +848,9 @@ fn group_to_json(
         })
         .collect();
     format!(
-        "{{\"hash\":{hash},\"waste\":{waste},\"date\":{date},\"files\":[{files}]}}",
+        "{{\"hash\":{hash},\"edited\":{edited},\"waste\":{waste},\"date\":{date},\"files\":[{files}]}}",
         hash = json_str(hash_prefix),
+        edited = edited,
         waste = waste,
         date = date_json,
         files = files_json.join(","),
@@ -855,6 +863,52 @@ pub(crate) fn query_stats(conn: &Connection) -> Stats {
         total_files: s.total_files,
         duplicate_groups: s.duplicate_group_count,
     }
+}
+
+/// Google Takeout edits beside their originals, each as `[original, edit]`:
+/// the original is kept. See `videre::takeout_names`.
+pub(crate) fn query_edited_groups(conn: &Connection) -> Vec<Vec<FileRow>> {
+    let Ok(mut stmt) = conn.prepare("SELECT path, hash FROM file_hashes") else {
+        return Vec::new();
+    };
+    let rows: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default();
+    let refs: Vec<(&str, &str)> = rows.iter().map(|(p, h)| (p.as_str(), h.as_str())).collect();
+    let pairs = videre::takeout_names::edited_pairs(&refs);
+    if pairs.is_empty() {
+        return Vec::new();
+    }
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT path, hash, size_bytes, COALESCE(ext,''), created_at, modified_at, exif_date, \
+                gps_lat, gps_lon, width, height \
+         FROM file_hashes WHERE path = ?1",
+    ) else {
+        return Vec::new();
+    };
+    let mut row = |path: &str| -> Option<FileRow> {
+        stmt.query_row([path], |r| {
+            Ok(FileRow {
+                path: r.get(0)?,
+                hash: r.get(1)?,
+                size_bytes: r.get(2)?,
+                ext: r.get(3)?,
+                created_at: r.get(4)?,
+                modified_at: r.get(5)?,
+                exif_date: r.get(6)?,
+                gps_lat: r.get(7)?,
+                gps_lon: r.get(8)?,
+                width: r.get(9)?,
+                height: r.get(10)?,
+            })
+        })
+        .ok()
+    };
+    pairs
+        .iter()
+        .filter_map(|pair| Some(vec![row(pair.original)?, row(pair.edit)?]))
+        .collect()
 }
 
 pub(crate) fn query_groups(conn: &Connection) -> Vec<Vec<FileRow>> {
@@ -1114,6 +1168,7 @@ pub(crate) fn write_static_page(
     conn: &Connection,
     output: &Path,
     groups: &[Vec<FileRow>],
+    edited_groups: &[Vec<FileRow>],
     flat: Option<&[FileRow]>,
 ) -> anyhow::Result<()> {
     let stats = query_stats(conn);
@@ -1142,6 +1197,7 @@ pub(crate) fn write_static_page(
         stats,
         items,
         groups,
+        edited_groups: edited_groups.to_vec(),
         faces_by_hash,
         marks_by_hash,
         nav: None,
@@ -1197,6 +1253,9 @@ pub(crate) struct RenderSet {
     pub stats: Stats,
     pub items: Vec<FileRow>,
     pub groups: Vec<Vec<FileRow>>,
+    /// Google Takeout edited pairs, `[original, edit]`, shown after `groups`
+    /// on the duplicates page.
+    pub edited_groups: Vec<Vec<FileRow>>,
     pub faces_by_hash: videre_core::face_db::LabeledFacesByHash,
     /// Marks for the rows a static page inlines, so offline sorting by rating
     /// and liked reads the same fields the live API splices in. Live pages
@@ -1247,9 +1306,11 @@ pub(crate) fn render(set: &RenderSet) -> String {
     // works when the active model has embeddings for this library. Tell the
     // client, so it can hide a Similar button that would otherwise fail.
     let has_embeddings = embedded.is_some_and(|n| n > 0);
+    let edited_groups: &[Vec<FileRow>] = &set.edited_groups;
     let data = build_data_block(
         nav,
         groups,
+        edited_groups,
         all_files,
         keep_files,
         heic,
@@ -1276,7 +1337,7 @@ pub(crate) fn render(set: &RenderSet) -> String {
         generated_at: &now,
         total_files: stats.total_files,
         embedded,
-        has_groups: !groups.is_empty(),
+        has_groups: !groups.is_empty() || !edited_groups.is_empty(),
         duplicate_groups: stats.duplicate_groups,
         all_files_count: all_files.map(|f| f.len()),
         has_keep_files: keep_files.is_some() || set.view == View::Events,
@@ -1285,7 +1346,7 @@ pub(crate) fn render(set: &RenderSet) -> String {
         // secondary sections drop it. See `GalleryPage::show_header`.
         show_header: nav.is_none() || nav == Some(Section::All),
         settings_script: &set.options.settings_script,
-        no_duplicates: groups_view && groups.is_empty(),
+        no_duplicates: groups_view && groups.is_empty() && edited_groups.is_empty(),
         event_sort,
     };
     page.render().expect("gallery template")
@@ -1297,6 +1358,7 @@ pub(crate) fn render(set: &RenderSet) -> String {
 fn build_data_block(
     nav: Option<Section>,
     groups: &[Vec<FileRow>],
+    edited_groups: &[Vec<FileRow>],
     all_files: Option<&[FileRow]>,
     keep_files: Option<&[FileRow]>,
     heic: bool,
@@ -1333,13 +1395,18 @@ fn build_data_block(
         event_json,
     ));
     out.push_str("<script>\nvar GROUPS=[\n");
-    for (i, group) in groups.iter().enumerate() {
+    let tagged = groups
+        .iter()
+        .map(|g| (g, false))
+        .chain(edited_groups.iter().map(|g| (g, true)));
+    for (i, (group, edited)) in tagged.enumerate() {
         if i > 0 {
             out.push(',');
         }
         out.push('\n');
         out.push_str(&group_to_json(
             group,
+            edited,
             heic,
             heic_original,
             faces_by_hash,

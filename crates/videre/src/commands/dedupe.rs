@@ -94,6 +94,7 @@ fn write_html(
     ctx: &CommandContext,
     conn: &rusqlite::Connection,
     arg: Option<&std::path::Path>,
+    edited: bool,
 ) -> anyhow::Result<()> {
     let db = &ctx.library.paths.db;
     // A bare --html targets a page beside the selected database; an explicit
@@ -111,7 +112,12 @@ fn write_html(
         }
     };
     let groups = crate::render::query_groups(conn);
-    crate::render::write_static_page(conn, &output, &groups, None)
+    let edited_groups = if edited {
+        crate::render::query_edited_groups(conn)
+    } else {
+        Vec::new()
+    };
+    crate::render::write_static_page(conn, &output, &groups, &edited_groups, None)
 }
 
 fn run_text(args: DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
@@ -156,7 +162,7 @@ fn run_text(args: DedupeArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     }
 
     if let Some(arg) = args.html.as_ref() {
-        write_html(ctx, &conn, arg.as_deref())?;
+        write_html(ctx, &conn, arg.as_deref(), args.edited)?;
     }
     Ok(())
 }
