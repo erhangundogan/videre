@@ -143,13 +143,6 @@ fn block_timeout(
     }
 }
 
-/// The wake backoff for a pending batch or owed rescan: the io backoff
-/// when it has grown past the pending-retry cadence, that cadence
-/// otherwise. Pure, so the combination is unit-testable.
-fn combined_backoff(io_backoff: Duration) -> Duration {
-    io_backoff.max(PENDING_RETRY_BACKOFF)
-}
-
 /// The backoff between wakes after a cycle hit a systemic disk error:
 /// start at the pending-retry cadence, double, and never exceed the
 /// maintenance cadence - the failing volume is retried hourly, not
@@ -341,23 +334,6 @@ mod scheduler_tests {
     }
 
     #[test]
-    fn the_wake_takes_the_longer_of_the_io_and_pending_backoffs() {
-        assert_eq!(combined_backoff(Duration::ZERO), PENDING_RETRY_BACKOFF);
-        assert_eq!(
-            combined_backoff(Duration::from_secs(60)),
-            Duration::from_secs(60)
-        );
-        // Through the wake rule with pending work: the io backoff holds.
-        let t = block_timeout(
-            false,
-            Duration::ZERO,
-            Duration::from_secs(3600),
-            combined_backoff(Duration::from_secs(60)),
-        );
-        assert_eq!(t, Duration::from_secs(60));
-    }
-
-    #[test]
     fn a_drain_open_failure_enters_the_backoff_only_for_disk_errors() {
         let cantopen = anyhow::Error::new(rusqlite::Error::SqliteFailure(
             rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
@@ -467,7 +443,10 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
             pending.is_empty() && !rescan_owed,
             last_maintenance.elapsed(),
             maintenance,
-            combined_backoff(io_backoff),
+            // The io backoff has already been slept at the top of the loop,
+            // so the pending cadence is all the extra wait a retry needs -
+            // counting the backoff here too would double every wait.
+            PENDING_RETRY_BACKOFF,
         );
         match rx.recv_timeout(timeout) {
             Ok(Ok(batch)) => {
