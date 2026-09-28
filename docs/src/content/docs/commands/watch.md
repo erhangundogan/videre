@@ -197,6 +197,12 @@ cannot ask, so the bulk-deletion and repeated-failure guards are always active.
 An unplugged drive is skipped rather than wiped. See
 [`videre prune`](/commands/prune/) for the rules.
 
+**A failing library volume backs the cycle off.** A disk-level error (the drive
+disconnecting, a full disk) is logged once and the loop's retry cadence doubles,
+up to the hourly maintenance pass, instead of hammering the volume every few
+seconds. The daemon stays up, and one clean cycle returns it to the normal
+cadence.
+
 **The HEIC cache grows without limit.** `--heic` caches a full-resolution decode
 per HEIC file, which is what makes face detection fast, and can reach tens of
 GB. Only `prune` reclaims any of it, and only for photos no longer in the
