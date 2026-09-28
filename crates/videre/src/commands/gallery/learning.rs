@@ -272,9 +272,11 @@ fn persist_training(
     // status. A retry inserts a fresh candidate row; promotion history stays
     // per row.
     mark_generation_trained(conn, generation, Some(summary.profile_id)).map_err(|error| {
+        // The same fence as persistence: a cleared training marker means prune
+        // withdrew evidence meanwhile. A newer generation alone is new
+        // feedback, which mark_generation_trained handles by going stale.
         if learning_state(conn).is_ok_and(|state| {
-            state.generation != generation
-                || state.status != videre_core::face_learning::LearningStatus::Training
+            state.status != videre_core::face_learning::LearningStatus::Training
                 || state.training_generation != Some(generation)
         }) {
             videre_api::Error::Conflict
@@ -613,6 +615,44 @@ mod tests {
             assert_eq!(learning_state(&conn).unwrap().generation, 2);
         }
         assert_eq!(prepare_training(&deps).unwrap().unwrap().generation, 2);
+    }
+
+    /// Naming during a fit advances the generation but withdraws nothing, so
+    /// the finished run is kept (and the state goes stale for a follow-up),
+    /// unlike a prune during the fit. On a large library a run takes a
+    /// minute; discarding it on every naming action would starve promotion.
+    #[test]
+    fn a_teaching_action_during_fit_keeps_the_run() {
+        let (_dir, gallery) = library();
+        make_generation_pending(&gallery.lock().unwrap());
+        let during_fit = gallery.clone();
+        let deps = make_deps(gallery.clone(), move |_, _, _| {
+            // What `append_event_batch_in_transaction` does to the state.
+            during_fit
+                .lock()
+                .unwrap()
+                .execute(
+                    "UPDATE face_learning_state SET generation = generation + 1 WHERE id = 1",
+                    [],
+                )
+                .unwrap();
+            Ok(stub_run())
+        });
+        assert_eq!(run_cycle(&deps), Cycle::Done);
+        let conn = gallery.lock().unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM face_learning_profiles WHERE status = 'active'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1,
+            "the run is promoted"
+        );
+        let (generation, trained_generation, status) = learning_status(&conn);
+        assert_eq!((generation, trained_generation), (2, 1));
+        assert_eq!(status, "stale", "the new feedback trains next");
     }
 
     fn stub_report() -> videre_core::face_learning::ValidationReport {

@@ -1381,16 +1381,18 @@ pub fn persist_trained_profile(
         stage: videre_core::face_learning::ProfileStage::Suggestion,
     };
     immediate_transaction(conn, || {
-        let (generation, status, training_generation): (i64, String, Option<i64>) = conn
-            .query_row(
-                "SELECT generation,status,training_generation FROM face_learning_state WHERE id=1",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )?;
-        if generation != expected_generation
-            || status != "training"
-            || training_generation != Some(expected_generation)
-        {
+        // Fence on the training marker, not the generation. Prune withdraws
+        // evidence by clearing it (the fit used evidence that is gone), while a
+        // teaching action only advances the generation and leaves it: that fit
+        // is still valid, and `mark_generation_trained` then leaves the state
+        // stale for a follow-up run. Discarding it would lose a whole run to
+        // every naming action made while it trained.
+        let (status, training_generation): (String, Option<i64>) = conn.query_row(
+            "SELECT status,training_generation FROM face_learning_state WHERE id=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if status != "training" || training_generation != Some(expected_generation) {
             return Err(Error::Conflict);
         }
         let profile_id = videre_core::face_learning::insert_candidate(conn, &profile)?;
