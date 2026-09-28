@@ -167,7 +167,27 @@ fn prune_preserves_faces_while_a_duplicate_path_survives() {
     )
     .unwrap();
     drop(conn);
-    seed_face(&lib, "haaa");
+    let face_id = seed_face(&lib, "haaa");
+    // Learning that relied on the face, and a profile in use.
+    let conn = lib.conn();
+    conn.execute("INSERT INTO face_learning_events(id,action_kind,decision_kind,outcome,embedding_model_id,feature_schema_version,feature_snapshot_json,support_count)
+        VALUES(1,'assign_face','membership','positive','test',1,'{}',0)", []).unwrap();
+    conn.execute("INSERT INTO face_learning_event_faces(event_id,face_id,role,ordinal) VALUES(1,?1,'subject',0)", [face_id]).unwrap();
+    conn.execute("INSERT INTO face_learning_profiles(id,artifact_version,embedding_model_id,feature_schema_version,model_kind,parameters,training_evidence_json,validation_report_json,stage,status)
+        VALUES(5,1,'test',1,'logistic',X'00','{}','{}','suggestion','active')", []).unwrap();
+    drop(conn);
+    let learning = |lib: &TestLibrary| -> (i64, String) {
+        lib.conn()
+            .query_row(
+                "SELECT (SELECT eligible FROM face_learning_events WHERE id=1),
+                        (SELECT status FROM face_learning_profiles WHERE id=5)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+    };
+
+    // One copy goes, one survives: faces, marker, evidence and profile stay.
     run_prune(&lib, false);
     assert_eq!(
         lib.conn()
@@ -176,6 +196,19 @@ fn prune_preserves_faces_while_a_duplicate_path_survives() {
             .unwrap(),
         1
     );
+    assert_eq!(
+        lib.conn()
+            .query_row(
+                "SELECT count(*) FROM faces_scanned WHERE hash='haaa'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(learning(&lib), (1, "active".to_owned()));
+
+    // The last copy goes: so do the faces, and the evidence and profile with them.
     std::fs::remove_file(a).unwrap();
     run_prune(&lib, false);
     assert_eq!(
@@ -185,6 +218,7 @@ fn prune_preserves_faces_while_a_duplicate_path_survives() {
             .unwrap(),
         0
     );
+    assert_eq!(learning(&lib), (0, "retired".to_owned()));
 }
 
 #[test]

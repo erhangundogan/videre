@@ -617,6 +617,56 @@ mod tests {
         assert_eq!(prepare_training(&deps).unwrap().unwrap().generation, 2);
     }
 
+    /// Deleting a person during a fit withdraws their evidence, like prune: the
+    /// fit trained on it, so it must not be promoted.
+    #[test]
+    fn person_removal_during_fit_retries_without_its_evidence() {
+        let (_dir, gallery) = library();
+        {
+            let conn = gallery.lock().unwrap();
+            make_generation_pending(&conn);
+            let features = videre_core::face_learning::FeatureVector {
+                schema_version: videre_core::face_learning::FEATURE_SCHEMA_VERSION,
+                values: MEMBERSHIP_FEATURE_NAMES
+                    .iter()
+                    .map(|name| ((*name).to_owned(), 0.0))
+                    .collect(),
+            }
+            .to_canonical_json()
+            .unwrap();
+            conn.execute(
+                "INSERT INTO face_learning_events
+                 (id,action_kind,decision_kind,outcome,embedding_model_id,feature_schema_version,feature_snapshot_json,support_count,target_identity)
+                 VALUES(1,'assign_face','membership','positive','arcface/test',1,?1,0,'alice')",
+                [features],
+            )
+            .unwrap();
+        }
+        let during_fit = gallery.clone();
+        let deps = make_deps(gallery.clone(), move |_, _, _| {
+            let conn = during_fit.lock().unwrap();
+            conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+            videre_core::face_learning::invalidate_identity_for_removal_in_transaction(
+                &conn, "alice",
+            )
+            .unwrap();
+            conn.execute_batch("COMMIT").unwrap();
+            Ok(stub_run())
+        });
+        assert_eq!(run_cycle(&deps), Cycle::Busy);
+        let conn = gallery.lock().unwrap();
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM face_learning_profiles", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "the fit on withdrawn evidence is not stored"
+        );
+        let state = learning_state(&conn).unwrap();
+        assert_eq!(state.generation, 2);
+        assert_eq!(state.training_generation, None);
+    }
+
     /// Naming during a fit advances the generation but withdraws nothing, so
     /// the finished run is kept (and the state goes stale for a follow-up),
     /// unlike a prune during the fit. On a large library a run takes a

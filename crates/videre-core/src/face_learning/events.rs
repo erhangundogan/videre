@@ -584,7 +584,18 @@ pub fn invalidate_exact_identity_in_transaction(
     } else {
         0
     };
-    if invalidated > 0 || superseded > 0 {
+    if invalidated > 0 {
+        // Evidence was withdrawn: a run in progress trained on it, so clear
+        // its marker as prune does. Its promotion fence then rejects it and
+        // the next cycle trains without this person's evidence.
+        conn.execute(
+            "UPDATE face_learning_state
+             SET generation = generation + 1, status = 'stale',
+                 training_generation = NULL, last_error = NULL
+             WHERE id = 1",
+            [],
+        )?;
+    } else if superseded > 0 {
         conn.execute(
             "UPDATE face_learning_state
              SET generation = generation + 1,
