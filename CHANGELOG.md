@@ -16,6 +16,34 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.45.0] - 2026-09-28
+
+### Changed
+
+- **`videre embed` computes the near-duplicate fingerprint** that
+  `dedupe --similar` reads, from the image it already decodes, so fingerprints
+  no longer need a separate decode pass. The first `embed` after upgrading also
+  fingerprints files that were embedded before and have none: it decodes and
+  hashes them without loading the model, and its summary counts them as
+  fingerprints added. Fingerprints stored by `scan --similar` are kept.
+- **`scan --similar` is deprecated** and does nothing; it still parses so
+  scripts do not break, and prints a notice. Run `videre embed` instead.
+- **`dedupe --similar` says to run `videre embed`** when the library has no
+  fingerprints yet.
+
+### Fixed
+
+- **A rescan erased near-duplicate fingerprints.** Every `scan --force`, and any
+  rescan of a changed file without `--similar`, cleared the stored fingerprint.
+  A fingerprint is now kept while the file's content is unchanged.
+- **The gallery waited 20 seconds on an audio-only video** (such as a Live
+  Photo's companion) each time it asked for its poster. It is now skipped at
+  once, as `embed` already did.
+- **A QuickLook timeout was logged once**, not twice, by `embed` and `faces`,
+  and thumbnails, posters and `watch` still log it when they skip a file.
+- **HEIC and video files whose names are not valid UTF-8** now convert through
+  QuickLook instead of failing.
+
 ## [0.44.0] - 2026-09-27
 
 ### Added
@@ -2413,7 +2441,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.44.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.45.0...HEAD
+[0.45.0]: https://github.com/erhangundogan/videre/compare/v0.44.0...v0.45.0
 [0.44.0]: https://github.com/erhangundogan/videre/compare/v0.43.0...v0.44.0
 [0.43.0]: https://github.com/erhangundogan/videre/compare/v0.42.1...v0.43.0
 [0.42.1]: https://github.com/erhangundogan/videre/compare/v0.42.0...v0.42.1
