@@ -65,6 +65,9 @@ pub(crate) struct Summary {
     pub updated: usize,
     pub errors: usize,
     pub aborted: bool,
+    /// Google Takeout only: edits exported beside their originals, counted by
+    /// name (`videre::takeout_names`), for the hint to `dedupe --edited`.
+    pub edited_pairs: usize,
 }
 
 pub fn run(args: ImportArgs, ctx: &CommandContext) -> anyhow::Result<()> {
@@ -170,6 +173,11 @@ fn import_one(
         root: root.to_path_buf(),
         located_via: via.clone(),
         files: files.len(),
+        edited_pairs: if provider.id == "google-takeout" {
+            videre::takeout_names::edited_name_pairs(&files)
+        } else {
+            0
+        },
         ..Default::default()
     };
 
@@ -216,6 +224,15 @@ fn import_one(
         tracing::info!("Next:");
         for r in &roots {
             tracing::info!("  videre scan {}", r.display());
+        }
+        if summary.edited_pairs > 0 {
+            tracing::info!(
+                "  videre dedupe --edited --html     # review {} photo(s) Google Photos exported twice",
+                summary.edited_pairs
+            );
+            tracing::info!(
+                "  videre dedupe --edited --remove   # keep the originals, trash the edits"
+            );
         }
     }
 
@@ -588,5 +605,6 @@ fn json_summary(s: &Summary) -> serde_json::Value {
         "updated": s.updated,
         "errors": s.errors,
         "aborted": s.aborted,
+        "edited_pairs": s.edited_pairs,
     })
 }

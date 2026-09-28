@@ -255,3 +255,46 @@ fn takeout_dry_run_leaves_every_timestamp_alone() {
         "must still report what it found: {text}"
     );
 }
+
+/// The Takeout export plus Google Photos' render of an edit beside `a.jpg`.
+fn takeout_tree_with_an_edit(root: &Path) {
+    let photo = takeout_tree(root);
+    std::fs::write(photo.with_file_name("a-edited.jpg"), b"y").unwrap();
+}
+
+#[test]
+fn a_takeout_import_with_edits_points_at_dedupe_edited() {
+    let lib = TestLibrary::new();
+    takeout_tree_with_an_edit(&lib.root);
+    let text = run(&lib, &[".", "--yes"]);
+    assert!(
+        text.contains("videre dedupe --edited --html")
+            && text.contains("1 photo(s) Google Photos exported twice"),
+        "{text}"
+    );
+    assert!(text.contains("videre dedupe --edited --remove"), "{text}");
+}
+
+#[test]
+fn a_takeout_import_without_edits_says_nothing_about_them() {
+    let lib = TestLibrary::new();
+    takeout_tree(&lib.root);
+    let text = run(&lib, &[".", "--yes"]);
+    assert!(!text.contains("--edited"), "{text}");
+}
+
+#[test]
+fn the_edited_hint_respects_silent_and_json() {
+    let lib = TestLibrary::new();
+    takeout_tree_with_an_edit(&lib.root);
+    let text = run(&lib, &[".", "--yes", "--silent"]);
+    assert!(!text.contains("--edited"), "{text}");
+
+    let out = lib
+        .cmd()
+        .args(["import", ".", "--yes", "--json"])
+        .output()
+        .unwrap();
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc[0]["edited_pairs"], 1, "{doc}");
+}
