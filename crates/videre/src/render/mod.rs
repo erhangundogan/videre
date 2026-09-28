@@ -562,7 +562,7 @@ fn base64_encode(data: &[u8]) -> String {
 /// Convert a HEIC file to a base64 JPEG data-URI payload, downscaled so
 /// neither dimension exceeds `max_px`.
 ///
-/// Uses QuickLook (see `videre_core::heic::heic_via_quicklook`) rather than
+/// Uses QuickLook (see `videre_core::heic::decode_via_quicklook`) rather than
 /// `sips -s format jpeg` because `sips` copies the raw sensor-buffer pixels
 /// unrotated for HEIC files where the iPhone camera encoded rotation via the
 /// HEIF `irot` transform box rather than a classic EXIF Orientation tag.
@@ -570,9 +570,15 @@ fn heic_to_b64(path: &str, max_px: u32) -> Option<String> {
     // Some(max_px): the caller already downscales to max_px below, so
     // requesting a decode already capped at that size avoids wasted
     // decode/resize/PNG-encode work. See the safety note on
-    // heic_via_quicklook for why this is only safe when the result is
+    // decode_via_quicklook for why this is only safe when the result is
     // downscaled by the caller anyway.
-    let img = videre_core::heic::heic_via_quicklook(path, &format!("b64_{max_px}"), Some(max_px))?;
+    let img = videre_core::heic::decode_via_quicklook(
+        std::path::Path::new(path),
+        &format!("b64_{max_px}"),
+        Some(max_px),
+    )
+    .inspect_err(videre_core::heic::warn_if_timeout)
+    .ok()?;
     let img = if img.width() > max_px || img.height() > max_px {
         img.resize(max_px, max_px, image::imageops::FilterType::Triangle)
     } else {

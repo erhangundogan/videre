@@ -35,7 +35,7 @@ fn crop_face_square(img: &image::DynamicImage, bbox: [f32; 4]) -> image::Dynamic
 /// the same dimensions used at detection time.
 ///
 /// For HEIC: videre faces converts via QuickLook (see
-/// `videre_core::heic::heic_via_quicklook`), which already applies correct
+/// `videre_core::heic::decode_via_quicklook`), which already applies correct
 /// rotation, so no separate orientation step is needed.
 ///
 /// `pub`: the static-page base64 thumbnail path (`face_thumb_b64` in
@@ -49,8 +49,14 @@ pub fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image
         .to_lowercase();
     if ext == "heic" {
         // None: bbox is stored relative to a full-res decode. See the
-        // safety note on heic_via_quicklook.
-        let img = videre_core::heic::heic_via_quicklook(path, &format!("thumb{face_id}"), None)?;
+        // safety note on decode_via_quicklook.
+        let img = videre_core::heic::decode_via_quicklook(
+            std::path::Path::new(path),
+            &format!("thumb{face_id}"),
+            None,
+        )
+        .inspect_err(videre_core::heic::warn_if_timeout)
+        .ok()?;
         return Some(crop_face_square(&img, bbox));
     }
     let timeout_path = path.to_string();
@@ -259,8 +265,13 @@ pub fn original_bytes_from_lookup(
         }
         // None: this serves the true original image, so it must stay at
         // full resolution.
-        let img = videre_core::heic::heic_via_quicklook(file_path, &format!("orig{face_id}"), None)
-            .ok_or(Error::NotFound)?;
+        let img = videre_core::heic::decode_via_quicklook(
+            std::path::Path::new(file_path),
+            &format!("orig{face_id}"),
+            None,
+        )
+        .inspect_err(videre_core::heic::warn_if_timeout)
+        .map_err(|_| Error::NotFound)?;
         let mut buf = Vec::new();
         img.write_to(
             &mut std::io::Cursor::new(&mut buf),

@@ -3674,7 +3674,7 @@ struct RawFileQuery {
 /// so a client can't request arbitrary paths off the filesystem.
 ///
 /// HEIC is converted to JPEG on demand via QuickLook (same
-/// `videre_core::heic::heic_via_quicklook` helper used elsewhere), one file per request,
+/// `videre_core::heic::decode_via_quicklook` helper used elsewhere), one file per request,
 /// lazily as the browser requests each thumbnail/lightbox image, NOT
 /// eagerly for the whole report up front, which is what made server mode
 /// unusably slow on a collection with many HEIC files before this endpoint
@@ -3814,13 +3814,15 @@ async fn handle_raw_file(
             // `size` doubles as the qlmanage render cap: when Some, this
             // caller downscales to it below anyway; when None, the caller
             // wants the true original (no downscale applied), which is
-            // exactly heic_via_quicklook(..., None)'s full-resolution
+            // exactly decode_via_quicklook(..., None)'s full-resolution
             // behavior too. See its safety note.
-            let img = videre_core::heic::heic_via_quicklook(
-                &path,
+            let img = videre_core::heic::decode_via_quicklook(
+                std::path::Path::new(&path),
                 &format!("raw{}", size.unwrap_or(0)),
                 size,
-            )?;
+            )
+            .inspect_err(videre_core::heic::warn_if_timeout)
+            .ok()?;
             let img = match size {
                 Some(max_px) if img.width() > max_px || img.height() > max_px => {
                     img.resize(max_px, max_px, image::imageops::FilterType::Triangle)
@@ -3840,8 +3842,13 @@ async fn handle_raw_file(
             // baked into the image videre serves. Cached so later tile requests
             // for the same content reuse it instead of re-running QuickLook.
             let px = size.unwrap();
-            let img =
-                videre_core::heic::heic_via_quicklook(&path, &format!("vposter{px}"), Some(px))?;
+            let img = videre_core::heic::decode_via_quicklook(
+                std::path::Path::new(&path),
+                &format!("vposter{px}"),
+                Some(px),
+            )
+            .inspect_err(videre_core::heic::warn_if_timeout)
+            .ok()?;
             let img = if img.width() > px || img.height() > px {
                 img.resize(px, px, image::imageops::FilterType::Triangle)
             } else {

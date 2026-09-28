@@ -821,11 +821,17 @@ fn load_image(
                     // fresh decode rather than failing outright.
                 }
             }
-            // QuickLook does not say why it failed, so no kind is claimed.
-            return videre_core::heic::heic_via_quicklook(path, "faces", None).ok_or_else(|| {
-                anyhow::anyhow!(
+            // QuickLook does not say why it failed, so no kind is claimed;
+            // the context keeps whatever cause the decode did report.
+            return videre_core::heic::decode_via_quicklook(
+                std::path::Path::new(path),
+                "faces",
+                None,
+            )
+            .map_err(|e| {
+                e.context(format!(
                     "could not read/convert HEIC file {path} (missing, timed out, or unreadable - is its drive connected?)"
-                )
+                ))
             });
         }
         #[cfg(not(target_os = "macos"))]
