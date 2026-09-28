@@ -231,6 +231,14 @@ library, it blocked 15 photos of the owner, several of which matched a face
 already in their group almost exactly. Run `videre faces --reset` to record
 sharpness and leave it behind.
 
+## When a photo is deleted
+
+When `videre prune` removes the last indexed copy of a photo, its detected
+faces disappear from People, but the person's name remains. If the last face
+of a person was on that photo, the person can be labeled again later without
+recovering the deleted photo. The historical learning journal remains, though
+events that relied on the removed face no longer train new profiles.
+
 ## Reset
 
 `videre faces --reset` is the start-over button. It deletes every face row,

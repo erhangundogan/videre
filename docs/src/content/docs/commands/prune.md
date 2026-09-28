@@ -43,16 +43,20 @@ videre prune --dry-run
 1. Removes rows for files no longer on disk
 2. Refreshes the stored timestamp of any file whose modification time has
    changed since the last pass
-3. Deletes embeddings whose photo is gone, across **every**
+3. Removes face detections and face-scan markers whose content has no indexed
+   path. Person names and the learning journal remain; evidence from removed
+   faces becomes ineligible, pending questions are withdrawn, and an active
+   learned profile is retired if an eligible event lost its source
+4. Deletes embeddings whose photo is gone, across **every**
    [model](/reference/models/)
-4. Deletes [cached thumbnails](/guides/caches/#thumbnail-cache) whose photo is
+5. Deletes [cached thumbnails](/guides/caches/#thumbnail-cache) whose photo is
    gone
-5. Removes any [model database](/reference/models/) the sweep has left with no
+6. Removes any [model database](/reference/models/) the sweep has left with no
    embeddings at all, typically one an interrupted or failed `videre embed`
    left behind
 
-Steps 3 and 4 are the reason to prune at all rather than ignoring stale rows:
-they are what actually reclaims disk space.
+Steps 4 and 5 reclaim derived data on disk. Step 3 keeps the People page and
+face learning consistent with the indexed files.
 
 Step 2 only touches rows that actually differ, so the count tells you something.
 Its usual cause is another program changing a file's modification time.
@@ -62,14 +66,18 @@ is a no-op.
 
 If two paths share the same content and only one is deleted, the shared
 embedding and cache entries are **kept**. They are keyed by content, so they are
-still in use by the surviving copy.
+still in use by the surviving copy. The same rule protects faces and face-scan
+markers.
 
 :::note[`--dry-run` undercounts orphans]
-The orphan counts in a dry run only include entries that are *already* orphaned,
+The orphan counts in a dry run, including faces, scan markers, affected learning
+events and questions, only include entries that are *already* orphaned,
 not the ones the pending row deletions would create. The real run usually
 reclaims more than the preview suggests. Row counts are exact. The same lower
 bound applies to empty model databases: one whose only embeddings are about to
 be orphaned still counts as non-empty in the preview.
+Dry-run opens the database read-only and records no pipeline run. A schema-3
+library must first be upgraded by a writable command such as `videre scan`.
 :::
 
 ## If a drive is not plugged in, prune leaves it alone
