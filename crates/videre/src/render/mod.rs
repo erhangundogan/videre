@@ -577,6 +577,7 @@ fn heic_to_b64(path: &str, max_px: u32) -> Option<String> {
         &format!("b64_{max_px}"),
         Some(max_px),
     )
+    .inspect_err(videre_core::heic::warn_if_timeout)
     .ok()?;
     let img = if img.width() > max_px || img.height() > max_px {
         img.resize(max_px, max_px, image::imageops::FilterType::Triangle)

@@ -148,29 +148,45 @@ pub fn decode_via_quicklook(
         .spawn()
         .context("run qlmanage (requires macOS)")?;
     let outcome = wait_with_timeout(&mut child, QLMANAGE_TIMEOUT);
+    // Returned, never logged here: a caller that reports its errors would log
+    // it a second time. Callers that swallow the error pass it through
+    // `warn_if_timeout` so a disconnected drive still reaches the log.
     if outcome == WaitOutcome::TimedOut {
-        // Warn as well as erroring: callers that swallow errors (the scan
-        // side) must still see this in the log.
-        tracing::warn!(
-            "qlmanage timed out after {}s converting {} (file may be unreachable - is its drive disconnected?); skipping",
+        return Err(anyhow::anyhow!(
+            "qlmanage timed out after {}s decoding {} (file may be unreachable - is its drive connected?)",
             QLMANAGE_TIMEOUT.as_secs(),
             path.display()
-        );
+        )
+        .context(crate::error_kind::ErrorKind::SourceUnavailable));
     }
-    anyhow::ensure!(
-        outcome != WaitOutcome::TimedOut,
-        "qlmanage timed out after {}s decoding {} (file may be unreachable - is its drive connected?)",
-        QLMANAGE_TIMEOUT.as_secs(),
-        path.display()
-    );
     anyhow::ensure!(
         outcome == WaitOutcome::Success,
         "qlmanage failed for {}",
         path.display()
     );
     let file_name = path.file_name().context("path has no file name")?;
-    let out_file = out_dir.join(format!("{}.png", file_name.to_string_lossy()));
+    let out_file = out_dir.join(quicklook_output_name(file_name));
     image::open(&out_file).with_context(|| format!("decode qlmanage output for {}", path.display()))
+}
+
+/// `qlmanage -t` writes `<file name>.png`, byte for byte. Built as an OS
+/// string so a file name that is not valid UTF-8 still finds its output.
+fn quicklook_output_name(file_name: &std::ffi::OsStr) -> std::ffi::OsString {
+    let mut name = file_name.to_os_string();
+    name.push(".png");
+    name
+}
+
+/// For callers that swallow a QuickLook decode failure (a thumbnail, a
+/// poster, a cache fill): a timeout still reaches the log, since it usually
+/// means a disconnected drive. Other failures stay quiet there, as before.
+/// Callers that return the error must not call this, or it is logged twice.
+pub fn warn_if_timeout(error: &anyhow::Error) {
+    if crate::error_kind::ErrorKind::in_chain(error)
+        == Some(crate::error_kind::ErrorKind::SourceUnavailable)
+    {
+        crate::error_log::report(tracing::Level::WARN, error, None);
+    }
 }
 
 /// Message shared by every QuickLook entry point, so a non-macOS user gets one
@@ -273,6 +289,47 @@ mod tests {
             crate::error_kind::ErrorKind::in_chain(&err),
             Some(crate::error_kind::ErrorKind::QuicklookUnavailable)
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_non_utf8_file_name_keeps_its_bytes_in_the_output_name() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let name = std::ffi::OsStr::from_bytes(b"caf\xe9.heic");
+        assert_eq!(
+            quicklook_output_name(name).into_vec(),
+            b"caf\xe9.heic.png".to_vec()
+        );
+    }
+
+    #[test]
+    fn only_a_timeout_is_warned_for_callers_that_swallow_the_error() {
+        #[derive(Clone, Default)]
+        struct Buf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Buf {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let buf = Buf::default();
+        let w = buf.clone();
+        let sub = tracing_subscriber::fmt()
+            .with_writer(move || w.clone())
+            .finish();
+        tracing::subscriber::with_default(sub, || {
+            warn_if_timeout(&anyhow::anyhow!("decode failed"));
+            warn_if_timeout(
+                &anyhow::anyhow!("qlmanage timed out")
+                    .context(crate::error_kind::ErrorKind::SourceUnavailable),
+            );
+        });
+        let logged = String::from_utf8_lossy(&buf.0.lock().unwrap()).to_string();
+        assert!(logged.contains("qlmanage timed out"), "{logged}");
+        assert!(!logged.contains("decode failed"), "{logged}");
     }
 
     #[test]

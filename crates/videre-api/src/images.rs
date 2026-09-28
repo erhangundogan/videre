@@ -55,6 +55,7 @@ pub fn make_face_thumb(path: &str, bbox: [f32; 4], face_id: i64) -> Option<image
             &format!("thumb{face_id}"),
             None,
         )
+        .inspect_err(videre_core::heic::warn_if_timeout)
         .ok()?;
         return Some(crop_face_square(&img, bbox));
     }
@@ -269,6 +270,7 @@ pub fn original_bytes_from_lookup(
             &format!("orig{face_id}"),
             None,
         )
+        .inspect_err(videre_core::heic::warn_if_timeout)
         .map_err(|_| Error::NotFound)?;
         let mut buf = Vec::new();
         img.write_to(

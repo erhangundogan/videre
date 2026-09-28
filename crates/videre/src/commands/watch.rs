@@ -988,7 +988,8 @@ fn run_heic_stage(
                     }
                 }
             }
-            Err(_) => {
+            Err(error) => {
+                videre_core::heic::warn_if_timeout(&error);
                 if need_240 {
                     failed += 1;
                 }

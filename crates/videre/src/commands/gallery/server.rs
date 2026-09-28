@@ -3821,6 +3821,7 @@ async fn handle_raw_file(
                 &format!("raw{}", size.unwrap_or(0)),
                 size,
             )
+            .inspect_err(videre_core::heic::warn_if_timeout)
             .ok()?;
             let img = match size {
                 Some(max_px) if img.width() > max_px || img.height() > max_px => {
@@ -3846,6 +3847,7 @@ async fn handle_raw_file(
                 &format!("vposter{px}"),
                 Some(px),
             )
+            .inspect_err(videre_core::heic::warn_if_timeout)
             .ok()?;
             let img = if img.width() > px || img.height() > px {
                 img.resize(px, px, image::imageops::FilterType::Triangle)
