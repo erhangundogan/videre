@@ -882,6 +882,7 @@ fn recluster_ignores_learning_evidence_about_the_same_faces() {
             &videre_api::TeachingContext {
                 embedding_model_id: "arcface/test".into(),
                 active_profile_id: None,
+                record: true,
             },
         )
         .unwrap();

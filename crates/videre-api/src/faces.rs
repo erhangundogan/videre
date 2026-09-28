@@ -573,6 +573,16 @@ fn assignment_events(
     Ok(events)
 }
 
+/// The acknowledgement of a mutation made while face learning is off: the
+/// face writes happened, nothing was recorded.
+fn learning_off(conn: &Connection) -> Result<LearningAcknowledgement> {
+    Ok(LearningAcknowledgement {
+        generation: learning_state(conn)?.generation,
+        event_ids: Vec::new(),
+        message_key: "learning_off".to_owned(),
+    })
+}
+
 fn assign_teaching(
     conn: &Connection,
     face_ids: &[i64],
@@ -601,6 +611,10 @@ fn assign_teaching(
             }
             person_support_ids(conn, &identity, face_ids)?
         };
+        if !context.record {
+            assign_in_transaction(conn, face_ids, &identity, &display)?;
+            return learning_off(conn);
+        }
         let events =
             assignment_events(conn, &states, &identity, &support, context, creating_person)?;
         assign_in_transaction(conn, face_ids, &identity, &display)?;
@@ -680,6 +694,17 @@ pub fn remove_face_with_learning(
     }
     immediate_transaction(conn, || {
         let state = face_states(conn, &[face_id])?.remove(0);
+        if !context.record {
+            let named =
+                state.confirmed && state.person_label.is_some() && state.cluster_id.is_none();
+            let clustered =
+                !state.confirmed && state.person_label.is_none() && state.cluster_id.is_some();
+            if !(named || clustered) {
+                return Err(Error::Invalid);
+            }
+            remove_face_in_transaction(conn, face_id)?;
+            return learning_off(conn);
+        }
         let (action, support, identity, stage) =
             if state.confirmed && state.person_label.is_some() && state.cluster_id.is_none() {
                 let identity = state.person_label.clone().ok_or(Error::Invalid)?;
@@ -787,6 +812,10 @@ pub fn dissolve_cluster_with_learning(
             } else {
                 Err(Error::Invalid)
             };
+        }
+        if !context.record {
+            dissolve_cluster_in_transaction(conn, cluster_id)?;
+            return learning_off(conn);
         }
         let event = cluster_event(
             conn,
@@ -1110,6 +1139,7 @@ pub fn face_learning_status(conn: &Connection) -> Result<FaceLearningStatus> {
         failed,
     )?;
     Ok(FaceLearningStatus {
+        enabled: true,
         generation: state.generation,
         trained_generation: state.trained_generation,
         status: format!("{:?}", state.status).to_lowercase(),
@@ -1267,39 +1297,59 @@ pub fn face_learning_event(
 }
 
 /// Load the immutable training inputs for the learning worker's snapshot.
-pub fn load_training_snapshot(
+/// What training reads from the database. Loaded in one short read
+/// transaction; building the snapshot from it is slow and holds nothing.
+pub struct TrainingInputs {
+    pub labels: Vec<videre_core::face_learning::LabeledFace>,
+    pub observations: Vec<videre_core::face_learning::FaceObservation>,
+    pub events: Vec<videre_core::face_learning::StoredLearningEvent>,
+}
+
+/// Read the training inputs as one consistent state: a deferred read
+/// transaction, so a face deleted between two of the reads cannot fail the
+/// run.
+pub fn load_training_inputs(
     conn: &Connection,
     embedding_model_id: &str,
-    generation: u64,
-    config: &videre_core::face_learning::TrainingConfig,
-) -> std::result::Result<videre_core::face_learning::TrainingSnapshot, String> {
-    let labels =
-        videre_core::face_db::load_confirmed_face_labels(conn).map_err(|e| e.to_string())?;
+) -> std::result::Result<TrainingInputs, videre_core::face_learning::LearningEventError> {
+    let tx = conn.unchecked_transaction()?;
+    let labels = videre_core::face_db::load_confirmed_face_labels(&tx)?;
     let face_ids: Vec<i64> = {
-        let mut statement = conn
-            .prepare("SELECT id FROM faces ORDER BY id")
-            .map_err(|e| e.to_string())?;
+        let mut statement = tx.prepare("SELECT id FROM faces ORDER BY id")?;
         let rows = statement
-            .query_map([], |row| row.get(0))
-            .map_err(|e| e.to_string())?
-            .collect::<rusqlite::Result<Vec<i64>>>()
-            .map_err(|e| e.to_string())?;
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<i64>>>()?;
         rows
     };
-    let observations =
-        videre_core::face_db::load_face_observations(conn, &face_ids).map_err(|e| e.to_string())?;
+    let observations = videre_core::face_db::load_face_observations(&tx, &face_ids)?;
     let events = videre_core::face_learning::eligible_events_for_training(
-        conn,
+        &tx,
         embedding_model_id,
         videre_core::face_learning::FEATURE_SCHEMA_VERSION,
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
+    tx.commit()?;
+    Ok(TrainingInputs {
+        labels,
+        observations,
+        events,
+    })
+}
+
+/// Build the training snapshot from loaded inputs. Pure and slow (the
+/// per-person features are quadratic in a person's face count), so it runs
+/// with no connection held.
+pub fn build_training_inputs(
+    inputs: &TrainingInputs,
+    generation: u64,
+    embedding_model_id: &str,
+    config: &videre_core::face_learning::TrainingConfig,
+) -> std::result::Result<videre_core::face_learning::TrainingSnapshot, String> {
     videre_core::face_learning::build_training_snapshot(
         generation,
         embedding_model_id,
-        &labels,
-        &observations,
-        &events,
+        &inputs.labels,
+        &inputs.observations,
+        &inputs.events,
         config,
     )
     .map_err(|e| e.to_string())
@@ -1463,6 +1513,7 @@ mod tests {
             TeachingContext {
                 embedding_model_id: "buffalo_l/w600k_r50.onnx".to_owned(),
                 active_profile_id: None,
+                record: true,
             }
         }
 
@@ -1533,6 +1584,91 @@ mod tests {
                 .unwrap();
             }
             conn
+        }
+
+        fn off() -> TeachingContext {
+            TeachingContext {
+                record: false,
+                ..context()
+            }
+        }
+
+        fn face_rows(conn: &Connection) -> Vec<(i64, Option<i64>, Option<String>, bool)> {
+            let mut statement = conn
+                .prepare("SELECT id, cluster_id, person_label, confirmed FROM faces ORDER BY id")
+                .unwrap();
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            rows
+        }
+
+        fn event_count(conn: &Connection) -> i64 {
+            conn.query_row("SELECT count(*) FROM face_learning_events", [], |row| {
+                row.get(0)
+            })
+            .unwrap_or(0)
+        }
+
+        /// Learning off: every mutation writes the same faces as with learning
+        /// on, records no event, and leaves the generation alone.
+        #[test]
+        fn with_learning_off_mutations_write_the_same_faces_and_record_nothing() {
+            type Step = fn(&Connection, &TeachingContext) -> Result<LearningAcknowledgement>;
+            let steps: [(&str, Step); 4] = [
+                ("assign", |c, x| assign_with_learning(c, &[6], "alice", x)),
+                ("new person", |c, x| {
+                    new_person_with_learning(c, &[3, 4, 5], "Bob", x)
+                }),
+                ("remove face", |c, x| remove_face_with_learning(c, 7, x)),
+                ("dissolve", |c, x| dissolve_cluster_with_learning(c, 9, x)),
+            ];
+            for (name, step) in steps {
+                let on = learning_seed();
+                let off_conn = learning_seed();
+                step(&on, &context()).unwrap();
+                let ack = step(&off_conn, &off()).unwrap();
+                assert_eq!(face_rows(&on), face_rows(&off_conn), "{name}");
+                assert_eq!(ack.event_ids, Vec::<i64>::new(), "{name}");
+                assert_eq!(ack.message_key, "learning_off", "{name}");
+                assert_eq!(ack.generation, 0, "{name}");
+                assert_eq!(event_count(&off_conn), 0, "{name}");
+                assert_eq!(learning_state(&off_conn).unwrap().generation, 0, "{name}");
+            }
+        }
+
+        #[test]
+        fn with_learning_off_the_same_requests_are_rejected() {
+            let conn = learning_seed();
+            for (on, off) in [
+                (
+                    new_person_with_learning(&conn, &[1], "Bob", &context()),
+                    new_person_with_learning(&conn, &[1], "Bob", &off()),
+                ),
+                (
+                    new_person_with_learning(&conn, &[3, 4], "Bob", &context()),
+                    new_person_with_learning(&conn, &[3, 4], "Bob", &off()),
+                ),
+                (
+                    assign_with_learning(&conn, &[6], "nobody", &context()),
+                    assign_with_learning(&conn, &[6], "nobody", &off()),
+                ),
+                (
+                    remove_face_with_learning(&conn, 6, &context()),
+                    remove_face_with_learning(&conn, 6, &off()),
+                ),
+                (
+                    dissolve_cluster_with_learning(&conn, 42, &context()),
+                    dissolve_cluster_with_learning(&conn, 42, &off()),
+                ),
+            ] {
+                assert_eq!(on.unwrap_err().to_string(), off.unwrap_err().to_string());
+            }
+            assert_eq!(event_count(&conn), 0);
         }
 
         #[test]
@@ -2748,6 +2884,7 @@ mod never_run_tests {
             TeachingContext {
                 embedding_model_id: "arcface/test".into(),
                 active_profile_id: Some(profile_id),
+                record: true,
             }
         }
     }
@@ -3197,6 +3334,7 @@ mod never_run_tests {
             let context = TeachingContext {
                 embedding_model_id: "x/1".into(),
                 active_profile_id: None,
+                record: true,
             };
             assert!(matches!(
                 answer_question_with_learning(&conn, stored[0].id, Answer::Yes, &context),

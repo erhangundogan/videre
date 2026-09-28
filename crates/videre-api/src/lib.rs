@@ -15,12 +15,13 @@ pub use error::{Error, Result};
 pub use faces::rejection_reason;
 pub use faces::FaceLearningEventProof;
 pub use faces::{
-    answer_question_with_learning, assign, assign_with_learning, cluster_detail, delete_person,
-    delete_person_with_learning, dissolve_cluster, dissolve_cluster_with_learning,
-    face_learning_event, face_learning_events, face_learning_status, faces_list,
-    load_training_snapshot, new_person, new_person_with_learning, pending_identity_questions,
-    persist_trained_profile, person_detail, refresh_identity_questions, remove_face,
-    remove_face_with_learning, search_person, set_full_name, set_primary,
+    answer_question_with_learning, assign, assign_with_learning, build_training_inputs,
+    cluster_detail, delete_person, delete_person_with_learning, dissolve_cluster,
+    dissolve_cluster_with_learning, face_learning_event, face_learning_events,
+    face_learning_status, faces_list, load_training_inputs, new_person, new_person_with_learning,
+    pending_identity_questions, persist_trained_profile, person_detail, refresh_identity_questions,
+    remove_face, remove_face_with_learning, search_person, set_full_name, set_primary,
+    TrainingInputs,
 };
 pub use images::{
     face_bytes_from_lookup, face_image_bytes, face_lookup, make_face_thumb, mime_for_ext,

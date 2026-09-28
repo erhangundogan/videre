@@ -5,6 +5,9 @@ use serde::Serialize;
 pub struct TeachingContext {
     pub embedding_model_id: String,
     pub active_profile_id: Option<i64>,
+    /// Whether this mutation records teaching evidence. False while face
+    /// learning is off: the same checks and face writes, no events.
+    pub record: bool,
 }
 
 /// Durable learning work committed with a visible people mutation.
@@ -18,6 +21,8 @@ pub struct LearningAcknowledgement {
 /// Learning status for the gallery background worker.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FaceLearningStatus {
+    /// Whether face learning is on for this library (`faces.learning`).
+    pub enabled: bool,
     pub generation: u64,
     pub trained_generation: u64,
     pub status: String,
@@ -37,6 +42,17 @@ pub struct FaceLearningStatus {
     /// What learning contributes right now, in one sentence for the People
     /// toolbar.
     pub summary: String,
+}
+
+impl FaceLearningStatus {
+    /// The same stored state, reported for a library with learning off.
+    pub fn turned_off(self) -> Self {
+        Self {
+            enabled: false,
+            summary: "Learning: off for this library.".to_owned(),
+            ..self
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
