@@ -16,6 +16,29 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.47.1] - 2026-09-28
+
+### Added
+
+- **Liked files wear a red heart on their thumbnails** in the gallery's tile
+  and list views, bottom left. It only shows the state; the heart in the
+  lightbox is the one that likes and unlikes, and the thumbnail follows it.
+- **The Duplicates page has its header back**: the number of duplicate
+  groups, the files in them, and the space the extra copies take.
+
+### Fixed
+
+- **The gallery could stop seeing the library.** After a Recluster preview or
+  apply, the next other process to close the library could delete the
+  database's write-ahead log while the gallery was still using it. The
+  gallery then showed a frozen view of the library, and changes made in it
+  from then on could be lost when it stopped. Checking a library's database
+  no longer releases the gallery's locks on it.
+- **The search box disappeared on the Date, Duplicates and Events pages** of
+  a library with embeddings. It now shows on every section.
+- **Similar on the grid under the map failed** with nowhere to show its
+  results; it now shows them above the grid.
+
 ## [0.47.0] - 2026-09-28
 
 ### Upgrading
@@ -2520,7 +2543,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.47.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.47.1...HEAD
+[0.47.1]: https://github.com/erhangundogan/videre/compare/v0.47.0...v0.47.1
 [0.47.0]: https://github.com/erhangundogan/videre/compare/v0.46.0...v0.47.0
 [0.46.0]: https://github.com/erhangundogan/videre/compare/v0.45.0...v0.46.0
 [0.45.0]: https://github.com/erhangundogan/videre/compare/v0.44.0...v0.45.0

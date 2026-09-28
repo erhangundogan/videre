@@ -143,6 +143,45 @@ fn block_timeout(
     }
 }
 
+/// The backoff between wakes after a cycle hit a systemic disk error:
+/// start at the pending-retry cadence, double, and never exceed the
+/// maintenance cadence - the failing volume is retried hourly, not
+/// hammered every 2 s. Pure so the rule is unit-testable.
+fn next_io_backoff(current: Duration) -> Duration {
+    if current.is_zero() {
+        PENDING_RETRY_BACKOFF
+    } else {
+        current
+            .saturating_mul(2)
+            .min(Duration::from_secs(MAINTENANCE_RECONCILE_SECS))
+    }
+}
+
+/// Enter the backoff after a fatal-IO error, warning once on the
+/// transition in; the daemon stays up either way.
+fn enter_io_backoff(io_backoff: &mut Duration) {
+    let was_zero = io_backoff.is_zero();
+    *io_backoff = next_io_backoff(*io_backoff);
+    if was_zero {
+        tracing::warn!("library volume is failing (disk I/O error); backing off before retrying");
+    }
+}
+
+/// Fold one reconcile's result into the loop's io backoff: a fatal-IO
+/// cycle enters the backoff, a cycle without one resets it (the volume
+/// recovered).
+fn fold_io_backoff(io_backoff: &mut Duration, result: &Result<ReconcileOutcome>) {
+    let cycle_fatal = match result {
+        Ok(outcome) => outcome.fatal_io,
+        Err(e) => videre_core::error_kind::is_fatal_io_error(e),
+    };
+    if cycle_fatal {
+        enter_io_backoff(io_backoff);
+    } else {
+        *io_backoff = Duration::ZERO;
+    }
+}
+
 #[cfg(test)]
 mod scheduler_tests {
     use super::*;
@@ -157,6 +196,7 @@ mod scheduler_tests {
             Some(ReconcileOutcome {
                 hashed: vec![],
                 complete: true,
+                fatal_io: false,
             }),
         );
         assert!(
@@ -175,6 +215,7 @@ mod scheduler_tests {
             Some(ReconcileOutcome {
                 hashed: vec![std::path::PathBuf::from("/lib/b.jpg")],
                 complete: false,
+                fatal_io: false,
             }),
         );
         assert!(!complete, "an incomplete reconcile is owed");
@@ -278,6 +319,38 @@ mod scheduler_tests {
         );
         assert_eq!(t, Duration::ZERO);
     }
+
+    #[test]
+    fn the_io_backoff_doubles_to_the_maintenance_cadence_then_stays() {
+        let mut b = Duration::ZERO;
+        b = next_io_backoff(b);
+        assert_eq!(b, PENDING_RETRY_BACKOFF);
+        b = next_io_backoff(b);
+        assert_eq!(b, Duration::from_secs(4));
+        b = next_io_backoff(b);
+        assert_eq!(b, Duration::from_secs(8));
+        let capped = next_io_backoff(Duration::from_secs(MAINTENANCE_RECONCILE_SECS));
+        assert_eq!(capped, Duration::from_secs(MAINTENANCE_RECONCILE_SECS));
+    }
+
+    #[test]
+    fn a_drain_open_failure_enters_the_backoff_only_for_disk_errors() {
+        let cantopen = anyhow::Error::new(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+            None,
+        ));
+        let mut io_backoff = Duration::ZERO;
+        note_drain_open_failure(&mut io_backoff, &cantopen);
+        assert_eq!(io_backoff, PENDING_RETRY_BACKOFF);
+
+        let busy = anyhow::Error::new(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+            None,
+        ));
+        let mut io_backoff = Duration::ZERO;
+        note_drain_open_failure(&mut io_backoff, &busy);
+        assert_eq!(io_backoff, Duration::ZERO);
+    }
 }
 
 /// The live event path: one recursive debounced watch on the root, blocked
@@ -340,16 +413,15 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
     // An incomplete startup reconcile (a stage was busy, the scan lock was
     // taken) is a debt: the loop retries it on the backoff exactly like a
     // dropped-events recovery that did not finish.
-    let mut rescan_owed = !apply_rescan_outcome(
-        &mut pending,
-        match reconcile(args, ctx) {
-            Ok(outcome) => Some(outcome),
-            Err(e) => {
-                failed("startup scan", e);
-                None
-            }
-        },
-    );
+    let mut io_backoff = Duration::ZERO;
+    let mut rescan_owed = {
+        let result = reconcile(args, ctx);
+        fold_io_backoff(&mut io_backoff, &result);
+        !apply_rescan_outcome(
+            &mut pending,
+            result.map_err(|e| failed("startup scan", e)).ok(),
+        )
+    };
     // Test-only bounded exit: registration plus one startup pass then stop.
     // Test-only control, never documented as a user-facing knob.
     if std::env::var_os("VIDERE_WATCH_ONCE").is_some() {
@@ -357,12 +429,23 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
     }
 
     loop {
+        // Backing off a failing volume: hold for the cadence, letting
+        // arriving events queue in the channel, then drain once at the
+        // deadline. Everything below runs with the backoff cleared or due,
+        // so an event storm cannot hit the volume ahead of the cadence.
+        if !io_backoff.is_zero() {
+            std::thread::sleep(io_backoff);
+            drain_pending(args, ctx, &mut pending, &mut io_backoff);
+        }
         // A pending batch, an owed rescan, or the maintenance deadline: each
         // buys its own short wake instead of an idle block.
         let timeout = block_timeout(
             pending.is_empty() && !rescan_owed,
             last_maintenance.elapsed(),
             maintenance,
+            // The io backoff has already been slept at the top of the loop,
+            // so the pending cadence is all the extra wait a retry needs -
+            // counting the backoff here too would double every wait.
             PENDING_RETRY_BACKOFF,
         );
         match rx.recv_timeout(timeout) {
@@ -373,7 +456,9 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
                     // anything pending; an incomplete one (a stage was busy,
                     // the scan errored) seeds what it hashed and keeps the
                     // batch for the backoff.
-                    let outcome = reconcile(args, ctx).map_err(|e| failed("rescan", e));
+                    let result = reconcile(args, ctx);
+                    fold_io_backoff(&mut io_backoff, &result);
+                    let outcome = result.map_err(|e| failed("rescan", e));
                     rescan_owed = !apply_rescan_outcome(&mut pending, outcome.ok());
                     last_maintenance = Instant::now();
                     continue;
@@ -381,14 +466,16 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
                 for p in videre::watch_events::affected_paths(batch.iter().map(|e| &e.event)) {
                     pending.insert(p);
                 }
-                drain_pending(args, ctx, &mut pending);
+                drain_pending(args, ctx, &mut pending, &mut io_backoff);
             }
             Ok(Err(errs)) => {
                 for e in errs {
                     failed("event", e);
                 }
                 // An event error may mean missed changes: reconcile to be safe.
-                let outcome = reconcile(args, ctx).map_err(|e| failed("rescan", e));
+                let result = reconcile(args, ctx);
+                fold_io_backoff(&mut io_backoff, &result);
+                let outcome = result.map_err(|e| failed("rescan", e));
                 rescan_owed = !apply_rescan_outcome(&mut pending, outcome.ok());
                 last_maintenance = Instant::now();
             }
@@ -398,7 +485,9 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
                     // the scan lock was taken): attempt it again on the
                     // backoff. A complete attempt clears the debt, and the
                     // attempt itself counts as watch activity.
-                    let outcome = reconcile(args, ctx).map_err(|e| failed("rescan", e));
+                    let result = reconcile(args, ctx);
+                    fold_io_backoff(&mut io_backoff, &result);
+                    let outcome = result.map_err(|e| failed("rescan", e));
                     rescan_owed = !apply_rescan_outcome(&mut pending, outcome.ok());
                     last_maintenance = Instant::now();
                 } else if last_maintenance.elapsed() >= maintenance {
@@ -406,11 +495,13 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
                     // reconcile (a stage was busy, the scan lock was taken)
                     // becomes a debt retried on the backoff, not an hour of
                     // silence. A complete one supersedes any waiting batch.
-                    let outcome = reconcile(args, ctx).map_err(|e| failed("maintenance", e));
+                    let result = reconcile(args, ctx);
+                    fold_io_backoff(&mut io_backoff, &result);
+                    let outcome = result.map_err(|e| failed("maintenance", e));
                     rescan_owed = !apply_rescan_outcome(&mut pending, outcome.ok());
                     last_maintenance = Instant::now();
                 }
-                drain_pending(args, ctx, &mut pending);
+                drain_pending(args, ctx, &mut pending, &mut io_backoff);
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 // The backend died (its thread dropped or panicked): stop
@@ -420,6 +511,15 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
                 return Err(anyhow::anyhow!("event channel disconnected"));
             }
         }
+    }
+}
+
+/// A drain whose database will not open is the failing-volume case when
+/// the error is a disk error: enter the backoff and keep the batch for
+/// the deadline. Other open failures keep today's log-and-drop behavior.
+fn note_drain_open_failure(io_backoff: &mut Duration, e: &anyhow::Error) {
+    if videre_core::error_kind::is_fatal_io_error(e) {
+        enter_io_backoff(io_backoff);
     }
 }
 
@@ -433,6 +533,7 @@ fn drain_pending(
     args: &WatchArgs,
     ctx: &CommandContext,
     pending: &mut std::collections::BTreeSet<std::path::PathBuf>,
+    io_backoff: &mut Duration,
 ) {
     if pending.is_empty() {
         return;
@@ -446,6 +547,7 @@ fn drain_pending(
     let conn = match videre_core::library_db::open_existing(&ctx.library) {
         Ok(c) => c,
         Err(e) => {
+            note_drain_open_failure(io_backoff, &e);
             failed("open", e);
             return;
         }
@@ -457,13 +559,20 @@ fn drain_pending(
     // would strand a scanned file on the hourly maintenance pass, which is
     // the silent drop the pending set exists to prevent.
     let mut complete = true;
+    let mut fatal = false;
     if args.scan {
-        match stage("scan", "scan stage", || {
+        match stage("scan", "scan stage", &mut fatal, || {
             run_scan_stage(args, ctx, &conn, Some(&batch), &mut Vec::new())
         }) {
             Some(StageOutcome::Ran) => {}
             Some(StageOutcome::Busy) => return, // keep pending; retry on the next backoff
-            None => complete = false,
+            None => {
+                complete = false;
+                if fatal {
+                    enter_io_backoff(io_backoff);
+                    return; // keep pending; the backoff retries the batch
+                }
+            }
         }
     }
     if args.faces || args.heic || args.location {
@@ -472,21 +581,41 @@ fn drain_pending(
             return;
         }
         if args.faces
-            && stage("faces", "faces stage", || run_faces_stage(args, ctx, &conn))
-                != Some(StageOutcome::Ran)
+            && stage("faces", "faces stage", &mut fatal, || {
+                run_faces_stage(args, ctx, &conn)
+            }) != Some(StageOutcome::Ran)
         {
             complete = false;
+            if fatal {
+                enter_io_backoff(io_backoff);
+                return;
+            }
         }
         if args.heic {
-            stage("heic", "heic stage", || run_heic_stage(args, ctx, &conn));
+            stage("heic", "heic stage", &mut fatal, || {
+                run_heic_stage(args, ctx, &conn)
+            });
+            if fatal {
+                enter_io_backoff(io_backoff);
+                return;
+            }
         }
         if args.location
-            && stage("locations", "location stage", || {
+            && stage("locations", "location stage", &mut fatal, || {
                 run_location_stage(args, ctx, &conn)
             }) != Some(StageOutcome::Ran)
         {
             complete = false;
+            if fatal {
+                enter_io_backoff(io_backoff);
+                return;
+            }
         }
+    }
+    if !fatal {
+        // A batch without a disk fault resets the backoff: the volume
+        // recovered.
+        *io_backoff = Duration::ZERO;
     }
     if complete {
         pending.clear();
@@ -511,11 +640,19 @@ pub(crate) enum StageOutcome {
 /// carries on: `None` tells the caller the stage did not finish. `name` is
 /// the command the stage stands in for (`scan`, `faces`, `locations`, ...);
 /// `label` keeps the wording watch has always used for that stage.
-fn stage<T>(name: &'static str, label: &str, f: impl FnOnce() -> Result<T>) -> Option<T> {
+fn stage<T>(
+    name: &'static str,
+    label: &str,
+    fatal: &mut bool,
+    f: impl FnOnce() -> Result<T>,
+) -> Option<T> {
     let _stage = videre_core::error_log::enter_stage(name);
     match f() {
         Ok(v) => Some(v),
         Err(e) => {
+            if videre_core::error_kind::is_fatal_io_error(&e) {
+                *fatal = true;
+            }
             videre_core::error_log::report(
                 tracing::Level::ERROR,
                 &e.context(format!("videre watch: {label}")),
@@ -586,6 +723,9 @@ fn tracked_stage(
 struct ReconcileOutcome {
     hashed: Vec<std::path::PathBuf>,
     complete: bool,
+    /// A stage or the scan hit a systemic disk error this cycle: the loop
+    /// backs off instead of retrying on the pending cadence.
+    fatal_io: bool,
 }
 
 /// Fold a reconcile's result into the pending set. A complete reconcile
@@ -623,12 +763,13 @@ fn reconcile(args: &WatchArgs, ctx: &CommandContext) -> Result<ReconcileOutcome>
     // the hashed files are exactly the work those stages must retry.
     let mut hashed: Vec<std::path::PathBuf> = Vec::new();
     let mut complete = true;
+    let mut cycle_fatal = false;
     if args.scan {
         // A scan failure this cycle does not invalidate earlier rows; log and
         // carry on to the stages below, but report the cycle as incomplete so
         // the caller keeps any waiting batch alive. A busy scan lock is the
         // same debt: the walk never ran, so nothing was re-found.
-        if stage("scan", "scan stage", || {
+        if stage("scan", "scan stage", &mut cycle_fatal, || {
             run_scan_stage(args, ctx, &conn, None, &mut hashed)
         }) != Some(StageOutcome::Ran)
         {
@@ -638,47 +779,57 @@ fn reconcile(args: &WatchArgs, ctx: &CommandContext) -> Result<ReconcileOutcome>
     if args.faces || args.heic || args.location || args.prune || args.export_xmp {
         face_db::create_faces_table(&conn)?;
         if args.faces
-            && stage("faces", "faces stage", || run_faces_stage(args, ctx, &conn))
-                != Some(StageOutcome::Ran)
+            && stage("faces", "faces stage", &mut cycle_fatal, || {
+                run_faces_stage(args, ctx, &conn)
+            }) != Some(StageOutcome::Ran)
         {
             complete = false;
         }
         // A HEIC cache failure costs previews only, so the location, prune and
         // export stages still run; but the cycle is incomplete, so the caller
         // owes a retry instead of treating the work as done.
-        if args.heic && stage("heic", "heic stage", || run_heic_stage(args, ctx, &conn)).is_none() {
+        if args.heic
+            && stage("heic", "heic stage", &mut cycle_fatal, || {
+                run_heic_stage(args, ctx, &conn)
+            })
+            .is_none()
+        {
             complete = false;
         }
         if args.location {
-            if stage("locations", "location stage", || {
+            if stage("locations", "location stage", &mut cycle_fatal, || {
                 run_location_stage(args, ctx, &conn)
             }) != Some(StageOutcome::Ran)
             {
                 complete = false;
             }
             // Names first, then regroup: re-cluster when the GPS data changed.
-            if stage("locations", "locations recluster stage", || {
-                run_locations_recluster_stage(args, ctx, &conn)
-            }) != Some(StageOutcome::Ran)
+            if stage(
+                "locations",
+                "locations recluster stage",
+                &mut cycle_fatal,
+                || run_locations_recluster_stage(args, ctx, &conn),
+            ) != Some(StageOutcome::Ran)
             {
                 complete = false;
             }
         }
         if args.faces
-            && stage("faces", "face recluster stage", || {
+            && stage("faces", "face recluster stage", &mut cycle_fatal, || {
                 run_recluster_stage(args, ctx, &conn)
             }) != Some(StageOutcome::Ran)
         {
             complete = false;
         }
         if args.prune
-            && stage("prune", "prune stage", || run_prune_stage(args, ctx, &conn))
-                != Some(StageOutcome::Ran)
+            && stage("prune", "prune stage", &mut cycle_fatal, || {
+                run_prune_stage(args, ctx, &conn)
+            }) != Some(StageOutcome::Ran)
         {
             complete = false;
         }
         if args.export_xmp {
-            stage("export", "export stage", || {
+            stage("export", "export stage", &mut cycle_fatal, || {
                 run_export_stage(args, ctx, &conn)
             });
         }
@@ -690,7 +841,11 @@ fn reconcile(args: &WatchArgs, ctx: &CommandContext) -> Result<ReconcileOutcome>
     if let Err(e) = videre_core::pipeline_runs::record_heartbeat_in(&conn, &ctx.library, "watch") {
         failed("could not record the cycle heartbeat", e);
     }
-    Ok(ReconcileOutcome { hashed, complete })
+    Ok(ReconcileOutcome {
+        hashed,
+        complete,
+        fatal_io: cycle_fatal,
+    })
 }
 
 /// Writes XMP sidecars for the current labels (marks, named face regions,

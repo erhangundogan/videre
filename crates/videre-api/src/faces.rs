@@ -385,8 +385,9 @@ pub fn person_detail(conn: &Connection, name: &str) -> Result<PersonDetail> {
     })
 }
 
-/// Image paths for confirmed faces of a person (prefix match), for the
-/// person-name autocomplete. Delegates to the existing core search.
+/// Image paths for confirmed faces of a person, matched by identity or by
+/// display name (`person::resolve_identities`), never by prefix. Delegates to
+/// the existing core search.
 pub fn search_person(conn: &Connection, name: &str) -> Result<Vec<String>> {
     Ok(videre_core::person_search::search_by_person(
         conn, name, None,

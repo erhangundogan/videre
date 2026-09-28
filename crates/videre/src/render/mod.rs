@@ -27,6 +27,8 @@ pub(crate) struct FileRow {
 pub(crate) struct Stats {
     total_files: i64,
     duplicate_groups: i64,
+    duplicate_files: i64,
+    wasted_bytes: i64,
 }
 
 pub(crate) enum FileDateFilter {
@@ -865,6 +867,8 @@ pub(crate) fn query_stats(conn: &Connection) -> Stats {
     Stats {
         total_files: s.total_files,
         duplicate_groups: s.duplicate_group_count,
+        duplicate_files: s.duplicate_file_count,
+        wasted_bytes: s.wasted_bytes,
     }
 }
 
@@ -1124,6 +1128,10 @@ struct GalleryPage<'a> {
     embedded: Option<usize>,
     has_groups: bool,
     duplicate_groups: i64,
+    /// Every file in a duplicate group, and the space taken by the copies
+    /// beyond the one kept, for the duplicates header.
+    duplicate_files: i64,
+    wasted: String,
     all_files_count: Option<usize>,
     has_keep_files: bool,
     /// The current section, or `None` on a page with nowhere to navigate to.
@@ -1135,6 +1143,8 @@ struct GalleryPage<'a> {
     /// (`/`, the All-files section) and on a standalone static export, and is
     /// dropped on the secondary sections (`/duplicates`, `/date`) where the nav
     /// strip already names where you are and the header only pushed content down.
+    /// The duplicates page keeps a header of its own when it has duplicates
+    /// (`has_groups`): its counts and wasted space are what the page is for.
     show_header: bool,
     /// A duplicates page with no duplicates. Without this the page renders a
     /// header and nothing else, which reads as broken rather than as good news,
@@ -1342,6 +1352,8 @@ pub(crate) fn render(set: &RenderSet) -> String {
         embedded,
         has_groups: !groups.is_empty() || !edited_groups.is_empty(),
         duplicate_groups: stats.duplicate_groups,
+        duplicate_files: stats.duplicate_files,
+        wasted: videre_core::disk::human_bytes(stats.wasted_bytes.max(0) as u64),
         all_files_count: all_files.map(|f| f.len()),
         has_keep_files: keep_files.is_some() || set.view == View::Events,
         nav,

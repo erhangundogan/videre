@@ -81,6 +81,31 @@ impl ErrorKind {
     }
 }
 
+/// Whether an error is a systemic disk failure rather than per-item
+/// logic: the SQLITE_IOERR family (rusqlite flattens the extended
+/// IOERR_* codes to this base), a full disk, a read-only database, or a
+/// path that cannot be opened. The "stop the run" class, as opposed to
+/// "skip the item"; `DatabaseBusy` is deliberately absent, contention is
+/// transient and already has its own path.
+pub fn is_fatal_io_error(err: &anyhow::Error) -> bool {
+    fn fatal(e: &rusqlite::Error) -> bool {
+        matches!(
+            e,
+            rusqlite::Error::SqliteFailure(ffi, _)
+                if matches!(
+                    ffi.code,
+                    rusqlite::ErrorCode::SystemIoFailure
+                        | rusqlite::ErrorCode::DiskFull
+                        | rusqlite::ErrorCode::ReadOnly
+                        | rusqlite::ErrorCode::CannotOpen
+                )
+        )
+    }
+    // `chain` starts at the error itself, so one walk covers it all.
+    err.chain()
+        .any(|cause| cause.downcast_ref::<rusqlite::Error>().is_some_and(fatal))
+}
+
 impl std::fmt::Display for ErrorKind {
     /// A short phrase that reads naturally inside `{e:#}` output.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -219,6 +244,56 @@ mod tests {
         let explicit =
             anyhow::Error::new(rusqlite::Error::InvalidQuery).context(ErrorKind::LibraryBusy);
         assert_eq!(ErrorKind::in_chain(&explicit), Some(ErrorKind::LibraryBusy));
+    }
+
+    fn sql_err(code: i32) -> anyhow::Error {
+        anyhow::Error::new(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(code),
+            None,
+        ))
+    }
+
+    #[test]
+    fn the_ioerr_family_full_readonly_and_cantopen_are_fatal() {
+        for code in [
+            rusqlite::ffi::SQLITE_IOERR,
+            rusqlite::ffi::SQLITE_IOERR_WRITE,
+            rusqlite::ffi::SQLITE_FULL,
+            rusqlite::ffi::SQLITE_READONLY,
+            rusqlite::ffi::SQLITE_CANTOPEN,
+        ] {
+            assert!(is_fatal_io_error(&sql_err(code)), "code {code}");
+        }
+    }
+
+    #[test]
+    fn contention_and_logic_errors_are_not_fatal() {
+        for code in [
+            rusqlite::ffi::SQLITE_BUSY,
+            rusqlite::ffi::SQLITE_BUSY_RECOVERY,
+            rusqlite::ffi::SQLITE_CONSTRAINT,
+        ] {
+            assert!(!is_fatal_io_error(&sql_err(code)), "code {code}");
+        }
+        assert!(!is_fatal_io_error(&anyhow::Error::new(
+            rusqlite::Error::InvalidQuery
+        )));
+        assert!(!is_fatal_io_error(&anyhow::anyhow!("not a database error")));
+    }
+
+    #[test]
+    fn a_fatal_error_is_found_through_its_context_chain() {
+        let wrapped = sql_err(rusqlite::ffi::SQLITE_IOERR_WRITE).context("write failed /x.jpg");
+        assert!(is_fatal_io_error(&wrapped));
+    }
+
+    #[test]
+    fn a_read_only_connection_fails_fatal() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t(x)").unwrap();
+        conn.pragma_update(None, "query_only", true).unwrap();
+        let err = conn.execute("INSERT INTO t VALUES (1)", []).unwrap_err();
+        assert!(is_fatal_io_error(&anyhow::Error::new(err)));
     }
 
     #[test]

@@ -21,10 +21,26 @@ test("the home header carries Library/Date/count lines and sections drop it", as
   // The count moved into the header, so the grid head no longer titles itself.
   await expect(page.locator(".gallery-toolbar")).not.toContainText("All files");
 
-  for (const route of ["/duplicates", "/date", "/map"]) {
+  for (const route of ["/date", "/map"]) {
     await page.goto(`${gallery.baseURL}${route}`);
     await expect(page.locator(".header")).toHaveCount(0);
   }
+});
+
+test("the duplicates page heads itself with what the duplicates cost", async ({ page, gallery }) => {
+  // first.jpg and second.jpg are one image: one group of two files, and the
+  // one extra copy is the wasted space.
+  const size = (await (await page.request.get(`${gallery.baseURL}/api/files?limit=10`)).json()).files
+    .find((f: { path: string }) => f.path.endsWith("/first.jpg")).size as number;
+  await page.goto(`${gallery.baseURL}/duplicates`);
+  const header = page.locator(".header");
+  await expect(header).toContainText("Library:");
+  await expect(header.locator(".hmeta", { hasText: "Duplicate groups:" })).toHaveText("Duplicate groups: 1");
+  await expect(header.locator(".hmeta", { hasText: "Duplicate files:" })).toHaveText("Duplicate files: 2");
+  const wasted = size < 1024 ? `${size} B` : `${(size / 1024).toFixed(1)} KB`;
+  await expect(header.locator(".hmeta", { hasText: "Wasted space:" })).toHaveText(`Wasted space: ${wasted}`);
+  // The home-only lines stay on the home page.
+  await expect(header).not.toContainText("Files/Embedding Count:");
 });
 
 test("the Show more button uses the primary style", async ({ page, gallery }) => {
