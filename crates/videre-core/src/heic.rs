@@ -216,7 +216,11 @@ pub fn decode_fullres_cached(
             return Ok(img);
         }
     }
-    let img = decode_via_quicklook(path, tag, None).inspect_err(warn_if_timeout)?;
+    // A QuickLook timeout is the caller's to log: the two callers either
+    // swallow the error (`make_face_thumb`, via `warn_if_timeout`) or
+    // propagate it to a worker that logs it (`load_image`), and calling it
+    // here as well would log a detection timeout twice.
+    let img = decode_via_quicklook(path, tag, None)?;
     if let Some((cache, hash)) = cache {
         let mut jpeg = Vec::new();
         if img

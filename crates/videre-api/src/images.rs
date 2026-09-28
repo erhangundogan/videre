@@ -66,6 +66,7 @@ pub fn make_face_thumb(
             &format!("thumb{face_id}"),
             original,
         )
+        .inspect_err(videre_core::heic::warn_if_timeout)
         .ok()?;
         return Some(crop_face_square(&img, bbox));
     }
