@@ -591,47 +591,11 @@ pub fn invalidate_exact_identity_in_transaction(
         conn.execute(
             "UPDATE face_learning_state
              SET generation = generation + 1, status = 'stale',
-                 training_generation = NULL, last_error = NULL
+                 training_generation = NULL, feedback_needed = NULL, last_error = NULL
              WHERE id = 1",
             [],
         )?;
     } else if superseded > 0 {
-        conn.execute(
-            "UPDATE face_learning_state
-             SET generation = generation + 1,
-                 status = CASE WHEN status = 'training' THEN 'training' ELSE 'stale' END,
-                 last_error = CASE WHEN status = 'training' THEN last_error ELSE NULL END
-             WHERE id = 1",
-            [],
-        )?;
-    }
-    nonnegative_u64(
-        conn.query_row(
-            "SELECT generation FROM face_learning_state WHERE id = 1",
-            [],
-            |row| row.get(0),
-        )?,
-        "generation",
-    )
-}
-
-pub fn invalidate_identity_in_transaction(
-    conn: &Connection,
-    identity: &str,
-) -> Result<u64, LearningEventError> {
-    if conn.is_autocommit() {
-        return Err(LearningEventError::TransactionRequired);
-    }
-    let identity = crate::person::normalize(identity).ok_or_else(|| {
-        LearningEventError::InvalidEvent("identity to invalidate is empty".to_owned())
-    })?;
-    let changed = conn.execute(
-        "UPDATE face_learning_events
-         SET eligible = 0, invalidation_reason = 'person_removed'
-         WHERE target_identity = ?1 AND eligible = 1",
-        [&identity],
-    )?;
-    if changed > 0 {
         conn.execute(
             "UPDATE face_learning_state
              SET generation = generation + 1,
