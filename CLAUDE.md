@@ -351,6 +351,16 @@ without that, files of metadata alone would share one key and dedupe would
 offer to delete them. Libraries built before this (schema below 3) are
 refused and rebuilt by a fresh scan; there is no migration.
 
+Schema 4 is the one exception to "no migration": it makes `faces.id`
+`AUTOINCREMENT`, so a face ID is never reused. The learning journal and
+identity questions keep face IDs as history with no foreign key, and a reused
+ID would silently point that history at a different face. A writable open
+upgrades schema 3 once (`library_db::upgrade_v3_to_v4`), rebuilding `faces`
+with every ID and reserving the highest ID the journal or questions mention;
+a read-only open refuses. Prune removes faces whose content has no indexed
+path and marks journal events that lost a source face ineligible
+(`face_learning::prune`), keeping the journal itself.
+
 :warning: **Changing the splitter's spans changes stored keys.** Any change to
 which bytes `content_key` counts as content, including teaching it a format
 that used to fall back, gives the affected files new keys the next time they
@@ -740,6 +750,9 @@ above.
   off unless `gallery.json` sets `faces.learning` -> `gallery::learning` (module doc)
 - Errors logged once, at boundaries; per-command log layout and reader -> `videre_core::error_log`, `videre_core::error_kind`, `crates/videre/src/logging.rs`
 - File identity is the content key, metadata excluded -> `videre::content_key`
+- Face IDs are never reused (schema 4); prune keeps the journal and withdraws
+  evidence that lost its source face -> `videre_core::library_db::upgrade_v3_to_v4`,
+  `videre_core::face_learning::prune`
 - Offline map basemap: one shared PMTiles archive per machine, downloaded once
   behind a cross-process flock; the map grid never gates on MapLibre's load
   (a WebGL probe can pass where the context still cannot render) -> `videre_core::basemap`, `commands::gallery::server` (`handle_basemap_*`), `static/map.js`

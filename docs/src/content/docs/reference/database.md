@@ -44,8 +44,9 @@ CREATE TABLE file_hashes (
 );
 ```
 
-This is the table's shape. A library created by an older videre is refused, not
-upgraded: remove its `.videre` directory and run `videre scan`.
+This is the table's shape. Schema 3 libraries are upgraded to schema 4 on a
+writable open. Older libraries with incompatible content keys are refused:
+remove their `.videre` directory and run `videre scan`.
 
 | Column | Notes |
 |---|---|
@@ -78,7 +79,7 @@ One row per detected face, written by [`videre faces`](/commands/faces/).
 
 ```sql
 CREATE TABLE faces (
-    id            INTEGER PRIMARY KEY,
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
     hash          TEXT NOT NULL,
     bbox          TEXT NOT NULL,
     landmark      TEXT,
@@ -99,6 +100,9 @@ CREATE TABLE faces (
 stored as raw f16, so 1024 bytes. `cluster_id` is assigned by grouping;
 `person_label` and `confirmed` are what the labeling UI writes, and
 [`search --person`](/commands/search/) reads.
+Face IDs never reuse a deleted ID, including IDs retained in journal and
+question provenance. Schema 4 reserves historical IDs during its one-time
+upgrade from schema 3.
 
 `oriented` is always `1`: `bbox` and `landmark` are measured on the display
 canvas, the orientation a person sees.
@@ -353,9 +357,10 @@ parents are not the rows a child belongs to:
   one hash can appear on several paths. Deleting one `file_hashes` row must
   not cascade into the others.
 - `face_learning_event_faces.face_id` and the question equivalent are
-  historical provenance: they record which faces an action was about, and a
-  face row being replaced by a later scan must never invalidate that history
-  or block the write.
+  historical provenance: they record which faces an action was about. Prune
+  keeps those references even when the face row is removed, but marks an
+  affected event ineligible with `source_face_pruned`. This preserves the
+  journal without allowing missing source content to train a new profile.
 
 ## Writing to it yourself
 

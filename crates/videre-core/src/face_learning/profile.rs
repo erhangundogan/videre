@@ -989,61 +989,7 @@ pub fn evaluate_and_promote(
 ) -> Result<PromotionOutcome, ProfileError> {
     ensure_profile_table(conn)?;
     conn.execute_batch("BEGIN IMMEDIATE")?;
-    let result = (|| {
-        let candidate = stored_profile(conn, "id = ?1", candidate_id)?
-            .ok_or(ProfileError::CandidateNotFound(candidate_id))?;
-        if candidate.status != ProfileStatus::Candidate {
-            return Err(ProfileError::NotCandidate(candidate_id));
-        }
-        validate_profile_metadata(
-            candidate.artifact_version,
-            &candidate.embedding_model_id,
-            candidate.feature_schema_version,
-            &candidate.model_kind,
-            &candidate.validation_report,
-        )?;
-        let active = active_profile(conn)?;
-        if let Some(active) = &active {
-            validate_profile_metadata(
-                active.artifact_version,
-                &active.embedding_model_id,
-                active.feature_schema_version,
-                &active.model_kind,
-                &active.validation_report,
-            )?;
-            if active.embedding_model_id != candidate.embedding_model_id {
-                return Err(ProfileError::IncompatibleProfile(format!(
-                    "embedding model {} does not match active model {}",
-                    candidate.embedding_model_id, active.embedding_model_id
-                )));
-            }
-        }
-        let failures = evaluate_promotion(
-            active.as_ref().map(|profile| &profile.validation_report),
-            &candidate.validation_report,
-            gates,
-            candidate.stage,
-        )?;
-        let result_json = serde_json::to_string(&failures)?;
-        if !failures.is_empty() {
-            conn.execute(
-                "UPDATE face_learning_profiles
-                 SET status = 'rejected', promotion_result_json = ?1 WHERE id = ?2",
-                params![result_json, candidate_id],
-            )?;
-            return Ok(PromotionOutcome::Rejected(failures));
-        }
-        conn.execute(
-            "UPDATE face_learning_profiles SET status = 'retired' WHERE status = 'active'",
-            [],
-        )?;
-        conn.execute(
-            "UPDATE face_learning_profiles
-             SET status = 'active', promotion_result_json = ?1 WHERE id = ?2",
-            params![result_json, candidate_id],
-        )?;
-        Ok(PromotionOutcome::Promoted)
-    })();
+    let result = evaluate_and_promote_in_transaction(conn, candidate_id, gates);
     match result {
         Ok(outcome) => {
             if let Err(error) = conn.execute_batch("COMMIT") {
@@ -1058,6 +1004,74 @@ pub fn evaluate_and_promote(
             Err(error)
         }
     }
+}
+
+/// Evaluate and update a candidate inside the caller's write transaction.
+/// This lets persistence fence the evidence generation and promotion as one
+/// indivisible operation.
+pub fn evaluate_and_promote_in_transaction(
+    conn: &Connection,
+    candidate_id: i64,
+    gates: &PromotionGates,
+) -> Result<PromotionOutcome, ProfileError> {
+    if conn.is_autocommit() {
+        return Err(ProfileError::InvalidProfile(
+            "promotion requires a transaction".into(),
+        ));
+    }
+    let candidate = stored_profile(conn, "id = ?1", candidate_id)?
+        .ok_or(ProfileError::CandidateNotFound(candidate_id))?;
+    if candidate.status != ProfileStatus::Candidate {
+        return Err(ProfileError::NotCandidate(candidate_id));
+    }
+    validate_profile_metadata(
+        candidate.artifact_version,
+        &candidate.embedding_model_id,
+        candidate.feature_schema_version,
+        &candidate.model_kind,
+        &candidate.validation_report,
+    )?;
+    let active = active_profile(conn)?;
+    if let Some(active) = &active {
+        validate_profile_metadata(
+            active.artifact_version,
+            &active.embedding_model_id,
+            active.feature_schema_version,
+            &active.model_kind,
+            &active.validation_report,
+        )?;
+        if active.embedding_model_id != candidate.embedding_model_id {
+            return Err(ProfileError::IncompatibleProfile(format!(
+                "embedding model {} does not match active model {}",
+                candidate.embedding_model_id, active.embedding_model_id
+            )));
+        }
+    }
+    let failures = evaluate_promotion(
+        active.as_ref().map(|profile| &profile.validation_report),
+        &candidate.validation_report,
+        gates,
+        candidate.stage,
+    )?;
+    let result_json = serde_json::to_string(&failures)?;
+    if !failures.is_empty() {
+        conn.execute(
+            "UPDATE face_learning_profiles
+                 SET status = 'rejected', promotion_result_json = ?1 WHERE id = ?2",
+            params![result_json, candidate_id],
+        )?;
+        return Ok(PromotionOutcome::Rejected(failures));
+    }
+    conn.execute(
+        "UPDATE face_learning_profiles SET status = 'retired' WHERE status = 'active'",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE face_learning_profiles
+             SET status = 'active', promotion_result_json = ?1 WHERE id = ?2",
+        params![result_json, candidate_id],
+    )?;
+    Ok(PromotionOutcome::Promoted)
 }
 
 #[cfg(test)]
@@ -1230,6 +1244,25 @@ mod tests {
 
     fn candidate(stage: ProfileStage, report: ValidationReport) -> NewProfile {
         candidate_for_bundle(stage, report, &logistic_bundle())
+    }
+
+    #[test]
+    fn in_transaction_and_wrapper_make_identical_promotion_decisions() {
+        let wrapper = Connection::open_in_memory().unwrap();
+        let inner = Connection::open_in_memory().unwrap();
+        let profile = candidate(ProfileStage::Suggestion, report(0.72, 3));
+        let wrapper_id = insert_candidate(&wrapper, &profile).unwrap();
+        let inner_id = insert_candidate(&inner, &profile).unwrap();
+        let wrapper_outcome = evaluate_and_promote(&wrapper, wrapper_id, &gates()).unwrap();
+        inner.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let inner_outcome =
+            evaluate_and_promote_in_transaction(&inner, inner_id, &gates()).unwrap();
+        inner.execute_batch("COMMIT").unwrap();
+        assert_eq!(wrapper_outcome, inner_outcome);
+        assert_eq!(
+            active_profile(&wrapper).unwrap().is_some(),
+            active_profile(&inner).unwrap().is_some()
+        );
     }
 
     fn failure_keys(failures: &[GateFailure]) -> Vec<(&str, &str)> {
