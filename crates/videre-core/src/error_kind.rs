@@ -101,10 +101,9 @@ pub fn is_fatal_io_error(err: &anyhow::Error) -> bool {
                 )
         )
     }
-    err.downcast_ref::<rusqlite::Error>().is_some_and(fatal)
-        || err
-            .chain()
-            .any(|cause| cause.downcast_ref::<rusqlite::Error>().is_some_and(fatal))
+    // `chain` starts at the error itself, so one walk covers it all.
+    err.chain()
+        .any(|cause| cause.downcast_ref::<rusqlite::Error>().is_some_and(fatal))
 }
 
 impl std::fmt::Display for ErrorKind {
