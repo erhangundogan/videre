@@ -818,7 +818,7 @@ fn load_image(
         return Err(anyhow::anyhow!(
             "HEIC decoding is only supported on macOS: {path} (hash {hash})"
         )
-        .context(ErrorKind::QuicklookUnavailable));
+        .context(videre_core::error_kind::ErrorKind::QuicklookUnavailable));
     }
     let timeout_path = std::path::PathBuf::from(path);
     videre_core::io_timeout::run_with_timeout(
