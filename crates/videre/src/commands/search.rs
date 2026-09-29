@@ -40,7 +40,12 @@ pub struct SearchArgs {
     pub(crate) like: Option<String>,
 
     /// Only files containing a named person (confirmed faces only)
-    #[arg(long)]
+    #[arg(
+        long,
+        add = clap_complete::engine::ArgValueCompleter::new(
+            crate::completions::person_candidates
+        )
+    )]
     pub(crate) person: Option<String>,
 
     /// Only files classified as this category: photo/screenshot/document/

@@ -2,6 +2,7 @@
 //! parses with, so they cannot drift from the real flags.
 
 use clap_complete::shells::Shell;
+use std::ffi::OsStr;
 #[cfg(target_os = "macos")]
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -302,4 +303,109 @@ mod self_setup_tests {
         );
         assert_eq!(detect_shell_in(None, None), None);
     }
+}
+
+// ---- dynamic candidates (second slice) ------------------------------------
+//
+// Under clap_complete's CompleteEnv mode, these run while the user types, so
+// they open the library read-only and answer empty on anything that is not a
+// readable library. No write lock, no download, no error path a user sees.
+
+use clap_complete::engine::CompletionCandidate;
+
+/// The library under the invocation directory, read-only, or nothing: shell
+/// completion has no `--library` flag to honor, so it reads the default.
+fn completion_ctx() -> Option<videre_core::library::LibraryContext> {
+    let cwd = std::env::current_dir().ok()?;
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    videre_core::library::LibraryContext::new(&cwd, &home.join(".cache/videre")).ok()
+}
+
+fn prefix_filtered(
+    current: &OsStr,
+    values: impl Iterator<Item = (String, Option<String>)>,
+) -> Vec<CompletionCandidate> {
+    let current = current.to_string_lossy();
+    values
+        .filter(|(value, _)| value.starts_with(current.as_ref()))
+        .map(|(value, help)| {
+            let mut c = CompletionCandidate::new(value);
+            if let Some(help) = help {
+                c = c.help(Some(help.into()));
+            }
+            c
+        })
+        .collect()
+}
+
+/// People for `--person`: the identity and, when set, the display name.
+pub fn person_candidates(current: &OsStr) -> Vec<CompletionCandidate> {
+    let Some(ctx) = completion_ctx() else {
+        return Vec::new();
+    };
+    let Ok(conn) = videre_core::library_db::open_existing_read_only(&ctx) else {
+        return Vec::new();
+    };
+    let Ok(mut stmt) = conn.prepare("SELECT name, full_name FROM people") else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+    }) else {
+        return Vec::new();
+    };
+    let values = rows.flatten().flat_map(|(name, full)| {
+        let mut both = vec![(name.clone(), full.clone())];
+        if let Some(full) = full {
+            both.push((full, Some(name)));
+        }
+        both
+    });
+    prefix_filtered(current, values)
+}
+
+/// Models for `--model`: the ones this library already has embeddings for,
+/// plus the built-in default.
+pub fn model_candidates(current: &OsStr) -> Vec<CompletionCandidate> {
+    let Some(ctx) = completion_ctx() else {
+        return Vec::new();
+    };
+    let mut models = vec![(
+        videre_core::embeddings::DEFAULT_MODEL_ID.to_string(),
+        Some("default".to_string()),
+    )];
+    if let Ok(slugs) = videre_core::embeddings_db::list_models_in(&ctx) {
+        for slug in slugs {
+            models.push((videre_core::embeddings_db::model_from_slug(&slug), None));
+        }
+    }
+    prefix_filtered(current, models.into_iter())
+}
+
+fn distinct_column_candidates(column: &'static str) -> impl Fn(&OsStr) -> Vec<CompletionCandidate> {
+    move |current| {
+        let Some(ctx) = completion_ctx() else {
+            return Vec::new();
+        };
+        let Ok(conn) = videre_core::library_db::open_existing_read_only(&ctx) else {
+            return Vec::new();
+        };
+        let Ok(mut stmt) = conn.prepare(&format!(
+            "SELECT DISTINCT {column} FROM file_hashes WHERE {column} IS NOT NULL ORDER BY {column}"
+        )) else {
+            return Vec::new();
+        };
+        let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, None::<String>))) else {
+            return Vec::new();
+        };
+        prefix_filtered(current, rows.flatten())
+    }
+}
+
+pub fn ext_candidates(current: &OsStr) -> Vec<CompletionCandidate> {
+    distinct_column_candidates("ext")(current)
+}
+
+pub fn mime_candidates(current: &OsStr) -> Vec<CompletionCandidate> {
+    distinct_column_candidates("mime")(current)
 }

@@ -27,11 +27,25 @@ pub struct MediaArgs {
     pub media_type: Vec<String>,
 
     /// File extension, e.g. mov. Repeatable, or comma-separated
-    #[arg(long, value_delimiter = ',', value_name = "EXT")]
+    #[arg(
+        long,
+        value_delimiter = ',',
+        value_name = "EXT",
+        add = clap_complete::engine::ArgValueCompleter::new(
+            crate::completions::ext_candidates
+        )
+    )]
     pub ext: Vec<String>,
 
     /// Exact mime type, e.g. video/quicktime. Repeatable, or comma-separated
-    #[arg(long, value_delimiter = ',', value_name = "MIME")]
+    #[arg(
+        long,
+        value_delimiter = ',',
+        value_name = "MIME",
+        add = clap_complete::engine::ArgValueCompleter::new(
+            crate::completions::mime_candidates
+        )
+    )]
     pub mime: Vec<String>,
 }
 
@@ -112,7 +126,13 @@ impl PlaceArgs {
 #[derive(clap::Args, Clone, Debug, Default)]
 pub struct PeopleArgs {
     /// Only files containing this labeled person, confirmed faces only
-    #[arg(long, value_name = "NAME")]
+    #[arg(
+        long,
+        value_name = "NAME",
+        add = clap_complete::engine::ArgValueCompleter::new(
+            crate::completions::person_candidates
+        )
+    )]
     pub person: Option<String>,
 
     /// Only files classified as this category

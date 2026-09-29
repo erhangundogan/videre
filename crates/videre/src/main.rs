@@ -140,6 +140,10 @@ fn with_docs_links(cmd: clap::Command) -> clap::Command {
 }
 
 fn main() {
+    // Shell completion (CompleteEnv): when invoked by a registered shell
+    // (COMPLETE=<shell>), answer the candidates and exit; otherwise a no-op.
+    clap_complete::env::CompleteEnv::with_factory(cli_command).complete();
+
     let raw: Vec<OsString> = std::env::args_os().collect();
     let cli = {
         use clap::FromArgMatches;

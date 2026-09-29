@@ -9,7 +9,13 @@ pub struct EmbedArgs {
     /// Embedding model to use (default: 'videre config set model', else the
     /// built-in default). Each model gets its own database under
     /// <library>/.videre/embeddings/, so models never overwrite each other.
-    #[arg(long, value_parser = super::parse_model_id)]
+    #[arg(
+        long,
+        value_parser = super::parse_model_id,
+        add = clap_complete::engine::ArgValueCompleter::new(
+            crate::completions::model_candidates
+        )
+    )]
     model: Option<String>,
 
     /// Which files to embed. No selection means every pending file, as before.
