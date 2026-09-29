@@ -295,7 +295,7 @@ test("zooming out to the world clears a MapLibre selection", async ({ page, gall
   await expect(page.locator("#gallery .card")).toHaveCount(3);
 });
 
-test("a library that never clustered shows the empty state with a working grid", async ({ page, gallery }) => {
+test("a library that never clustered shows the shared empty state", async ({ page, gallery }) => {
   const db = openDatabase(gallery.libraryRoot);
   db.exec("UPDATE file_hashes SET location_cluster_id = NULL; DELETE FROM location_clusters;");
   db.close();
@@ -304,6 +304,7 @@ test("a library that never clustered shows the empty state with a working grid",
     (window as unknown as { __VIDERE_FORCE_CANVAS_MAP__: boolean }).__VIDERE_FORCE_CANVAS_MAP__ = true;
   });
   await page.goto(`${gallery.baseURL}/map`);
-  await expect(page.locator("#map-empty")).toBeVisible();
-  await expect(page.locator("#gallery [data-lb-url]").first()).toBeVisible();
+  await expect(page.locator("#page-empty").getByRole("heading", { name: "No places yet" })).toBeVisible();
+  await expect(page.locator("#page-empty")).toContainText("videre locations");
+  await expect(page.locator("#gallery")).toBeHidden();
 });

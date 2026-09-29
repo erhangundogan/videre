@@ -74,6 +74,25 @@
 </div>
 </nav>
 <script>
+// The one empty state every page shows when it has nothing to show: a centred
+// `.empty-state` box directly under the nav, with everything else on the page
+// (toolbars, headers, layouts) hidden, so no route looks different from
+// another when a library is empty. `body` is the box's inner HTML after the
+// heading. Calling it again replaces the message.
+window.showEmptyState=function(title,body){
+  var nav=document.querySelector('nav.secnav');
+  var box=document.getElementById('page-empty');
+  if(!box){
+    box=document.createElement('div');
+    box.id='page-empty';
+    box.className='empty-state';
+    nav.parentNode.insertBefore(box,nav.nextSibling);
+  }
+  box.innerHTML='<h2>'+title+'</h2>'+body;
+  Array.prototype.forEach.call(document.body.children,function(el){
+    if(el!==nav&&el!==box&&el.tagName!=='SCRIPT'&&el.tagName!=='STYLE')el.style.display='none';
+  });
+};
 // The nav's "..." menu: page-independent actions, Settings first. Closes on
 // Escape (focus back to the button), an outside click, or choosing an item.
 (function(){

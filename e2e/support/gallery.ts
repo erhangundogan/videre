@@ -1,5 +1,7 @@
 import { once } from "node:events";
+import { copyFileSync } from "node:fs";
 import { access, copyFile, mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import { get, request } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -251,6 +253,63 @@ async function seedSearchEmbeddings(libraryRoot: string): Promise<void> {
 // Save List as the library's view, for specs that count list-view `.card`s.
 // Written to the settings file directly, the way a hand edit would be, so the
 // next page load picks it up.
+// Seeding for pages that show the shared empty state until the library has
+// what they are about: a place for Map, a face for People, trips for Events.
+// Each writes straight to the running library's database.
+function openLibraryDb(libraryRoot: string): DatabaseSync {
+  const db = new DatabaseSync(join(libraryRoot, ".videre", "hashes.db"));
+  db.exec("PRAGMA busy_timeout = 5000");
+  return db;
+}
+
+// One place, Berlin, holding every file in the library.
+export function seedPlace(libraryRoot: string): void {
+  const db = openLibraryDb(libraryRoot);
+  db.exec(
+    "DELETE FROM location_clusters;" +
+    "INSERT INTO location_clusters " +
+      "(id, centroid_lat, centroid_lon, name, photo_count, radius_km, created_at) " +
+      "VALUES (1, 52.52, 13.405, 'Berlin', 1, 20.0, CURRENT_TIMESTAMP);" +
+    "UPDATE file_hashes SET location_cluster_id = 1, gps_lat = 52.52, gps_lon = 13.405;"
+  );
+  db.close();
+}
+
+// One unnamed face, with a unit embedding along the first axis.
+export function seedFace(libraryRoot: string): void {
+  const db = openLibraryDb(libraryRoot);
+  db.exec("INSERT INTO faces (hash, bbox, embedding, blur) VALUES " +
+    "('seeded-face', '0,0,100,100', X'" + "003C".padEnd(2048, "0") + "', 500.0)");
+  db.close();
+}
+
+// Files that make exactly one trip, to Budapest in March 2020, against a
+// Berlin home base; the rest are undated or unlocated on purpose.
+export function seedTrips(root: string): void {
+  const db = openLibraryDb(root);
+  const add = db.prepare("INSERT INTO file_hashes " +
+    "(path,hash,size_bytes,ext,mime,exif_date,modified_at,gps_lat,gps_lon) " +
+    "VALUES (?,?,?,?,?,?,?,?,?)");
+  const put = (n: number, ext: string, date: string | null,
+               lat: number | null, lon: number | null) => {
+    const path = join(root, "events-" + n + "." + ext);
+    copyFileSync(join(FIXTURES, ext === "mp4" ? "red_1s.mp4" : "tiny.jpg"), path);
+    add.run(path, n.toString(16).padStart(64, "0"), 100, ext,
+      ext === "mp4" ? "video/mp4" : "image/jpeg", date,
+      "2020-03-12T11:00:00+00:00", lat, lon);
+  };
+  for (let i = 0; i < 13; i++) put(i + 1, "jpg",
+    "2020-01-01T08:" + String(i).padStart(2, "0") + ":00", 52.52, 13.405);
+  put(101, "jpg", "2020-03-12T10:00:00", 47.4979, 19.0402);
+  put(102, "jpg", "2020-03-12T11:00:00", 47.4980, 19.0410);
+  put(103, "jpg", "2020-03-12T12:00:00", 47.4981, 19.0420);
+  for (let i = 0; i < 8; i++) put(104 + i, "jpg",
+    "2020-03-12T10:" + String(10 + i * 5).padStart(2, "0") + ":00", null, null);
+  put(112, "mp4", "2020-03-12T11:40:00", null, null);
+  put(113, "jpg", null, null, null);
+  db.close();
+}
+
 export async function preferListView(session: GallerySession): Promise<void> {
   await mkdir(join(session.libraryRoot, ".videre"), { recursive: true });
   await writeFile(
@@ -275,6 +334,7 @@ export const test = base.extend<
     sortedGallery: GallerySession;
     isolatedGallery: GallerySession;
     searchGallery: GallerySession;
+    emptyGallery: GallerySession;
   },
   { galleryServer: GallerySession; sortedGalleryServer: GallerySession; searchGalleryServer: GallerySession }
 >({
@@ -335,6 +395,15 @@ export const test = base.extend<
   },
   sortedGallery: async ({ sortedGalleryServer }, use) => {
     await use(await withDefaultSettings(sortedGalleryServer));
+  },
+  // A scanned library with no files at all, for the empty states.
+  emptyGallery: async ({}, use) => {
+    const session = await startGalleryWith([]);
+    try {
+      await use(session);
+    } finally {
+      await stopGallery(session);
+    }
   },
   isolatedGallery: async ({}, use) => {
     const session = await startGallery();
