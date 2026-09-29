@@ -581,6 +581,22 @@ Starts the once-per-machine download if the archive is absent and none is
 already running, then returns the current status immediately (same body shape
 as the status endpoint). Repeated calls while a download runs are no-ops.
 
+### `GET /api/processing`
+
+While [`videre watch`](/commands/watch/) runs on the library, each of its
+stages that still has files to process, which the nav polls to show its
+"still processing" note. `watch` is `false` and `stages` empty when no watcher
+runs. Embed and classify appear only once their model is downloaded, since
+watch never fetches it.
+
+```bash
+curl "http://127.0.0.1:7878/api/processing"
+```
+
+```json
+{ "watch": true, "stages": [{ "stage": "faces", "outstanding": 12 }] }
+```
+
 ### `GET /vendor/{version}/{asset}`
 
 Serves the vendored map libraries compiled into the binary, with a long-lived
@@ -1036,6 +1052,7 @@ content-length: 0
 | `GET /tiles/basemap.pmtiles` | Serve the offline basemap archive (Range) |
 | `GET /api/basemap/status` | Report the basemap download state |
 | `POST /api/basemap/ensure` | Start the one-time basemap download |
+| `GET /api/processing` | Stages watch still has files to process |
 | `GET /vendor/{version}/{asset}` | Serve a vendored map library (MapLibre, pmtiles) |
 | `GET /api/people` | Search people |
 | `POST /api/people` | Create a person from faces |

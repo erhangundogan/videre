@@ -38,6 +38,7 @@ pub mod person_search;
 pub mod pipeline_runs;
 pub mod progress;
 pub mod query;
+pub mod recompute_cost;
 pub mod selection;
 pub mod semaphore;
 pub mod shutdown;

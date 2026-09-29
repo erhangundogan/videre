@@ -466,6 +466,378 @@ fn a_batch_blocked_by_a_faces_run_retries_and_processes_when_free() {
     );
 }
 
+/// A placed photo, then a live watch and a copy of it. The copy must share the
+/// original's place and that place must count 2, from the event batch alone,
+/// whether the batch runs the full recompute (`last_recompute_ms` under the
+/// budget) or places only the new row (over it). Skips, like the other live
+/// tests, if the platform delivers no event in time.
+fn a_copy_joins_its_place_from_the_batch(last_recompute_ms: i64) {
+    use std::io::Write;
+    let lib = TestLibrary::new();
+    lib.copy_fixture("sample_with_exif.jpg", "Şile/çiçek.jpg");
+    lib.scan();
+    let out = lib.cmd().args(["locations", "--silent"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    videre_core::library_state::set(
+        &lib.conn(),
+        videre_core::recompute_cost::LOCATIONS,
+        last_recompute_ms,
+    )
+    .unwrap();
+    let out = lib
+        .cmd()
+        .args(["config", "set", "watch-debounce-ms", "200"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+
+    let mut child = lib
+        .cmd()
+        .args(["watch", "--scan", "--location", "--silent"])
+        .spawn()
+        .expect("spawn watch");
+    std::thread::sleep(Duration::from_millis(1500)); // startup pass and registration
+    lib.copy_fixture("sample_with_exif.jpg", "kopya/çiçek.jpg");
+    let root = lib.context().paths.root.clone();
+    let original = root.join("Şile/çiçek.jpg").to_string_lossy().into_owned();
+    let copy = root.join("kopya/çiçek.jpg").to_string_lossy().into_owned();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut scanned = false;
+    let mut placed = None;
+    while Instant::now() < deadline {
+        if let Some(c) = lib.try_conn() {
+            let row = |p: &str| -> Option<Option<i64>> {
+                c.query_row(
+                    "SELECT location_cluster_id FROM file_hashes WHERE path = ?1",
+                    [p],
+                    |r| r.get(0),
+                )
+                .ok()
+            };
+            if let Some(cluster) = row(&copy) {
+                scanned = true;
+                if cluster.is_some() {
+                    let count: i64 = c
+                        .query_row(
+                            "SELECT photo_count FROM location_clusters WHERE id = ?1",
+                            [cluster],
+                            |r| r.get(0),
+                        )
+                        .unwrap();
+                    placed = Some((cluster, row(&original).flatten(), count));
+                    break;
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    if !scanned {
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIP: event not delivered within 20s; the startup-scan guarantee covers correctness"
+        );
+        return;
+    }
+    let (copy_place, original_place, count) =
+        placed.expect("the batch scanned the copy but left it without a place");
+    assert_eq!(
+        copy_place, original_place,
+        "the copy joins the original's place"
+    );
+    assert_eq!(count, 2, "the map's marker count must match its grid");
+    // And status agrees: nothing left to place.
+    let out = lib.cmd().args(["status", "--json"]).output().unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let locations = json["report"]["coverage"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["stage"] == "locations")
+        .cloned()
+        .unwrap();
+    assert_eq!(locations["outstanding"], 0, "{locations}");
+}
+
+#[test]
+fn a_copied_photo_joins_its_place_when_a_full_recompute_is_cheap() {
+    a_copy_joins_its_place_from_the_batch(10);
+}
+
+#[test]
+fn a_copied_photo_joins_its_place_when_a_full_recompute_is_slow() {
+    a_copy_joins_its_place_from_the_batch(600_000);
+}
+
+#[test]
+fn a_copied_rated_photo_gets_its_sidecar_from_the_batch() {
+    use std::io::Write;
+    let lib = TestLibrary::new();
+    lib.copy_fixture("sample_with_exif.jpg", "Şile/çiçek.jpg");
+    lib.scan();
+    for args in [
+        &["mark", "--path", "Şile", "--rating", "4", "--silent"][..],
+        &["config", "set", "watch-debounce-ms", "200"][..],
+    ] {
+        let out = lib.cmd().args(args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let mut child = lib
+        .cmd()
+        .args(["watch", "--scan", "--export-xmp", "--silent"])
+        .spawn()
+        .expect("spawn watch");
+    std::thread::sleep(Duration::from_millis(1500));
+    lib.copy_fixture("sample_with_exif.jpg", "kopya/çiçek.jpg");
+    // The canonical root: what the scan stores, so the row lookup matches.
+    let copy = lib.context().paths.root.join("kopya/çiçek.jpg");
+    let sidecar = std::path::PathBuf::from(format!("{}.xmp", copy.display()));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut scanned = false;
+    while Instant::now() < deadline && !sidecar.exists() {
+        scanned = scanned
+            || lib
+                .try_conn()
+                .and_then(|c| {
+                    c.query_row(
+                        "SELECT 1 FROM file_hashes WHERE path = ?1",
+                        [copy.to_string_lossy()],
+                        |_| Ok(()),
+                    )
+                    .ok()
+                })
+                .is_some();
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    if !scanned && !sidecar.exists() {
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIP: event not delivered within 20s; the startup-scan guarantee covers correctness"
+        );
+        return;
+    }
+    let doc = std::fs::read_to_string(&sidecar).expect("the batch wrote no sidecar for the copy");
+    assert!(doc.contains("<xmp:Rating>4</xmp:Rating>"), "{doc}");
+}
+
+#[test]
+fn a_bulk_import_scans_first_and_finishes_once_it_goes_quiet() {
+    use std::io::{Read, Write};
+    let lib = TestLibrary::new();
+    lib.copy_fixture("sample_with_exif.jpg", "Şile/çiçek.jpg");
+    lib.scan();
+    for args in [
+        &["locations", "--silent"][..],
+        &["config", "set", "watch-debounce-ms", "200"][..],
+        &["config", "set", "watch-bulk-threshold", "3"][..],
+        &["config", "set", "watch-bulk-quiet-ms", "2000"][..],
+    ] {
+        let out = lib.cmd().args(args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    // A slow library as far as watch knows: outside bulk mode it would place
+    // only the new rows, so a rebuild below can only come from the finish.
+    videre_core::library_state::set(&lib.conn(), videre_core::recompute_cost::LOCATIONS, 600_000)
+        .unwrap();
+    let mut child = lib
+        .cmd()
+        .args(["watch", "--scan", "--location"])
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn watch");
+    std::thread::sleep(Duration::from_millis(1500));
+    // Staged outside, then moved in at once: one batch of four.
+    let staging = lib.home.join("gelen");
+    std::fs::create_dir_all(&staging).unwrap();
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/sample_with_exif.jpg");
+    for i in 0..4 {
+        std::fs::copy(&fixture, staging.join(format!("toplu-{i}.jpg"))).unwrap();
+    }
+    let root = lib.context().paths.root.clone();
+    for i in 0..4 {
+        std::fs::rename(
+            staging.join(format!("toplu-{i}.jpg")),
+            root.join(format!("toplu-{i}.jpg")),
+        )
+        .unwrap();
+    }
+    let placed = |c: &rusqlite::Connection| -> i64 {
+        c.query_row(
+            "SELECT COUNT(*) FROM file_hashes WHERE path LIKE '%toplu-%' AND location_cluster_id IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0)
+    };
+    let deadline = Instant::now() + Duration::from_secs(25);
+    let mut done = false;
+    while Instant::now() < deadline {
+        if lib.try_conn().map(|c| placed(&c)) == Some(4) {
+            done = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    if !stderr.contains("bulk:") && !done {
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIP: events not delivered within 25s; the startup-scan guarantee covers correctness"
+        );
+        return;
+    }
+    assert!(stderr.contains("bulk: 4 files waiting"), "{stderr}");
+    assert!(done, "the finish must place every file: {stderr}");
+    assert!(
+        stderr.contains("location clusters rebuilt"),
+        "the finish runs the full recompute, whatever it costs: {stderr}"
+    );
+}
+
+#[test]
+fn each_batch_says_what_each_file_got_and_what_it_did_not() {
+    use std::io::{Read, Write};
+    let lib = TestLibrary::new();
+    lib.copy_fixture("sample_with_exif.jpg", "Şile/çiçek.jpg");
+    lib.scan();
+    for args in [
+        &["locations", "--silent"][..],
+        &["config", "set", "watch-debounce-ms", "200"][..],
+    ] {
+        let out = lib.cmd().args(args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let mut child = lib
+        .cmd()
+        .args(["watch", "--scan", "--location", "--embed"])
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn watch");
+    std::thread::sleep(Duration::from_millis(1500));
+    lib.copy_fixture("sample_with_exif.jpg", "kopya/çiçek.jpg");
+    let copy = lib.context().paths.root.join("kopya/çiçek.jpg");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut placed = false;
+    while Instant::now() < deadline && !placed {
+        placed = lib
+            .try_conn()
+            .and_then(|c| {
+                c.query_row(
+                    "SELECT location_cluster_id FROM file_hashes WHERE path = ?1",
+                    [copy.to_string_lossy()],
+                    |r| r.get::<_, Option<i64>>(0),
+                )
+                .ok()
+            })
+            .flatten()
+            .is_some();
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    std::thread::sleep(Duration::from_millis(500)); // the report follows the stages
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    if !placed {
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIP: event not delivered within 20s; the startup-scan guarantee covers correctness"
+        );
+        return;
+    }
+    let line = stderr
+        .lines()
+        .find(|l| l.contains("kopya/çiçek.jpg: scanned"))
+        .unwrap_or_else(|| panic!("no report line for the copy:\n{stderr}"));
+    assert!(
+        line.contains("embed skipped:") && line.contains("not downloaded"),
+        "{line}"
+    );
+    assert!(line.contains("placed in "), "{line}");
+}
+
+#[test]
+fn watch_without_the_model_says_so_and_downloads_nothing() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("sample_with_exif.jpg", "çiçek.jpg");
+    let out = watch_once(&lib, &["--scan", "--embed"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("embed skipped: model") && stderr.contains("not downloaded"),
+        "{stderr}"
+    );
+    let hub = lib.home.join(".cache/huggingface/hub");
+    let fetched = std::fs::read_dir(&hub).map(|d| d.count()).unwrap_or(0);
+    assert_eq!(fetched, 0, "a watcher must never start a model download");
+}
+
+#[test]
+fn watch_embeds_and_classifies_a_new_photo() {
+    use common::model_test_support::skip_unless_model_tests_enabled;
+    if skip_unless_model_tests_enabled("watch embed stage") {
+        return;
+    }
+    let guard = common::shared_cache_guard();
+    let lib = TestLibrary::new();
+    lib.copy_fixture("sample_with_exif.jpg", "çiçek.jpg");
+    let out = lib
+        .model_cmd(&guard)
+        .args(["watch", "--scan", "--embed"])
+        .env("VIDERE_WATCH_ONCE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let status = lib
+        .model_cmd(&guard)
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    let coverage = json["report"]["coverage"].as_array().expect("coverage");
+    for stage in ["embed", "classify"] {
+        let c = coverage.iter().find(|c| c["stage"] == stage).unwrap();
+        assert_eq!(c["outstanding"], 0, "{stage}: {c}");
+        assert_eq!(c["total"], 1, "{stage}: {c}");
+    }
+}
+
 #[test]
 fn a_scan_that_changes_gps_data_triggers_the_recluster_on_the_next_pass() {
     let lib = TestLibrary::new();

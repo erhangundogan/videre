@@ -89,22 +89,33 @@ pub fn run(args: EmbedArgs, ctx: &CommandContext) -> Result<()> {
         args.model.as_deref(),
     )?;
     let guard = videre_core::library_locks::try_command(&ctx.library, "embed")?;
+    videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "embed", || {
+        run_in(&args, ctx, &conn, &model_id)
+    })
+}
+
+/// The embedding work for a caller already holding the activity lease and the
+/// `embed` command lock: `run` above, and `videre watch`'s embed stage. `conn`
+/// must not have a model database attached yet.
+pub(crate) fn run_in(
+    args: &EmbedArgs,
+    ctx: &CommandContext,
+    conn: &rusqlite::Connection,
+    model_id: &str,
+) -> Result<()> {
     // embed is the only command allowed to bring a model database into
     // existence, and it does so only once a model has loaded and there is
     // work to write (inside run_embed, after Embedder::load). A failed load
     // and a zero-work run both leave the embeddings directory untouched, so
     // a typo in --model cannot leave an empty model behind for stats to list
-    // forever. The attach therefore lives inside track_in, where a failed
-    // create is recorded as a failed pipeline run, which it now genuinely is.
-    let db_existed = videre_core::embeddings_db::db_path_in(&ctx.library, &model_id)?.exists();
+    // forever. The attach runs inside the caller's tracked run, where a failed
+    // create is recorded as a failed pipeline run, which it genuinely is.
+    let db_existed = videre_core::embeddings_db::db_path_in(&ctx.library, model_id)?.exists();
     if db_existed {
         // Today's ensure-schema-and-attach; on a missing file it must not run.
-        videre_core::embeddings_db::attach_in(&conn, &ctx.library, &model_id, true)?;
+        videre_core::embeddings_db::attach_in(conn, &ctx.library, model_id, true)?;
     }
-
-    videre_core::pipeline_runs::track_in(&conn, &ctx.library, &guard, "embed", || {
-        run_embed(&args, ctx, &conn, &model_id, db_existed)
-    })
+    run_embed(args, ctx, conn, model_id, db_existed)
 }
 
 /// The actual embedding work, wrapped by `track_in()` above.

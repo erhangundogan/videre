@@ -25,6 +25,7 @@ pub mod stats;
 pub mod status;
 pub mod tag;
 pub mod watch;
+pub(crate) mod watch_report;
 
 /// Prompts on stderr and reads a yes/no answer from stdin. Any input other
 /// than "y"/"yes" (case-insensitive) is treated as "no", including EOF (e.g.

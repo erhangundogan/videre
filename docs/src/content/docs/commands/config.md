@@ -15,6 +15,7 @@ videre config set io-workers 64
 videre config set xmp file
 videre config set export-xmp-on-watch true
 videre config set watch-debounce-ms 500
+videre config set watch-bulk-threshold 500
 videre config set log-level debug
 videre config unset model
 ```
@@ -41,6 +42,8 @@ io-workers:    40 (default)
 xmp:           db
 export-xmp-on-watch: off
 watch-debounce-ms: 1500 ms (default)
+watch-bulk-threshold: 1000 files (default)
+watch-bulk-quiet-ms: 30000 ms (default)
 log-level:     warn
 log-format:    json
 log-max-size-mb: 10 MB
@@ -62,6 +65,8 @@ log-max-age-days: 30 days
 | `xmp` | Effective XMP precedence for ingest |
 | `export-xmp-on-watch` | Whether watch exports XMP each cycle |
 | `watch-debounce-ms` | How long watch lets file changes settle before processing |
+| `watch-bulk-threshold` | Files waiting at which watch switches to bulk mode |
+| `watch-bulk-quiet-ms` | How long a bulk import must go quiet before watch finishes it |
 | `log-level` | What the per-command log files record |
 | `log-format` | How log lines are written |
 | `log-max-size-mb` | Size at which a log file rotates |
@@ -82,6 +87,8 @@ are responsible for initializing a library database.
 | `xmp` | `xmp_precedence` | `db`, `file`, or `newest` |
 | `export-xmp-on-watch` | `export_xmp_on_watch` | `true` or `false` |
 | `watch-debounce-ms` | `watch_debounce_ms` | A positive whole number of milliseconds |
+| `watch-bulk-threshold` | `watch_bulk_threshold` | A positive whole number of files (default 1000) |
+| `watch-bulk-quiet-ms` | `watch_bulk_quiet_ms` | A positive whole number of milliseconds (default 30000) |
 | `log-level` | `log_level` | `error`, `warn` (default), `info`, or `debug`; `info` and `debug` add a trace file |
 | `log-format` | `log_format` | `json` (default) or `text` |
 | `log-max-size-mb` | `log_max_size_mb` | A positive whole number of megabytes (default 10) |
@@ -116,6 +123,9 @@ out. The limit applies to this videre process, not other running processes.
 changes settle before processing them as one batch. Lower it for the fastest
 reaction to a single file; raise it on a chatty importer or a slow mount so
 more of a burst lands in one batch.
+
+`watch-bulk-threshold` and `watch-bulk-quiet-ms` shape how watch handles a
+large import; see [bulk imports](/commands/watch/#bulk-imports).
 
 The `log-*` keys control the per-command log files under `.videre/logs/`.
 They never change what the terminal shows. See

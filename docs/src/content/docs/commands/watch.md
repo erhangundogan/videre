@@ -10,7 +10,7 @@ polling interval and no whole-library sweep on a timer. No server and no UI: it
 runs in the foreground logging to stderr until you stop it with Ctrl-C.
 
 ```bash
-videre watch                           # scan, faces, HEIC cache, and locations, live
+videre watch                           # every stage, live: see Stages below
 videre --library ~/Photos watch        # watch a different library
 videre watch --scan --faces            # only these stages
 videre watch --heic                    # only pre-convert HEIC thumbnails
@@ -58,25 +58,47 @@ directory and `.xmp` sidecars are filtered out of the event stream.
 
 ## Stages
 
-If none of `--scan`, `--faces`, `--heic` or `--location` are given, all four
-run. `--prune` and `--export-xmp` are the exceptions: they are opt-in and never
-default on.
+If none of `--scan`, `--faces`, `--heic`, `--location` or `--embed` are given,
+all five run. `--prune` and `--export-xmp` are the exceptions: they are opt-in
+and never default on.
+
+A file watch picks up goes through every stage in the same batch: it is
+scanned, its faces are detected and grouped with their people, it is embedded
+and classified, and it is given a place on the map, all within seconds of
+arriving.
+
+After each batch, watch says what each file got, read back from the library,
+and what it did not get and why:
+
+```text
+videre watch: Kadıköy/çiçek.heic: scanned, 2 faces (1 grouped), embedded (photo), placed in Kadıköy
+videre watch: Kadıköy/deniz.jpg: scanned, no faces, embed skipped: model not downloaded, placed in Kadıköy
+```
+
+A batch of more than 20 files prints the totals and only the files that were
+not completed. `--silent` turns the lines off; [`videre status`](/commands/status/)
+counts whatever is still outstanding. While watch has work outstanding, the
+[gallery](/commands/gallery/)'s nav shows a small "still processing" note that
+opens a list of what each stage has left, and disappears at zero.
 
 | Stage | What it does |
 |---|---|
 | `--scan` | Same scan and hash pipeline as [`videre scan`](/commands/scan/), including reading marks from XMP (`--xmp db\|file\|newest`, see [scan](/commands/scan/#reading-marks-from-xmp---xmp)) |
-| `--faces` | Detects faces in new images within seconds of arrival |
+| `--faces` | Detects faces in new images and groups them with their people |
 | `--heic` | Pre-converts and caches HEIC thumbnails |
-| `--location` | Looks up place names for GPS coordinates that have none, and re-clusters locations when the GPS data changed (at the default radius; a manual radius is respected) |
+| `--location` | Looks up place names for GPS coordinates that have none, and gives each new photo its place on the map (at the default radius; a manual radius is respected) |
+| `--embed` | Embeds and classifies new files with the library's model, the same work as [`videre embed`](/commands/embed/) and [`videre classify`](/commands/classify/). It never downloads the model: until `videre embed` has fetched it once, watch says so once and the files stay outstanding in [`videre status`](/commands/status/) |
 | `--prune` | Same cleanup as [`videre prune`](/commands/prune/); runs on the startup and maintenance passes, not per event |
-| `--export-xmp` | Writes labels to `.xmp` sidecars, same as [`videre export`](/commands/export/); runs on the startup and maintenance passes, not per event |
+| `--export-xmp` | Writes labels to `.xmp` sidecars, same as [`videre export`](/commands/export/). Each batch writes its own files' sidecars; the startup and maintenance passes rewrite every file's |
 
-Face detection is event-fast. The global face regrouping that follows
-detection is a minutes-long whole-library pass, so it runs on the maintenance
-pass instead, and only when faces were actually added since the previous
-regroup. Until that pass, a brand-new face is detected but not yet assigned to
-a person. If you want it grouped immediately, run [`videre
-faces`](/commands/faces/), whose own regroup satisfies the same gate.
+Grouping faces into people and photos into places are whole-library passes,
+and how long they take depends on the size of the library, not on how many
+files arrived: on a large library each takes minutes. So each batch looks at
+how long the last full pass took. If it took under five seconds, as on a small
+library, the batch runs the full pass. Otherwise the batch puts each new face
+with the person whose face it most resembles (using the same similarity rule
+as the full pass) and each new photo in the nearest place, or a new place of
+its own, and the full pass runs on the maintenance pass to rebalance.
 
 The regroup uses the same grouping values as `videre faces`: the ones the
 gallery's People page saved for this library with **Recluster**, where it did,
@@ -87,9 +109,10 @@ Every tracked stage records a run in the pipeline table, so
 [`videre status`](/commands/status/) shows its last run and whether it
 succeeded. The location stage reports as **`location-names`**, deliberately
 distinct from **`locations`**, which is the row for
-[`videre locations`](/commands/locations/), the clustering recompute. The face
-regrouping reports as **`face-recluster`**, distinct from **`faces`**, which is
-the row for a detection run. Each appears once watch has run it at least once;
+[`videre locations`](/commands/locations/), the clustering recompute; placing
+only the new photos reports as **`location-assign`**. The face regrouping
+reports as **`face-recluster`**, distinct from **`faces`**, which is the row for
+a detection run; grouping only the new faces reports as **`face-attach`**. Each appears once watch has run it at least once;
 a library that never used those stages does not list them.
 
 The export stage keeps sidecars current while you work in another tool. It is
@@ -100,10 +123,6 @@ so it never clobbers another tool's data.
 The scan stage is [incremental](/commands/scan/#incremental-by-default), like
 `videre scan`: a file whose row is already current hashes nothing, whether it
 was seen by an event or by a full pass, so a spurious event costs nothing.
-
-Note that [`embed`](/commands/embed/) and [`classify`](/commands/classify/) are
-**not** stages. Semantic search data is not kept current automatically; run
-`videre embed` yourself after adding a batch of photos.
 
 ## Choosing what to run
 
@@ -162,9 +181,26 @@ videre status                # pipeline health, what to run next, watch liveness
 videre status --check        # exit non-zero if anything failed, for cron
 ```
 
+## Bulk imports
+
+When 1,000 or more files are waiting at once, a camera import or a folder of
+thousands copied in, watch switches to bulk mode. It keeps scanning as the files
+arrive, so they show up in the gallery at once, but holds everything else until
+no new file has arrived for 30 seconds. Then it runs every other stage once
+over the whole import, each model loaded once, followed by the full face
+regroup and place recompute whatever they cost, each stage showing its
+progress as the standalone command does. It says when it switches:
+
+```text
+videre watch: bulk: 4213 files waiting; scanning as they arrive, everything else once no file has arrived for 30s
+```
+
+Until the import finishes, its files count as outstanding in
+[`videre status`](/commands/status/).
+
 ## Tuning
 
-The one knob is the debounce window, the time a file must stay quiet before
+The main knob is the debounce window, the time a file must stay quiet before
 its event settles into a batch:
 
 ```bash
@@ -172,8 +208,15 @@ videre config set watch-debounce-ms 500     # default 1500
 ```
 
 Lower it for the fastest possible reaction to a single file; raise it on a
-chatty importer or a slow mount so more of a burst lands in one batch. See
-[config](/commands/config/).
+chatty importer or a slow mount so more of a burst lands in one batch. Bulk mode has its own two, the number of
+waiting files that starts it and the quiet period that finishes it:
+
+```bash
+videre config set watch-bulk-threshold 500      # default 1000 files
+videre config set watch-bulk-quiet-ms 60000     # default 30000
+```
+
+See [config](/commands/config/).
 
 ## Caveats
 

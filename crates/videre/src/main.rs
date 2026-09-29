@@ -3,6 +3,7 @@ use std::ffi::{OsStr, OsString};
 
 mod command_context;
 mod commands;
+mod display_path;
 mod exit;
 mod logging;
 mod removal;
