@@ -6,11 +6,14 @@ pub struct StatsArgs {
     /// Emit a single JSON object on stdout instead of human-readable text
     #[arg(long)]
     json: bool,
+    /// List every file whose extension conflicts with its detected MIME
+    #[arg(long)]
+    mismatched: bool,
 }
 
 pub fn run(args: StatsArgs, ctx: &CommandContext) -> anyhow::Result<()> {
     if args.json {
-        match run_json(ctx) {
+        match run_json(ctx, args.mismatched) {
             Ok(doc) => {
                 println!("{}", serde_json::to_string(&doc)?);
                 Ok(())
@@ -21,11 +24,11 @@ pub fn run(args: StatsArgs, ctx: &CommandContext) -> anyhow::Result<()> {
             }
         }
     } else {
-        run_text(ctx)
+        run_text(ctx, args.mismatched)
     }
 }
 
-fn run_text(ctx: &CommandContext) -> anyhow::Result<()> {
+fn run_text(ctx: &CommandContext, all_mismatches: bool) -> anyhow::Result<()> {
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
     let _activity = videre_core::library_locks::try_activity(
         &ctx.library,
@@ -86,6 +89,21 @@ fn run_text(ctx: &CommandContext) -> anyhow::Result<()> {
         }
     }
 
+    let limit = if all_mismatches { None } else { Some(10) };
+    let mismatches = videre_core::library_stats::mismatched_files(&conn, limit)?;
+    println!();
+    println!("Mismatched files: {}", mismatches.count);
+    println!("  A mismatch means the filename and last scanned content disagree; verify before renaming.");
+    for file in &mismatches.files {
+        println!("  {}  {:?}", file.mime, file.path);
+    }
+    if mismatches.truncated {
+        println!(
+            "  ... and {} more",
+            mismatches.count - mismatches.files.len()
+        );
+    }
+
     println!();
     println!("Disk use:");
     // Every location is derived from the selected library context, so a run
@@ -120,17 +138,19 @@ fn run_text(ctx: &CommandContext) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_json(ctx: &CommandContext) -> anyhow::Result<StatsJson> {
+fn run_json(ctx: &CommandContext, all_mismatches: bool) -> anyhow::Result<StatsJson> {
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
     let _activity = videre_core::library_locks::try_activity(
         &ctx.library,
         videre_core::library_locks::ActivityMode::Shared,
     )?;
     let library = videre_core::library_stats::compute_full_in(&conn, &ctx.library)?;
+    let limit = if all_mismatches { None } else { Some(10) };
     Ok(StatsJson {
         schema_version: SCHEMA_VERSION,
         library,
         by_type: videre_core::library_stats::by_type(&conn, usize::MAX)?,
+        mismatches: videre_core::library_stats::mismatched_files(&conn, limit)?,
         disk_use: videre_core::disk::usage_in(&ctx.library),
     })
 }

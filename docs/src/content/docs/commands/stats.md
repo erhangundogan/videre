@@ -6,6 +6,7 @@ description: "Library inventory: counts, sizes, disk use. Purely informational."
 ```bash
 videre stats                           # library totals and inventory
 videre stats --json                    # print one JSON object instead
+videre stats --mismatched             # list every filename/content mismatch
 videre --library ~/Photos stats        # select a different library
 ```
 
@@ -38,6 +39,10 @@ By type:
   gif      image/gif                       2     4.8 MB
   png      image/jpeg                      1    43.7 KB
 
+Mismatched files: 1
+  A mismatch means the filename and last scanned content disagree; verify before renaming.
+  image/jpeg  "/Photos/sunset.png"
+
 Disk use:
   embeddings           446.3 MB
   database             161.8 MB
@@ -55,12 +60,19 @@ ones.
 and the largest first. These are the values `--ext` and `--mime` take, so this is
 where to look before scoping a run.
 
-**Extension and mime disagree more often than people expect**, and both are shown
-rather than reconciled. Three rows above are the same file types filed under a
-different name: 251 `.mov` files holding MP4 video, one `.mp4` holding QuickTime,
-and one `.png` that is really a JPEG. Reconciling them would mean choosing which
-of the two to lie about, so `--ext mov` and `--mime video/quicktime` select
-genuinely different sets.
+**By type preserves both values**, even when they differ. The `.mov` files
+detected as MP4 video and the `.mp4` detected as QuickTime are normal container
+brand differences, not suspicious filenames. The `.png` detected as JPEG is a
+filename/content mismatch. Keeping extension and detected MIME separate means
+`--ext mov` and `--mime video/quicktime` still select genuinely different sets.
+
+**Mismatched files** counts paths whose known extension conflicts with their
+known detected MIME, then shows the first 10 paths in path order. Run
+`videre stats --mismatched` for the full list; ordinary `stats` says how many
+more paths were omitted. A zero count is shown explicitly. The report uses
+the last scan's stored MIME, not a fresh read of the media. It does not imply
+videre damaged the file or that the file can be decoded; inspect it before
+renaming anything. Files with unknown MIME are not reported as mismatches.
 
 **Disk use** is what videre itself stores, not your photos, largest first.
 Entries marked `(rebuildable)` cost only time to recreate: thumbnails are
@@ -107,8 +119,12 @@ is normal, not a sign of a failed run.
 
 `--json` prints one object: `schema_version`, `library` (the totals, faces,
 marks and embeddings above), `by_type` (every type, not only the top 12 the
-text shows, each with `ext`, `mime`, `files` and `bytes`) and `disk_use` (each
-row with `label`, `path`, `bytes`, `files` and `rebuildable`).
+text shows, each with `ext`, `mime`, `files` and `bytes`), `mismatches` (the
+exact `count`, a `files` array of `{path, ext, mime}`, and `truncated`), and
+`disk_use` (each row with `label`, `path`, `bytes`, `files` and `rebuildable`).
+The JSON mismatch list also defaults to 10 paths; combine `--json` with
+`--mismatched` for all paths. It remains one JSON object even when the count
+is zero.
 
 ## Numbers that look wrong but are not
 

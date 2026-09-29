@@ -8,6 +8,142 @@ fn library_with_one_file() -> common::TestLibrary {
     lib
 }
 
+fn seed_mismatches(lib: &common::TestLibrary, count: usize) -> Vec<String> {
+    let conn = lib.init_db();
+    (0..count)
+        .map(|i| {
+            let path = lib
+                .root
+                .canonicalize()
+                .unwrap()
+                .join(format!("mismatch-{i:02}.png"))
+                .to_string_lossy()
+                .into_owned();
+            conn.execute(
+                "INSERT INTO file_hashes (path, hash, ext, mime)
+                 VALUES (?1, ?2, 'png', 'image/jpeg')",
+                rusqlite::params![path, format!("hash-{i}")],
+            )
+            .unwrap();
+            path
+        })
+        .collect()
+}
+
+#[test]
+fn stats_mismatches_zero_is_explicit() {
+    let lib = library_with_one_file();
+    let text = lib.cmd().arg("stats").output().unwrap();
+    assert!(
+        text.status.success(),
+        "{}",
+        String::from_utf8_lossy(&text.stderr)
+    );
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(text.contains("Mismatched files: 0"), "{text}");
+
+    let json = lib.cmd().args(["stats", "--json"]).output().unwrap();
+    assert!(json.status.success());
+    let doc: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(doc["mismatches"]["count"], 0, "{doc}");
+    assert_eq!(doc["mismatches"]["files"], serde_json::json!([]));
+    assert_eq!(doc["mismatches"]["truncated"], false);
+}
+
+#[test]
+fn stats_mismatches_are_bounded_unless_requested() {
+    let lib = common::TestLibrary::new();
+    let paths = seed_mismatches(&lib, 12);
+
+    let text = lib.cmd().arg("stats").output().unwrap();
+    assert!(
+        text.status.success(),
+        "{}",
+        String::from_utf8_lossy(&text.stderr)
+    );
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(text.contains("By type:\n  png      image/jpeg"), "{text}");
+    assert!(text.contains("Mismatched files: 12"), "{text}");
+    assert!(text.contains("... and 2 more"), "{text}");
+    for path in &paths[..10] {
+        assert!(text.contains(path), "missing {path} in {text}");
+    }
+    for path in &paths[10..] {
+        assert!(!text.contains(path), "unexpected {path} in {text}");
+    }
+
+    let json = lib.cmd().args(["stats", "--json"]).output().unwrap();
+    assert!(json.status.success());
+    let doc: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(doc["mismatches"]["count"], 12);
+    assert_eq!(doc["mismatches"]["truncated"], true);
+    let files = doc["mismatches"]["files"].as_array().unwrap();
+    assert_eq!(files.len(), 10);
+    for (file, path) in files.iter().zip(&paths) {
+        assert_eq!(&file["path"], path);
+        assert_eq!(file["ext"], "png");
+        assert_eq!(file["mime"], "image/jpeg");
+    }
+
+    let text = lib.cmd().args(["stats", "--mismatched"]).output().unwrap();
+    assert!(
+        text.status.success(),
+        "{}",
+        String::from_utf8_lossy(&text.stderr)
+    );
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(!text.contains("... and"), "{text}");
+    for path in &paths {
+        assert!(text.contains(path), "missing {path} in {text}");
+    }
+    let json = lib
+        .cmd()
+        .args(["stats", "--mismatched", "--json"])
+        .output()
+        .unwrap();
+    assert!(json.status.success());
+    let doc: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(doc["mismatches"]["count"], 12);
+    assert_eq!(doc["mismatches"]["files"].as_array().unwrap().len(), 12);
+    assert_eq!(doc["mismatches"]["truncated"], false);
+}
+
+#[test]
+fn stats_mismatch_path_is_escaped_in_text() {
+    let lib = common::TestLibrary::new();
+    let path = lib
+        .root
+        .canonicalize()
+        .unwrap()
+        .join("strange\n\u{1b}[31m.png")
+        .to_string_lossy()
+        .into_owned();
+    lib.init_db()
+        .execute(
+            "INSERT INTO file_hashes (path, hash, ext, mime)
+             VALUES (?1, 'strange-hash', 'png', 'image/jpeg')",
+            [&path],
+        )
+        .unwrap();
+
+    let text = lib.cmd().arg("stats").output().unwrap();
+    assert!(
+        text.status.success(),
+        "{}",
+        String::from_utf8_lossy(&text.stderr)
+    );
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(text.contains("\\n"), "{text}");
+    assert!(text.contains("\\u{1b}"), "{text}");
+    assert!(!text.contains('\u{1b}'), "{text}");
+    assert!(!text.lines().any(|line| line.starts_with("[31m")), "{text}");
+
+    let json = lib.cmd().args(["stats", "--json"]).output().unwrap();
+    assert!(json.status.success());
+    let doc: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(doc["mismatches"]["files"][0]["path"], path);
+}
+
 #[test]
 fn stats_reports_library_totals_without_pipeline_status() {
     // Pipeline run health is operational state, and it lives in `videre
