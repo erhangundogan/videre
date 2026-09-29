@@ -93,6 +93,16 @@ fn dedupe_html_shows_edit_pairs_only_with_edited() {
     let html = std::fs::read_to_string(&out).unwrap();
     assert!(html.contains("\"edited\":true"), "the pair is shown");
     assert!(html.contains("IMG_1-edited.jpg"));
+    // The header counts the pairs it shows, not only exact copies: a Takeout
+    // library whose groups are all edits read "Duplicate groups: 0".
+    let edit_size = std::fs::metadata(lib.context().paths.root.join("Photos/IMG_1-edited.jpg"))
+        .unwrap()
+        .len();
+    let expected = format!(
+        "Google Photos edits:</span> 1 ({})",
+        videre_core::disk::human_bytes(edit_size)
+    );
+    assert!(html.contains(&expected), "{expected} in the header");
 }
 
 /// `videre search --html`, the other static page. Renders a flat list rather
