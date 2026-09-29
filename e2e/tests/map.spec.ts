@@ -1,8 +1,7 @@
 import { copyFileSync, mkdirSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, preferListView, test } from "../support/gallery";
+import { expect, openLibraryDb, preferListView, test } from "../support/gallery";
 
 const FIXTURES = resolve(dirname(fileURLToPath(import.meta.url)), "../../crates/videre/tests/fixtures");
 
@@ -15,12 +14,10 @@ function seedBasemap(libraryRoot: string): void {
   copyFileSync(join(FIXTURES, "basemap-tiny.pmtiles"), join(dir, "basemap.pmtiles"));
 }
 
-function openDatabase(libraryRoot: string): DatabaseSync {
-  return new DatabaseSync(join(libraryRoot, ".videre", "hashes.db"));
-}
-
+// Through the shared opener, which waits while the running gallery server
+// holds a write lock; a bare open failed the seed with "database is locked".
 function seedClusters(libraryRoot: string): void {
-  const db = openDatabase(libraryRoot);
+  const db = openLibraryDb(libraryRoot);
   const files = db.prepare("SELECT path FROM file_hashes ORDER BY path").all() as Array<{ path: string }>;
   const first = files.find((file) => file.path.endsWith("first.jpg"));
   const second = files.find((file) => file.path.endsWith("second.jpg"));
@@ -126,6 +123,9 @@ test.describe("map clusters", () => {
 
   test("Escape clears a selection when the lightbox is closed", async ({ page, gallery }) => {
     await page.goto(`${gallery.baseURL}/map/location/berlin?radius=20`);
+    // Escape clears only a loaded selection; pressing it before the place has
+    // loaded did nothing on a slow runner.
+    await expect(page.locator("#map-breadcrumb")).toBeVisible();
     await page.keyboard.press("Escape");
 
     await expect(page).toHaveURL(`${gallery.baseURL}/map`);
@@ -296,7 +296,7 @@ test("zooming out to the world clears a MapLibre selection", async ({ page, gall
 });
 
 test("a library that never clustered shows the shared empty state", async ({ page, gallery }) => {
-  const db = openDatabase(gallery.libraryRoot);
+  const db = openLibraryDb(gallery.libraryRoot);
   db.exec("UPDATE file_hashes SET location_cluster_id = NULL; DELETE FROM location_clusters;");
   db.close();
 

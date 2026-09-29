@@ -568,19 +568,83 @@ let facesData = { people: [], clusters: [], singletons: [] };
       });
     }
 
+    // Info icons: a click or tap pins one description open (closing any
+    // other); Escape or a click elsewhere closes it. Hover and keyboard focus
+    // show it through CSS alone.
+    function closeTips(except) {
+      document.querySelectorAll('#recluster-row .param-info[aria-expanded="true"]').forEach(function(b) {
+        if (b !== except) b.setAttribute('aria-expanded', 'false');
+      });
+    }
+    document.querySelectorAll('#recluster-row .param-info').forEach(function(b) {
+      b.addEventListener('click', function(e) {
+        e.stopPropagation();
+        const open = b.getAttribute('aria-expanded') !== 'true';
+        closeTips(b);
+        b.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+    });
+    document.addEventListener('click', function() { closeTips(null); });
+    document.addEventListener('keydown', function(e) {
+      if (e.key !== 'Escape') return;
+      closeTips(null);
+      const focused = document.activeElement;
+      if (focused && focused.classList.contains('param-info')) focused.blur();
+    });
+
+    reclusterInputs().forEach(function(input) {
+      input.addEventListener('input', function() { input.removeAttribute('aria-invalid'); });
+    });
+
+    // The default in each description comes from the server's built-in set,
+    // so the page cannot drift from it.
+    function fillDefaultsInTips(defaults) {
+      reclusterInputs().forEach(function(input) {
+        const tip = document.getElementById(input.getAttribute('aria-describedby'));
+        const slot = tip && tip.querySelector('.param-default');
+        const v = defaults[input.dataset.param];
+        if (slot && v !== undefined && v !== null) slot.textContent = 'Default ' + (Math.round(v * 1000) / 1000) + '.';
+      });
+    }
+
     function fillReclusterDefaults() {
       if (reclusterDefaults) fillRecluster(reclusterDefaults);
     }
     window.fillReclusterDefaults = fillReclusterDefaults;
 
+    function fieldTitle(param) {
+      const input = document.querySelector('#recluster-row input[data-param="' + param + '"]');
+      const label = input && document.querySelector('label[for="' + input.id + '"]');
+      return label ? label.textContent.trim() : param;
+    }
+
+    // Every field is required: a blank one used to be dropped from the
+    // request, so Preview silently ran the saved value instead. The ranges are
+    // the inputs' min and max, which match the server's validation.
     function reclusterBody() {
       const body = {};
-      reclusterInputs().forEach(function(input) {
-        if (input.value === '') return;
-        const n = Number(input.value);
-        if (Number.isFinite(n)) body[input.dataset.param] = n;
-      });
-      return body;
+      for (const input of reclusterInputs()) {
+        input.removeAttribute('aria-invalid');
+        const v = input.validity;
+        let error = null;
+        if (input.value === '' || v.badInput) error = 'enter a number';
+        else if (v.rangeUnderflow || v.rangeOverflow) {
+          error = input.max !== '' ? 'between ' + input.min + ' and ' + input.max : input.min + ' or more';
+        } else if (input.dataset.param === 'min_cluster_size' && !Number.isInteger(Number(input.value))) {
+          // The one count; every other value is a threshold the server takes
+          // fractional, whatever the input's step.
+          error = 'a whole number';
+        }
+        if (error) {
+          input.setAttribute('aria-invalid', 'true');
+          const more = input.closest('details');
+          if (more) more.open = true;
+          input.focus();
+          return { error: fieldTitle(input.dataset.param) + ': ' + error + '.' };
+        }
+        body[input.dataset.param] = Number(input.value);
+      }
+      return { body: body };
     }
 
     async function loadReclusterParams() {
@@ -589,6 +653,7 @@ let facesData = { people: [], clusters: [], singletons: [] };
         if (!r.ok) return;
         const p = await r.json();
         reclusterDefaults = p.defaults;
+        fillDefaultsInTips(p.defaults);
         fillRecluster(p.effective);
         document.getElementById('recluster-learning').textContent = p.learning || '';
         if (p.warnings && p.warnings.length) {
@@ -624,7 +689,7 @@ let facesData = { people: [], clusters: [], singletons: [] };
 
     async function refusalText(r) {
       const body = await r.json().catch(() => ({}));
-      if (r.status === 400 && body.field) return body.field + ' is out of range.';
+      if (r.status === 400 && body.field) return fieldTitle(body.field) + ': out of range.';
       if (r.status === 409) return 'A faces or watch run is in progress; try again when it finishes.';
       return 'Recluster failed (' + r.status + ').';
     }
@@ -640,13 +705,15 @@ let facesData = { people: [], clusters: [], singletons: [] };
 
     async function runRecluster(url, verb) {
       const line = document.getElementById('recluster-result');
+      const request = reclusterBody();
+      if (request.error) { line.textContent = request.error; return null; }
       setReclusterBusy(true);
       line.textContent = verb === 'Applied' ? 'Reclustering...' : 'Computing preview...';
       try {
         const r = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(reclusterBody())
+          body: JSON.stringify(request.body)
         });
         if (!r.ok) { line.textContent = await refusalText(r); return null; }
         const s = await r.json();
@@ -672,7 +739,19 @@ let facesData = { people: [], clusters: [], singletons: [] };
       if (!s) return;
       await loadFaces();
       loadQuestion();
+      loadLearningLine();
     }
     window.applyRecluster = applyRecluster;
+
+    // Apply refreshes the identity questions, so what learning contributes
+    // changes with it; the line is otherwise read only when the row opens.
+    async function loadLearningLine() {
+      try {
+        const r = await fetch('/api/faces/cluster-params');
+        if (!r.ok) return;
+        const p = await r.json();
+        document.getElementById('recluster-learning').textContent = p.learning || '';
+      } catch (_) { /* the line keeps what it said */ }
+    }
 
     applyReclusterOpen();

@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { readFile } from "node:fs/promises";
-import { expect, seedFace, test } from "../support/gallery";
+import type { Page } from "@playwright/test";
+import { expect, openLibraryDb, seedFace, seedFaces, test } from "../support/gallery";
 
 // A 512-dim f16 unit vector along `axis`, as the faces table stores embeddings:
 // little-endian, 1.0 = 0x3C00.
@@ -132,4 +133,276 @@ test("another process's writes stay visible after a recluster preview", async ({
   next!.prepare("INSERT INTO faces (hash, bbox, embedding) VALUES ('p1', '0,0,50,50', X'0000')").run();
   next!.close();
   expect(await faces(), "the gallery no longer sees other writers").toBe(5);
+});
+
+const SHOWN = ["eps", "merge_sim", "attach_sim", "min_cluster_size"];
+const MORE = ["min_face_size", "min_blur", "max_generic_sim", "max_landmark_error"];
+
+async function openRow(page: Page, baseURL: string) {
+  await page.goto(`${baseURL}/people`);
+  await page.locator("#recluster-toggle").click();
+  await expect(page.locator("#recluster-row")).toBeVisible();
+  await expect(page.locator('#recluster-row input[data-param="eps"]')).not.toHaveValue("");
+}
+
+for (const width of [1280, 375]) {
+  test(`recluster fields form two aligned columns at ${width}px`, async ({ page, isolatedGallery: gallery }) => {
+    await page.setViewportSize({ width, height: 900 });
+    seedFaces(gallery.libraryRoot, [{ hash: "a1", vector: [1] }]);
+    await openRow(page, gallery.baseURL);
+    const params = (sel: string) =>
+      page.locator(sel).evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.param));
+    expect(await params("#recluster-row > .recluster-fields input[data-param]")).toEqual(SHOWN);
+    const more = page.locator("details.recluster-more");
+    await expect(more).not.toHaveAttribute("open", "");
+    await more.locator("summary").click();
+    expect(await params("details.recluster-more input[data-param]")).toEqual(MORE);
+
+    const lefts = (sel: string) =>
+      page.locator(sel).evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().left)));
+    const inputs = await lefts("#recluster-row input[data-param]");
+    const titles = await lefts("#recluster-row .recluster-field label");
+    expect(new Set(inputs).size, `inputs start at one x: ${inputs}`).toBe(1);
+    expect(new Set(titles).size, `titles start at one x: ${titles}`).toBe(1);
+    expect(inputs[0]).toBeGreaterThan(titles[0]);
+    // Each info icon sits after its title, on its line.
+    const rows = page.locator("#recluster-row .recluster-field");
+    await expect(rows).toHaveCount(8);
+    for (let i = 0; i < 8; i++) {
+      const t = await rows.nth(i).locator("label").boundingBox();
+      const b = await rows.nth(i).locator("button.param-info").boundingBox();
+      expect(b!.x).toBeGreaterThan(t!.x);
+      expect(Math.abs(b!.y + b!.height / 2 - (t!.y + t!.height / 2))).toBeLessThan(6);
+    }
+    // Actions below the last field, and nothing in the row wider than a phone.
+    const lastField = await rows.nth(7).boundingBox();
+    const actions = await page.locator(".recluster-actions").boundingBox();
+    expect(actions!.y).toBeGreaterThanOrEqual(lastField!.y + lastField!.height);
+    const overflow = await page.locator("#recluster-row *").evaluateAll((els) =>
+      els.filter((e) => e.getBoundingClientRect().right > window.innerWidth).map((e) => e.outerHTML.slice(0, 60)));
+    expect(overflow).toEqual([]);
+  });
+}
+
+test("each recluster value explains itself by click, tap and keyboard", async ({ page, isolatedGallery: gallery }) => {
+  seedFaces(gallery.libraryRoot, [{ hash: "a1", vector: [1] }]);
+  await openRow(page, gallery.baseURL);
+  await page.locator("details.recluster-more summary").click();
+  await expect(page.locator("#recluster-row button.param-info")).toHaveCount(8);
+  const epsIcon = page.getByRole("button", { name: "About eps" });
+  const epsTip = page.locator("#rc-eps-tip");
+  await expect(epsTip).toBeHidden();
+  await expect(page.locator("#rc-eps")).toHaveAttribute("aria-describedby", "rc-eps-tip");
+  // A click (a tap on a phone) opens and pins it, with the default filled in.
+  await epsIcon.click();
+  await expect(epsTip).toBeVisible();
+  await expect(epsIcon).toHaveAttribute("aria-expanded", "true");
+  await expect(epsTip).toContainText("Default 0.6.");
+  await page.keyboard.press("Escape");
+  await page.mouse.move(1, 1); // hovering the icon shows it too
+  await expect(epsTip).toBeHidden();
+  await expect(epsIcon).toHaveAttribute("aria-expanded", "false");
+  // Keyboard focus shows it without a click.
+  await page.locator("#rc-eps").focus();
+  await page.keyboard.press("Shift+Tab");
+  await expect(epsIcon).toBeFocused();
+  await expect(epsTip).toBeVisible();
+  // Opening another closes the first; a click elsewhere closes the open one.
+  const mergeIcon = page.getByRole("button", { name: "About merge" });
+  await mergeIcon.click();
+  await expect(page.locator("#rc-merge-tip")).toContainText("Default 0.35.");
+  await page.getByRole("button", { name: "About attach" }).click();
+  await expect(mergeIcon).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator("#rc-merge-tip")).toBeHidden();
+  await page.mouse.click(5, 5);
+  await expect(page.locator("#rc-attach-tip")).toBeHidden();
+  for (const id of ["rc-min-size", "rc-min-face", "rc-sharpness", "rc-generic", "rc-landmark"]) {
+    await expect(page.locator(`#${id}-tip .param-default`)).toHaveText(/^Default [\d.]+\.$/);
+  }
+});
+
+// A number input reports text that is not a number as an empty value, so the
+// empty case covers it; Playwright cannot type letters into one.
+test("invalid recluster values are refused and nothing runs", async ({ page, isolatedGallery: gallery }) => {
+  seedFaces(gallery.libraryRoot, [{ hash: "a1", vector: [1] }]);
+  const posts: string[] = [];
+  page.on("request", (r) => {
+    if (r.method() === "POST" && r.url().includes("/api/faces/recluster")) posts.push(r.url());
+  });
+  await openRow(page, gallery.baseURL);
+  const line = page.locator("#recluster-result");
+  const eps = page.locator("#rc-eps");
+  const minSize = page.locator("#rc-min-size");
+
+  await eps.fill("");
+  await page.locator("#recluster-preview").click();
+  await expect(line).toHaveText("eps: enter a number.");
+  await expect(eps).toHaveAttribute("aria-invalid", "true");
+  await expect(eps).toBeFocused();
+
+  await eps.fill("3");
+  await page.locator("#recluster-apply").click();
+  await expect(line).toHaveText("eps: between 0 and 2.");
+
+  await eps.fill("0.6");
+  await expect(eps).not.toHaveAttribute("aria-invalid", "true");
+  await minSize.fill("0");
+  await page.locator("#recluster-preview").click();
+  await expect(line).toHaveText("min size: 1 or more.");
+  await minSize.fill("2.5");
+  await page.locator("#recluster-preview").click();
+  await expect(line).toHaveText("min size: a whole number.");
+  // A bad value under a closed More opens it, so the marked field is seen.
+  await minSize.fill("3");
+  await page.locator("#rc-sharpness").evaluate((e) => ((e as HTMLInputElement).value = "-1"));
+  await expect(page.locator("details.recluster-more")).not.toHaveAttribute("open", "");
+  await page.locator("#recluster-preview").click();
+  await expect(line).toHaveText("sharpness: 0 or more.");
+  await expect(page.locator("#rc-sharpness")).toBeFocused();
+  expect(posts, "nothing was posted").toHaveLength(0);
+
+  // Only min size is a count; a fractional sharpness or face size is a value
+  // the server takes, so the form sends it.
+  await page.locator("#rc-sharpness").fill("82.5");
+  await page.locator("#rc-min-face").fill("80.5");
+  await page.locator("#recluster-preview").click();
+  await expect(line).toContainText("Preview:");
+  expect(posts).toHaveLength(1);
+
+  // The server's own refusal names the field by its title too.
+  await page.locator("#rc-sharpness").fill("80");
+  await page.route("**/api/faces/recluster/preview", (route) =>
+    route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ field: "merge_sim" }) }));
+  await page.locator("#recluster-preview").click();
+  await expect(line).toHaveText("merge: out of range.");
+});
+
+// Each value moves the grouping the way its description says. Faces sit at
+// chosen angles in tight groups: [1] and [0.5, 0.866] are 0.5 alike (cosine
+// distance 0.5), [0.6, 0, 0.8] is 0.6 alike to [1], and [0, 1] is unrelated.
+// Each test changes one value from a stated baseline and reads Preview.
+async function preview(page: Page, values: Record<string, string>) {
+  await page.locator("details.recluster-more").evaluate((d) => ((d as HTMLDetailsElement).open = true));
+  for (const [param, value] of Object.entries(values)) {
+    await page.locator(`#recluster-row input[data-param="${param}"]`).fill(value);
+  }
+  const line = page.locator("#recluster-result");
+  const done = page.waitForResponse((r) => r.url().includes("/api/faces/recluster/preview"));
+  await page.locator("#recluster-preview").click();
+  await done;
+  await expect(line).toContainText("Preview:");
+  return (await line.textContent())!;
+}
+
+const group = (hash: string, vector: number[], n: number) =>
+  Array.from({ length: n }, (_, i) => ({ hash: `${hash}${i}`, vector }));
+
+test("lower eps splits look-alikes", async ({ page, isolatedGallery: gallery }) => {
+  seedFaces(gallery.libraryRoot, [...group("a", [1], 3), ...group("b", [0.5, 0.866], 3)]);
+  await openRow(page, gallery.baseURL);
+  const base = { merge_sim: "0.9", attach_sim: "1", min_cluster_size: "3" };
+  expect(await preview(page, { ...base, eps: "0.6" })).toContain("Preview: 1 group from 6 of 6");
+  expect(await preview(page, { ...base, eps: "0.3" })).toContain("Preview: 2 groups from 6 of 6");
+});
+
+test("lower merge rejoins a person split in two", async ({ page, isolatedGallery: gallery }) => {
+  seedFaces(gallery.libraryRoot, [...group("a", [1], 3), ...group("b", [0.5, 0.866], 3)]);
+  await openRow(page, gallery.baseURL);
+  const base = { eps: "0.3", attach_sim: "1", min_cluster_size: "3" };
+  expect(await preview(page, { ...base, merge_sim: "0.9" })).toContain("Preview: 2 groups from 6 of 6");
+  expect(await preview(page, { ...base, merge_sim: "0.4" })).toContain("Preview: 1 group from 6 of 6");
+});
+
+test("attach pulls a leftover in, and 1 turns it off", async ({ page, isolatedGallery: gallery }) => {
+  seedFaces(gallery.libraryRoot, [...group("a", [1], 3), { hash: "loner", vector: [0.6, 0, 0.8] }]);
+  await openRow(page, gallery.baseURL);
+  const base = { eps: "0.3", merge_sim: "0.9", min_cluster_size: "3" };
+  expect(await preview(page, { ...base, attach_sim: "1" })).toContain("from 3 of 4 unnamed faces; 1 left single");
+  expect(await preview(page, { ...base, attach_sim: "0.5" })).toContain("from 4 of 4 unnamed faces; 0 left single");
+});
+
+test("a larger min size leaves more faces single", async ({ page, isolatedGallery: gallery }) => {
+  seedFaces(gallery.libraryRoot, [...group("a", [1], 3), ...group("c", [0, 1], 2)]);
+  await openRow(page, gallery.baseURL);
+  expect(await preview(page, { min_cluster_size: "2" })).toContain("Preview: 2 groups from 5 of 5");
+  expect(await preview(page, { min_cluster_size: "3" })).toContain(
+    "Preview: 1 group from 3 of 5 unnamed faces; 2 left single"
+  );
+});
+
+test("the quality gates in More hold out tiny and blurred faces", async ({ page, isolatedGallery: gallery }) => {
+  seedFaces(gallery.libraryRoot, [
+    ...group("a", [1], 3),
+    { hash: "tiny", vector: [1], side: 40 },
+    { hash: "soft", vector: [1], blur: 50 }
+  ]);
+  await openRow(page, gallery.baseURL);
+  const base = { attach_sim: "1" };
+  expect(await preview(page, { ...base, min_face_size: "80", min_blur: "80" })).toContain(
+    "from 3 of 5 unnamed faces; 2 left single (2 held out by quality)"
+  );
+  expect(await preview(page, { ...base, min_face_size: "30", min_blur: "80" })).toContain(
+    "from 4 of 5 unnamed faces; 1 left single (1 held out by quality)"
+  );
+  expect(await preview(page, { ...base, min_face_size: "80", min_blur: "40" })).toContain(
+    "from 4 of 5 unnamed faces; 1 left single (1 held out by quality)"
+  );
+});
+
+test("apply regroups, keeps named faces, saves, and re-reads the learning line", async ({
+  page,
+  isolatedGallery: gallery
+}) => {
+  seedFaces(gallery.libraryRoot, [
+    ...group("a", [1], 3),
+    ...group("c", [0, 1], 2),
+    { hash: "named", vector: [1], label: "Ayşe" }
+  ]);
+  const settings = await page.request.patch(`${gallery.baseURL}/api/settings`, {
+    headers: { "content-type": "application/merge-patch+json" },
+    data: JSON.stringify({ faces: { learning: true } })
+  });
+  expect(settings.ok()).toBeTruthy();
+  await openRow(page, gallery.baseURL);
+  await expect(page.locator("#recluster-learning")).not.toHaveText("");
+
+  // The toggle closes and reopens the row; Defaults refills an edited field.
+  await page.locator("#rc-eps").fill("0.4");
+  await page.locator("#recluster-defaults").click();
+  await expect(page.locator("#rc-eps")).toHaveValue("0.6");
+  await page.locator("#recluster-toggle").click();
+  await expect(page.locator("#recluster-row")).toBeHidden();
+  // Reopening reloads the saved values; wait for them before typing.
+  const reloaded = page.waitForResponse((r) => r.url().includes("/api/faces/cluster-params"));
+  await page.locator("#recluster-toggle").click();
+  await reloaded;
+  await expect(page.locator("#recluster-row")).toBeVisible();
+  await expect(page.locator("#rc-eps")).toHaveValue("0.6");
+
+  const reads: string[] = [];
+  page.on("request", (q) => {
+    if (q.url().includes("/api/faces/cluster-params")) reads.push(q.url());
+  });
+  await page.locator("#rc-min-size").fill("2");
+  await page.locator("#recluster-apply").click();
+  await expect(page.locator("#recluster-result")).toContainText("Applied: 2 groups from 5 of 5 unnamed faces");
+  await expect.poll(() => reads.length, { message: "the learning line is re-read after Apply" }).toBeGreaterThan(0);
+
+  const db = openLibraryDb(gallery.libraryRoot);
+  const named = db.prepare("SELECT confirmed, person_label, cluster_id FROM faces WHERE hash = 'named'").get();
+  const grouped = db
+    .prepare("SELECT count(*) AS n FROM faces WHERE cluster_id IS NOT NULL AND person_label IS NULL")
+    .get() as { n: number };
+  db.close();
+  expect({ ...named }).toEqual({ confirmed: 1, person_label: "Ayşe", cluster_id: null });
+  expect(grouped.n).toBe(5);
+
+  const saved = JSON.parse(await readFile(join(gallery.libraryRoot, ".videre", "gallery.json"), "utf8"));
+  expect(saved.faces.clustering).toEqual({ min_cluster_size: 2 });
+  // The row's open state is saved after a short quiet period.
+  await expect
+    .poll(async () => (await (await page.request.get(`${gallery.baseURL}/api/settings`)).json()).effective.routes.people.reclusterOpen)
+    .toBe(true);
+  await page.reload();
+  await expect(page.locator("#rc-min-size")).toHaveValue("2");
 });
