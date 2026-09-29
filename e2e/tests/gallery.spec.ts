@@ -24,6 +24,14 @@ test("a back-to-top button appears once the grid is scrolled, bottom right", asy
   await button.click();
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
   await expect(button).toBeHidden();
+
+  // Never on the People pages: there it would sit on top of the People panel
+  // at the right, so those pages do not get it at all, scrolled or not.
+  for (const path of ["/people", "/people/person/nobody"]) {
+    await page.goto(`${gallery.baseURL}${path}`);
+    await page.evaluate(() => { document.body.style.minHeight = "5000px"; window.scrollTo(0, 2000); });
+    await expect(page.locator(".to-top"), path).toHaveCount(0);
+  }
 });
 
 test("renders and expands the duplicate-review route", async ({ page, gallery }) => {
