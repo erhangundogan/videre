@@ -768,6 +768,36 @@ fn the_back_link_returns_to_the_labeling_ui_not_the_file_list() {
 }
 
 #[test]
+fn processing_reports_outstanding_work_only_while_watch_runs() {
+    let lib = fixture();
+    // A second photo nothing has detected faces on yet.
+    let path = lib.context().paths.root.join("çiçek.jpg");
+    lib.conn()
+        .execute(
+            "INSERT INTO file_hashes (path, hash, ext, size_bytes) VALUES (?1, 'def456', 'jpg', 10)",
+            [path.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+    let server = Server::start(&lib);
+
+    let (status, body) = server.get("/api/processing");
+    assert_eq!(status, 200, "{body}");
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(json, serde_json::json!({"watch": false, "stages": []}));
+
+    // A running watch holds the library's `watch` lock.
+    let _watch = videre_core::library_locks::try_command(&lib.context(), "watch").unwrap();
+    let (_, body) = server.get("/api/processing");
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(json["watch"], true, "{body}");
+    assert_eq!(
+        json["stages"],
+        serde_json::json!([{"stage": "faces", "outstanding": 1}]),
+        "embed is left out while its model is not downloaded: {body}"
+    );
+}
+
+#[test]
 fn the_api_the_labeling_ui_depends_on_answers_json() {
     let lib = fixture();
     let server = Server::start(&lib);

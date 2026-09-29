@@ -77,7 +77,9 @@ videre watch: Kadıköy/deniz.jpg: scanned, no faces, embed skipped: model not d
 
 A batch of more than 20 files prints the totals and only the files that were
 not completed. `--silent` turns the lines off; [`videre status`](/commands/status/)
-counts whatever is still outstanding.
+counts whatever is still outstanding. While watch has work outstanding, the
+[gallery](/commands/gallery/)'s nav shows a small "still processing" note that
+opens a list of what each stage has left, and disappears at zero.
 
 | Stage | What it does |
 |---|---|

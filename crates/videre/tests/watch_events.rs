@@ -551,6 +551,17 @@ fn a_copy_joins_its_place_from_the_batch(last_recompute_ms: i64) {
         "the copy joins the original's place"
     );
     assert_eq!(count, 2, "the map's marker count must match its grid");
+    // And status agrees: nothing left to place.
+    let out = lib.cmd().args(["status", "--json"]).output().unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let locations = json["report"]["coverage"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["stage"] == "locations")
+        .cloned()
+        .unwrap();
+    assert_eq!(locations["outstanding"], 0, "{locations}");
 }
 
 #[test]
