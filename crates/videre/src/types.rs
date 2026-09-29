@@ -138,6 +138,8 @@ pub struct StatsJson {
     pub library: videre_core::library_stats::LibraryStats,
     /// Every file type, largest first; the text output shows the top 12.
     pub by_type: Vec<videre_core::library_stats::TypeBreakdown>,
+    /// Conflicts between the filename extension and last scanned MIME.
+    pub mismatches: videre_core::library_stats::MismatchReport,
     /// What videre stores for this library, largest first.
     pub disk_use: Vec<videre_core::disk::Usage>,
 }

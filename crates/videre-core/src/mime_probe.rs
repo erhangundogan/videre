@@ -125,6 +125,21 @@ fn mime_for_ext(ext: &str) -> Option<&'static str> {
     })
 }
 
+/// Whether the stored filename extension conflicts with a known MIME found
+/// during the last scan. Missing or unrecognised scan evidence proves nothing.
+pub fn is_content_mismatch(ext: &str, detected_mime: Option<&str>) -> bool {
+    let Some(mime) = detected_mime else {
+        return false;
+    };
+    if !PHOTO_MIMES.contains(&mime) && !VIDEO_MIMES.contains(&mime) {
+        return false;
+    }
+    if matches!(ext.to_ascii_lowercase().as_str(), "mov" | "mp4" | "m4v") {
+        return !VIDEO_MIMES.contains(&mime);
+    }
+    mime_for_ext(ext).is_some_and(|expected| expected != mime)
+}
+
 /// The type to route on: the detected mime when known, else derived from the
 /// extension.
 ///
@@ -350,5 +365,47 @@ mod tests {
     fn the_sentinel_with_an_unknown_extension_stays_unknown() {
         assert_eq!(effective_mime(Some(UNKNOWN_MIME), "xyz"), None);
         assert!(!is_embeddable(Some(UNKNOWN_MIME), "xyz"));
+    }
+
+    #[test]
+    fn content_mismatch_requires_known_conflicting_evidence() {
+        for (ext, mime) in [
+            ("jpg", "image/jpeg"),
+            ("jpeg", "image/jpeg"),
+            ("JPG", "image/jpeg"),
+            ("JPEG", "image/jpeg"),
+            ("png", "image/png"),
+            ("gif", "image/gif"),
+            ("webp", "image/webp"),
+            ("bmp", "image/bmp"),
+            ("tif", "image/tiff"),
+            ("tiff", "image/tiff"),
+            ("dng", "image/tiff"),
+            ("heic", "image/heic"),
+        ] {
+            assert!(!is_content_mismatch(ext, Some(mime)), "{ext} {mime}");
+        }
+        for ext in ["mov", "mp4", "m4v"] {
+            for mime in ["video/quicktime", "video/mp4"] {
+                assert!(!is_content_mismatch(ext, Some(mime)), "{ext} {mime}");
+            }
+        }
+        for (ext, mime) in [
+            ("png", "image/jpeg"),
+            ("jpg", "image/png"),
+            ("mp4", "image/jpeg"),
+        ] {
+            assert!(is_content_mismatch(ext, Some(mime)), "{ext} {mime}");
+        }
+        for mime in [
+            None,
+            Some(""),
+            Some(UNKNOWN_MIME),
+            Some("application/x-unknown"),
+        ] {
+            assert!(!is_content_mismatch("jpg", mime), "{mime:?}");
+        }
+        assert!(!is_content_mismatch("xyz", Some("image/jpeg")));
+        assert!(!is_content_mismatch("", Some("image/jpeg")));
     }
 }
