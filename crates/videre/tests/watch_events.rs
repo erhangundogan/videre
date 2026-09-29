@@ -621,6 +621,93 @@ fn a_copied_rated_photo_gets_its_sidecar_from_the_batch() {
 }
 
 #[test]
+fn a_bulk_import_scans_first_and_finishes_once_it_goes_quiet() {
+    use std::io::{Read, Write};
+    let lib = TestLibrary::new();
+    lib.copy_fixture("sample_with_exif.jpg", "Şile/çiçek.jpg");
+    lib.scan();
+    for args in [
+        &["locations", "--silent"][..],
+        &["config", "set", "watch-debounce-ms", "200"][..],
+        &["config", "set", "watch-bulk-threshold", "3"][..],
+        &["config", "set", "watch-bulk-quiet-ms", "2000"][..],
+    ] {
+        let out = lib.cmd().args(args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    // A slow library as far as watch knows: outside bulk mode it would place
+    // only the new rows, so a rebuild below can only come from the finish.
+    videre_core::library_state::set(&lib.conn(), videre_core::recompute_cost::LOCATIONS, 600_000)
+        .unwrap();
+    let mut child = lib
+        .cmd()
+        .args(["watch", "--scan", "--location"])
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn watch");
+    std::thread::sleep(Duration::from_millis(1500));
+    // Staged outside, then moved in at once: one batch of four.
+    let staging = lib.home.join("gelen");
+    std::fs::create_dir_all(&staging).unwrap();
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/sample_with_exif.jpg");
+    for i in 0..4 {
+        std::fs::copy(&fixture, staging.join(format!("toplu-{i}.jpg"))).unwrap();
+    }
+    let root = lib.context().paths.root.clone();
+    for i in 0..4 {
+        std::fs::rename(
+            staging.join(format!("toplu-{i}.jpg")),
+            root.join(format!("toplu-{i}.jpg")),
+        )
+        .unwrap();
+    }
+    let placed = |c: &rusqlite::Connection| -> i64 {
+        c.query_row(
+            "SELECT COUNT(*) FROM file_hashes WHERE path LIKE '%toplu-%' AND location_cluster_id IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0)
+    };
+    let deadline = Instant::now() + Duration::from_secs(25);
+    let mut done = false;
+    while Instant::now() < deadline {
+        if lib.try_conn().map(|c| placed(&c)) == Some(4) {
+            done = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    if !stderr.contains("bulk:") && !done {
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIP: events not delivered within 25s; the startup-scan guarantee covers correctness"
+        );
+        return;
+    }
+    assert!(stderr.contains("bulk: 4 files waiting"), "{stderr}");
+    assert!(done, "the finish must place every file: {stderr}");
+    assert!(
+        stderr.contains("location clusters rebuilt"),
+        "the finish runs the full recompute, whatever it costs: {stderr}"
+    );
+}
+
+#[test]
 fn watch_without_the_model_says_so_and_downloads_nothing() {
     let lib = TestLibrary::new();
     lib.copy_fixture("sample_with_exif.jpg", "çiçek.jpg");

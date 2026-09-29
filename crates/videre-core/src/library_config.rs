@@ -24,6 +24,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// when `watch_debounce_ms` is absent.
 pub const WATCH_DEBOUNCE_MS_DEFAULT: u64 = 1500;
 
+/// Built-in number of waiting files at which watch switches to bulk mode, when
+/// `watch_bulk_threshold` is absent.
+pub const WATCH_BULK_THRESHOLD_DEFAULT: u64 = 1000;
+/// Built-in quiet period, in milliseconds, after which a bulk import is
+/// finished in one pass, when `watch_bulk_quiet_ms` is absent.
+pub const WATCH_BULK_QUIET_MS_DEFAULT: u64 = 30_000;
+
 /// Built-in size, in megabytes, at which a log file rotates.
 pub const LOG_MAX_SIZE_MB_DEFAULT: u64 = 10;
 /// Built-in number of rotated log files kept per log file.
@@ -113,6 +120,12 @@ pub struct LibraryConfig {
     /// Debounce window for watch's event coalescing, in ms; `None` means the
     /// built-in default (`WATCH_DEBOUNCE_MS_DEFAULT`).
     pub watch_debounce_ms: Option<u64>,
+    /// Waiting files at which watch switches to bulk mode; `None` means the
+    /// built-in default (`WATCH_BULK_THRESHOLD_DEFAULT`).
+    pub watch_bulk_threshold: Option<u64>,
+    /// Quiet period after which bulk mode finishes, in ms; `None` means the
+    /// built-in default (`WATCH_BULK_QUIET_MS_DEFAULT`).
+    pub watch_bulk_quiet_ms: Option<u64>,
     /// What the per-command log files record.
     pub log_level: LogLevel,
     /// How log lines are written.
@@ -137,6 +150,8 @@ impl Default for LibraryConfig {
             min_read_rate_mb_s: None,
             max_io_workers: None,
             watch_debounce_ms: None,
+            watch_bulk_threshold: None,
+            watch_bulk_quiet_ms: None,
             log_level: LogLevel::default(),
             log_format: LogFormat::default(),
             log_max_size_mb: LOG_MAX_SIZE_MB_DEFAULT,
@@ -165,6 +180,10 @@ pub enum ConfigKey {
     ExportXmpOnWatch,
     /// `watch_debounce_ms`, a positive integer or absent.
     WatchDebounceMs,
+    /// `watch_bulk_threshold`, a positive integer or absent.
+    WatchBulkThreshold,
+    /// `watch_bulk_quiet_ms`, a positive integer or absent.
+    WatchBulkQuietMs,
     /// `log_level`, one of `error`, `warn`, `info`, `debug`.
     LogLevel,
     /// `log_format`, `json` or `text`.
@@ -187,6 +206,8 @@ impl ConfigKey {
             ConfigKey::Xmp => "xmp_precedence",
             ConfigKey::ExportXmpOnWatch => "export_xmp_on_watch",
             ConfigKey::WatchDebounceMs => "watch_debounce_ms",
+            ConfigKey::WatchBulkThreshold => "watch_bulk_threshold",
+            ConfigKey::WatchBulkQuietMs => "watch_bulk_quiet_ms",
             ConfigKey::LogLevel => "log_level",
             ConfigKey::LogFormat => "log_format",
             ConfigKey::LogMaxSizeMb => "log_max_size_mb",
@@ -371,6 +392,8 @@ fn config_from_table(table: &toml::Table, file: &Path) -> Result<LibraryConfig> 
         min_read_rate_mb_s: read_rate_setting(table, file)?,
         max_io_workers: io_workers_setting(table, file)?,
         watch_debounce_ms: debounce_setting(table, file)?,
+        watch_bulk_threshold: int_setting(table, file, "watch_bulk_threshold", 1)?,
+        watch_bulk_quiet_ms: int_setting(table, file, "watch_bulk_quiet_ms", 1)?,
         log_level: LogLevel::parse(&string_setting(
             table,
             file,
@@ -438,6 +461,20 @@ fn validate_value(key: ConfigKey, value: &toml::Value) -> Result<()> {
         (ConfigKey::Xmp, toml::Value::String(s)) => XmpPrecedence::parse(s).map(|_| ()),
         (ConfigKey::ExportXmpOnWatch, toml::Value::Boolean(_)) => Ok(()),
         (ConfigKey::WatchDebounceMs, toml::Value::Integer(n)) if *n > 0 => Ok(()),
+        (ConfigKey::WatchBulkThreshold | ConfigKey::WatchBulkQuietMs, toml::Value::Integer(n))
+            if *n > 0 =>
+        {
+            Ok(())
+        }
+        (
+            k @ (ConfigKey::WatchBulkThreshold | ConfigKey::WatchBulkQuietMs),
+            toml::Value::Integer(n),
+        ) => {
+            bail!("{} must be greater than 0, got {n}", k.name())
+        }
+        (k @ (ConfigKey::WatchBulkThreshold | ConfigKey::WatchBulkQuietMs), other) => {
+            bail!("{} must be an integer, got {}", k.name(), other.type_str())
+        }
         (ConfigKey::LogLevel, toml::Value::String(s)) => LogLevel::parse(s).map(|_| ()),
         (ConfigKey::LogFormat, toml::Value::String(s)) => LogFormat::parse(s).map(|_| ()),
         (ConfigKey::LogMaxSizeMb | ConfigKey::LogMaxAgeDays, toml::Value::Integer(n))
@@ -898,6 +935,55 @@ mod tests {
         assert!(edit(
             &ctx,
             ConfigKey::WatchDebounceMs,
+            Some(toml::Value::Integer(0))
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn watch_bulk_settings_read_and_reject_zero() {
+        let (_t, ctx) =
+            library_with_config("watch_bulk_threshold = 3\nwatch_bulk_quiet_ms = 2000\n");
+        let c = load(&ctx.paths).unwrap();
+        assert_eq!(
+            (c.watch_bulk_threshold, c.watch_bulk_quiet_ms),
+            (Some(3), Some(2000))
+        );
+        for body in ["watch_bulk_threshold = 0\n", "watch_bulk_quiet_ms = 0\n"] {
+            let (_t, ctx) = library_with_config(body);
+            assert!(load(&ctx.paths).is_err(), "{body}");
+        }
+        let (_t, ctx) = library_with_config("custom = \"x\"\n");
+        let c = load(&ctx.paths).unwrap();
+        assert_eq!(
+            (c.watch_bulk_threshold, c.watch_bulk_quiet_ms),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn edit_sets_the_watch_bulk_settings() {
+        let (_t, ctx) = library_with_config("custom = \"keep\"\n");
+        edit(
+            &ctx,
+            ConfigKey::WatchBulkThreshold,
+            Some(toml::Value::Integer(5)),
+        )
+        .unwrap();
+        edit(
+            &ctx,
+            ConfigKey::WatchBulkQuietMs,
+            Some(toml::Value::Integer(900)),
+        )
+        .unwrap();
+        let c = load(&ctx.paths).unwrap();
+        assert_eq!(
+            (c.watch_bulk_threshold, c.watch_bulk_quiet_ms),
+            (Some(5), Some(900))
+        );
+        assert!(edit(
+            &ctx,
+            ConfigKey::WatchBulkThreshold,
             Some(toml::Value::Integer(0))
         )
         .is_err());

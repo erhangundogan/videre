@@ -167,9 +167,26 @@ videre status                # pipeline health, what to run next, watch liveness
 videre status --check        # exit non-zero if anything failed, for cron
 ```
 
+## Bulk imports
+
+When 1,000 or more files are waiting at once, a camera import or a folder of
+thousands copied in, watch switches to bulk mode. It keeps scanning as the files
+arrive, so they show up in the gallery at once, but holds everything else until
+no new file has arrived for 30 seconds. Then it runs every other stage once
+over the whole import, each model loaded once, followed by the full face
+regroup and place recompute whatever they cost, each stage showing its
+progress as the standalone command does. It says when it switches:
+
+```text
+videre watch: bulk: 4213 files waiting; scanning as they arrive, everything else once no file has arrived for 30s
+```
+
+Until the import finishes, its files count as outstanding in
+[`videre status`](/commands/status/).
+
 ## Tuning
 
-The one knob is the debounce window, the time a file must stay quiet before
+The main knob is the debounce window, the time a file must stay quiet before
 its event settles into a batch:
 
 ```bash
@@ -177,8 +194,15 @@ videre config set watch-debounce-ms 500     # default 1500
 ```
 
 Lower it for the fastest possible reaction to a single file; raise it on a
-chatty importer or a slow mount so more of a burst lands in one batch. See
-[config](/commands/config/).
+chatty importer or a slow mount so more of a burst lands in one batch. Bulk mode has its own two, the number of
+waiting files that starts it and the quiet period that finishes it:
+
+```bash
+videre config set watch-bulk-threshold 500      # default 1000 files
+videre config set watch-bulk-quiet-ms 60000     # default 30000
+```
+
+See [config](/commands/config/).
 
 ## Caveats
 

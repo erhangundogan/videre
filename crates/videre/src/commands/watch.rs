@@ -149,6 +149,46 @@ fn block_timeout(
     }
 }
 
+/// What one drain does with the pending set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DrainMode {
+    /// Every stage, for the batch.
+    Normal,
+    /// A bulk import is still arriving: scan only, so files show up at once,
+    /// and keep them pending for the finish.
+    ScanOnly,
+    /// The bulk import went quiet: every stage once over everything collected,
+    /// each model loaded once, with the full place recompute and face regroup.
+    BulkFinish,
+}
+
+/// The mode for the next drain, and whether bulk mode is on after it. Bulk
+/// starts when `threshold` files are waiting and holds, scanning only, until no
+/// event has arrived for `quiet`; then one finish runs everything. Pure so the
+/// rules are unit-testable.
+fn next_mode(
+    pending: usize,
+    bulk: bool,
+    since_event: Duration,
+    threshold: usize,
+    quiet: Duration,
+) -> (DrainMode, bool) {
+    if !bulk && pending < threshold {
+        return (DrainMode::Normal, false);
+    }
+    if since_event >= quiet {
+        (DrainMode::BulkFinish, false)
+    } else {
+        (DrainMode::ScanOnly, true)
+    }
+}
+
+/// While bulk mode is on, the loop must wake at the quiet deadline even with no
+/// event, or the finish would wait for the next one.
+fn bulk_wake(bulk: bool, since_event: Duration, quiet: Duration) -> Option<Duration> {
+    bulk.then(|| quiet.saturating_sub(since_event))
+}
+
 /// The backoff between wakes after a cycle hit a systemic disk error:
 /// start at the pending-retry cadence, double, and never exceed the
 /// maintenance cadence - the failing volume is retried hourly, not
@@ -191,6 +231,55 @@ fn fold_io_backoff(io_backoff: &mut Duration, result: &Result<ReconcileOutcome>)
 #[cfg(test)]
 mod scheduler_tests {
     use super::*;
+
+    const THRESHOLD: usize = 1000;
+    const QUIET: Duration = Duration::from_secs(30);
+
+    #[test]
+    fn a_small_batch_drains_normally() {
+        assert_eq!(
+            next_mode(10, false, Duration::ZERO, THRESHOLD, QUIET),
+            (DrainMode::Normal, false)
+        );
+    }
+
+    #[test]
+    fn a_large_batch_enters_bulk_and_only_scans() {
+        assert_eq!(
+            next_mode(1000, false, Duration::ZERO, THRESHOLD, QUIET),
+            (DrainMode::ScanOnly, true)
+        );
+    }
+
+    #[test]
+    fn bulk_keeps_scanning_while_files_arrive() {
+        assert_eq!(
+            next_mode(40, true, Duration::from_secs(5), THRESHOLD, QUIET),
+            (DrainMode::ScanOnly, true),
+            "bulk holds even after the pending set shrank below the threshold"
+        );
+    }
+
+    #[test]
+    fn a_quiet_folder_finishes_the_bulk_import_in_one_pass() {
+        assert_eq!(
+            next_mode(2000, true, Duration::from_secs(31), THRESHOLD, QUIET),
+            (DrainMode::BulkFinish, false)
+        );
+    }
+
+    #[test]
+    fn bulk_wakes_the_loop_at_the_quiet_deadline() {
+        assert_eq!(
+            bulk_wake(true, Duration::from_secs(10), QUIET),
+            Some(Duration::from_secs(20))
+        );
+        assert_eq!(
+            bulk_wake(true, Duration::from_secs(40), QUIET),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(bulk_wake(false, Duration::ZERO, QUIET), None);
+    }
 
     #[test]
     fn a_complete_rescan_supersedes_the_pending_batch() {
@@ -405,6 +494,42 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
     // on a short backoff; never a blocking wait, never a drop.
     let mut pending: BTreeSet<std::path::PathBuf> = BTreeSet::new();
     let mut last_maintenance = Instant::now();
+    // Bulk mode: a large import scans as it arrives and runs everything else
+    // once it goes quiet (see `next_mode`).
+    let settings = &ctx.library.settings;
+    let bulk_threshold = settings
+        .watch_bulk_threshold
+        .unwrap_or(videre_core::library_config::WATCH_BULK_THRESHOLD_DEFAULT)
+        as usize;
+    let bulk_quiet = Duration::from_millis(
+        settings
+            .watch_bulk_quiet_ms
+            .unwrap_or(videre_core::library_config::WATCH_BULK_QUIET_MS_DEFAULT),
+    );
+    let mut bulk = false;
+    let mut last_event = Instant::now();
+    let drain = |pending: &mut BTreeSet<std::path::PathBuf>,
+                 io_backoff: &mut Duration,
+                 bulk: &mut bool,
+                 last_event: Instant| {
+        let (mode, on) = next_mode(
+            pending.len(),
+            *bulk,
+            last_event.elapsed(),
+            bulk_threshold,
+            bulk_quiet,
+        );
+        if on && !*bulk && !args.silent {
+            tracing::info!(
+                "videre watch: bulk: {} files waiting; scanning as they arrive, \
+                 everything else once no file has arrived for {}s",
+                pending.len(),
+                bulk_quiet.as_secs()
+            );
+        }
+        *bulk = on;
+        drain_pending(args, ctx, pending, io_backoff, mode);
+    };
 
     // Startup incremental scan, run with the watcher already registered:
     // everything that changed while watch was down is caught here, and
@@ -441,7 +566,7 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
         // so an event storm cannot hit the volume ahead of the cadence.
         if !io_backoff.is_zero() {
             std::thread::sleep(io_backoff);
-            drain_pending(args, ctx, &mut pending, &mut io_backoff);
+            drain(&mut pending, &mut io_backoff, &mut bulk, last_event);
         }
         // A pending batch, an owed rescan, or the maintenance deadline: each
         // buys its own short wake instead of an idle block.
@@ -454,6 +579,8 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
             // counting the backoff here too would double every wait.
             PENDING_RETRY_BACKOFF,
         );
+        let timeout = bulk_wake(bulk, last_event.elapsed(), bulk_quiet)
+            .map_or(timeout, |wake| timeout.min(wake));
         match rx.recv_timeout(timeout) {
             Ok(Ok(batch)) => {
                 if videre::watch_events::needs_full_rescan(batch.iter().map(|e| &e.event)) {
@@ -469,10 +596,17 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
                     last_maintenance = Instant::now();
                     continue;
                 }
+                let mut arrived = false;
                 for p in videre::watch_events::affected_paths(batch.iter().map(|e| &e.event)) {
-                    pending.insert(p);
+                    arrived |= pending.insert(p);
                 }
-                drain_pending(args, ctx, &mut pending, &mut io_backoff);
+                // Only a path not already waiting is an arrival. Events for
+                // files already pending (the bulk scan itself touches them)
+                // would otherwise keep a finished import from ever going quiet.
+                if arrived {
+                    last_event = Instant::now();
+                }
+                drain(&mut pending, &mut io_backoff, &mut bulk, last_event);
             }
             Ok(Err(errs)) => {
                 for e in errs {
@@ -507,7 +641,7 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
                     rescan_owed = !apply_rescan_outcome(&mut pending, outcome.ok());
                     last_maintenance = Instant::now();
                 }
-                drain_pending(args, ctx, &mut pending, &mut io_backoff);
+                drain(&mut pending, &mut io_backoff, &mut bulk, last_event);
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 // The backend died (its thread dropped or panicked): stop
@@ -540,6 +674,7 @@ fn drain_pending(
     ctx: &CommandContext,
     pending: &mut std::collections::BTreeSet<std::path::PathBuf>,
     io_backoff: &mut Duration,
+    mode: DrainMode,
 ) {
     if pending.is_empty() {
         return;
@@ -570,6 +705,16 @@ fn drain_pending(
         match stage("scan", "scan stage", &mut fatal, || {
             run_scan_stage(args, ctx, &conn, Some(&batch), &mut Vec::new())
         }) {
+            Some(StageOutcome::Ran) if mode == DrainMode::ScanOnly => {
+                // Bulk: the files are indexed and visible; everything else
+                // waits for the finish, so they stay pending.
+                if let Err(e) =
+                    videre_core::pipeline_runs::record_heartbeat_in(&conn, &ctx.library, "watch")
+                {
+                    failed("could not record the batch heartbeat", e);
+                }
+                return;
+            }
             Some(StageOutcome::Ran) => {}
             Some(StageOutcome::Busy) => return, // keep pending; retry on the next backoff
             None => {
@@ -602,7 +747,7 @@ fn drain_pending(
         // only the new faces and leave the regroup to the hourly pass.
         if args.faces
             && stage("faces", "people stage", &mut fatal, || {
-                run_people_stage(args, ctx, &conn)
+                run_people_stage(args, ctx, &conn, mode == DrainMode::BulkFinish)
             }) != Some(StageOutcome::Ran)
         {
             complete = false;
@@ -647,7 +792,7 @@ fn drain_pending(
         // marker counted one, and the map disagreed with its own grid.
         if args.location
             && stage("locations", "places stage", &mut fatal, || {
-                run_places_stage(args, ctx, &conn)
+                run_places_stage(args, ctx, &conn, mode == DrainMode::BulkFinish)
             }) != Some(StageOutcome::Ran)
         {
             complete = false;
@@ -1394,20 +1539,22 @@ fn stored_radius(conn: &rusqlite::Connection) -> Result<f64> {
 }
 
 /// Places for an event batch's new GPS rows. When the last full recompute was
-/// cheap (`recompute_cost`) the batch runs it, exactly as the hourly pass
-/// would; otherwise, and always under a manual radius the watcher must not
-/// recompute at, only the unplaced rows are placed, and the full recompute is
-/// left to the hourly pass.
+/// cheap (`recompute_cost`), or `force_full` (a bulk import's finish), the batch
+/// runs it, exactly as the hourly pass would; otherwise, and always under a
+/// manual radius the watcher must not recompute at, only the unplaced rows are
+/// placed, and the full recompute is left to the hourly pass.
 fn run_places_stage(
     args: &WatchArgs,
     ctx: &CommandContext,
     conn: &rusqlite::Connection,
+    force_full: bool,
 ) -> Result<StageOutcome> {
     use videre_core::location_cluster;
     let radius = stored_radius(conn)?;
     let manual = (radius - location_cluster::DEFAULT_CLUSTER_RADIUS_KM).abs() > f64::EPSILON;
     if !manual
-        && videre_core::recompute_cost::is_cheap(conn, videre_core::recompute_cost::LOCATIONS)?
+        && (force_full
+            || videre_core::recompute_cost::is_cheap(conn, videre_core::recompute_cost::LOCATIONS)?)
     {
         return run_locations_recluster_stage(args, ctx, conn);
     }
@@ -1433,14 +1580,17 @@ fn run_places_stage(
 }
 
 /// People for an event batch's new faces: the full regroup when the last one
-/// was cheap, else only the new faces attach to their nearest person and the
-/// regroup is left to the hourly pass.
+/// was cheap or `force_full` (a bulk import's finish), else only the new faces
+/// attach to their nearest person and the regroup is left to the hourly pass.
 fn run_people_stage(
     args: &WatchArgs,
     ctx: &CommandContext,
     conn: &rusqlite::Connection,
+    force_full: bool,
 ) -> Result<StageOutcome> {
-    if videre_core::recompute_cost::is_cheap(conn, videre_core::recompute_cost::FACES)? {
+    if force_full
+        || videre_core::recompute_cost::is_cheap(conn, videre_core::recompute_cost::FACES)?
+    {
         return run_recluster_stage(args, ctx, conn);
     }
     tracked_stage(
