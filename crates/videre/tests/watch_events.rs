@@ -466,6 +466,103 @@ fn a_batch_blocked_by_a_faces_run_retries_and_processes_when_free() {
     );
 }
 
+/// A placed photo, then a live watch and a copy of it. The copy must share the
+/// original's place and that place must count 2, from the event batch alone,
+/// whether the batch runs the full recompute (`last_recompute_ms` under the
+/// budget) or places only the new row (over it). Skips, like the other live
+/// tests, if the platform delivers no event in time.
+fn a_copy_joins_its_place_from_the_batch(last_recompute_ms: i64) {
+    use std::io::Write;
+    let lib = TestLibrary::new();
+    lib.copy_fixture("sample_with_exif.jpg", "Şile/çiçek.jpg");
+    lib.scan();
+    let out = lib.cmd().args(["locations", "--silent"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    videre_core::library_state::set(
+        &lib.conn(),
+        videre_core::recompute_cost::LOCATIONS,
+        last_recompute_ms,
+    )
+    .unwrap();
+    let out = lib
+        .cmd()
+        .args(["config", "set", "watch-debounce-ms", "200"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+
+    let mut child = lib
+        .cmd()
+        .args(["watch", "--scan", "--location", "--silent"])
+        .spawn()
+        .expect("spawn watch");
+    std::thread::sleep(Duration::from_millis(1500)); // startup pass and registration
+    lib.copy_fixture("sample_with_exif.jpg", "kopya/çiçek.jpg");
+    let root = lib.context().paths.root.clone();
+    let original = root.join("Şile/çiçek.jpg").to_string_lossy().into_owned();
+    let copy = root.join("kopya/çiçek.jpg").to_string_lossy().into_owned();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut scanned = false;
+    let mut placed = None;
+    while Instant::now() < deadline {
+        if let Some(c) = lib.try_conn() {
+            let row = |p: &str| -> Option<Option<i64>> {
+                c.query_row(
+                    "SELECT location_cluster_id FROM file_hashes WHERE path = ?1",
+                    [p],
+                    |r| r.get(0),
+                )
+                .ok()
+            };
+            if let Some(cluster) = row(&copy) {
+                scanned = true;
+                if cluster.is_some() {
+                    let count: i64 = c
+                        .query_row(
+                            "SELECT photo_count FROM location_clusters WHERE id = ?1",
+                            [cluster],
+                            |r| r.get(0),
+                        )
+                        .unwrap();
+                    placed = Some((cluster, row(&original).flatten(), count));
+                    break;
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    if !scanned {
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIP: event not delivered within 20s; the startup-scan guarantee covers correctness"
+        );
+        return;
+    }
+    let (copy_place, original_place, count) =
+        placed.expect("the batch scanned the copy but left it without a place");
+    assert_eq!(
+        copy_place, original_place,
+        "the copy joins the original's place"
+    );
+    assert_eq!(count, 2, "the map's marker count must match its grid");
+}
+
+#[test]
+fn a_copied_photo_joins_its_place_when_a_full_recompute_is_cheap() {
+    a_copy_joins_its_place_from_the_batch(10);
+}
+
+#[test]
+fn a_copied_photo_joins_its_place_when_a_full_recompute_is_slow() {
+    a_copy_joins_its_place_from_the_batch(600_000);
+}
+
 #[test]
 fn a_scan_that_changes_gps_data_triggers_the_recluster_on_the_next_pass() {
     let lib = TestLibrary::new();

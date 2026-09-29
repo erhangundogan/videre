@@ -591,6 +591,20 @@ fn drain_pending(
                 return;
             }
         }
+        // People for the batch's new faces, now rather than on the hourly
+        // pass: the full regroup when the last one was cheap, else attach
+        // only the new faces and leave the regroup to the hourly pass.
+        if args.faces
+            && stage("faces", "people stage", &mut fatal, || {
+                run_people_stage(args, ctx, &conn)
+            }) != Some(StageOutcome::Ran)
+        {
+            complete = false;
+            if fatal {
+                enter_io_backoff(io_backoff);
+                return;
+            }
+        }
         if args.heic {
             stage("heic", "heic stage", &mut fatal, || {
                 run_heic_stage(args, ctx, &conn)
@@ -603,6 +617,20 @@ fn drain_pending(
         if args.location
             && stage("locations", "location stage", &mut fatal, || {
                 run_location_stage(args, ctx, &conn)
+            }) != Some(StageOutcome::Ran)
+        {
+            complete = false;
+            if fatal {
+                enter_io_backoff(io_backoff);
+                return;
+            }
+        }
+        // Places for the batch's new GPS rows, now rather than on the hourly
+        // pass: without this a copied photo kept no place while its original's
+        // marker counted one, and the map disagreed with its own grid.
+        if args.location
+            && stage("locations", "places stage", &mut fatal, || {
+                run_places_stage(args, ctx, &conn)
             }) != Some(StageOutcome::Ran)
         {
             complete = false;
@@ -1249,6 +1277,86 @@ fn run_location_stage(
 /// needs no new machinery. A standalone run at a non-default radius is a manual
 /// choice: the watcher leaves it alone rather than silently reclustering at the
 /// default (the radius the last recompute used is recorded by that recompute).
+/// The radius the last recompute ran at, else the default: the radius a place
+/// created for a new row gets, so it matches its neighbours.
+fn stored_radius(conn: &rusqlite::Connection) -> Result<f64> {
+    use videre_core::location_cluster;
+    Ok(
+        videre_core::library_state::get_string(conn, location_cluster::LOCATIONS_RADIUS)?
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(location_cluster::DEFAULT_CLUSTER_RADIUS_KM),
+    )
+}
+
+/// Places for an event batch's new GPS rows. When the last full recompute was
+/// cheap (`recompute_cost`) the batch runs it, exactly as the hourly pass
+/// would; otherwise, and always under a manual radius the watcher must not
+/// recompute at, only the unplaced rows are placed, and the full recompute is
+/// left to the hourly pass.
+fn run_places_stage(
+    args: &WatchArgs,
+    ctx: &CommandContext,
+    conn: &rusqlite::Connection,
+) -> Result<StageOutcome> {
+    use videre_core::location_cluster;
+    let radius = stored_radius(conn)?;
+    let manual = (radius - location_cluster::DEFAULT_CLUSTER_RADIUS_KM).abs() > f64::EPSILON;
+    if !manual
+        && videre_core::recompute_cost::is_cheap(conn, videre_core::recompute_cost::LOCATIONS)?
+    {
+        return run_locations_recluster_stage(args, ctx, conn);
+    }
+    tracked_stage(
+        ctx,
+        conn,
+        "location-assign",
+        "locations",
+        videre_core::library_locks::ActivityMode::Shared,
+        args.silent,
+        || {
+            let out = location_cluster::assign_new_rows(conn, &ctx.library.cache, radius)?;
+            if !args.silent && out.joined + out.created > 0 {
+                tracing::info!(
+                    "videre watch: placed {} new location(s) ({} new place(s))",
+                    out.joined + out.created,
+                    out.created
+                );
+            }
+            Ok(())
+        },
+    )
+}
+
+/// People for an event batch's new faces: the full regroup when the last one
+/// was cheap, else only the new faces attach to their nearest person and the
+/// regroup is left to the hourly pass.
+fn run_people_stage(
+    args: &WatchArgs,
+    ctx: &CommandContext,
+    conn: &rusqlite::Connection,
+) -> Result<StageOutcome> {
+    if videre_core::recompute_cost::is_cheap(conn, videre_core::recompute_cost::FACES)? {
+        return run_recluster_stage(args, ctx, conn);
+    }
+    tracked_stage(
+        ctx,
+        conn,
+        "face-attach",
+        "faces",
+        videre_core::library_locks::ActivityMode::Shared,
+        args.silent,
+        || {
+            let params = super::cluster_settings::resolve_for_run(
+                &ctx.library.paths.state,
+                &videre_ml::cluster_params::PartialClusteringParameters::default(),
+                true,
+            );
+            videre_ml::pipeline::attach_new_faces(conn, &params, args.silent)?;
+            Ok(())
+        },
+    )
+}
+
 fn run_locations_recluster_stage(
     args: &WatchArgs,
     ctx: &CommandContext,
