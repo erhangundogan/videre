@@ -1747,9 +1747,14 @@ fn processing_json(
     let model = library.settings.default_model.clone();
     videre_core::embeddings_db::attach_for_read_or_placeholder_in(&conn, library, &model)?;
     let embeds = videre_ml::model::is_cached(&model);
+    // Only the stages this watcher runs: work it will never do is not "still
+    // processing", and a note for it would never go away.
+    let runs = videre_core::library_state::peek_string(&conn, status_report::WATCH_STAGES)?
+        .unwrap_or_default();
     let stages: Vec<serde_json::Value> = status_report::coverage_in(&conn, &model, &model)?
         .into_iter()
-        .filter(|c| matches!(c.stage, "faces" | "locations") || (embeds && c.heavy))
+        .filter(|c| status_report::watch_covers(&runs, c.stage))
+        .filter(|c| embeds || !c.heavy)
         .filter(|c| c.outstanding > 0)
         .map(|c| serde_json::json!({"stage": c.stage, "outstanding": c.outstanding}))
         .collect();

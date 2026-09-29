@@ -785,8 +785,25 @@ fn processing_reports_outstanding_work_only_while_watch_runs() {
     let json: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(json, serde_json::json!({"watch": false, "stages": []}));
 
-    // A running watch holds the library's `watch` lock.
+    // A running watch holds the library's `watch` lock and records the stages
+    // it runs. One that does not detect faces leaves them out of the note.
     let _watch = videre_core::library_locks::try_command(&lib.context(), "watch").unwrap();
+    videre_core::library_state::set_string(
+        &lib.conn(),
+        videre_core::status_report::WATCH_STAGES,
+        "scan,location",
+    )
+    .unwrap();
+    let (_, body) = server.get("/api/processing");
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(json["stages"], serde_json::json!([]), "{body}");
+
+    videre_core::library_state::set_string(
+        &lib.conn(),
+        videre_core::status_report::WATCH_STAGES,
+        "scan,faces,location,embed",
+    )
+    .unwrap();
     let (_, body) = server.get("/api/processing");
     let json: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(json["watch"], true, "{body}");

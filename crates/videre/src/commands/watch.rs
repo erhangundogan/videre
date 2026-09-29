@@ -84,6 +84,23 @@ pub fn run(mut args: WatchArgs, ctx: &CommandContext) -> Result<()> {
     // second `videre watch` against this library is refused rather than racing.
     // No pipeline_runs row: watch has no "finished" moment, only running or not.
     let _watch_lock = videre_core::library_locks::try_command(&ctx.library, "watch")?;
+    // Which stages this watcher runs, for the gallery's "still processing"
+    // note: work a watcher never does must not read as in progress.
+    let runs: Vec<&str> = [
+        ("scan", args.scan),
+        ("faces", args.faces),
+        ("heic", args.heic),
+        ("location", args.location),
+        ("embed", args.embed),
+    ]
+    .into_iter()
+    .filter_map(|(name, on)| on.then_some(name))
+    .collect();
+    videre_core::library_state::set_string(
+        &videre_core::library_db::open_existing(&ctx.library)?,
+        videre_core::status_report::WATCH_STAGES,
+        &runs.join(","),
+    )?;
 
     // The watcher registers BEFORE the startup reconcile: anything that lands
     // while the startup scan walks queues in the event channel and drains
