@@ -41,7 +41,7 @@ By type:
 
 Mismatched files: 1
   A mismatch means the filename and last scanned content disagree; verify before renaming.
-  image/jpeg  "/Photos/sunset.png"
+  image/jpeg  /Photos/sunset.png
 
 Disk use:
   embeddings           446.3 MB
@@ -73,6 +73,9 @@ more paths were omitted. A zero count is shown explicitly. The report uses
 the last scan's stored MIME, not a fresh read of the media. It does not imply
 videre damaged the file or that the file can be decoded; inspect it before
 renaming anything. Files with unknown MIME are not reported as mismatches.
+Printable characters in paths, including Unicode combining marks, are shown
+as-is. Control characters and invisible direction or zero-width characters are
+escaped, so a filename can neither alter the terminal nor display reordered.
 
 **Disk use** is what videre itself stores, not your photos, largest first.
 Entries marked `(rebuildable)` cost only time to recreate: thumbnails are

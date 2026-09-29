@@ -95,7 +95,7 @@ fn run_text(ctx: &CommandContext, all_mismatches: bool) -> anyhow::Result<()> {
     println!("Mismatched files: {}", mismatches.count);
     println!("  A mismatch means the filename and last scanned content disagree; verify before renaming.");
     for file in &mismatches.files {
-        println!("  {}  {:?}", file.mime, file.path);
+        println!("  {}  {}", file.mime, escape_path_controls(&file.path));
     }
     if mismatches.truncated {
         println!(
@@ -136,6 +136,31 @@ fn run_text(ctx: &CommandContext, all_mismatches: bool) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// A path as the user should read it: every printable character as-is,
+/// including combining marks, so a decomposed Turkish name stays readable,
+/// but control characters and invisible direction or width characters
+/// escaped, so a filename can neither drive the terminal nor display
+/// reordered (a right-to-left override can make `gnp.jpg` read as `jpg.png`).
+fn escape_path_controls(path: &str) -> String {
+    let mut escaped = String::with_capacity(path.len());
+    for ch in path.chars() {
+        if ch.is_control() || is_invisible_format(ch) {
+            escaped.extend(ch.escape_default());
+        } else {
+            escaped.push(ch);
+        }
+    }
+    escaped
+}
+
+/// Bidirectional overrides, isolates and marks, and zero-width characters.
+fn is_invisible_format(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{061c}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}'
+    )
 }
 
 fn run_json(ctx: &CommandContext, all_mismatches: bool) -> anyhow::Result<StatsJson> {

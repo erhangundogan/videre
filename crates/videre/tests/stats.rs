@@ -115,7 +115,7 @@ fn stats_mismatch_path_is_escaped_in_text() {
         .root
         .canonicalize()
         .unwrap()
-        .join("strange\n\u{1b}[31m.png")
+        .join("strange\n\u{1b}[31m\u{202e}gnp.jpg.png")
         .to_string_lossy()
         .into_owned();
     lib.init_db()
@@ -136,12 +136,45 @@ fn stats_mismatch_path_is_escaped_in_text() {
     assert!(text.contains("\\n"), "{text}");
     assert!(text.contains("\\u{1b}"), "{text}");
     assert!(!text.contains('\u{1b}'), "{text}");
+    // A right-to-left override would make the name display reversed.
+    assert!(text.contains("\\u{202e}"), "{text}");
+    assert!(!text.contains('\u{202e}'), "{text}");
     assert!(!text.lines().any(|line| line.starts_with("[31m")), "{text}");
 
     let json = lib.cmd().args(["stats", "--json"]).output().unwrap();
     assert!(json.status.success());
     let doc: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
     assert_eq!(doc["mismatches"]["files"][0]["path"], path);
+}
+
+#[test]
+fn stats_mismatch_path_keeps_printable_combining_marks() {
+    let lib = common::TestLibrary::new();
+    let path = lib
+        .root
+        .canonicalize()
+        .unwrap()
+        .join("Fotog\u{306}raf_I\u{307}zmir.png")
+        .to_string_lossy()
+        .into_owned();
+    lib.init_db()
+        .execute(
+            "INSERT INTO file_hashes (path, hash, ext, mime)
+             VALUES (?1, 'turkish-hash', 'png', 'image/jpeg')",
+            [&path],
+        )
+        .unwrap();
+
+    let output = lib.cmd().arg("stats").output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains(&path), "printable path changed: {text}");
+    assert!(!text.contains("\\u{306}"), "combining mark escaped: {text}");
+    assert!(!text.contains("\\u{307}"), "combining mark escaped: {text}");
 }
 
 #[test]
