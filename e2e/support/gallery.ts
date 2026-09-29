@@ -292,7 +292,9 @@ export function seedFaces(libraryRoot: string, faces: SeedFace[]): void {
   const db = openLibraryDb(libraryRoot);
   const insert = db.prepare(
     "INSERT INTO faces (hash, bbox, embedding, blur, confirmed, person_label) VALUES (?, ?, ?, ?, ?, ?)");
+  const person = db.prepare("INSERT OR IGNORE INTO people (name, full_name) VALUES (?, ?)");
   for (const f of faces) {
+    if (f.label) person.run(f.label, f.label);
     const v = new Array(512).fill(0);
     f.vector.forEach((x, i) => (v[i] = x));
     const side = f.side ?? 100;

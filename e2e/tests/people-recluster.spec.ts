@@ -340,3 +340,61 @@ test("the quality gates in More hold out tiny and blurred faces", async ({ page,
     "from 4 of 5 unnamed faces; 1 left single (1 held out by quality)"
   );
 });
+
+test("apply regroups, keeps named faces, saves, and re-reads the learning line", async ({
+  page,
+  isolatedGallery: gallery
+}) => {
+  seedFaces(gallery.libraryRoot, [
+    ...group("a", [1], 3),
+    ...group("c", [0, 1], 2),
+    { hash: "named", vector: [1], label: "Ayşe" }
+  ]);
+  const settings = await page.request.patch(`${gallery.baseURL}/api/settings`, {
+    headers: { "content-type": "application/merge-patch+json" },
+    data: JSON.stringify({ faces: { learning: true } })
+  });
+  expect(settings.ok()).toBeTruthy();
+  await openRow(page, gallery.baseURL);
+  await expect(page.locator("#recluster-learning")).not.toHaveText("");
+
+  // The toggle closes and reopens the row; Defaults refills an edited field.
+  await page.locator("#rc-eps").fill("0.4");
+  await page.locator("#recluster-defaults").click();
+  await expect(page.locator("#rc-eps")).toHaveValue("0.6");
+  await page.locator("#recluster-toggle").click();
+  await expect(page.locator("#recluster-row")).toBeHidden();
+  // Reopening reloads the saved values; wait for them before typing.
+  const reloaded = page.waitForResponse((r) => r.url().includes("/api/faces/cluster-params"));
+  await page.locator("#recluster-toggle").click();
+  await reloaded;
+  await expect(page.locator("#recluster-row")).toBeVisible();
+  await expect(page.locator("#rc-eps")).toHaveValue("0.6");
+
+  const reads: string[] = [];
+  page.on("request", (q) => {
+    if (q.url().includes("/api/faces/cluster-params")) reads.push(q.url());
+  });
+  await page.locator("#rc-min-size").fill("2");
+  await page.locator("#recluster-apply").click();
+  await expect(page.locator("#recluster-result")).toContainText("Applied: 2 groups from 5 of 5 unnamed faces");
+  await expect.poll(() => reads.length, { message: "the learning line is re-read after Apply" }).toBeGreaterThan(0);
+
+  const db = openLibraryDb(gallery.libraryRoot);
+  const named = db.prepare("SELECT confirmed, person_label, cluster_id FROM faces WHERE hash = 'named'").get();
+  const grouped = db
+    .prepare("SELECT count(*) AS n FROM faces WHERE cluster_id IS NOT NULL AND person_label IS NULL")
+    .get() as { n: number };
+  db.close();
+  expect({ ...named }).toEqual({ confirmed: 1, person_label: "Ayşe", cluster_id: null });
+  expect(grouped.n).toBe(5);
+
+  const saved = JSON.parse(await readFile(join(gallery.libraryRoot, ".videre", "gallery.json"), "utf8"));
+  expect(saved.faces.clustering).toEqual({ min_cluster_size: 2 });
+  // The row's open state is saved after a short quiet period.
+  await expect
+    .poll(async () => (await (await page.request.get(`${gallery.baseURL}/api/settings`)).json()).effective.routes.people.reclusterOpen)
+    .toBe(true);
+  await page.reload();
+  await expect(page.locator("#rc-min-size")).toHaveValue("2");
+});

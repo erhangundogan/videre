@@ -735,7 +735,19 @@ let facesData = { people: [], clusters: [], singletons: [] };
       if (!s) return;
       await loadFaces();
       loadQuestion();
+      loadLearningLine();
     }
     window.applyRecluster = applyRecluster;
+
+    // Apply refreshes the identity questions, so what learning contributes
+    // changes with it; the line is otherwise read only when the row opens.
+    async function loadLearningLine() {
+      try {
+        const r = await fetch('/api/faces/cluster-params');
+        if (!r.ok) return;
+        const p = await r.json();
+        document.getElementById('recluster-learning').textContent = p.learning || '';
+      } catch (_) { /* the line keeps what it said */ }
+    }
 
     applyReclusterOpen();
