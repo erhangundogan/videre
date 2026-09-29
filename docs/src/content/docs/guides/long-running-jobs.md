@@ -37,35 +37,14 @@ from stacking up when a run takes longer than its interval.
 
 ## What is allowed but a bad idea
 
-:::caution[Do not run two HEIC-converting jobs at once]
-[`embed`](/commands/embed/), [`faces`](/commands/faces/) and
-[`watch`](/commands/watch/)'s faces and HEIC stages all convert HEIC and video
-through the same macOS QuickLook service. Each limits its own concurrency, but
-the limit is **per process**, so two videre processes together permit twice as
-many conversions against one shared service.
-
-Measured with `faces` and `embed` running simultaneously: HEIC loading averaged
-**16.3 seconds** per file against about 7.6 uncontended, and one file exceeded
-the 20 second timeout entirely, having converted in 0.39 s standalone
-immediately afterwards.
-
-Nothing is corrupted, and the skipped file is correctly not marked as done, so
-it retries next run. But both jobs get dramatically slower, which is the
-opposite of what running them in parallel was meant to achieve.
-:::
-
-Run them one after another instead:
-
-```bash
-videre embed && videre faces
-```
-
-If you keep `watch` running, stop it first or restrict it to stages that do not
-decode:
-
-```bash
-videre --library ~/Photos watch --scan --location    # safe alongside a manual embed
-```
+**Two jobs that convert HEIC or video share QuickLook.**
+[`embed`](/commands/embed/), [`faces`](/commands/faces/), the gallery's
+previews and [`watch`](/commands/watch/)'s faces and HEIC stages all convert
+through the one macOS QuickLook service. Every videre process on the machine
+shares one limit of simultaneous conversions (6 by default, or the largest
+`--qlmanage-concurrency` in use), whichever library it works on. Running them
+together is safe and nothing is skipped, but each waits its turn, so together
+they take about as long as one after the other.
 
 **`videre locations` blocks writers for its whole run.** It does its work in a
 single transaction, measured at about 8 minutes on a 70,000 file library, and

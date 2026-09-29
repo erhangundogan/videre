@@ -91,12 +91,8 @@ it stopped either way. See [long-running jobs](/guides/long-running-jobs/).
 
 ## Concurrency across commands
 
-The HEIC conversion limit is **per process**. Running two videre commands at
-once therefore permits twice as many conversions against one shared QuickLook
-agent, and they contend: with `faces` and `embed` running together, HEIC load
-averaged 16.3s against ~7.6s uncontended, and one file exceeded the 20s timeout
-that converted in 0.39s on its own.
-
-The impact is bounded - a skipped file is not marked as done and self-heals on
-the next run - but if you use [`videre watch`](/commands/watch/), expect manual
-commands run alongside it to be slower than they are on their own.
+The HEIC and video conversion limit (`--qlmanage-concurrency`, default 6) is
+shared by every videre process on the machine, so running `faces` next to
+`embed`, a gallery or `watch` does not multiply the load on QuickLook: the
+commands take turns within one limit. See
+[running things at once](/guides/long-running-jobs/).

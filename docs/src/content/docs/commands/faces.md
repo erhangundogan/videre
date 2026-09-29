@@ -167,7 +167,7 @@ videre faces --max-generic-sim 0.4     # legacy fallback, see below (default 0.4
 videre faces --attach-sim 0.4          # stray faces join their nearest group (default 0.4)
 videre faces --batch 8                 # images per batch (default 8)
 videre faces --workers 8               # parallel workers (default: 2x your CPU cores)
-videre faces --qlmanage-concurrency 6  # simultaneous HEIC conversions (default 6)
+videre faces --qlmanage-concurrency 6  # simultaneous HEIC conversions, shared by every videre process (default 6)
 ```
 
 ### Clustering parameters
