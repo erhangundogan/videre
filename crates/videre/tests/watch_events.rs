@@ -708,6 +708,77 @@ fn a_bulk_import_scans_first_and_finishes_once_it_goes_quiet() {
 }
 
 #[test]
+fn each_batch_says_what_each_file_got_and_what_it_did_not() {
+    use std::io::{Read, Write};
+    let lib = TestLibrary::new();
+    lib.copy_fixture("sample_with_exif.jpg", "Şile/çiçek.jpg");
+    lib.scan();
+    for args in [
+        &["locations", "--silent"][..],
+        &["config", "set", "watch-debounce-ms", "200"][..],
+    ] {
+        let out = lib.cmd().args(args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let mut child = lib
+        .cmd()
+        .args(["watch", "--scan", "--location", "--embed"])
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn watch");
+    std::thread::sleep(Duration::from_millis(1500));
+    lib.copy_fixture("sample_with_exif.jpg", "kopya/çiçek.jpg");
+    let copy = lib.context().paths.root.join("kopya/çiçek.jpg");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut placed = false;
+    while Instant::now() < deadline && !placed {
+        placed = lib
+            .try_conn()
+            .and_then(|c| {
+                c.query_row(
+                    "SELECT location_cluster_id FROM file_hashes WHERE path = ?1",
+                    [copy.to_string_lossy()],
+                    |r| r.get::<_, Option<i64>>(0),
+                )
+                .ok()
+            })
+            .flatten()
+            .is_some();
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    std::thread::sleep(Duration::from_millis(500)); // the report follows the stages
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    if !placed {
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIP: event not delivered within 20s; the startup-scan guarantee covers correctness"
+        );
+        return;
+    }
+    let line = stderr
+        .lines()
+        .find(|l| l.contains("kopya/çiçek.jpg: scanned"))
+        .unwrap_or_else(|| panic!("no report line for the copy:\n{stderr}"));
+    assert!(
+        line.contains("embed skipped:") && line.contains("not downloaded"),
+        "{line}"
+    );
+    assert!(line.contains("placed in "), "{line}");
+}
+
+#[test]
 fn watch_without_the_model_says_so_and_downloads_nothing() {
     let lib = TestLibrary::new();
     lib.copy_fixture("sample_with_exif.jpg", "çiçek.jpg");

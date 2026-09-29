@@ -67,6 +67,18 @@ scanned, its faces are detected and grouped with their people, it is embedded
 and classified, and it is given a place on the map, all within seconds of
 arriving.
 
+After each batch, watch says what each file got, read back from the library,
+and what it did not get and why:
+
+```text
+videre watch: Kadıköy/çiçek.heic: scanned, 2 faces (1 grouped), embedded (photo), placed in Kadıköy
+videre watch: Kadıköy/deniz.jpg: scanned, no faces, embed skipped: model not downloaded, placed in Kadıköy
+```
+
+A batch of more than 20 files prints the totals and only the files that were
+not completed. `--silent` turns the lines off; [`videre status`](/commands/status/)
+counts whatever is still outstanding.
+
 | Stage | What it does |
 |---|---|
 | `--scan` | Same scan and hash pipeline as [`videre scan`](/commands/scan/), including reading marks from XMP (`--xmp db\|file\|newest`, see [scan](/commands/scan/#reading-marks-from-xmp---xmp)) |

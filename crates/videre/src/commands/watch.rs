@@ -813,6 +813,11 @@ fn drain_pending(
             super::export::export_hashes_in(&conn, ctx, &hashes)
         });
     }
+    if !args.silent && !fatal {
+        if let Err(e) = report_batch(args, ctx, &batch) {
+            failed("batch report", e);
+        }
+    }
     if !fatal {
         // A batch without a disk fault resets the backoff: the volume
         // recovered.
@@ -1668,6 +1673,52 @@ fn run_locations_recluster_stage(
 /// File candidates pass through untouched. Extracted from the scoped scan
 /// so the expansion rule has a deterministic test that cannot be skipped
 /// by OS event delivery.
+/// Print what the batch did for each of its files, read back from the database
+/// (see `watch_report`), so a user can tell what was applied and what was not.
+/// Its own connection: it attaches the model database to check embeddings.
+fn report_batch(
+    args: &WatchArgs,
+    ctx: &CommandContext,
+    batch: &[std::path::PathBuf],
+) -> Result<()> {
+    use super::watch_report::{gather, render, Stages};
+    let conn = videre_core::library_db::open_existing(&ctx.library)?;
+    let rows = batch_rows(&conn, batch)?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let model_id = videre_core::embeddings::resolve_model_id_from(&ctx.library.settings, None)?;
+    let mut embeddable = std::collections::HashSet::new();
+    if args.embed {
+        embeddable = videre_core::embeddings::embeddable_images(&conn, &model_id)?
+            .into_iter()
+            .map(|p| p.hash)
+            .collect();
+        if videre_core::embeddings_db::db_path_in(&ctx.library, &model_id)?.exists() {
+            videre_core::embeddings_db::attach_for_read_in(&conn, &ctx.library, &model_id)?;
+        }
+    }
+    let stages = Stages {
+        faces: args.faces,
+        embed: args.embed,
+        location: args.location,
+        embed_skipped: (args.embed && !videre_ml::model::is_cached(&model_id))
+            .then(|| "model not downloaded".to_string()),
+    };
+    let facts = gather(
+        &conn,
+        &ctx.library.paths.root,
+        &rows,
+        &stages,
+        &model_id,
+        &embeddable,
+    )?;
+    for line in render(&facts) {
+        tracing::info!("videre watch: {line}");
+    }
+    Ok(())
+}
+
 /// `(path, hash)` for every indexed file at or under a batch's paths, a
 /// directory event standing for everything in it. Files the scan did not index
 /// (outside the media selection, unreadable) are simply absent.
