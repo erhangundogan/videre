@@ -38,7 +38,58 @@ fn person_candidates_come_from_the_seeded_library() {
         String::from_utf8_lossy(&output.stderr)
     );
     let out = String::from_utf8_lossy(&output.stdout);
-    assert!(out.contains("Ayşe Demirtaş"), "{out}");
+    // The value is the space-free identity key: bash inserts a completion
+    // unquoted, so a display name with a space would split the line.
+    let line = out
+        .lines()
+        .find(|l| l.starts_with("ayse_demirtas"))
+        .unwrap();
+    assert!(
+        out.lines().all(|l| !l.starts_with("Ayşe")),
+        "the display name must not be a completion value: {out}"
+    );
+}
+
+#[test]
+fn person_candidates_honor_an_invocation_library_flag() {
+    let lib = TestLibrary::new();
+    lib.init_db();
+    lib.copy_fixture("sample_with_exif.jpg", "çiçek.jpg");
+    lib.conn()
+        .execute_batch(
+            "INSERT INTO people (name, full_name) VALUES ('ayse_demirtas', 'Ayşe Demirtaş');",
+        )
+        .unwrap();
+
+    // The completer runs from an unrelated directory; the invocation's own
+    // --library flag names the library whose people complete.
+    let elsewhere = tempfile::tempdir().unwrap();
+    let library_root = lib.context().paths.root.clone();
+    let output = std::process::Command::new(env_binary())
+        .current_dir(elsewhere.path())
+        .env("COMPLETE", "bash")
+        .env("_CLAP_COMPLETE_INDEX", "3")
+        .env("_CLAP_COMPLETE_SPACE", "false")
+        .args([
+            "videre",
+            "--library",
+            library_root.to_string_lossy().as_ref(),
+            "--",
+            "videre",
+            "search",
+            "--person",
+            "ay",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(out.contains("ayse_demirtas"), "{out}");
 }
 
 #[test]

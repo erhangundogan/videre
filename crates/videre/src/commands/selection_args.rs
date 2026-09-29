@@ -22,7 +22,8 @@ pub struct MediaArgs {
         long = "type",
         value_delimiter = ',',
         value_name = "KIND",
-        value_parser = ["image", "video"]
+        value_parser = ["image", "video"],
+        ignore_case = true
     )]
     pub media_type: Vec<String>,
 
@@ -158,7 +159,8 @@ pub struct PresenceArgs {
         long = "has",
         value_delimiter = ',',
         value_name = "FIELD",
-        value_parser = ["gps", "date"]
+        value_parser = ["gps", "date"],
+        ignore_case = true
     )]
     pub has: Vec<String>,
 
@@ -167,7 +169,8 @@ pub struct PresenceArgs {
         long = "missing",
         value_delimiter = ',',
         value_name = "FIELD",
-        value_parser = ["gps", "date"]
+        value_parser = ["gps", "date"],
+        ignore_case = true
     )]
     pub missing: Vec<String>,
 }
@@ -302,6 +305,21 @@ mod tests {
     /// so a fixed-set flag must carry them at parse time - and clap then
     /// rejects an unknown with the choices named, instead of the resolution
     /// layer finding it later.
+    #[test]
+    fn fixed_set_flags_accept_any_case_like_the_old_parsers_did() {
+        use clap::Parser;
+        for args in [
+            ["videre", "search", "--type", "Image"],
+            ["videre", "search", "--has", "GPS"],
+            ["videre", "search", "--missing", "Date"],
+        ] {
+            assert!(
+                crate::Cli::try_parse_from(args).is_ok(),
+                "any case must parse: {args:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_fixed_set_flag_rejects_with_the_choices_named() {
         use clap::Parser;

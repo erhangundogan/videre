@@ -313,21 +313,51 @@ mod self_setup_tests {
 
 use clap_complete::engine::CompletionCandidate;
 
-/// The library under the invocation directory, read-only, or nothing: shell
-/// completion has no `--library` flag to honor, so it reads the default.
+/// The library the completion candidates come from: the one named by the
+/// invocation's own `--library` flag (the shell passes the typed words to the
+/// completer), else the library under the invocation directory. Read-only, or
+/// nothing when the root is not a library.
 fn completion_ctx() -> Option<videre_core::library::LibraryContext> {
     let cwd = std::env::current_dir().ok()?;
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
-    videre_core::library::LibraryContext::new(&cwd, &home.join(".cache/videre")).ok()
+    let root = library_root_from_args().unwrap_or_else(|| cwd.clone());
+    let root = if root.is_absolute() {
+        root
+    } else {
+        cwd.join(root)
+    };
+    videre_core::library::LibraryContext::new(&root, &home.join(".cache/videre")).ok()
+}
+
+/// The value of the invocation's `--library` flag, when one was typed before
+/// the word being completed. Words after the `--` separator are the line
+/// being completed; the flag belongs to the invocation itself.
+fn library_root_from_args() -> Option<PathBuf> {
+    let mut waiting = false;
+    for arg in std::env::args_os().skip(1) {
+        let arg = arg.to_string_lossy().into_owned();
+        if arg == "--" {
+            break;
+        }
+        if waiting {
+            return Some(PathBuf::from(arg));
+        }
+        if arg == "--library" {
+            waiting = true;
+        } else if let Some(value) = arg.strip_prefix("--library=") {
+            return Some(PathBuf::from(value.to_owned()));
+        }
+    }
+    None
 }
 
 fn prefix_filtered(
     current: &OsStr,
     values: impl Iterator<Item = (String, Option<String>)>,
 ) -> Vec<CompletionCandidate> {
-    let current = current.to_string_lossy();
+    let current = current.to_string_lossy().to_lowercase();
     values
-        .filter(|(value, _)| value.starts_with(current.as_ref()))
+        .filter(|(value, _)| value.to_lowercase().starts_with(current.as_str()))
         .map(|(value, help)| {
             let mut c = CompletionCandidate::new(value);
             if let Some(help) = help {
@@ -354,12 +384,12 @@ pub fn person_candidates(current: &OsStr) -> Vec<CompletionCandidate> {
     }) else {
         return Vec::new();
     };
-    let values = rows.flatten().flat_map(|(name, full)| {
-        let mut both = vec![(name.clone(), full.clone())];
-        if let Some(full) = full {
-            both.push((full, Some(name)));
-        }
-        both
+    // The value is the space-free identity key: bash inserts a completion
+    // without quoting, so a display name with a space would split the line.
+    // The display name rides along as the candidate's help text.
+    let values = rows.flatten().map(|(name, full)| {
+        let help = full.filter(|f| *f != name);
+        (name, help)
     });
     prefix_filtered(current, values)
 }
