@@ -617,6 +617,58 @@ impl ClusterOutcome {
     }
 }
 
+/// The per-face quality gate: true when a face is held out of grouping. One
+/// definition, used by the full regroup and by `attach_new_faces`, so a face
+/// watch attaches is judged exactly as a regroup would judge it.
+/// `global_mean` is the normalized mean of every face being judged.
+fn is_low_quality(
+    face: &(i64, Vec<f32>, f32, Option<String>, Option<f32>),
+    params: &crate::cluster_params::ClusteringParameters,
+    global_mean: &[f32],
+) -> bool {
+    let (_, emb, side, landmark, blur) = face;
+    let min_face_px = params.min_face_size;
+    let max_generic_sim = params.max_generic_sim;
+    let max_landmark_err = params.max_landmark_error;
+    let min_blur = params.min_blur;
+    let too_small = *side < min_face_px;
+    // :warning: **The two quality gates are alternatives, not a stack, and
+    // which one applies depends on what the library recorded.**
+    //
+    // `blur` is the better signal: it measures the crop the model is given,
+    // so it is a property of one face. `max_generic_sim` compares a face to
+    // the population mean, which on a personal library largely *is* the most
+    // photographed person - measured at +0.917 correlation between that
+    // score and having a near neighbour, so it discards exactly the faces
+    // worth clustering.
+    //
+    // But a library detected before `blur` existed has none, and simply
+    // dropping the old gate would leave those libraries with nothing at all:
+    // measured, that produces a 33-face cluster of mixed people. So a face
+    // with a blur reading is judged on it, and a face without falls back to
+    // the old gate until the library is re-detected.
+    let has_blur = blur.is_some();
+    let too_generic =
+        !has_blur && !global_mean.is_empty() && cosine_sim(emb, global_mean) > max_generic_sim;
+    // A face whose landmarks are not a face shape was warped into a mangled
+    // 112x112 crop, so its embedding describes the mangling. Those resemble
+    // each other and collect into a cluster of their own, which is what the
+    // two wrong clusters on the labelled corpus turned out to be.
+    //
+    // A face with no stored landmarks predates the column and is not judged
+    // here; it keeps whatever the other gates decide.
+    let bad_landmarks = landmark
+        .as_deref()
+        .and_then(crate::face_align::parse_landmarks)
+        .map(|lm| crate::face_align::landmark_residual(&lm) > max_landmark_err)
+        .unwrap_or(false);
+    // A crop too soft to read carries almost no identity. Measured on a
+    // 1,063-face corpus: faces that clustered had a median sharpness of 894,
+    // those left as singletons 182.
+    let too_blurry = blur.map(|b| b < min_blur).unwrap_or(false);
+    too_small || too_generic || bad_landmarks || too_blurry
+}
+
 /// Clusters `faces` (each `(id, embedding, min_bbox_side_px)`) after gating out
 /// low-quality faces, which come back as unassigned singletons (`None`) instead
 /// of being clustered. Two independent quality signals, a face failing either
@@ -645,56 +697,18 @@ pub fn cluster_with_quality_gate(
         eps,
         min_cluster_size,
         merge_sim,
-        min_face_size: min_face_px,
-        max_generic_sim,
-        max_landmark_error: max_landmark_err,
-        min_blur,
         attach_sim,
+        ..
     } = *params;
     let global_mean = normalized_mean(faces.iter().map(|(_, e, _, _, _)| e));
 
     let mut quality: Vec<(i64, Vec<f32>)> = Vec::new();
     let mut low_quality_ids: Vec<i64> = Vec::new();
-    for (id, emb, side, landmark, blur) in faces {
-        let too_small = *side < min_face_px;
-        // :warning: **The two quality gates are alternatives, not a stack, and
-        // which one applies depends on what the library recorded.**
-        //
-        // `blur` is the better signal: it measures the crop the model is given,
-        // so it is a property of one face. `max_generic_sim` compares a face to
-        // the population mean, which on a personal library largely *is* the most
-        // photographed person - measured at +0.917 correlation between that
-        // score and having a near neighbour, so it discards exactly the faces
-        // worth clustering.
-        //
-        // But a library detected before `blur` existed has none, and simply
-        // dropping the old gate would leave those libraries with nothing at all:
-        // measured, that produces a 33-face cluster of mixed people. So a face
-        // with a blur reading is judged on it, and a face without falls back to
-        // the old gate until the library is re-detected.
-        let has_blur = blur.is_some();
-        let too_generic =
-            !has_blur && !global_mean.is_empty() && cosine_sim(emb, &global_mean) > max_generic_sim;
-        // A face whose landmarks are not a face shape was warped into a mangled
-        // 112x112 crop, so its embedding describes the mangling. Those resemble
-        // each other and collect into a cluster of their own, which is what the
-        // two wrong clusters on the labelled corpus turned out to be.
-        //
-        // A face with no stored landmarks predates the column and is not judged
-        // here; it keeps whatever the other gates decide.
-        let bad_landmarks = landmark
-            .as_deref()
-            .and_then(crate::face_align::parse_landmarks)
-            .map(|lm| crate::face_align::landmark_residual(&lm) > max_landmark_err)
-            .unwrap_or(false);
-        // A crop too soft to read carries almost no identity. Measured on a
-        // 1,063-face corpus: faces that clustered had a median sharpness of 894,
-        // those left as singletons 182.
-        let too_blurry = blur.map(|b| b < min_blur).unwrap_or(false);
-        if too_small || too_generic || bad_landmarks || too_blurry {
-            low_quality_ids.push(*id);
+    for face in faces {
+        if is_low_quality(face, params, &global_mean) {
+            low_quality_ids.push(face.0);
         } else {
-            quality.push((*id, emb.clone()));
+            quality.push((face.0, face.1.clone()));
         }
     }
     // The average-linkage pass below is O(n^2), never silent about starting
@@ -764,15 +778,10 @@ fn attach_leftovers(
             continue;
         }
         let Some(e) = emb.get(id) else { continue };
-        let mut best = (attach_sim, None);
-        for (other, cluster) in &assigned {
-            let Some(oe) = emb.get(other) else { continue };
-            let sim: f32 = e.iter().zip(oe.iter()).map(|(a, b)| a * b).sum();
-            if sim >= best.0 {
-                best = (sim, Some(*cluster));
-            }
-        }
-        if let Some(c) = best.1 {
+        let targets = assigned
+            .iter()
+            .filter_map(|(other, cluster)| emb.get(other).map(|oe| (oe.as_slice(), *cluster)));
+        if let Some(c) = nearest_cluster(e, targets, attach_sim) {
             *slot = Some(c);
             attached += 1;
         }
@@ -780,6 +789,102 @@ fn attach_leftovers(
     if !silent && attached > 0 {
         tracing::info!("Attached {attached} leftover face(s) to their nearest cluster");
     }
+}
+
+/// The cluster of the face most similar to `e`, when that similarity is at
+/// least `attach_sim`. The leftover pass and `attach_new_faces` share it, so a
+/// face watch attaches joins by exactly the regroup's rule.
+fn nearest_cluster<'a>(
+    e: &[f32],
+    targets: impl Iterator<Item = (&'a [f32], i64)>,
+    attach_sim: f32,
+) -> Option<i64> {
+    let mut best = (attach_sim, None);
+    for (oe, cluster) in targets {
+        let sim: f32 = e.iter().zip(oe.iter()).map(|(a, b)| a * b).sum();
+        if sim >= best.0 {
+            best = (sim, Some(cluster));
+        }
+    }
+    best.1
+}
+
+/// What [`attach_new_faces`] did with the faces detected since the last regroup.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct AttachOutcome {
+    /// Faces that joined their nearest grouped face's cluster.
+    pub attached: usize,
+    /// Faces that matched no group, or that the quality gate held out: a
+    /// result, not pending work.
+    pub unassigned: usize,
+}
+
+/// Group the faces detected since the last full regroup without redoing it:
+/// each face above the recluster watermark with no cluster and no confirmed
+/// name joins the cluster of its nearest grouped face at `attach_sim` or
+/// better, after the same quality gate a regroup applies.
+///
+/// This is how `videre watch` puts a new face with its person at once when a
+/// full regroup is too slow to run per batch. It does not advance the
+/// watermark, so the next full regroup still runs and rebalances. A leftover
+/// the last regroup already judged (at or below the watermark) is not revisited.
+pub fn attach_new_faces(
+    conn: &Connection,
+    params: &crate::cluster_params::ClusteringParameters,
+    silent: bool,
+) -> Result<AttachOutcome> {
+    let watermark = videre_core::face_db::recluster_watermark(conn)?;
+    let faces = videre_core::face_db::load_faces_for_clustering(conn)?;
+    let state: std::collections::HashMap<i64, (Option<i64>, bool)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, cluster_id, (confirmed = 1 AND person_label IS NOT NULL) FROM faces",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let is_new = |id: i64| id > watermark && matches!(state.get(&id), Some((None, false)));
+    let mut out = AttachOutcome::default();
+    if !faces.iter().any(|f| is_new(f.0)) {
+        return Ok(out);
+    }
+    // The gate's distinctiveness signal compares a face to the population mean
+    // a regroup would use: every face it would cluster, so the named are left out.
+    let global_mean = normalized_mean(
+        faces
+            .iter()
+            .filter(|f| !matches!(state.get(&f.0), Some((_, true))))
+            .map(|f| &f.1),
+    );
+    let targets: Vec<(&[f32], i64)> = faces
+        .iter()
+        .filter_map(|f| match state.get(&f.0) {
+            Some((Some(cluster), false)) => Some((f.1.as_slice(), *cluster)),
+            _ => None,
+        })
+        .collect();
+    let mut assignments: Vec<(i64, Option<i64>)> = Vec::new();
+    for face in faces.iter().filter(|f| is_new(f.0)) {
+        let cluster = if is_low_quality(face, params, &global_mean) {
+            None
+        } else {
+            nearest_cluster(&face.1, targets.iter().copied(), params.attach_sim)
+        };
+        match cluster {
+            Some(c) => {
+                assignments.push((face.0, Some(c)));
+                out.attached += 1;
+            }
+            None => out.unassigned += 1,
+        }
+    }
+    videre_core::face_db::update_cluster_assignments(conn, &assignments)?;
+    if !silent && out.attached > 0 {
+        tracing::info!(
+            "Grouped {} new face(s) with their nearest person",
+            out.attached
+        );
+    }
+    Ok(out)
 }
 
 /// L2-normalized mean of a set of embeddings, or an empty vec if there are none
@@ -1211,6 +1316,90 @@ mod tests {
         .unwrap();
 
         assert!(result.is_some(), "some faces should cluster");
+    }
+
+    fn cluster_of(conn: &Connection, id: i64) -> Option<i64> {
+        conn.query_row("SELECT cluster_id FROM faces WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    }
+
+    /// Faces 0 and 1 grouped as cluster 7 and face 2 left unassigned by the
+    /// last regroup (watermark 2); `new` are faces detected since.
+    fn regrouped_then(conn: &Connection, new: &[(i64, f32, bool, Option<&str>)]) {
+        let mut all = vec![
+            (0, 0.0, false, None),
+            (1, 8.0, false, None),
+            (2, 9.0, false, None),
+        ];
+        all.extend_from_slice(new);
+        seed_faces(conn, &all);
+        conn.execute("UPDATE faces SET cluster_id = 7 WHERE id IN (0, 1)", [])
+            .unwrap();
+        videre_core::library_state::set(
+            conn,
+            videre_core::library_state::FACE_RECLUSTER_WATERMARK,
+            2,
+        )
+        .unwrap();
+    }
+
+    fn attach_params() -> crate::cluster_params::ClusteringParameters {
+        params(0.6, 2, 1.0, 5.0, 0.4, f32::MAX, 0.0, 0.6)
+    }
+
+    #[test]
+    fn a_new_face_joins_its_nearest_grouped_face() {
+        let conn = Connection::open_in_memory().unwrap();
+        regrouped_then(&conn, &[(3, 10.0, false, None), (4, 90.0, false, None)]);
+        let out = attach_new_faces(&conn, &attach_params(), true).unwrap();
+        assert_eq!(cluster_of(&conn, 3), Some(7));
+        assert_eq!(cluster_of(&conn, 4), None, "a face like nobody stays alone");
+        assert_eq!((out.attached, out.unassigned), (1, 1));
+    }
+
+    #[test]
+    fn the_quality_gate_holds_a_new_face_out_as_a_regroup_would() {
+        let conn = Connection::open_in_memory().unwrap();
+        regrouped_then(&conn, &[(3, 10.0, false, None)]);
+        conn.execute("UPDATE faces SET bbox = '0,0,2,2' WHERE id = 3", [])
+            .unwrap();
+        attach_new_faces(&conn, &attach_params(), true).unwrap();
+        assert_eq!(cluster_of(&conn, 3), None, "too small to group");
+    }
+
+    #[test]
+    fn a_leftover_from_the_last_regroup_is_not_revisited() {
+        let conn = Connection::open_in_memory().unwrap();
+        regrouped_then(&conn, &[]);
+        let out = attach_new_faces(&conn, &attach_params(), true).unwrap();
+        assert_eq!(cluster_of(&conn, 2), None, "the regroup already judged it");
+        assert_eq!((out.attached, out.unassigned), (0, 0));
+    }
+
+    #[test]
+    fn a_named_face_neither_moves_nor_pulls_a_new_face_in() {
+        let conn = Connection::open_in_memory().unwrap();
+        regrouped_then(
+            &conn,
+            &[(3, 80.0, true, Some("ayşe")), (4, 81.0, false, None)],
+        );
+        attach_new_faces(&conn, &attach_params(), true).unwrap();
+        assert_eq!(cluster_of(&conn, 3), None, "a named face keeps no group");
+        assert_eq!(
+            cluster_of(&conn, 4),
+            None,
+            "a named face is no group to join, and cluster 7 is too far"
+        );
+    }
+
+    #[test]
+    fn attaching_does_not_advance_the_watermark() {
+        let conn = Connection::open_in_memory().unwrap();
+        regrouped_then(&conn, &[(3, 10.0, false, None)]);
+        attach_new_faces(&conn, &attach_params(), true).unwrap();
+        assert_eq!(face_db::recluster_watermark(&conn).unwrap(), 2);
     }
 
     #[test]
