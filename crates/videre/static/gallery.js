@@ -300,6 +300,7 @@ const ICON_FLAG=selIcon('<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8
 const ICON_ROT_L=selIcon('<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>');
 const ICON_ROT_R=selIcon('<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>');
 const ICON_MORE=selIcon('<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>');
+const ICON_UP=selIcon('<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>');
 const ICON_TRASH=selIcon('<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>');
 function renderMetaPanel(meta){
   const el = document.getElementById('lbMeta');
@@ -1741,3 +1742,19 @@ function confirmDelete(c){
     d.showModal();
   });
 }
+
+// Back to top: a small button at the bottom right of every grid page, shown
+// once the page has scrolled past one screen, for long tile and list views.
+(function(){
+  var b=document.createElement('button');
+  b.type='button';
+  b.className='to-top';
+  b.title='Back to top';
+  b.setAttribute('aria-label','Back to top');
+  b.innerHTML=ICON_UP;
+  b.addEventListener('click',function(){ window.scrollTo({top:0,behavior:'smooth'}); });
+  function sync(){ b.hidden=window.scrollY<window.innerHeight; }
+  window.addEventListener('scroll',sync,{passive:true});
+  document.body.appendChild(b);
+  sync();
+})();
