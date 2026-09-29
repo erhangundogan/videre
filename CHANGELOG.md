@@ -16,6 +16,30 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.48.1] - 2026-09-29
+
+### Added
+
+- **`videre stats` reports files whose name disagrees with their content**,
+  such as a `.png` that holds a JPEG, from what the last scan detected. It
+  shows the count and the first 10 paths; `--mismatched` lists them all, and
+  `--json` carries them as `mismatches`. Normal container differences, such
+  as a `.mov` holding MP4 video, are not reported.
+- **`videre scan` shows progress within a large file.** While a file of 1 GiB
+  or more hashes, its bytes read, size and read rate appear beside the
+  progress bar, or in a log line every 30 seconds without a terminal.
+
+### Fixed
+
+- **Two videre commands at once could skip HEIC and video files.** Each
+  process limited itself to 6 simultaneous QuickLook conversions, so two
+  processes ran 12, and a file that converts in 5 seconds alone timed out
+  and was recorded as undecodable; two such runs skipped it for good. The
+  limit is now shared by every videre process on the machine, whichever
+  library it works on, and waiting for a turn never counts toward the
+  timeout. The docs describe what happens when commands run together
+  instead of warning against it.
+
 ## [0.48.0] - 2026-09-28
 
 ### Added
@@ -2582,7 +2606,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.48.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.48.1...HEAD
+[0.48.1]: https://github.com/erhangundogan/videre/compare/v0.48.0...v0.48.1
 [0.48.0]: https://github.com/erhangundogan/videre/compare/v0.47.1...v0.48.0
 [0.47.1]: https://github.com/erhangundogan/videre/compare/v0.47.0...v0.47.1
 [0.47.0]: https://github.com/erhangundogan/videre/compare/v0.46.0...v0.47.0
