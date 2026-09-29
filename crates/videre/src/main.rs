@@ -1,8 +1,9 @@
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use std::ffi::{OsStr, OsString};
 
 mod command_context;
 mod commands;
+mod completions;
 mod exit;
 mod logging;
 mod removal;
@@ -37,6 +38,11 @@ struct Cli {
 // clap's name sort takes over.
 #[command(next_display_order = None)]
 enum Command {
+    /// Print a shell completion script (bash, zsh, or fish)
+    Completion {
+        #[arg(value_enum)]
+        shell: clap_complete::shells::Shell,
+    },
     /// Report duplicate files from the database and print paths to remove
     Dedupe(commands::dedupe::DedupeArgs),
     /// Browse the library in a local web UI: files, duplicates, dates, people, map, events
@@ -116,6 +122,12 @@ fn library_option_count(args: &[OsString]) -> usize {
 /// subcommand name as its page slug, so the mapping is total by construction;
 /// `docs_links_point_at_pages_that_exist` in `tests/docs_flags.rs` asserts a
 /// page exists for each.
+/// The command the binary parses and the completion script is generated
+/// from: one definition, so the two cannot drift.
+pub(crate) fn cli_command() -> clap::Command {
+    with_docs_links(Cli::command())
+}
+
 fn with_docs_links(cmd: clap::Command) -> clap::Command {
     let names: Vec<String> = cmd
         .get_subcommands()
@@ -130,8 +142,8 @@ fn with_docs_links(cmd: clap::Command) -> clap::Command {
 fn main() {
     let raw: Vec<OsString> = std::env::args_os().collect();
     let cli = {
-        use clap::{CommandFactory, FromArgMatches};
-        let matches = match with_docs_links(Cli::command()).try_get_matches_from(&raw) {
+        use clap::FromArgMatches;
+        let matches = match cli_command().try_get_matches_from(&raw) {
             Ok(matches) => matches,
             Err(error) => error.exit(),
         };
@@ -149,6 +161,13 @@ fn main() {
     };
     let Cli { library, command } = cli;
     let code = match command {
+        Command::Completion { shell } => {
+            // A broken pipe (piping into head) is the caller's business, not
+            // an error to report.
+            use std::io::Write;
+            let _ = std::io::stdout().write_all(completions::script_for(shell).as_bytes());
+            0
+        }
         Command::Scan(args) => {
             let json = args.json();
             with_ctx_or(
