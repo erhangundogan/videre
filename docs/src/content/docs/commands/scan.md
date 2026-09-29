@@ -147,3 +147,10 @@ skips a file after 20 seconds without read progress. The initial file stat
 has a separate five-second limit. `read-rate` does not control hashing;
 it still applies to other size-bounded file reads. See
 [tuning](/guides/tuning/#slow-drives-and-large-files) for details.
+
+While a file of 1 GB or more is being hashed, its bytes read so far and the
+current rate show beside the progress bar (for several at once, their
+totals), so one large video does not leave the counter sitting still for
+minutes. A falling rate is the early sign of a stalled drive. Without a
+terminal the same line is logged every 30 seconds; `--silent` shows none of
+it.
