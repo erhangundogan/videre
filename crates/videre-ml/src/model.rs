@@ -428,8 +428,8 @@ pub fn is_cached(model_id: &str) -> bool {
 }
 
 /// [`is_cached`] against an explicit hub directory. A snapshot counts when it
-/// holds the config, the tokenizer, and single-file or sharded weights, the
-/// files `Embedder::load` fetches.
+/// holds the config, the tokenizer, and single-file weights or every shard
+/// its index names, the files `Embedder::load` fetches.
 pub fn is_cached_in(hub: &Path, model_id: &str) -> bool {
     let snapshots = hub
         .join(format!("models--{}", model_id.replace('/', "--")))
@@ -441,9 +441,15 @@ pub fn is_cached_in(hub: &Path, model_id: &str) -> bool {
         let p = snap.path();
         p.join("config.json").is_file()
             && p.join("tokenizer.json").is_file()
-            && (p.join("model.safetensors").is_file()
-                || p.join("model.safetensors.index.json").is_file())
+            && (p.join("model.safetensors").is_file() || all_shards_present(&p))
     })
+}
+
+fn all_shards_present(snapshot: &Path) -> bool {
+    std::fs::read_to_string(snapshot.join("model.safetensors.index.json"))
+        .ok()
+        .and_then(|index| shard_names_from_index(&index).ok())
+        .is_some_and(|shards| shards.iter().all(|s| snapshot.join(s).is_file()))
 }
 
 #[cfg(test)]
@@ -518,18 +524,42 @@ mod cache_presence_tests {
         assert!(!is_cached_in(&hub, "owner/other"), "the id names the repo");
     }
 
+    fn sharded(hub: &std::path::Path, shards_present: &[&str]) {
+        snapshot(hub, &["config.json", "tokenizer.json"]);
+        let snap = hub.join("models--owner--model/snapshots/abc123");
+        std::fs::write(
+            snap.join("model.safetensors.index.json"),
+            r#"{"weight_map": {
+                "a": "model-00001-of-00002.safetensors",
+                "b": "model-00002-of-00002.safetensors"
+            }}"#,
+        )
+        .unwrap();
+        for s in shards_present {
+            std::fs::write(snap.join(s), b"x").unwrap();
+        }
+    }
+
     #[test]
     fn a_sharded_snapshot_is_cached() {
         let hub = hub("sharded");
-        snapshot(
+        sharded(
             &hub,
             &[
-                "config.json",
-                "tokenizer.json",
-                "model.safetensors.index.json",
+                "model-00001-of-00002.safetensors",
+                "model-00002-of-00002.safetensors",
             ],
         );
         assert!(is_cached_in(&hub, "owner/model"));
+    }
+
+    // The loader fetches every shard the index names, so an index with a
+    // shard missing would start a download from the watcher.
+    #[test]
+    fn an_index_missing_a_shard_is_not_cached() {
+        let hub = hub("missing-shard");
+        sharded(&hub, &["model-00001-of-00002.safetensors"]);
+        assert!(!is_cached_in(&hub, "owner/model"));
     }
 
     #[test]
