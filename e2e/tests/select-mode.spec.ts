@@ -73,22 +73,49 @@ test("the bar's actions mark, tag and copy the selection", async ({ page, sorted
   await page.goto(sortedGallery.baseURL);
   await page.locator(".gallery-toolbar .select-toggle").first().click();
   const cards = page.locator("#gallery .card[data-hash]");
-  await cards.nth(0).click();
-  await cards.nth(1).click({ modifiers: ["Shift"] });
   const bar = page.locator("#file-sel-bar");
+  const heartX = async () => (await bar.locator('[data-sel-act="like"]').boundingBox())!.x;
+  await cards.nth(0).click();
+  await expect(bar.locator(".sel-count")).toHaveText("1 selected");
+  const firstX = await heartX();
+  await cards.nth(1).click({ modifiers: ["Shift"] });
   await expect(bar.locator(".sel-count")).toHaveText("2 selected");
+  // The buttons hold still while the count changes, up to four digits: the
+  // count keeps one width, so the centred bar never re-centres.
+  expect(await heartX()).toBe(firstX);
+  await bar.locator(".sel-count").evaluate((el) => { el.textContent = "8888 selected"; });
+  expect(await heartX()).toBe(firstX);
+  await bar.locator(".sel-count").evaluate((el) => { el.textContent = "2 selected"; });
+  // Clear is as tall as the icon buttons beside it.
+  const clearBox = (await bar.locator("[data-sel-clear]").boundingBox())!;
+  const heartBox = (await bar.locator('[data-sel-act="like"]').boundingBox())!;
+  expect(clearBox.height).toBe(heartBox.height);
 
-  // Cards 0 and 1: one liked (c_clip), one not, so the heart offers Like.
+  // Cards 0 and 1: one liked (c_clip), one not. A mixed selection is not
+  // all liked, so the heart is unpressed and looks like every other button
+  // in the bar (white, blue outline heart). Pressing it likes them all and
+  // shows it pressed, inverted: blue with a white border and a filled white
+  // heart. Pressing again unlikes them all and unpresses it.
   const heart = bar.locator('[data-sel-act="like"]');
-  await expect(heart).toHaveAttribute("aria-pressed", "false");
-  await expect(heart).toHaveCSS("background-color", "rgb(42, 109, 181)");
+  const heartPath = heart.locator("svg path");
+  const rotate = bar.locator('[data-sel-act="rotate-cw"]');
+  const unpressed = async () => {
+    await expect(heart).toHaveAttribute("aria-pressed", "false");
+    await expect(heart).toHaveCSS("background-color", await rotate.evaluate((el) => getComputedStyle(el).backgroundColor));
+    await expect(heart).toHaveCSS("color", await rotate.evaluate((el) => getComputedStyle(el).color));
+    await expect(heartPath).toHaveCSS("fill", "none");
+  };
+  await unpressed();
   await heart.click();
   await expect(page.locator("#sel-toast")).toHaveText("Liked 2 item(s)");
   await expect(heart).toHaveAttribute("aria-pressed", "true");
-  await expect(heart).toHaveCSS("background-color", "rgb(255, 255, 255)");
+  await expect(heart).toHaveCSS("background-color", "rgb(42, 109, 181)");
+  await expect(heart).toHaveCSS("color", "rgb(255, 255, 255)");
+  await expect(heart).toHaveCSS("border-top-color", "rgb(255, 255, 255)");
+  await expect(heartPath).toHaveCSS("fill", "rgb(255, 255, 255)");
   await heart.click();
   await expect(page.locator("#sel-toast")).toHaveText("Unliked 2 item(s)");
-  await expect(heart).toHaveAttribute("aria-pressed", "false");
+  await unpressed();
 
   await bar.locator('[data-sel-pop="rate"]').click();
   await bar.locator('[data-sel-act="rate"][data-value="4"]').click();
