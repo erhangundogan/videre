@@ -126,6 +126,9 @@ test.describe("map clusters", () => {
 
   test("Escape clears a selection when the lightbox is closed", async ({ page, gallery }) => {
     await page.goto(`${gallery.baseURL}/map/location/berlin?radius=20`);
+    // Escape clears only a loaded selection; pressing it before the place has
+    // loaded did nothing on a slow runner.
+    await expect(page.locator("#map-breadcrumb")).toBeVisible();
     await page.keyboard.press("Escape");
 
     await expect(page).toHaveURL(`${gallery.baseURL}/map`);
