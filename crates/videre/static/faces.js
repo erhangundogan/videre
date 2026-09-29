@@ -568,6 +568,41 @@ let facesData = { people: [], clusters: [], singletons: [] };
       });
     }
 
+    // Info icons: a click or tap pins one description open (closing any
+    // other); Escape or a click elsewhere closes it. Hover and keyboard focus
+    // show it through CSS alone.
+    function closeTips(except) {
+      document.querySelectorAll('#recluster-row .param-info[aria-expanded="true"]').forEach(function(b) {
+        if (b !== except) b.setAttribute('aria-expanded', 'false');
+      });
+    }
+    document.querySelectorAll('#recluster-row .param-info').forEach(function(b) {
+      b.addEventListener('click', function(e) {
+        e.stopPropagation();
+        const open = b.getAttribute('aria-expanded') !== 'true';
+        closeTips(b);
+        b.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+    });
+    document.addEventListener('click', function() { closeTips(null); });
+    document.addEventListener('keydown', function(e) {
+      if (e.key !== 'Escape') return;
+      closeTips(null);
+      const focused = document.activeElement;
+      if (focused && focused.classList.contains('param-info')) focused.blur();
+    });
+
+    // The default in each description comes from the server's built-in set,
+    // so the page cannot drift from it.
+    function fillDefaultsInTips(defaults) {
+      reclusterInputs().forEach(function(input) {
+        const tip = document.getElementById(input.getAttribute('aria-describedby'));
+        const slot = tip && tip.querySelector('.param-default');
+        const v = defaults[input.dataset.param];
+        if (slot && v !== undefined && v !== null) slot.textContent = 'Default ' + (Math.round(v * 1000) / 1000) + '.';
+      });
+    }
+
     function fillReclusterDefaults() {
       if (reclusterDefaults) fillRecluster(reclusterDefaults);
     }
@@ -589,6 +624,7 @@ let facesData = { people: [], clusters: [], singletons: [] };
         if (!r.ok) return;
         const p = await r.json();
         reclusterDefaults = p.defaults;
+        fillDefaultsInTips(p.defaults);
         fillRecluster(p.effective);
         document.getElementById('recluster-learning').textContent = p.learning || '';
         if (p.warnings && p.warnings.length) {

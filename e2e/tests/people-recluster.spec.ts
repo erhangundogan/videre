@@ -183,3 +183,40 @@ for (const width of [1280, 375]) {
     expect(overflow).toEqual([]);
   });
 }
+
+test("each recluster value explains itself by click, tap and keyboard", async ({ page, isolatedGallery: gallery }) => {
+  seedFaces(gallery.libraryRoot, [{ hash: "a1", vector: [1] }]);
+  await openRow(page, gallery.baseURL);
+  await page.locator("details.recluster-more summary").click();
+  await expect(page.locator("#recluster-row button.param-info")).toHaveCount(8);
+  const epsIcon = page.getByRole("button", { name: "About eps" });
+  const epsTip = page.locator("#rc-eps-tip");
+  await expect(epsTip).toBeHidden();
+  await expect(page.locator("#rc-eps")).toHaveAttribute("aria-describedby", "rc-eps-tip");
+  // A click (a tap on a phone) opens and pins it, with the default filled in.
+  await epsIcon.click();
+  await expect(epsTip).toBeVisible();
+  await expect(epsIcon).toHaveAttribute("aria-expanded", "true");
+  await expect(epsTip).toContainText("Default 0.6.");
+  await page.keyboard.press("Escape");
+  await page.mouse.move(1, 1); // hovering the icon shows it too
+  await expect(epsTip).toBeHidden();
+  await expect(epsIcon).toHaveAttribute("aria-expanded", "false");
+  // Keyboard focus shows it without a click.
+  await page.locator("#rc-eps").focus();
+  await page.keyboard.press("Shift+Tab");
+  await expect(epsIcon).toBeFocused();
+  await expect(epsTip).toBeVisible();
+  // Opening another closes the first; a click elsewhere closes the open one.
+  const mergeIcon = page.getByRole("button", { name: "About merge" });
+  await mergeIcon.click();
+  await expect(page.locator("#rc-merge-tip")).toContainText("Default 0.35.");
+  await page.getByRole("button", { name: "About attach" }).click();
+  await expect(mergeIcon).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator("#rc-merge-tip")).toBeHidden();
+  await page.mouse.click(5, 5);
+  await expect(page.locator("#rc-attach-tip")).toBeHidden();
+  for (const id of ["rc-min-size", "rc-min-face", "rc-sharpness", "rc-generic", "rc-landmark"]) {
+    await expect(page.locator(`#${id}-tip .param-default`)).toHaveText(/^Default [\d.]+\.$/);
+  }
+});

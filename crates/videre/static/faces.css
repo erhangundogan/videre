@@ -111,6 +111,14 @@
 .recluster-line { margin: 4px 0 0; font-size: 13px; }
 .recluster-line:empty { display: none; }
 .recluster-learning { color: #3f3f46; }
+/* Info icons: the description floats under the title. Shown on hover, on
+   keyboard focus, and pinned by a click or tap (aria-expanded). It takes no
+   clicks, so an open one never blocks the field or icon it covers. */
+.recluster-row .param-info { flex: none; width: 16px; height: 16px; padding: 0; border-radius: 50%; font: italic 600 11px/14px Georgia, serif; cursor: pointer; }
+.param-tip { display: none; position: absolute; left: 0; top: 100%; z-index: 60; margin-top: 2px; padding: 6px 8px; width: max-content; max-width: min(20rem, calc(100vw - 32px)); background: #18181b; color: #fafafa; border-radius: 6px; font-size: 12px; line-height: 1.35; pointer-events: none; }
+.param-info:hover + .param-tip,
+.param-info:focus-visible + .param-tip,
+.param-info[aria-expanded=true] + .param-tip { display: block; }
 .page-body.recluster-busy { opacity: .5; pointer-events: none; }
 /* `display: flex` outranks the `hidden` attribute's default, so both would
    otherwise show while hidden. */
