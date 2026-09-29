@@ -16,6 +16,43 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.49.0] - 2026-09-29
+
+### Removed
+
+- **`videre scan --retry-incomplete` and `videre scan --similar`.** Both only
+  printed a deprecation notice: scan is incremental by default, and
+  near-duplicate fingerprints come from `videre embed`. A script that still
+  passes either flag now fails with an unknown-argument error.
+
+### Changed
+
+- **Every empty gallery page looks the same:** one centred message under the
+  nav, with toolbars and layouts hidden. Library, Date, Events, People and Map
+  now match Duplicates, and a map with photos but no places counts as empty.
+  The empty Duplicates page points to `videre embed`, then
+  `videre dedupe --similar`, for near-duplicates.
+- **The selection bar's like button reads as pressed** (blue, filled heart)
+  only when every selected item is liked, and likes or unlikes them all. Clear
+  matches the other buttons, and the bar no longer shifts as the count changes.
+
+### Fixed
+
+- **`videre mark --export-xmp` erased the rest of a sidecar.** It rewrote a
+  sidecar `videre export --xmp` had written with only the rating, losing the
+  face names, place and keywords. It now writes only the rating and colour
+  label and leaves everything else.
+- **A cleared rating or label came back from the sidecar.** Clearing a mark
+  and exporting left the old value in the sidecar, and the next
+  `scan --xmp file` restored it. Both exports now remove cleared fields from
+  an existing sidecar.
+- **A rating stored inside a photo was ignored whenever it had a sidecar.**
+  Scan now reads each field from the sidecar when it has one and from the
+  photo otherwise, and keeps keywords from both.
+- **Removing a photo left its XMP sidecar behind.** `videre dedupe --remove`
+  and the gallery's Delete now move the photo's `.xmp` sidecar to the trash
+  with it.
+
 ## [0.48.1] - 2026-09-29
 
 ### Added
@@ -2606,7 +2643,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.48.1...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.49.0...HEAD
+[0.49.0]: https://github.com/erhangundogan/videre/compare/v0.48.1...v0.49.0
 [0.48.1]: https://github.com/erhangundogan/videre/compare/v0.48.0...v0.48.1
 [0.48.0]: https://github.com/erhangundogan/videre/compare/v0.47.1...v0.48.0
 [0.47.1]: https://github.com/erhangundogan/videre/compare/v0.47.0...v0.47.1
