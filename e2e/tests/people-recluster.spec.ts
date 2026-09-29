@@ -261,6 +261,14 @@ test("invalid recluster values are refused and nothing runs", async ({ page, iso
   await expect(page.locator("#rc-sharpness")).toBeFocused();
   expect(posts, "nothing was posted").toHaveLength(0);
 
+  // Only min size is a count; a fractional sharpness or face size is a value
+  // the server takes, so the form sends it.
+  await page.locator("#rc-sharpness").fill("82.5");
+  await page.locator("#rc-min-face").fill("80.5");
+  await page.locator("#recluster-preview").click();
+  await expect(line).toContainText("Preview:");
+  expect(posts).toHaveLength(1);
+
   // The server's own refusal names the field by its title too.
   await page.locator("#rc-sharpness").fill("80");
   await page.route("**/api/faces/recluster/preview", (route) =>

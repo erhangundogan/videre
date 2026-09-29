@@ -630,7 +630,11 @@ let facesData = { people: [], clusters: [], singletons: [] };
         if (input.value === '' || v.badInput) error = 'enter a number';
         else if (v.rangeUnderflow || v.rangeOverflow) {
           error = input.max !== '' ? 'between ' + input.min + ' and ' + input.max : input.min + ' or more';
-        } else if (input.step === '1' && !Number.isInteger(Number(input.value))) error = 'a whole number';
+        } else if (input.dataset.param === 'min_cluster_size' && !Number.isInteger(Number(input.value))) {
+          // The one count; every other value is a threshold the server takes
+          // fractional, whatever the input's step.
+          error = 'a whole number';
+        }
         if (error) {
           input.setAttribute('aria-invalid', 'true');
           const more = input.closest('details');
