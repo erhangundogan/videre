@@ -34,6 +34,11 @@ impl Semaphore {
         }
     }
 
+    /// How many holders the semaphore allows at once.
+    pub fn max(&self) -> usize {
+        self.max
+    }
+
     /// Blocks until fewer than `max` permits are held, then takes one.
     /// Released automatically when the returned guard drops.
     pub fn acquire(&self) -> SemaphorePermit<'_> {
@@ -53,6 +58,11 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn semaphore_reports_its_max() {
+        assert_eq!(Semaphore::new(4).max(), 4);
+    }
 
     #[test]
     fn never_exceeds_max_concurrent_holders() {

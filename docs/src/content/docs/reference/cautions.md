@@ -58,17 +58,6 @@ It sets each file's modification time from its EXIF date. That is a real change
 to your files and there is no undo. It asks for confirmation first, and
 `--dry-run` shows you exactly what it would do.
 
-## Do not run two heavy commands at the same time
-
-`embed`, `faces`, and `watch` all convert HEIC and video through macOS
-QuickLook, and each limits itself to a few conversions at a time. That limit is
-per command, not system-wide, so two at once can overwhelm QuickLook.
-
-Measured on a real library: a single file took over 16 seconds against about 7.6
-seconds normally, and one exceeded the timeout entirely. Nothing is lost, since
-skipped files are simply retried next run, but it is much slower than doing one
-thing at a time.
-
 ## Disk use grows quietly
 
 Each search model keeps its own data, roughly 130 MB to 190 MB per model for a

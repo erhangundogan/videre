@@ -52,6 +52,11 @@ impl CommandContext {
             );
         }
         let library = videre_core::library::LibraryContext::new(&root, &home.join(".cache"))?;
+        // Beside the shared geo cache, not in the library: the QuickLook
+        // agent is one per user, whichever library a process works on.
+        videre_core::heic::set_quicklook_slot_dir(
+            library.cache.base.join("videre/locks/quicklook"),
+        );
         if let Some(rate) = library.settings.min_read_rate_mb_s {
             videre_core::io_timeout::set_min_read_rate_mb_s(rate);
         }

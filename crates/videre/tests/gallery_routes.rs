@@ -381,6 +381,54 @@ fn a_sized_video_request_returns_an_oriented_poster_jpeg() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
+fn a_conversion_waits_for_a_machine_wide_quicklook_slot() {
+    // Another videre process holding every QuickLook slot (here: this test,
+    // through its own open files) must hold the gallery's conversion back
+    // until one is released, however many permits the gallery has itself.
+    use fs2::FileExt;
+    let lib = TestLibrary::new();
+    let dst = lib
+        .copy_fixture("red_1s.mp4", "clip.mp4")
+        .canonicalize()
+        .unwrap();
+    lib.init_db()
+        .execute(
+            "INSERT INTO file_hashes (path, hash, ext, size_bytes) VALUES (?1, 'vid1', 'mp4', 1000)",
+            [dst.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+    let slots = lib.home.join(".cache/videre/locks/quicklook");
+    std::fs::create_dir_all(&slots).unwrap();
+    let held: Vec<std::fs::File> = (0..6)
+        .map(|i| {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(false)
+                .open(slots.join(format!("slot-{i}.lock")))
+                .unwrap();
+            file.try_lock_exclusive().unwrap();
+            file
+        })
+        .collect();
+
+    let server = Server::start(&lib);
+    std::thread::scope(|scope| {
+        let request = scope.spawn(|| server.get_bytes("/api/files/vid1/raw?size=240"));
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(
+            !request.is_finished(),
+            "the poster was rendered while every slot was held"
+        );
+        drop(held);
+        let (status, _, body) = request.join().unwrap();
+        assert_eq!(status, 200, "the poster is served once a slot is free");
+        assert!(body.starts_with(&[0xFF, 0xD8]));
+    });
+}
+
+#[test]
 fn every_live_route_answers() {
     let lib = fixture();
     let server = Server::start(&lib);

@@ -177,20 +177,13 @@ chatty importer or a slow mount so more of a burst lands in one batch. See
 
 ## Caveats
 
-:::caution[Do not run watch alongside a manual embed or faces]
-`watch --faces` and `watch --heic` both drive HEIC conversion, as do
-[`videre embed`](/commands/embed/) and [`videre faces`](/commands/faces/). The
-concurrency limit is per process, so two videre processes together permit twice
-as many conversions against one shared macOS service.
-
-Measured: a HEIC load averaged over 16 seconds against about 7.6 uncontended,
-and one file exceeded the timeout that converted in 0.39 s alone. Nothing is
-lost, since a batch that finds the library busy is held and retried
-automatically, but both jobs get much slower.
-
-If you are about to run a long `embed` or `faces` by hand, stop `watch` first,
-or start it with only `--scan --location`.
-:::
+**A manual command never runs at once with its own watch stage.** Each stage
+takes the same lock as the command it stands in for, so a manual `faces` during
+watch's faces stage is refused, and a stage that finds its command running is
+held and retried. Commands with no matching stage, such as `embed`, run
+alongside `watch`. Conversions through QuickLook share one machine-wide limit with every
+other videre process; see
+[running things at once](/guides/long-running-jobs/).
 
 **`--prune` cannot override prune's safety guards.** It runs unattended and
 cannot ask, so the bulk-deletion and repeated-failure guards are always active.
