@@ -268,3 +268,75 @@ test("invalid recluster values are refused and nothing runs", async ({ page, iso
   await page.locator("#recluster-preview").click();
   await expect(line).toHaveText("merge: out of range.");
 });
+
+// Each value moves the grouping the way its description says. Faces sit at
+// chosen angles in tight groups: [1] and [0.5, 0.866] are 0.5 alike (cosine
+// distance 0.5), [0.6, 0, 0.8] is 0.6 alike to [1], and [0, 1] is unrelated.
+// Each test changes one value from a stated baseline and reads Preview.
+async function preview(page: Page, values: Record<string, string>) {
+  await page.locator("details.recluster-more").evaluate((d) => ((d as HTMLDetailsElement).open = true));
+  for (const [param, value] of Object.entries(values)) {
+    await page.locator(`#recluster-row input[data-param="${param}"]`).fill(value);
+  }
+  const line = page.locator("#recluster-result");
+  const done = page.waitForResponse((r) => r.url().includes("/api/faces/recluster/preview"));
+  await page.locator("#recluster-preview").click();
+  await done;
+  await expect(line).toContainText("Preview:");
+  return (await line.textContent())!;
+}
+
+const group = (hash: string, vector: number[], n: number) =>
+  Array.from({ length: n }, (_, i) => ({ hash: `${hash}${i}`, vector }));
+
+test("lower eps splits look-alikes", async ({ page, isolatedGallery: gallery }) => {
+  seedFaces(gallery.libraryRoot, [...group("a", [1], 3), ...group("b", [0.5, 0.866], 3)]);
+  await openRow(page, gallery.baseURL);
+  const base = { merge_sim: "0.9", attach_sim: "1", min_cluster_size: "3" };
+  expect(await preview(page, { ...base, eps: "0.6" })).toContain("Preview: 1 group from 6 of 6");
+  expect(await preview(page, { ...base, eps: "0.3" })).toContain("Preview: 2 groups from 6 of 6");
+});
+
+test("lower merge rejoins a person split in two", async ({ page, isolatedGallery: gallery }) => {
+  seedFaces(gallery.libraryRoot, [...group("a", [1], 3), ...group("b", [0.5, 0.866], 3)]);
+  await openRow(page, gallery.baseURL);
+  const base = { eps: "0.3", attach_sim: "1", min_cluster_size: "3" };
+  expect(await preview(page, { ...base, merge_sim: "0.9" })).toContain("Preview: 2 groups from 6 of 6");
+  expect(await preview(page, { ...base, merge_sim: "0.4" })).toContain("Preview: 1 group from 6 of 6");
+});
+
+test("attach pulls a leftover in, and 1 turns it off", async ({ page, isolatedGallery: gallery }) => {
+  seedFaces(gallery.libraryRoot, [...group("a", [1], 3), { hash: "loner", vector: [0.6, 0, 0.8] }]);
+  await openRow(page, gallery.baseURL);
+  const base = { eps: "0.3", merge_sim: "0.9", min_cluster_size: "3" };
+  expect(await preview(page, { ...base, attach_sim: "1" })).toContain("from 3 of 4 unnamed faces; 1 left single");
+  expect(await preview(page, { ...base, attach_sim: "0.5" })).toContain("from 4 of 4 unnamed faces; 0 left single");
+});
+
+test("a larger min size leaves more faces single", async ({ page, isolatedGallery: gallery }) => {
+  seedFaces(gallery.libraryRoot, [...group("a", [1], 3), ...group("c", [0, 1], 2)]);
+  await openRow(page, gallery.baseURL);
+  expect(await preview(page, { min_cluster_size: "2" })).toContain("Preview: 2 groups from 5 of 5");
+  expect(await preview(page, { min_cluster_size: "3" })).toContain(
+    "Preview: 1 group from 3 of 5 unnamed faces; 2 left single"
+  );
+});
+
+test("the quality gates in More hold out tiny and blurred faces", async ({ page, isolatedGallery: gallery }) => {
+  seedFaces(gallery.libraryRoot, [
+    ...group("a", [1], 3),
+    { hash: "tiny", vector: [1], side: 40 },
+    { hash: "soft", vector: [1], blur: 50 }
+  ]);
+  await openRow(page, gallery.baseURL);
+  const base = { attach_sim: "1" };
+  expect(await preview(page, { ...base, min_face_size: "80", min_blur: "80" })).toContain(
+    "from 3 of 5 unnamed faces; 2 left single (2 held out by quality)"
+  );
+  expect(await preview(page, { ...base, min_face_size: "30", min_blur: "80" })).toContain(
+    "from 4 of 5 unnamed faces; 1 left single (1 held out by quality)"
+  );
+  expect(await preview(page, { ...base, min_face_size: "80", min_blur: "40" })).toContain(
+    "from 4 of 5 unnamed faces; 1 left single (1 held out by quality)"
+  );
+});
