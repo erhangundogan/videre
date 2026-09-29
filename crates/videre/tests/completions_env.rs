@@ -40,10 +40,7 @@ fn person_candidates_come_from_the_seeded_library() {
     let out = String::from_utf8_lossy(&output.stdout);
     // The value is the space-free identity key: bash inserts a completion
     // unquoted, so a display name with a space would split the line.
-    let line = out
-        .lines()
-        .find(|l| l.starts_with("ayse_demirtas"))
-        .unwrap();
+    assert!(out.lines().any(|l| l.starts_with("ayse_demirtas")), "{out}");
     assert!(
         out.lines().all(|l| !l.starts_with("Ayşe")),
         "the display name must not be a completion value: {out}"
