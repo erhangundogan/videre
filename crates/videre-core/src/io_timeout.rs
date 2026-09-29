@@ -315,15 +315,59 @@ where
 struct ProgressState {
     last_read: Instant,
     cancelled: bool,
+    /// Every nonzero read, summed. Rereads (EXIF, video headers) count again,
+    /// so this can pass `size`; a display clamps it.
+    bytes: u64,
+    /// The file's size, once the operation has read it.
+    size: Option<u64>,
+}
+
+/// What a progress handle has seen so far.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProgressSnapshot {
+    pub bytes: u64,
+    pub size: Option<u64>,
 }
 
 /// Shares one read-progress clock across every reader in a hashing operation.
+/// The same state that decides a stall also counts the bytes, so a display
+/// and the timeout read one number and cannot disagree.
 #[derive(Clone)]
 pub struct ProgressHandle {
     state: Arc<Mutex<ProgressState>>,
 }
 
+impl Default for ProgressHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProgressHandle {
+    pub fn new() -> Self {
+        ProgressHandle {
+            state: Arc::new(Mutex::new(ProgressState {
+                last_read: Instant::now(),
+                cancelled: false,
+                bytes: 0,
+                size: None,
+            })),
+        }
+    }
+
+    /// Record the size of the file being read, for a display's denominator.
+    pub fn set_size(&self, size: u64) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).size = Some(size);
+    }
+
+    pub fn snapshot(&self) -> ProgressSnapshot {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        ProgressSnapshot {
+            bytes: state.bytes,
+            size: state.size,
+        }
+    }
+
     pub fn wrap<R: Read + Seek>(&self, inner: R) -> ProgressReader<R> {
         ProgressReader {
             inner,
@@ -343,9 +387,10 @@ impl ProgressHandle {
         }
     }
 
-    fn read_progressed(&self) {
+    fn read_progressed(&self, count: usize) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.last_read = Instant::now();
+        state.bytes = state.bytes.saturating_add(count as u64);
     }
 }
 
@@ -360,7 +405,7 @@ impl<R: Read + Seek> Read for ProgressReader<R> {
         self.progress.check_cancelled()?;
         let count = self.inner.read(buf)?;
         if count > 0 {
-            self.progress.read_progressed();
+            self.progress.read_progressed(count);
         }
         Ok(count)
     }
@@ -381,6 +426,20 @@ where
     run_with_progress_timeout_in(global_pool(), idle, f)
 }
 
+/// [`run_with_progress_timeout`] on a handle the caller keeps a clone of, so
+/// it can watch the bytes while the operation runs.
+pub fn run_with_progress_timeout_on<T, F>(
+    progress: ProgressHandle,
+    idle: Duration,
+    f: F,
+) -> Result<T, IoRunError>
+where
+    F: FnOnce(ProgressHandle) -> T + Send + 'static,
+    T: Send + 'static,
+{
+    run_with_progress_timeout_on_in(global_pool(), progress, idle, f)
+}
+
 fn run_with_progress_timeout_in<T, F>(
     pool: &Arc<IoWorkerPool>,
     idle: Duration,
@@ -390,14 +449,27 @@ where
     F: FnOnce(ProgressHandle) -> T + Send + 'static,
     T: Send + 'static,
 {
+    run_with_progress_timeout_on_in(pool, ProgressHandle::new(), idle, f)
+}
+
+fn run_with_progress_timeout_on_in<T, F>(
+    pool: &Arc<IoWorkerPool>,
+    progress: ProgressHandle,
+    idle: Duration,
+    f: F,
+) -> Result<T, IoRunError>
+where
+    F: FnOnce(ProgressHandle) -> T + Send + 'static,
+    T: Send + 'static,
+{
     let permit = pool.acquire()?;
     let lifecycle = Arc::clone(&permit.lifecycle);
-    let progress = ProgressHandle {
-        state: Arc::new(Mutex::new(ProgressState {
-            last_read: Instant::now(),
-            cancelled: false,
-        })),
-    };
+    // The idle window starts now, not when a caller-held handle was made.
+    progress
+        .state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .last_read = Instant::now();
     let observer = progress.clone();
     let (tx, rx) = mpsc::channel();
     thread::Builder::new()
@@ -1043,5 +1115,64 @@ mod progress_tests {
             assert_eq!(pool.stats().active, 0);
             assert_eq!(pool.stats().timed_out_active, 0);
         }
+    }
+
+    /// Hands out 3, then 0, then 5 bytes: a zero read in the middle.
+    struct Chunks(Vec<usize>);
+    impl Read for Chunks {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = if self.0.is_empty() {
+                0
+            } else {
+                self.0.remove(0)
+            };
+            let n = n.min(buf.len());
+            buf[..n].fill(7);
+            Ok(n)
+        }
+    }
+    impl Seek for Chunks {
+        fn seek(&mut self, _pos: SeekFrom) -> std::io::Result<u64> {
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn nonzero_reads_count_bytes_zero_reads_and_seeks_do_not() {
+        let handle = ProgressHandle::new();
+        let mut reader = handle.wrap(Chunks(vec![3, 0, 5]));
+        let mut buf = [0u8; 16];
+        assert_eq!(reader.read(&mut buf).unwrap(), 3);
+        assert_eq!(reader.read(&mut buf).unwrap(), 0);
+        reader.seek(SeekFrom::Start(0)).unwrap();
+        assert_eq!(reader.read(&mut buf).unwrap(), 5);
+        assert_eq!(
+            handle.snapshot(),
+            ProgressSnapshot {
+                bytes: 8,
+                size: None
+            }
+        );
+    }
+
+    #[test]
+    fn a_caller_held_handle_sees_the_worker_s_bytes() {
+        let pool = Arc::new(IoWorkerPool::new(1));
+        let handle = ProgressHandle::new();
+        let seen = handle.clone();
+        let result = run_with_progress_timeout_on_in(&pool, handle, Duration::from_secs(1), |h| {
+            h.set_size(10);
+            let mut reader = h.wrap(Cursor::new([1_u8; 4]));
+            let mut buf = [0u8; 4];
+            reader.read_exact(&mut buf).unwrap();
+        });
+        assert!(result.is_ok());
+        assert_eq!(
+            seen.snapshot(),
+            ProgressSnapshot {
+                bytes: 4,
+                size: Some(10)
+            }
+        );
     }
 }
