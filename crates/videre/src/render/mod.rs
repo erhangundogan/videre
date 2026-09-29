@@ -1132,6 +1132,11 @@ struct GalleryPage<'a> {
     /// beyond the one kept, for the duplicates header.
     duplicate_files: i64,
     wasted: String,
+    /// Google Takeout edit pairs on the page and the size of their edits, the
+    /// files `dedupe --edited` removes. Counted apart from the exact copies
+    /// above, since an edit is not a byte-for-byte duplicate.
+    edited_pairs: usize,
+    edits_size: String,
     all_files_count: Option<usize>,
     has_keep_files: bool,
     /// The current section, or `None` on a page with nowhere to navigate to.
@@ -1354,6 +1359,14 @@ pub(crate) fn render(set: &RenderSet) -> String {
         duplicate_groups: stats.duplicate_groups,
         duplicate_files: stats.duplicate_files,
         wasted: videre_core::disk::human_bytes(stats.wasted_bytes.max(0) as u64),
+        edited_pairs: edited_groups.len(),
+        edits_size: videre_core::disk::human_bytes(
+            edited_groups
+                .iter()
+                .filter_map(|pair| pair.last())
+                .map(|edit| edit.size_bytes.max(0) as u64)
+                .sum(),
+        ),
         all_files_count: all_files.map(|f| f.len()),
         has_keep_files: keep_files.is_some() || set.view == View::Events,
         nav,
