@@ -250,7 +250,7 @@ fn json_with_similar_flag_includes_similar_groups_key() {
     // Not decodable as images, so no phash -> similar_groups is present but empty
     std::fs::write(lib.root.join("a.jpg"), b"content one").unwrap();
     std::fs::write(lib.root.join("b.jpg"), b"content two").unwrap();
-    scan(&lib, &["--similar"]);
+    scan(&lib, &[]);
 
     let out = dedupe(&lib, &["--similar", "--json"]);
     assert!(out.status.success());

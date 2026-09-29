@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { expect, preferListView, test, type GallerySession } from "../support/gallery";
+import { expect, preferListView, seedPlace, test, type GallerySession } from "../support/gallery";
 
 // The search library stores vectors for çiçek (the example), bahçe (close to
 // it) and deniz (far). Similar ranks those for real. A text query needs the
@@ -36,6 +36,8 @@ test("Similar works on the grid under the map", async ({ page, searchGallery }) 
   await preferListView(searchGallery);
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
+  // A map with no places shows the empty state, so give it one.
+  seedPlace(searchGallery.libraryRoot);
   await page.goto(`${searchGallery.baseURL}/map`);
   const card = page.locator("#gallery .card", { hasText: "çiçek.jpg" });
   await card.locator(".similar-btn").click();

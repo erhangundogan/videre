@@ -1,4 +1,4 @@
-import { expect, preferListView, test } from "../support/gallery";
+import { expect, preferListView, seedPlace, seedTrips, test } from "../support/gallery";
 import type { GallerySession } from "../support/gallery";
 
 async function settings(page: import("@playwright/test").Page, gallery: GallerySession) {
@@ -7,6 +7,8 @@ async function settings(page: import("@playwright/test").Page, gallery: GalleryS
 
 test("the map sorts its files and keeps its own sort choice", async ({ page, sortedGallery }) => {
   await preferListView(sortedGallery);
+  // A map with no places shows the empty state, so give it one.
+  seedPlace(sortedGallery.libraryRoot);
   await page.goto(`${sortedGallery.baseURL}/map`);
   await expect(page.locator("#gallery .card")).toHaveCount(3);
 
@@ -21,6 +23,8 @@ test("the map sorts its files and keeps its own sort choice", async ({ page, sor
 });
 
 test("the Events overview sorts events by its own fields", async ({ page, isolatedGallery: gallery }) => {
+  // With no trips the page shows the empty state, and no toolbar.
+  seedTrips(gallery.libraryRoot);
   await page.goto(`${gallery.baseURL}/events`);
   const select = page.locator(".gallery-toolbar .sort-select");
   await expect(select.locator("option")).toHaveText(["Date", "Files", "Length", "Name"]);

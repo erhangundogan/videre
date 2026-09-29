@@ -34,25 +34,13 @@ let facesData = { people: [], clusters: [], singletons: [] };
     }
 
     function showNothingDetected() {
-      const host = document.querySelector('.people-section');
-      if (!host || document.getElementById('faces-empty')) return;
-      const box = document.createElement('div');
-      box.id = 'faces-empty';
-      box.className = 'empty-state';
-      box.innerHTML =
-        '<h2>No faces detected yet</h2>' +
+      window.showEmptyState('No faces detected yet',
         '<p>Face detection has not run against this library, so there is nobody ' +
         'to name here.</p>' +
         '<p class="hint">Run <code>videre faces</code> to detect and group them, ' +
         'then reload this page. It downloads the detection models on first use ' +
         'and takes a while on a large library, which is why it is a command you ' +
-        'run rather than something a page starts for you.</p>';
-      host.parentNode.insertBefore(box, host);
-      ['.people-section', '.title-clusters', '#cluster-grid',
-       '.title-singletons', '#singleton-grid'].forEach(function(sel) {
-        const el = document.querySelector(sel);
-        if (el) el.style.display = 'none';
-      });
+        'run rather than something a page starts for you.</p>');
     }
 
     function faceImg(faceId, w, h) {

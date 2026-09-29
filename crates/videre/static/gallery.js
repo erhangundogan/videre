@@ -760,6 +760,12 @@ function buildYearView(){
   var narrowing=document.getElementById('dateNarrowing');
   if(narrowing)narrowing.innerHTML='';
   var draw=function(b){
+    if(!b.length&&window.showEmptyState){
+      window.showEmptyState('No photos yet',
+        '<p>There is nothing to arrange by date: this library has no scanned files.</p>'+
+        '<p class="hint">Run <code>videre scan</code> in the library folder to index it, then reload this page.</p>');
+      return;
+    }
     document.getElementById('dateGrid').innerHTML=
       dateCards(b,function(k){return "buildMonthView('"+k+"')";});
   };
@@ -940,9 +946,10 @@ function buildEventsOverview(){
         insufficient_location_evidence:'Events needs dated, location-supported photos to recognize travel.',
         no_qualifying_trips:'No substantial travel trips were found yet.'
       };
-      grid.innerHTML=evs.length?eventCards(evs):
-        '<div class="empty-state"><h2>No travel trips yet</h2><p>'+escH(reasons[d.empty_reason]||reasons.no_qualifying_trips)+
-        '</p><p class="hint">Events finds travel from dated, location-supported photos.</p></div>';
+      var why='<p>'+escH(reasons[d.empty_reason]||reasons.no_qualifying_trips)+
+        '</p><p class="hint">Events finds travel from dated, location-supported photos.</p>';
+      if(!evs.length){ window.showEmptyState('No travel trips yet',why); return; }
+      grid.innerHTML=eventCards(evs);
     })
     .catch(function(){ grid.innerHTML='<p class="muted">Could not load events.</p>'; });
 }
@@ -1222,6 +1229,12 @@ function renderGallery(){
     .then(function(d){
       if(request!==gRequest)return;
       gLoading=false;
+      if(!d.total&&!gShown&&location.pathname==='/'){
+        window.showEmptyState('No photos yet',
+          '<p>This library has no scanned files.</p>'+
+          '<p class="hint">Run <code>videre scan</code> in the library folder to index it, then reload this page.</p>');
+        return;
+      }
       appendCards(d.files||[],d.total||0);
     })
     .catch(function(){

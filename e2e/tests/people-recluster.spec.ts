@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { readFile } from "node:fs/promises";
-import { expect, test } from "../support/gallery";
+import { expect, seedFace, test } from "../support/gallery";
 
 // A 512-dim f16 unit vector along `axis`, as the faces table stores embeddings:
 // little-endian, 1.0 = 0x3C00.
@@ -22,7 +22,9 @@ async function openLibrary(libraryRoot: string): Promise<Db | undefined> {
   return db;
 }
 
-test("face learning is off by default and turned on in gallery.json", async ({ page, gallery }) => {
+test("face learning is off by default and turned on in gallery.json", async ({ page, isolatedGallery: gallery }) => {
+  // With no faces the page shows the empty state, strip included.
+  seedFace(gallery.libraryRoot);
   const learningCalls: string[] = [];
   page.on("request", (r) => {
     if (r.url().includes("/api/face-learning/")) learningCalls.push(r.url());

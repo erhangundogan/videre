@@ -260,21 +260,6 @@ fn incremental_scan_reprocesses_nothing_when_all_known() {
 }
 
 #[test]
-fn retry_incomplete_is_accepted_as_a_deprecated_alias() {
-    let library = TestLibrary::new();
-    library.copy_fixture("tiny.jpg", "image.jpg");
-    // Still accepted so old scripts do not error, but it changes nothing and
-    // says so.
-    let output = scan(&library, &["--retry-incomplete"]);
-    assert!(output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("--retry-incomplete is deprecated"),
-        "{stderr}"
-    );
-}
-
-#[test]
 fn incremental_scan_processes_only_unknown_rows_and_new_files() {
     let library = TestLibrary::new();
     library.copy_fixture("tiny.jpg", "first.jpg");
@@ -320,24 +305,6 @@ fn unidentifiable_files_receive_a_sentinel_and_are_not_retried() {
     let output = scan(&library, &[]);
     assert!(output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("Wrote 0 record(s)"));
-}
-
-#[test]
-fn similar_is_deprecated_and_stores_no_fingerprint() {
-    let library = TestLibrary::new();
-    library.copy_fixture("tiny.jpg", "image.jpg");
-    let out = scan(&library, &["--similar"]);
-    assert!(out.status.success());
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("--similar is deprecated"),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let phash: Option<i64> = library
-        .conn()
-        .query_row("SELECT phash FROM file_hashes", [], |row| row.get(0))
-        .unwrap();
-    assert!(phash.is_none());
 }
 
 #[test]
