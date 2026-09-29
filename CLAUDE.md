@@ -767,6 +767,12 @@ above.
   built-in, per field (watch: no flag layer) -> `videre_ml::cluster_params`,
   `commands::cluster_settings`, `gallery::recluster`
 - Undecodable files are skipped after two strikes -> `videre_core::decode_failures`
+- watch completes every new file per batch: the full place recompute and face
+  regroup only when the last one took under five seconds, otherwise only the
+  new rows and faces are placed and attached; a bulk import scans first and
+  finishes once quiet -> `videre_core::recompute_cost`,
+  `location_cluster::assign_new_rows`, `pipeline::attach_new_faces`,
+  `commands::watch` (`next_mode`)
 - QuickLook conversions share a machine-wide slot pool, waited for before
   spawn -> `videre_core::heic::acquire_slot`
 - Face learning never uses `AppState.conn`: its own connection and thread,

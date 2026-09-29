@@ -1721,6 +1721,46 @@ async fn handle_get_settings(
         .map_err(internal)
 }
 
+/// `GET /api/processing`: while `videre watch` runs, each of its stages with
+/// work still outstanding, for the nav's "still processing" note. Empty when
+/// no watcher runs: outstanding work nobody is doing is `videre status`'s to
+/// report, not a note that never goes away. Embed and classify count only when
+/// the model is downloaded, since watch will not fetch it.
+async fn handle_processing(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let library = state.context.library.clone();
+    tokio::task::spawn_blocking(move || processing_json(&library).map_err(internal))
+        .await
+        .map_err(internal)?
+}
+
+fn processing_json(
+    library: &videre_core::library::LibraryContext,
+) -> anyhow::Result<Json<serde_json::Value>> {
+    use videre_core::status_report;
+    // Its own connection, read-only work, never the shared one.
+    let conn = videre_core::library_db::open_existing(library)?;
+    if !status_report::watch_liveness_in(&conn, library)?.running {
+        return Ok(Json(serde_json::json!({"watch": false, "stages": []})));
+    }
+    let model = library.settings.default_model.clone();
+    videre_core::embeddings_db::attach_for_read_or_placeholder_in(&conn, library, &model)?;
+    let embeds = videre_ml::model::is_cached(&model);
+    // Only the stages this watcher runs: work it will never do is not "still
+    // processing", and a note for it would never go away.
+    let runs = videre_core::library_state::peek_string(&conn, status_report::WATCH_STAGES)?
+        .unwrap_or_default();
+    let stages: Vec<serde_json::Value> = status_report::coverage_in(&conn, &model, &model)?
+        .into_iter()
+        .filter(|c| status_report::watch_covers(&runs, c.stage))
+        .filter(|c| embeds || !c.heavy)
+        .filter(|c| c.outstanding > 0)
+        .map(|c| serde_json::json!({"stage": c.stage, "outstanding": c.outstanding}))
+        .collect();
+    Ok(Json(serde_json::json!({"watch": true, "stages": stages})))
+}
+
 /// Read-modify-write of the overrides under one lock, from disk every time,
 /// so a hand edit made while the server runs is never overwritten by a stale
 /// copy in memory.
@@ -4193,6 +4233,7 @@ async fn serve_faces_async(
         .route("/tiles/basemap.pmtiles", get(handle_basemap_tiles))
         .route("/api/basemap/status", get(handle_basemap_status))
         .route("/api/basemap/ensure", post(handle_basemap_ensure))
+        .route("/api/processing", get(handle_processing))
         .route("/vendor/{version}/{asset}", get(handle_vendor_asset))
         // people
         .route(

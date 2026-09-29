@@ -10,6 +10,8 @@ const CONFIG_KEYS: &[&str] = &[
     "xmp",
     "export-xmp-on-watch",
     "watch-debounce-ms",
+    "watch-bulk-threshold",
+    "watch-bulk-quiet-ms",
     "log-level",
     "log-format",
     "log-max-size-mb",
@@ -59,6 +61,8 @@ fn config_key(key: &str) -> ConfigKey {
         "xmp" => ConfigKey::Xmp,
         "export-xmp-on-watch" => ConfigKey::ExportXmpOnWatch,
         "watch-debounce-ms" => ConfigKey::WatchDebounceMs,
+        "watch-bulk-threshold" => ConfigKey::WatchBulkThreshold,
+        "watch-bulk-quiet-ms" => ConfigKey::WatchBulkQuietMs,
         "log-level" => ConfigKey::LogLevel,
         "log-format" => ConfigKey::LogFormat,
         "log-max-size-mb" => ConfigKey::LogMaxSizeMb,
@@ -95,6 +99,8 @@ fn config_value(key: &str, value: String) -> Result<(ConfigKey, toml::Value)> {
             toml::Value::Integer(mb_s)
         }
         ConfigKey::IoWorkers => whole_number(name, &value, "workers")?,
+        ConfigKey::WatchBulkThreshold => whole_number(name, &value, "files")?,
+        ConfigKey::WatchBulkQuietMs => whole_number(name, &value, "milliseconds")?,
         ConfigKey::ExportXmpOnWatch => {
             let on: bool = value.parse().map_err(|_| {
                 anyhow::anyhow!("export-xmp-on-watch must be true or false, got {value:?}")
@@ -162,6 +168,28 @@ fn show(ctx: &CommandContext) -> Result<()> {
             videre_core::library_config::WATCH_DEBOUNCE_MS_DEFAULT
         ),
     }
+    println!(
+        "watch-bulk-threshold: {} files{}",
+        config
+            .watch_bulk_threshold
+            .unwrap_or(library_config::WATCH_BULK_THRESHOLD_DEFAULT),
+        if config.watch_bulk_threshold.is_some() {
+            ""
+        } else {
+            " (default)"
+        }
+    );
+    println!(
+        "watch-bulk-quiet-ms: {} ms{}",
+        config
+            .watch_bulk_quiet_ms
+            .unwrap_or(library_config::WATCH_BULK_QUIET_MS_DEFAULT),
+        if config.watch_bulk_quiet_ms.is_some() {
+            ""
+        } else {
+            " (default)"
+        }
+    );
     println!("log-level:     {}", config.log_level.as_str());
     println!("log-format:    {}", config.log_format.as_str());
     println!("log-max-size-mb: {} MB", config.log_max_size_mb);
