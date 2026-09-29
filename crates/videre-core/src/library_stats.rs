@@ -162,6 +162,56 @@ pub fn by_type(conn: &rusqlite::Connection, limit: usize) -> rusqlite::Result<Ve
     Ok(out)
 }
 
+/// A scanned path whose filename extension conflicts with detected content.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MismatchFile {
+    pub path: String,
+    pub ext: String,
+    pub mime: String,
+}
+
+/// Exact mismatch count with a bounded or complete path list.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MismatchReport {
+    pub count: usize,
+    pub files: Vec<MismatchFile>,
+    pub truncated: bool,
+}
+
+/// Report disagreements from the last scan without opening source files.
+///
+/// `Some(limit)` retains at most that many paths; `None` retains all paths.
+/// Every row is still examined so `count` is exact even for a bounded report.
+pub fn mismatched_files(conn: &Connection, limit: Option<usize>) -> Result<MismatchReport> {
+    let mut stmt = conn.prepare("SELECT path, ext, mime FROM file_hashes ORDER BY path")?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, Option<String>>(1)?,
+            r.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+    let mut count = 0;
+    let mut files = Vec::new();
+    for row in rows {
+        let (path, ext, mime) = row?;
+        let (Some(ext), Some(mime)) = (ext, mime) else {
+            continue;
+        };
+        if crate::mime_probe::is_content_mismatch(&ext, Some(&mime)) {
+            count += 1;
+            if limit.is_none_or(|bound| files.len() < bound) {
+                files.push(MismatchFile { path, ext, mime });
+            }
+        }
+    }
+    Ok(MismatchReport {
+        count,
+        truncated: count > files.len(),
+        files,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,6 +237,74 @@ mod tests {
             rusqlite::params![path, hash, size_bytes, ext],
         )
         .unwrap();
+    }
+
+    fn insert_scanned_file(conn: &Connection, path: &str, hash: &str, ext: &str, mime: &str) {
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, ext, mime) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![path, hash, ext, mime],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn mismatched_files_counts_paths_not_hashes() {
+        let conn = test_db();
+        insert_scanned_file(&conn, "/a/1.png", "same", "png", "image/jpeg");
+        insert_scanned_file(&conn, "/a/2.png", "same", "png", "image/jpeg");
+        insert_scanned_file(&conn, "/a/3.jpg", "same", "jpg", "image/jpeg");
+
+        let report = mismatched_files(&conn, Some(10)).unwrap();
+        assert_eq!(report.count, 2);
+        assert_eq!(report.files.len(), 2);
+        assert_eq!(report.files[0].path, "/a/1.png");
+        assert_eq!(report.files[0].ext, "png");
+        assert_eq!(report.files[0].mime, "image/jpeg");
+        assert_eq!(report.files[1].path, "/a/2.png");
+        assert!(!report.truncated);
+    }
+
+    #[test]
+    fn mismatched_files_samples_in_path_order() {
+        let conn = test_db();
+        for i in (0..12).rev() {
+            insert_scanned_file(
+                &conn,
+                &format!("/a/{i:02}.png"),
+                &format!("hash-{i}"),
+                "png",
+                "image/jpeg",
+            );
+        }
+        insert_scanned_file(&conn, "/a/movie.mov", "movie", "mov", "video/mp4");
+        insert_scanned_file(
+            &conn,
+            "/a/unknown.jpg",
+            "unknown",
+            "jpg",
+            crate::mime_probe::UNKNOWN_MIME,
+        );
+
+        let bounded = mismatched_files(&conn, Some(10)).unwrap();
+        assert_eq!(bounded.count, 12);
+        assert_eq!(bounded.files.len(), 10);
+        assert_eq!(bounded.files.first().unwrap().path, "/a/00.png");
+        assert_eq!(bounded.files.last().unwrap().path, "/a/09.png");
+        assert!(bounded.truncated);
+
+        let full = mismatched_files(&conn, None).unwrap();
+        assert_eq!(full.count, 12);
+        assert_eq!(full.files.len(), 12);
+        assert_eq!(full.files.first().unwrap().path, "/a/00.png");
+        assert_eq!(full.files.last().unwrap().path, "/a/11.png");
+        assert!(!full.truncated);
+    }
+
+    #[test]
+    fn mismatched_files_propagates_sql_errors() {
+        let conn = test_db();
+        conn.execute_batch("DROP TABLE file_hashes").unwrap();
+        assert!(mismatched_files(&conn, Some(10)).is_err());
     }
 
     #[test]
