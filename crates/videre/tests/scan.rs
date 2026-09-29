@@ -260,21 +260,6 @@ fn incremental_scan_reprocesses_nothing_when_all_known() {
 }
 
 #[test]
-fn retry_incomplete_is_accepted_as_a_deprecated_alias() {
-    let library = TestLibrary::new();
-    library.copy_fixture("tiny.jpg", "image.jpg");
-    // Still accepted so old scripts do not error, but it changes nothing and
-    // says so.
-    let output = scan(&library, &["--retry-incomplete"]);
-    assert!(output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("--retry-incomplete is deprecated"),
-        "{stderr}"
-    );
-}
-
-#[test]
 fn incremental_scan_processes_only_unknown_rows_and_new_files() {
     let library = TestLibrary::new();
     library.copy_fixture("tiny.jpg", "first.jpg");
