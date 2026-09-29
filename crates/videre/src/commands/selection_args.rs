@@ -18,7 +18,12 @@ use videre_core::selection::{MediaKind, PathSelection, PlaceQuery, PresenceField
 #[derive(clap::Args, Clone, Debug, Default)]
 pub struct MediaArgs {
     /// Media kind: image or video. Repeatable, or comma-separated
-    #[arg(long = "type", value_delimiter = ',', value_name = "KIND")]
+    #[arg(
+        long = "type",
+        value_delimiter = ',',
+        value_name = "KIND",
+        value_parser = ["image", "video"]
+    )]
     pub media_type: Vec<String>,
 
     /// File extension, e.g. mov. Repeatable, or comma-separated
@@ -120,7 +125,7 @@ pub struct PeopleArgs {
 #[derive(clap::Args, Clone, Debug, Default)]
 pub struct PathArgs {
     /// Only files under this directory. Repeatable
-    #[arg(long, value_name = "DIR")]
+    #[arg(long, value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
     pub path: Vec<std::path::PathBuf>,
 }
 
@@ -129,11 +134,21 @@ pub struct PathArgs {
 #[derive(clap::Args, Clone, Debug, Default)]
 pub struct PresenceArgs {
     /// Only files where this database field is present. Repeatable, or comma-separated
-    #[arg(long = "has", value_delimiter = ',', value_name = "FIELD")]
+    #[arg(
+        long = "has",
+        value_delimiter = ',',
+        value_name = "FIELD",
+        value_parser = ["gps", "date"]
+    )]
     pub has: Vec<String>,
 
     /// Only files where this database field is missing. Repeatable, or comma-separated
-    #[arg(long = "missing", value_delimiter = ',', value_name = "FIELD")]
+    #[arg(
+        long = "missing",
+        value_delimiter = ',',
+        value_name = "FIELD",
+        value_parser = ["gps", "date"]
+    )]
     pub missing: Vec<String>,
 }
 
@@ -263,6 +278,21 @@ pub fn path_selection(
 
 #[cfg(test)]
 mod tests {
+    /// The shells complete a flag's choices from the parser's known values,
+    /// so a fixed-set flag must carry them at parse time - and clap then
+    /// rejects an unknown with the choices named, instead of the resolution
+    /// layer finding it later.
+    #[test]
+    fn a_fixed_set_flag_rejects_with_the_choices_named() {
+        use clap::{CommandFactory, Parser};
+        let error = crate::Cli::try_parse_from(["videre", "search", "--type", "shrubbery"])
+            .err()
+            .expect("shrubbery is not a media kind");
+        let text = error.to_string();
+        assert!(text.contains("image"), "{text}");
+        assert!(text.contains("video"), "{text}");
+    }
+
     use super::*;
 
     #[test]
