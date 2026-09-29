@@ -96,15 +96,19 @@
 .page-body { padding: 24px 32px; }
 .labeling-main > h2:first-child, .people-section > h2:first-child { margin-top: 0; }
 
-/* People toolbar: the recluster row under the settings bar. */
-.toolbar-toggle[aria-expanded="true"] { background: #ccc; }
-.recluster-row { align-items: center; row-gap: 6px; }
-.recluster-row input[type=number] { width: 64px; font: inherit; padding: 3px 6px; border: 1px solid #2a2a33; border-radius: 6px; }
-.recluster-more { display: inline-flex; gap: 12px; align-items: center; }
-.recluster-more[open] { display: inline-flex; }
-.recluster-more summary { cursor: pointer; font-size: 13px; }
-.recluster-actions { display: inline-flex; gap: 6px; }
-.recluster-line { flex-basis: 100%; margin: 0; font-size: 13px; }
+/* People toolbar: the recluster row, a two-column form. The title column has
+   one fixed width, shared by the rows under More, so every input starts at
+   the same x top to bottom. */
+.recluster-row { display: block; --rc-title: 9.5rem; }
+.recluster-fields { display: grid; row-gap: 6px; margin-bottom: 6px; }
+.recluster-field { display: grid; grid-template-columns: var(--rc-title) auto; align-items: center; justify-items: start; position: relative; }
+.rc-title { grid-column: 1; display: flex; align-items: center; gap: 4px; }
+.recluster-field > input { grid-column: 2; width: 72px; font: inherit; padding: 3px 6px; border: 1px solid #2a2a33; border-radius: 6px; }
+.recluster-field > input[aria-invalid=true] { border-color: #b91c1c; outline: 1px solid #b91c1c; }
+.recluster-more { margin-bottom: 6px; }
+.recluster-more summary { cursor: pointer; font-size: 13px; margin-bottom: 6px; }
+.recluster-actions { display: flex; gap: 6px; margin: 4px 0; }
+.recluster-line { margin: 4px 0 0; font-size: 13px; }
 .recluster-line:empty { display: none; }
 .recluster-learning { color: #3f3f46; }
 .page-body.recluster-busy { opacity: .5; pointer-events: none; }

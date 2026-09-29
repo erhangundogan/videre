@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { readFile } from "node:fs/promises";
-import { expect, seedFace, test } from "../support/gallery";
+import type { Page } from "@playwright/test";
+import { expect, openLibraryDb, seedFace, seedFaces, test } from "../support/gallery";
 
 // A 512-dim f16 unit vector along `axis`, as the faces table stores embeddings:
 // little-endian, 1.0 = 0x3C00.
@@ -133,3 +134,52 @@ test("another process's writes stay visible after a recluster preview", async ({
   next!.close();
   expect(await faces(), "the gallery no longer sees other writers").toBe(5);
 });
+
+const SHOWN = ["eps", "merge_sim", "attach_sim", "min_cluster_size"];
+const MORE = ["min_face_size", "min_blur", "max_generic_sim", "max_landmark_error"];
+
+async function openRow(page: Page, baseURL: string) {
+  await page.goto(`${baseURL}/people`);
+  await page.locator("#recluster-toggle").click();
+  await expect(page.locator("#recluster-row")).toBeVisible();
+  await expect(page.locator('#recluster-row input[data-param="eps"]')).not.toHaveValue("");
+}
+
+for (const width of [1280, 375]) {
+  test(`recluster fields form two aligned columns at ${width}px`, async ({ page, isolatedGallery: gallery }) => {
+    await page.setViewportSize({ width, height: 900 });
+    seedFaces(gallery.libraryRoot, [{ hash: "a1", vector: [1] }]);
+    await openRow(page, gallery.baseURL);
+    const params = (sel: string) =>
+      page.locator(sel).evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.param));
+    expect(await params("#recluster-row > .recluster-fields input[data-param]")).toEqual(SHOWN);
+    const more = page.locator("details.recluster-more");
+    await expect(more).not.toHaveAttribute("open", "");
+    await more.locator("summary").click();
+    expect(await params("details.recluster-more input[data-param]")).toEqual(MORE);
+
+    const lefts = (sel: string) =>
+      page.locator(sel).evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().left)));
+    const inputs = await lefts("#recluster-row input[data-param]");
+    const titles = await lefts("#recluster-row .recluster-field label");
+    expect(new Set(inputs).size, `inputs start at one x: ${inputs}`).toBe(1);
+    expect(new Set(titles).size, `titles start at one x: ${titles}`).toBe(1);
+    expect(inputs[0]).toBeGreaterThan(titles[0]);
+    // Each info icon sits after its title, on its line.
+    const rows = page.locator("#recluster-row .recluster-field");
+    await expect(rows).toHaveCount(8);
+    for (let i = 0; i < 8; i++) {
+      const t = await rows.nth(i).locator("label").boundingBox();
+      const b = await rows.nth(i).locator("button.param-info").boundingBox();
+      expect(b!.x).toBeGreaterThan(t!.x);
+      expect(Math.abs(b!.y + b!.height / 2 - (t!.y + t!.height / 2))).toBeLessThan(6);
+    }
+    // Actions below the last field, and nothing in the row wider than a phone.
+    const lastField = await rows.nth(7).boundingBox();
+    const actions = await page.locator(".recluster-actions").boundingBox();
+    expect(actions!.y).toBeGreaterThanOrEqual(lastField!.y + lastField!.height);
+    const overflow = await page.locator("#recluster-row *").evaluateAll((els) =>
+      els.filter((e) => e.getBoundingClientRect().right > window.innerWidth).map((e) => e.outerHTML.slice(0, 60)));
+    expect(overflow).toEqual([]);
+  });
+}

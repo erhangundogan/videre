@@ -205,7 +205,7 @@ async function startGallery(): Promise<ManagedGallery> {
 }
 
 // IEEE 754 half precision, little-endian: how videre stores a vector.
-function f16Bytes(values: number[]): Uint8Array {
+export function f16Bytes(values: number[]): Uint8Array {
   const out = new Uint8Array(values.length * 2);
   const f32 = new Float32Array(1);
   const u32 = new Uint32Array(f32.buffer);
@@ -256,7 +256,7 @@ async function seedSearchEmbeddings(libraryRoot: string): Promise<void> {
 // Seeding for pages that show the shared empty state until the library has
 // what they are about: a place for Map, a face for People, trips for Events.
 // Each writes straight to the running library's database.
-function openLibraryDb(libraryRoot: string): DatabaseSync {
+export function openLibraryDb(libraryRoot: string): DatabaseSync {
   const db = new DatabaseSync(join(libraryRoot, ".videre", "hashes.db"));
   db.exec("PRAGMA busy_timeout = 5000");
   return db;
@@ -280,6 +280,24 @@ export function seedFace(libraryRoot: string): void {
   const db = openLibraryDb(libraryRoot);
   db.exec("INSERT INTO faces (hash, bbox, embedding, blur) VALUES " +
     "('seeded-face', '0,0,100,100', X'" + "003C".padEnd(2048, "0") + "', 500.0)");
+  db.close();
+}
+
+export type SeedFace = { hash: string; vector: number[]; side?: number; blur?: number; label?: string };
+
+// Faces at chosen angles: `vector` fills the first components of a 512-dim
+// embedding, so a test decides exactly how alike any two faces are. A `label`
+// makes the face confirmed and named.
+export function seedFaces(libraryRoot: string, faces: SeedFace[]): void {
+  const db = openLibraryDb(libraryRoot);
+  const insert = db.prepare(
+    "INSERT INTO faces (hash, bbox, embedding, blur, confirmed, person_label) VALUES (?, ?, ?, ?, ?, ?)");
+  for (const f of faces) {
+    const v = new Array(512).fill(0);
+    f.vector.forEach((x, i) => (v[i] = x));
+    const side = f.side ?? 100;
+    insert.run(f.hash, `0,0,${side},${side}`, f16Bytes(v), f.blur ?? 500, f.label ? 1 : 0, f.label ?? null);
+  }
   db.close();
 }
 
