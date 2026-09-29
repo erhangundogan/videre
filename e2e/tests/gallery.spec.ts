@@ -38,6 +38,16 @@ test("loads the People route without face data", async ({ page, gallery }) => {
   await expect(page.locator(".secnav a[href='/people']")).toHaveClass(/on/);
   await expect(page.getByRole("heading", { name: "No faces detected yet" })).toBeVisible();
   await expect(page.getByText("Run videre faces to detect and group them")).toBeVisible();
+  // Placed like every other empty state: centred, in the sidebar layout too
+  // (where the emptied labeling column used to push it left), and the same
+  // distance below the nav as the empty duplicates page, with no people
+  // toolbar or page padding in between.
+  const box = await page.locator("#faces-empty").boundingBox();
+  const width = page.viewportSize()!.width;
+  expect(Math.abs(box!.x - (width - box!.x - box!.width))).toBeLessThanOrEqual(2);
+  const nav = await page.locator(".secnav").boundingBox();
+  expect(Math.round(box!.y - (nav!.y + nav!.height))).toBe(64);
+  await expect(page.locator(".gallery-toolbar").first()).toBeHidden();
 });
 
 test("persists the list layout after a reload", async ({ page, gallery }) => {

@@ -47,12 +47,18 @@ let facesData = { people: [], clusters: [], singletons: [] };
         'then reload this page. It downloads the detection models on first use ' +
         'and takes a while on a large library, which is why it is a command you ' +
         'run rather than something a page starts for you.</p>';
-      host.parentNode.insertBefore(box, host);
-      ['.people-section', '.title-clusters', '#cluster-grid',
-       '.title-singletons', '#singleton-grid'].forEach(function(sel) {
-        const el = document.querySelector(sel);
-        if (el) el.style.display = 'none';
-      });
+      // Placed and spaced like every other empty state: directly under the
+      // nav, with the people toolbar (panel position, Recluster: nothing to
+      // act on without faces) and the whole labeling layout hidden. Hiding
+      // only the layout's contents left an emptied column that pushed the
+      // message left in the sidebar layout, and the toolbar and page padding
+      // pushed it down.
+      const body = host.closest('.page-body') || host;
+      const toolbars = document.querySelectorAll('.gallery-toolbar');
+      const anchor = toolbars.length ? toolbars[0] : body;
+      anchor.parentNode.insertBefore(box, anchor);
+      toolbars.forEach(function(el) { el.style.display = 'none'; });
+      body.style.display = 'none';
     }
 
     function faceImg(faceId, w, h) {
