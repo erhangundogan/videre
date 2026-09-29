@@ -232,3 +232,28 @@ never sent anywhere. Two features make an outbound request:
 and the gallery Map view, which downloads a world basemap once on first use
 (below). Both fetch data in; neither sends anything about your library out.
 :::
+
+## Shell completion
+
+Tab completion installs itself. The first time `videre` runs under **bash** or
+**fish**, it writes a completion script into the directory that shell already
+loads (`~/.local/share/bash-completion/completions/` and
+`~/.config/fish/completions/`), and refreshes it when the version changes.
+Open a new shell (or re-source your setup) and tab completes subcommands,
+flags, and choices such as `--xmp db|file|newest`.
+
+**zsh** has no per-user completion directory on its load path, so it is not
+installed automatically. Save the script as `_videre` in a directory on your
+`fpath` - for oh-my-zsh, `~/.oh-my-zsh/completions/_videre` - and run
+`rehash`:
+
+```bash
+videre completion zsh > ~/.oh-my-zsh/completions/_videre && rehash
+```
+
+With `--person`, `--model`, `--ext` and `--mime`, the choices come from your
+library: register the dynamic completer in your shell's startup file, e.g. for
+bash `eval "$(COMPLETE=bash videre)"` (zsh: `eval "$(COMPLETE=zsh videre)"`,
+fish: `COMPLETE=fish videre | source`), and keep it read-only fast - videre
+answers from a read-only connection and completes nothing when there is no
+library.
