@@ -821,11 +821,19 @@ pub fn run_clustering(
     params: &crate::cluster_params::ClusteringParameters,
     silent: bool,
 ) -> Result<Option<ClusteringResult>> {
-    let Some(outcome) = compute_clustering(conn, params, silent)? else {
-        return Ok(None);
-    };
-    videre_core::face_db::update_cluster_assignments(conn, &outcome.assignments)?;
-    Ok(Some(outcome.summarize()))
+    let started = std::time::Instant::now();
+    let outcome = compute_clustering(conn, params, silent)?;
+    if let Some(outcome) = &outcome {
+        videre_core::face_db::update_cluster_assignments(conn, &outcome.assignments)?;
+    }
+    // How long a full regroup takes here decides whether `videre watch` runs
+    // one per batch or attaches only the new faces (`recompute_cost`).
+    videre_core::recompute_cost::record(
+        conn,
+        videre_core::recompute_cost::FACES,
+        started.elapsed(),
+    )?;
+    Ok(outcome.map(|o| o.summarize()))
 }
 
 /// The clustering `run_clustering` would write, without writing it: every
@@ -1203,6 +1211,24 @@ mod tests {
         .unwrap();
 
         assert!(result.is_some(), "some faces should cluster");
+    }
+
+    #[test]
+    fn a_regroup_records_how_long_it_took() {
+        let conn = Connection::open_in_memory().unwrap();
+        seed_faces(&conn, &[(0, 0.0, false, None), (1, 8.0, false, None)]);
+        run_clustering(
+            &conn,
+            &params(0.6, 2, 1.0, 5.0, 0.4, f32::MAX, 0.0, 1.0),
+            true,
+        )
+        .unwrap();
+        assert!(
+            videre_core::library_state::get(&conn, videre_core::recompute_cost::FACES)
+                .unwrap()
+                .is_some(),
+            "watch reads this to choose a full regroup or per-face attaching"
+        );
     }
 
     #[test]

@@ -415,6 +415,7 @@ pub fn recompute_all(
     radius_km: f64,
     quiet: bool,
 ) -> anyhow::Result<Vec<RecomputedCluster>> {
+    let started = std::time::Instant::now();
     let tx = conn.unchecked_transaction()?;
 
     ensure_location_clusters_table(&tx)?;
@@ -442,7 +443,7 @@ pub fn recompute_all(
 
     if coords.is_empty() {
         tx.commit()?;
-        store_recompute_state(conn, radius_km)?;
+        store_recompute_state(conn, radius_km, started.elapsed())?;
         return Ok(Vec::new());
     }
 
@@ -516,15 +517,22 @@ pub fn recompute_all(
 
     clusters.sort_by_key(|c| std::cmp::Reverse(c.photo_count));
     tx.commit()?;
-    store_recompute_state(conn, radius_km)?;
+    store_recompute_state(conn, radius_km, started.elapsed())?;
     Ok(clusters)
 }
 
 /// Record what a recompute covered, so the watcher's fingerprint gate and
-/// `videre status` can tell current clusters from stale ones. The fingerprint
-/// is over the GPS data, which the recompute does not change, so reading it
-/// back now yields the library's current fingerprint.
-fn store_recompute_state(conn: &Connection, radius_km: f64) -> anyhow::Result<()> {
+/// `videre status` can tell current clusters from stale ones, and how long it
+/// took, so watch can tell whether a full recompute per batch is affordable
+/// (`recompute_cost`). The fingerprint is over the GPS data, which the
+/// recompute does not change, so reading it back now yields the library's
+/// current fingerprint.
+fn store_recompute_state(
+    conn: &Connection,
+    radius_km: f64,
+    took: std::time::Duration,
+) -> anyhow::Result<()> {
+    crate::recompute_cost::record(conn, crate::recompute_cost::LOCATIONS, took)?;
     let fingerprint = gps_fingerprint(conn)?;
     crate::library_state::set_string(conn, LOCATIONS_GPS_FINGERPRINT, &fingerprint)?;
     crate::library_state::set_string(conn, LOCATIONS_RADIUS, &format!("{radius_km}"))?;
@@ -633,6 +641,24 @@ mod tests {
             )
             .unwrap();
         assert_eq!(assigned, 3);
+    }
+
+    #[test]
+    fn recompute_all_records_how_long_it_took() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, gps_lat REAL, gps_lon REAL,
+                location_cluster_id INTEGER);
+             INSERT INTO file_hashes (path, gps_lat, gps_lon) VALUES ('İstanbul/çiçek.jpg', 41.0082, 28.9784);",
+        )
+        .unwrap();
+        recompute_all(&conn, &temp_cache(), 15.0, true).unwrap();
+        assert!(
+            crate::library_state::get(&conn, crate::recompute_cost::LOCATIONS)
+                .unwrap()
+                .is_some(),
+            "watch reads this to choose a full recompute or per-file placing"
+        );
     }
 
     #[test]
