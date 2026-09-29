@@ -220,3 +220,51 @@ test("each recluster value explains itself by click, tap and keyboard", async ({
     await expect(page.locator(`#${id}-tip .param-default`)).toHaveText(/^Default [\d.]+\.$/);
   }
 });
+
+// A number input reports text that is not a number as an empty value, so the
+// empty case covers it; Playwright cannot type letters into one.
+test("invalid recluster values are refused and nothing runs", async ({ page, isolatedGallery: gallery }) => {
+  seedFaces(gallery.libraryRoot, [{ hash: "a1", vector: [1] }]);
+  const posts: string[] = [];
+  page.on("request", (r) => {
+    if (r.method() === "POST" && r.url().includes("/api/faces/recluster")) posts.push(r.url());
+  });
+  await openRow(page, gallery.baseURL);
+  const line = page.locator("#recluster-result");
+  const eps = page.locator("#rc-eps");
+  const minSize = page.locator("#rc-min-size");
+
+  await eps.fill("");
+  await page.locator("#recluster-preview").click();
+  await expect(line).toHaveText("eps: enter a number.");
+  await expect(eps).toHaveAttribute("aria-invalid", "true");
+  await expect(eps).toBeFocused();
+
+  await eps.fill("3");
+  await page.locator("#recluster-apply").click();
+  await expect(line).toHaveText("eps: between 0 and 2.");
+
+  await eps.fill("0.6");
+  await expect(eps).not.toHaveAttribute("aria-invalid", "true");
+  await minSize.fill("0");
+  await page.locator("#recluster-preview").click();
+  await expect(line).toHaveText("min size: 1 or more.");
+  await minSize.fill("2.5");
+  await page.locator("#recluster-preview").click();
+  await expect(line).toHaveText("min size: a whole number.");
+  // A bad value under a closed More opens it, so the marked field is seen.
+  await minSize.fill("3");
+  await page.locator("#rc-sharpness").evaluate((e) => ((e as HTMLInputElement).value = "-1"));
+  await expect(page.locator("details.recluster-more")).not.toHaveAttribute("open", "");
+  await page.locator("#recluster-preview").click();
+  await expect(line).toHaveText("sharpness: 0 or more.");
+  await expect(page.locator("#rc-sharpness")).toBeFocused();
+  expect(posts, "nothing was posted").toHaveLength(0);
+
+  // The server's own refusal names the field by its title too.
+  await page.locator("#rc-sharpness").fill("80");
+  await page.route("**/api/faces/recluster/preview", (route) =>
+    route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ field: "merge_sim" }) }));
+  await page.locator("#recluster-preview").click();
+  await expect(line).toHaveText("merge: out of range.");
+});

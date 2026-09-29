@@ -592,6 +592,10 @@ let facesData = { people: [], clusters: [], singletons: [] };
       if (focused && focused.classList.contains('param-info')) focused.blur();
     });
 
+    reclusterInputs().forEach(function(input) {
+      input.addEventListener('input', function() { input.removeAttribute('aria-invalid'); });
+    });
+
     // The default in each description comes from the server's built-in set,
     // so the page cannot drift from it.
     function fillDefaultsInTips(defaults) {
@@ -608,14 +612,35 @@ let facesData = { people: [], clusters: [], singletons: [] };
     }
     window.fillReclusterDefaults = fillReclusterDefaults;
 
+    function fieldTitle(param) {
+      const input = document.querySelector('#recluster-row input[data-param="' + param + '"]');
+      const label = input && document.querySelector('label[for="' + input.id + '"]');
+      return label ? label.textContent.trim() : param;
+    }
+
+    // Every field is required: a blank one used to be dropped from the
+    // request, so Preview silently ran the saved value instead. The ranges are
+    // the inputs' min and max, which match the server's validation.
     function reclusterBody() {
       const body = {};
-      reclusterInputs().forEach(function(input) {
-        if (input.value === '') return;
-        const n = Number(input.value);
-        if (Number.isFinite(n)) body[input.dataset.param] = n;
-      });
-      return body;
+      for (const input of reclusterInputs()) {
+        input.removeAttribute('aria-invalid');
+        const v = input.validity;
+        let error = null;
+        if (input.value === '' || v.badInput) error = 'enter a number';
+        else if (v.rangeUnderflow || v.rangeOverflow) {
+          error = input.max !== '' ? 'between ' + input.min + ' and ' + input.max : input.min + ' or more';
+        } else if (input.step === '1' && !Number.isInteger(Number(input.value))) error = 'a whole number';
+        if (error) {
+          input.setAttribute('aria-invalid', 'true');
+          const more = input.closest('details');
+          if (more) more.open = true;
+          input.focus();
+          return { error: fieldTitle(input.dataset.param) + ': ' + error + '.' };
+        }
+        body[input.dataset.param] = Number(input.value);
+      }
+      return { body: body };
     }
 
     async function loadReclusterParams() {
@@ -660,7 +685,7 @@ let facesData = { people: [], clusters: [], singletons: [] };
 
     async function refusalText(r) {
       const body = await r.json().catch(() => ({}));
-      if (r.status === 400 && body.field) return body.field + ' is out of range.';
+      if (r.status === 400 && body.field) return fieldTitle(body.field) + ': out of range.';
       if (r.status === 409) return 'A faces or watch run is in progress; try again when it finishes.';
       return 'Recluster failed (' + r.status + ').';
     }
@@ -676,13 +701,15 @@ let facesData = { people: [], clusters: [], singletons: [] };
 
     async function runRecluster(url, verb) {
       const line = document.getElementById('recluster-result');
+      const request = reclusterBody();
+      if (request.error) { line.textContent = request.error; return null; }
       setReclusterBusy(true);
       line.textContent = verb === 'Applied' ? 'Reclustering...' : 'Computing preview...';
       try {
         const r = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(reclusterBody())
+          body: JSON.stringify(request.body)
         });
         if (!r.ok) { line.textContent = await refusalText(r); return null; }
         const s = await r.json();
