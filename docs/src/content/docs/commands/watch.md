@@ -177,10 +177,11 @@ chatty importer or a slow mount so more of a burst lands in one batch. See
 
 ## Caveats
 
-**A manual command and a watch stage never run at once.** Each stage takes the
-same lock as the command it stands in for, so a manual `faces` during watch's
-faces stage is refused, and a stage that finds its command running is held and
-retried. Conversions through QuickLook share one machine-wide limit with every
+**A manual command never runs at once with its own watch stage.** Each stage
+takes the same lock as the command it stands in for, so a manual `faces` during
+watch's faces stage is refused, and a stage that finds its command running is
+held and retried. Commands with no matching stage, such as `embed`, run
+alongside `watch`. Conversions through QuickLook share one machine-wide limit with every
 other videre process; see
 [running things at once](/guides/long-running-jobs/).
 

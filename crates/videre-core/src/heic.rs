@@ -105,7 +105,17 @@ struct QuicklookSlot(#[allow(dead_code)] File);
 /// The files are created once and never unlinked: the lock lives on the
 /// inode, so removing a held file would let a second, independent lock form.
 fn acquire_slot(dir: &Path, n: usize, poll: Duration) -> std::io::Result<QuicklookSlot> {
-    use fs2::FileExt;
+    acquire_slot_with(dir, n, poll, fs2::FileExt::try_lock_exclusive)
+}
+
+/// `acquire_slot` with the lock attempt passed in, so a test can stand in
+/// for a filesystem that refuses locking.
+fn acquire_slot_with(
+    dir: &Path,
+    n: usize,
+    poll: Duration,
+    try_lock: impl Fn(&File) -> std::io::Result<()>,
+) -> std::io::Result<QuicklookSlot> {
     std::fs::create_dir_all(dir)?;
     let slots = (0..n.max(1))
         .map(|i| {
@@ -118,8 +128,13 @@ fn acquire_slot(dir: &Path, n: usize, poll: Duration) -> std::io::Result<Quicklo
         .collect::<std::io::Result<Vec<File>>>()?;
     loop {
         for slot in &slots {
-            if slot.try_lock_exclusive().is_ok() {
-                return Ok(QuicklookSlot(slot.try_clone()?));
+            // Contention is the only reason to wait. Any other error (a
+            // filesystem without flock support) goes back to the caller,
+            // which falls back to the in-process cap instead of spinning.
+            match try_lock(slot) {
+                Ok(()) => return Ok(QuicklookSlot(slot.try_clone()?)),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(error),
             }
         }
         std::thread::sleep(poll);
@@ -420,6 +435,25 @@ mod tests {
         let dir = temp.path().join("quicklook");
         drop(acquire_slot(&dir, 1, Duration::from_millis(10)).unwrap());
         assert!(!is_held(&dir, 0));
+    }
+
+    #[test]
+    fn a_filesystem_that_rejects_locking_is_an_error_not_a_wait() {
+        // Only contention means "wait": any other lock error (a filesystem
+        // without flock support) must reach the caller's fallback, or every
+        // conversion would spin here forever before qlmanage starts.
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("quicklook");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let rejected = |_: &File| Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
+            let _ = tx.send(acquire_slot_with(&dir, 2, Duration::from_millis(10), rejected).err());
+        });
+        let error = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("acquire returned instead of waiting")
+            .expect("a lock that is refused outright is an error");
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
     }
 
     #[test]
