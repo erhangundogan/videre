@@ -18,6 +18,13 @@ version number and are released together.
 
 ## [0.49.0] - 2026-09-29
 
+### Added
+
+- **A back-to-top button on the gallery's grid and list pages.** A small up
+  arrow appears in the bottom right once you scroll past the first screen and
+  scrolls smoothly back to the top. It is not shown on the People pages, where
+  the people list occupies that corner.
+
 ### Removed
 
 - **`videre scan --retry-incomplete` and `videre scan --similar`.** Both only
