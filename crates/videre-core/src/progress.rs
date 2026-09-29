@@ -1,6 +1,10 @@
+use crate::io_timeout::{ProgressHandle, ProgressSnapshot};
 use indicatif::{ProgressBar, ProgressStyle};
+use std::collections::VecDeque;
 use std::io::IsTerminal;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// Reports progress for a batch of N items as an in-place bar (brew/docker/
 /// npm style) when stderr is a terminal, or periodic plain-text lines when
@@ -28,6 +32,162 @@ pub struct Progress {
     /// a log claiming "26744/26744 images processed" for a 70,601-file
     /// library is a number a reader cannot reconcile with anything.
     noun: &'static str,
+    /// Files being read right now whose bytes are worth showing (see
+    /// `track`), plus the ticker thread that renders them.
+    tracked: Arc<Tracked>,
+}
+
+/// A file counter says nothing while one large file hashes: a 300 GiB video
+/// printed nothing for minutes, which reads as a hang. So files at least this
+/// big show their bytes beside the bar. Below it (about 7 s at 150 MB/s) the
+/// file counter moves often enough on its own.
+const LARGE_FILE_BYTES: u64 = 1 << 30;
+/// How often the readout refreshes on a terminal.
+const TICK: Duration = Duration::from_secs(1);
+/// How often a non-terminal run logs the readout.
+const PLAIN_EVERY: Duration = Duration::from_secs(30);
+/// The rate is measured over this much recent history, so a stall shows as a
+/// falling rate before the no-progress timeout skips the file.
+const RATE_WINDOW: Duration = Duration::from_secs(5);
+
+struct Entry {
+    id: u64,
+    name: String,
+    handle: ProgressHandle,
+    samples: VecDeque<(Instant, u64)>,
+}
+
+#[derive(Default)]
+struct Tracked {
+    entries: Mutex<Vec<Entry>>,
+    next_id: AtomicU64,
+    ticker: Mutex<Option<std::thread::JoinHandle<()>>>,
+    stop: AtomicBool,
+    ticker_exited: AtomicBool,
+}
+
+/// Keeps a file in the readout while it is being read; dropping it removes
+/// the file.
+pub struct TrackGuard {
+    tracked: Arc<Tracked>,
+    id: u64,
+}
+
+impl Drop for TrackGuard {
+    fn drop(&mut self) {
+        if let Ok(mut entries) = self.tracked.entries.lock() {
+            entries.retain(|entry| entry.id != self.id);
+        }
+    }
+}
+
+/// One file as the readout shows it: `done` already clamped to `size`.
+#[derive(Debug, Clone, PartialEq)]
+struct Shown {
+    name: String,
+    done: u64,
+    size: u64,
+    rate: u64,
+}
+
+/// A file worth showing, or `None` below the size threshold or before its
+/// size is known. Rereads can count past the size, so `done` is clamped.
+fn shown_file(name: &str, seen: ProgressSnapshot, rate: u64) -> Option<Shown> {
+    let size = seen.size.filter(|size| *size >= LARGE_FILE_BYTES)?;
+    Some(Shown {
+        name: name.to_owned(),
+        done: seen.bytes.min(size),
+        size,
+        rate,
+    })
+}
+
+/// The text beside the bar: one file by name, several summed.
+fn readout(files: &[Shown]) -> Option<String> {
+    let bytes = crate::disk::human_bytes;
+    match files {
+        [] => None,
+        [one] => Some(format!(
+            "{} {} of {}, {}/s",
+            one.name,
+            bytes(one.done),
+            bytes(one.size),
+            bytes(one.rate)
+        )),
+        many => {
+            let done = many.iter().map(|f| f.done).sum();
+            let size = many.iter().map(|f| f.size).sum();
+            let rate = many.iter().map(|f| f.rate).sum();
+            Some(format!(
+                "{} large files: {} of {}, {}/s",
+                many.len(),
+                bytes(done),
+                bytes(size),
+                bytes(rate)
+            ))
+        }
+    }
+}
+
+/// Bytes per second across the samples inside the last `RATE_WINDOW`: the
+/// newest against the oldest in the window. Fewer than two, or a stall, is 0.
+fn rate(samples: &VecDeque<(Instant, u64)>, now: Instant) -> u64 {
+    let recent: Vec<&(Instant, u64)> = samples
+        .iter()
+        .filter(|(at, _)| now.saturating_duration_since(*at) <= RATE_WINDOW)
+        .collect();
+    let (Some(first), Some(last)) = (recent.first(), recent.last()) else {
+        return 0;
+    };
+    let span = last.0.saturating_duration_since(first.0).as_secs_f64();
+    if span <= 0.0 {
+        return 0;
+    }
+    (last.1.saturating_sub(first.1) as f64 / span) as u64
+}
+
+/// The ticker: sample each tracked handle once a second, then show the
+/// readout beside the bar, or log it every `PLAIN_EVERY` without a terminal.
+fn run_ticker(tracked: Arc<Tracked>, bar: Option<ProgressBar>) {
+    let mut last_line: Option<Instant> = None;
+    while !tracked.stop.load(Ordering::SeqCst) {
+        std::thread::park_timeout(TICK);
+        if tracked.stop.load(Ordering::SeqCst) {
+            break;
+        }
+        let now = Instant::now();
+        let shown: Vec<Shown> = match tracked.entries.lock() {
+            Ok(mut entries) => entries
+                .iter_mut()
+                .filter_map(|entry| {
+                    let seen = entry.handle.snapshot();
+                    entry.samples.push_back((now, seen.bytes));
+                    while entry
+                        .samples
+                        .front()
+                        .is_some_and(|(at, _)| now.saturating_duration_since(*at) > RATE_WINDOW)
+                    {
+                        entry.samples.pop_front();
+                    }
+                    shown_file(&entry.name, seen, rate(&entry.samples, now))
+                })
+                .collect(),
+            Err(_) => break,
+        };
+        let text = readout(&shown);
+        match &bar {
+            Some(bar) => bar.set_message(text.unwrap_or_default()),
+            None => {
+                if let Some(text) = text {
+                    if last_line.is_none_or(|at| at.elapsed() >= PLAIN_EVERY) {
+                        tracing::info!("{text}");
+                        last_line = Some(now);
+                    }
+                }
+            }
+        }
+    }
+    tracked.ticker_exited.store(true, Ordering::SeqCst);
 }
 
 enum Mode {
@@ -69,7 +229,7 @@ impl Progress {
         } else if std::io::stderr().is_terminal() {
             let bar = ProgressBar::new(total);
             bar.set_style(
-                ProgressStyle::with_template("{bar:40} {percent}%")
+                ProgressStyle::with_template("{bar:40} {percent}% {msg}")
                     .unwrap()
                     .progress_chars("=> "),
             );
@@ -89,6 +249,61 @@ impl Progress {
             done: AtomicU64::new(0),
             mode,
             noun: "images",
+            tracked: Arc::new(Tracked::default()),
+        }
+    }
+
+    /// A progress in the non-terminal mode, whatever the test's stderr is.
+    #[cfg(test)]
+    fn plain_for_test(total: u64) -> Self {
+        let mut progress = Progress::new(total, true);
+        progress.mode = Mode::Plain;
+        progress
+    }
+
+    /// Show `name`'s bytes beside the bar while it is being read through
+    /// `handle`, if it turns out to be a large file (see `LARGE_FILE_BYTES`),
+    /// until the returned guard drops. The first tracked file starts the
+    /// ticker that renders the readout; `--silent` shows nothing and starts
+    /// no thread.
+    pub fn track(&self, name: &str, handle: ProgressHandle) -> TrackGuard {
+        let id = self.tracked.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+        let guard = TrackGuard {
+            tracked: Arc::clone(&self.tracked),
+            id,
+        };
+        let bar = match &self.mode {
+            Mode::Silent => return guard,
+            Mode::Bar(bar) => Some(bar.clone()),
+            Mode::Plain => None,
+        };
+        if let Ok(mut entries) = self.tracked.entries.lock() {
+            entries.push(Entry {
+                id,
+                name: name.to_owned(),
+                handle,
+                samples: VecDeque::new(),
+            });
+        }
+        if let Ok(mut ticker) = self.tracked.ticker.lock() {
+            if ticker.is_none() {
+                let tracked = Arc::clone(&self.tracked);
+                *ticker = std::thread::Builder::new()
+                    .name("videre-progress".into())
+                    .spawn(move || run_ticker(tracked, bar))
+                    .ok();
+            }
+        }
+        guard
+    }
+
+    /// Stop and join the readout ticker, if one was started.
+    fn stop_ticker(&self) {
+        self.tracked.stop.store(true, Ordering::SeqCst);
+        let handle = self.tracked.ticker.lock().ok().and_then(|mut t| t.take());
+        if let Some(handle) = handle {
+            handle.thread().unpark();
+            let _ = handle.join();
         }
     }
 
@@ -144,6 +359,8 @@ impl Progress {
     /// rather than being overwritten. Does not print anything itself, the
     /// caller assembles and prints its own summary line(s).
     pub fn finish(self) {
+        // Before clearing, so the ticker cannot write a message after it.
+        self.stop_ticker();
         if let Mode::Bar(bar) = &self.mode {
             bar.finish_and_clear();
         }
@@ -151,8 +368,10 @@ impl Progress {
 }
 
 impl Drop for Progress {
-    /// Unregister this bar, unless a newer one has taken its place.
+    /// Stop the readout ticker, and unregister this bar unless a newer one
+    /// has taken its place.
     fn drop(&mut self) {
+        self.stop_ticker();
         if let Ok(mut active) = ACTIVE_BAR.lock() {
             if active.as_ref().is_some_and(|(id, _)| *id == self.id) {
                 *active = None;
@@ -234,6 +453,108 @@ mod tests {
         let p = Progress::new_counting(10, true, "coordinates");
         assert_eq!(p.noun, "coordinates");
         assert_eq!(Progress::new(10, true).noun, "images");
+    }
+
+    const GB: u64 = 1 << 30;
+
+    #[test]
+    fn one_large_file_reads_with_its_name() {
+        let shown = shown_file(
+            "Fotoğraf_İzmir.mov",
+            crate::io_timeout::ProgressSnapshot {
+                bytes: 12 * GB,
+                size: Some(300 * GB),
+            },
+            158_000_000,
+        )
+        .unwrap();
+        assert_eq!(
+            readout(&[shown]).unwrap(),
+            "Fotoğraf_İzmir.mov 12.0 GB of 300.0 GB, 150.7 MB/s"
+        );
+    }
+
+    #[test]
+    fn several_large_files_are_summed() {
+        let a = shown_file(
+            "a.mov",
+            crate::io_timeout::ProgressSnapshot {
+                bytes: GB,
+                size: Some(2 * GB),
+            },
+            1 << 20,
+        )
+        .unwrap();
+        let b = shown_file(
+            "b.mov",
+            crate::io_timeout::ProgressSnapshot {
+                bytes: 3 * GB,
+                size: Some(4 * GB),
+            },
+            1 << 20,
+        )
+        .unwrap();
+        assert_eq!(
+            readout(&[a, b]).unwrap(),
+            "2 large files: 4.0 GB of 6.0 GB, 2.0 MB/s"
+        );
+    }
+
+    #[test]
+    fn files_below_a_gibibyte_or_without_a_size_are_not_shown() {
+        let small = crate::io_timeout::ProgressSnapshot {
+            bytes: 10,
+            size: Some(GB - 1),
+        };
+        assert!(shown_file("küçük.jpg", small, 0).is_none());
+        let unknown = crate::io_timeout::ProgressSnapshot {
+            bytes: 10,
+            size: None,
+        };
+        assert!(shown_file("belirsiz.mov", unknown, 0).is_none());
+        assert!(readout(&[]).is_none());
+    }
+
+    #[test]
+    fn done_never_exceeds_size() {
+        let shown = shown_file(
+            "tekrar.mov",
+            crate::io_timeout::ProgressSnapshot {
+                bytes: 3 * GB,
+                size: Some(2 * GB),
+            },
+            0,
+        )
+        .unwrap();
+        assert_eq!(shown.done, 2 * GB);
+    }
+
+    #[test]
+    fn the_rate_is_the_last_five_seconds() {
+        let now = std::time::Instant::now();
+        let at =
+            |secs_ago: u64, bytes: u64| (now - std::time::Duration::from_secs(secs_ago), bytes);
+        // 1000 bytes long ago must not count; 500 bytes over the last 4 s do.
+        let samples: std::collections::VecDeque<_> =
+            [at(20, 0), at(10, 1000), at(4, 1000), at(0, 1500)].into();
+        assert_eq!(rate(&samples, now), 125);
+        // A stall reads as zero.
+        let stalled: std::collections::VecDeque<_> = [at(4, 1500), at(0, 1500)].into();
+        assert_eq!(rate(&stalled, now), 0);
+        let single: std::collections::VecDeque<_> = [at(0, 1500)].into();
+        assert_eq!(rate(&single, now), 0);
+    }
+
+    #[test]
+    fn finish_stops_the_ticker() {
+        let p = Progress::plain_for_test(1);
+        let handle = crate::io_timeout::ProgressHandle::new();
+        let guard = p.track("büyük.mov", handle);
+        let tracked = std::sync::Arc::clone(&p.tracked);
+        assert!(!tracked.ticker_exited.load(Ordering::SeqCst));
+        drop(guard);
+        p.finish();
+        assert!(tracked.ticker_exited.load(Ordering::SeqCst));
     }
 
     #[test]
