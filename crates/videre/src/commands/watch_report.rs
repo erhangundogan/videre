@@ -59,7 +59,11 @@ fn line(f: &FileFacts) -> String {
             Step::Done(t) | Step::Missing(t) => t.as_str(),
         })
         .collect();
-    format!("{}: {}", f.path, parts.join(", "))
+    format!(
+        "{}: {}",
+        crate::display_path::escape_controls(&f.path),
+        parts.join(", ")
+    )
 }
 
 /// Which stages the batch ran, and what the drain knows about why one did not.
@@ -223,6 +227,19 @@ mod tests {
             vec![
                 "çiçek.heic: scanned, 2 faces (1 grouped), embedded (photo), placed in Altunizade"
             ]
+        );
+    }
+
+    #[test]
+    fn a_filename_cannot_forge_lines_or_drive_the_terminal() {
+        let lines = render(&[facts(
+            "a\nfake: done\u{1b}[31m\u{202e}gnp.jpg",
+            &[Step::Done("scanned".into())],
+        )]);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(
+            lines[0],
+            "a\\nfake: done\\u{1b}[31m\\u{202e}gnp.jpg: scanned"
         );
     }
 
