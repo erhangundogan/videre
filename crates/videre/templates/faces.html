@@ -14,21 +14,81 @@
     <button type="button" id="recluster-toggle" class="toolbar-toggle" aria-expanded="false" aria-controls="recluster-row" onclick="toggleRecluster()">Recluster</button>
   </div>
   <div class="gallery-toolbar recluster-row" id="recluster-row" hidden>
-    <label class="view-toggle" title="How alike faces must be to group: the cosine-distance radius. Higher groups more.">eps <input type="number" data-param="eps" min="0" max="2" step="0.01"></label>
-    <label class="view-toggle" title="Fewest faces that can form a group; smaller groups stay singletons.">min size <input type="number" data-param="min_cluster_size" min="1" step="1"></label>
-    <label class="view-toggle" title="How readily two groups merge. Lower merges more.">merge <input type="number" data-param="merge_sim" min="-1" max="1" step="0.01"></label>
-    <label class="view-toggle" title="A leftover face joins the group of its nearest face at this similarity. 1 turns it off.">attach <input type="number" data-param="attach_sim" min="-1" max="1" step="0.01"></label>
-    <label class="view-toggle" title="Faces smaller than this, in pixels, are left out of grouping.">min face px <input type="number" data-param="min_face_size" min="0" step="1"></label>
-    <label class="view-toggle" title="Faces softer than this are left out of grouping.">sharpness <input type="number" data-param="min_blur" min="0" step="1"></label>
+    <div class="recluster-fields">
+      <div class="recluster-field">
+        <span class="rc-title">
+          <label for="rc-eps">eps</label>
+          <button type="button" class="param-info" aria-label="About eps" aria-expanded="false" aria-controls="rc-eps-tip">i</button>
+          <span class="param-tip" id="rc-eps-tip" role="tooltip">How alike two faces must be to start a group. Higher puts more faces together; lower splits look-alikes apart. <span class="param-default"></span></span>
+        </span>
+        <input id="rc-eps" type="number" data-param="eps" min="0" max="2" step="0.01" aria-describedby="rc-eps-tip">
+      </div>
+      <div class="recluster-field">
+        <span class="rc-title">
+          <label for="rc-merge">merge</label>
+          <button type="button" class="param-info" aria-label="About merge" aria-expanded="false" aria-controls="rc-merge-tip">i</button>
+          <span class="param-tip" id="rc-merge-tip" role="tooltip">How alike two whole groups must be to join into one. Lower joins more, reuniting a person split in two; higher keeps groups apart. <span class="param-default"></span></span>
+        </span>
+        <input id="rc-merge" type="number" data-param="merge_sim" min="-1" max="1" step="0.01" aria-describedby="rc-merge-tip">
+      </div>
+      <div class="recluster-field">
+        <span class="rc-title">
+          <label for="rc-attach">attach</label>
+          <button type="button" class="param-info" aria-label="About attach" aria-expanded="false" aria-controls="rc-attach-tip">i</button>
+          <span class="param-tip" id="rc-attach-tip" role="tooltip">A face left out of every group joins the group of its most similar face when at least this similar. Lower pulls more faces in; 1 turns it off. <span class="param-default"></span></span>
+        </span>
+        <input id="rc-attach" type="number" data-param="attach_sim" min="-1" max="1" step="0.01" aria-describedby="rc-attach-tip">
+      </div>
+      <div class="recluster-field">
+        <span class="rc-title">
+          <label for="rc-min-size">min size</label>
+          <button type="button" class="param-info" aria-label="About min size" aria-expanded="false" aria-controls="rc-min-size-tip">i</button>
+          <span class="param-tip" id="rc-min-size-tip" role="tooltip">The fewest faces that make a group. Faces in smaller groups stay single. <span class="param-default"></span></span>
+        </span>
+        <input id="rc-min-size" type="number" data-param="min_cluster_size" min="1" step="1" aria-describedby="rc-min-size-tip">
+      </div>
+    </div>
     <details class="recluster-more"><summary>More</summary>
-      <label class="view-toggle" title="Legacy gate for faces without a sharpness reading. Lower is stricter.">generic <input type="number" data-param="max_generic_sim" min="-1" max="1" step="0.01"></label>
-      <label class="view-toggle" title="Faces whose landmarks are this far from a face shape are left out.">landmark error <input type="number" data-param="max_landmark_error" min="0" step="0.5"></label>
+      <div class="recluster-fields">
+        <div class="recluster-field">
+          <span class="rc-title">
+            <label for="rc-min-face">min face px</label>
+            <button type="button" class="param-info" aria-label="About min face px" aria-expanded="false" aria-controls="rc-min-face-tip">i</button>
+            <span class="param-tip" id="rc-min-face-tip" role="tooltip">Faces smaller than this, in pixels, are left out of grouping. Lower lets smaller faces in. <span class="param-default"></span></span>
+          </span>
+          <input id="rc-min-face" type="number" data-param="min_face_size" min="0" step="1" aria-describedby="rc-min-face-tip">
+        </div>
+        <div class="recluster-field">
+          <span class="rc-title">
+            <label for="rc-sharpness">sharpness</label>
+            <button type="button" class="param-info" aria-label="About sharpness" aria-expanded="false" aria-controls="rc-sharpness-tip">i</button>
+            <span class="param-tip" id="rc-sharpness-tip" role="tooltip">Faces blurrier than this are left out of grouping. Lower lets blurrier faces in. <span class="param-default"></span></span>
+          </span>
+          <input id="rc-sharpness" type="number" data-param="min_blur" min="0" step="1" aria-describedby="rc-sharpness-tip">
+        </div>
+        <div class="recluster-field">
+          <span class="rc-title">
+            <label for="rc-generic">generic</label>
+            <button type="button" class="param-info" aria-label="About generic" aria-expanded="false" aria-controls="rc-generic-tip">i</button>
+            <span class="param-tip" id="rc-generic-tip" role="tooltip">Only for faces detected before sharpness was recorded: faces this close to the average face are left out. Lower is stricter. <span class="param-default"></span></span>
+          </span>
+          <input id="rc-generic" type="number" data-param="max_generic_sim" min="-1" max="1" step="0.01" aria-describedby="rc-generic-tip">
+        </div>
+        <div class="recluster-field">
+          <span class="rc-title">
+            <label for="rc-landmark">landmark error</label>
+            <button type="button" class="param-info" aria-label="About landmark error" aria-expanded="false" aria-controls="rc-landmark-tip">i</button>
+            <span class="param-tip" id="rc-landmark-tip" role="tooltip">Faces whose eyes, nose and mouth sit this far from a face shape are left out. Lower is stricter. <span class="param-default"></span></span>
+          </span>
+          <input id="rc-landmark" type="number" data-param="max_landmark_error" min="0" step="0.5" aria-describedby="rc-landmark-tip">
+        </div>
+      </div>
     </details>
-    <span class="recluster-actions">
+    <div class="recluster-actions">
       <button type="button" id="recluster-preview" onclick="previewRecluster()">Preview</button>
       <button type="button" id="recluster-apply" class="primary" onclick="applyRecluster()">Apply</button>
       <button type="button" id="recluster-defaults" onclick="fillReclusterDefaults()">Defaults</button>
-    </span>
+    </div>
     <p id="recluster-result" class="recluster-line" role="status"></p>
     <p id="recluster-learning" class="recluster-line recluster-learning"></p>
   </div>
