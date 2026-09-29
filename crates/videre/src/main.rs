@@ -160,6 +160,9 @@ fn main() {
         }
     };
     let Cli { library, command } = cli;
+    if !matches!(command, Command::Completion { .. }) {
+        completions::self_setup();
+    }
     let code = match command {
         Command::Completion { shell } => {
             // A broken pipe (piping into head) is the caller's business, not

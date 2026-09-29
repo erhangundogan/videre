@@ -5339,6 +5339,7 @@ dependencies = [
  "half",
  "image",
  "kamadak-exif",
+ "libc",
  "little_exif",
  "notify",
  "notify-debouncer-full",
