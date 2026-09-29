@@ -77,9 +77,13 @@ explicit sentinel, so it counts as complete and is not re-read on every scan.
 
 ## Reading marks from XMP
 
-Scan reads ratings, colour labels, and keywords from an adjacent XMP sidecar or
-an embedded XMP packet. The `--xmp` option controls how ratings and labels are
-reconciled with database values:
+Scan reads ratings, colour labels, and keywords from an adjacent XMP sidecar and
+from the XMP packet embedded in the photo. They are combined field by field: the
+sidecar's value wins where it has one, the photo's fills whatever the sidecar
+lacks, and keywords from both are kept. So a rating another app writes into the
+photo is read even when the photo also has a sidecar, for example one
+[`videre export`](/commands/export/) wrote with face regions only. The `--xmp`
+option controls how ratings and labels are reconciled with database values:
 
 | Value | Behaviour |
 |---|---|
