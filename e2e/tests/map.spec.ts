@@ -253,6 +253,12 @@ test("the map renders MapLibre with attribution when WebGL is available", async 
 });
 
 test("zooming out to the world clears a MapLibre selection", async ({ page, gallery }) => {
+  // Eight animated zoom-outs over a real vector basemap, rendered on the CPU
+  // where CI has no GPU (SwiftShader): a failed run's trace showed each step
+  // taking up to 4 s, with even a 200 ms wait stretched to 3 s by the busy
+  // renderer, so the whole test came to 30 s and ran out of the default
+  // budget with every assertion already passing. Locally it takes 4-11 s.
+  test.slow();
   seedClusters(gallery.libraryRoot);
   seedBasemap(gallery.libraryRoot);
   await preferListView(gallery);
