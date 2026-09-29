@@ -89,13 +89,16 @@ body.select-mode .card[data-hash].selected::after,body.select-mode .tile[data-ha
 /* The file selection bar: icon buttons, Clear beside the count, Delete last. */
 #file-sel-bar{flex-wrap:nowrap;gap:8px;white-space:nowrap}
 #file-sel-bar>*{flex-shrink:0}
-#file-sel-bar .sel-count{order:-2}
-#file-sel-bar [data-sel-clear]{order:-1;margin-right:8px}
+/* One width for the count, room for four digits, so the centred bar does not
+   re-centre and move every button each time the count changes. */
+#file-sel-bar .sel-count{order:-2;min-width:13ch;font-variant-numeric:tabular-nums}
+#file-sel-bar [data-sel-clear]{order:-1;margin-right:8px;height:32px;padding:0 12px;border-radius:6px}
 #file-sel-bar .sel-icon{width:32px;height:32px;padding:0;display:inline-flex;align-items:center;justify-content:center;border-radius:6px}
 #file-sel-bar .sel-icon svg{width:18px;height:18px}
 #file-sel-bar .sel-heart svg path{fill:none;stroke:currentColor;stroke-width:2}
-#file-sel-bar .sel-heart[aria-pressed="false"]{background:#2a6db5;color:#fff;border:1px solid #fff}
-#file-sel-bar .sel-heart[aria-pressed="true"]{background:#fff;color:#2a6db5}
+/* The like toggle: unpressed looks like every other button in the bar;
+   pressed (every selected item liked) inverts, like a pressed key. */
+#file-sel-bar .sel-heart[aria-pressed="true"]{background:#2a6db5;color:#fff;border:1px solid #fff}
 #file-sel-bar .sel-heart[aria-pressed="true"] svg path{fill:currentColor}
 #file-sel-bar .sel-sep{width:1px;align-self:stretch;background:rgba(255,255,255,.35)}
 #file-sel-bar .sel-danger{margin-left:4px}
