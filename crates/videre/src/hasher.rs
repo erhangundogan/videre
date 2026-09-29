@@ -175,6 +175,16 @@ pub fn hash_file_in(
     ctx: &videre_core::library::LibraryContext,
     path: &Path,
 ) -> io::Result<FileRecord> {
+    hash_file_in_observed(ctx, path, &videre_core::io_timeout::ProgressHandle::new())
+}
+
+/// [`hash_file_in`] through a progress handle the caller keeps, so it can
+/// show the bytes read and the file's size while the hash runs.
+pub fn hash_file_in_observed(
+    ctx: &videre_core::library::LibraryContext,
+    path: &Path,
+    progress: &videre_core::io_timeout::ProgressHandle,
+) -> io::Result<FileRecord> {
     let file = videre_core::library_io::open_media(ctx, path).map_err(io::Error::other)?;
     let stat_file = file.try_clone()?;
     videre_core::io_timeout::run_with_timeout(videre_core::io_timeout::STAT_TIMEOUT, move || {
@@ -182,7 +192,8 @@ pub fn hash_file_in(
     })
     .map_err(videre_core::io_timeout::IoRunError::into_io_error)??;
     let owned = path.to_path_buf();
-    videre_core::io_timeout::run_with_progress_timeout(
+    videre_core::io_timeout::run_with_progress_timeout_on(
+        progress.clone(),
         videre_core::io_timeout::DEFAULT_IO_TIMEOUT,
         move |progress| hash_open_file(&owned, file, &progress),
     )
@@ -196,6 +207,7 @@ fn hash_open_file(
 ) -> io::Result<FileRecord> {
     let metadata = file.metadata()?;
     let size_bytes = metadata.len();
+    progress.set_size(size_bytes);
     let created_at = metadata.created().ok().map(system_time_to_iso);
     let modified_at = metadata.modified().ok().map(system_time_to_iso);
 
@@ -408,6 +420,37 @@ mod tests {
             assert_eq!(confined.hash, expected.content, "{relative}");
             assert_eq!(confined.meta_hash, expected.meta, "{relative}");
         }
+    }
+
+    #[test]
+    fn observed_hash_matches_and_counts_the_whole_file() {
+        let library_dir = tempdir().unwrap();
+        let root = library_dir.path().join("fotoğraflar");
+        fs::create_dir(&root).unwrap();
+        let library =
+            videre_core::library::LibraryContext::new(&root, &library_dir.path().join("cache"))
+                .unwrap();
+        let path = root.join("çiçek.jpg");
+        fs::copy(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/sample_with_exif.jpg"
+            ),
+            &path,
+        )
+        .unwrap();
+        let len = fs::metadata(&path).unwrap().len();
+
+        let handle = videre_core::io_timeout::ProgressHandle::new();
+        let observed = hash_file_in_observed(&library, &path, &handle).unwrap();
+        let plain = hash_file_in(&library, &path).unwrap();
+        assert_eq!(observed.hash, plain.hash);
+        assert_eq!(observed.meta_hash, plain.meta_hash);
+        assert_eq!(observed.exif_date, plain.exif_date);
+
+        let seen = handle.snapshot();
+        assert_eq!(seen.size, Some(len));
+        assert!(seen.bytes >= len, "{} of {len}", seen.bytes);
     }
 
     #[test]

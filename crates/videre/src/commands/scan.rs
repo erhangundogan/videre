@@ -176,11 +176,17 @@ fn gather_records(
     let records: Vec<_> = paths
         .par_iter()
         .filter_map(|path| {
-            let result = record_or_skip(
-                hasher::hash_file_in(&ctx.library, path),
-                &progress,
-                &path.display().to_string(),
-            );
+            // Tracked while it hashes, so a large file shows its bytes beside
+            // the bar instead of the counter sitting still for minutes.
+            let handle = videre_core::io_timeout::ProgressHandle::new();
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            let tracked = progress.track(&name, handle.clone());
+            let hashed = hasher::hash_file_in_observed(&ctx.library, path, &handle);
+            drop(tracked);
+            let result = record_or_skip(hashed, &progress, &path.display().to_string());
             progress.tick();
             result
         })
