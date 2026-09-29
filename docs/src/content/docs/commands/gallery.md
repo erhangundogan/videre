@@ -356,10 +356,14 @@ Answering Yes names a cluster; No only teaches; Skip does neither.
 
 ### Recluster
 
-**Recluster** in the People toolbar opens a row with the grouping values of
-[`videre faces`](/commands/faces/#clustering-parameters): `eps`, minimum group
-size, merge, attach, minimum face size and sharpness, with the two legacy
-gates under **More**. It starts from the values this library uses now.
+**Recluster** in the People toolbar opens a form with the grouping values of
+[`videre faces`](/commands/faces/#clustering-parameters), one per line:
+`eps`, merge, attach and minimum group size, with the quality gates (minimum
+face size, sharpness, and the two legacy gates) under **More**. Each has an
+**i** after its name that says what it does, which way to move it, and its
+default; hover, focus or tap it. The form starts from the values this library
+uses now, and a blank or out-of-range value is refused with a message before
+anything runs.
 
 - **Preview** computes the grouping those values would produce and changes
   nothing: how many groups, from how many unnamed faces, how many stay single
