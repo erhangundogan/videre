@@ -87,12 +87,13 @@ struct Shown {
     name: String,
     done: u64,
     size: u64,
-    rate: u64,
+    /// `None` until there are two samples to measure between.
+    rate: Option<u64>,
 }
 
 /// A file worth showing, or `None` below the size threshold or before its
 /// size is known. Rereads can count past the size, so `done` is clamped.
-fn shown_file(name: &str, seen: ProgressSnapshot, rate: u64) -> Option<Shown> {
+fn shown_file(name: &str, seen: ProgressSnapshot, rate: Option<u64>) -> Option<Shown> {
     let size = seen.size.filter(|size| *size >= LARGE_FILE_BYTES)?;
     Some(Shown {
         name: name.to_owned(),
@@ -102,48 +103,55 @@ fn shown_file(name: &str, seen: ProgressSnapshot, rate: u64) -> Option<Shown> {
     })
 }
 
-/// The text beside the bar: one file by name, several summed.
+/// The text beside the bar: one file by name, several summed. The rate is
+/// left off until every shown file has one, since a missing rate is not a
+/// stall and must not read as `0 B/s`.
 fn readout(files: &[Shown]) -> Option<String> {
     let bytes = crate::disk::human_bytes;
+    let rate = |rate: Option<u64>| {
+        rate.map(|r| format!(", {}/s", bytes(r)))
+            .unwrap_or_default()
+    };
     match files {
         [] => None,
         [one] => Some(format!(
-            "{} {} of {}, {}/s",
+            "{} {} of {}{}",
             one.name,
             bytes(one.done),
             bytes(one.size),
-            bytes(one.rate)
+            rate(one.rate)
         )),
         many => {
             let done = many.iter().map(|f| f.done).sum();
             let size = many.iter().map(|f| f.size).sum();
-            let rate = many.iter().map(|f| f.rate).sum();
+            let total = many.iter().map(|f| f.rate).sum::<Option<u64>>();
             Some(format!(
-                "{} large files: {} of {}, {}/s",
+                "{} large files: {} of {}{}",
                 many.len(),
                 bytes(done),
                 bytes(size),
-                bytes(rate)
+                rate(total)
             ))
         }
     }
 }
 
 /// Bytes per second across the samples inside the last `RATE_WINDOW`: the
-/// newest against the oldest in the window. Fewer than two, or a stall, is 0.
-fn rate(samples: &VecDeque<(Instant, u64)>, now: Instant) -> u64 {
+/// newest against the oldest in the window. A stall is `Some(0)`; fewer
+/// than two samples is `None`, no measurement yet.
+fn rate(samples: &VecDeque<(Instant, u64)>, now: Instant) -> Option<u64> {
     let recent: Vec<&(Instant, u64)> = samples
         .iter()
         .filter(|(at, _)| now.saturating_duration_since(*at) <= RATE_WINDOW)
         .collect();
     let (Some(first), Some(last)) = (recent.first(), recent.last()) else {
-        return 0;
+        return None;
     };
     let span = last.0.saturating_duration_since(first.0).as_secs_f64();
     if span <= 0.0 {
-        return 0;
+        return None;
     }
-    (last.1.saturating_sub(first.1) as f64 / span) as u64
+    Some((last.1.saturating_sub(first.1) as f64 / span) as u64)
 }
 
 /// The ticker: sample each tracked handle once a second, then show the
@@ -465,13 +473,27 @@ mod tests {
                 bytes: 12 * GB,
                 size: Some(300 * GB),
             },
-            158_000_000,
+            Some(158_000_000),
         )
         .unwrap();
         assert_eq!(
             readout(&[shown]).unwrap(),
             "Fotoğraf_İzmir.mov 12.0 GB of 300.0 GB, 150.7 MB/s"
         );
+    }
+
+    #[test]
+    fn a_file_without_a_rate_yet_reads_without_one() {
+        let shown = shown_file(
+            "yeni.mov",
+            crate::io_timeout::ProgressSnapshot {
+                bytes: GB,
+                size: Some(4 * GB),
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(readout(&[shown]).unwrap(), "yeni.mov 1.0 GB of 4.0 GB");
     }
 
     #[test]
@@ -482,7 +504,7 @@ mod tests {
                 bytes: GB,
                 size: Some(2 * GB),
             },
-            1 << 20,
+            Some(1 << 20),
         )
         .unwrap();
         let b = shown_file(
@@ -491,7 +513,7 @@ mod tests {
                 bytes: 3 * GB,
                 size: Some(4 * GB),
             },
-            1 << 20,
+            Some(1 << 20),
         )
         .unwrap();
         assert_eq!(
@@ -506,12 +528,12 @@ mod tests {
             bytes: 10,
             size: Some(GB - 1),
         };
-        assert!(shown_file("küçük.jpg", small, 0).is_none());
+        assert!(shown_file("küçük.jpg", small, None).is_none());
         let unknown = crate::io_timeout::ProgressSnapshot {
             bytes: 10,
             size: None,
         };
-        assert!(shown_file("belirsiz.mov", unknown, 0).is_none());
+        assert!(shown_file("belirsiz.mov", unknown, None).is_none());
         assert!(readout(&[]).is_none());
     }
 
@@ -523,7 +545,7 @@ mod tests {
                 bytes: 3 * GB,
                 size: Some(2 * GB),
             },
-            0,
+            None,
         )
         .unwrap();
         assert_eq!(shown.done, 2 * GB);
@@ -537,12 +559,13 @@ mod tests {
         // 1000 bytes long ago must not count; 500 bytes over the last 4 s do.
         let samples: std::collections::VecDeque<_> =
             [at(20, 0), at(10, 1000), at(4, 1000), at(0, 1500)].into();
-        assert_eq!(rate(&samples, now), 125);
+        assert_eq!(rate(&samples, now), Some(125));
         // A stall reads as zero.
         let stalled: std::collections::VecDeque<_> = [at(4, 1500), at(0, 1500)].into();
-        assert_eq!(rate(&stalled, now), 0);
+        assert_eq!(rate(&stalled, now), Some(0));
         let single: std::collections::VecDeque<_> = [at(0, 1500)].into();
-        assert_eq!(rate(&single, now), 0);
+        // One sample is no rate at all, not a stall.
+        assert_eq!(rate(&single, now), None);
     }
 
     #[test]
