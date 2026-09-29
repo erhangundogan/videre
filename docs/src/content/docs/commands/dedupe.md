@@ -24,7 +24,8 @@ any that contain one (common in Google Takeout exports). `--remove` moves copies
 to the system trash (recoverable), never `rm`, asks before deleting unless
 `--yes`, previews with `--dry-run`, and refuses an implausibly large deletion
 unless `--force`. It removes only **exact** duplicates; `--similar` groups are
-review-only.
+review-only. A copy's XMP sidecar (`<file>.<ext>.xmp`) goes to the trash with it,
+and `--dry-run` lists which sidecars would.
 
 :::danger
 `--remove` (without `--dry-run`) moves copies to the trash immediately once you

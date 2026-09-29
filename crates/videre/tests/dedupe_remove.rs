@@ -120,6 +120,48 @@ fn remove_yes_also_prunes_the_loser_row() {
 }
 
 #[test]
+fn remove_takes_the_copys_sidecar_and_leaves_the_kept_ones() {
+    let (lib, a, b) = lib_with_spaced_duplicate();
+    let sidecar = |p: &PathBuf| PathBuf::from(format!("{}.xmp", p.display()));
+    for p in [&a, &b] {
+        std::fs::write(sidecar(p), "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"/>").unwrap();
+    }
+
+    let dry = lib
+        .cmd()
+        .args(["dedupe", "--remove", "--dry-run"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&dry.stderr);
+    assert!(
+        stderr.contains("1 XMP sidecar(s) would go with them"),
+        "{stderr}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&dry.stdout).contains(".xmp"),
+        "stdout stays the media paths alone"
+    );
+
+    let out = lib
+        .cmd()
+        .args(["dedupe", "--remove", "--yes", "--silent"])
+        .output()
+        .unwrap();
+    if !out.status.success() {
+        // No-trash environment (see above): nothing moved.
+        assert_eq!(remaining(&[&sidecar(&a), &sidecar(&b)]), 2);
+        return;
+    }
+    let (kept, gone) = if a.exists() { (&a, &b) } else { (&b, &a) };
+    assert!(!gone.exists());
+    assert!(
+        !sidecar(gone).exists(),
+        "the removed copy's sidecar was left behind"
+    );
+    assert!(sidecar(kept).exists(), "the kept copy's sidecar must stay");
+}
+
+#[test]
 fn remove_rejects_similar_json_and_html() {
     let (lib, _a, _b) = lib_with_spaced_duplicate();
     let combos: [&[&str]; 3] = [

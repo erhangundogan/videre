@@ -309,6 +309,19 @@ fn run_remove(
         print_paths_delimited(&losers, args.print0);
         if !args.silent {
             tracing::info!("{} would be moved to the trash.", removals.describe());
+            // Stdout stays the media paths alone, for `--print0 | xargs -0`.
+            let sidecars = crate::removal::sidecars_of(&losers);
+            if !sidecars.is_empty() {
+                tracing::info!(
+                    "{} XMP sidecar(s) would go with them: {}",
+                    sidecars.len(),
+                    sidecars
+                        .iter()
+                        .map(|s| s.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
         }
         return Ok(0);
     }

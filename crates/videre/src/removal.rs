@@ -8,13 +8,34 @@ use std::path::PathBuf;
 /// Move each path to the OS trash, returning a per-path result so the caller can
 /// count successes, report skips, and stop on a run of failures. Never hard
 /// deletes: a move to the system trash is recoverable.
+///
+/// A photo that moved takes its `<file>.<ext>.xmp` sidecar with it, so no
+/// orphan sidecar is left describing a photo that is gone. A sidecar that will
+/// not move is warned about and never turns the photo's result into a failure.
 pub fn trash_paths(paths: &[PathBuf]) -> Vec<(PathBuf, Result<(), String>)> {
     paths
         .iter()
         .map(|p| {
             let result = trash::delete(p).map_err(|e| e.to_string());
+            if result.is_ok() {
+                let sidecar = crate::xmp::write::sidecar_path(p);
+                if sidecar.exists() {
+                    if let Err(e) = trash::delete(&sidecar) {
+                        tracing::warn!("could not trash the sidecar {sidecar:?}: {e}");
+                    }
+                }
+            }
             (p.clone(), result)
         })
+        .collect()
+}
+
+/// The sidecars that would go to the trash with `paths`, for a dry run.
+pub fn sidecars_of(paths: &[PathBuf]) -> Vec<PathBuf> {
+    paths
+        .iter()
+        .map(|p| crate::xmp::write::sidecar_path(p))
+        .filter(|s| s.exists())
         .collect()
 }
 
@@ -55,6 +76,22 @@ mod tests {
         // there is nothing to assert; the wrapper reported the error.
         if let Ok(()) = &res[0].1 {
             assert!(!f.exists(), "trashed file must be gone from its path");
+        }
+    }
+
+    #[test]
+    fn a_trashed_photo_takes_its_sidecar_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let photo = dir.path().join("kopya çiçek.jpg");
+        let sidecar = dir.path().join("kopya çiçek.jpg.xmp");
+        let other = dir.path().join("çiçek.jpg.xmp");
+        std::fs::write(&photo, b"x").unwrap();
+        std::fs::write(&sidecar, b"<x:xmpmeta/>").unwrap();
+        std::fs::write(&other, b"<x:xmpmeta/>").unwrap();
+        let res = trash_paths(std::slice::from_ref(&photo));
+        if let Ok(()) = &res[0].1 {
+            assert!(!sidecar.exists(), "the sidecar was left behind");
+            assert!(other.exists(), "another photo's sidecar must stay");
         }
     }
 }
