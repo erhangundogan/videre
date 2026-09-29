@@ -2,7 +2,8 @@ use crate::io_timeout::{wait_with_timeout, WaitOutcome};
 use crate::semaphore::Semaphore;
 use anyhow::Context as _;
 use image::DynamicImage;
-use std::path::Path;
+use std::fs::File;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -27,7 +28,9 @@ const QLMANAGE_TIMEOUT: Duration = Duration::from_secs(20);
 /// A/B measurement of `videre faces`'s parallel pipeline showed HEIC-heavy
 /// runs leaving CPU idle (477% of 1000% on a 10-core machine), a real
 /// bottleneck candidate given `--workers` now defaults to 2x cores (up to
-/// 20 concurrent workers, all previously queuing on a 3-permit cap).
+/// 20 concurrent workers, all previously queuing on a 3-permit cap). With a
+/// slot directory set (every videre command sets one) the cap is also
+/// machine-wide, shared with other videre processes; see `acquire_slot`.
 const QLMANAGE_MAX_CONCURRENT_DEFAULT: usize = 6;
 
 /// Process-wide override for `QLMANAGE_MAX_CONCURRENT_DEFAULT`, set at most
@@ -61,6 +64,86 @@ pub fn qlmanage_semaphore() -> &'static Semaphore {
         let max = resolve_qlmanage_concurrency(QLMANAGE_CONCURRENCY_OVERRIDE.get().copied());
         Semaphore::new(max)
     })
+}
+
+/// Where this process's machine-wide QuickLook slots live, set once at
+/// startup (`set_quicklook_slot_dir`). Unset, as for an embedder or a unit
+/// test, the in-process semaphore is the only cap.
+static QUICKLOOK_SLOT_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// How long a conversion sleeps before retrying when every slot is taken.
+const SLOT_POLL: Duration = Duration::from_millis(50);
+
+/// Share the QuickLook cap with every other videre process that uses `dir`.
+/// First call wins, like `set_qlmanage_concurrency`.
+pub fn set_quicklook_slot_dir(dir: PathBuf) {
+    let _ = QUICKLOOK_SLOT_DIR.set(dir);
+}
+
+/// One held machine-wide QuickLook slot. Dropping it closes the file, which
+/// releases the lock.
+struct QuicklookSlot(#[allow(dead_code)] File);
+
+/// Take one of the `n` slots `slot-0.lock .. slot-{n-1}.lock` in `dir`,
+/// waiting until one is free.
+///
+/// The in-process semaphore alone let two videre processes run twice the
+/// intended conversions against the one per-user QuickLook agent; measured,
+/// a HEIC that converts in 0.39 s alone then exceeded `QLMANAGE_TIMEOUT`.
+/// Each conversion therefore also holds an exclusive `flock` on a slot file
+/// shared by every videre process on the machine.
+///
+/// - `n` is this process's own cap, so processes with the same cap share the
+///   same slots: the machine total is the largest cap in use, not the sum.
+/// - The wait happens before `qlmanage` is spawned, so it never counts toward
+///   `QLMANAGE_TIMEOUT`: contention slows a run instead of skipping files.
+/// - The kernel releases a flock when its process dies, so a crash leaves no
+///   stale token to clean up.
+/// - Accepted gap: a holder that is stopped (Ctrl-Z) keeps its slot until it
+///   resumes or dies, and other processes wait for it.
+///
+/// The files are created once and never unlinked: the lock lives on the
+/// inode, so removing a held file would let a second, independent lock form.
+fn acquire_slot(dir: &Path, n: usize, poll: Duration) -> std::io::Result<QuicklookSlot> {
+    use fs2::FileExt;
+    std::fs::create_dir_all(dir)?;
+    let slots = (0..n.max(1))
+        .map(|i| {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(false)
+                .open(dir.join(format!("slot-{i}.lock")))
+        })
+        .collect::<std::io::Result<Vec<File>>>()?;
+    loop {
+        for slot in &slots {
+            if slot.try_lock_exclusive().is_ok() {
+                return Ok(QuicklookSlot(slot.try_clone()?));
+            }
+        }
+        std::thread::sleep(poll);
+    }
+}
+
+/// This process's machine-wide slot, or `None` when no slot directory is set
+/// or it cannot be used; the latter warns once and falls back to the
+/// in-process cap, which is how videre behaved before slots existed.
+fn machine_slot() -> Option<QuicklookSlot> {
+    let dir = QUICKLOOK_SLOT_DIR.get()?;
+    match acquire_slot(dir, qlmanage_semaphore().max(), SLOT_POLL) {
+        Ok(slot) => Some(slot),
+        Err(error) => {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                tracing::warn!(
+                    "QuickLook slots in {} are unusable, limiting conversions in this process only: {error}",
+                    dir.display()
+                )
+            });
+            None
+        }
+    }
 }
 
 /// Convert an image or video file to a `DynamicImage` via QuickLook
@@ -138,6 +221,7 @@ pub fn decode_via_quicklook(
         .context("create qlmanage temp dir")?;
     let out_dir = scratch.path();
     let _permit = qlmanage_semaphore().acquire();
+    let _slot = machine_slot();
     let size_arg = max_size.unwrap_or(10000).to_string();
     let mut child = std::process::Command::new("qlmanage")
         .args(["-t", "-s", &size_arg, "-o"])
@@ -283,6 +367,68 @@ fn quicklook_unavailable() -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Hold `slot-{i}` the way another process would: through its own open
+    /// file, so the flock is a separate lock from any the code takes.
+    fn hold(dir: &Path, i: usize) -> std::fs::File {
+        use fs2::FileExt;
+        std::fs::create_dir_all(dir).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(dir.join(format!("slot-{i}.lock")))
+            .unwrap();
+        file.try_lock_exclusive().unwrap();
+        file
+    }
+
+    fn is_held(dir: &Path, i: usize) -> bool {
+        use fs2::FileExt;
+        let file = std::fs::File::open(dir.join(format!("slot-{i}.lock"))).unwrap();
+        file.try_lock_exclusive().is_err()
+    }
+
+    #[test]
+    fn a_free_slot_is_taken() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("quicklook");
+        let _other = hold(&dir, 0);
+        let _slot = acquire_slot(&dir, 2, Duration::from_millis(10)).unwrap();
+        assert!(is_held(&dir, 1), "the free slot is the one taken");
+    }
+
+    #[test]
+    fn a_full_pool_waits_for_a_release() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("quicklook");
+        let first = hold(&dir, 0);
+        let _second = hold(&dir, 1);
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            drop(first);
+        });
+        let started = std::time::Instant::now();
+        let _slot = acquire_slot(&dir, 2, Duration::from_millis(10)).unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        release.join().unwrap();
+    }
+
+    #[test]
+    fn a_released_slot_is_free_again() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("quicklook");
+        drop(acquire_slot(&dir, 1, Duration::from_millis(10)).unwrap());
+        assert!(!is_held(&dir, 0));
+    }
+
+    #[test]
+    fn an_unusable_directory_is_an_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("quicklook");
+        std::fs::write(&dir, b"not a directory").unwrap();
+        assert!(acquire_slot(&dir, 2, Duration::from_millis(10)).is_err());
+    }
 
     #[test]
     fn a_published_original_opens_as_a_jpeg() {
