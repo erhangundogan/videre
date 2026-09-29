@@ -821,14 +821,21 @@ fn drain_pending(
     }
     // Sidecars for the batch's files, when export is on: a copied labelled
     // photo gets its sidecar now, not on the hourly full export.
-    if args.export_xmp {
-        stage("export", "export stage", &mut fatal, || {
+    if args.export_xmp
+        && stage("export", "export stage", &mut fatal, || {
             let hashes: Vec<String> = batch_rows(&conn, &batch)?
                 .into_iter()
                 .map(|(_, hash)| hash)
                 .collect();
             super::export::export_hashes_in(&conn, ctx, &hashes)
-        });
+        })
+        .is_none()
+    {
+        complete = false;
+        if fatal {
+            enter_io_backoff(io_backoff);
+            return;
+        }
     }
     if !args.silent && !fatal {
         if let Err(e) = report_batch(args, ctx, &batch) {
