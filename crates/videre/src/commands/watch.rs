@@ -25,8 +25,13 @@ pub struct WatchArgs {
     /// Pre-resolve reverse-geocoded location names each cycle
     #[arg(long)]
     location: bool,
+    /// Embed and classify new files each cycle, with the library's model. Never
+    /// downloads it: until `videre embed` has fetched the model once, the stage
+    /// says so and the files stay outstanding.
+    #[arg(long)]
+    embed: bool,
     /// Sync stale rows/cache and clean orphans each cycle (same cleanup as
-    /// `videre prune`). Opt-in only, unlike the other four stages, this is
+    /// `videre prune`). Opt-in only, unlike the other default stages, this is
     /// NOT included when no stage flags are passed, so existing `videre
     /// watch` invocations keep their current behavior unchanged. Never
     /// deletes real files, only stale db rows and cache entries for files
@@ -58,11 +63,12 @@ pub fn run(mut args: WatchArgs, ctx: &CommandContext) -> Result<()> {
     // original all-four default: the common case is "just keep everything up
     // to date". An explicit --prune is a stage selection and does not turn the
     // others on.
-    if !(args.scan || args.faces || args.heic || args.location || args.prune) {
+    if !(args.scan || args.faces || args.heic || args.location || args.embed || args.prune) {
         args.scan = true;
         args.faces = true;
         args.heic = true;
         args.location = true;
+        args.embed = true;
     }
 
     // The XMP export stage is opt-in: the flag, or the library config default.
@@ -575,7 +581,7 @@ fn drain_pending(
             }
         }
     }
-    if args.faces || args.heic || args.location {
+    if args.faces || args.heic || args.location || args.embed {
         if let Err(e) = face_db::create_faces_table(&conn) {
             failed("faces table", e);
             return;
@@ -609,6 +615,17 @@ fn drain_pending(
             stage("heic", "heic stage", &mut fatal, || {
                 run_heic_stage(args, ctx, &conn)
             });
+            if fatal {
+                enter_io_backoff(io_backoff);
+                return;
+            }
+        }
+        if args.embed
+            && stage("embed", "embed stage", &mut fatal, || {
+                run_embed_stage(args, ctx, &conn)
+            }) != Some(StageOutcome::Ran)
+        {
+            complete = false;
             if fatal {
                 enter_io_backoff(io_backoff);
                 return;
@@ -804,7 +821,7 @@ fn reconcile(args: &WatchArgs, ctx: &CommandContext) -> Result<ReconcileOutcome>
             complete = false;
         }
     }
-    if args.faces || args.heic || args.location || args.prune || args.export_xmp {
+    if args.faces || args.heic || args.location || args.embed || args.prune || args.export_xmp {
         face_db::create_faces_table(&conn)?;
         if args.faces
             && stage("faces", "faces stage", &mut cycle_fatal, || {
@@ -821,6 +838,13 @@ fn reconcile(args: &WatchArgs, ctx: &CommandContext) -> Result<ReconcileOutcome>
                 run_heic_stage(args, ctx, &conn)
             })
             .is_none()
+        {
+            complete = false;
+        }
+        if args.embed
+            && stage("embed", "embed stage", &mut cycle_fatal, || {
+                run_embed_stage(args, ctx, &conn)
+            }) != Some(StageOutcome::Ran)
         {
             complete = false;
         }
@@ -1277,6 +1301,76 @@ fn run_location_stage(
 /// needs no new machinery. A standalone run at a non-default radius is a manual
 /// choice: the watcher leaves it alone rather than silently reclustering at the
 /// default (the radius the last recompute used is recorded by that recompute).
+/// Set once this process has said the embedding model is not downloaded, so a
+/// long-running watch says it once rather than every batch.
+static EMBED_MODEL_MISSING_NOTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Embed, then classify, the files not yet embedded under the library's model,
+/// through the same work `videre embed` and `videre classify` do. Their own
+/// pending sets scope them, as the faces stage is scoped. Never downloads the
+/// model: a background watcher must not start a multi-gigabyte fetch, so until
+/// `videre embed` has run once the stage says so and the files stay outstanding
+/// in `videre status`.
+fn run_embed_stage(
+    args: &WatchArgs,
+    ctx: &CommandContext,
+    conn: &rusqlite::Connection,
+) -> Result<StageOutcome> {
+    use std::sync::atomic::Ordering;
+    let model_id = videre_core::embeddings::resolve_model_id_from(&ctx.library.settings, None)?;
+    if !videre_ml::model::is_cached(&model_id) {
+        if !EMBED_MODEL_MISSING_NOTED.swap(true, Ordering::Relaxed) {
+            tracing::info!(
+                "videre watch: embed skipped: model {model_id} not downloaded; \
+                 run `videre embed` once to fetch it"
+            );
+        }
+        return Ok(StageOutcome::Ran);
+    }
+    // Each stage attaches its model database, which a connection can hold
+    // only once: give each its own.
+    let embedded = tracked_stage(
+        ctx,
+        conn,
+        "embed",
+        "embed",
+        videre_core::library_locks::ActivityMode::Shared,
+        args.silent,
+        || {
+            let own = videre_core::library_db::open_existing(&ctx.library)?;
+            super::embed::run_in(
+                &super::embed::EmbedArgs::for_pipeline(args.silent),
+                ctx,
+                &own,
+                &model_id,
+            )
+        },
+    )?;
+    if embedded != StageOutcome::Ran
+        || !videre_core::embeddings_db::db_path_in(&ctx.library, &model_id)?.exists()
+    {
+        return Ok(embedded);
+    }
+    tracked_stage(
+        ctx,
+        conn,
+        "classify",
+        "classify",
+        videre_core::library_locks::ActivityMode::Shared,
+        args.silent,
+        || {
+            let own = videre_core::library_db::open_existing(&ctx.library)?;
+            super::classify::run_in(
+                &super::classify::ClassifyArgs::for_pipeline(args.silent),
+                &ctx.library,
+                &own,
+                &model_id,
+            )
+        },
+    )
+}
+
 /// The radius the last recompute ran at, else the default: the radius a place
 /// created for a new row gets, so it matches its neighbours.
 fn stored_radius(conn: &rusqlite::Connection) -> Result<f64> {

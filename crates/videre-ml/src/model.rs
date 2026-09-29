@@ -420,6 +420,32 @@ fn load_sharded_safetensors(repo: &Repo) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
+/// Whether the weights for `model_id` are already in the local Hugging Face
+/// cache, without touching the network. `videre watch` asks before it embeds:
+/// a background watcher must never start a multi-gigabyte download on its own.
+pub fn is_cached(model_id: &str) -> bool {
+    is_cached_in(&videre_core::hf_cache::cache_dir(), model_id)
+}
+
+/// [`is_cached`] against an explicit hub directory. A snapshot counts when it
+/// holds the config, the tokenizer, and single-file or sharded weights, the
+/// files `Embedder::load` fetches.
+pub fn is_cached_in(hub: &Path, model_id: &str) -> bool {
+    let snapshots = hub
+        .join(format!("models--{}", model_id.replace('/', "--")))
+        .join("snapshots");
+    let Ok(entries) = std::fs::read_dir(&snapshots) else {
+        return false;
+    };
+    entries.flatten().any(|snap| {
+        let p = snap.path();
+        p.join("config.json").is_file()
+            && p.join("tokenizer.json").is_file()
+            && (p.join("model.safetensors").is_file()
+                || p.join("model.safetensors.index.json").is_file())
+    })
+}
+
 #[cfg(test)]
 mod index_parsing_tests {
     use super::shard_names_from_index;
@@ -453,6 +479,64 @@ mod index_parsing_tests {
     fn shard_names_from_index_errors_on_malformed_json() {
         let result = shard_names_from_index("not json");
         assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod cache_presence_tests {
+    use super::is_cached_in;
+
+    fn hub(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("videre-hub-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn snapshot(hub: &std::path::Path, files: &[&str]) {
+        let snap = hub.join("models--owner--model/snapshots/abc123");
+        std::fs::create_dir_all(&snap).unwrap();
+        for f in files {
+            std::fs::write(snap.join(f), b"x").unwrap();
+        }
+    }
+
+    #[test]
+    fn an_empty_hub_has_no_model() {
+        let hub = hub("empty");
+        assert!(!is_cached_in(&hub, "owner/model"));
+    }
+
+    #[test]
+    fn a_complete_snapshot_is_cached() {
+        let hub = hub("complete");
+        snapshot(
+            &hub,
+            &["config.json", "tokenizer.json", "model.safetensors"],
+        );
+        assert!(is_cached_in(&hub, "owner/model"));
+        assert!(!is_cached_in(&hub, "owner/other"), "the id names the repo");
+    }
+
+    #[test]
+    fn a_sharded_snapshot_is_cached() {
+        let hub = hub("sharded");
+        snapshot(
+            &hub,
+            &[
+                "config.json",
+                "tokenizer.json",
+                "model.safetensors.index.json",
+            ],
+        );
+        assert!(is_cached_in(&hub, "owner/model"));
+    }
+
+    #[test]
+    fn a_half_downloaded_snapshot_is_not() {
+        let hub = hub("partial");
+        snapshot(&hub, &["config.json", "tokenizer.json"]);
+        assert!(!is_cached_in(&hub, "owner/model"));
     }
 }
 

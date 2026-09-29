@@ -87,6 +87,19 @@ pub fn run(args: ClassifyArgs, ctx: &CommandContext) -> Result<()> {
     })
 }
 
+/// The classification work for a caller already holding the activity lease and
+/// the `classify` command lock: `videre watch`'s classify stage. `conn` must not
+/// have a model database attached yet.
+pub(crate) fn run_in(
+    args: &ClassifyArgs,
+    library: &LibraryContext,
+    conn: &rusqlite::Connection,
+    model_id: &str,
+) -> Result<()> {
+    videre_core::embeddings_db::attach_for_read_in(conn, library, model_id)?;
+    run_classify(args, library, conn, model_id)
+}
+
 /// The actual classification work, wrapped by `track_in()` above.
 fn run_classify(
     args: &ClassifyArgs,

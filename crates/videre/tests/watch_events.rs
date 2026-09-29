@@ -564,6 +564,55 @@ fn a_copied_photo_joins_its_place_when_a_full_recompute_is_slow() {
 }
 
 #[test]
+fn watch_without_the_model_says_so_and_downloads_nothing() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("sample_with_exif.jpg", "çiçek.jpg");
+    let out = watch_once(&lib, &["--scan", "--embed"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("embed skipped: model") && stderr.contains("not downloaded"),
+        "{stderr}"
+    );
+    let hub = lib.home.join(".cache/huggingface/hub");
+    let fetched = std::fs::read_dir(&hub).map(|d| d.count()).unwrap_or(0);
+    assert_eq!(fetched, 0, "a watcher must never start a model download");
+}
+
+#[test]
+fn watch_embeds_and_classifies_a_new_photo() {
+    use common::model_test_support::skip_unless_model_tests_enabled;
+    if skip_unless_model_tests_enabled("watch embed stage") {
+        return;
+    }
+    let guard = common::shared_cache_guard();
+    let lib = TestLibrary::new();
+    lib.copy_fixture("sample_with_exif.jpg", "çiçek.jpg");
+    let out = lib
+        .model_cmd(&guard)
+        .args(["watch", "--scan", "--embed"])
+        .env("VIDERE_WATCH_ONCE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let status = lib
+        .model_cmd(&guard)
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    let coverage = json["report"]["coverage"].as_array().expect("coverage");
+    for stage in ["embed", "classify"] {
+        let c = coverage.iter().find(|c| c["stage"] == stage).unwrap();
+        assert_eq!(c["outstanding"], 0, "{stage}: {c}");
+        assert_eq!(c["total"], 1, "{stage}: {c}");
+    }
+}
+
+#[test]
 fn a_scan_that_changes_gps_data_triggers_the_recluster_on_the_next_pass() {
     let lib = TestLibrary::new();
     drop(lib.init_db());
