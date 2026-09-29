@@ -564,6 +564,63 @@ fn a_copied_photo_joins_its_place_when_a_full_recompute_is_slow() {
 }
 
 #[test]
+fn a_copied_rated_photo_gets_its_sidecar_from_the_batch() {
+    use std::io::Write;
+    let lib = TestLibrary::new();
+    lib.copy_fixture("sample_with_exif.jpg", "Şile/çiçek.jpg");
+    lib.scan();
+    for args in [
+        &["mark", "--path", "Şile", "--rating", "4", "--silent"][..],
+        &["config", "set", "watch-debounce-ms", "200"][..],
+    ] {
+        let out = lib.cmd().args(args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let mut child = lib
+        .cmd()
+        .args(["watch", "--scan", "--export-xmp", "--silent"])
+        .spawn()
+        .expect("spawn watch");
+    std::thread::sleep(Duration::from_millis(1500));
+    lib.copy_fixture("sample_with_exif.jpg", "kopya/çiçek.jpg");
+    // The canonical root: what the scan stores, so the row lookup matches.
+    let copy = lib.context().paths.root.join("kopya/çiçek.jpg");
+    let sidecar = std::path::PathBuf::from(format!("{}.xmp", copy.display()));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut scanned = false;
+    while Instant::now() < deadline && !sidecar.exists() {
+        scanned = scanned
+            || lib
+                .try_conn()
+                .and_then(|c| {
+                    c.query_row(
+                        "SELECT 1 FROM file_hashes WHERE path = ?1",
+                        [copy.to_string_lossy()],
+                        |_| Ok(()),
+                    )
+                    .ok()
+                })
+                .is_some();
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    if !scanned && !sidecar.exists() {
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIP: event not delivered within 20s; the startup-scan guarantee covers correctness"
+        );
+        return;
+    }
+    let doc = std::fs::read_to_string(&sidecar).expect("the batch wrote no sidecar for the copy");
+    assert!(doc.contains("<xmp:Rating>4</xmp:Rating>"), "{doc}");
+}
+
+#[test]
 fn watch_without_the_model_says_so_and_downloads_nothing() {
     let lib = TestLibrary::new();
     lib.copy_fixture("sample_with_exif.jpg", "çiçek.jpg");

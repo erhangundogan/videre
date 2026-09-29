@@ -75,7 +75,7 @@ arriving.
 | `--location` | Looks up place names for GPS coordinates that have none, and gives each new photo its place on the map (at the default radius; a manual radius is respected) |
 | `--embed` | Embeds and classifies new files with the library's model, the same work as [`videre embed`](/commands/embed/) and [`videre classify`](/commands/classify/). It never downloads the model: until `videre embed` has fetched it once, watch says so once and the files stay outstanding in [`videre status`](/commands/status/) |
 | `--prune` | Same cleanup as [`videre prune`](/commands/prune/); runs on the startup and maintenance passes, not per event |
-| `--export-xmp` | Writes labels to `.xmp` sidecars, same as [`videre export`](/commands/export/); runs on the startup and maintenance passes, not per event |
+| `--export-xmp` | Writes labels to `.xmp` sidecars, same as [`videre export`](/commands/export/). Each batch writes its own files' sidecars; the startup and maintenance passes rewrite every file's |
 
 Grouping faces into people and photos into places are whole-library passes,
 and how long they take depends on the size of the library, not on how many

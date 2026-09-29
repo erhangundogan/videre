@@ -657,6 +657,17 @@ fn drain_pending(
             }
         }
     }
+    // Sidecars for the batch's files, when export is on: a copied labelled
+    // photo gets its sidecar now, not on the hourly full export.
+    if args.export_xmp {
+        stage("export", "export stage", &mut fatal, || {
+            let hashes: Vec<String> = batch_rows(&conn, &batch)?
+                .into_iter()
+                .map(|(_, hash)| hash)
+                .collect();
+            super::export::export_hashes_in(&conn, ctx, &hashes)
+        });
+    }
     if !fatal {
         // A batch without a disk fault resets the backoff: the volume
         // recovered.
@@ -1507,6 +1518,28 @@ fn run_locations_recluster_stage(
 /// File candidates pass through untouched. Extracted from the scoped scan
 /// so the expansion rule has a deterministic test that cannot be skipped
 /// by OS event delivery.
+/// `(path, hash)` for every indexed file at or under a batch's paths, a
+/// directory event standing for everything in it. Files the scan did not index
+/// (outside the media selection, unreadable) are simply absent.
+fn batch_rows(
+    conn: &rusqlite::Connection,
+    batch: &[std::path::PathBuf],
+) -> Result<Vec<(String, String)>> {
+    use rusqlite::OptionalExtension;
+    let mut stmt = conn.prepare("SELECT hash FROM file_hashes WHERE path = ?1")?;
+    let mut rows = Vec::new();
+    for p in expand_candidates(batch) {
+        let path = p.to_string_lossy().into_owned();
+        if let Some(hash) = stmt
+            .query_row([&path], |r| r.get::<_, String>(0))
+            .optional()?
+        {
+            rows.push((path, hash));
+        }
+    }
+    Ok(rows)
+}
+
 fn expand_candidates(paths: &[std::path::PathBuf]) -> Vec<std::path::PathBuf> {
     let mut expanded: Vec<std::path::PathBuf> = Vec::new();
     for p in paths {
