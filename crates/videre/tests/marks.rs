@@ -187,3 +187,62 @@ fn prune_drops_orphaned_marks() {
         "surviving mark must remain: {after}"
     );
 }
+
+#[test]
+fn mark_export_keeps_the_rest_of_the_sidecar_and_clears_a_cleared_rating() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "fotoğraflar/çiçek.jpg");
+    lib.scan();
+    let sidecar = lib.root.join("fotoğraflar/çiçek.jpg.xmp");
+    let marks_export = ["mark", "--path", "fotoğraflar", "--export-xmp", "--silent"];
+
+    // A full export first: the keyword comes from a tag.
+    run(
+        &lib,
+        &[
+            "tag",
+            "--path",
+            "fotoğraflar",
+            "--add",
+            "doğum günü",
+            "--silent",
+        ],
+    );
+    run(&lib, &["export", "--xmp", "--silent"]);
+    assert!(std::fs::read_to_string(&sidecar)
+        .unwrap()
+        .contains("doğum günü"));
+
+    // A marks export adds the rating and leaves the keyword.
+    run(
+        &lib,
+        &["mark", "--path", "fotoğraflar", "--rating", "4", "--silent"],
+    );
+    run(&lib, &marks_export);
+    let doc = std::fs::read_to_string(&sidecar).unwrap();
+    assert!(doc.contains("<xmp:Rating>4</xmp:Rating>"), "got: {doc}");
+    assert!(
+        doc.contains("doğum günü"),
+        "the marks export erased the keyword: {doc}"
+    );
+
+    // Clearing the rating and exporting marks removes it from the sidecar...
+    run(
+        &lib,
+        &["mark", "--path", "fotoğraflar", "--rating", "0", "--silent"],
+    );
+    run(&lib, &marks_export);
+    let doc = std::fs::read_to_string(&sidecar).unwrap();
+    assert!(
+        !doc.contains("xmp:Rating"),
+        "a cleared rating stayed: {doc}"
+    );
+    assert!(doc.contains("doğum günü"), "got: {doc}");
+
+    // ...so a file-wins scan cannot bring it back.
+    run(&lib, &["scan", "--xmp", "file", "--silent"]);
+    assert!(
+        !run(&lib, &["search", "--rating", "1"]).contains("çiçek.jpg"),
+        "the cleared rating came back from the sidecar"
+    );
+}

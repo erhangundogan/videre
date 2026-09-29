@@ -1,5 +1,6 @@
-//! Read rating and colour label from XMP. Two sources, checked in order:
-//! an adjacent `<file>.xmp` sidecar, then the embedded XMP packet. kamadak-exif
+//! Read rating and colour label from XMP. Two sources, combined per field:
+//! an adjacent `<file>.xmp` sidecar wins, the embedded XMP packet fills what the
+//! sidecar lacks (see `read_data_in`). kamadak-exif
 //! reads EXIF, not XMP, so this is separate. Best-effort: any parse failure
 //! yields no marks rather than an error, so a malformed packet never fails a scan.
 
@@ -149,25 +150,48 @@ pub fn parse_xmp_data(doc: &str) -> XmpData {
     d
 }
 
-/// Read the full XMP data for a photo: sidecar first, then the embedded packet.
+/// Read the full XMP data for a photo, field by field: the sidecar's value
+/// where it has one, the embedded packet's otherwise, and the keywords of both.
 /// Never errors; a missing or malformed source yields an empty `XmpData`. Both
 /// reads are confined to the library through `open_media`, so a sidecar or
 /// photo resolving outside the root simply reads as absent.
+///
+/// :warning: Per field, not per document. Taking the whole sidecar whenever it
+/// held anything meant that after one `videre export --xmp` (which writes a
+/// sidecar with regions and a keyword for nearly every photo), a rating another
+/// app wrote into the photo itself was never read again.
 pub fn read_data_in(ctx: &videre_core::library::LibraryContext, path: &Path) -> XmpData {
-    let sidecar = sidecar_path(path);
-    if let Some(doc) = read_confined(ctx, &sidecar).and_then(|bytes| String::from_utf8(bytes).ok())
-    {
-        let data = parse_xmp_data(&doc);
-        if data != XmpData::default() {
-            return data;
+    let sidecar = read_confined(ctx, &sidecar_path(path))
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .map(|doc| parse_xmp_data(&doc))
+        .unwrap_or_default();
+    let embedded = read_confined(ctx, path)
+        .and_then(|bytes| embedded_packet_bytes(&bytes))
+        .map(|doc| parse_xmp_data(&doc))
+        .unwrap_or_default();
+    merge_sources(sidecar, embedded)
+}
+
+/// The sidecar wins each field it holds; the embedded packet fills the rest.
+/// Keywords are additive everywhere else, so both sources' are kept, the
+/// sidecar's first, without repeats.
+fn merge_sources(sidecar: XmpData, embedded: XmpData) -> XmpData {
+    let mut keywords = sidecar.keywords;
+    for k in embedded.keywords {
+        if !keywords.contains(&k) {
+            keywords.push(k);
         }
     }
-    if let Some(bytes) = read_confined(ctx, path) {
-        if let Some(doc) = embedded_packet_bytes(&bytes) {
-            return parse_xmp_data(&doc);
-        }
+    XmpData {
+        rating: sidecar.rating.or(embedded.rating),
+        label: sidecar.label.or(embedded.label),
+        regions: if sidecar.regions.is_empty() {
+            embedded.regions
+        } else {
+            sidecar.regions
+        },
+        keywords,
     }
-    XmpData::default()
 }
 
 /// Read XMP from the sidecar only, never the media. Used by the incremental
@@ -395,5 +419,78 @@ xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\">\
     #[test]
     fn garbage_is_no_marks_not_an_error() {
         assert_eq!(parse_xmp("not xml at all"), XmpMarks::default());
+    }
+
+    /// A photo with an embedded packet carrying `embedded_props`, beside a
+    /// sidecar whose rdf:Description holds `sidecar_body`.
+    fn photo_with_both(
+        ctx: &videre_core::library::LibraryContext,
+        embedded_props: &str,
+        sidecar_body: &str,
+    ) -> PathBuf {
+        let photo = ctx.paths.root.join("çiçek.jpg");
+        let mut media = b"\xff\xd8\xff\xe1".to_vec();
+        media.extend_from_slice(
+            format!(
+                "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF \
+xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" \
+xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\" \
+xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\
+<rdf:Description {embedded_props}</rdf:Description></rdf:RDF></x:xmpmeta>"
+            )
+            .as_bytes(),
+        );
+        std::fs::write(&photo, media).unwrap();
+        std::fs::write(
+            ctx.paths.root.join("çiçek.jpg.xmp"),
+            format!(
+                r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF
+ xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+ <rdf:Description rdf:about=""
+   xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+   xmlns:dc="http://purl.org/dc/elements/1.1/"
+   xmlns:mwg-rs="http://www.metadataworkinggroup.com/schemas/regions/"
+   xmlns:stArea="http://ns.adobe.com/xmp/sType/Area#">{sidecar_body}</rdf:Description>
+ </rdf:RDF></x:xmpmeta>"#
+            ),
+        )
+        .unwrap();
+        photo
+    }
+
+    const REGION_ONLY: &str = r#"
+  <mwg-rs:Regions rdf:parseType="Resource"><mwg-rs:RegionList><rdf:Bag>
+   <rdf:li rdf:parseType="Resource"><mwg-rs:Name>Ayşe</mwg-rs:Name>
+    <mwg-rs:Area stArea:x="0.5" stArea:y="0.5" stArea:w="0.2" stArea:h="0.2"/>
+   </rdf:li>
+  </rdf:Bag></mwg-rs:RegionList></mwg-rs:Regions>"#;
+
+    #[test]
+    fn an_embedded_rating_is_read_beside_a_sidecar_without_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = videre_core::library::LibraryContext::new(dir.path(), &dir.path().join("cache"))
+            .unwrap();
+        let photo = photo_with_both(&ctx, r#"xmp:Rating="5" xmp:Label="Red">"#, REGION_ONLY);
+        let d = read_data_in(&ctx, &photo);
+        assert_eq!(d.rating, Some(5), "the photo's own rating was ignored");
+        assert_eq!(d.label.as_deref(), Some("Red"));
+        assert_eq!(d.regions.len(), 1);
+        assert_eq!(d.regions[0].name, "Ayşe");
+    }
+
+    #[test]
+    fn the_sidecar_wins_a_field_both_hold_and_keywords_combine() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = videre_core::library::LibraryContext::new(dir.path(), &dir.path().join("cache"))
+            .unwrap();
+        let photo = photo_with_both(
+            &ctx,
+            r#"xmp:Rating="5"><dc:subject><rdf:Bag><rdf:li>deniz</rdf:li><rdf:li>tatil</rdf:li></rdf:Bag></dc:subject>"#,
+            "<xmp:Rating>2</xmp:Rating><dc:subject><rdf:Bag><rdf:li>tatil</rdf:li>\
+             <rdf:li>doğum günü</rdf:li></rdf:Bag></dc:subject>",
+        );
+        let d = read_data_in(&ctx, &photo);
+        assert_eq!(d.rating, Some(2));
+        assert_eq!(d.keywords, vec!["tatil", "doğum günü", "deniz"]);
     }
 }

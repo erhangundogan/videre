@@ -49,7 +49,9 @@ Lightroom use for face tags, so a name you assigned in videre shows up as a name
 face region there. Picks and likes have no portable standard and stay in videre's
 database.
 
-A file with nothing to write gets no sidecar.
+A file with nothing to write gets no sidecar. If it already has one, videre's
+fields are removed from it, so a label you took away since the last export does
+not linger there.
 
 ## Merging, not clobbering
 

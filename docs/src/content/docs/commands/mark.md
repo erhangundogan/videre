@@ -101,6 +101,12 @@ write them back:
 videre mark --path ~/Photos --export-xmp    # write .xmp sidecars (opt-in)
 ```
 
+`--export-xmp` writes only the rating and colour label. Anything else already in
+the sidecar, including the face regions, location and keywords that
+[`videre export`](/commands/export/) wrote, is left as it is. A rating or label
+you cleared is removed from an existing sidecar, so a later `scan --xmp file`
+cannot bring it back. No sidecar is created for a photo with nothing to write.
+
 To export more than marks (named face regions, location, categories) in one
 pass, use [`videre export`](/commands/export/), which shares the same sidecar
 writer and merges rather than overwriting.

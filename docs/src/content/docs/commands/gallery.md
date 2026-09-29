@@ -269,7 +269,8 @@ first, then clears the selection.
 Marks and tags belong to the content, so every copy of a photo changes with
 it, exactly as with [`videre mark`](/commands/mark/) and
 [`videre tag`](/commands/tag/). Delete moves **every copy** of each selected
-item to the Trash (the confirmation counts them), and the library stops
+item to the Trash (the confirmation counts them), each with its XMP sidecar,
+and the library stops
 listing them at once; their marks, tags and faces stay until
 [`videre prune`](/commands/prune/). Prune also withdraws face-learning evidence
 that depended on those faces, while keeping the historical journal and person
