@@ -1199,10 +1199,9 @@ fn run_faces_stage(
                 }
                 result.total_faces
             };
-            // Detection only on this path: the global recluster is a
-            // minutes-long pass at scale and runs as its own reconcile-gated
-            // stage (run_recluster_stage), never here, so an event burst
-            // costs scoped scans, not clustering passes.
+            // Detection only here. Grouping the new faces is the people
+            // stage that follows (run_people_stage), which runs the full
+            // regroup only when the last one was cheap.
             let _ = new_faces;
             Ok(())
         },
@@ -1211,9 +1210,10 @@ fn run_faces_stage(
 
 /// The periodic global face recluster, gated by the persisted watermark:
 /// any face id above it means new faces exist, so one pass runs and then
-/// advances the mark; otherwise this is a zero-cost skip. Runs on
-/// reconciles only, never on the event path: a full pass is minutes-long
-/// at scale. The lock is `faces`, shared with detection and the
+/// advances the mark; otherwise this is a zero-cost skip. Runs on every
+/// reconcile, and on an event batch only when the last pass was cheap or a
+/// bulk import finishes (`run_people_stage`): at scale a full pass takes
+/// minutes, so a batch then attaches only the new faces. The lock is `faces`, shared with detection and the
 /// standalone command so they cannot overlap; the tracked label is its
 /// own so `videre status` can show repair passes distinctly. The
 /// watermark advances even when the quality gate filters every face
@@ -1455,9 +1455,10 @@ fn run_location_stage(
 
 /// The location recluster: the same from-scratch pass the standalone command
 /// runs, gated by a fingerprint over the GPS-bearing data. The gate is one
-/// query; the recompute is the expensive part. Runs on the reconcile only
-/// (never in the event-batch drain) - cluster staleness is map-view staleness,
-/// and reconcile freshness is the contract. Tracked under the `locations` row
+/// query; the recompute is the expensive part. Runs on every reconcile, and on
+/// an event batch only when the last recompute was cheap or a bulk import
+/// finishes (`run_places_stage`); otherwise a batch places only the new rows
+/// and this rebalances on the next reconcile. Tracked under the `locations` row
 /// and lock, the same work the standalone command does, so status liveness
 /// needs no new machinery. A standalone run at a non-default radius is a manual
 /// choice: the watcher leaves it alone rather than silently reclustering at the
