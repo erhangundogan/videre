@@ -5,6 +5,7 @@
 
 use crate::command_context::CommandContext;
 use crate::xmp::model::{Area, OwnedXmp, Region};
+use crate::xmp::write::Scope;
 use anyhow::{bail, Result};
 use std::path::PathBuf;
 use videre_core::library::LibraryContext;
@@ -220,14 +221,17 @@ fn write_sidecars_for(
             regions,
             applied_dims: g.dims,
         };
-        if owned.is_empty() {
-            continue;
-        }
         // One hash can map to several paths (duplicates); write beside each.
         let mut stmt = conn.prepare("SELECT path FROM file_hashes WHERE hash = ?1")?;
         let paths = stmt.query_map([hash], |r| r.get::<_, String>(0))?;
         for p in paths {
             let path = PathBuf::from(p?);
+            // Nothing to say and no sidecar to clear: leave the folder alone.
+            // An existing sidecar is still written, so labels removed since the
+            // last export are removed from it too.
+            if owned.is_empty() && !crate::xmp::write::sidecar_path(&path).exists() {
+                continue;
+            }
             if dry_run {
                 tracing::info!(
                     "would write {}",
@@ -236,8 +240,10 @@ fn write_sidecars_for(
                 continue;
             }
             let wrote = match ctx {
-                Some(library) => crate::xmp::write::write_sidecar_in(library, &path, &owned)?,
-                None => crate::xmp::write::write_sidecar(&path, &owned)?,
+                Some(library) => {
+                    crate::xmp::write::write_sidecar_in(library, &path, &owned, Scope::All)?
+                }
+                None => crate::xmp::write::write_sidecar(&path, &owned, Scope::All)?,
             };
             if wrote {
                 written += 1;

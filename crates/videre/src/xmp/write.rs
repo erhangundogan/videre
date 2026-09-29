@@ -124,6 +124,32 @@ fn is_owned(ns: &str, name: &str) -> bool {
     OWNED_PROPS.iter().any(|(u, n)| *u == ns && *n == name)
 }
 
+/// Which of the owned properties one write is responsible for. A merge removes
+/// only the properties in its scope before inserting its block, so a marks-only
+/// write leaves the face regions, place and keywords a full export wrote.
+///
+/// :warning: Without this, `mark --export-xmp` erased everything but the rating
+/// from a sidecar `export --xmp` had written: the merge removed every owned
+/// property while the marks write supplied only rating and label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    /// Everything `videre export --xmp` writes.
+    All,
+    /// Only `xmp:Rating` and `xmp:Label`, what `videre mark --export-xmp` writes.
+    Marks,
+}
+
+impl Scope {
+    fn owns(self, ns: &str, name: &str) -> bool {
+        match self {
+            Scope::All => is_owned(ns, name),
+            Scope::Marks => {
+                ns == "http://ns.adobe.com/xap/1.0/" && (name == "Rating" || name == "Label")
+            }
+        }
+    }
+}
+
 /// Apply non-overlapping `(start, end, replacement)` edits to `s`, highest start
 /// first so earlier offsets stay valid.
 fn apply_edits(mut s: String, mut edits: Vec<(usize, usize, String)>) -> String {
@@ -135,12 +161,12 @@ fn apply_edits(mut s: String, mut edits: Vec<(usize, usize, String)>) -> String 
 }
 
 /// Merge owned properties into an existing sidecar's text. Removes only
-/// videre-owned properties (in element OR attribute form, across every
+/// videre-owned properties within `scope` (in element OR attribute form, across every
 /// rdf:Description), preserves all foreign content and its namespace
 /// declarations verbatim, and inserts the freshly built owned block into the
 /// first rdf:Description. Best effort: if the text cannot be parsed or has no
 /// rdf:Description, fall back to a fresh packet, so a merge never fails an export.
-pub fn merge_into(existing: &str, o: &OwnedXmp) -> String {
+pub fn merge_into(existing: &str, o: &OwnedXmp, scope: Scope) -> String {
     // Pass 1: locate and delete owned props (elements and attributes) everywhere.
     let out = {
         let Ok(doc) = roxmltree::Document::parse(existing) else {
@@ -158,7 +184,7 @@ pub fn merge_into(existing: &str, o: &OwnedXmp) -> String {
         let mut cuts: Vec<(usize, usize, String)> = Vec::new();
         for desc in &descs {
             for child in desc.children().filter(|n| n.is_element()) {
-                if is_owned(
+                if scope.owns(
                     child.tag_name().namespace().unwrap_or(""),
                     child.tag_name().name(),
                 ) {
@@ -167,7 +193,7 @@ pub fn merge_into(existing: &str, o: &OwnedXmp) -> String {
                 }
             }
             for attr in desc.attributes() {
-                if is_owned(attr.namespace().unwrap_or(""), attr.name()) {
+                if scope.owns(attr.namespace().unwrap_or(""), attr.name()) {
                     let mut r = attr.range();
                     // Eat one leading space so we do not leave a double gap.
                     if r.start > 0 && existing.as_bytes()[r.start - 1] == b' ' {
@@ -243,15 +269,15 @@ pub fn sidecar_path(path: &Path) -> std::path::PathBuf {
 }
 
 /// Write (creating or merging) the sidecar for `path` from its owned properties.
-/// Reads any existing sidecar and merges so foreign data is preserved. Returns
-/// whether a file was written (false when there is nothing owned to write).
-pub fn write_sidecar(path: &Path, o: &OwnedXmp) -> std::io::Result<bool> {
-    if o.is_empty() {
-        return Ok(false);
-    }
+/// Reads any existing sidecar and merges so foreign data is preserved. An empty
+/// set still merges into an existing sidecar, which is how a cleared rating or
+/// label is removed from it; it never creates one. Returns whether a file was
+/// written.
+pub fn write_sidecar(path: &Path, o: &OwnedXmp, scope: Scope) -> std::io::Result<bool> {
     let side = sidecar_path(path);
     let doc = match std::fs::read_to_string(&side) {
-        Ok(existing) => merge_into(&existing, o),
+        Ok(existing) => merge_into(&existing, o, scope),
+        Err(_) if o.is_empty() => return Ok(false),
         Err(_) => build_packet(o),
     };
     std::fs::write(&side, doc)?;
@@ -267,12 +293,13 @@ pub fn write_sidecar_in(
     ctx: &videre_core::library::LibraryContext,
     path: &Path,
     o: &OwnedXmp,
+    scope: Scope,
 ) -> anyhow::Result<bool> {
     use std::io::Read;
-    if o.is_empty() {
+    let side = sidecar_path(path);
+    if o.is_empty() && !side.exists() {
         return Ok(false);
     }
-    let side = sidecar_path(path);
     let existing = if side.exists() {
         let mut file = videre_core::library_io::open_media(ctx, &side)?;
         let mut buf = String::new();
@@ -282,7 +309,7 @@ pub fn write_sidecar_in(
         None
     };
     let doc = match existing {
-        Some(existing) => merge_into(&existing, o),
+        Some(existing) => merge_into(&existing, o, scope),
         None => build_packet(o),
     };
     videre_core::library_io::replace_sidecar(ctx, &side, doc.as_bytes())?;
@@ -385,7 +412,7 @@ mod tests {
             keywords: vec!["beach".into()],
             ..Default::default()
         };
-        let merged = merge_into(existing, &owned);
+        let merged = merge_into(existing, &owned, Scope::All);
         assert!(merged.contains("<crs:Temperature>5200</crs:Temperature>")); // foreign survives
         assert!(!merged.contains("<xmp:Rating>2</xmp:Rating>")); // old rating gone
         assert_eq!(merged.matches("<xmp:Rating>5</xmp:Rating>").count(), 1); // new, once
@@ -409,7 +436,7 @@ mod tests {
             rating: Some(5),
             ..Default::default()
         };
-        let merged = merge_into(existing, &owned);
+        let merged = merge_into(existing, &owned, Scope::All);
         // Old attribute rating removed; no attribute rating survives.
         assert!(!merged.contains(r#"xmp:Rating="2""#));
         assert!(!merged.contains(r#"xmp:Rating="5""#));
@@ -447,7 +474,7 @@ mod tests {
             applied_dims: Some((6000, 4000)),
             ..Default::default()
         };
-        let merged = merge_into(&existing, &owned);
+        let merged = merge_into(&existing, &owned, Scope::All);
 
         // Foreign Camera Raw develop setting survives untouched.
         assert!(merged.contains("<crs:Contrast>25</crs:Contrast>"));
@@ -472,7 +499,7 @@ mod tests {
             rating: Some(3),
             ..Default::default()
         };
-        let merged = merge_into("not xml at all", &owned);
+        let merged = merge_into("not xml at all", &owned, Scope::All);
         assert!(merged.contains("<xmp:Rating>3</xmp:Rating>"));
         assert!(merged.contains("<x:xmpmeta"));
     }
@@ -525,7 +552,7 @@ mod tests {
             rating: Some(3),
             ..Default::default()
         };
-        assert!(write_sidecar(&photo, &owned).unwrap());
+        assert!(write_sidecar(&photo, &owned, Scope::All).unwrap());
         let back = std::fs::read_to_string(&side).unwrap();
         assert!(back.contains("crs:Temperature")); // foreign survived
         assert!(back.contains("<xmp:Rating>3</xmp:Rating>"));
@@ -537,7 +564,78 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let photo = dir.path().join("p.jpg");
         std::fs::write(&photo, b"x").unwrap();
-        assert!(!write_sidecar(&photo, &OwnedXmp::default()).unwrap());
+        assert!(!write_sidecar(&photo, &OwnedXmp::default(), Scope::All).unwrap());
         assert!(!sidecar_path(&photo).exists());
+    }
+
+    /// A sidecar as `videre export --xmp` writes it: every owned field.
+    fn full_sidecar() -> String {
+        use crate::xmp::model::{Area, OwnedXmp, Region};
+        build_packet(&OwnedXmp {
+            rating: Some(2),
+            label: Some("Red".into()),
+            location: Some("Kadıköy, TR".into()),
+            keywords: vec!["doğum günü".into()],
+            regions: vec![Region {
+                name: "Ayşe".into(),
+                area: Area {
+                    cx: 0.5,
+                    cy: 0.5,
+                    w: 0.2,
+                    h: 0.2,
+                },
+            }],
+            applied_dims: Some((4000, 3000)),
+        })
+    }
+
+    #[test]
+    fn a_marks_merge_keeps_regions_place_and_keywords() {
+        use crate::xmp::model::OwnedXmp;
+        let owned = OwnedXmp {
+            rating: Some(4),
+            ..Default::default()
+        };
+        let merged = merge_into(&full_sidecar(), &owned, Scope::Marks);
+        assert!(
+            merged.contains("<mwg-rs:Name>Ayşe</mwg-rs:Name>"),
+            "{merged}"
+        );
+        assert!(merged.contains("Kadıköy, TR"), "{merged}");
+        assert!(merged.contains("<rdf:li>doğum günü</rdf:li>"), "{merged}");
+        assert_eq!(merged.matches("<xmp:Rating>4</xmp:Rating>").count(), 1);
+        assert!(!merged.contains("<xmp:Rating>2</xmp:Rating>"));
+        // Label is in the marks scope and was not given: it is cleared.
+        assert!(!merged.contains("xmp:Label"), "{merged}");
+        assert!(roxmltree::Document::parse(&merged).is_ok());
+    }
+
+    #[test]
+    fn an_empty_marks_write_clears_rating_and_label_only() {
+        use crate::xmp::model::OwnedXmp;
+        let dir = tempfile::tempdir().unwrap();
+        let photo = dir.path().join("çiçek.jpg");
+        std::fs::write(&photo, b"x").unwrap();
+        std::fs::write(sidecar_path(&photo), full_sidecar()).unwrap();
+        assert!(write_sidecar(&photo, &OwnedXmp::default(), Scope::Marks).unwrap());
+        let back = std::fs::read_to_string(sidecar_path(&photo)).unwrap();
+        assert!(!back.contains("xmp:Rating"), "{back}");
+        assert!(!back.contains("xmp:Label"), "{back}");
+        assert!(back.contains("<mwg-rs:Name>Ayşe</mwg-rs:Name>"), "{back}");
+        assert!(back.contains("<rdf:li>doğum günü</rdf:li>"), "{back}");
+    }
+
+    #[test]
+    fn an_empty_full_write_clears_every_owned_field_of_an_existing_sidecar() {
+        use crate::xmp::model::OwnedXmp;
+        let dir = tempfile::tempdir().unwrap();
+        let photo = dir.path().join("çiçek.jpg");
+        std::fs::write(&photo, b"x").unwrap();
+        std::fs::write(sidecar_path(&photo), full_sidecar()).unwrap();
+        assert!(write_sidecar(&photo, &OwnedXmp::default(), Scope::All).unwrap());
+        let back = std::fs::read_to_string(sidecar_path(&photo)).unwrap();
+        assert!(!back.contains("xmp:Rating"), "{back}");
+        assert!(!back.contains("mwg-rs:Regions"), "{back}");
+        assert!(!back.contains("dc:subject"), "{back}");
     }
 }

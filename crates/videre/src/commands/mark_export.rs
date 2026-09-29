@@ -16,9 +16,10 @@ pub fn run(
     let mut written = 0usize;
     for h in &hashes {
         let m = marks::get(conn, h)?;
-        if m.rating.is_none() && m.label.is_none() {
-            continue;
-        }
+        // No early skip for a photo without marks: its sidecar may still hold a
+        // rating cleared since the last export, and leaving it there let the
+        // next `scan --xmp file` restore it. The writer creates no sidecar for
+        // an empty set, and clears the marks from one that exists.
         let owned = crate::xmp::model::OwnedXmp {
             rating: m.rating,
             label: m.label.clone(),
@@ -30,12 +31,18 @@ pub fn run(
         let paths = stmt.query_map([h], |r| r.get::<_, String>(0))?;
         for p in paths {
             let path = std::path::PathBuf::from(p?);
+            let side = crate::xmp::write::sidecar_path(&path);
+            if owned.is_empty() && !side.exists() {
+                continue;
+            }
             if args.dry_run {
-                tracing::info!(
-                    "would write {}",
-                    crate::xmp::write::sidecar_path(&path).display()
-                );
-            } else if crate::xmp::write::write_sidecar_in(&ctx.library, &path, &owned)? {
+                tracing::info!("would write {}", side.display());
+            } else if crate::xmp::write::write_sidecar_in(
+                &ctx.library,
+                &path,
+                &owned,
+                crate::xmp::write::Scope::Marks,
+            )? {
                 written += 1;
             }
         }
