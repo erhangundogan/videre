@@ -218,6 +218,22 @@ pub fn coverage_in(
     ])
 }
 
+/// `library_state` key where a running `videre watch` records the stages it
+/// runs, comma-separated flag names (`scan,faces,location,embed`), so the
+/// gallery reports only work that watcher will actually do.
+pub const WATCH_STAGES: &str = "watch_stages";
+
+/// The coverage stages a watcher running `watch_stages` works on.
+pub fn watch_covers(watch_stages: &str, coverage_stage: &str) -> bool {
+    let runs = |flag: &str| watch_stages.split(',').any(|s| s == flag);
+    match coverage_stage {
+        "faces" => runs("faces"),
+        "locations" => runs("location"),
+        "embed" | "classify" => runs("embed"),
+        _ => false,
+    }
+}
+
 /// Whether a watcher is alive, and when its last cycle completed. Running-
 /// ness comes from the watch lock; the last-cycle time from the heartbeat
 /// row `videre watch` writes at the end of each successful cycle. A watcher

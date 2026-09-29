@@ -155,9 +155,19 @@ fn export_selection(
 /// Export sidecars for every file in the selected library, publishing each
 /// through the confined library writer.
 pub fn export_all_in(conn: &rusqlite::Connection, ctx: &CommandContext) -> Result<usize> {
+    export_hashes_in(conn, ctx, &all_hashes(conn)?)
+}
+
+/// Write sidecars for `hashes` only, through the same writer: what watch runs
+/// for one batch's files, so a copied labelled photo gets its sidecar at once
+/// rather than on the hourly full export.
+pub fn export_hashes_in(
+    conn: &rusqlite::Connection,
+    ctx: &CommandContext,
+    hashes: &[String],
+) -> Result<usize> {
     ensure_optional_tables(conn);
-    let hashes = all_hashes(conn)?;
-    write_sidecars_for(conn, &hashes, false, Some(&ctx.library))
+    write_sidecars_for(conn, hashes, false, Some(&ctx.library))
 }
 
 /// Ensure the optional tables/columns exist so gathering never hits a missing
@@ -327,5 +337,41 @@ mod tests {
         assert!(std::fs::read_to_string(side)
             .unwrap()
             .contains("<xmp:Rating>4</xmp:Rating>"));
+    }
+
+    #[test]
+    fn export_hashes_in_writes_only_the_given_files() {
+        // The path watch's per-batch export drives: only the batch's files.
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = test_context(dir.path(), &dir.path().join("cache"));
+        let root = ctx.library.paths.root.clone();
+        let (a, b) = (root.join("çiçek.jpg"), root.join("deniz.jpg"));
+        std::fs::write(&a, b"x").unwrap();
+        std::fs::write(&b, b"y").unwrap();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (path TEXT, hash TEXT, ext TEXT, mime TEXT,
+                width INTEGER, height INTEGER, location_cluster_id INTEGER);",
+        )
+        .unwrap();
+        for (p, h) in [(&a, "ha"), (&b, "hb")] {
+            conn.execute(
+                "INSERT INTO file_hashes (path, hash) VALUES (?1, ?2)",
+                [p.to_str().unwrap(), h],
+            )
+            .unwrap();
+        }
+        marks::ensure_marks_table(&conn).unwrap();
+        marks::set(
+            &conn,
+            &["ha".to_string(), "hb".to_string()],
+            &marks::change_from_parts(Some(3), None, None, None),
+        )
+        .unwrap();
+
+        let n = export_hashes_in(&conn, &ctx, &["ha".to_string()]).unwrap();
+        assert_eq!(n, 1);
+        assert!(crate::xmp::write::sidecar_path(&a).exists());
+        assert!(!crate::xmp::write::sidecar_path(&b).exists());
     }
 }

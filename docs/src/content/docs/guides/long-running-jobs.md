@@ -46,7 +46,7 @@ produced a different result.
 | the same command twice on one library | the second is refused: "the library is busy" |
 | a command and `watch`'s stage for it | whichever starts second is refused; `watch` retries later |
 | two `scan`s of a library not yet set up | the second is refused until the first has set it up |
-| `faces` + `embed`, `watch` + `embed`, `gallery` + `faces` | both run, sharing QuickLook |
+| `faces` + `embed`, `watch`'s faces stage + `embed`, `gallery` + `faces` | both run, sharing QuickLook |
 | the same command on two libraries | both run, sharing QuickLook and the CPU |
 | two first-time model downloads | one downloads, the other waits for it |
 
