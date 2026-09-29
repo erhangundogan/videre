@@ -284,7 +284,7 @@ mod tests {
     /// layer finding it later.
     #[test]
     fn a_fixed_set_flag_rejects_with_the_choices_named() {
-        use clap::{CommandFactory, Parser};
+        use clap::Parser;
         let error = crate::Cli::try_parse_from(["videre", "search", "--type", "shrubbery"])
             .err()
             .expect("shrubbery is not a media kind");
