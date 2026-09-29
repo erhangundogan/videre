@@ -35,7 +35,22 @@ database path, so two libraries never block each other.
 refused rather than allowed to interleave writes. This is what stops a cron job
 from stacking up when a run takes longer than its interval.
 
-## What is allowed but a bad idea
+## At a glance
+
+Measured by running each pair at once on two small libraries and comparing the
+result with running the same two commands one after the other. No pair
+produced a different result.
+
+| running together | what happens |
+|---|---|
+| the same command twice on one library | the second is refused: "the library is busy" |
+| a command and `watch`'s stage for it | whichever starts second is refused; `watch` retries later |
+| two `scan`s of a library not yet set up | the second is refused until the first has set it up |
+| `faces` + `embed`, `watch` + `embed`, `gallery` + `faces` | both run, sharing QuickLook |
+| the same command on two libraries | both run, sharing QuickLook and the CPU |
+| two first-time model downloads | one downloads, the other waits for it |
+
+## What slows things down
 
 **Two jobs that convert HEIC or video share QuickLook.**
 [`embed`](/commands/embed/), [`faces`](/commands/faces/), the gallery's
@@ -43,8 +58,8 @@ previews and [`watch`](/commands/watch/)'s faces and HEIC stages all convert
 through the one macOS QuickLook service. Every videre process on the machine
 shares one limit of simultaneous conversions (6 by default, or the largest
 `--qlmanage-concurrency` in use), whichever library it works on. Running them
-together is safe and nothing is skipped, but each waits its turn, so together
-they take about as long as one after the other.
+together is safe and nothing is skipped, but each runs slower than it would
+alone.
 
 **`videre locations` blocks writers for its whole run.** It does its work in a
 single transaction, measured at about 8 minutes on a 70,000 file library, and

@@ -515,7 +515,7 @@ open, so any parse error proceeds to QuickLook as before. Measured on a real
 70,601-file library: three audio-only Live Photo companions cost 60s per `embed`
 run and another 60s per `scan --similar`.
 
-### qlmanage concurrency is capped per process, and that is not enough
+### qlmanage concurrency is capped machine-wide
 
 All `qlmanage` launches share one process-wide semaphore
 (`videre_core::heic::qlmanage_semaphore`), 6 by default. Raising it from 3 to 6
@@ -523,12 +523,22 @@ gave a further ~1.23x on top of a ~3.23x from the worker pool, for ~4.48x over
 the serial baseline. Beyond 6 the gains are 1.3-4.4% and per-image detect time
 creeps up, so the bottleneck shifts into CPU contention.
 
-**The cap is per-process, so two videre commands at once permit 12 against one
-shared QuickLook agent.** Measured with `faces` and `embed` running together:
-HEIC load averaged 16,339ms against ~7.6s uncontended, and one file blew past
-the 20s timeout that converted in 0.39s standalone. Impact is bounded, since the
-skipped file is correctly not marked scanned and self-heals next run, but the
-intended `watch` + manual-command workflow makes overlap normal.
+**The semaphore alone is per process, so two videre processes permitted 12
+against one per-user QuickLook agent.** Each conversion therefore also holds a
+`flock` slot in `<cache base>/videre/locks/quicklook/` (`heic::acquire_slot`),
+shared by every videre process on the machine whichever library it works on.
+The slot count is the process's own cap, so the machine total is the largest
+cap in use, not the sum, and the wait comes before spawn, never inside the 20s
+timeout.
+
+Measured 2026-09-29 with `faces` on two 250-file libraries at once: before
+slots, one HEIC (5.2s to convert alone) timed out in each library on 3 of 3
+runs and was recorded in `decode_failures`; with slots, 0 of 3. That is worse
+than slow: `decode_failures` skips a file after two strikes, so two overlapping
+runs could leave a file permanently without faces. Every other pair measured
+(same command twice, watch plus a manual command, faces plus embed, gallery
+plus faces, two first-time model downloads) was refused cleanly or gave the
+same result as a serial run.
 
 ### `pipeline_runs` tracks exactly 8 commands
 
@@ -757,6 +767,8 @@ above.
   built-in, per field (watch: no flag layer) -> `videre_ml::cluster_params`,
   `commands::cluster_settings`, `gallery::recluster`
 - Undecodable files are skipped after two strikes -> `videre_core::decode_failures`
+- QuickLook conversions share a machine-wide slot pool, waited for before
+  spawn -> `videre_core::heic::acquire_slot`
 - Face learning never uses `AppState.conn`: its own connection and thread,
   off unless `gallery.json` sets `faces.learning` -> `gallery::learning` (module doc)
 - Never open the library database through `std::fs`: closing any descriptor
