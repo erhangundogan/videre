@@ -8,12 +8,6 @@ use videre::{
 
 #[derive(clap::Args)]
 pub struct ScanArgs {
-    /// Deprecated and ignored: `videre embed` now computes the near-duplicate
-    /// fingerprint from the decode it already does. Accepted (with a
-    /// deprecation notice) only so existing scripts do not error.
-    #[arg(long)]
-    similar: bool,
-
     /// Re-read and re-hash every file, ignoring the unchanged-since-last-scan
     /// skip. The honest full pass (and what a future integrity check wants).
     #[arg(long)]
@@ -115,11 +109,6 @@ fn run_inner(args: &ScanArgs, ctx: &CommandContext) -> anyhow::Result<ScanJson> 
             Ok((records, skipped))
         })?;
 
-    if args.similar && !args.silent {
-        tracing::info!(
-            "note: --similar is deprecated and has no effect; videre embed computes near-duplicate fingerprints."
-        );
-    }
     if !args.silent {
         tracing::info!(
             "{}",

@@ -308,24 +308,6 @@ fn unidentifiable_files_receive_a_sentinel_and_are_not_retried() {
 }
 
 #[test]
-fn similar_is_deprecated_and_stores_no_fingerprint() {
-    let library = TestLibrary::new();
-    library.copy_fixture("tiny.jpg", "image.jpg");
-    let out = scan(&library, &["--similar"]);
-    assert!(out.status.success());
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("--similar is deprecated"),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let phash: Option<i64> = library
-        .conn()
-        .query_row("SELECT phash FROM file_hashes", [], |row| row.get(0))
-        .unwrap();
-    assert!(phash.is_none());
-}
-
-#[test]
 fn xmp_precedence_and_keywords_are_applied_from_confined_sidecars() {
     let library = TestLibrary::new();
     library.copy_fixture("tiny.jpg", "image.jpg");

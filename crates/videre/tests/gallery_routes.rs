@@ -429,6 +429,19 @@ fn a_conversion_waits_for_a_machine_wide_quicklook_slot() {
 }
 
 #[test]
+fn the_empty_duplicates_page_points_at_the_command_that_finds_similar_photos() {
+    // Near-duplicate fingerprints come from `videre embed`; `scan --similar`
+    // no longer exists, so the hint must not send anyone there.
+    let lib = fixture();
+    let server = Server::start(&lib);
+    let (status, body) = server.get("/duplicates");
+    assert_eq!(status, 200);
+    assert!(body.contains("No duplicates"), "{body}");
+    assert!(body.contains("<code>videre embed</code>"), "{body}");
+    assert!(!body.contains("scan --similar"), "{body}");
+}
+
+#[test]
 fn every_live_route_answers() {
     let lib = fixture();
     let server = Server::start(&lib);

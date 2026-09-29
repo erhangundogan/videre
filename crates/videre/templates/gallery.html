@@ -37,7 +37,7 @@
 {% endif %}{% if no_duplicates %}<div class="empty-state">
 <h2>No duplicates</h2>
 <p>Every file in this library has a unique hash, so there is nothing to review here.</p>
-<p class="hint">Visually similar photos are a different question: <code>videre scan --similar</code> finds those, and they appear here once it has run.</p>
+<p class="hint">Visually similar photos are a different question: <code>videre embed</code> finds those, and they appear here once it has run.</p>
 </div>
 {% endif %}{% if has_keep_files %}<div class="gallery-toolbar" data-files><label class="view-toggle">View <select class="view-mode-select" onchange="setViewMode(this.value)"><option value="list">List</option><option value="tile">Tile</option></select></label>{% include "sort-control.html" %}</div>
 <div class="date-view" id="dateView">

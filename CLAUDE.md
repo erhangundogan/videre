@@ -513,7 +513,7 @@ videre paid the full 20s `QLMANAGE_TIMEOUT` per such file on every run.
 `videre_core::video_probe` walks ISO-BMFF boxes for a `vide` handler and fails
 open, so any parse error proceeds to QuickLook as before. Measured on a real
 70,601-file library: three audio-only Live Photo companions cost 60s per `embed`
-run and another 60s per `scan --similar`.
+run and, while scan still computed fingerprints, another 60s per `scan --similar`.
 
 ### qlmanage concurrency is capped machine-wide
 
