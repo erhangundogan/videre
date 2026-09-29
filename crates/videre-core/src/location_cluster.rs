@@ -1246,6 +1246,86 @@ mod tests {
         );
     }
 
+    /// Cost of a full recompute against placing only new rows, by library
+    /// size, on an on-disk WAL database like a real library's. Run by hand:
+    /// `cargo test -p videre-core --release --lib recompute_and_assign_cost --
+    /// --ignored --nocapture`. It sets `recompute_cost::RECOMPUTE_BUDGET`.
+    #[test]
+    #[ignore]
+    fn recompute_and_assign_cost() {
+        const CITIES: [(f64, f64); 8] = [
+            (41.01, 28.98),
+            (39.93, 32.86),
+            (38.42, 27.14),
+            (52.52, 13.405),
+            (48.86, 2.35),
+            (51.51, -0.13),
+            (40.71, -74.0),
+            (35.68, 139.69),
+        ];
+        for rows in [1_000usize, 10_000, 70_000] {
+            let dir = tempfile::tempdir().unwrap();
+            let conn = Connection::open(dir.path().join("hashes.db")).unwrap();
+            conn.execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 CREATE TABLE file_hashes (path TEXT PRIMARY KEY, gps_lat REAL, gps_lon REAL,
+                    location_cluster_id INTEGER);",
+            )
+            .unwrap();
+            let mut state = 7;
+            {
+                let tx = conn.unchecked_transaction().unwrap();
+                let mut last = (0.0, 0.0);
+                for i in 0..rows {
+                    // About 40% distinct coordinates, as in the real library
+                    // (26,744 distinct of 70,601).
+                    if i % 5 < 2 || i == 0 {
+                        // Most photos near home cities, the rest travel: the
+                        // spread is what makes many places, each named.
+                        last = if i % 10 < 3 {
+                            (noise(&mut state) * 60.0, noise(&mut state) * 170.0)
+                        } else {
+                            let (lat, lon) = CITIES[i % CITIES.len()];
+                            (lat + noise(&mut state) * 0.3, lon + noise(&mut state) * 0.3)
+                        };
+                    }
+                    tx.execute(
+                        "INSERT INTO file_hashes (path, gps_lat, gps_lon) VALUES (?1, ?2, ?3)",
+                        rusqlite::params![format!("f{i}.jpg"), last.0, last.1],
+                    )
+                    .unwrap();
+                }
+                tx.commit().unwrap();
+            }
+            let cache = temp_cache();
+            let started = std::time::Instant::now();
+            recompute_all(&conn, &cache, DEFAULT_CLUSTER_RADIUS_KM, true).unwrap();
+            let full = started.elapsed();
+            let mut assign = Vec::new();
+            for new in [1usize, 100] {
+                for k in 0..new {
+                    let (lat, lon) = CITIES[k % CITIES.len()];
+                    conn.execute(
+                        "INSERT INTO file_hashes (path, gps_lat, gps_lon) VALUES (?1, ?2, ?3)",
+                        rusqlite::params![
+                            format!("new{new}-{k}.jpg"),
+                            lat + noise(&mut state) * 0.05,
+                            lon + noise(&mut state) * 0.05
+                        ],
+                    )
+                    .unwrap();
+                }
+                let started = std::time::Instant::now();
+                assign_new_rows(&conn, &cache, DEFAULT_CLUSTER_RADIUS_KM).unwrap();
+                assign.push((new, started.elapsed()));
+            }
+            let places: i64 = conn
+                .query_row("SELECT COUNT(*) FROM location_clusters", [], |r| r.get(0))
+                .unwrap();
+            eprintln!("{rows} rows, {places} places: full recompute {full:?}; assign {assign:?}");
+        }
+    }
+
     #[test]
     fn centroid_is_unweighted_mean() {
         let points = vec![(0.0, 0.0), (2.0, 4.0)];

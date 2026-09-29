@@ -1402,6 +1402,77 @@ mod tests {
         assert_eq!(face_db::recluster_watermark(&conn).unwrap(), 2);
     }
 
+    /// Cost of a full regroup against attaching only new faces, by face count.
+    /// Run by hand: `cargo test -p videre-ml --release --lib regroup_and_attach_cost
+    /// -- --ignored --nocapture`. It sets `recompute_cost::RECOMPUTE_BUDGET`.
+    #[test]
+    #[ignore]
+    fn regroup_and_attach_cost() {
+        let mut state: u64 = 11;
+        let mut rand = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % 20_000) as f32 / 10_000.0 - 1.0
+        };
+        let centres: Vec<Vec<f32>> = (0..300)
+            .map(|_| l2((0..512).map(|_| rand()).collect()))
+            .collect();
+        for n in [1_000usize, 5_000, 10_000, 40_000] {
+            let conn = Connection::open_in_memory().unwrap();
+            face_db::create_faces_table(&conn).unwrap();
+            let tx = conn.unchecked_transaction().unwrap();
+            for id in 0..(n as i64 + 100) {
+                let c = &centres[(id as usize * 7) % centres.len()];
+                let e = l2(c.iter().map(|v| v + rand() * 0.04).collect());
+                let blob: Vec<u8> = e
+                    .iter()
+                    .flat_map(|v| half::f16::from_f32(*v).to_le_bytes())
+                    .collect();
+                tx.execute(
+                    "INSERT INTO faces (id, hash, bbox, embedding, confirmed, det_score, blur) \
+                     VALUES (?1, ?2, '0,0,120,120', ?3, 0, 0.9, 500.0)",
+                    rusqlite::params![id, format!("h{id}"), blob],
+                )
+                .unwrap();
+            }
+            tx.commit().unwrap();
+            // Regroup the first n, then attach the 100 detected after.
+            conn.execute("UPDATE faces SET cluster_id = NULL", [])
+                .unwrap();
+            let p = params(0.6, 2, 0.35, 50.0, 0.45, f32::MAX, 0.0, 0.6);
+            conn.execute(&format!("DELETE FROM faces WHERE id >= {n}"), [])
+                .unwrap();
+            let started = std::time::Instant::now();
+            run_clustering(&conn, &p, true).unwrap();
+            let full = started.elapsed();
+            face_db::advance_recluster_watermark(&conn).unwrap();
+            let tx = conn.unchecked_transaction().unwrap();
+            for id in n as i64..n as i64 + 100 {
+                let c = &centres[(id as usize * 7) % centres.len()];
+                let e = l2(c.iter().map(|v| v + rand() * 0.04).collect());
+                let blob: Vec<u8> = e
+                    .iter()
+                    .flat_map(|v| half::f16::from_f32(*v).to_le_bytes())
+                    .collect();
+                tx.execute(
+                    "INSERT INTO faces (id, hash, bbox, embedding, confirmed, det_score, blur) \
+                     VALUES (?1, ?2, '0,0,120,120', ?3, 0, 0.9, 500.0)",
+                    rusqlite::params![id, format!("h{id}"), blob],
+                )
+                .unwrap();
+            }
+            tx.commit().unwrap();
+            let started = std::time::Instant::now();
+            let out = attach_new_faces(&conn, &p, true).unwrap();
+            eprintln!(
+                "{n} faces: full regroup {full:?}; attach 100 {:?} ({} attached)",
+                started.elapsed(),
+                out.attached
+            );
+        }
+    }
+
     #[test]
     fn a_regroup_records_how_long_it_took() {
         let conn = Connection::open_in_memory().unwrap();
