@@ -7,6 +7,33 @@ test("loads a scanned local library in Chromium", async ({ page, gallery }) => {
   await expect(page.locator("#gallery")).toHaveClass(/tile-mode/);
 });
 
+test("a back-to-top button appears once the grid is scrolled, bottom right", async ({ page, gallery }) => {
+  await page.goto(gallery.baseURL);
+  const button = page.getByRole("button", { name: "Back to top" });
+  await expect(button).toBeHidden();
+
+  // Make the page tall enough to scroll a few screens.
+  await page.evaluate(() => { document.body.style.minHeight = "5000px"; });
+  await page.evaluate(() => window.scrollTo(0, 2000));
+  await expect(button).toBeVisible();
+  const box = (await button.boundingBox())!;
+  const view = page.viewportSize()!;
+  expect(view.width - (box.x + box.width)).toBeLessThanOrEqual(32);
+  expect(view.height - (box.y + box.height)).toBeLessThanOrEqual(32);
+
+  await button.click();
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+  await expect(button).toBeHidden();
+
+  // Never on the People pages: there it would sit on top of the People panel
+  // at the right, so those pages do not get it at all, scrolled or not.
+  for (const path of ["/people", "/people/person/nobody"]) {
+    await page.goto(`${gallery.baseURL}${path}`);
+    await page.evaluate(() => { document.body.style.minHeight = "5000px"; window.scrollTo(0, 2000); });
+    await expect(page.locator(".to-top"), path).toHaveCount(0);
+  }
+});
+
 test("renders and expands the duplicate-review route", async ({ page, gallery }) => {
   await page.goto(`${gallery.baseURL}/duplicates`);
   await expect(page.locator(".secnav a[href='/duplicates']")).toHaveClass(/on/);
