@@ -12,6 +12,15 @@
   }
   runCanvasPlot();
 
+  // No places at all: the shared empty state every page uses, in place of an
+  // empty map over a grid that would only repeat the library.
+  function showNoPlaces() {
+    window.showEmptyState('No places yet',
+      '<p>No photo in this library has been placed on the map.</p>' +
+      '<p class="hint">Photos need GPS coordinates. Run <code>videre locations</code> ' +
+      'to plot them, then reload this page.</p>');
+  }
+
   // The radius a place opens with: `routes.map.radiusKm` from the gallery
   // settings when positive, otherwise the place's own cluster radius. An
   // explicit `?radius=` in the URL still wins over both.
@@ -462,11 +471,7 @@
       .then(function (rows) {
         clusters = rows;
         if (!clusters.length) {
-          empty.hidden = false;
-          // No clusters to select, but the grid still owns the page: load all
-          // files, since gallery.js defers the initial grid fetch to the map.
-          window.setGalleryLocation(null, null, null);
-          initMap();
+          showNoPlaces();
           return;
         }
         empty.hidden = true;
@@ -920,11 +925,7 @@
       .then(function (rows) {
         clusters = rows;
         if (!clusters.length) {
-          empty.hidden = false;
-          render();
-          // No clusters to select, but the grid still owns the page: load all
-          // files, since gallery.js defers the initial grid fetch to the map here.
-          window.setGalleryLocation(null, null, null);
+          showNoPlaces();
           return;
         }
         empty.hidden = true;

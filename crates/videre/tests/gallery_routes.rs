@@ -429,6 +429,24 @@ fn a_conversion_waits_for_a_machine_wide_quicklook_slot() {
 }
 
 #[test]
+fn the_empty_duplicates_page_points_at_the_command_that_finds_similar_photos() {
+    // Near-duplicates are never shown on this page: `videre embed` computes
+    // their fingerprints and `videre dedupe --similar` lists them. The hint
+    // must say so, not send anyone to the removed `scan --similar`.
+    let lib = fixture();
+    let server = Server::start(&lib);
+    let (status, body) = server.get("/duplicates");
+    assert_eq!(status, 200);
+    assert!(body.contains("No duplicates"), "{body}");
+    assert!(
+        body.contains("<code>videre dedupe --similar</code>"),
+        "{body}"
+    );
+    assert!(!body.contains("appear here"), "{body}");
+    assert!(!body.contains("scan --similar"), "{body}");
+}
+
+#[test]
 fn every_live_route_answers() {
     let lib = fixture();
     let server = Server::start(&lib);

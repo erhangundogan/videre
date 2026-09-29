@@ -6,7 +6,18 @@ async function settings(page: import("@playwright/test").Page, gallery: GalleryS
   return (await page.request.get(`${gallery.baseURL}/api/settings`)).json();
 }
 
-test("the people layout choice survives a reload", async ({ page, gallery }) => {
+test("the people layout choice survives a reload", async ({ page, isolatedGallery: gallery }) => {
+  // The layout toolbar only shows once there are faces to lay out, so give
+  // this library one. Its own gallery, so the face cannot reach the shared
+  // library's "No faces detected yet" test.
+  const { DatabaseSync } = await import("node:sqlite").catch(() => ({ DatabaseSync: undefined }));
+  test.skip(!DatabaseSync, "node:sqlite is unavailable on this Node");
+  const db = new DatabaseSync!(join(gallery.libraryRoot, ".videre", "hashes.db"));
+  db.exec("PRAGMA busy_timeout = 5000");
+  db.exec(`INSERT INTO faces (hash, bbox, embedding, blur)
+           VALUES ('layout-face', '0,0,100,100', X'${"003C".padEnd(2048, "0")}', 500.0)`);
+  db.close();
+
   await page.goto(`${gallery.baseURL}/people`);
   await expect(page.locator("body")).toHaveClass(/sidebar-mode/);
 

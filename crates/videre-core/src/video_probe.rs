@@ -6,7 +6,8 @@
 //! the wait is paid on every run, forever, because nothing records the file as
 //! permanently unembeddable. Measured on a real 70,601-file library: three
 //! audio-only Live Photo companions cost 60s per `videre embed` run and
-//! another 60s per `videre scan --similar`.
+//! another 60s per `videre scan --similar`, when scan still computed
+//! near-duplicate fingerprints.
 
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
