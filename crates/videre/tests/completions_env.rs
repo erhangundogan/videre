@@ -65,14 +65,14 @@ fn person_candidates_honor_an_invocation_library_flag() {
     let output = std::process::Command::new(env_binary())
         .current_dir(elsewhere.path())
         .env("COMPLETE", "bash")
-        .env("_CLAP_COMPLETE_INDEX", "3")
+        .env("_CLAP_COMPLETE_INDEX", "5")
         .env("_CLAP_COMPLETE_SPACE", "false")
         .args([
             "videre",
-            "--library",
-            library_root.to_string_lossy().as_ref(),
             "--",
             "videre",
+            "--library",
+            library_root.to_string_lossy().as_ref(),
             "search",
             "--person",
             "ay",

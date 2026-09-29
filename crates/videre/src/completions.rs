@@ -333,12 +333,15 @@ fn completion_ctx() -> Option<videre_core::library::LibraryContext> {
 /// the word being completed. Words after the `--` separator are the line
 /// being completed; the flag belongs to the invocation itself.
 fn library_root_from_args() -> Option<PathBuf> {
+    // Every shell calls the completer as `videre -- <the words you typed>`:
+    // the typed words, the program name repeated first and any flags
+    // including --library, are what follows the -- separator. Nothing before
+    // it is the user's line.
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let separator = args.iter().position(|a| a == "--")?;
     let mut waiting = false;
-    for arg in std::env::args_os().skip(1) {
+    for arg in &args[separator + 2..] {
         let arg = arg.to_string_lossy().into_owned();
-        if arg == "--" {
-            break;
-        }
         if waiting {
             return Some(PathBuf::from(arg));
         }
