@@ -2175,3 +2175,26 @@ fn a_bad_query_is_a_400_that_says_what_and_where() {
     assert_eq!(status, 400);
     assert_eq!(v["at"], 10, "{v}");
 }
+
+#[test]
+fn the_nav_box_offers_search_and_filter_in_well_formed_markup() {
+    let lib = tagged_library();
+    let server = Server::start(&lib);
+    let (status, body) = server.get("/");
+    assert_eq!(status, 200);
+    let start = body
+        .find("id=\"nav-search\"")
+        .expect("the nav box is on the page");
+    let tag_start = body[..start].rfind('<').unwrap();
+    let tag = &body[tag_start..tag_start + body[tag_start..].find('>').unwrap() + 1];
+    assert_eq!(tag.matches("placeholder=").count(), 1, "{tag}");
+    assert_eq!(tag.matches("aria-label=").count(), 1, "{tag}");
+    assert!(
+        tag.contains("placeholder=\"Search or filter&hellip;\""),
+        "{tag}"
+    );
+    assert!(
+        tag.contains("aria-label=\"Search or filter photos\""),
+        "{tag}"
+    );
+}
