@@ -26,6 +26,10 @@
   // means "both"; for the rest two values can only mean "either".
   var MULTI={person:1,tag:1};
   var PLACEHOLDER=input.placeholder;
+  // The pages that narrow by a query; the rest ignore one, so the box sends
+  // a query from them to the Library, and the nav carries it only here.
+  var HONOURS=/^\/(date(\/.*)?)?$/;
+  window.videreQueryHonours=function(path){return HONOURS.test(path);};
   var labels={};
   var chips=[];
 
@@ -153,9 +157,13 @@
     return parts.join(' ');
   }
 
+  // Other parameters of the page (a date range) stay as they are.
   function apply(){
-    var q=query();
-    location.href=q?'/?q='+encodeURIComponent(q):'/';
+    var q=query(),here=HONOURS.test(location.pathname);
+    var params=here?new URLSearchParams(location.search):new URLSearchParams();
+    if(q)params.set('q',q); else params.delete('q');
+    var rest=params.toString().replace(/\+/g,'%20');
+    location.href=(here?location.pathname:'/')+(rest?'?'+rest:'');
   }
 
   // ---- rendering -------------------------------------------------------------
@@ -331,6 +339,10 @@
     var parsed=parse(q);
     chips=parsed.chips;
     input.value=parsed.words;
+    document.querySelectorAll('nav.secnav a[href]').forEach(function(a){
+      var href=a.getAttribute('href');
+      if(href.indexOf('?')<0&&HONOURS.test(href))a.setAttribute('href',href+'?q='+encodeURIComponent(q));
+    });
   }
   input.setAttribute('role','combobox');
   input.setAttribute('aria-controls','qbox-suggest');

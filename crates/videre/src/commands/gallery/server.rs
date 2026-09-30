@@ -2589,33 +2589,17 @@ async fn handle_files(
     // A query narrows by its filters; the extra fields tell the client the
     // library's size (for "N of M") and the words it should rank.
     let mut extra = String::new();
-    let mut within_query = false;
-    if let Some(query) = q.q.as_deref().filter(|s| !s.trim().is_empty()) {
-        let compiled = match videre::query_lang::compile(query) {
-            Ok(c) => c,
-            Err(e) => return Ok(query_error_response(&e.message, e.at)),
-        };
-        if let Some(filter) = &compiled.filter {
-            let sel_ctx = videre_core::selection::SelectionCtx {
-                model_id: Some(state.model_id.clone()),
-            };
-            let hashes = match videre::query_lang::resolve(
-                filter,
-                &conn,
-                &sel_ctx,
-                &state.context.library,
-            ) {
-                Ok(h) => h,
-                Err(e) => return Ok(query_error_response(&format!("{e:#}"), None)),
-            };
-            load_query_hashes(&conn, &hashes).map_err(internal)?;
-            within_query = true;
-        }
+    let applied = match apply_query(&state, &conn, q.q.as_deref()) {
+        Ok(a) => a,
+        Err(response) => return Ok(*response),
+    };
+    let within_query = applied.as_ref().is_some_and(|a| a.filtered);
+    if let Some(applied) = &applied {
         let library_total: i64 = conn
             .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
             .map_err(internal)?;
         extra.push_str(&format!(",\"library_total\":{library_total}"));
-        if let Some(text) = &compiled.text {
+        if let Some(text) = &applied.text {
             extra.push_str(&format!(",\"text\":{}", json_str(text)));
         }
     }
@@ -2664,6 +2648,42 @@ async fn handle_files(
         &faces_by_hash,
         &extra,
     ))
+}
+
+/// A route's `q`, applied: `None` without one; otherwise its filters, if it
+/// has any, resolved once into `temp.query_hashes` for the route's SQL to
+/// narrow by (`filtered`), and its words for the client to rank. A query that
+/// cannot run is the route's whole answer, a 400 from
+/// [`query_error_response`], so no route shows unfiltered rows for it.
+struct AppliedQuery {
+    filtered: bool,
+    text: Option<String>,
+}
+
+fn apply_query(
+    state: &AppState,
+    conn: &Connection,
+    q: Option<&str>,
+) -> Result<Option<AppliedQuery>, Box<axum::response::Response>> {
+    let Some(query) = q.filter(|s| !s.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let compiled = videre::query_lang::compile(query)
+        .map_err(|e| Box::new(query_error_response(&e.message, e.at)))?;
+    let mut filtered = false;
+    if let Some(filter) = &compiled.filter {
+        let sel_ctx = videre_core::selection::SelectionCtx {
+            model_id: Some(state.model_id.clone()),
+        };
+        let hashes = videre::query_lang::resolve(filter, conn, &sel_ctx, &state.context.library)
+            .map_err(|e| Box::new(query_error_response(&format!("{e:#}"), None)))?;
+        load_query_hashes(conn, &hashes).map_err(|e| Box::new(internal(e).into_response()))?;
+        filtered = true;
+    }
+    Ok(Some(AppliedQuery {
+        filtered,
+        text: compiled.text,
+    }))
 }
 
 /// A query the gallery cannot run: `400 {"error": ..., "at": ...}`, where
@@ -3200,9 +3220,38 @@ async fn handle_dates(
             params.push(p.to_string());
         }
     }
-    sql.push_str(" GROUP BY k ORDER BY k DESC");
 
     let conn = state.conn.lock().map_err(poisoned)?;
+    // A query narrows every bucket, so a period with no match is not listed.
+    // "N of M" counts the date view's own files, one per content hash.
+    let applied = match apply_query(&state, &conn, q.q.as_deref()) {
+        Ok(a) => a,
+        Err(response) => return Ok(*response),
+    };
+    let mut extra = String::new();
+    if let Some(applied) = &applied {
+        let within = format!("f.hash IN (SELECT hash FROM {QUERY_HASHES_TABLE})");
+        if applied.filtered {
+            sql.push_str(&format!(" AND {within}"));
+        }
+        let count = |filter: &str| -> Result<i64, StatusCode> {
+            conn.query_row(
+                &format!("SELECT COUNT(*) FROM {keep} AS f{filter}"),
+                [],
+                |r| r.get(0),
+            )
+            .map_err(internal)
+        };
+        let library_total = count("")?;
+        let matched = if applied.filtered {
+            count(&format!(" WHERE {within}"))?
+        } else {
+            library_total
+        };
+        extra = format!(",\"matched\":{matched},\"library_total\":{library_total}");
+    }
+    sql.push_str(" GROUP BY k ORDER BY k DESC");
+
     let mut stmt = conn
         .prepare(&sql)
         .map_err(|e| internal(anyhow::anyhow!("/api/dates query failed: {e}\n  {sql}")))?;
@@ -3241,7 +3290,9 @@ async fn handle_dates(
             h.map(|v| v.to_string()).unwrap_or("null".into()),
         ));
     }
-    out.push_str("]}");
+    out.push(']');
+    out.push_str(&extra);
+    out.push('}');
     Ok(json_response(out))
 }
 
@@ -3786,6 +3837,8 @@ struct DatesQuery {
     /// The bucket being drilled into: a year for `month`, a year-month for
     /// `day`. Absent at the top level.
     parent: Option<String>,
+    /// A query: only matching files are counted.
+    q: Option<String>,
 }
 
 #[derive(Deserialize)]

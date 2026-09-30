@@ -133,8 +133,12 @@ page with it:
 - **A query that cannot run says so.** The line above the grid shows the error
   and the character it failed at, instead of an unfiltered grid.
 
-The query stays in the address bar as `/?q=...`, so a reload or a bookmark
-opens the same grid.
+The query stays in the address bar as `?q=...`, so a reload or a bookmark
+opens the same view. The **Date** page takes it too: its years, months and days
+count only the matching files, a period with none is left out, and its links
+keep the query. On Library and Date the box applies the query where you are,
+and the strip's links to those two pages carry it; from any other page it
+opens Library.
 
 In the box, each filter is a **chip**, and words stay as text:
 

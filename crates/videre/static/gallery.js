@@ -708,17 +708,17 @@ function dateHref(prefix){
   return '/date/'+String(prefix).replace(/-/g,'/');
 }
 function dateCardAttrs(prefix,action){
-  if(LIVE_SERVER) return '<a class="date-card-link" href="/date/'+escA(String(prefix).replace(/-/g,'/'))+'" aria-label="Open '+escA(prefix)+'"></a>';
+  if(LIVE_SERVER) return '<a class="date-card-link" href="'+escA(withQuery(dateHref(prefix)))+'" aria-label="Open '+escA(prefix)+'"></a>';
   return '<a class="date-card-link" href="#" onclick="'+action+';return false" aria-label="Open '+escA(prefix)+'"></a>';
 }
 function dateCrumb(label,prefix,action){
-  if(LIVE_SERVER) return '<a href="'+escA(dateHref(prefix))+'">'+escH(label)+'</a>';
+  if(LIVE_SERVER) return '<a href="'+escA(withQuery(dateHref(prefix)))+'">'+escH(label)+'</a>';
   return '<a onclick="'+action+'">'+escH(label)+'</a>';
 }
 // The topmost breadcrumb, back to the full year overview: the /date route on a
 // live server, or buildYearView() in a static export.
 function dateRootCrumb(){
-  return LIVE_SERVER ? '<a href="/date">All Dates</a>' : '<a onclick="buildYearView()">All Dates</a>';
+  return LIVE_SERVER ? '<a href="'+escA(withQuery('/date'))+'">All Dates</a>' : '<a onclick="buildYearView()">All Dates</a>';
 }
 
 function dateCards(buckets,actionFor){
@@ -736,8 +736,13 @@ function fetchBuckets(level,parent,then,target){
   grid.innerHTML='<p class="muted">Loading...</p>';
   var q='/api/dates?level='+encodeURIComponent(level);
   if(parent)q+='&parent='+encodeURIComponent(parent);
-  fetch(q).then(function(r){return r.json();})
-    .then(function(d){ then(d.buckets||[]); })
+  q+=galleryQueryParam();
+  fetch(q).then(queryJson)
+    .then(function(d){
+      if(d.bad){ queryErrorStatus(d); grid.innerHTML=''; return; }
+      if(GQUERY&&typeof d.library_total==='number')queryCountStatus(d.matched,d.library_total);
+      then(d.buckets||[]);
+    })
     .catch(function(){ grid.innerHTML='<p class="muted">Could not load dates.</p>'; });
 }
 // Groups inlined rows the old way, for a static export.
@@ -761,6 +766,10 @@ function buildYearView(){
   var narrowing=document.getElementById('dateNarrowing');
   if(narrowing)narrowing.innerHTML='';
   var draw=function(b){
+    if(!b.length&&GQUERY){
+      document.getElementById('dateGrid').innerHTML='<p class="muted">No dated files match this query.</p>';
+      return;
+    }
     if(!b.length&&window.showEmptyState){
       window.showEmptyState('No photos yet',
         '<p>There is nothing to arrange by date: this library has no scanned files.</p>'+
@@ -824,9 +833,10 @@ function buildDayGallery(day){
 function fetchDateFiles(params,emptyText){
   var grid=document.getElementById('dateGrid');
   grid.innerHTML='<p class="muted">Loading...</p>';
-  fetch('/api/files?view=date&'+params+'&limit=500'+sortQuery())
-    .then(function(r){return r.json();})
+  fetch('/api/files?view=date&'+params+'&limit=500'+sortQuery()+galleryQueryParam())
+    .then(queryJson)
     .then(function(d){
+      if(d.bad){ queryErrorStatus(d); grid.innerHTML=''; return; }
       showPeriodCount(d.total!=null?d.total:(d.files||[]).length);
       renderDateFiles(d.files||[],emptyText);
     })
@@ -1045,16 +1055,46 @@ document.getElementById('lb').addEventListener('click',function(e){
 // GPAGE is capped at 500, the most /api/files returns per request.
 var GPAGE=settingIntInRange('routes.files.pageSize',1,500),gShown=0,HASH_FILES={},RESULT_ROWS={},galleryFiles=[];
 var GLOCATION=null,gRequest=0;
-// The nav box's query, on the Files page: its filters narrow the grid through
-// /api/files, and its words, if any, rank in the results strip.
-var GQUERY=(location.pathname==='/')?(new URLSearchParams(location.search).get('q')||''):'';
+// The nav box's query, on the pages that honour one (templates/query-box.js):
+// its filters narrow what the page shows, and on the Files page its words, if
+// any, rank in the results strip.
+var GQUERY=((window.videreQueryHonours?window.videreQueryHonours(location.pathname):location.pathname==='/')
+  ?(new URLSearchParams(location.search).get('q')||''):'');
 var gQueryRanked=false;
 function galleryQueryParam(){
   return GQUERY?'&q='+encodeURIComponent(GQUERY):'';
 }
+// A link within the page's own route keeps the query.
+function withQuery(href){
+  return GQUERY?href+(href.indexOf('?')<0?'?':'&')+'q='+encodeURIComponent(GQUERY):href;
+}
+// This page without the query, for "clear".
+function withoutQuery(){
+  var p=new URLSearchParams(location.search);
+  p.delete('q');
+  var rest=p.toString();
+  return location.pathname+(rest?'?'+rest:'');
+}
+function queryCountStatus(matched,total){
+  showQueryStatus('<strong>'+(matched||0).toLocaleString()+'</strong> of '+
+    total.toLocaleString()+' match <code>'+escH(GQUERY)+'</code>'+
+    ' &middot; <a href="'+escA(withoutQuery())+'">clear</a>',false);
+}
+// A 400 from a route that took the query: say why, and where, rather than
+// show unfiltered results that look like an answer.
+function queryErrorStatus(d){
+  var at=(typeof d.at==='number')?' (at character '+(d.at+1)+')':'';
+  showQueryStatus('Cannot run <code>'+escH(GQUERY)+'</code>: '+escH(d.error||'')+at+
+    ' &middot; <a href="https://docs.videre.sh/reference/query-syntax/" target="_blank" rel="noopener">syntax</a>',true);
+}
+// A route's JSON, with a 400 marked `bad` rather than thrown.
+function queryJson(r){
+  if(r.status===400)return r.json().then(function(e){ e.bad=true; return e; });
+  return r.json();
+}
 // "N of M", or why the query could not run, in a line above the grid.
 function showQueryStatus(html,isError){
-  var g=document.getElementById('gallery');
+  var g=document.getElementById('gallery')||document.getElementById('dateBreadcrumb');
   if(!g)return;
   var s=document.getElementById('query-status');
   if(!s){
@@ -1247,26 +1287,17 @@ function renderGallery(){
   if(btn)btn.textContent='Loading\u2026';
   fetch('/api/files?view='+encodeURIComponent(GVIEW)+'&offset='+gShown+'&limit='+GPAGE+
         galleryLocationQuery()+sortQuery()+galleryQueryParam())
-    .then(function(r){
-      if(r.status===400)return r.json().then(function(e){ e.bad=true; return e; });
-      return r.json();
-    })
+    .then(queryJson)
     .then(function(d){
       if(request!==gRequest)return;
       gLoading=false;
       if(d.bad){
-        // The query did not run: say why, and where, rather than show an
-        // unfiltered grid that looks like an answer.
-        var at=(typeof d.at==='number')?' (at character '+(d.at+1)+')':'';
-        showQueryStatus('Cannot run <code>'+escH(GQUERY)+'</code>: '+escH(d.error||'')+at+
-          ' &middot; <a href="https://docs.videre.sh/reference/query-syntax/" target="_blank" rel="noopener">syntax</a>',true);
+        queryErrorStatus(d);
         if(btn)btn.style.display='none';
         return;
       }
       if(GQUERY&&typeof d.library_total==='number'&&!gShown){
-        showQueryStatus('<strong>'+(d.total||0).toLocaleString()+'</strong> of '+
-          d.library_total.toLocaleString()+' match <code>'+escH(GQUERY)+'</code>'+
-          ' &middot; <a href="/">clear</a>',false);
+        queryCountStatus(d.total,d.library_total);
       }
       // The query's words rank, once, in the results strip, within its filters.
       if(GQUERY&&d.text&&!gQueryRanked){

@@ -380,6 +380,11 @@ Returns date buckets for the year, month or day drill-down.
 | `level=month` | Return month buckets under `parent=YYYY` |
 | `level=day` | Return day buckets under `parent=YYYY-MM` |
 | `parent=<prefix>` | Parent year or month |
+| `q=<query>` | A [query](/reference/query-syntax/). Only matching files are counted, and a period with none is left out |
+
+With `q`, the response adds `matched` and `library_total`: the date view's
+files (one per content hash) that match, and all of them. A query that cannot
+run answers `400 {"error": "...", "at": 7}`, as `GET /api/files` does.
 
 ```bash
 curl "http://127.0.0.1:7878/api/dates?level=month&parent=2026"
