@@ -48,6 +48,53 @@ pub struct WatchArgs {
 
     #[arg(long)]
     silent: bool,
+
+    /// Stop once process <PID> is no longer this watch's parent. Set by the
+    /// gallery on the watch it starts, so the watch cannot outlive it however
+    /// it exits. Not for users: hidden from help.
+    #[arg(long, value_name = "PID", hide = true)]
+    exit_with: Option<u32>,
+}
+
+/// How often a watch serving a parent (`--exit-with`) checks that the parent
+/// is still there. It bounds how long an orphaned watch lingers; the work it
+/// is doing between checks is resumable.
+const PARENT_CHECK: Duration = Duration::from_secs(1);
+
+/// True when this watch serves a parent (`--exit-with`) that is gone: the
+/// process has been re-parented, so its parent id is no longer the one it was
+/// started for.
+fn orphaned(args: &WatchArgs) -> bool {
+    let gone = parent_gone(args.exit_with, std::os::unix::process::parent_id());
+    if gone && !args.silent {
+        tracing::info!("videre watch: the process that started it has exited; stopping");
+    }
+    gone
+}
+
+/// Pure half of [`orphaned`], for tests.
+fn parent_gone(expected: Option<u32>, actual: u32) -> bool {
+    expected.is_some_and(|pid| pid != actual)
+}
+
+/// Sleep for `total`, in [`PARENT_CHECK`] steps while serving a parent.
+/// Returns false as soon as the parent is gone.
+fn sleep_while_served(args: &WatchArgs, total: Duration) -> bool {
+    if args.exit_with.is_none() {
+        std::thread::sleep(total);
+        return true;
+    }
+    let until = Instant::now() + total;
+    loop {
+        if orphaned(args) {
+            return false;
+        }
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return true;
+        }
+        std::thread::sleep(left.min(PARENT_CHECK));
+    }
 }
 
 /// Degraded-mode rescan cadence, in seconds. Internal, not a flag: this
@@ -134,7 +181,9 @@ pub fn run(mut args: WatchArgs, ctx: &CommandContext) -> Result<()> {
 /// error arm); the event loop sits in front of it when watching works.
 fn degraded_rescan_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
     loop {
-        std::thread::sleep(Duration::from_secs(FALLBACK_RESCAN_SECS));
+        if !sleep_while_served(args, Duration::from_secs(FALLBACK_RESCAN_SECS)) {
+            return Ok(());
+        }
         if let Err(e) = reconcile(args, ctx) {
             failed("rescan", e);
         }
@@ -251,6 +300,19 @@ mod scheduler_tests {
 
     const THRESHOLD: usize = 1000;
     const QUIET: Duration = Duration::from_secs(30);
+
+    #[test]
+    fn only_a_watch_serving_a_parent_can_be_orphaned() {
+        assert!(
+            !parent_gone(None, 1),
+            "a standalone watch never stops itself"
+        );
+        assert!(!parent_gone(Some(4242), 4242), "its parent is still there");
+        assert!(
+            parent_gone(Some(4242), 1),
+            "re-parented: the parent is gone"
+        );
+    }
 
     #[test]
     fn a_small_batch_drains_normally() {
@@ -577,12 +639,17 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
     }
 
     loop {
+        if orphaned(args) {
+            return Ok(());
+        }
         // Backing off a failing volume: hold for the cadence, letting
         // arriving events queue in the channel, then drain once at the
         // deadline. Everything below runs with the backoff cleared or due,
         // so an event storm cannot hit the volume ahead of the cadence.
         if !io_backoff.is_zero() {
-            std::thread::sleep(io_backoff);
+            if !sleep_while_served(args, io_backoff) {
+                return Ok(());
+            }
             drain(&mut pending, &mut io_backoff, &mut bulk, last_event);
         }
         // A pending batch, an owed rescan, or the maintenance deadline: each
@@ -598,6 +665,13 @@ fn event_loop(args: &WatchArgs, ctx: &CommandContext) -> Result<()> {
         );
         let timeout = bulk_wake(bulk, last_event.elapsed(), bulk_quiet)
             .map_or(timeout, |wake| timeout.min(wake));
+        // Serving a parent: wake often enough to notice it has gone. A wake
+        // with nothing due falls through the timeout arm doing nothing.
+        let timeout = if args.exit_with.is_some() {
+            timeout.min(PARENT_CHECK)
+        } else {
+            timeout
+        };
         match rx.recv_timeout(timeout) {
             Ok(Ok(batch)) => {
                 if videre::watch_events::needs_full_rescan(batch.iter().map(|e| &e.event)) {
