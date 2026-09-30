@@ -18,15 +18,35 @@ use videre_core::selection::{MediaKind, PathSelection, PlaceQuery, PresenceField
 #[derive(clap::Args, Clone, Debug, Default)]
 pub struct MediaArgs {
     /// Media kind: image or video. Repeatable, or comma-separated
-    #[arg(long = "type", value_delimiter = ',', value_name = "KIND")]
+    #[arg(
+        long = "type",
+        value_delimiter = ',',
+        value_name = "KIND",
+        value_parser = ["image", "video"],
+        ignore_case = true
+    )]
     pub media_type: Vec<String>,
 
     /// File extension, e.g. mov. Repeatable, or comma-separated
-    #[arg(long, value_delimiter = ',', value_name = "EXT")]
+    #[arg(
+        long,
+        value_delimiter = ',',
+        value_name = "EXT",
+        add = clap_complete::engine::ArgValueCompleter::new(
+            crate::completions::ext_candidates
+        )
+    )]
     pub ext: Vec<String>,
 
     /// Exact mime type, e.g. video/quicktime. Repeatable, or comma-separated
-    #[arg(long, value_delimiter = ',', value_name = "MIME")]
+    #[arg(
+        long,
+        value_delimiter = ',',
+        value_name = "MIME",
+        add = clap_complete::engine::ArgValueCompleter::new(
+            crate::completions::mime_candidates
+        )
+    )]
     pub mime: Vec<String>,
 }
 
@@ -107,7 +127,13 @@ impl PlaceArgs {
 #[derive(clap::Args, Clone, Debug, Default)]
 pub struct PeopleArgs {
     /// Only files containing this labeled person, confirmed faces only
-    #[arg(long, value_name = "NAME")]
+    #[arg(
+        long,
+        value_name = "NAME",
+        add = clap_complete::engine::ArgValueCompleter::new(
+            crate::completions::person_candidates
+        )
+    )]
     pub person: Option<String>,
 
     /// Only files classified as this category
@@ -120,7 +146,7 @@ pub struct PeopleArgs {
 #[derive(clap::Args, Clone, Debug, Default)]
 pub struct PathArgs {
     /// Only files under this directory. Repeatable
-    #[arg(long, value_name = "DIR")]
+    #[arg(long, value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
     pub path: Vec<std::path::PathBuf>,
 }
 
@@ -129,11 +155,23 @@ pub struct PathArgs {
 #[derive(clap::Args, Clone, Debug, Default)]
 pub struct PresenceArgs {
     /// Only files where this database field is present. Repeatable, or comma-separated
-    #[arg(long = "has", value_delimiter = ',', value_name = "FIELD")]
+    #[arg(
+        long = "has",
+        value_delimiter = ',',
+        value_name = "FIELD",
+        value_parser = ["gps", "date"],
+        ignore_case = true
+    )]
     pub has: Vec<String>,
 
     /// Only files where this database field is missing. Repeatable, or comma-separated
-    #[arg(long = "missing", value_delimiter = ',', value_name = "FIELD")]
+    #[arg(
+        long = "missing",
+        value_delimiter = ',',
+        value_name = "FIELD",
+        value_parser = ["gps", "date"],
+        ignore_case = true
+    )]
     pub missing: Vec<String>,
 }
 
@@ -263,6 +301,36 @@ pub fn path_selection(
 
 #[cfg(test)]
 mod tests {
+    /// The shells complete a flag's choices from the parser's known values,
+    /// so a fixed-set flag must carry them at parse time - and clap then
+    /// rejects an unknown with the choices named, instead of the resolution
+    /// layer finding it later.
+    #[test]
+    fn fixed_set_flags_accept_any_case_like_the_old_parsers_did() {
+        use clap::Parser;
+        for args in [
+            ["videre", "search", "--type", "Image"],
+            ["videre", "search", "--has", "GPS"],
+            ["videre", "search", "--missing", "Date"],
+        ] {
+            assert!(
+                crate::Cli::try_parse_from(args).is_ok(),
+                "any case must parse: {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fixed_set_flag_rejects_with_the_choices_named() {
+        use clap::Parser;
+        let error = crate::Cli::try_parse_from(["videre", "search", "--type", "shrubbery"])
+            .err()
+            .expect("shrubbery is not a media kind");
+        let text = error.to_string();
+        assert!(text.contains("image"), "{text}");
+        assert!(text.contains("video"), "{text}");
+    }
+
     use super::*;
 
     #[test]
