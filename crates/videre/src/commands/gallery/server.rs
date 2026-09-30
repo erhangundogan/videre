@@ -2563,6 +2563,39 @@ async fn handle_files(
 
     let conn = state.conn.lock().map_err(poisoned)?;
     let faces_by_hash = videre_core::face_db::labeled_faces_by_hash(&conn).unwrap_or_default();
+    // A query narrows by its filters; the extra fields tell the client the
+    // library's size (for "N of M") and the words it should rank.
+    let mut extra = String::new();
+    let mut within_query = false;
+    if let Some(query) = q.q.as_deref().filter(|s| !s.trim().is_empty()) {
+        let compiled = match videre::query_lang::compile(query) {
+            Ok(c) => c,
+            Err(e) => return Ok(query_error_response(&e.message, e.at)),
+        };
+        if let Some(filter) = &compiled.filter {
+            let sel_ctx = videre_core::selection::SelectionCtx {
+                model_id: Some(state.model_id.clone()),
+            };
+            let hashes = match videre::query_lang::resolve(
+                filter,
+                &conn,
+                &sel_ctx,
+                &state.context.library,
+            ) {
+                Ok(h) => h,
+                Err(e) => return Ok(query_error_response(&format!("{e:#}"), None)),
+            };
+            load_query_hashes(&conn, &hashes).map_err(internal)?;
+            within_query = true;
+        }
+        let library_total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
+            .map_err(internal)?;
+        extra.push_str(&format!(",\"library_total\":{library_total}"));
+        if let Some(text) = &compiled.text {
+            extra.push_str(&format!(",\"text\":{}", json_str(text)));
+        }
+    }
     let (rows, total) = match q.hashes.as_deref() {
         Some(h) if !h.is_empty() => query_files_by_hash(&conn, h).map_err(internal)?,
         _ => {
@@ -2586,7 +2619,7 @@ async fn handle_files(
             };
             let location = files_location_filter(&q, view)?;
             let sort = FileSort::from_query(q.sort.as_deref(), q.dir.as_deref());
-            query_files_page(
+            query_files_page_within(
                 &conn,
                 view,
                 date_filter.as_ref(),
@@ -2594,18 +2627,34 @@ async fn handle_files(
                 limit,
                 location.as_ref(),
                 sort,
+                within_query,
             )
             .map_err(internal)?
         }
     };
 
-    Ok(files_json_response(
+    Ok(files_json_response_with(
         &conn,
         &rows,
         total,
         offset,
         &faces_by_hash,
+        &extra,
     ))
+}
+
+/// A query the gallery cannot run: `400 {"error": ..., "at": ...}`, where
+/// `at` is the character offset of a syntax error, when known, so the page
+/// can point at it.
+fn query_error_response(message: &str, at: Option<usize>) -> axum::response::Response {
+    let at = at.map_or("null".to_string(), |a| a.to_string());
+    let body = format!("{{\"error\":{},\"at\":{at}}}", json_str(message));
+    (
+        StatusCode::BAD_REQUEST,
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        body,
+    )
+        .into_response()
 }
 
 /// Build the `{total,offset,files:[...]}` body shared by `/api/files` and the
@@ -2617,6 +2666,19 @@ fn files_json_response(
     offset: i64,
     faces_by_hash: &videre_core::face_db::LabeledFacesByHash,
 ) -> axum::response::Response {
+    files_json_response_with(conn, rows, total, offset, faces_by_hash, "")
+}
+
+/// [`files_json_response`] with `extra`, already-serialized `,"key":value`
+/// fields, spliced in after `offset`.
+fn files_json_response_with(
+    conn: &Connection,
+    rows: &[(FileRow, i64)],
+    total: i64,
+    offset: i64,
+    faces_by_hash: &videre_core::face_db::LabeledFacesByHash,
+    extra: &str,
+) -> axum::response::Response {
     let page_hashes: Vec<String> = rows.iter().map(|(r, _)| r.hash.clone()).collect();
     let marks = videre_core::marks::get_many(conn, &page_hashes).unwrap_or_default();
 
@@ -2624,6 +2686,7 @@ fn files_json_response(
     out.push_str(&total.to_string());
     out.push_str(",\"offset\":");
     out.push_str(&offset.to_string());
+    out.push_str(extra);
     out.push_str(",\"files\":[");
     for (i, (row, copies)) in rows.iter().enumerate() {
         if i > 0 {
@@ -3734,6 +3797,10 @@ struct FilesQuery {
     sort: Option<String>,
     /// `asc` or `desc`. Anything else means `desc`.
     dir: Option<String>,
+    /// A query in the query language. Its filters narrow the page and the
+    /// count; its words, if any, are returned as `text` for the client to rank
+    /// through `/api/search`, and do not filter.
+    q: Option<String>,
 }
 
 fn files_location_filter(

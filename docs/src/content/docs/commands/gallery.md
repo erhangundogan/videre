@@ -119,10 +119,22 @@ people or location data yet.
 **Library**, **Duplicates**, **Date**, **Events**, **People** and **Map** sit in a strip along
 the top of every page, so you switch between them without touching the address
 bar. The reserved routes are deliberately not in it; each one appears when it
-renders something. At the right of the strip is a **search** box: type a
-natural-language query and it ranks the library semantically on the Library page,
-the same ranking the **Similar** button uses. It appears on every section when
-the library has embeddings to rank against, and on none when it has not.
+renders something. At the right of the strip is a **search** box, on every
+section, that takes a [query](/reference/query-syntax/) and opens the Library
+page with it:
+
+- **Filters narrow the grid.** `tag:deniz OR tag:plaj`, `person:özgür
+  date:2023` or `-tag:ekran` leave only the matching files, with a line above
+  the grid saying how many of the library's files match, and a **clear** link.
+- **Words rank.** Words without a key rank the files the filters left, by
+  meaning, in the results strip above the grid: the same ranking the
+  **Similar** button uses, so they need a library with embeddings. Without
+  embeddings the box is offered as a filter.
+- **A query that cannot run says so.** The line above the grid shows the error
+  and the character it failed at, instead of an unfiltered grid.
+
+The query stays in the address bar as `/?q=...`, so a reload or a bookmark
+opens the same grid.
 
 The tall library header (the database path and the scanned-file counts) shows on
 the Library page and on a static export; the other sections drop it, since the strip

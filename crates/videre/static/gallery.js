@@ -1045,6 +1045,27 @@ document.getElementById('lb').addEventListener('click',function(e){
 // GPAGE is capped at 500, the most /api/files returns per request.
 var GPAGE=settingIntInRange('routes.files.pageSize',1,500),gShown=0,HASH_FILES={},RESULT_ROWS={},galleryFiles=[];
 var GLOCATION=null,gRequest=0;
+// The nav box's query, on the Files page: its filters narrow the grid through
+// /api/files, and its words, if any, rank in the results strip.
+var GQUERY=(location.pathname==='/')?(new URLSearchParams(location.search).get('q')||''):'';
+var gQueryRanked=false;
+function galleryQueryParam(){
+  return GQUERY?'&q='+encodeURIComponent(GQUERY):'';
+}
+// "N of M", or why the query could not run, in a line above the grid.
+function showQueryStatus(html,isError){
+  var g=document.getElementById('gallery');
+  if(!g)return;
+  var s=document.getElementById('query-status');
+  if(!s){
+    s=document.createElement('div');
+    s.id='query-status';
+    s.className='query-status';
+    g.parentNode.insertBefore(s,g);
+  }
+  s.classList.toggle('query-error',!!isError);
+  s.innerHTML=html;
+}
 function galleryLocationQuery(){
   if(!GLOCATION)return '';
   return '&lat='+encodeURIComponent(GLOCATION.lat)+
@@ -1225,12 +1246,34 @@ function renderGallery(){
   var btn=document.getElementById('gallery-more');
   if(btn)btn.textContent='Loading\u2026';
   fetch('/api/files?view='+encodeURIComponent(GVIEW)+'&offset='+gShown+'&limit='+GPAGE+
-        galleryLocationQuery()+sortQuery())
-    .then(function(r){ return r.json(); })
+        galleryLocationQuery()+sortQuery()+galleryQueryParam())
+    .then(function(r){
+      if(r.status===400)return r.json().then(function(e){ e.bad=true; return e; });
+      return r.json();
+    })
     .then(function(d){
       if(request!==gRequest)return;
       gLoading=false;
-      if(!d.total&&!gShown&&location.pathname==='/'){
+      if(d.bad){
+        // The query did not run: say why, and where, rather than show an
+        // unfiltered grid that looks like an answer.
+        var at=(typeof d.at==='number')?' (at character '+(d.at+1)+')':'';
+        showQueryStatus('Cannot run <code>'+escH(GQUERY)+'</code>: '+escH(d.error||'')+at+
+          ' &middot; <a href="https://docs.videre.sh/reference/query-syntax/" target="_blank" rel="noopener">syntax</a>',true);
+        if(btn)btn.style.display='none';
+        return;
+      }
+      if(GQUERY&&typeof d.library_total==='number'&&!gShown){
+        showQueryStatus('<strong>'+(d.total||0).toLocaleString()+'</strong> of '+
+          d.library_total.toLocaleString()+' match <code>'+escH(GQUERY)+'</code>'+
+          ' &middot; <a href="/">clear</a>',false);
+      }
+      // The query's words rank, once, in the results strip, within its filters.
+      if(GQUERY&&d.text&&!gQueryRanked){
+        gQueryRanked=true;
+        runTextSearch(GQUERY);
+      }
+      if(!d.total&&!gShown&&location.pathname==='/'&&!GQUERY){
         window.showEmptyState('No photos yet',
           '<p>This library has no scanned files.</p>'+
           '<p class="hint">Run <code>videre scan</code> in the library folder to index it, then reload this page.</p>');
@@ -1361,19 +1404,16 @@ function drawTextResults(query,scored){
   panel.querySelectorAll('img').forEach(function(img){if(img.loading==='lazy')img.loading='eager';});
   panel.scrollIntoView({behavior:'smooth',block:'start'});
 }
-// Wire the shared nav search box: prefill it from the URL, hide it where the
-// library has no embeddings to rank against, and run any `?q=` on the Files page.
+// Wire the shared nav search box: prefill it from the URL. It stays on
+// libraries without embeddings, because a query's filters need none; a query
+// on the Files page runs through the grid fetch above, which ranks its words.
 (function(){
-  if(typeof HAS_EMBEDDINGS!=='undefined'&&!HAS_EMBEDDINGS){
-    var form=document.querySelector('.secnav-search');
-    if(form)form.style.display='none';
-    return;
-  }
   var q=new URLSearchParams(window.location.search).get('q');
-  if(!q)return;
   var navInput=document.getElementById('nav-search');
-  if(navInput)navInput.value=q;
-  if(typeof LIVE_SERVER!=='undefined'&&LIVE_SERVER&&document.getElementById('results'))runTextSearch(q);
+  if(navInput&&typeof HAS_EMBEDDINGS!=='undefined'&&!HAS_EMBEDDINGS){
+    navInput.placeholder='Filter, e.g. tag:deniz…';
+  }
+  if(q&&navInput)navInput.value=q;
 })();
 if(typeof ALLFILES!=='undefined'){
   ALLFILES.forEach(function(f){

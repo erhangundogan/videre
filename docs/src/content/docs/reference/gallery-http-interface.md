@@ -158,6 +158,7 @@ Returns a page of file rows. By default it lists all scanned paths.
 | `radius=<km>` | Positive radius in kilometers for a `view=all` proximity filter |
 | `sort=<date\|name\|size\|rating\|liked\|type>` | Field the files are ordered by. Default `date`. Unknown values fall back to the default |
 | `dir=<asc\|desc>` | Sort direction. Default `desc`. `path` is always the final tie-break, so pages stay stable |
+| `q=<query>` | A [query](/reference/query-syntax/). Its filters narrow the page and `total`; its words do not filter |
 
 `lat`, `lon` and `radius` must be supplied together. The server first narrows
 GPS-bearing rows with the coordinate index, then applies exact great-circle
@@ -167,6 +168,12 @@ view ignores all three parameters and keeps its own one-row-per-hash behavior.
 Every sort puts nulls last in both directions (undated files, unrated files),
 and appends `path` as the final tie-break, so two consecutive pages never
 share a row and "Show more" concatenates into the sorted order.
+
+With `q`, the response adds `library_total`, the number of files in the
+library, so a client can say "N of M", and `text`, the query's words when it
+has any, for the client to rank through `/api/search`. A query that cannot run
+answers `400 {"error": "...", "at": 7}`, where `at` is the zero-based
+character offset of a syntax error, or `null` when there is none to point at.
 
 ```bash
 curl "http://127.0.0.1:7878/api/files?limit=1"
