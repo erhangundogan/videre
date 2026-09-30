@@ -91,6 +91,9 @@ impl Server {
     /// that should not happen lands where a test can see it instead of being
     /// absorbed by the developer's warm cache.
     fn start_with_hf_home(lib: &TestLibrary, hf_home: Option<&Path>) -> Server {
+        // Route tests check the server alone; the watch it would start beside
+        // it has tests of its own (tests/gallery_watch.rs).
+        lib.no_gallery_watch();
         let _serialised = STARTUP.lock().unwrap_or_else(|e| e.into_inner());
         let port = free_port();
         let mut cmd = lib.cmd();
@@ -925,6 +928,7 @@ fn the_api_the_labeling_ui_depends_on_answers_json() {
 #[test]
 fn port_zero_announces_the_port_it_actually_bound() {
     let lib = fixture();
+    lib.no_gallery_watch();
 
     let mut child = lib
         .cmd()
