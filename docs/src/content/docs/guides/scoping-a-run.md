@@ -52,6 +52,24 @@ the marks and tags you set with [`videre mark`](/commands/mark/) and
 Combining flags narrows further: every condition must hold. `--type video
 --after 2024-01-01` means videos *and* taken this year, never either.
 
+## Or / not: `--query`
+
+Flags only say "and". For "or" and "not", every command below also takes
+`--query`, the [query syntax](/reference/query-syntax/) as filters:
+
+```bash
+videre embed --query '(tag:deniz OR tag:plaj) -tag:ekran'
+videre tag --query 'person:özgür OR person:ayşe' --add aile
+videre export --xmp --query 'rating:>=4 date:2023'
+```
+
+It narrows together with the flags, and the `N of M` line shows it. It takes
+filters only: words to search for need [`videre search`](/commands/search/).
+Quote it in single quotes; a query may start with `-`. `embed` and `faces`
+refuse `person:` and `category:` in a query for the same reason they have no
+`--person` or `--category`. `mark` accepts mark filters there, such as
+`rating:>=4`: `key:value` cannot be mistaken for a setter.
+
 ## Which commands take which flags
 
 | Command | Flags |

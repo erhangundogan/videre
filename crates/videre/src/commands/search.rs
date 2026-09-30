@@ -964,6 +964,7 @@ mod tests {
             label: Some("Green".into()),
             liked: true,
             tags: vec!["beach".into(), "sea".into()],
+            query: None,
         };
         assert_eq!(got.describe(), want.describe());
     }

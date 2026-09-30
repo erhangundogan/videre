@@ -484,6 +484,17 @@ fn search_with_no_input_or_two_rankers_is_tool_error() {
             .contains("at most one"),
         "{two}"
     );
+
+    // A query that only filters is not a ranker: it goes with image_path.
+    let filters = client.call_tool(
+        11,
+        "search",
+        json!({"query": "tag:deniz", "image_path": "/tmp/example.jpg"}),
+    );
+    let said = filters["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(!said.contains("at most one"), "{filters}");
     client.shutdown();
 }
 

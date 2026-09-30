@@ -26,6 +26,10 @@ pub struct MarkArgs {
     paths: super::selection_args::PathArgs,
     #[command(flatten)]
     tags: super::selection_args::TagFilterArgs,
+    // Unlike the mark flags, a query can select by marks too ('rating:>=4'):
+    // `key:value` cannot be mistaken for a setter.
+    #[command(flatten)]
+    query: super::selection_args::QueryArg,
 
     /// Set the star rating (0-5; 0 clears)
     #[arg(long, value_name = "N")]
@@ -56,6 +60,8 @@ pub struct MarkArgs {
 }
 
 pub fn run(args: MarkArgs, ctx: &CommandContext) -> Result<()> {
+    // A bad query fails before anything else is checked or changed.
+    args.query.compile()?;
     // Guard every --path against the selected root before any mutation.
     videre_core::library_guard::validate_paths(&ctx.library, &args.paths.path)?;
     let conn = videre_core::library_db::open_existing(&ctx.library)?;
@@ -127,6 +133,13 @@ pub(crate) fn resolve_targets(
         Some(&a.paths),
         None,
         Some(&a.tags),
+    )?;
+    let sel = super::selection_args::with_query(
+        sel,
+        &a.query,
+        conn,
+        &SelectionCtx::default(),
+        &ctx.library,
     )?;
     let resolved = sel.resolve_in(conn, &SelectionCtx::default(), &ctx.library)?;
     match resolved.hashes {

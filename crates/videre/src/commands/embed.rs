@@ -38,6 +38,8 @@ pub struct EmbedArgs {
     marks: super::selection_args::MarkArgs,
     #[command(flatten)]
     tags: super::selection_args::TagFilterArgs,
+    #[command(flatten)]
+    query: super::selection_args::QueryArg,
 
     /// Re-embed every eligible image, including ones already embedded under
     /// this model. Use after a fix that changed what the model sees, such as
@@ -78,6 +80,8 @@ impl EmbedArgs {
 }
 
 pub fn run(args: EmbedArgs, ctx: &CommandContext) -> Result<()> {
+    // A bad query fails before any model store or table is touched.
+    args.query.refuse_derived("embed")?;
     // Guard every --path against the selected root before any state changes, so
     // an out-of-root filter is rejected before the model store below is created.
     videre_core::library_guard::validate_paths(&ctx.library, &args.paths.path)?;
@@ -177,6 +181,11 @@ fn run_embed(
         Some(&args.marks),
         Some(&args.tags),
     )?;
+    let sel_ctx = videre_core::selection::SelectionCtx {
+        model_id: Some(model_id.to_string()),
+    };
+    let selection =
+        super::selection_args::with_query(selection, &args.query, conn, &sel_ctx, &ctx.library)?;
     let work = videre_core::work::narrow_in(
         pending,
         |p| p.hash.as_str(),

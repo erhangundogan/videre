@@ -70,6 +70,9 @@ Targets come from either the selection flags or a pipe:
   themselves (`--rating`/`--pick`/`--label`/`--like`) always *set* on this
   command rather than filter, so there is no `--rating`/`--pick`/`--label`/`--like`
   filter here.
+- **`--query`** takes a [query](/reference/query-syntax/), filters only, for OR
+  and NOT. Mark filters are allowed in it, since `key:value` cannot be taken for
+  a setter: `videre mark --query 'rating:>=4 -pick:reject' --label Green`.
 - **Standard input**: if you pipe paths in (`videre search ... | videre mark ...`),
   those files are marked. This is how you mark by an *existing* mark, since the
   mark flags on `mark` itself always *set* rather than filter.
