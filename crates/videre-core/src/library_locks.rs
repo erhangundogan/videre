@@ -45,6 +45,7 @@ use fs2::FileExt;
 use std::fs::OpenOptions;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// How the library's activity is held: many concurrent readers, or one
 /// process changing the library's state.
@@ -359,6 +360,29 @@ pub fn try_command(ctx: &LibraryContext, command: &str) -> Result<CommandGuard> 
     })
 }
 
+/// Retry `attempt`, one of the non-blocking `try_*` calls above, while the
+/// library is busy, until it succeeds or `deadline` passes; then the last
+/// refusal is returned as it was. For an interactive action (a gallery
+/// delete or regroup) that would otherwise be refused because a background
+/// stage happened to hold the lock for a moment. Any error other than
+/// contention is returned at once.
+pub fn wait_for<T>(deadline: Duration, mut attempt: impl FnMut() -> Result<T>) -> Result<T> {
+    const POLL: Duration = Duration::from_millis(100);
+    let until = Instant::now() + deadline;
+    loop {
+        match attempt() {
+            Err(e)
+                if crate::error_kind::ErrorKind::in_chain(&e)
+                    == Some(crate::error_kind::ErrorKind::LibraryBusy)
+                    && Instant::now() < until =>
+            {
+                std::thread::sleep(POLL.min(until.saturating_duration_since(Instant::now())));
+            }
+            result => return result,
+        }
+    }
+}
+
 /// Whether another live process currently holds `command`'s lock for this
 /// library. A pure probe: creates nothing and never blocks, so it is safe on
 /// any read path; a missing lock file (or a library with no state at all)
@@ -409,6 +433,48 @@ mod tests {
         let ctx = LibraryContext::new(&root, &temp.path().join("cache")).unwrap();
         std::fs::create_dir_all(&ctx.paths.locks).unwrap();
         (temp, ctx)
+    }
+
+    #[test]
+    fn waiting_takes_a_lock_released_within_the_deadline() {
+        let (_t, ctx) = locked_library();
+        let holder = try_command(&ctx, "faces").unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            drop(holder);
+        });
+        let started = Instant::now();
+        let guard = wait_for(Duration::from_secs(3), || try_command(&ctx, "faces"));
+        assert!(guard.is_ok(), "{:#}", guard.err().unwrap());
+        assert!(started.elapsed() < Duration::from_secs(2));
+        release.join().unwrap();
+    }
+
+    #[test]
+    fn waiting_gives_the_refusal_back_once_the_deadline_passes() {
+        use crate::error_kind::ErrorKind;
+        let (_t, ctx) = locked_library();
+        let _holder = try_activity(&ctx, ActivityMode::Shared).unwrap();
+        let started = Instant::now();
+        let err = wait_for(Duration::from_millis(400), || {
+            try_activity(&ctx, ActivityMode::Exclusive)
+        })
+        .unwrap_err();
+        assert_eq!(ErrorKind::in_chain(&err), Some(ErrorKind::LibraryBusy));
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(400) && waited < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn waiting_does_not_retry_an_error_that_is_not_contention() {
+        let mut attempts = 0;
+        let err = wait_for(Duration::from_secs(3), || -> Result<()> {
+            attempts += 1;
+            anyhow::bail!("disk gone")
+        })
+        .unwrap_err();
+        assert_eq!(attempts, 1);
+        assert!(format!("{err:#}").contains("disk gone"));
     }
 
     #[test]

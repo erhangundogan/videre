@@ -214,8 +214,12 @@ pub(crate) async fn handle_delete(
         } else {
             videre_core::library_locks::ActivityMode::Exclusive
         };
-        let _activity = videre_core::library_locks::try_activity(library, mode)
-            .map_err(|_| Refusal::Busy("library_busy"))?;
+        // Wait briefly: the watch the gallery starts may hold the library for
+        // a stage, and a delete should not fail for that alone.
+        let _activity = videre_core::library_locks::wait_for(super::server::BUSY_WAIT, || {
+            videre_core::library_locks::try_activity(library, mode)
+        })
+        .map_err(|_| Refusal::Busy("library_busy"))?;
         let conn = state.conn.lock().map_err(poisoned)?;
         let hashes = known_hashes(&conn, &body.hashes)?;
         let mut files: Vec<(String, String, String)> = Vec::new();
