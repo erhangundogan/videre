@@ -80,9 +80,8 @@ pub fn set_quicklook_slot_dir(dir: PathBuf) {
     let _ = QUICKLOOK_SLOT_DIR.set(dir);
 }
 
-/// One held machine-wide QuickLook slot. Dropping it closes the file, which
-/// releases the lock.
-struct QuicklookSlot(#[allow(dead_code)] File);
+/// One held machine-wide QuickLook slot, released when dropped.
+struct QuicklookSlot(#[allow(dead_code)] crate::held_lock::HeldLock);
 
 /// Take one of the `n` slots `slot-0.lock .. slot-{n-1}.lock` in `dir`,
 /// waiting until one is free.
@@ -132,7 +131,11 @@ fn acquire_slot_with(
             // filesystem without flock support) goes back to the caller,
             // which falls back to the in-process cap instead of spinning.
             match try_lock(slot) {
-                Ok(()) => return Ok(QuicklookSlot(slot.try_clone()?)),
+                Ok(()) => {
+                    return Ok(QuicklookSlot(crate::held_lock::HeldLock::new(
+                        slot.try_clone()?,
+                    )))
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(error) => return Err(error),
             }

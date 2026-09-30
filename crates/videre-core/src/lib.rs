@@ -14,6 +14,7 @@ pub mod face_match;
 pub mod fix_dates_target;
 pub mod geocode;
 pub mod heic;
+pub(crate) mod held_lock;
 pub mod hf_cache;
 pub mod image_decode;
 pub mod import_location;

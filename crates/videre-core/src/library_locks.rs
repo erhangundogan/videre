@@ -37,11 +37,12 @@
 //! Closing the gap would mean blocking lock release on a thread that may
 //! never finish, trading a rare stale read for a hang.
 
+use crate::held_lock::HeldLock;
 use crate::io_timeout::STAT_TIMEOUT;
 use crate::library::{bounded_op, root_cause_is_not_found, LibraryContext};
 use anyhow::{bail, Context, Result};
 use fs2::FileExt;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -55,17 +56,17 @@ pub enum ActivityMode {
     Exclusive,
 }
 
-/// A held library activity lock. Dropping releases it (closing the file
-/// releases the `flock`), and process death releases it too, so nothing
-/// correct depends on `Drop` running: the same OS backstop
-/// `pipeline_runs::LockGuard` relies on.
+/// A held library activity lock. Dropping releases it (an explicit unlock,
+/// so a descriptor a spawned child inherited cannot keep it alive; see
+/// `held_lock`), and process death releases it too, so nothing
+/// correct depends on `Drop` running.
 #[derive(Debug)]
-pub struct ActivityGuard(#[allow(dead_code)] File);
+pub struct ActivityGuard(#[allow(dead_code)] HeldLock);
 
 /// A held library init lock, serializing initialization and config edits.
 /// Same release semantics as [`ActivityGuard`].
 #[derive(Debug)]
-pub struct InitGuard(#[allow(dead_code)] File);
+pub struct InitGuard(#[allow(dead_code)] HeldLock);
 
 /// A held per-command lock. Carries the library and command it was taken
 /// for, so a caller handing it to bookkeeping such as
@@ -74,7 +75,7 @@ pub struct InitGuard(#[allow(dead_code)] File);
 #[derive(Debug)]
 pub struct CommandGuard {
     #[allow(dead_code)]
-    file: File,
+    file: HeldLock,
     root: PathBuf,
     command: String,
 }
@@ -253,8 +254,9 @@ fn require_locks(ctx: &LibraryContext) -> Result<()> {
 }
 
 /// Open (creating if absent) and non-blockingly lock one lock file. The file
-/// is never removed afterwards; the lock is released by closing it.
-fn acquire_lock_file(path: &Path, exclusive: bool, busy: String, what: &str) -> Result<File> {
+/// is never removed afterwards; the lock is released when the returned
+/// [`HeldLock`] drops.
+fn acquire_lock_file(path: &Path, exclusive: bool, busy: String, what: &str) -> Result<HeldLock> {
     reject_redirect(path, what)?;
     let owned = path.to_path_buf();
     let file = bounded_op(path, "open", STAT_TIMEOUT, move || {
@@ -282,7 +284,7 @@ fn acquire_lock_file(path: &Path, exclusive: bool, busy: String, what: &str) -> 
         return Err(lock_refusal(e, busy, what));
     }
     tracing::debug!(lock = %path.display(), exclusive, "lock acquired");
-    Ok(file)
+    Ok(HeldLock::new(file))
 }
 
 /// Why a lock could not be taken. Only contention (another holder) is
@@ -459,6 +461,40 @@ mod tests {
         drop(two);
         // ...and with none left, exclusive is available again.
         let _ex = try_activity(&ctx, ActivityMode::Exclusive).unwrap();
+    }
+
+    /// A flock belongs to the open file description, not to the descriptor,
+    /// so closing the guard's descriptor releases nothing while another
+    /// reference to that description lives. A child spawned by any thread
+    /// while a guard is held owns exactly such a reference until its exec
+    /// closes it, which made `open_existing` right after `initialize` refuse
+    /// with "its activity lock is held" whenever a test thread nearby was
+    /// spawning `videre`. `try_clone` stands in for that inherited copy.
+    #[test]
+    fn dropping_a_guard_releases_its_lock_while_a_copy_of_its_descriptor_lives() {
+        let (_t, ctx) = locked_library();
+
+        let activity = try_activity(&ctx, ActivityMode::Exclusive).unwrap();
+        let inherited = activity.0.file().try_clone().unwrap();
+        drop(activity);
+        let shared = try_activity(&ctx, ActivityMode::Shared);
+        assert!(shared.is_ok(), "{:#}", shared.unwrap_err());
+        drop((shared, inherited));
+
+        let init = try_init(&ctx).unwrap();
+        let inherited = init.0.file().try_clone().unwrap();
+        drop(init);
+        let again = try_init(&ctx);
+        assert!(again.is_ok(), "{:#}", again.unwrap_err());
+        drop((again, inherited));
+
+        let scan = try_command(&ctx, "scan").unwrap();
+        let inherited = scan.file.file().try_clone().unwrap();
+        drop(scan);
+        assert!(!command_locked(&ctx, "scan").unwrap());
+        let again = try_command(&ctx, "scan");
+        assert!(again.is_ok(), "{:#}", again.unwrap_err());
+        drop((again, inherited));
     }
 
     #[test]
