@@ -572,6 +572,14 @@ mod tests {
     }
 
     #[test]
+    fn or_binds_its_neighbours_and_the_rest_must_match() {
+        assert_eq!(
+            ok("person:özgür tag:deniz OR tag:plaj").0.as_deref(),
+            Some(r#"and(--person "özgür", or(--tag deniz, --tag plaj))"#)
+        );
+    }
+
+    #[test]
     fn ratings_are_at_least_or_a_band() {
         assert_eq!(ok("rating:4").0.as_deref(), Some("--rating 4"));
         assert_eq!(ok("rating:>=4").0.as_deref(), Some("--rating 4"));

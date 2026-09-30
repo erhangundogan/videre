@@ -13,7 +13,7 @@ use videre_ml::{device, model, search};
 /// MCP server builds one directly from its tool parameters and runs it through
 /// the same pipeline; a second, parallel query path is exactly what would let
 /// the two surfaces drift apart.
-#[derive(clap::Args)]
+#[derive(clap::Args, Clone)]
 pub struct SearchArgs {
     /// Embedding model to search against (default: 'videre config set model', else
     /// the built-in default). Must already have been embedded; run
@@ -21,11 +21,17 @@ pub struct SearchArgs {
     #[arg(long, value_parser = super::parse_model_id)]
     pub(crate) model: Option<String>,
 
-    /// Text query, e.g. "sunset on beach" (omit when using --image)
+    /// What to find, in the query language: words to rank by, filters such
+    /// as person:özgür, tag:deniz, date:2023 or rating:>=4, combined with
+    /// OR, NOT or -, and (groups). Quote the whole query in single quotes.
+    /// See https://docs.videre.sh/reference/query-syntax/
+    // A query may start with `-`, as in '-tag:ekran'; clap would otherwise
+    // take it for an unknown flag.
+    #[arg(allow_hyphen_values = true)]
     pub(crate) query: Option<String>,
 
-    /// Search by example image instead of text
-    #[arg(long, conflicts_with = "query")]
+    /// Search by example image instead of text; a query may still filter
+    #[arg(long)]
     pub(crate) image: Option<PathBuf>,
 
     /// Rank by the stored embedding of a file already in this library, by hash.
@@ -591,6 +597,21 @@ fn collect_hits(
     ctx: &CommandContext,
     embedder: &dyn QueryEmbedder,
 ) -> Result<Outcome> {
+    // The positional query is the query language: its words without a key are
+    // the text that ranks, its filters narrow. Everything below sees only the
+    // text as `query`, so ranking, sorting and reporting are unchanged.
+    let compiled = videre::query_lang::compile(args.query.as_deref().unwrap_or(""))
+        .map_err(|e| anyhow::anyhow!("invalid query: {e}"))?;
+    anyhow::ensure!(
+        compiled.text.is_none() || (args.image.is_none() && args.like.is_none()),
+        "the query's words rank the results, and so does --image: use one; \
+         filters such as tag:deniz can still go with --image"
+    );
+    let text_only = SearchArgs {
+        query: compiled.text.clone(),
+        ..args.clone()
+    };
+    let args = &text_only;
     let sort_keys = resolve_sort(args)?;
     let primary = sort_keys[0].field;
     let dates = resolve_dates(args)?;
@@ -615,7 +636,7 @@ fn collect_hits(
     // `--sort distance` reads.
     let selection = selection_for(args, &dates)?;
     anyhow::ensure!(
-        is_ranked(args) || !selection.is_empty(),
+        is_ranked(args) || !selection.is_empty() || compiled.filter.is_some(),
         "provide a text query, --image <path>, or at least one filter \
          (--person, --category, --location, --date, --after, --before, \
           --type, --ext, --mime, --path, --has, --missing, \
@@ -634,15 +655,23 @@ fn collect_hits(
     // resolve_in guards every --path against the selected root before it
     // geocodes or reads a row, so an out-of-root or unresolved path filter
     // rejects the whole query before any model load below.
-    let resolved = selection.resolve_in(
-        &conn,
-        &videre_core::selection::SelectionCtx {
-            model_id: Some(model_id.clone()),
-        },
-        &ctx.library,
-    )?;
+    let selection_ctx = videre_core::selection::SelectionCtx {
+        model_id: Some(model_id.clone()),
+    };
+    let resolved = selection.resolve_in(&conn, &selection_ctx, &ctx.library)?;
+    // The query's filter narrows what the flags selected; it never widens it.
+    let hashes = match &compiled.filter {
+        Some(filter) => {
+            let matched = videre::query_lang::resolve(filter, &conn, &selection_ctx, &ctx.library)?;
+            Some(match resolved.hashes {
+                Some(flags) => flags.intersection(&matched).cloned().collect(),
+                None => matched,
+            })
+        }
+        None => resolved.hashes,
+    };
     let cands = query::Candidates {
-        hashes: resolved.hashes,
+        hashes,
         distances: resolved.distances,
     };
 
@@ -857,9 +886,14 @@ mod tests {
         assert_eq!(a.tags.tags, vec!["beach".to_string()]);
     }
 
+    /// `--image` goes with a query: its filters narrow what the image ranks.
+    /// Only a query's words conflict with it, and that is refused at run time
+    /// (`tests/search.rs`), because only the compiled query knows its words.
     #[test]
-    fn image_and_a_positional_query_conflict() {
-        assert!(Standalone::try_parse_from(["videre", "sunset", "--image", "/e.jpg"]).is_err());
+    fn image_parses_alongside_a_query() {
+        let a = parse(&["videre", "tag:deniz", "--image", "/e.jpg"]);
+        assert_eq!(a.query.as_deref(), Some("tag:deniz"));
+        assert!(a.image.is_some());
     }
 
     #[test]
