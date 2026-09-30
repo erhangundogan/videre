@@ -2082,3 +2082,96 @@ fn a_rotated_heic_is_rendered_again_not_served_from_cache() {
     let (w, h) = dims(&second);
     assert!(w > h, "re-rendered landscape after the turn: {w}x{h}");
 }
+
+/// Three files, two tagged: `deniz.jpg` (deniz), `plaj.jpg` (plaj), `ev.jpg`.
+fn tagged_library() -> TestLibrary {
+    let lib = TestLibrary::new();
+    let root = lib.context().paths.root;
+    let conn = lib.init_db();
+    for (name, hash, date) in [
+        ("deniz.jpg", "h1", "2023-07-01T10:00:00"),
+        ("plaj.jpg", "h2", "2023-08-01T10:00:00"),
+        ("ev.jpg", "h3", "2024-01-01T10:00:00"),
+    ] {
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, size_bytes, modified_at, exif_date, ext, mime)
+             VALUES (?1, ?2, 100, ?3, ?3, 'jpg', 'image/jpeg')",
+            rusqlite::params![root.join(name).to_string_lossy().as_ref(), hash, date],
+        )
+        .unwrap();
+    }
+    videre_core::tags::ensure_photo_tags_table(&conn).unwrap();
+    conn.execute_batch("INSERT INTO photo_tags VALUES ('h1','deniz'), ('h2','plaj');")
+        .unwrap();
+    lib
+}
+
+fn files_for(server: &Server, q: &str) -> (u16, serde_json::Value) {
+    let path = format!(
+        "/api/files?view=all&limit=50&q={}",
+        q.bytes().map(|b| format!("%{b:02X}")).collect::<String>()
+    );
+    let (status, body) = server.get(&path);
+    (
+        status,
+        serde_json::from_str(&body).unwrap_or(serde_json::Value::Null),
+    )
+}
+
+fn names(v: &serde_json::Value) -> Vec<String> {
+    let mut n: Vec<String> = v["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            f["path"]
+                .as_str()
+                .unwrap()
+                .rsplit('/')
+                .next()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    n.sort();
+    n
+}
+
+#[test]
+fn the_library_grid_narrows_by_a_query() {
+    let lib = tagged_library();
+    let server = Server::start(&lib);
+
+    let (status, v) = files_for(&server, "tag:deniz OR tag:plaj");
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(names(&v), ["deniz.jpg", "plaj.jpg"]);
+    assert_eq!(v["total"], 2, "{v}");
+    assert_eq!(v["library_total"], 3, "N of M needs M: {v}");
+
+    let (_, v) = files_for(&server, "-tag:deniz date:2023");
+    assert_eq!(names(&v), ["plaj.jpg"]);
+}
+
+#[test]
+fn a_query_s_words_are_returned_for_ranking_and_do_not_filter() {
+    let lib = tagged_library();
+    let server = Server::start(&lib);
+    let (status, v) = files_for(&server, "gün batımı tag:deniz");
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(names(&v), ["deniz.jpg"]);
+    assert_eq!(v["text"], "gün batımı");
+    let (_, v) = files_for(&server, "gün batımı");
+    assert_eq!(v["total"], 3, "words alone leave the grid whole: {v}");
+}
+
+#[test]
+fn a_bad_query_is_a_400_that_says_what_and_where() {
+    let lib = tagged_library();
+    let server = Server::start(&lib);
+    let (status, v) = files_for(&server, "kişi:özgür");
+    assert_eq!(status, 400);
+    assert!(v["error"].as_str().unwrap().contains("unknown key"), "{v}");
+    let (status, v) = files_for(&server, "(tag:deniz");
+    assert_eq!(status, 400);
+    assert_eq!(v["at"], 10, "{v}");
+}

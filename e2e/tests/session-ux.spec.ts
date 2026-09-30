@@ -1,14 +1,15 @@
 import { expect, test } from "../support/gallery";
 
-// The fixture library has no embeddings, so the semantic search box hides
-// itself and the Similar buttons never render.
+// The fixture library has no embeddings, so the Similar buttons never render.
+// The nav box stays, offered as a filter: a query's filters need no vectors.
 
-test("nav shows the videre logo, a Library link, and no search box without embeddings", async ({ page, gallery }) => {
+test("nav shows the videre logo, a Library link, and a filter box without embeddings", async ({ page, gallery }) => {
   await page.goto(gallery.baseURL);
   await expect(page.locator(".secnav-brand svg")).toBeVisible();
   // The brand links home but is not one of the highlighted section buttons.
   await expect(page.locator(".secnav a:not(.secnav-brand)").first()).toHaveText("Library");
-  await expect(page.locator(".secnav-search")).toBeHidden();
+  await expect(page.locator(".secnav-search")).toBeVisible();
+  await expect(page.locator("#nav-search")).toHaveAttribute("placeholder", /Filter/);
 });
 
 test("the home header carries Library/Date/count lines and sections drop it", async ({ page, gallery }) => {

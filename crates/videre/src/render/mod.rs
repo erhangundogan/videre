@@ -243,6 +243,10 @@ const FILE_BASENAME: &str = "CASE WHEN instr(f.path, '/') = 0 THEN f.path ELSE \
 /// `videre prune` removes a row. The consequence to handle when this is wired
 /// up is that an unplugged drive shows files rather than an empty grid, which
 /// needs saying in the page rather than being left to look broken.
+///
+/// The server calls [`query_files_page_within`] directly; this unnarrowed
+/// form is what the tests below read.
+#[cfg(test)]
 pub(crate) fn query_files_page(
     conn: &Connection,
     view: &str,
@@ -251,6 +255,59 @@ pub(crate) fn query_files_page(
     limit: i64,
     location: Option<&LocationFilter>,
     sort: FileSort,
+) -> anyhow::Result<(Vec<(FileRow, i64)>, i64)> {
+    query_files_page_within(
+        conn,
+        view,
+        date_filter,
+        offset,
+        limit,
+        location,
+        sort,
+        false,
+    )
+}
+
+/// The temporary table a query's matching hashes are loaded into for one
+/// `/api/files` request; see [`query_files_page_within`].
+pub(crate) const QUERY_HASHES_TABLE: &str = "temp.query_hashes";
+
+/// Replace [`QUERY_HASHES_TABLE`]'s contents with `hashes`, on this
+/// connection only (a temporary table is private to it).
+pub(crate) fn load_query_hashes(
+    conn: &Connection,
+    hashes: &std::collections::HashSet<String>,
+) -> anyhow::Result<()> {
+    conn.execute_batch(&format!(
+        "CREATE TEMP TABLE IF NOT EXISTS query_hashes (hash TEXT PRIMARY KEY);
+         DELETE FROM {QUERY_HASHES_TABLE};"
+    ))?;
+    let tx = conn.unchecked_transaction()?;
+    {
+        let mut insert = tx.prepare(&format!(
+            "INSERT OR IGNORE INTO {QUERY_HASHES_TABLE} (hash) VALUES (?1)"
+        ))?;
+        for hash in hashes {
+            insert.execute([hash])?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// [`query_files_page`], narrowed to the hashes in [`QUERY_HASHES_TABLE`]
+/// when `within_query` is set: a query-language filter, resolved and loaded
+/// by the caller, narrows the count and the page alike.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn query_files_page_within(
+    conn: &Connection,
+    view: &str,
+    date_filter: Option<&FileDateFilter>,
+    offset: i64,
+    limit: i64,
+    location: Option<&LocationFilter>,
+    sort: FileSort,
+    within_query: bool,
 ) -> anyhow::Result<(Vec<(FileRow, i64)>, i64)> {
     // `view=date` shows one row per hash, the same KEEP set `/date` renders.
     // Choosing it in SQL rather than in Rust is what makes it pageable.
@@ -312,13 +369,18 @@ pub(crate) fn query_files_page(
             params.push(location.radius_km.into());
         }
     }
+    if within_query {
+        // Qualified: the page joins `marks`, which has a `hash` too. The count
+        // below uses the same `f` alias so this clause reads the same there.
+        clauses.push(format!("f.hash IN (SELECT hash FROM {QUERY_HASHES_TABLE})"));
+    }
     let where_sql = if clauses.is_empty() {
         String::new()
     } else {
         format!(" WHERE {}", clauses.join(" AND "))
     };
 
-    let count_sql = format!("SELECT COUNT(*) FROM {total_from} AS t{}", where_sql);
+    let count_sql = format!("SELECT COUNT(*) FROM {total_from} AS f{}", where_sql);
     let total: i64 = conn
         .query_row(&count_sql, rusqlite::params_from_iter(params.iter()), |r| {
             r.get(0)
