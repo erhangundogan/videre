@@ -51,7 +51,10 @@ database.
 The category [`videre classify`](/commands/classify/) gives a photo is not
 exported either. It is recomputed whenever you classify again, and a scan reads
 every `dc:subject` keyword back as a tag, so writing it there would turn it into
-a tag you never added.
+a tag you never added. Versions before 0.50.0 did write it: the next full
+export rewrites the keywords from your tags alone, so the old category keyword
+disappears from the sidecar, while keywords another app added stay, because
+scan has already imported them as tags.
 
 A file with nothing to write gets no sidecar. If it already has one, videre's
 fields are removed from it, so a label you took away since the last export does

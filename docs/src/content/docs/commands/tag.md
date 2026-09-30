@@ -70,9 +70,19 @@ videre search --tag beach --tag summer --person "Ayşe" --rating 4
 Tags round-trip through standard XMP `dc:subject` keywords: a scan reads keywords
 from a photo's sidecar or embedded packet and stores them as tags, and
 [`videre export --xmp`](/commands/export/) writes your tags, and only your
-tags, back out as `dc:subject`, so digiKam, Lightroom and darktable see them. Hierarchical
-keywords (`lr:hierarchicalSubject`) are not modelled yet; a tag is one flat
-string, and a `/`-separated value is stored verbatim.
+tags, back out as `dc:subject`, so digiKam, Lightroom and darktable see them.
+Hierarchical keywords (`lr:hierarchicalSubject`) are not modelled yet; a tag
+is one flat string, and a `/`-separated value is stored verbatim.
+
+Before 0.50.0, export also wrote each photo's [category](/commands/classify/)
+as a keyword, so a library rebuilt from those sidecars has tags such as
+`photo` and `unknown` that you never added. videre cannot tell them from tags
+you chose, so remove them yourself, once:
+
+```bash
+videre tag --remove photo --remove screenshot --remove document --remove meme --remove unknown
+videre export --xmp    # rewrite the sidecars without them
+```
 
 ## Other options
 
