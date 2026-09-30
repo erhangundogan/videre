@@ -77,3 +77,10 @@ videre search 'tag:deniz' --image örnek.jpg    # filters with an example image
 
 An example image and words in the query both rank the results, so one search
 takes one or the other.
+
+## In other commands
+
+`embed`, `faces`, `classify`, `tag`, `mark` and `export` take a query as
+`--query`, filters only, to narrow what they work on. See
+[Scoping a run](/guides/scoping-a-run/). The MCP server's `search` tool takes
+the same language in its `query` parameter.

@@ -208,12 +208,18 @@ struct FindDuplicatesParams {
 /// accepted forms rather than pointing elsewhere.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct SearchParams {
-    /// Ranker: semantic text query, e.g. "sunset on beach" (requires prior
-    /// 'videre embed'). Cannot be combined with image_path.
+    /// Query language, as in Gmail or GitHub search: words rank semantically
+    /// (requires prior 'videre embed'), and key:value terms filter: person:,
+    /// tag:, category:, place:, date:, after:, before:, rating: (rating:>=4),
+    /// pick:, label:, is:liked, type:, ext:, mime:, path:, has:, missing:.
+    /// Combine with OR, - or NOT, and parentheses, e.g.
+    /// '(person:özgür OR person:ayşe) date:2023 -tag:ekran gün batımı'.
+    /// Words cannot be combined with image_path; filters can.
     #[serde(default)]
     query: Option<String>,
     /// Ranker: path to a local example image to find similar files to
-    /// (requires prior 'videre embed'). Cannot be combined with query.
+    /// (requires prior 'videre embed'). Cannot be combined with words in
+    /// query; its filters still apply.
     #[serde(default)]
     image_path: Option<String>,
     /// Filter: only files containing this labeled person, confirmed faces only
@@ -290,9 +296,18 @@ fn build_search(
     // Filters compose; rankers do not, since only one thing can order a result
     // list. Checked here rather than left to the CLI's own guard so the message
     // names the parameters the caller actually passed.
+    // A query ranks only through its words; its filters go with image_path.
+    let query_ranks = match params.query.as_deref() {
+        Some(q) => videre::query_lang::compile(q)
+            .map_err(|e| anyhow::anyhow!("invalid query: {e}"))?
+            .text
+            .is_some(),
+        None => false,
+    };
     anyhow::ensure!(
-        !(params.query.is_some() && params.image_path.is_some()),
-        "provide at most one ranker: 'query' or 'image_path', not both"
+        !(query_ranks && params.image_path.is_some()),
+        "provide at most one ranker: words in 'query' or 'image_path', not both; \
+         the query's filters can go with image_path"
     );
     // Hand-maintained, and it must not fall behind the vocabulary: forgetting a
     // new axis here rejects a valid query rather than running it, which is the

@@ -158,6 +158,7 @@ each condition must hold.
 | `--label` | only photos with this colour label |
 | `--like` | only liked photos |
 | `--tag` | only files carrying this tag. Repeatable; all must be present |
+| `--query` | only files matching a [query](/reference/query-syntax/), filters only, for OR and NOT: `'(tag:deniz OR tag:plaj) -tag:ekran'` |
 
 A scoped run prints `N of M`, so a filter that matches nothing is
 distinguishable from an empty library. Full detail, including how missing data

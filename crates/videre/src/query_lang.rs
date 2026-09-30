@@ -400,6 +400,16 @@ fn resolve_with(
     })
 }
 
+/// True when any leaf of `expr` satisfies `test`: for a command to refuse a
+/// key it cannot answer, as the flags refuse it by not existing.
+pub fn any_leaf(expr: &Expr, test: &dyn Fn(&RowSelection) -> bool) -> bool {
+    match expr {
+        Expr::And(parts) | Expr::Or(parts) => parts.iter().any(|p| any_leaf(p, test)),
+        Expr::Not(inner) => any_leaf(inner, test),
+        Expr::Leaf(sel) => test(sel),
+    }
+}
+
 /// A compact, stable rendering for tests and error messages:
 /// `and(person:"özgür", or(tag:deniz, tag:plaj), not(tag:ekran))`.
 pub fn render(expr: &Expr) -> String {

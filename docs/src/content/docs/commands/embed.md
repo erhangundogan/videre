@@ -186,6 +186,7 @@ each condition must hold.
 | `--label` | only photos with this colour label |
 | `--like` | only liked photos |
 | `--tag` | only files carrying this tag. Repeatable; all must be present |
+| `--query` | only files matching a [query](/reference/query-syntax/), filters only, for OR and NOT: `'(tag:deniz OR tag:plaj) -tag:ekran'` |
 
 `--person` and `--category` are deliberately absent: both are derived from data
 this command produces, so selecting its input by one would be circular.

@@ -29,6 +29,8 @@ pub struct ExportArgs {
     marks: super::selection_args::MarkArgs,
     #[command(flatten)]
     tags: super::selection_args::TagFilterArgs,
+    #[command(flatten)]
+    query: super::selection_args::QueryArg,
 
     /// Write XMP sidecars beside each photo
     #[arg(long)]
@@ -65,6 +67,8 @@ impl ExportArgs {
 }
 
 pub fn run(args: ExportArgs, ctx: &CommandContext) -> Result<()> {
+    // A bad query fails before anything else is checked.
+    args.query.compile()?;
     if !args.xmp && !args.jsonl {
         bail!("nothing to export: pass --xmp or --jsonl");
     }
@@ -93,7 +97,7 @@ fn export_jsonl_snapshot(
     conn: &rusqlite::Connection,
     args: &ExportArgs,
 ) -> Result<()> {
-    let selection = selection_for(args)?;
+    let selection = selection_for(args, ctx, conn)?;
     let _lock = videre_core::library_locks::try_command(&ctx.library, "export")?;
     let written = super::export_jsonl::write_snapshot(ctx, conn, &selection, args.dry_run)?;
     if !args.silent {
@@ -113,8 +117,12 @@ fn export_jsonl_snapshot(
 }
 
 /// The row selection this export was scoped to.
-fn selection_for(args: &ExportArgs) -> Result<videre_core::selection::RowSelection> {
-    super::selection_args::row_selection(
+fn selection_for(
+    args: &ExportArgs,
+    ctx: &CommandContext,
+    conn: &rusqlite::Connection,
+) -> Result<videre_core::selection::RowSelection> {
+    let selection = super::selection_args::row_selection(
         Some(&args.media),
         Some(&args.dates),
         Some(&args.place),
@@ -123,6 +131,13 @@ fn selection_for(args: &ExportArgs) -> Result<videre_core::selection::RowSelecti
         Some(&args.paths),
         Some(&args.marks),
         Some(&args.tags),
+    )?;
+    super::selection_args::with_query(
+        selection,
+        &args.query,
+        conn,
+        &SelectionCtx::default(),
+        &ctx.library,
     )
 }
 
@@ -134,7 +149,7 @@ fn export_selection(
     args: &ExportArgs,
 ) -> Result<()> {
     ensure_optional_tables(conn);
-    let sel = selection_for(args)?;
+    let sel = selection_for(args, ctx, conn)?;
     let resolved = sel.resolve_in(conn, &SelectionCtx::default(), &ctx.library)?;
     let hashes: Vec<String> = match resolved.hashes {
         Some(h) => h.into_iter().collect(),

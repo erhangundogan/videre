@@ -73,8 +73,10 @@ The selection flags narrow the library exactly as [`videre search`](/commands/se
 does: `--path`, `--person`, `--date`/`--after`/`--before`,
 `--location`/`--radius`, `--type`, `--ext`, `--mime`, `--category`, `--has`,
 `--missing`, and the mark/tag filters `--rating`, `--pick`, `--label`,
-`--like`, `--tag`. See [scoping a run](/guides/scoping-a-run/). With no selection,
-every file with something to write gets a sidecar.
+`--like`, `--tag`, and `--query` for OR and NOT (a
+[query](/reference/query-syntax/), filters only). See
+[scoping a run](/guides/scoping-a-run/). With no selection, every file with
+something to write gets a sidecar.
 
 A run prints `N of M`, so a filter matching nothing is distinguishable from an
 empty library.

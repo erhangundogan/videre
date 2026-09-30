@@ -35,6 +35,8 @@ pub struct TagArgs {
     marks: super::selection_args::MarkArgs,
     #[command(flatten)]
     tags: super::selection_args::TagFilterArgs,
+    #[command(flatten)]
+    query: super::selection_args::QueryArg,
 
     /// No per-run output
     #[arg(long)]
@@ -42,6 +44,8 @@ pub struct TagArgs {
 }
 
 pub fn run(args: TagArgs, ctx: &CommandContext) -> Result<()> {
+    // A bad query fails before anything else is checked or changed.
+    args.query.compile()?;
     let add: Vec<String> = args
         .add
         .iter()
@@ -78,6 +82,13 @@ pub fn run(args: TagArgs, ctx: &CommandContext) -> Result<()> {
         Some(&args.paths),
         Some(&args.marks),
         Some(&args.tags),
+    )?;
+    let sel = super::selection_args::with_query(
+        sel,
+        &args.query,
+        &conn,
+        &SelectionCtx::default(),
+        &ctx.library,
     )?;
     let resolved = sel.resolve_in(&conn, &SelectionCtx::default(), &ctx.library)?;
     let hashes: Vec<String> = match resolved.hashes {

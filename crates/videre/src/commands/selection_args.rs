@@ -240,7 +240,82 @@ pub fn row_selection(
         label: marks.and_then(|m| m.label.clone()),
         liked: marks.is_some_and(|m| m.like),
         tags: tags.map(|t| t.tags.clone()).unwrap_or_default(),
+        // Resolving a query needs the database; see [`with_query`].
+        query: None,
     })
+}
+
+/// `--query`: the query language, as filters only. `search` takes the same
+/// language as its positional argument, where its words also rank.
+#[derive(clap::Args, Clone, Debug, Default)]
+pub struct QueryArg {
+    /// Only files matching this query, e.g. 'tag:deniz OR tag:plaj' or
+    /// '(person:özgür OR person:ayşe) date:2023 -tag:ekran'. Filters only:
+    /// words to search for need videre search.
+    /// See https://docs.videre.sh/reference/query-syntax/
+    // A query may start with `-` ('-tag:ekran'). Safe on a flag, unlike on a
+    // positional: only the value right after --query is taken this way.
+    #[arg(long, value_name = "QUERY", allow_hyphen_values = true)]
+    pub query: Option<String>,
+}
+
+impl QueryArg {
+    /// Compile the query, refusing words to search for: only `search` ranks.
+    /// Done before any database work, so a typo fails at once.
+    pub fn compile(&self) -> anyhow::Result<Option<videre::query_lang::Expr>> {
+        let Some(query) = self.query.as_deref() else {
+            return Ok(None);
+        };
+        let compiled = videre::query_lang::compile(query)
+            .map_err(|e| anyhow::anyhow!("invalid --query: {e}"))?;
+        if let Some(text) = compiled.text {
+            anyhow::bail!(
+                "--query takes filters only; {text:?} is text to search for, which needs \
+                 videre search. Use a key, such as tag:{}",
+                text.split_whitespace().next().unwrap_or_default()
+            );
+        }
+        compiled
+            .filter
+            .map(Some)
+            .ok_or_else(|| anyhow::anyhow!("--query is empty"))
+    }
+
+    /// For `embed` and `faces`, which offer no `--person` or `--category`:
+    /// both are derived from what those commands produce, so selecting their
+    /// input by either is circular. A query cannot bring them back.
+    pub fn refuse_derived(&self, command: &str) -> anyhow::Result<()> {
+        if let Some(expr) = self.compile()? {
+            if videre::query_lang::any_leaf(&expr, &|s| s.person.is_some() || s.category.is_some())
+            {
+                anyhow::bail!(
+                    "{command} cannot select by person: or category:: both come from \
+                     {command}'s own results"
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `selection` narrowed by `query`: the query is resolved against the library
+/// here and carried as a hash set, so every consumer of the selection (the
+/// work narrower, direct resolvers, the `N of M` line) honours it unchanged.
+pub fn with_query(
+    mut selection: RowSelection,
+    query: &QueryArg,
+    conn: &rusqlite::Connection,
+    ctx: &videre_core::selection::SelectionCtx,
+    library: &videre_core::library::LibraryContext,
+) -> anyhow::Result<RowSelection> {
+    if let Some(expr) = query.compile()? {
+        let hashes = videre::query_lang::resolve(&expr, conn, ctx, library)?;
+        selection.query = Some(videre_core::selection::QueryScope {
+            text: query.query.clone().unwrap_or_default(),
+            hashes,
+        });
+    }
+    Ok(selection)
 }
 
 /// `--rating`/`--pick`/`--label`/`--like` as *filters* (row-side only: marks are
