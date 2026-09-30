@@ -1,6 +1,7 @@
 mod bmff;
 pub mod content_key;
 pub mod hasher;
+pub mod heif_rotate;
 pub mod incremental;
 pub mod output;
 pub mod scanner;
