@@ -16,6 +16,47 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.49.1] - 2026-09-30
+
+### Added
+
+- **Shell tab completion.** Commands, flags and fixed values (`--type
+  image|video`, `--has`/`--missing gps|date`) complete in bash, zsh and fish.
+  videre installs and updates the script itself for bash and fish when it runs
+  under them, into the directory that shell already loads, and never
+  overwrites a file it did not write; `videre completion <bash|zsh|fish>`
+  prints it, and the install guide covers zsh. With the shell's dynamic mode
+  registered, `--person`, `--model`, `--ext` and `--mime` complete from the
+  library itself, including one named with `--library`.
+- **`videre watch` finishes every new file in one batch.** A file it picks up
+  is now also grouped with its people, placed on the map, embedded and
+  classified (the new default-on `--embed` stage) and, with XMP export on,
+  given its sidecar, within seconds instead of on the hourly pass. On a large
+  library, where the full regroup and place recompute take minutes, a batch
+  attaches only the new faces and photos and the maintenance pass rebalances.
+  Watch never downloads the model; until `videre embed` has, it says so once.
+- **Watch says what each file got.** After each batch, one line per file names
+  its stages and why any is missing, and the gallery nav shows "still
+  processing" while a watcher has work outstanding.
+- **Bulk imports.** From 1,000 waiting files, watch scans as files arrive and
+  runs everything else once over the whole import after 30 quiet seconds.
+  Both are settable: `videre config set watch-bulk-threshold` and
+  `watch-bulk-quiet-ms`.
+
+### Changed
+
+- **The People page's Recluster controls are an aligned form**, one parameter
+  per line, with an info icon on each explaining the value, which way to move
+  it and its default. A blank or out-of-range value is refused with a message
+  naming the field; before, a blank field was dropped and Preview silently
+  used the saved value.
+
+### Fixed
+
+- **The duplicates header read 0 for a Google Takeout library** whose groups
+  were all edit pairs. It now adds a "Google Photos edits" count and the size
+  `dedupe --edited` would free, in the gallery and in `dedupe --edited --html`.
+
 ## [0.49.0] - 2026-09-29
 
 ### Added
@@ -2650,7 +2691,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.49.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.49.1...HEAD
+[0.49.1]: https://github.com/erhangundogan/videre/compare/v0.49.0...v0.49.1
 [0.49.0]: https://github.com/erhangundogan/videre/compare/v0.48.1...v0.49.0
 [0.48.1]: https://github.com/erhangundogan/videre/compare/v0.48.0...v0.48.1
 [0.48.0]: https://github.com/erhangundogan/videre/compare/v0.47.1...v0.48.0
