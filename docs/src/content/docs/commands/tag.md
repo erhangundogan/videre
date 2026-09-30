@@ -31,7 +31,9 @@ The gallery tags and untags many photos at once: see
 The selection flags narrow the library the same way `search` does: `--person`,
 `--category`, `--date`/`--after`/`--before`, `--location`/`--radius`, `--type`,
 `--ext`, `--mime`, `--path`, `--has`, `--missing`, plus the mark and tag
-filters `--rating`, `--pick`, `--label`, `--like` and `--tag`. See
+filters `--rating`, `--pick`, `--label`, `--like` and `--tag`, and `--query`
+for OR and NOT (a [query](/reference/query-syntax/), filters only:
+`videre tag --query 'person:özgür OR person:ayşe' --add aile`). See
 [scoping a run](/guides/scoping-a-run/). A run prints `N of M`. With no
 selection, every file is tagged.
 
