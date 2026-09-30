@@ -334,6 +334,72 @@ fn range(key: &str, lower: &UserInputBound, upper: &UserInputBound) -> Result<Ex
     })
 }
 
+/// The hashes `expr` selects in `library`. Each leaf resolves through the
+/// selection layer, with its path guard and per-model categories, exactly as
+/// the flag it mirrors would; NOT subtracts from every hash in the library.
+pub fn resolve(
+    expr: &Expr,
+    conn: &rusqlite::Connection,
+    ctx: &videre_core::selection::SelectionCtx,
+    library: &videre_core::library::LibraryContext,
+) -> anyhow::Result<std::collections::HashSet<String>> {
+    let mut everything = None;
+    resolve_with(expr, conn, ctx, library, &mut everything)
+}
+
+fn resolve_with(
+    expr: &Expr,
+    conn: &rusqlite::Connection,
+    ctx: &videre_core::selection::SelectionCtx,
+    library: &videre_core::library::LibraryContext,
+    everything: &mut Option<std::collections::HashSet<String>>,
+) -> anyhow::Result<std::collections::HashSet<String>> {
+    Ok(match expr {
+        Expr::Leaf(sel) => sel
+            .resolve_in(conn, ctx, library)?
+            .hashes
+            .expect("a leaf always holds a predicate"),
+        Expr::And(parts) => {
+            let mut acc: Option<std::collections::HashSet<String>> = None;
+            for part in parts {
+                // An empty intersection stays empty: skip the rest.
+                if acc.as_ref().is_some_and(|a| a.is_empty()) {
+                    break;
+                }
+                let set = resolve_with(part, conn, ctx, library, everything)?;
+                acc = Some(match acc {
+                    Some(a) => a.intersection(&set).cloned().collect(),
+                    None => set,
+                });
+            }
+            acc.unwrap_or_default()
+        }
+        Expr::Or(parts) => {
+            let mut acc = std::collections::HashSet::new();
+            for part in parts {
+                acc.extend(resolve_with(part, conn, ctx, library, everything)?);
+            }
+            acc
+        }
+        Expr::Not(inner) => {
+            let excluded = resolve_with(inner, conn, ctx, library, everything)?;
+            if everything.is_none() {
+                let mut stmt = conn.prepare("SELECT DISTINCT hash FROM file_hashes")?;
+                let all = stmt
+                    .query_map([], |r| r.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<_>>()?;
+                *everything = Some(all);
+            }
+            everything
+                .as_ref()
+                .unwrap()
+                .difference(&excluded)
+                .cloned()
+                .collect()
+        }
+    })
+}
+
 /// A compact, stable rendering for tests and error messages:
 /// `and(person:"özgür", or(tag:deniz, tag:plaj), not(tag:ekran))`.
 pub fn render(expr: &Expr) -> String {
@@ -348,6 +414,95 @@ pub fn render(expr: &Expr) -> String {
         Expr::Or(parts) => join("or", parts),
         Expr::Not(inner) => format!("not({})", render(inner)),
         Expr::Leaf(sel) => sel.describe(),
+    }
+}
+
+#[cfg(test)]
+mod resolve_tests {
+    use super::*;
+    use videre_core::library::LibraryContext;
+    use videre_core::selection::SelectionCtx;
+
+    /// A library of four photos:
+    /// - `deniz.jpg`: tagged deniz, 5 stars, 2023, Özgür in it;
+    /// - `plaj.jpg`: tagged plaj, 2 stars, 2024, Ayşe in it;
+    /// - `klip.mov`: untagged, unrated, undated;
+    /// - `ekran.png`: tagged ekran, 2023.
+    fn library() -> (tempfile::TempDir, LibraryContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("kütüphane");
+        std::fs::create_dir(&root).unwrap();
+        let ctx = LibraryContext::new(&root, &temp.path().join("cache")).unwrap();
+        let conn = videre_core::library_db::initialize(&ctx).unwrap();
+        let root = ctx.paths.root.display().to_string();
+        conn.execute_batch(&format!(
+            "INSERT INTO file_hashes (path, hash, ext, mime, exif_date) VALUES
+               ('{root}/deniz.jpg', 'h_deniz', 'jpg', 'image/jpeg', '2023-07-01T10:00:00'),
+               ('{root}/plaj.jpg',  'h_plaj',  'jpg', 'image/jpeg', '2024-08-01T10:00:00'),
+               ('{root}/klip.mov',  'h_klip',  'mov', 'video/quicktime', NULL),
+               ('{root}/ekran.png', 'h_ekran', 'png', 'image/png', '2023-02-01T10:00:00');
+             INSERT INTO photo_tags VALUES
+               ('h_deniz', 'deniz'), ('h_plaj', 'plaj'), ('h_ekran', 'ekran');
+             INSERT INTO marks (hash, rating, liked, updated_at) VALUES
+               ('h_deniz', 5, 1, 'now'), ('h_plaj', 2, 0, 'now');
+             INSERT INTO people (name, full_name) VALUES ('ozgur', 'Özgür'), ('ayse', 'Ayşe');
+             INSERT INTO faces (hash, bbox, embedding, person_label, confirmed) VALUES
+               ('h_deniz', '0,0,9,9', X'00', 'ozgur', 1),
+               ('h_plaj',  '0,0,9,9', X'00', 'ayse', 1);"
+        ))
+        .unwrap();
+        (temp, ctx)
+    }
+
+    fn hashes(ctx: &LibraryContext, query: &str) -> Vec<String> {
+        let conn = videre_core::library_db::open_existing(ctx).unwrap();
+        let filter = compile(query).unwrap().filter.expect("a filter");
+        let mut got: Vec<String> = resolve(&filter, &conn, &SelectionCtx::default(), ctx)
+            .unwrap()
+            .into_iter()
+            .collect();
+        got.sort();
+        got
+    }
+
+    #[test]
+    fn and_or_and_not_are_set_operations() {
+        let (_t, ctx) = library();
+        assert_eq!(hashes(&ctx, "tag:deniz OR tag:plaj"), ["h_deniz", "h_plaj"]);
+        assert_eq!(hashes(&ctx, "tag:deniz is:liked"), ["h_deniz"]);
+        assert_eq!(hashes(&ctx, "tag:deniz tag:plaj"), Vec::<String>::new());
+        assert_eq!(hashes(&ctx, "type:image -tag:ekran"), ["h_deniz", "h_plaj"]);
+    }
+
+    #[test]
+    fn not_keeps_files_that_have_nothing_to_exclude() {
+        let (_t, ctx) = library();
+        // The untagged clip is not tagged ekran, so it stays.
+        assert_eq!(hashes(&ctx, "-tag:ekran"), ["h_deniz", "h_klip", "h_plaj"]);
+    }
+
+    #[test]
+    fn missing_data_excludes() {
+        let (_t, ctx) = library();
+        assert_eq!(hashes(&ctx, "date:2023"), ["h_deniz", "h_ekran"]);
+        assert_eq!(hashes(&ctx, "missing:date"), ["h_klip"]);
+    }
+
+    #[test]
+    fn people_or_gives_their_union_and_a_band_is_exact() {
+        let (_t, ctx) = library();
+        assert_eq!(
+            hashes(&ctx, "person:Özgür OR person:ayşe"),
+            ["h_deniz", "h_plaj"]
+        );
+        assert_eq!(hashes(&ctx, "rating:[2 TO 4]"), ["h_plaj"]);
+        assert_eq!(hashes(&ctx, "rating:>=3"), ["h_deniz"]);
+    }
+
+    #[test]
+    fn nothing_matching_is_an_empty_set() {
+        let (_t, ctx) = library();
+        assert!(hashes(&ctx, "tag:yok").is_empty());
     }
 }
 
