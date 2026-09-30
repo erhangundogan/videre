@@ -84,6 +84,11 @@ Note that the underlying scores cluster in a narrow band, so `--margin` is more
 sensitive than its scale suggests. Move it in small steps and check the result
 before committing to it across a library.
 
+Categories stay in videre's database. [`videre export --xmp`](/commands/export/)
+does not write them to sidecars, because they are recomputed whenever you
+classify again; to carry one to another app, [tag](/commands/tag/) the photos
+with it, for example `videre tag --add receipt --category document`.
+
 ## What each category catches
 
 | Category | Typically |

@@ -216,10 +216,11 @@ fn write_sidecars_for(
             })
             .unwrap_or_default();
 
-        // The zero-shot category and the user's tags both export as dc:subject
-        // keywords. Dedup so a tag equal to the category is not written twice.
-        let mut keywords: Vec<String> = g.category.clone().into_iter().collect();
-        keywords.extend(videre_core::tags::tags_for_hash(conn, hash)?);
+        // Only the user's tags are keywords. The classifier's category is not
+        // exported: scan reads every dc:subject keyword back as a tag, so a
+        // category written here became a permanent tag on the next rebuild,
+        // stale once the file was reclassified and back after every removal.
+        let mut keywords = videre_core::tags::tags_for_hash(conn, hash)?;
         keywords.sort();
         keywords.dedup();
 
