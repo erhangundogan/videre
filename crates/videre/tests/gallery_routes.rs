@@ -1958,3 +1958,123 @@ fn marks_are_set_and_cleared_over_http() {
     assert_eq!(status, 200, "{body}");
     assert_eq!(marks(&lib), (None, None, 1));
 }
+
+/// Two HEICs in a scanned library: `portre.heic`, laid out like an iPhone
+/// portrait (a grid sharing one `irot` with its thumbnail), and `irotsuz.heic`,
+/// written without any `irot`. Returns the library and both content keys.
+fn heic_library() -> (TestLibrary, String, String) {
+    let lib = TestLibrary::new();
+    let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+    std::fs::copy(
+        format!("{fixtures}/heic/grid_rot90.heic"),
+        lib.root.join("portre.heic"),
+    )
+    .unwrap();
+    let mut plain = std::fs::read(format!("{fixtures}/content_key/tiny.heic")).unwrap();
+    let at = plain.windows(4).position(|w| w == b"irot").unwrap();
+    plain[at..at + 4].copy_from_slice(b"frot");
+    std::fs::write(lib.root.join("irotsuz.heic"), plain).unwrap();
+    lib.scan();
+    let conn = lib.conn();
+    let hash_of = |name: &str| -> String {
+        conn.query_row(
+            "SELECT hash FROM file_hashes WHERE path LIKE '%' || ?1",
+            [name],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let (portrait, plain) = (hash_of("portre.heic"), hash_of("irotsuz.heic"));
+    drop(conn);
+    (lib, portrait, plain)
+}
+
+#[test]
+fn a_heic_rotates_by_irot_and_its_faces_turn_with_it() {
+    let (lib, portrait, plain) = heic_library();
+    // The grid displays 1536x2048; a face near its top-left corner.
+    lib.conn()
+        .execute(
+            "INSERT INTO faces (hash, bbox, embedding) VALUES (?1, '100,200,300,400', X'0000')",
+            [&portrait],
+        )
+        .unwrap();
+    let before = std::fs::read(lib.root.join("portre.heic")).unwrap();
+    let plain_before = std::fs::read(lib.root.join("irotsuz.heic")).unwrap();
+    let server = Server::start(&lib);
+
+    let (status, body) = server.send("POST", &format!("/api/files/{portrait}/rotate"), "");
+    assert_eq!(status, 200, "{body}");
+    // irot 270 turned clockwise is 180, which EXIF calls 3.
+    assert_eq!(body, r#"{"orientation":3}"#);
+    let after = std::fs::read(lib.root.join("portre.heic")).unwrap();
+    assert_eq!(after.len(), before.len());
+    assert_eq!(videre::heif_rotate::read(&after).unwrap().angle, 2);
+    // Clockwise on a 2048-high canvas: x' = 2048 - y - h, y' = x, sides swap.
+    let bbox: String = lib
+        .conn()
+        .query_row("SELECT bbox FROM faces WHERE hash = ?1", [&portrait], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(bbox, "1448,100,400,300");
+
+    let (status, _) = server.send("POST", &format!("/api/files/{plain}/rotate"), "");
+    assert_eq!(status, 415);
+    assert_eq!(
+        std::fs::read(lib.root.join("irotsuz.heic")).unwrap(),
+        plain_before
+    );
+
+    // A rescan finds the same photo: the content key survived the turn.
+    drop(server);
+    lib.scan();
+    let keys: i64 = lib
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM file_hashes WHERE hash = ?1",
+            [&portrait],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(keys, 1);
+}
+
+/// A rotated HEIC must never be served from a conversion cached before the
+/// turn: its content key is unchanged, so every `<hash>_` file would still
+/// match. The user never clears a cache by hand.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_rotated_heic_is_rendered_again_not_served_from_cache() {
+    let (lib, portrait, _) = heic_library();
+    let thumbs = lib.context().cache.thumbnails;
+    let server = Server::start(&lib);
+    let dims = |bytes: &[u8]| {
+        let img = image::load_from_memory(bytes).unwrap();
+        (img.width(), img.height())
+    };
+
+    let (status, _, first) = server.get_bytes(&format!("/api/files/{portrait}/raw?size=240"));
+    assert_eq!(status, 200);
+    let (w, h) = dims(&first);
+    assert!(h > w, "displays portrait before the turn: {w}x{h}");
+    // What `watch --heic` would have left, plus the other names the sweep owns.
+    std::fs::create_dir_all(&thumbs).unwrap();
+    for name in ["240.jpg", "original.jpg", "face-1.jpg"] {
+        std::fs::write(thumbs.join(format!("{portrait}_{name}")), &first).unwrap();
+    }
+
+    let (status, body) = server.send("POST", &format!("/api/files/{portrait}/rotate"), "");
+    assert_eq!(status, 200, "{body}");
+    let left: Vec<_> = std::fs::read_dir(&thumbs)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(&format!("{portrait}_")))
+        .collect();
+    assert!(left.is_empty(), "stale conversions left: {left:?}");
+
+    let (status, _, second) = server.get_bytes(&format!("/api/files/{portrait}/raw?size=240"));
+    assert_eq!(status, 200);
+    let (w, h) = dims(&second);
+    assert!(w > h, "re-rendered landscape after the turn: {w}x{h}");
+}

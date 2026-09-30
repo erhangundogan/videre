@@ -1,25 +1,56 @@
-//! Rotating a photo 90 degrees clockwise by editing its stored EXIF
-//! Orientation tag, rather than re-encoding pixels: the gallery lightbox's
-//! rotate button turns a sideways scan upright without a quality loss, and the
-//! change is reversible by rotating back.
+//! Rotating a photo 90 degrees by editing its stored orientation rather than
+//! re-encoding pixels: the gallery lightbox's rotate button turns a sideways
+//! scan upright without a quality loss, and the change is reversible by
+//! rotating back.
 //!
-//! Only formats that carry an EXIF Orientation tag are supported (JPEG and the
-//! PNG/TIFF/WebP family); videos and everything else are refused so the button
-//! is never offered where it cannot work. A photo that has no EXIF at all gets
-//! its first EXIF block on its first rotation.
+//! JPEG and the PNG/TIFF/WebP family turn by their EXIF Orientation tag; a
+//! photo that has no EXIF at all gets its first EXIF block on its first
+//! rotation. HEIC turns by its `irot` property (`videre::heif_rotate`), which
+//! is what QuickLook applies. Videos and everything else are refused so the
+//! button is never offered where it cannot work.
 
 use anyhow::Context;
 use little_exif::exif_tag::ExifTag;
 use little_exif::metadata::Metadata;
 use std::path::Path;
 
-/// The formats whose orientation this rotates. The gallery hides the button for
-/// anything else, and the endpoint refuses it, so the two stay in agreement.
-pub fn supports_exif_orientation(ext: &str) -> bool {
-    matches!(
-        ext.to_ascii_lowercase().as_str(),
-        "jpg" | "jpeg" | "png" | "tif" | "tiff" | "webp"
-    )
+/// The formats this rotates. The gallery hides the button for anything else,
+/// and the endpoint refuses it, so the two stay in agreement.
+pub fn supports_rotation(ext: &str) -> bool {
+    is_heif(ext)
+        || matches!(
+            ext.to_ascii_lowercase().as_str(),
+            "jpg" | "jpeg" | "png" | "tif" | "tiff" | "webp"
+        )
+}
+
+/// HEIC and HEIF, which rotate by `irot` rather than EXIF.
+pub fn is_heif(ext: &str) -> bool {
+    matches!(ext.to_ascii_lowercase().as_str(), "heic" | "heif")
+}
+
+/// Replace `path`'s bytes with `bytes` atomically: write a temporary file
+/// beside it, then rename over it, so a crash never leaves a half-written
+/// photo. The original's permissions carry over.
+pub fn replace_file(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let name = path
+        .file_name()
+        .with_context(|| format!("{} has no file name", path.display()))?;
+    let mut tmp_name = std::ffi::OsString::from(".");
+    tmp_name.push(name);
+    tmp_name.push(".videre-rotate");
+    let tmp = path.with_file_name(tmp_name);
+    let permissions = std::fs::metadata(path)
+        .with_context(|| format!("inspect {}", path.display()))?
+        .permissions();
+    let written = std::fs::write(&tmp, bytes)
+        .and_then(|()| std::fs::set_permissions(&tmp, permissions))
+        .and_then(|()| std::fs::rename(&tmp, path));
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e).with_context(|| format!("write {}", path.display()));
+    }
+    Ok(())
 }
 
 /// The EXIF Orientation value after one 90-degrees-clockwise turn of the
@@ -191,8 +222,8 @@ pub fn rotate_ccw_in_place(path: &Path, ext: &str) -> anyhow::Result<u16> {
 /// Advance the file's stored Orientation by `next` (the CW or CCW step) and
 /// write it back in place, returning the new value.
 fn rotate_in_place(path: &Path, ext: &str, next: fn(u16) -> u16) -> anyhow::Result<u16> {
-    if !supports_exif_orientation(ext) {
-        anyhow::bail!("rotation is not supported for .{ext} files");
+    if !supports_rotation(ext) || is_heif(ext) {
+        anyhow::bail!("EXIF rotation is not supported for .{ext} files");
     }
     let next = next(current_orientation(path));
     // PNG needs its own path: `little_exif` stores PNG EXIF in a text chunk that
@@ -358,13 +389,30 @@ mod tests {
     }
 
     #[test]
-    fn only_exif_bearing_formats_are_supported() {
-        for ext in ["jpg", "JPG", "jpeg", "png", "tif", "tiff", "webp"] {
-            assert!(supports_exif_orientation(ext), "{ext} should be supported");
+    fn exif_formats_and_heif_are_supported() {
+        for ext in [
+            "jpg", "JPG", "jpeg", "png", "tif", "tiff", "webp", "heic", "HEIC", "heif",
+        ] {
+            assert!(supports_rotation(ext), "{ext} should be supported");
         }
-        for ext in ["mp4", "mov", "heic", "dng", "gif", "bmp", ""] {
-            assert!(!supports_exif_orientation(ext), "{ext} should be refused");
+        for ext in ["mp4", "mov", "dng", "gif", "bmp", ""] {
+            assert!(!supports_rotation(ext), "{ext} should be refused");
         }
+    }
+
+    #[test]
+    fn replacing_a_file_keeps_its_permissions_and_leaves_no_temporary() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fotoğraf.heic");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        replace_file(&path, b"new").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o640);
+        let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(names.len(), 1, "no temporary left behind");
     }
 
     #[test]

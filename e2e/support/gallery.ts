@@ -355,6 +355,7 @@ export const test = base.extend<
     isolatedGallery: GallerySession;
     searchGallery: GallerySession;
     emptyGallery: GallerySession;
+    heicGallery: GallerySession;
   },
   { galleryServer: GallerySession; sortedGalleryServer: GallerySession; searchGalleryServer: GallerySession }
 >({
@@ -427,6 +428,15 @@ export const test = base.extend<
   },
   isolatedGallery: async ({}, use) => {
     const session = await startGallery();
+    try {
+      await use(session);
+    } finally {
+      await stopGallery(session);
+    }
+  },
+  // One HEIC laid out like an iPhone portrait, which rotates by its irot.
+  heicGallery: async ({}, use) => {
+    const session = await startGalleryWith([{ name: "portre.heic", fixture: "heic/grid_rot90.heic" }]);
     try {
       await use(session);
     } finally {

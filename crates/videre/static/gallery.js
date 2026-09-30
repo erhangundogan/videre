@@ -416,9 +416,9 @@ function syncLikedMeta(hash, liked){
 }
 var lbIndex=-1;      // index of the open item among the currently visible tiles
 var lbLoading=false; // guards the auto-paginate load so it fires once
-// The formats whose EXIF orientation the rotate button can edit; must match
-// videre gallery's rotate endpoint (supports_exif_orientation).
-var ROTATABLE_EXTS=['jpg','jpeg','png','tif','tiff','webp'];
+// The formats the rotate button can turn (EXIF Orientation, or a HEIC's irot);
+// must match videre gallery's rotate endpoint (supports_rotation).
+var ROTATABLE_EXTS=['jpg','jpeg','png','tif','tiff','webp','heic','heif'];
 var lbCurrent=null;
 function openLb(url,type,metaJson){
   var meta = null;
@@ -429,7 +429,7 @@ function openLb(url,type,metaJson){
   // Fullscreen is for photos: a playing video already has it in its own
   // controls, and two fullscreen buttons on one player is noise.
   document.getElementById('lb-fs').hidden = (type==='video');
-  // Rotate is offered only for EXIF-bearing images: the endpoint refuses the
+  // Rotate is offered only for images the endpoint can turn: it refuses the
   // rest, so the button never appears where it cannot work.
   var ext=(meta&&meta.ext?String(meta.ext):'').toLowerCase();
   var canRotate = type!=='video' && ROTATABLE_EXTS.indexOf(ext)>=0;

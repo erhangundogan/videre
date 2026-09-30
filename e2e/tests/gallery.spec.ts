@@ -261,6 +261,26 @@ test("rotate is offered for photos, rotates, and is hidden for video", async ({ 
   await expect(page.locator("#lb-rotate")).toBeHidden();
 });
 
+test("rotate is offered for a HEIC and turns it by its irot", async ({ page, heicGallery }) => {
+  await page.goto(heicGallery.baseURL);
+  await page.locator("#gallery [data-lb-type='image']").first().click();
+  await expect(page.locator("#lb")).toHaveClass(/on/);
+  await expect(page.locator("#lb-rotate")).toBeVisible();
+  await expect(page.locator("#lb-rotate-ccw")).toBeVisible();
+
+  const rotateResponse = page.waitForResponse(
+    (r) => /\/api\/files\/[^/]+\/rotate$/.test(new URL(r.url()).pathname) && r.request().method() === "POST"
+  );
+  const before = await page.locator("#lb-img").getAttribute("src");
+  await page.locator("#lb-rotate").click();
+  const response = await rotateResponse;
+  expect(response.status()).toBe(200);
+  // irot 270 turned clockwise is 180, which EXIF calls 3.
+  expect(await response.json()).toEqual({ orientation: 3 });
+  await expect(page.locator("#lb-img")).not.toHaveAttribute("src", before ?? "");
+  await expect(page.locator("#lb-rotate")).toBeEnabled();
+});
+
 test("a rotated photo reopens and zooms from fresh URLs, not the browser cache", async ({
   page,
   gallery
