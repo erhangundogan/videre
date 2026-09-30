@@ -443,6 +443,22 @@ Every subcommand opens through `videre_core::db::open_wal`. WAL persists in the
 file once set, so it is idempotent and safe on every open. This is what lets
 `videre watch` write while a `videre gallery` server reads.
 
+### Every operation leaves the library consistent on its own
+
+A gallery action, or any command, that changes a file or a row must itself
+invalidate everything derived from what it changed, before it returns. It never
+relies on `videre watch` running, on another command being run next, or on the
+user clearing a cache. The test: stop the process right after the operation,
+and every stored value is either still true or marked for redo, so the next
+`embed`, `faces`, `pipeline` or `watch` finishes the job and `videre status`
+reports it as outstanding.
+
+Before adding or changing an operation, list every value derived from what it
+touches: rows, per-model stores, `classifications`, face geometry, and every
+`<hash>_` file in the thumbnail cache. Keying by content hash is exactly what
+makes this easy to miss, because a metadata edit such as an EXIF rotation keeps
+the hash while changing what the pixels mean.
+
 ### Resumability uses "already processed", not "has a result"
 
 Two tables exist purely for this, and both record work that produced no rows:

@@ -190,6 +190,23 @@ pub fn list_models_in(ctx: &crate::library::LibraryContext) -> Result<Vec<String
     Ok(models)
 }
 
+/// Remove `hash` from every model database in the library, so the next
+/// `embed` treats it as new. For an edit that changes what the pixels show
+/// while keeping the content key, such as a rotation.
+pub fn forget_in(ctx: &crate::library::LibraryContext, hash: &str) -> Result<()> {
+    for model in list_models_in(ctx)? {
+        let path = db_path_in(ctx, &model)?;
+        // A standalone connection: the caller's may already hold another
+        // model attached as `emb`. Waits briefly on an `embed` writing.
+        let store = open_model_db(&path)?;
+        store.busy_timeout(std::time::Duration::from_secs(5))?;
+        store
+            .execute("DELETE FROM embeddings WHERE hash = ?1", [hash])
+            .with_context(|| format!("forget {hash} in {}", path.display()))?;
+    }
+    Ok(())
+}
+
 /// One model's embedding inventory, for `videre stats`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ModelEmbeddingCount {
@@ -359,6 +376,46 @@ mod tests {
             db_path_in(&a, "owner/model-a").unwrap(),
             db_path_in(&b, "owner/model-a").unwrap()
         );
+    }
+
+    #[test]
+    fn forgetting_a_hash_removes_it_from_every_model_and_nothing_else() {
+        let temp = tempfile::tempdir().unwrap();
+        let ctx = explicit_context(temp.path(), "kütüphane");
+        let conn = crate::library_db::initialize(&ctx).unwrap();
+        for model in ["owner/model-a", "owner/model-b"] {
+            attach_in(&conn, &ctx, model, true).unwrap();
+            conn.execute_batch(&format!(
+                "INSERT INTO emb.embeddings (hash, model_id, embedding, embedded_at)
+                 VALUES ('döndü', '{model}', zeroblob(8), 'now'),
+                        ('kaldı', '{model}', zeroblob(8), 'now');"
+            ))
+            .unwrap();
+            detach(&conn).unwrap();
+        }
+
+        forget_in(&ctx, "döndü").unwrap();
+
+        for model in ["owner/model-a", "owner/model-b"] {
+            let store = open_model_db(&db_path_in(&ctx, model).unwrap()).unwrap();
+            let left: Vec<String> = store
+                .prepare("SELECT hash FROM embeddings ORDER BY hash")
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            assert_eq!(left, vec!["kaldı"], "{model}");
+        }
+    }
+
+    #[test]
+    fn forgetting_in_a_library_with_no_embeddings_is_a_no_op() {
+        let temp = tempfile::tempdir().unwrap();
+        let ctx = explicit_context(temp.path(), "library");
+        drop(crate::library_db::initialize(&ctx).unwrap());
+        forget_in(&ctx, "any").unwrap();
+        assert!(!ctx.paths.embeddings.exists());
     }
 
     #[test]
