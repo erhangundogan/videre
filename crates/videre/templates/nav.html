@@ -37,13 +37,33 @@
 /* The search box always submits to `/`, where the Files page reads `?q=` and
    runs a semantic search; from any other section it just navigates there
    first. */
-.secnav-search{display:flex}
-/* 5px vertical padding (not 6px) so the input's 1px border does not make it
-   taller than the borderless section links; the strip is then the same height
-   whether the search box shows or is hidden. */
-.secnav-search input{width:200px;max-width:42vw;padding:5px 12px;border:1px solid #2a2a33;border-radius:6px;background:#25252d;color:#d8d8e0;font:500 14px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-.secnav-search input::placeholder{color:#71717a}
-.secnav-search input:focus-visible{outline:2px solid #3b82f6;outline-offset:1px}
+.secnav-search{display:flex;position:relative}
+/* The box holds the query's chips and, last, the input for words and the term
+   being typed. 2px vertical padding plus the input's 3px keep it the height of
+   the borderless section links, so the strip does not grow. */
+.qbox{display:flex;align-items:center;gap:4px;min-width:200px;max-width:42vw;overflow-x:auto;padding:2px 6px;border:1px solid #2a2a33;border-radius:6px;background:#25252d;scrollbar-width:none}
+.qbox:focus-within{outline:2px solid #3b82f6;outline-offset:1px}
+.qbox input{flex:1;min-width:80px;padding:3px 4px;border:0;background:transparent;color:#d8d8e0;font:500 14px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;outline:none}
+.qbox input::placeholder{color:#71717a}
+.qchip{display:inline-flex;align-items:center;gap:2px;flex:none;max-width:260px;padding:1px 2px 1px 4px;border-radius:4px;background:#33333d;color:#d8d8e0;font:500 12px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;white-space:nowrap}
+.qchip-neg{background:#4a2a2e}
+.qchip-text{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.qchip-body{overflow:hidden;text-overflow:ellipsis;cursor:text}
+.qchip-key{color:#9a9aa8}
+.qchip-key::after{content:":"}
+.qchip-join{margin:0 3px;color:#9a9aa8}
+.qchip button{padding:0 3px;border:0;border-radius:3px;background:transparent;color:#9a9aa8;font:inherit;cursor:pointer}
+.qchip button:hover{background:#44444f;color:#f4f4f5}
+.qchip-neg .qchip-not{color:#fca5a5}
+.qchip-neg-word{margin-right:4px;color:#fca5a5}
+.qbox-suggest{position:absolute;right:0;top:calc(100% + 4px);z-index:50;min-width:260px;max-width:420px;max-height:360px;overflow-y:auto;margin:0;padding:4px;list-style:none;background:#1f1f25;border:1px solid #2a2a33;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+.qbox-suggest[hidden]{display:none}
+.qbox-opt{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:5px;color:#d8d8e0;font:500 13px/1.3 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;cursor:pointer}
+.qbox-opt[aria-selected=true]{background:#2f3b52}
+.qbox-face{width:22px;height:22px;border-radius:50%;object-fit:cover;flex:none}
+.qbox-opt-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qbox-opt-value{color:#71717a;font-size:12px}
+.qbox-opt-count{color:#9a9aa8;font-size:12px;font-variant-numeric:tabular-nums}
 /* The "..." menu sits after the search box at the far right. Its item reuses
    the section-link rule above for padding, colour and hover. */
 .secnav-menu{position:relative;margin-left:8px}
@@ -76,7 +96,8 @@
 <ul class="secnav-processing-list" id="secnav-processing-list" hidden></ul>
 </div>
 <form class="secnav-search" action="/" method="get" role="search">
-<input type="search" name="q" id="nav-search" placeholder="Search or filter&hellip;" aria-label="Search or filter photos" autocomplete="off">
+<div class="qbox" id="qbox"><input type="search" name="q" id="nav-search" placeholder="Search or filter&hellip;" aria-label="Search or filter photos" autocomplete="off"></div>
+<ul class="qbox-suggest" id="qbox-suggest" role="listbox" aria-label="Suggestions" hidden></ul>
 </form>
 <div class="secnav-menu">
 <button type="button" id="secnav-more" class="secnav-more" aria-label="More" aria-haspopup="menu" aria-expanded="false" aria-controls="secnav-menu-list">&#8943;</button>
@@ -105,6 +126,7 @@ window.showEmptyState=function(title,body){
     if(el!==nav&&el!==box&&el.tagName!=='SCRIPT'&&el.tagName!=='STYLE')el.style.display='none';
   });
 };
+{% include "query-box.js" %}
 // The nav's "..." menu: page-independent actions, Settings first. Closes on
 // Escape (focus back to the button), an outside click, or choosing an item.
 (function(){

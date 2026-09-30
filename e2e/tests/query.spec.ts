@@ -17,8 +17,9 @@ test("a query in the nav box narrows the Library grid and says N of M", async ({
   await expect(page.locator("#query-status")).toContainText("1 of 3");
   await expect(gridNames(page)).toHaveCount(1);
   await expect(page.locator("#gallery [data-lb-type='video']")).toHaveCount(1);
-  // The box keeps what was asked, so it can be edited.
-  await expect(page.locator("#nav-search")).toHaveValue("type:video");
+  // The box keeps what was asked, as a chip that can be edited.
+  await expect(page.locator(".qbox .qchip")).toHaveCount(1);
+  await expect(page.locator(".qbox .qchip")).toContainText("video");
 });
 
 test("NOT and a reload keep the query", async ({ page, gallery }) => {
