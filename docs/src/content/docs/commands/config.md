@@ -64,6 +64,7 @@ log-max-age-days: 30 days
 | `io-workers` | Maximum concurrent helper I/O workers in this process |
 | `xmp` | Effective XMP precedence for ingest |
 | `export-xmp-on-watch` | Whether watch exports XMP each cycle |
+| `gallery-starts-watch` | Whether the gallery starts `videre watch` beside it |
 | `watch-debounce-ms` | How long watch lets file changes settle before processing |
 | `watch-bulk-threshold` | Files waiting at which watch switches to bulk mode |
 | `watch-bulk-quiet-ms` | How long a bulk import must go quiet before watch finishes it |
@@ -86,6 +87,7 @@ are responsible for initializing a library database.
 | `io-workers` | `max_io_workers` | A whole number from 1 through 256 |
 | `xmp` | `xmp_precedence` | `db`, `file`, or `newest` |
 | `export-xmp-on-watch` | `export_xmp_on_watch` | `true` or `false` |
+| `gallery-starts-watch` | `gallery_starts_watch` | `true` (default) or `false` |
 | `watch-debounce-ms` | `watch_debounce_ms` | A positive whole number of milliseconds |
 | `watch-bulk-threshold` | `watch_bulk_threshold` | A positive whole number of files (default 1000) |
 | `watch-bulk-quiet-ms` | `watch_bulk_quiet_ms` | A positive whole number of milliseconds (default 30000) |

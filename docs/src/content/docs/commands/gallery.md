@@ -18,6 +18,33 @@ videre gallery --port 8080      # use exactly this port
 
 Stop it with `Ctrl-C`.
 
+## It keeps the library current
+
+The gallery starts [`videre watch`](/commands/watch/) beside it, so files you
+add, change or remove while browsing are scanned and processed without a
+second terminal. [`videre status`](/commands/status/) shows what it is doing,
+and it logs to `.videre/logs/watch.log`. The watch stops when the gallery
+does, and if the gallery is killed without the chance to stop it, the watch
+notices within a second or two and stops itself.
+
+When a watch is already running for the library, one you started yourself for
+example, the gallery says so and uses it, and leaves it running when the
+gallery stops.
+
+The watch is a normal `videre watch`, so it does that command's work,
+including fetching the face model once if it has never been downloaded. On a
+library that was never processed, opening the gallery therefore starts the
+whole scan, faces and embed pipeline in the background. To browse without it:
+
+```bash
+videre config set gallery-starts-watch false
+```
+
+Nothing depends on the watch being there: every change you make on the page
+is complete when it returns, and anything a watch would redo is left for the
+next [`videre embed`](/commands/embed/), [`videre faces`](/commands/faces/)
+or `videre watch`.
+
 Without `--port`, `videre gallery` starts at 7878 and, if that is taken,
 advances to the next free port (7879, then 7880, ...), printing the address it
 actually bound. So a second `videre gallery` for another library just works,
