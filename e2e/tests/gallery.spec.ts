@@ -262,6 +262,10 @@ test("rotate is offered for photos, rotates, and is hidden for video", async ({ 
 });
 
 test("rotate is offered for a HEIC and turns it by its irot", async ({ page, heicGallery }) => {
+  // HEIC previews come from QuickLook. Elsewhere the tile shows "no preview"
+  // and has no lightbox to open; the rotation itself is covered on every
+  // platform by the Rust route tests.
+  test.skip(process.platform !== "darwin", "HEIC previews need QuickLook (macOS)");
   await page.goto(heicGallery.baseURL);
   await page.locator("#gallery [data-lb-type='image']").first().click();
   await expect(page.locator("#lb")).toHaveClass(/on/);
