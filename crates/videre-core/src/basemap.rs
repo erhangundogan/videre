@@ -79,7 +79,7 @@ fn ensure_downloaded_with_url(
     // makes exactly one process download at a time; the loser bails and its
     // client keeps polling the status the winner is advancing. The per-process
     // AtomicBool in the server is the cheap first gate; this is the correctness
-    // one. The lock lives on the inode and releases when this handle drops (or
+    // one. The lock lives on the inode and releases when `_held` drops (or
     // the process dies).
     let lock_path = parent.join("download.lock");
     let lock = std::fs::OpenOptions::new()
@@ -91,6 +91,7 @@ fn ensure_downloaded_with_url(
     if FileExt::try_lock_exclusive(&lock).is_err() {
         anyhow::bail!("another process is already downloading the basemap");
     }
+    let _held = crate::held_lock::HeldLock::new(lock);
     // A racing winner may have finished between the first check and the lock.
     if let BasemapStatus::Ready { bytes } = status(&path) {
         progress(bytes, bytes);
