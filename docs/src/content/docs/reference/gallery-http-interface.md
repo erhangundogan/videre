@@ -461,6 +461,13 @@ curl "http://127.0.0.1:7878/api/events"
 }
 ```
 
+`q=<query>` takes a [query](/reference/query-syntax/). Trips are still found
+over the whole library, so a query never splits or merges one: it keeps the
+trips with a matching member, `count` counts those members, and `sample` is
+one of them. None matching is `"empty_reason": "no_matching_events"`. The
+response then adds `matched` and `library_total`, as `GET /api/dates` does, and
+a query that cannot run answers `400`.
+
 ### `GET /api/events/{key}/files`
 
 Returns the files of one trip, by its exact members, in the same
@@ -468,7 +475,8 @@ Returns the files of one trip, by its exact members, in the same
 the first destination photo anchor's compact time, a hyphen, and its full
 content hash, so two trips starting in the same second stay distinct. An
 unknown or stale key (the library or
-the thresholds changed since it was read) returns `404`.
+the thresholds changed since it was read) returns `404`. With `q=<query>`, only
+the members that match.
 
 ```bash
 curl "http://127.0.0.1:7878/api/events/20200312T100000-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/files"
@@ -573,6 +581,10 @@ Returns the clusters produced by `videre locations`, largest first. The
 `continent` field is derived locally from each centroid and is used by the Map
 view's world overview. A library that has not run `videre locations` returns an
 empty array.
+
+With `q=<query>`, a [query](/reference/query-syntax/), only the clusters holding
+a matching file are returned, `photo_count` counts those files, and the order is
+by that count. A query that cannot run answers `400`.
 
 ```bash
 curl "http://127.0.0.1:7878/api/location-clusters"

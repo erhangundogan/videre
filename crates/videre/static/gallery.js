@@ -915,7 +915,7 @@ function eventCards(events){
     var label=e.title||range;
     var sub=escH(range)+' · '+e.count+' file'+(e.count===1?'':'s');
     return '<div class="date-card event-card" data-key="'+escA(e.key)+'">'+
-      '<a class="date-card-link" href="/events/'+escA(e.key)+'" aria-label="Open '+escA(label)+'"></a>'+
+      '<a class="date-card-link" href="'+escA(withQuery('/events/'+e.key))+'" aria-label="Open '+escA(label)+'"></a>'+
       buildPreview(e.sample)+
       '<div class="date-card-label">'+escH(label)+'</div>'+
       '<div class="date-card-count">'+sub+'</div></div>';
@@ -947,9 +947,15 @@ function buildEventsOverview(){
   if(narrowing)narrowing.innerHTML='';
   var grid=document.getElementById('dateGrid');
   if(!eventsResponse)grid.innerHTML='<p class="muted">Loading…</p>';
-  (eventsResponse?Promise.resolve(eventsResponse):fetch('/api/events').then(function(r){return r.json();}))
+  (eventsResponse?Promise.resolve(eventsResponse):fetch('/api/events'+(GQUERY?'?q='+encodeURIComponent(GQUERY):'')).then(queryJson))
     .then(function(d){
+      if(d.bad){ queryErrorStatus(d); grid.innerHTML=''; return; }
       eventsResponse=d;
+      if(GQUERY&&typeof d.library_total==='number')queryCountStatus(d.matched,d.library_total);
+      if(d.empty_reason==='no_matching_events'){
+        grid.innerHTML='<p class="muted">No trip has a matching file.</p>';
+        return;
+      }
       var evs=sortEvents(d.events||[]);
       var reasons={
         no_media:'No media has been scanned yet.',
@@ -968,14 +974,15 @@ function buildEventLeaf(ev){
   rerunDateView=function(){buildEventLeaf(ev);};
   var range=eventDateRange(ev.from,ev.to);
   document.getElementById('dateBreadcrumb').innerHTML=
-    '<a href="/events">All Events</a> &gt; '+escH(ev.title||range);
+    '<a href="'+escA(withQuery('/events'))+'">All Events</a> &gt; '+escH(ev.title||range);
   var narrowing=document.getElementById('dateNarrowing');
   if(narrowing)narrowing.innerHTML='';
   var grid=document.getElementById('dateGrid');
   grid.innerHTML='<p class="muted">Loading…</p>';
-  fetch('/api/events/'+encodeURIComponent(ev.key)+'/files')
-    .then(function(r){return r.json();})
+  fetch('/api/events/'+encodeURIComponent(ev.key)+'/files'+(GQUERY?'?q='+encodeURIComponent(GQUERY):''))
+    .then(queryJson)
     .then(function(d){
+      if(d.bad){ queryErrorStatus(d); grid.innerHTML=''; return; }
       showPeriodCount(d.total!=null?d.total:(d.files||[]).length);
       renderDateFiles(sortFiles(d.files||[]),'No files in this event.');
     })

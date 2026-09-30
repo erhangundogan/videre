@@ -134,11 +134,19 @@ page with it:
   and the character it failed at, instead of an unfiltered grid.
 
 The query stays in the address bar as `?q=...`, so a reload or a bookmark
-opens the same view. The **Date** page takes it too: its years, months and days
-count only the matching files, a period with none is left out, and its links
-keep the query. On Library and Date the box applies the query where you are,
-and the strip's links to those two pages carry it; from any other page it
-opens Library.
+opens the same view. Other pages take it too:
+
+- **Date**: years, months and days count only the matching files, a period
+  with none is left out, and its links keep the query.
+- **Map**: only the places holding a matching file, counted by those files;
+  the grid below lists the matching files.
+- **Events**: trips are still found over the whole library, so a query never
+  splits one; it shows the trips with a matching file, and a trip's page shows
+  only those files.
+
+On these pages the box applies the query where you are, and the strip's links
+to them carry it. Words rank only on the Library page, so a query with words,
+or one typed on any other page, opens Library.
 
 In the box, each filter is a **chip**, and words stay as text:
 
