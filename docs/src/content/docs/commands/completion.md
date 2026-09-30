@@ -22,4 +22,5 @@ zsh has no per-user completion directory on its load path, so its script is
 saved wherever your `fpath` looks and `rehash` picks it up. See
 [the install guide's completion section](/start/install/#shell-completion) for
 the full story, including dynamic value completion for `--person`, `--model`,
-`--ext` and `--mime`.
+`--ext` and `--mime`, and for the terms of a
+[query](/reference/query-syntax/#completion).

@@ -410,6 +410,303 @@ pub fn any_leaf(expr: &Expr, test: &dyn Fn(&RowSelection) -> bool) -> bool {
     }
 }
 
+/// What a suggestion completes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SuggestionKind {
+    Key,
+    Value,
+    Operator,
+}
+
+/// One suggestion: `insert` replaces the query from [`Suggestions::start`] to
+/// the cursor. `label` is what a person reads (a display name, for a person
+/// inserted by identity), `count` how many files have the value, and
+/// `face_id` a face to show beside a person.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Suggestion {
+    pub insert: String,
+    pub label: String,
+    pub kind: SuggestionKind,
+    pub count: Option<i64>,
+    pub face_id: Option<i64>,
+}
+
+/// The suggestions for the term at the cursor, and where that term starts,
+/// as a character offset, as [`QueryError::at`] is.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct Suggestions {
+    pub start: usize,
+    pub items: Vec<Suggestion>,
+}
+
+/// One value a key can take in this library.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Value {
+    /// What goes after `key:`, unquoted.
+    pub value: String,
+    pub label: String,
+    pub count: Option<i64>,
+    pub face_id: Option<i64>,
+}
+
+/// What can complete the term at `cursor` (a character offset) in `text`: a
+/// key while one is typed, the library's values after `key:`, and operators
+/// after a complete term. One function for the gallery and the shell
+/// completer, so both offer the same things. Anything the library cannot
+/// answer (a missing table, an unknown key) suggests nothing rather than
+/// failing: a suggestion is a convenience, never an error.
+pub fn suggest(
+    conn: &rusqlite::Connection,
+    text: &str,
+    cursor: usize,
+    limit: usize,
+) -> Suggestions {
+    let before: Vec<char> = text.chars().take(cursor).collect();
+    let Some(mut start) = term_start(&before) else {
+        // Inside a quoted phrase: that is text, not a term to complete.
+        return Suggestions::default();
+    };
+    let negated = before.get(start) == Some(&'-');
+    if negated {
+        start += 1;
+    }
+    let term: String = before[start..].iter().collect();
+    let mut items = Vec::new();
+    if let Some((key, typed)) = term.split_once(':') {
+        let typed = typed.strip_prefix('"').unwrap_or(typed);
+        for v in values(conn, key, typed) {
+            let insert = format!("{key}:{}", quoted(&v.value));
+            items.push(Suggestion {
+                insert,
+                label: v.label,
+                kind: SuggestionKind::Value,
+                count: v.count,
+                face_id: v.face_id,
+            });
+        }
+    } else {
+        let follows_a_term = !negated
+            && before[..start]
+                .iter()
+                .rev()
+                .find(|c| !c.is_whitespace())
+                .is_some_and(|c| *c != '(');
+        if follows_a_term {
+            for op in ["OR", "-", "("] {
+                if op.starts_with(term.as_str()) {
+                    items.push(operator(op));
+                }
+            }
+        }
+        let typed = term.to_lowercase();
+        for key in KEYS {
+            if key.starts_with(typed.as_str()) {
+                items.push(Suggestion {
+                    insert: format!("{key}:"),
+                    label: format!("{key}:"),
+                    kind: SuggestionKind::Key,
+                    count: None,
+                    face_id: None,
+                });
+            }
+        }
+    }
+    items.truncate(limit);
+    Suggestions { start, items }
+}
+
+fn operator(op: &str) -> Suggestion {
+    Suggestion {
+        insert: op.to_string(),
+        label: op.to_string(),
+        kind: SuggestionKind::Operator,
+        count: None,
+        face_id: None,
+    }
+}
+
+/// Where the term ending at the cursor begins: after the last whitespace or
+/// `(` outside double quotes. `None` inside a quoted phrase, where the quote
+/// did not follow a `key:`.
+fn term_start(before: &[char]) -> Option<usize> {
+    let (mut start, mut quote_at) = (0, None);
+    for (i, c) in before.iter().enumerate() {
+        match (quote_at, c) {
+            (None, '"') => quote_at = Some(i),
+            (Some(_), '"') => quote_at = None,
+            (None, c) if c.is_whitespace() || *c == '(' => start = i + 1,
+            _ => {}
+        }
+    }
+    match quote_at {
+        // An open quote is fine as a value's (`place:"Kad`), not as text.
+        Some(q) if q == 0 || before[q - 1] != ':' => None,
+        _ => Some(start),
+    }
+}
+
+/// `value` as a query term's value: quoted when it has a space or anything
+/// the grammar reads as syntax.
+fn quoted(value: &str) -> String {
+    let plain = !value.is_empty()
+        && !value.starts_with('-')
+        && !["OR", "AND", "NOT", "TO"].contains(&value)
+        && !value
+            .chars()
+            .any(|c| c.is_whitespace() || "():\"'[]{}^~*\\".contains(c));
+    if plain {
+        value.to_string()
+    } else {
+        format!("\"{value}\"")
+    }
+}
+
+/// The values `key` can take in this library that match `typed`, most used
+/// first. Matching folds case and accents, and a value matches when any of
+/// its words starts with what was typed, so "gündo" finds "Erhan Gündoğan".
+/// A person is offered by identity, with the display name as the label.
+pub fn values(conn: &rusqlite::Connection, key: &str, typed: &str) -> Vec<Value> {
+    let fixed = |vals: &[&str]| -> Vec<Value> {
+        vals.iter()
+            .map(|v| Value {
+                value: v.to_string(),
+                label: v.to_string(),
+                count: None,
+                face_id: None,
+            })
+            .collect()
+    };
+    let sql = |q: &str| -> Vec<Value> { counted(conn, q).unwrap_or_default() };
+    let mut all = match key {
+        "person" => {
+            if !table_exists(conn, "faces") {
+                return Vec::new();
+            }
+            let people = table_exists(conn, "people");
+            // Every named person, even one in no file yet, as `--person`
+            // always offered; and any label that has no people row.
+            let q = if people {
+                "SELECT p.name, p.full_name,
+                        (SELECT COUNT(DISTINCT hash) FROM faces
+                         WHERE person_label = p.name AND confirmed = 1),
+                        (SELECT MIN(id) FROM faces
+                         WHERE person_label = p.name AND confirmed = 1)
+                 FROM people p
+                 UNION ALL
+                 SELECT person_label, person_label, COUNT(DISTINCT hash), MIN(id)
+                 FROM faces
+                 WHERE confirmed = 1 AND person_label IS NOT NULL
+                   AND person_label NOT IN (SELECT name FROM people)
+                 GROUP BY person_label"
+            } else {
+                "SELECT person_label, person_label, COUNT(DISTINCT hash), MIN(id)
+                 FROM faces WHERE confirmed = 1 AND person_label IS NOT NULL
+                 GROUP BY person_label"
+            };
+            sql(q)
+        }
+        "tag" if table_exists(conn, "photo_tags") => {
+            sql("SELECT tag, tag, COUNT(*), NULL FROM photo_tags GROUP BY tag")
+        }
+        "category" if table_exists(conn, "classifications") => {
+            sql("SELECT category, category, COUNT(DISTINCT hash), NULL
+             FROM classifications GROUP BY category")
+        }
+        "label" if table_exists(conn, "marks") => {
+            sql("SELECT label, label, COUNT(*), NULL FROM marks
+             WHERE label IS NOT NULL AND label != '' GROUP BY label")
+        }
+        "place" => place_values(conn),
+        "ext" => sql("SELECT ext, ext, COUNT(*), NULL FROM file_hashes
+             WHERE ext IS NOT NULL AND ext != '' GROUP BY ext"),
+        "mime" => sql("SELECT mime, mime, COUNT(*), NULL FROM file_hashes
+             WHERE mime IS NOT NULL AND mime != '' GROUP BY mime"),
+        "is" => fixed(&["liked"]),
+        "type" => fixed(&["image", "video"]),
+        "has" | "missing" => fixed(&["gps", "date"]),
+        "pick" => fixed(&["keep", "reject"]),
+        "rating" => fixed(&["1", "2", "3", "4", "5"]),
+        _ => Vec::new(),
+    };
+    // Counted values, most used first; fixed ones keep their order.
+    if all.iter().any(|v| v.count.is_some()) {
+        all.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.value.cmp(&b.value)));
+    }
+    all.retain(|v| !v.value.contains('"') && matches_typed(v, typed));
+    all
+}
+
+fn table_exists(conn: &rusqlite::Connection, name: &str) -> bool {
+    videre_core::db::table_exists(conn, name).unwrap_or(false)
+}
+
+/// Rows of (value, label, count, face id).
+fn counted(conn: &rusqlite::Connection, sql: &str) -> rusqlite::Result<Vec<Value>> {
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map([], |r| {
+        Ok(Value {
+            value: r.get(0)?,
+            label: r.get(1)?,
+            count: r.get(2)?,
+            face_id: r.get(3)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// Place names from geocoding and from location clusters, as `place:`
+/// matches them (`query::by_place_name`).
+fn place_values(conn: &rusqlite::Connection) -> Vec<Value> {
+    let mut by_name: std::collections::BTreeMap<String, i64> = Default::default();
+    let named = counted(
+        conn,
+        "SELECT location_name, location_name, COUNT(*), NULL FROM file_hashes
+         WHERE location_name IS NOT NULL AND location_name != '' GROUP BY location_name",
+    )
+    .unwrap_or_default();
+    let clustered = if table_exists(conn, "location_clusters") {
+        counted(
+            conn,
+            "SELECT c.name, c.name, COUNT(f.hash), NULL FROM location_clusters c
+             JOIN file_hashes f ON f.location_cluster_id = c.id
+             WHERE c.name IS NOT NULL AND c.name != '' GROUP BY c.name",
+        )
+        .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    // The same name from both sources is one place; its larger count is the
+    // better guess, since the two overlap rather than add up.
+    for v in named.into_iter().chain(clustered) {
+        let n = by_name.entry(v.value).or_default();
+        *n = (*n).max(v.count.unwrap_or(0));
+    }
+    by_name
+        .into_iter()
+        .map(|(name, n)| Value {
+            label: name.clone(),
+            value: name,
+            count: Some(n),
+            face_id: None,
+        })
+        .collect()
+}
+
+fn matches_typed(v: &Value, typed: &str) -> bool {
+    let Some(want) = videre_core::person::normalize(typed) else {
+        return typed.trim().is_empty();
+    };
+    [v.value.as_str(), v.label.as_str()].iter().any(|s| {
+        videre_core::person::normalize(s).is_some_and(|folded| {
+            folded.starts_with(&want)
+                || folded
+                    .match_indices('_')
+                    .any(|(i, _)| folded[i + 1..].starts_with(&want))
+        })
+    })
+}
+
 /// A compact, stable rendering for tests and error messages:
 /// `and(person:"özgür", or(tag:deniz, tag:plaj), not(tag:ekran))`.
 pub fn render(expr: &Expr) -> String {
@@ -428,17 +725,18 @@ pub fn render(expr: &Expr) -> String {
 }
 
 #[cfg(test)]
-mod resolve_tests {
-    use super::*;
+mod test_library {
     use videre_core::library::LibraryContext;
-    use videre_core::selection::SelectionCtx;
 
     /// A library of four photos:
     /// - `deniz.jpg`: tagged deniz, 5 stars, 2023, Özgür in it;
     /// - `plaj.jpg`: tagged plaj, 2 stars, 2024, Ayşe in it;
     /// - `klip.mov`: untagged, unrated, undated;
     /// - `ekran.png`: tagged ekran, 2023.
-    fn library() -> (tempfile::TempDir, LibraryContext) {
+    ///
+    /// For suggestions: `plaj.jpg` is in "Kadıköy, İstanbul", `deniz.jpg` has
+    /// the label red, and `ekran.png` is classified as a screenshot.
+    pub(super) fn library() -> (tempfile::TempDir, LibraryContext) {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("kütüphane");
         std::fs::create_dir(&root).unwrap();
@@ -455,14 +753,166 @@ mod resolve_tests {
                ('h_deniz', 'deniz'), ('h_plaj', 'plaj'), ('h_ekran', 'ekran');
              INSERT INTO marks (hash, rating, liked, updated_at) VALUES
                ('h_deniz', 5, 1, 'now'), ('h_plaj', 2, 0, 'now');
-             INSERT INTO people (name, full_name) VALUES ('ozgur', 'Özgür'), ('ayse', 'Ayşe');
+             UPDATE marks SET label = 'red' WHERE hash = 'h_deniz';
+             UPDATE file_hashes SET location_name = 'Kadıköy, İstanbul' WHERE hash = 'h_plaj';
+             INSERT INTO classifications (model_id, hash, category, confidence, classified_at)
+               VALUES ('m', 'h_ekran', 'screenshot', 0.9, 'now');
+             INSERT INTO people (name, full_name) VALUES
+               ('ozgur', 'Özgür'), ('ayse', 'Ayşe'), ('erhan_gundogan', 'Erhan Gündoğan'),
+               ('zeynep', 'Zeynep');
              INSERT INTO faces (hash, bbox, embedding, person_label, confirmed) VALUES
                ('h_deniz', '0,0,9,9', X'00', 'ozgur', 1),
-               ('h_plaj',  '0,0,9,9', X'00', 'ayse', 1);"
+               ('h_plaj',  '0,0,9,9', X'00', 'ayse', 1),
+               ('h_plaj',  '1,1,9,9', X'00', 'erhan_gundogan', 1),
+               ('h_ekran', '1,1,9,9', X'00', 'erhan_gundogan', 1);"
         ))
         .unwrap();
         (temp, ctx)
     }
+}
+
+#[cfg(test)]
+mod suggest_tests {
+    use super::test_library::library;
+    use super::*;
+
+    /// What `text` suggests with the cursor at its end: the term's start and
+    /// each suggestion's insert text.
+    fn at_end(text: &str) -> (usize, Vec<String>) {
+        let (_t, ctx) = library();
+        let conn = videre_core::library_db::open_existing(&ctx).unwrap();
+        let s = suggest(&conn, text, text.chars().count(), 50);
+        (s.start, s.items.into_iter().map(|i| i.insert).collect())
+    }
+
+    fn inserts(text: &str) -> Vec<String> {
+        at_end(text).1
+    }
+
+    #[test]
+    fn a_key_being_typed_offers_keys() {
+        assert_eq!(inserts("pe"), ["person:"]);
+        assert_eq!(inserts("ta"), ["tag:"]);
+        assert_eq!(at_end("deniz pl"), (6, vec!["place:".to_string()]));
+        assert_eq!(
+            inserts("").len(),
+            KEYS.len(),
+            "an empty query offers every key"
+        );
+    }
+
+    #[test]
+    fn a_key_offers_the_library_s_values_most_used_first() {
+        assert_eq!(inserts("tag:"), ["tag:deniz", "tag:ekran", "tag:plaj"]);
+        assert_eq!(inserts("tag:de"), ["tag:deniz"]);
+        assert_eq!(inserts("label:"), ["label:red"]);
+        assert_eq!(inserts("category:"), ["category:screenshot"]);
+        assert_eq!(inserts("ext:"), ["ext:jpg", "ext:mov", "ext:png"]);
+        assert!(inserts("tag:yok").is_empty());
+        assert!(inserts("unknown:").is_empty());
+    }
+
+    #[test]
+    fn people_are_matched_folded_on_any_word_and_inserted_by_identity() {
+        // Erhan is in two files, so first.
+        assert_eq!(
+            inserts("person:"),
+            [
+                "person:erhan_gundogan",
+                "person:ayse",
+                "person:ozgur",
+                "person:zeynep"
+            ]
+        );
+        // Named, but in no file yet: still offered, last, with no files.
+        let (_t, ctx) = library();
+        let conn = videre_core::library_db::open_existing(&ctx).unwrap();
+        let zeynep = &values(&conn, "person", "zey")[0];
+        assert_eq!((zeynep.value.as_str(), zeynep.count), ("zeynep", Some(0)));
+        assert_eq!(inserts("person:Öz"), ["person:ozgur"]);
+        assert_eq!(inserts("person:oz"), ["person:ozgur"]);
+        assert_eq!(inserts("person:gündo"), ["person:erhan_gundogan"]);
+        assert_eq!(inserts("person:\"Erh"), ["person:erhan_gundogan"]);
+
+        let (_t, ctx) = library();
+        let conn = videre_core::library_db::open_existing(&ctx).unwrap();
+        let s = suggest(&conn, "person:erh", 10, 50);
+        let erhan = &s.items[0];
+        assert_eq!(erhan.label, "Erhan Gündoğan");
+        assert_eq!(erhan.count, Some(2));
+        assert!(erhan.face_id.is_some(), "a face to show beside the name");
+    }
+
+    #[test]
+    fn a_value_with_spaces_is_inserted_quoted() {
+        assert_eq!(inserts("place:"), ["place:\"Kadıköy, İstanbul\""]);
+        assert_eq!(inserts("place:kadi"), ["place:\"Kadıköy, İstanbul\""]);
+        assert_eq!(inserts("place:\"Kad"), ["place:\"Kadıköy, İstanbul\""]);
+        assert_eq!(inserts("place:ist"), ["place:\"Kadıköy, İstanbul\""]);
+    }
+
+    #[test]
+    fn fixed_values_are_offered_for_their_keys() {
+        assert_eq!(inserts("is:"), ["is:liked"]);
+        assert_eq!(inserts("type:v"), ["type:video"]);
+        assert_eq!(inserts("has:"), ["has:gps", "has:date"]);
+        assert_eq!(inserts("pick:"), ["pick:keep", "pick:reject"]);
+        assert_eq!(inserts("rating:4").len(), 1);
+    }
+
+    #[test]
+    fn a_negated_term_keeps_its_minus() {
+        assert_eq!(at_end("-tag:ek"), (1, vec!["tag:ekran".to_string()]));
+        assert_eq!(at_end("deniz (tag:pl"), (7, vec!["tag:plaj".to_string()]));
+    }
+
+    #[test]
+    fn a_complete_term_is_followed_by_operators_and_keys() {
+        let got = inserts("tag:deniz ");
+        assert_eq!(&got[..3], ["OR", "-", "("]);
+        assert!(got.contains(&"person:".to_string()));
+        assert_eq!(inserts("tag:deniz O"), ["OR"]);
+        // A minus waits for a term; an operator cannot follow it.
+        let negated = inserts("tag:deniz -");
+        assert!(!negated.contains(&"OR".to_string()), "{negated:?}");
+        assert_eq!(negated.len(), KEYS.len());
+    }
+
+    #[test]
+    fn inside_a_quoted_phrase_there_is_nothing_to_suggest() {
+        assert!(inserts("\"gün bat").is_empty());
+        assert!(inserts("tag:deniz \"ak").is_empty());
+    }
+
+    #[test]
+    fn the_cursor_not_the_end_decides_the_term() {
+        let (_t, ctx) = library();
+        let conn = videre_core::library_db::open_existing(&ctx).unwrap();
+        // Cursor after "tag:de", before " person:oz".
+        let s = suggest(&conn, "tag:de person:oz", 6, 50);
+        assert_eq!(s.start, 0);
+        let got: Vec<String> = s.items.into_iter().map(|i| i.insert).collect();
+        assert_eq!(got, ["tag:deniz"]);
+    }
+
+    #[test]
+    fn values_are_what_the_flag_completers_offer_too() {
+        let (_t, ctx) = library();
+        let conn = videre_core::library_db::open_existing(&ctx).unwrap();
+        let people: Vec<String> = values(&conn, "person", "ay")
+            .into_iter()
+            .map(|v| v.value)
+            .collect();
+        assert_eq!(people, ["ayse"]);
+    }
+}
+
+#[cfg(test)]
+mod resolve_tests {
+    use super::test_library::library;
+    use super::*;
+    use videre_core::library::LibraryContext;
+    use videre_core::selection::SelectionCtx;
 
     fn hashes(ctx: &LibraryContext, query: &str) -> Vec<String> {
         let conn = videre_core::library_db::open_existing(ctx).unwrap();

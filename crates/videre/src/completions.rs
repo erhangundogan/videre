@@ -420,29 +420,28 @@ fn prefix_filtered(
         .collect()
 }
 
-/// People for `--person`: the identity and, when set, the display name.
+/// People for `--person`: the identity, space-free, because bash inserts a
+/// completion without quoting and a display name with a space would split
+/// the line. The display name rides along as the candidate's help text.
 pub fn person_candidates(current: &OsStr) -> Vec<CompletionCandidate> {
+    key_values(current, "person")
+}
+
+/// A key's values from the library, as `videre::query_lang::values` gives
+/// them to the query and the gallery, for a flag with the same meaning.
+fn key_values(current: &OsStr, key: &str) -> Vec<CompletionCandidate> {
     let Some(ctx) = completion_ctx() else {
         return Vec::new();
     };
     let Ok(conn) = videre_core::library_db::open_existing_read_only(&ctx) else {
         return Vec::new();
     };
-    let Ok(mut stmt) = conn.prepare("SELECT name, full_name FROM people") else {
-        return Vec::new();
-    };
-    let Ok(rows) = stmt.query_map([], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
-    }) else {
-        return Vec::new();
-    };
-    // The value is the space-free identity key: bash inserts a completion
-    // without quoting, so a display name with a space would split the line.
-    // The display name rides along as the candidate's help text.
-    let values = rows.flatten().map(|(name, full)| {
-        let help = full.filter(|f| *f != name);
-        (name, help)
-    });
+    let values = videre::query_lang::values(&conn, key, "")
+        .into_iter()
+        .map(|v| {
+            let help = (v.label != v.value).then_some(v.label);
+            (v.value, help)
+        });
     prefix_filtered(current, values)
 }
 
@@ -464,30 +463,144 @@ pub fn model_candidates(current: &OsStr) -> Vec<CompletionCandidate> {
     prefix_filtered(current, models.into_iter())
 }
 
-fn distinct_column_candidates(column: &'static str) -> impl Fn(&OsStr) -> Vec<CompletionCandidate> {
-    move |current| {
-        let Some(ctx) = completion_ctx() else {
-            return Vec::new();
-        };
-        let Ok(conn) = videre_core::library_db::open_existing_read_only(&ctx) else {
-            return Vec::new();
-        };
-        let Ok(mut stmt) = conn.prepare(&format!(
-            "SELECT DISTINCT {column} FROM file_hashes WHERE {column} IS NOT NULL ORDER BY {column}"
-        )) else {
-            return Vec::new();
-        };
-        let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, None::<String>))) else {
-            return Vec::new();
-        };
-        prefix_filtered(current, rows.flatten())
-    }
-}
-
 pub fn ext_candidates(current: &OsStr) -> Vec<CompletionCandidate> {
-    distinct_column_candidates("ext")(current)
+    key_values(current, "ext")
 }
 
 pub fn mime_candidates(current: &OsStr) -> Vec<CompletionCandidate> {
-    distinct_column_candidates("mime")(current)
+    key_values(current, "mime")
+}
+
+/// The query's last term, for `search`'s query and `--query`: keys, the
+/// library's values, operators, from `videre::query_lang::suggest`, the
+/// function the gallery's box uses.
+pub fn query_candidates(current: &OsStr) -> Vec<CompletionCandidate> {
+    let Some(ctx) = completion_ctx() else {
+        return Vec::new();
+    };
+    let Ok(conn) = videre_core::library_db::open_existing_read_only(&ctx) else {
+        return Vec::new();
+    };
+    query_candidates_in(&conn, &current.to_string_lossy())
+        .into_iter()
+        .map(|(value, help)| CompletionCandidate::new(value).help(help.map(Into::into)))
+        .collect()
+}
+
+/// Each candidate is the whole query up to the cursor, as the shell replaces
+/// the whole word. Measured in bash 5.2, zsh 5.9 and fish 3.7, Tab inside an
+/// open single quote:
+///
+/// - bash passes the word without its open quote, zsh and fish with it, so
+///   one leading quote is dropped; every shell then closes the quote itself;
+/// - zsh and fish escape or drop a candidate that does not extend the typed
+///   text literally, so only those that do are offered: `place:Ka` gets no
+///   `place:"Kadıköy, İstanbul"`, while `place:` and `place:"Ka` do;
+/// - a lone candidate is completed and its quote closed, so a single key
+///   (`tag:`) is replaced by its values, keeping the quote open for them.
+fn query_candidates_in(
+    conn: &rusqlite::Connection,
+    current: &str,
+) -> Vec<(String, Option<String>)> {
+    let typed = current.strip_prefix(['\'', '"']).unwrap_or(current);
+    let suggest = |text: &str| {
+        let s = videre::query_lang::suggest(conn, text, text.chars().count(), 200);
+        let head: String = text.chars().take(s.start).collect();
+        (head, s.items)
+    };
+    let (mut head, mut items) = suggest(typed);
+    if let [only] = items.as_slice() {
+        if only.kind == videre::query_lang::SuggestionKind::Key {
+            let keyed = format!("{head}{}", only.insert);
+            let (h, values) = suggest(&keyed);
+            if !values.is_empty() {
+                (head, items) = (h, values);
+            }
+        }
+    }
+    items
+        .into_iter()
+        .map(|i| {
+            let value = i
+                .insert
+                .split_once(':')
+                .map_or("", |(_, v)| v.trim_matches('"'));
+            let help = match (i.count, i.label != value) {
+                (Some(n), true) => Some(format!("{} ({n})", i.label)),
+                (Some(n), false) => Some(n.to_string()),
+                (None, _) => None,
+            };
+            (format!("{head}{}", i.insert), help)
+        })
+        .filter(|(candidate, _)| candidate.starts_with(typed))
+        .collect()
+}
+
+#[cfg(test)]
+mod query_completion_tests {
+    use super::*;
+
+    /// A library with two tags, one person and one place with a space in it.
+    fn conn() -> (tempfile::TempDir, rusqlite::Connection) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("arşiv");
+        std::fs::create_dir(&root).unwrap();
+        let ctx = videre_core::library::LibraryContext::new(&root, &temp.path().join("c")).unwrap();
+        let conn = videre_core::library_db::initialize(&ctx).unwrap();
+        let root = ctx.paths.root.display().to_string();
+        conn.execute_batch(&format!(
+            "INSERT INTO file_hashes (path, hash, ext, mime, location_name) VALUES
+               ('{root}/a.jpg', 'h_a', 'jpg', 'image/jpeg', 'Kadıköy, İstanbul'),
+               ('{root}/b.jpg', 'h_b', 'jpg', 'image/jpeg', NULL);
+             INSERT INTO photo_tags VALUES ('h_a', 'deniz'), ('h_b', 'dağ');
+             INSERT INTO people (name, full_name) VALUES ('erhan_gundogan', 'Erhan Gündoğan');
+             INSERT INTO faces (hash, bbox, embedding, person_label, confirmed) VALUES
+               ('h_a', '0,0,9,9', X'00', 'erhan_gundogan', 1);"
+        ))
+        .unwrap();
+        (temp, conn)
+    }
+
+    fn got(current: &str) -> Vec<String> {
+        let (_t, conn) = conn();
+        query_candidates_in(&conn, current)
+            .into_iter()
+            .map(|(value, _)| value)
+            .collect()
+    }
+
+    #[test]
+    fn the_open_quote_zsh_and_fish_pass_is_not_part_of_the_query() {
+        // bash hands over the word without its open quote, zsh and fish with.
+        for typed in ["tag:de", "'tag:de", "\"tag:de"] {
+            assert_eq!(got(typed), ["tag:deniz"], "{typed}");
+        }
+        assert_eq!(got("'gün tag:den"), ["gün tag:deniz"]);
+    }
+
+    #[test]
+    fn a_candidate_is_the_query_up_to_the_cursor_and_extends_what_was_typed() {
+        assert_eq!(got("'person:erh"), ["person:erhan_gundogan"]);
+        // Matches in the gallery, but would not extend the typed text, which
+        // zsh and fish then mangle: left out here.
+        assert!(got("'person:gündo").is_empty());
+        assert_eq!(got("'place:"), ["place:\"Kadıköy, İstanbul\""]);
+        assert_eq!(got("'place:\"Ka"), ["place:\"Kadıköy, İstanbul\""]);
+        assert!(got("'place:Ka").is_empty());
+    }
+
+    #[test]
+    fn a_single_key_offers_its_values_so_the_shell_does_not_close_the_quote() {
+        assert_eq!(got("'ta"), ["tag:dağ", "tag:deniz"]);
+        assert_eq!(got("'-ta"), ["-tag:dağ", "-tag:deniz"]);
+        // Several keys: the keys themselves.
+        assert!(got("'p").contains(&"person:".to_string()));
+    }
+
+    #[test]
+    fn a_person_carries_the_display_name_as_help() {
+        let (_t, conn) = conn();
+        let c = query_candidates_in(&conn, "'person:e");
+        assert_eq!(c[0].1.as_deref(), Some("Erhan Gündoğan (1)"));
+    }
 }

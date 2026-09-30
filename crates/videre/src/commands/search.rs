@@ -28,6 +28,9 @@ pub struct SearchArgs {
     // Not `allow_hyphen_values`: that would take a mistyped flag such as
     // `--persn` for a query instead of refusing it. A query starting with `-`
     // goes after `--`, or starts with NOT.
+    #[arg(add = clap_complete::engine::ArgValueCompleter::new(
+        crate::completions::query_candidates
+    ))]
     pub(crate) query: Option<String>,
 
     /// Search by example image instead of text; a query may still filter

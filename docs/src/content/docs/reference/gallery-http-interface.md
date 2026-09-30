@@ -469,6 +469,45 @@ the thresholds changed since it was read) returns `404`.
 curl "http://127.0.0.1:7878/api/events/20200312T100000-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/files"
 ```
 
+### `GET /api/query/suggest`
+
+What can complete the term at the cursor of a [query](/reference/query-syntax/):
+keys while one is typed, the library's values after `key:`, and `OR`, `-`
+and `(` after a complete term. The shell completer answers from the same
+function, so both offer the same things.
+
+| Query | Meaning |
+|---|---|
+| `q=<query>` | The query as typed so far |
+| `cursor=<n>` | Character offset of the cursor. The default is the end of `q` |
+| `limit=<n>` | Most suggestions returned. The default is `20`, capped at `100` |
+
+`start` is the character offset where the term begins: a client replaces
+`q` from `start` to `cursor` with an item's `insert`. A value with a space is
+inserted quoted. A person is inserted by identity, with the display name as
+`label` and a `face_id` whose crop `/api/faces/{id}/image` serves. Values
+match folded for case and accents, on the start of any word, so `gündo`
+finds Erhan Gündoğan. Inside a quoted phrase there is nothing to suggest.
+
+```bash
+curl "http://127.0.0.1:7878/api/query/suggest?q=-person:g%C3%BCndo"
+```
+
+```json
+{
+  "start": 1,
+  "items": [
+    {
+      "insert": "person:erhan_gundogan",
+      "label": "Erhan Gündoğan",
+      "kind": "value",
+      "count": 214,
+      "face_id": 88
+    }
+  ]
+}
+```
+
 ### `GET /api/search`
 
 Ranks photos by text or by similarity to an existing hash. Pass exactly one of
@@ -1054,6 +1093,7 @@ content-length: 0
 | `GET /api/events` | List automatic travel trips and an empty reason when none qualify |
 | `GET /api/events/{key}/files` | Exact files of one trip |
 | `GET /api/search` | Rank by text or by an existing file hash |
+| `GET /api/query/suggest` | Complete the query term at the cursor |
 | `GET /api/locations` | Resolve one coordinate pair to a place name |
 | `GET /api/location-clusters` | List location clusters for the Map view |
 | `GET /tiles/basemap.pmtiles` | Serve the offline basemap archive (Range) |

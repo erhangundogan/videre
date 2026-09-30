@@ -255,7 +255,14 @@ pub struct QueryArg {
     /// See https://docs.videre.sh/reference/query-syntax/
     // A query may start with `-` ('-tag:ekran'). Safe on a flag, unlike on a
     // positional: only the value right after --query is taken this way.
-    #[arg(long, value_name = "QUERY", allow_hyphen_values = true)]
+    #[arg(
+        long,
+        value_name = "QUERY",
+        allow_hyphen_values = true,
+        add = clap_complete::engine::ArgValueCompleter::new(
+            crate::completions::query_candidates
+        )
+    )]
     pub query: Option<String>,
 }
 

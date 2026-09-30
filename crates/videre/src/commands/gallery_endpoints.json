@@ -17,6 +17,7 @@
     { "method": "GET",    "path": "/api/events" },
     { "method": "GET",    "path": "/api/events/{key}/files" },
     { "method": "GET",    "path": "/api/search" },
+    { "method": "GET",    "path": "/api/query/suggest" },
     { "method": "GET",    "path": "/api/locations" },
     { "method": "GET",    "path": "/api/location-clusters" },
     { "method": "GET",    "path": "/tiles/basemap.pmtiles" },

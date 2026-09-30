@@ -251,7 +251,8 @@ installed automatically. Save the script as `_videre` in a directory on your
 videre completion zsh > ~/.oh-my-zsh/completions/_videre && rehash
 ```
 
-With `--person`, `--model`, `--ext` and `--mime`, the choices come from your
+With `--person`, `--model`, `--ext` and `--mime`, and inside a
+[query](/reference/query-syntax/#completion), the choices come from your
 library: register the dynamic completer in your shell's startup file, e.g. for
 bash `eval "$(COMPLETE=bash videre)"` (zsh: `eval "$(COMPLETE=zsh videre)"`,
 fish: `COMPLETE=fish videre | source`), and keep it read-only fast - videre
