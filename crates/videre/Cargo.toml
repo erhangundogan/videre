@@ -63,6 +63,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "json", "registry"] }
 tracing-logfmt = "0.3"
 file-rotate = "0.8"
+# Parses the Lucene-style query language (`query_lang`) into a syntax tree;
+# no tantivy index. Only the binary crate queries, so it stays out of core.
+tantivy-query-grammar = "0.26"
 
 [dev-dependencies]
 tempfile = "3"

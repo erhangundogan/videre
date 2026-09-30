@@ -4,6 +4,7 @@ pub mod hasher;
 pub mod heif_rotate;
 pub mod incremental;
 pub mod output;
+pub mod query_lang;
 pub mod scanner;
 pub mod sqlite_output;
 pub mod takeout_names;
