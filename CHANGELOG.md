@@ -16,6 +16,60 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.50.0] - 2026-09-30
+
+### Added
+
+- **The gallery rotates HEIC photos.** The lightbox and selection bar turn a
+  HEIC by its rotation property, the one iPhones write and Photos and Preview
+  display by, and keep its EXIF orientation in step. The file keeps its size
+  and its identity, so faces, names, marks and tags stay attached. A HEIC
+  saved without that property is refused and left untouched.
+- **The gallery keeps the library current.** Opening it starts
+  `videre watch` beside it, so files added or changed while browsing are
+  processed without a second terminal. A watch already running for the
+  library is used and left running. The gallery's own watch stops when the
+  gallery does, and stops by itself within a second or two if the gallery is
+  killed. Turn it off with `videre config set gallery-starts-watch false`.
+
+### Changed
+
+- **A rotation redoes what the old orientation produced.** Rotating a photo
+  in the gallery, JPEG or HEIC, now also drops its search embedding and its
+  category, next to the cached previews it already cleared. The next
+  `videre embed`, or the watch, redoes that photo alone. Before, search and
+  classify kept seeing it sideways, and nothing short of
+  `videre embed --reprocess` fixed it.
+- **Gallery delete and regroup wait up to five seconds for a busy library**
+  instead of refusing at once, so a watch stage finishing up no longer makes
+  them fail.
+- **`videre export --xmp` writes only your tags as keywords.** It used to add
+  the photo's category too, and the next scan read that keyword back as a tag.
+
+### Fixed
+
+- **Categories turned into tags after a rebuild.** A library rebuilt from its
+  sidecars gained tags such as `photo` and `unknown` from the category
+  keywords older exports wrote, and removing them did not stick. The next
+  full export drops the category keyword from each sidecar.
+
+### Upgrading
+
+- **Remove category tags a rebuilt library picked up**, once, if you see
+  them:
+
+  ```bash
+  videre tag --remove photo --remove screenshot --remove document --remove meme --remove unknown
+  videre export --xmp
+  ```
+
+- **For crates depending on `videre-core`:** `xmp_gather::Gathered` no
+  longer has a `category` field.
+- **Opening the gallery on a library that was never processed** now starts
+  the whole scan, faces and embed pipeline in the background, including a
+  one-time download of the face model if it is missing, the same as
+  `videre watch`.
+
 ## [0.49.2] - 2026-09-30
 
 ### Added
@@ -2716,6 +2770,7 @@ takes the model id explicitly instead of reading it from the environment.
 - First release published to crates.io.
 
 [Unreleased]: https://github.com/erhangundogan/videre/compare/v0.49.2...HEAD
+[0.50.0]: https://github.com/erhangundogan/videre/compare/v0.49.2...v0.50.0
 [0.49.2]: https://github.com/erhangundogan/videre/compare/v0.49.1...v0.49.2
 [0.49.1]: https://github.com/erhangundogan/videre/compare/v0.49.0...v0.49.1
 [0.49.0]: https://github.com/erhangundogan/videre/compare/v0.48.1...v0.49.0
