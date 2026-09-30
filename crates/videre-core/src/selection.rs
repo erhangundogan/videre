@@ -133,6 +133,17 @@ pub enum PlaceQuery {
     Coords(GeoFilter),
 }
 
+/// A query-language filter a command was given with `--query`, already
+/// resolved to the hashes it selects. The language lives in the `videre`
+/// crate; this layer only intersects its result, so every command that takes a
+/// `RowSelection` honours a query without knowing its syntax.
+#[derive(Debug, Clone)]
+pub struct QueryScope {
+    /// The query as typed, for progress lines and confirmations.
+    pub text: String,
+    pub hashes: HashSet<String>,
+}
+
 /// What a command was asked to work on, over rows already in the database.
 #[derive(Debug, Clone, Default)]
 pub struct RowSelection {
@@ -160,6 +171,8 @@ pub struct RowSelection {
     pub liked: bool,
     /// Tags that must all be present (AND across multiple --tag values).
     pub tags: Vec<String>,
+    /// A `--query`, resolved by the caller.
+    pub query: Option<QueryScope>,
 }
 
 /// What a command can offer the resolver about itself.
@@ -206,6 +219,7 @@ impl RowSelection {
             && self.label.is_none()
             && !self.liked
             && self.tags.is_empty()
+            && self.query.is_none()
     }
 
     /// Human-readable form for progress lines and confirmations.
@@ -274,6 +288,9 @@ impl RowSelection {
         }
         for t in &self.tags {
             parts.push(format!("--tag {t}"));
+        }
+        if let Some(q) = &self.query {
+            parts.push(format!("--query '{}'", q.text));
         }
         parts.join(" ")
     }
@@ -389,6 +406,9 @@ impl RowSelection {
         }
         if let Some(p) = &self.place_name {
             narrow(query::by_place_name(conn, p)?, &mut acc);
+        }
+        if let Some(q) = &self.query {
+            narrow(q.hashes.clone(), &mut acc);
         }
 
         // Place last: geocoding may hit the network, so an already-empty
@@ -862,6 +882,27 @@ mod resolve_tests {
 
     fn set<const N: usize>(hashes: [&str; N]) -> HashSet<String> {
         hashes.into_iter().map(str::to_string).collect()
+    }
+
+    #[test]
+    fn a_resolved_query_narrows_like_any_other_predicate() {
+        let c = db();
+        let mut s = sel();
+        s.query = Some(QueryScope {
+            text: "tag:deniz OR tag:plaj".into(),
+            hashes: set(["h_jpg", "h_mov", "h_yok"]),
+        });
+        assert!(!s.is_empty());
+        assert!(
+            s.describe().contains("--query 'tag:deniz OR tag:plaj'"),
+            "{}",
+            s.describe()
+        );
+        let got = s.resolve(&c, &SelectionCtx::default()).unwrap();
+        assert_eq!(got.hashes, Some(set(["h_jpg", "h_mov", "h_yok"])));
+        s.kinds = vec![MediaKind::Video];
+        let got = s.resolve(&c, &SelectionCtx::default()).unwrap();
+        assert_eq!(got.hashes, Some(set(["h_mov"])));
     }
 
     #[test]

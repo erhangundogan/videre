@@ -23,6 +23,8 @@ pub struct ClassifyArgs {
     marks: super::selection_args::MarkArgs,
     #[command(flatten)]
     tags: super::selection_args::TagFilterArgs,
+    #[command(flatten)]
+    query: super::selection_args::QueryArg,
 
     /// Re-classify every embedded hash, including ones already classified
     #[arg(long)]
@@ -70,6 +72,8 @@ impl ClassifyArgs {
 }
 
 pub fn run(args: ClassifyArgs, ctx: &CommandContext) -> Result<()> {
+    // A bad query fails before any work.
+    args.query.compile()?;
     // Guard every --path against the selected root before any work; classify is
     // a reader of embeddings, so it never creates a model store.
     videre_core::library_guard::validate_paths(&ctx.library, &args.paths.path)?;
@@ -140,6 +144,11 @@ fn run_classify(
         Some(&args.marks),
         Some(&args.tags),
     )?;
+    let sel_ctx = videre_core::selection::SelectionCtx {
+        model_id: Some(model_id.to_string()),
+    };
+    let selection =
+        super::selection_args::with_query(selection, &args.query, conn, &sel_ctx, library)?;
     let work = videre_core::work::narrow_in(
         hashes,
         |h| h.as_str(),

@@ -27,6 +27,8 @@ pub struct FacesArgs {
     marks: super::selection_args::MarkArgs,
     #[command(flatten)]
     tags: super::selection_args::TagFilterArgs,
+    #[command(flatten)]
+    query: super::selection_args::QueryArg,
 
     /// How XMP face regions in a sidecar interact with detected faces: db (the
     /// database wins, imports only fill unconfirmed faces), file (the sidecar
@@ -196,7 +198,7 @@ fn validate_evaluation_arguments(args: &FacesArgs) -> Result<()> {
         Some(&args.marks),
         Some(&args.tags),
     )?;
-    if !selection.is_empty() || args.yes {
+    if !selection.is_empty() || args.query.query.is_some() || args.yes {
         anyhow::bail!(
             "--evaluate always covers the complete labeled library; selection flags and --yes are not accepted"
         );
@@ -248,6 +250,8 @@ fn reset_confirmation_prompt(counts: &face_db::FaceResetCounts) -> String {
 }
 
 pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
+    // A bad query fails before any work.
+    args.query.refuse_derived("faces")?;
     // Must happen before any HEIC file could be converted (the semaphore is a
     // OnceLock: first use wins for the life of this process). Clamped to at
     // least 1, a literal 0 would make every HEIC conversion block forever.
@@ -319,6 +323,15 @@ pub fn run(args: FacesArgs, ctx: &CommandContext) -> Result<()> {
         Some(&args.paths),
         Some(&args.marks),
         Some(&args.tags),
+    )?;
+    // Carried in the selection, so the --reset refusal and the work narrowing
+    // below treat a query like any other selection flag.
+    let selection = super::selection_args::with_query(
+        selection,
+        &args.query,
+        &conn,
+        &videre_core::selection::SelectionCtx::default(),
+        &ctx.library,
     )?;
 
     if args.reset {
