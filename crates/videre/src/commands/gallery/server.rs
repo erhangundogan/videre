@@ -2243,6 +2243,29 @@ struct SearchQuery {
     limit: Option<usize>,
 }
 
+#[derive(Deserialize)]
+struct SuggestQuery {
+    #[serde(default)]
+    q: String,
+    /// Character offset of the cursor; the end of `q` when absent.
+    cursor: Option<usize>,
+    limit: Option<usize>,
+}
+
+/// What can complete the query box's term at the cursor:
+/// `videre::query_lang::suggest`, the function the shell completer uses too.
+async fn handle_query_suggest(
+    State(state): State<Arc<AppState>>,
+    Query(sq): Query<SuggestQuery>,
+) -> Result<Json<videre::query_lang::Suggestions>, StatusCode> {
+    let cursor = sq.cursor.unwrap_or_else(|| sq.q.chars().count());
+    let limit = sq.limit.unwrap_or(20).clamp(1, 100);
+    let conn = state.conn.lock().map_err(poisoned)?;
+    Ok(Json(videre::query_lang::suggest(
+        &conn, &sq.q, cursor, limit,
+    )))
+}
+
 /// Rank the library, and return only a ranking.
 ///
 /// :warning: **Rows are deliberately not returned here.** The client already
@@ -4343,6 +4366,7 @@ async fn serve_faces_async(
         .route("/api/events", get(handle_events_api))
         .route("/api/events/{key}/files", get(handle_events_files))
         .route("/api/search", get(handle_search))
+        .route("/api/query/suggest", get(handle_query_suggest))
         .route("/api/locations", get(handle_location))
         .route("/api/location-clusters", get(handle_location_clusters))
         // basemap: the offline PMTiles archive and its download lifecycle

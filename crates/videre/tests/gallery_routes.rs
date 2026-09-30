@@ -2198,3 +2198,29 @@ fn the_nav_box_offers_search_and_filter_in_well_formed_markup() {
         "{tag}"
     );
 }
+
+#[test]
+fn the_query_box_gets_suggestions_for_the_term_at_the_cursor() {
+    let lib = tagged_library();
+    let server = Server::start(&lib);
+    let get = |q: &str, cursor: Option<usize>| {
+        let q: String = q.bytes().map(|b| format!("%{b:02X}")).collect();
+        let cursor = cursor.map(|c| format!("&cursor={c}")).unwrap_or_default();
+        let (status, body) = server.get(&format!("/api/query/suggest?q={q}{cursor}"));
+        assert_eq!(status, 200, "{body}");
+        serde_json::from_str::<serde_json::Value>(&body).unwrap()
+    };
+
+    let v = get("-tag:d", None);
+    assert_eq!(v["start"], 1, "{v}");
+    assert_eq!(v["items"][0]["insert"], "tag:deniz", "{v}");
+    assert_eq!(v["items"][0]["kind"], "value", "{v}");
+    assert_eq!(v["items"][0]["count"], 1, "{v}");
+
+    // The cursor, not the end, picks the term: after "ta", before " date:".
+    let v = get("ta date:2023", Some(2));
+    assert_eq!(v["items"][0]["insert"], "tag:", "{v}");
+    assert_eq!(v["items"][0]["kind"], "key", "{v}");
+
+    assert_eq!(get("\"gün bat", None)["items"], serde_json::json!([]));
+}
