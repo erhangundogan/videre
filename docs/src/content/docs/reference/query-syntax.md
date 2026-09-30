@@ -10,9 +10,15 @@ filters, in one string.
 videre search 'person:özgür "gün batımı" -tag:screenshot (tag:deniz OR tag:plaj) rating:>=4'
 ```
 
-Put the whole query in single quotes. That keeps double quotes, parentheses
-and a leading `-` inside it in bash, zsh and fish alike; in fish, parentheses
-outside quotes run a command.
+Put the whole query in single quotes. That keeps double quotes and
+parentheses inside it in bash, zsh and fish alike; in fish, parentheses
+outside quotes run a command. A query that starts with `-` would read as an
+option, so put `--` before it, or start with `NOT`:
+
+```bash
+videre search -- '-tag:ekran date:2023'
+videre search 'NOT tag:ekran date:2023'
+```
 
 ## Words and filters
 

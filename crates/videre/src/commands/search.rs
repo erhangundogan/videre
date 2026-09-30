@@ -25,9 +25,9 @@ pub struct SearchArgs {
     /// as person:özgür, tag:deniz, date:2023 or rating:>=4, combined with
     /// OR, NOT or -, and (groups). Quote the whole query in single quotes.
     /// See https://docs.videre.sh/reference/query-syntax/
-    // A query may start with `-`, as in '-tag:ekran'; clap would otherwise
-    // take it for an unknown flag.
-    #[arg(allow_hyphen_values = true)]
+    // Not `allow_hyphen_values`: that would take a mistyped flag such as
+    // `--persn` for a query instead of refusing it. A query starting with `-`
+    // goes after `--`, or starts with NOT.
     pub(crate) query: Option<String>,
 
     /// Search by example image instead of text; a query may still filter

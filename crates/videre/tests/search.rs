@@ -1020,7 +1020,9 @@ fn a_query_can_say_or_and_not() {
     let mut both = search_rel(&lib, &["tag:deniz OR tag:plaj"]);
     both.sort();
     assert_eq!(both, vec!["jun.jpg", "may.jpg"]);
-    assert_eq!(search_rel(&lib, &["-tag:deniz"]), vec!["jun.jpg"]);
+    // A query that starts with `-` goes after `--`, or says NOT.
+    assert_eq!(search_rel(&lib, &["--", "-tag:deniz"]), vec!["jun.jpg"]);
+    assert_eq!(search_rel(&lib, &["NOT tag:deniz"]), vec!["jun.jpg"]);
     assert_eq!(
         search_rel(&lib, &["(person:özgür OR person:ayşe) -tag:plaj"]),
         vec!["may.jpg"]
