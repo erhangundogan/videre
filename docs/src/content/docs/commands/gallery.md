@@ -8,7 +8,7 @@ browser. Nothing is uploaded. Browsing only reads the database `videre scan`
 built (previews may populate the derived thumbnail cache); the library changes
 only through what you do on the page: naming people, marking and liking photos,
 and face-learning answers are saved to the library database, and rotating a
-photo updates its orientation tag in the file itself.
+photo updates its orientation in the file itself.
 
 ```bash
 videre gallery                  # http://127.0.0.1:7878
@@ -42,12 +42,22 @@ on-screen arrows at the left and right edges, or the **Left** and **Right**
 arrow keys, step to the previous and next item. Stepping past the last loaded
 item pulls in the next page automatically and keeps going, so **Show more** is
 not needed to browse to the end. At the item's top-right corner sit up to three
-buttons: **Rotate** (photos only) turns the image 90 degrees clockwise by
-editing its EXIF orientation in place, and turns the photo's face boxes with it
-so face crops stay on their faces; **Fullscreen** blows the whole lightbox up to
+buttons: **Rotate** (photos only) turns the image 90 degrees by editing its
+orientation in place, never re-encoding the pixels, and turns the photo's face
+boxes with it so face crops stay on their faces; **Fullscreen** blows the whole lightbox up to
 the screen, arrows and info panel included (the same button, or **Escape**,
 steps back); and **Close** (the &#215; at its right) dismisses it. The close
 button, **Escape**, or a click outside the item all close the lightbox.
+
+JPEG, PNG, TIFF and WebP rotate by their EXIF orientation. A HEIC rotates by
+its rotation property, the one iPhones write and Photos and Preview display
+by, and its EXIF orientation is kept in step. A HEIC saved without that
+property cannot be rotated here, so the request is refused and the file is
+left untouched. A rotation changes what the photo shows but not its identity,
+so everything videre worked out from the old orientation is dropped at once:
+cached previews are rendered again, and the photo's search embedding and
+category are redone by the next [`videre embed`](/commands/embed/) or
+[`videre watch`](/commands/watch/). Nothing needs clearing by hand.
 
 The preview shown is a downscaled render, so **click the photo** to zoom in and
 **drag** to pan: the full-resolution original is loaded on the first zoom, so you
