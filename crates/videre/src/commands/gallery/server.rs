@@ -3,6 +3,7 @@
 //! `search --html` lives in `crate::render`; this file is the HTTP layer only.
 
 use crate::render::*;
+use anyhow::Context;
 use axum::body::Body;
 use axum::extract::{Json as AxumJson, Query, State};
 use axum::http::Request;
@@ -2763,10 +2764,10 @@ struct RotateQuery {
 
 /// `POST /api/files/{hash}/rotate`: rotate one photo 90 degrees (clockwise by
 /// default, counter-clockwise with `?dir=ccw`) by bumping its EXIF Orientation
-/// tag in place, then drop its cached previews so the grid and lightbox
-/// re-render. Refuses a format that carries no EXIF orientation (video, HEIC,
-/// and the like) with 415, matching the button the gallery only shows for
-/// supported images.
+/// tag, or a HEIC's `irot`, in place, then drop everything derived from the
+/// old pixels (see `forget_old_pixels`). Refuses what cannot be turned (video,
+/// DNG, a HEIC with no `irot`, and the like) with 415, matching the button the
+/// gallery only shows for supported images.
 async fn handle_rotate_file(
     axum::extract::Path(hash): axum::extract::Path<String>,
     Query(query): Query<RotateQuery>,
@@ -2782,7 +2783,7 @@ async fn handle_rotate_file(
         Ok(Ok(RotateOutcome::NotFound)) => StatusCode::NOT_FOUND.into_response(),
         Ok(Ok(RotateOutcome::Unsupported)) => (
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "rotation is only supported for EXIF-bearing images",
+            "this file cannot be rotated: only JPEG, PNG, TIFF, WebP and HEIC with a rotation property",
         )
             .into_response(),
         Ok(Err(e)) => internal(anyhow::anyhow!("rotate failed for {hash}: {e}")).into_response(),
@@ -2793,13 +2794,13 @@ async fn handle_rotate_file(
 pub(super) enum RotateOutcome {
     Rotated(u16),
     NotFound,
-    /// Not an image that carries an EXIF orientation (videos, DNG, ...).
+    /// Not an image this can turn (videos, DNG, a HEIC with no `irot`, ...).
     Unsupported,
 }
 
-/// Turn one photo a quarter turn: the EXIF orientation, its face geometry and
-/// its cached thumbnails. Blocking; shared by the lightbox's rotate and the
-/// selection bar's.
+/// Turn one photo a quarter turn: its orientation (EXIF, or a HEIC's `irot`),
+/// its face geometry, and everything derived from the old pixels. Blocking;
+/// shared by the lightbox's rotate and the selection bar's.
 pub(super) fn rotate_one(state: &AppState, hash: &str, ccw: bool) -> anyhow::Result<RotateOutcome> {
     let path: Option<String> = {
         let conn = state
@@ -2821,19 +2822,38 @@ pub(super) fn rotate_one(state: &AppState, hash: &str, ccw: bool) -> anyhow::Res
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
-    if !super::rotate::supports_exif_orientation(&ext) {
+    if !super::rotate::supports_rotation(&ext) {
         return Ok(RotateOutcome::Unsupported);
     }
     let source = std::path::Path::new(&path);
     // The stored face bboxes/landmarks are in the display canvas as it
     // decodes now; capture that canvas's dimensions before the turn so the
     // geometry can be mapped onto the post-rotation canvas. Read them up
-    // front: the rotation bumps the EXIF the dimensions depend on.
-    let dims = super::rotate::current_display_dimensions(source);
-    let orientation = if ccw {
-        super::rotate::rotate_ccw_in_place(source, &ext)?
+    // front: the rotation changes the orientation the dimensions depend on.
+    let (dims, orientation) = if super::rotate::is_heif(&ext) {
+        // A HEIC displays by its irot, which QuickLook applies; the image
+        // crate cannot read it, so its size comes from the file's own boxes.
+        let bytes = std::fs::read(source).with_context(|| format!("read {path}"))?;
+        let rotation = match videre::heif_rotate::read(&bytes) {
+            Ok(r) => r,
+            Err(videre::heif_rotate::Error::NoRotation) => return Ok(RotateOutcome::Unsupported),
+            Err(e) => return Err(anyhow::anyhow!("{path}: {e}")),
+        };
+        let turned = videre::heif_rotate::rotated(&bytes, ccw)?;
+        super::rotate::replace_file(source, &turned)?;
+        let angle = videre::heif_rotate::turned(rotation.angle, ccw);
+        (
+            Some(rotation.display),
+            videre::heif_rotate::orientation_for(angle),
+        )
     } else {
-        super::rotate::rotate_cw_in_place(source, &ext)?
+        let dims = super::rotate::current_display_dimensions(source);
+        let orientation = if ccw {
+            super::rotate::rotate_ccw_in_place(source, &ext)?
+        } else {
+            super::rotate::rotate_cw_in_place(source, &ext)?
+        };
+        (dims, orientation)
     };
     // Turn the display-canvas face geometry with the photo, so a rotated
     // photo's face crops stay on their faces and keep their people labels
@@ -2841,8 +2861,28 @@ pub(super) fn rotate_one(state: &AppState, hash: &str, ccw: bool) -> anyhow::Res
     if let Some((display_w, display_h)) = dims {
         rotate_faces_geometry(state, hash, ccw, display_w as i32, display_h as i32);
     }
-    invalidate_thumb_cache(&state.context.library.cache, hash);
+    forget_old_pixels(state, hash)?;
     Ok(RotateOutcome::Rotated(orientation))
+}
+
+/// Drop everything derived from a photo's pixels as they were before a
+/// rotation. The content key does not change, so nothing downstream would
+/// notice on its own: cached renderings would keep serving the old
+/// orientation, and `embed` and `classify` would skip a hash they already
+/// hold. Removing them here leaves the library consistent whether or not
+/// watch runs; the next `embed` (or watch's) redoes just this photo.
+fn forget_old_pixels(state: &AppState, hash: &str) -> anyhow::Result<()> {
+    invalidate_thumb_cache(&state.context.library.cache, hash);
+    {
+        let conn = state
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("the database connection lock is poisoned"))?;
+        videre_core::classify::forget(&conn, hash)
+            .with_context(|| format!("drop the category of {hash}"))?;
+    }
+    videre_core::embeddings_db::forget_in(&state.context.library, hash)
+        .with_context(|| format!("drop the embeddings of {hash}"))
 }
 
 /// Turn every face row for `hash` 90 degrees to
@@ -5542,6 +5582,77 @@ mod bulk_api_tests {
         .await;
         assert_eq!(s, StatusCode::OK, "{b}");
         assert_eq!(b, json!({ "rotated": 1, "skipped": 1, "failed": 0 }));
+    }
+
+    /// A rotation changes what the pixels show while the content key stays, so
+    /// everything derived from the old pixels must go with it, without watch
+    /// or the user doing anything: every cached rendering, the embedding under
+    /// every model, and the category. The other photo keeps all of its own.
+    #[tokio::test]
+    async fn rotate_drops_everything_derived_from_the_old_pixels() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = library(dir.path(), &[("döndü.jpg", "hd"), ("kaldı.jpg", "hk")]);
+        let ctx = &state.context.library;
+        let side = videre_core::library_db::open_existing(ctx).unwrap();
+        videre_core::classify::ensure_classifications_table(&side).unwrap();
+        for model in ["owner/model-a", "owner/model-b"] {
+            videre_core::embeddings_db::attach_in(&side, ctx, model, true).unwrap();
+            side.execute_batch(&format!(
+                "INSERT INTO emb.embeddings (hash, model_id, embedding, embedded_at)
+                 VALUES ('hd', '{model}', zeroblob(8), 'now'), ('hk', '{model}', zeroblob(8), 'now');
+                 INSERT INTO classifications VALUES
+                   ('{model}', 'hd', 'photo', 0.9, 'now'), ('{model}', 'hk', 'photo', 0.9, 'now');"
+            ))
+            .unwrap();
+            videre_core::embeddings_db::detach(&side).unwrap();
+        }
+        let thumbs = &ctx.cache.thumbnails;
+        std::fs::create_dir_all(thumbs).unwrap();
+        for name in [
+            "hd_240.jpg",
+            "hd_original.jpg",
+            "hd_face-7.jpg",
+            "hd_raster-v2_480.jpg",
+            "hk_240.jpg",
+        ] {
+            std::fs::write(thumbs.join(name), b"stale").unwrap();
+        }
+
+        let (s, b) = call(
+            &app(state.clone()),
+            "POST",
+            "/api/files/rotate",
+            json!({ "hashes": ["hd"], "direction": "cw" }),
+        )
+        .await;
+        assert_eq!(b, json!({ "rotated": 1, "skipped": 0, "failed": 0 }), "{s}");
+
+        let mut cached: Vec<String> = std::fs::read_dir(thumbs)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        cached.sort();
+        assert_eq!(cached, vec!["hk_240.jpg"]);
+        let classified: Vec<String> = side
+            .prepare("SELECT DISTINCT hash FROM classifications")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(classified, vec!["hk"]);
+        for model in ["owner/model-a", "owner/model-b"] {
+            videre_core::embeddings_db::attach_for_read_in(&side, ctx, model).unwrap();
+            let embedded: Vec<String> = side
+                .prepare("SELECT hash FROM emb.embeddings")
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            assert_eq!(embedded, vec!["hk"], "{model}");
+            videre_core::embeddings_db::detach(&side).unwrap();
+        }
     }
 }
 

@@ -18,6 +18,15 @@ pub fn ensure_classifications_table(conn: &Connection) -> Result<()> {
     )
 }
 
+/// Drop `hash`'s category under every model, so the next `classify` (or the
+/// one watch runs after `embed`) decides it again. For an edit that changes
+/// what the pixels show, such as a rotation.
+pub fn forget(conn: &Connection, hash: &str) -> Result<()> {
+    ensure_classifications_table(conn)?;
+    conn.execute("DELETE FROM classifications WHERE hash = ?1", [hash])?;
+    Ok(())
+}
+
 /// Hashes that have an embedding under `model_id` but no classification yet.
 /// Excludes video hashes (`.mov`/`.mp4`), none of the four zero-shot
 /// categories (photo/screenshot/document/meme) fit a video frame well, so
@@ -135,6 +144,34 @@ mod tests {
         ensure_classifications_table(&conn).unwrap();
         crate::embeddings_db::attach_in(&conn, &ctx, "owner/test-model", true).unwrap();
         conn
+    }
+
+    #[test]
+    fn forgetting_a_hash_drops_its_category_under_every_model() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_classifications_table(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO classifications VALUES
+                ('m1', 'döndü', 'photo', 0.9, 'now'),
+                ('m2', 'döndü', 'document', 0.8, 'now'),
+                ('m1', 'kaldı', 'photo', 0.9, 'now');",
+        )
+        .unwrap();
+        forget(&conn, "döndü").unwrap();
+        let left: Vec<String> = conn
+            .prepare("SELECT hash FROM classifications")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_>>()
+            .unwrap();
+        assert_eq!(left, vec!["kaldı"]);
+    }
+
+    #[test]
+    fn forgetting_before_any_classification_is_a_no_op() {
+        let conn = Connection::open_in_memory().unwrap();
+        forget(&conn, "any").unwrap();
     }
 
     fn insert_file(conn: &Connection, path: &str, hash: &str) {
