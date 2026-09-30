@@ -165,6 +165,9 @@ async function startGalleryWith(
       }
     }
     await run(binary, ["--library", libraryRoot, "scan", "--silent"], env);
+    // The suite checks the gallery alone: without this, every server would
+    // start a videre watch beside it (that has its own Rust tests).
+    await run(binary, ["--library", libraryRoot, "config", "set", "gallery-starts-watch", "false"], env);
     for (const file of seed) {
       if (file.mark) {
         await run(binary, ["--library", libraryRoot, "mark", ...file.mark], env);

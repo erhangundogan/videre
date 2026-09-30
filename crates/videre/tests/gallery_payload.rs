@@ -194,6 +194,7 @@ impl Drop for Server {
 
 impl Server {
     fn start(lib: &TestLibrary) -> Server {
+        lib.no_gallery_watch();
         Server::spawn(lib.cmd())
     }
 
@@ -201,6 +202,7 @@ impl Server {
     /// directory (`cwd`), via `--library`. Proves the server binds to the
     /// selected library rather than to wherever it was launched.
     fn start_in(lib: &TestLibrary, cwd: &Path) -> Server {
+        lib.no_gallery_watch();
         Server::spawn(lib.from(cwd))
     }
 

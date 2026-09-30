@@ -285,6 +285,22 @@ impl TestLibrary {
         videre_core::library::LibraryContext::new(&self.root, &self.home.join(".cache")).unwrap()
     }
 
+    /// Turn off the watch `videre gallery` starts beside it, for tests that
+    /// start a gallery to check something else: a watch would scan, run
+    /// stages and take locks the test does not expect.
+    pub fn no_gallery_watch(&self) {
+        let output = self
+            .cmd()
+            .args(["config", "set", "gallery-starts-watch", "false"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     /// Scan this library through the directory-local command surface.
     pub fn scan(&self) {
         let output = self.cmd().args(["scan", "--silent"]).output().unwrap();

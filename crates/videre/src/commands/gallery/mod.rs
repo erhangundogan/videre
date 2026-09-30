@@ -17,6 +17,7 @@ mod refusal;
 mod rotate;
 mod server;
 pub(crate) mod settings;
+mod watch_child;
 
 use crate::command_context::CommandContext;
 
@@ -52,6 +53,8 @@ pub fn run(args: GalleryArgs, ctx: &CommandContext) -> anyhow::Result<()> {
         &ctx.library.settings,
         args.model.as_deref(),
     )?;
+    // Held across serving: dropped, and so stopped, once the server returns.
+    let _watch = watch_child::start(ctx);
     server::serve_gallery(ctx, model_id, args.port, args.browse)
 }
 

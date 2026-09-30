@@ -189,19 +189,20 @@ pub(crate) async fn handle_apply(
 }
 
 fn apply(state: &AppState, params: ClusteringParameters) -> Result<ReclusterSummary, Refusal> {
-    use videre_core::library_locks::{try_activity, try_command, ActivityMode};
+    use videre_core::library_locks::{try_activity, try_command, wait_for, ActivityMode};
     let library = &state.context.library;
     library
         .ensure_root_identity()
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     // The same locks, in the same order, as watch's repair pass: the run's
     // identity, then activity, then the faces lock that detection and the
-    // standalone command hold, so none of them can overlap this.
-    let _identity =
-        try_command(library, "face-recluster").map_err(|_| Refusal::Busy("faces_busy"))?;
-    let _activity =
-        try_activity(library, ActivityMode::Shared).map_err(|_| Refusal::Busy("faces_busy"))?;
-    let guard = try_command(library, "faces").map_err(|_| Refusal::Busy("faces_busy"))?;
+    // standalone command hold, so none of them can overlap this. Each waits
+    // briefly, so a watch stage finishing up does not refuse a regroup.
+    let busy = |_| Refusal::Busy("faces_busy");
+    let wait = super::server::BUSY_WAIT;
+    let _identity = wait_for(wait, || try_command(library, "face-recluster")).map_err(busy)?;
+    let _activity = wait_for(wait, || try_activity(library, ActivityMode::Shared)).map_err(busy)?;
+    let guard = wait_for(wait, || try_command(library, "faces")).map_err(busy)?;
     let conn = videre_core::library_db::open_existing(library).map_err(failed)?;
     let before = current_grouping(&conn).map_err(failed)?;
 

@@ -157,6 +157,10 @@ stage disables the defaults.
 
 ## Running it for real
 
+[`videre gallery`](/commands/gallery/) starts a watch for you and stops it
+when the gallery stops; `videre config set gallery-starts-watch false` turns
+that off. A watch you start yourself is used by the gallery and left running.
+
 There is no daemon mode and no service unit. It runs in the foreground until
 interrupted.
 

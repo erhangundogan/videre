@@ -2740,6 +2740,15 @@ async fn handle_vendor_asset(
         .into_response()
 }
 
+/// How long an interactive action that needs the library to itself (delete,
+/// regroup) waits for a background holder, such as a watch stage, before it
+/// is refused as busy. Short in unit tests so a refusal test stays quick.
+pub(super) const BUSY_WAIT: std::time::Duration = if cfg!(test) {
+    std::time::Duration::from_millis(400)
+} else {
+    std::time::Duration::from_secs(5)
+};
+
 /// Delete every cached preview for one content hash, so the next request
 /// re-renders it. All caches (HEIC thumbnail, raster preview, video poster,
 /// full conversion, face crops) are named `<hash>_...` in the one thumbnails
@@ -5377,6 +5386,27 @@ mod recluster_api_tests {
     }
 
     #[tokio::test]
+    async fn apply_goes_ahead_once_a_brief_faces_run_lets_go() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = library(dir.path());
+        let held =
+            videre_core::library_locks::try_command(&state.context.library, "faces").unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(super::BUSY_WAIT / 4);
+            drop(held);
+        });
+        let (status, body) = call(
+            &app(state.clone()),
+            "POST",
+            "/api/faces/recluster",
+            json!({}),
+        )
+        .await;
+        release.join().unwrap();
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    #[tokio::test]
     async fn an_out_of_range_parameter_is_named() {
         let dir = tempfile::tempdir().unwrap();
         let app = app(library(dir.path()));
@@ -5799,5 +5829,30 @@ mod bulk_delete_tests {
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(body["error"], "library_busy");
         assert!(dir.path().join("a.jpg").exists());
+    }
+
+    /// A background stage (watch, started by the gallery) holding the
+    /// library for a moment must not make a delete fail: it waits briefly.
+    #[tokio::test]
+    async fn delete_goes_ahead_once_a_brief_holder_lets_go() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = library(dir.path(), &[("a.jpg", "ha", true)]);
+        let other = videre_core::library_locks::try_activity(
+            &state.context.library,
+            videre_core::library_locks::ActivityMode::Shared,
+        )
+        .unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(super::BUSY_WAIT / 4);
+            drop(other);
+        });
+        let (status, body) = delete(
+            &app(state.clone()),
+            json!({ "hashes": ["ha"], "dry_run": false }),
+        )
+        .await;
+        release.join().unwrap();
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(!dir.path().join("a.jpg").exists());
     }
 }

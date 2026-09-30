@@ -111,6 +111,10 @@ pub struct LibraryConfig {
     /// Whether `videre watch` runs the XMP export stage each cycle. Opt-in:
     /// absent means off, matching the global config.
     pub export_xmp_on_watch: bool,
+    /// Whether `videre gallery` starts `videre watch` beside it when none is
+    /// running, and stops it on quit. On by default: browsing is when a user
+    /// expects the library to keep up.
+    pub gallery_starts_watch: bool,
     /// Assumed floor read rate in MB/s used to scale I/O timeouts to file
     /// size; `None` means the built-in default applies
     /// (`io_timeout::MIN_READ_RATE_MB_S_DEFAULT`).
@@ -147,6 +151,7 @@ impl Default for LibraryConfig {
             default_model: DEFAULT_MODEL_ID.to_string(),
             xmp_precedence: XmpPrecedence::default(),
             export_xmp_on_watch: false,
+            gallery_starts_watch: true,
             min_read_rate_mb_s: None,
             max_io_workers: None,
             watch_debounce_ms: None,
@@ -178,6 +183,8 @@ pub enum ConfigKey {
     Xmp,
     /// `export_xmp_on_watch`, a boolean.
     ExportXmpOnWatch,
+    /// `gallery_starts_watch`, a boolean.
+    GalleryStartsWatch,
     /// `watch_debounce_ms`, a positive integer or absent.
     WatchDebounceMs,
     /// `watch_bulk_threshold`, a positive integer or absent.
@@ -205,6 +212,7 @@ impl ConfigKey {
             ConfigKey::IoWorkers => "max_io_workers",
             ConfigKey::Xmp => "xmp_precedence",
             ConfigKey::ExportXmpOnWatch => "export_xmp_on_watch",
+            ConfigKey::GalleryStartsWatch => "gallery_starts_watch",
             ConfigKey::WatchDebounceMs => "watch_debounce_ms",
             ConfigKey::WatchBulkThreshold => "watch_bulk_threshold",
             ConfigKey::WatchBulkQuietMs => "watch_bulk_quiet_ms",
@@ -389,6 +397,7 @@ fn config_from_table(table: &toml::Table, file: &Path) -> Result<LibraryConfig> 
         default_model,
         xmp_precedence,
         export_xmp_on_watch: bool_setting(table, file, "export_xmp_on_watch", false)?,
+        gallery_starts_watch: bool_setting(table, file, "gallery_starts_watch", true)?,
         min_read_rate_mb_s: read_rate_setting(table, file)?,
         max_io_workers: io_workers_setting(table, file)?,
         watch_debounce_ms: debounce_setting(table, file)?,
@@ -459,7 +468,9 @@ fn validate_value(key: ConfigKey, value: &toml::Value) -> Result<()> {
         (ConfigKey::ReadRate, toml::Value::Integer(n)) if *n > 0 => Ok(()),
         (ConfigKey::IoWorkers, toml::Value::Integer(n)) if (1..=256).contains(n) => Ok(()),
         (ConfigKey::Xmp, toml::Value::String(s)) => XmpPrecedence::parse(s).map(|_| ()),
-        (ConfigKey::ExportXmpOnWatch, toml::Value::Boolean(_)) => Ok(()),
+        (ConfigKey::ExportXmpOnWatch | ConfigKey::GalleryStartsWatch, toml::Value::Boolean(_)) => {
+            Ok(())
+        }
         (ConfigKey::WatchDebounceMs, toml::Value::Integer(n)) if *n > 0 => Ok(()),
         (ConfigKey::WatchBulkThreshold | ConfigKey::WatchBulkQuietMs, toml::Value::Integer(n))
             if *n > 0 =>
@@ -524,10 +535,9 @@ fn validate_value(key: ConfigKey, value: &toml::Value) -> Result<()> {
         (ConfigKey::Xmp, other) => {
             bail!("xmp_precedence must be a string, got {}", other.type_str())
         }
-        (ConfigKey::ExportXmpOnWatch, other) => bail!(
-            "export_xmp_on_watch must be a boolean, got {}",
-            other.type_str()
-        ),
+        (k @ (ConfigKey::ExportXmpOnWatch | ConfigKey::GalleryStartsWatch), other) => {
+            bail!("{} must be a boolean, got {}", k.name(), other.type_str())
+        }
     }
 }
 
@@ -893,6 +903,41 @@ mod tests {
         assert!(format!("{err:#}").contains("must be a boolean"), "{err:#}");
         let (_t, ctx) = library_with_config("export_xmp_on_watch = true\n");
         assert!(load(&ctx.paths).unwrap().export_xmp_on_watch);
+    }
+
+    #[test]
+    fn the_gallery_starts_watch_unless_told_not_to() {
+        let (_t, ctx) = library_with_config("");
+        assert!(load(&ctx.paths).unwrap().gallery_starts_watch);
+        let (_t, ctx) = library_with_config("gallery_starts_watch = false\n");
+        assert!(!load(&ctx.paths).unwrap().gallery_starts_watch);
+        let (_t, ctx) = library_with_config("gallery_starts_watch = \"no\"\n");
+        let err = load(&ctx.paths).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("gallery_starts_watch must be a boolean"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn an_edit_turns_the_gallery_watch_off_and_back_to_the_default() {
+        let (_t, ctx) = library_with_config("");
+        edit(
+            &ctx,
+            ConfigKey::GalleryStartsWatch,
+            Some(toml::Value::Boolean(false)),
+        )
+        .unwrap();
+        assert!(!load(&ctx.paths).unwrap().gallery_starts_watch);
+        let err = edit(
+            &ctx,
+            ConfigKey::GalleryStartsWatch,
+            Some(toml::Value::Integer(0)),
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("must be a boolean"), "{err:#}");
+        edit(&ctx, ConfigKey::GalleryStartsWatch, None).unwrap();
+        assert!(load(&ctx.paths).unwrap().gallery_starts_watch);
     }
 
     #[test]

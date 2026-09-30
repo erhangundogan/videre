@@ -160,6 +160,53 @@ fn two_watches_on_separate_libraries_do_not_conflict() {
     let _ = cb.wait();
 }
 
+/// `--exit-with <pid>`: a watch started on behalf of another process (the
+/// gallery) stops once that process is gone, however it went, so it is never
+/// left running orphaned. Here the parent is a shell that exits when its
+/// stdin closes, the way a killed gallery would vanish.
+#[test]
+fn a_watch_stops_once_the_process_it_serves_is_gone() {
+    use std::io::Write;
+    let lib = TestLibrary::new();
+    lib.copy_fixture("sample_with_exif.jpg", "a.jpg");
+    let watch_locked =
+        || videre_core::library_locks::command_locked(&lib.context(), "watch").unwrap_or(false);
+    let mut parent = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "\"{}\" watch --scan --silent --exit-with $$ >/dev/null 2>&1 & read _",
+            env!("CARGO_BIN_EXE_videre")
+        ))
+        .current_dir(&lib.root)
+        .env("HOME", &lib.home)
+        .env("HF_HOME", lib.home.join(".cache/huggingface"))
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !watch_locked() {
+        assert!(Instant::now() < deadline, "the watch never started");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // Still there while its parent lives.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(watch_locked(), "the watch left while its parent was alive");
+
+    let mut stdin = parent.stdin.take().unwrap();
+    let _ = stdin.write_all(b"\n");
+    drop(stdin);
+    parent.wait().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while watch_locked() {
+        assert!(
+            Instant::now() < deadline,
+            "the watch outlived its parent by more than 5s"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// Degraded fallback: when event registration fails, watch says so once and
 /// keeps running the rescan loop instead of crashing or sitting silent.
 #[test]

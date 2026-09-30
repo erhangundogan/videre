@@ -68,6 +68,7 @@ fn gallery_starts_and_keeps_serving() {
     // error. It binds a port and blocks, so this checks it is still alive a
     // moment later rather than waiting on a request.
     let lib = library_with_faces();
+    lib.no_gallery_watch();
     let mut child = lib
         .cmd()
         .args(["gallery", "--port", "7893"])
