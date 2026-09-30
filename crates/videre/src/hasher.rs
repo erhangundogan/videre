@@ -576,6 +576,34 @@ mod tests {
         assert_eq!(data.height, Some(3024));
     }
 
+    /// Every container the library holds photos in, read through the same
+    /// EXIF reader: a date or GPS lost for one format is silent.
+    #[test]
+    fn extract_exif_reads_every_container_format() {
+        for (file, date, gps) in [
+            ("tiny_dated.jpg", "2011-04-23T10:00:00", true),
+            ("tiny_dated.heic", "2011-04-23T10:00:00", true),
+            ("tiny_dated.tiff", "2011-04-23T10:00:00", true),
+            ("tiny_dated.png", "2021-08-10T19:34:03", true),
+            ("tiny_dated.webp", "2011-04-23T10:00:00", false),
+        ] {
+            let path = std::path::Path::new("tests/fixtures/content_key").join(file);
+            let data = extract_exif(&path);
+            assert_eq!(data.exif_date.as_deref(), Some(date), "{file}");
+            if gps {
+                assert!((data.gps_lat.unwrap() - 40.997).abs() < 0.01, "{file}");
+                assert!((data.gps_lon.unwrap() - 29.012).abs() < 0.01, "{file}");
+            }
+        }
+    }
+
+    #[test]
+    fn southern_and_western_coordinates_are_negative() {
+        let data = extract_exif(std::path::Path::new("tests/fixtures/gps_south_west.jpg"));
+        assert!((data.gps_lat.unwrap() + 40.997).abs() < 0.01);
+        assert!((data.gps_lon.unwrap() + 29.012).abs() < 0.01);
+    }
+
     #[test]
     fn hashing_detects_the_real_type_not_the_extension() {
         // A JPEG named .png, the shape of the real file that fails every

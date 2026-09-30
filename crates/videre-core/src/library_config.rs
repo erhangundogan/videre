@@ -1094,6 +1094,36 @@ mod tests {
         assert_eq!(table["export_xmp_on_watch"].as_bool(), Some(true));
     }
 
+    /// The exact text an edit writes back. The file is the user's: key order,
+    /// non-ASCII values and nested tables survive, and the reformatting the
+    /// serializer applies (arrays one item per line, a string holding quotes
+    /// as a literal string) is pinned so a serializer upgrade cannot change
+    /// what the user sees unnoticed.
+    #[test]
+    fn an_edit_writes_the_file_back_in_a_pinned_format() {
+        let (_t, ctx) = library_with_config(
+            "watch_debounce_ms = 900\n\
+             db = \"hashes.db\"\n\
+             \"albüm\" = \"Kadıköy \\\"yaz\\\" 2024\"\n\
+             etiketler = [\"deniz\", \"çiçek\"]\n\
+             \n\
+             [future]\n\
+             sub = \"keep\"\n",
+        );
+        edit(&ctx, ConfigKey::ReadRate, Some(toml::Value::Integer(42))).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&ctx.paths.config).unwrap(),
+            "watch_debounce_ms = 900\n\
+             db = \"hashes.db\"\n\
+             \"albüm\" = 'Kadıköy \"yaz\" 2024'\n\
+             etiketler = [\n    \"deniz\",\n    \"çiçek\",\n]\n\
+             min_read_rate_mb_s = 42\n\
+             \n\
+             [future]\n\
+             sub = \"keep\"\n"
+        );
+    }
+
     #[test]
     fn an_edit_does_not_launder_an_already_broken_file() {
         let (_t, ctx) =
