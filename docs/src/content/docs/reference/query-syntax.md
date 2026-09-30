@@ -85,3 +85,23 @@ takes one or the other.
 `--query`, filters only, to narrow what they work on. See
 [Scoping a run](/guides/scoping-a-run/). The MCP server's `search` tool takes
 the same language in its `query` parameter.
+
+## Completion
+
+With the [dynamic completer registered](/start/install/#shell-completion), Tab
+completes the query's last term in bash, zsh and fish, inside the single
+quotes: a key, then the library's own values for it (people, tags,
+categories, labels, places, extensions, and the fixed `is:`, `type:`, `has:`,
+`missing:`, `pick:` and `rating:` values), most used first.
+
+```bash
+videre search 'gün person:er<Tab>     # → 'gün person:erhan_gundogan'
+videre search 'ta<Tab>                # → 'tag:, then the tags
+```
+
+A person completes to their identity, which has no spaces, with the display
+name shown beside it. A value with a space is offered already quoted, right
+after `key:` or once you type the opening `"` (`place:"Ka`); after an
+unquoted letter (`place:Ka`) a shell cannot put the quote in front, so it is
+not offered. The gallery's search box suggests from the same function, and
+matches more loosely: `gündo` finds Erhan Gündoğan there.
