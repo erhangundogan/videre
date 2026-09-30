@@ -197,6 +197,30 @@ fn xmp_and_watch_export_settings_roundtrip() {
 }
 
 #[test]
+fn the_gallery_watch_setting_is_on_by_default_and_can_be_turned_off() {
+    let library = TestLibrary::new();
+    let shown = run(&library, &["config"]);
+    let stdout = String::from_utf8_lossy(&shown.stdout);
+    assert!(stdout.contains("gallery-starts-watch: on"), "{stdout}");
+    assert!(run(
+        &library,
+        &["config", "set", "gallery-starts-watch", "false"]
+    )
+    .status
+    .success());
+    let shown = run(&library, &["config"]);
+    let stdout = String::from_utf8_lossy(&shown.stdout);
+    assert!(stdout.contains("gallery-starts-watch: off"), "{stdout}");
+    assert!(config_text(&library).contains("gallery_starts_watch = false"));
+    let bad = run(
+        &library,
+        &["config", "set", "gallery-starts-watch", "sometimes"],
+    );
+    assert!(!bad.status.success());
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("true or false"));
+}
+
+#[test]
 fn removed_and_unknown_config_keys_are_rejected() {
     for key in ["db", "path", "jsonl", "nope"] {
         let library = TestLibrary::new();

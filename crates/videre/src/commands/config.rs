@@ -9,6 +9,7 @@ const CONFIG_KEYS: &[&str] = &[
     "io-workers",
     "xmp",
     "export-xmp-on-watch",
+    "gallery-starts-watch",
     "watch-debounce-ms",
     "watch-bulk-threshold",
     "watch-bulk-quiet-ms",
@@ -60,6 +61,7 @@ fn config_key(key: &str) -> ConfigKey {
         "io-workers" => ConfigKey::IoWorkers,
         "xmp" => ConfigKey::Xmp,
         "export-xmp-on-watch" => ConfigKey::ExportXmpOnWatch,
+        "gallery-starts-watch" => ConfigKey::GalleryStartsWatch,
         "watch-debounce-ms" => ConfigKey::WatchDebounceMs,
         "watch-bulk-threshold" => ConfigKey::WatchBulkThreshold,
         "watch-bulk-quiet-ms" => ConfigKey::WatchBulkQuietMs,
@@ -101,10 +103,10 @@ fn config_value(key: &str, value: String) -> Result<(ConfigKey, toml::Value)> {
         ConfigKey::IoWorkers => whole_number(name, &value, "workers")?,
         ConfigKey::WatchBulkThreshold => whole_number(name, &value, "files")?,
         ConfigKey::WatchBulkQuietMs => whole_number(name, &value, "milliseconds")?,
-        ConfigKey::ExportXmpOnWatch => {
-            let on: bool = value.parse().map_err(|_| {
-                anyhow::anyhow!("export-xmp-on-watch must be true or false, got {value:?}")
-            })?;
+        ConfigKey::ExportXmpOnWatch | ConfigKey::GalleryStartsWatch => {
+            let on: bool = value
+                .parse()
+                .map_err(|_| anyhow::anyhow!("{name} must be true or false, got {value:?}"))?;
             toml::Value::Boolean(on)
         }
         ConfigKey::WatchDebounceMs => {
@@ -156,6 +158,14 @@ fn show(ctx: &CommandContext) -> Result<()> {
     println!(
         "export-xmp-on-watch: {}",
         if config.export_xmp_on_watch {
+            "on"
+        } else {
+            "off"
+        }
+    );
+    println!(
+        "gallery-starts-watch: {}",
+        if config.gallery_starts_watch {
             "on"
         } else {
             "off"
