@@ -122,7 +122,7 @@ jobs:
           target: ${{ matrix.target }}
           archive: $bin-$tag-$target
           checksum: sha256
-          files: videre.bash,videre.zsh,videre.fish
+          include: videre.bash,videre.zsh,videre.fish
           token: ${{ secrets.GITHUB_TOKEN }}
 
       # Proof the artifact is self-contained. macOS was measured before this

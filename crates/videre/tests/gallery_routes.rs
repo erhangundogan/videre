@@ -163,6 +163,35 @@ impl Server {
         (status, body.to_string())
     }
 
+    /// A GET with an optional `Range` header. Returns (status, response head,
+    /// raw body), for the file-serving routes whose Range handling matters.
+    fn get_range(&self, path: &str, range: Option<&str>) -> (u16, String, Vec<u8>) {
+        let mut stream = TcpStream::connect(("127.0.0.1", self.port))
+            .unwrap_or_else(|e| panic!("connect for {path}: {e}"));
+        stream
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        let range = range.map(|r| format!("Range: {r}\r\n")).unwrap_or_default();
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{range}Connection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).unwrap();
+        let sep = raw
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .unwrap_or_else(|| panic!("no header end for {path}"));
+        let head = String::from_utf8_lossy(&raw[..sep]).to_lowercase();
+        let status = head
+            .split_whitespace()
+            .nth(1)
+            .and_then(|c| c.parse().ok())
+            .unwrap_or(0);
+        (status, head, raw[sep + 4..].to_vec())
+    }
+
     /// Like `get`, but returns the raw body bytes and the Content-Type, for
     /// binary responses (a poster JPEG) that `get`'s lossy-UTF-8 body mangles.
     // Only the macOS-gated poster test needs raw bytes; unused off macOS.
@@ -343,6 +372,67 @@ fn a_video_at_the_thumbnail_failure_threshold_is_refused() {
         videre_core::decode_failures::FAILURE_THRESHOLD,
         "the gate returned before conversion, so no new strike was recorded"
     );
+}
+
+/// Asserts a `bytes=0-15` answer: 206, the right Content-Range, and exactly
+/// those bytes of `file`.
+fn assert_first_sixteen_bytes(server: &Server, route: &str, file: &Path) {
+    let whole = std::fs::read(file).unwrap();
+    let (status, head, body) = server.get_range(route, Some("bytes=0-15"));
+    assert_eq!(status, 206, "{route}: {head}");
+    assert!(
+        head.contains(&format!("content-range: bytes 0-15/{}", whole.len())),
+        "{route}: {head}"
+    );
+    assert_eq!(body, whole[..16], "{route}");
+
+    let (status, head, body) = server.get_range(route, None);
+    assert_eq!(status, 200, "{route}: {head}");
+    assert!(head.contains("accept-ranges: bytes"), "{route}: {head}");
+    assert_eq!(body.len(), whole.len(), "{route}");
+
+    let (status, head, _) = server.get_range(route, Some(&format!("bytes={}-", whole.len())));
+    assert_eq!(status, 416, "{route}: a range past the end: {head}");
+}
+
+#[test]
+fn a_raw_video_is_served_by_byte_range() {
+    // Browsers read video metadata with Range requests; a full body for each
+    // ties up the connection pool (see the raw route).
+    let lib = TestLibrary::new();
+    let dst = lib
+        .copy_fixture("red_1s.mp4", "Kadıköy/vapur.mp4")
+        .canonicalize()
+        .unwrap();
+    lib.init_db()
+        .execute(
+            "INSERT INTO file_hashes (path, hash, ext, size_bytes) VALUES (?1, 'vid1', 'mp4', 1000)",
+            [dst.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+    let server = Server::start(&lib);
+    assert_first_sixteen_bytes(&server, "/api/files/vid1/raw", &dst);
+}
+
+#[test]
+fn the_basemap_archive_is_served_by_byte_range() {
+    // MapLibre's pmtiles protocol reads the archive only through Range requests.
+    let lib = TestLibrary::new();
+    drop(lib.init_db());
+    let archive = lib
+        .context()
+        .paths
+        .state
+        .join("basemap")
+        .join("basemap.pmtiles");
+    std::fs::create_dir_all(archive.parent().unwrap()).unwrap();
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/basemap-tiny.pmtiles"),
+        &archive,
+    )
+    .unwrap();
+    let server = Server::start(&lib);
+    assert_first_sixteen_bytes(&server, "/tiles/basemap.pmtiles", &archive);
 }
 
 #[test]
