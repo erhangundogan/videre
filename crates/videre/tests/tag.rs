@@ -164,3 +164,74 @@ fn a_file_with_only_a_category_gets_no_sidecar() {
     run(&lib, &["export", "--xmp", "--path", "Kadıköy", "--silent"]);
     assert!(!lib.root.join("Kadıköy/IMG.jpg.xmp").exists());
 }
+
+fn tags_of(lib: &TestLibrary, hash: &str) -> Vec<String> {
+    let mut tags = videre_core::tags::tags_for_hash(&lib.conn(), hash).unwrap();
+    tags.sort();
+    tags
+}
+
+/// The dc:subject keywords of a sidecar, sorted.
+fn keywords_in(sidecar: &Path) -> Vec<String> {
+    let doc = std::fs::read_to_string(sidecar).unwrap();
+    let mut keywords: Vec<String> = doc
+        .split("<rdf:li>")
+        .skip(1)
+        .filter_map(|s| s.split_once("</rdf:li>").map(|(k, _)| k.to_string()))
+        .collect();
+    keywords.sort();
+    keywords
+}
+
+#[test]
+fn a_rebuilt_library_gets_back_only_the_users_tags() {
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "Kadıköy/IMG.jpg");
+    lib.scan();
+    let hash = hash_of(&lib, "Kadıköy/IMG.jpg");
+    classify_as(&lib, &hash, "photo");
+    run(
+        &lib,
+        &[
+            "tag",
+            "--add",
+            "doğum günü",
+            "--path",
+            "Kadıköy",
+            "--silent",
+        ],
+    );
+    run(&lib, &["export", "--xmp", "--path", "Kadıköy", "--silent"]);
+
+    std::fs::remove_dir_all(lib.root.join(".videre")).unwrap();
+    lib.scan();
+    assert_eq!(tags_of(&lib, &hash), ["doğum günü"]);
+}
+
+#[test]
+fn a_full_export_drops_a_category_keyword_an_older_version_wrote() {
+    // An older export wrote the category `photo`; another app added `Kadıköy`.
+    let lib = TestLibrary::new();
+    lib.copy_fixture("tiny.jpg", "Kadıköy/IMG.jpg");
+    let sidecar = lib.root.join("Kadıköy/IMG.jpg.xmp");
+    std::fs::write(
+        &sidecar,
+        "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\
+         <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\
+         <rdf:Description rdf:about=\"\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\
+         <dc:subject><rdf:Bag><rdf:li>photo</rdf:li><rdf:li>Kadıköy</rdf:li></rdf:Bag></dc:subject>\
+         </rdf:Description></rdf:RDF></x:xmpmeta>",
+    )
+    .unwrap();
+    lib.scan();
+    let hash = hash_of(&lib, "Kadıköy/IMG.jpg");
+    assert_eq!(tags_of(&lib, &hash), ["Kadıköy", "photo"]);
+
+    run(
+        &lib,
+        &["tag", "--remove", "photo", "--path", "Kadıköy", "--silent"],
+    );
+    classify_as(&lib, &hash, "photo");
+    run(&lib, &["export", "--xmp", "--path", "Kadıköy", "--silent"]);
+    assert_eq!(keywords_in(&sidecar), ["Kadıköy"]);
+}
