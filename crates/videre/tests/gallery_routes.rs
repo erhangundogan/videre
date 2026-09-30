@@ -686,7 +686,9 @@ fn live_date_pages_link_the_drill_down_routes() {
 
     let (status, body) = server.get("/date");
     assert_eq!(status, 200);
-    assert!(body.contains("href=\"/date/'+escA"));
+    // The card links to the drill-down route, keeping any query.
+    assert!(body.contains("href=\"'+escA(withQuery(dateHref(prefix)))"));
+    assert!(body.contains("return '/date/'+String(prefix)"));
 
     let (status, body) = server.get("/date/2025");
     assert_eq!(status, 200);
@@ -2223,4 +2225,53 @@ fn the_query_box_gets_suggestions_for_the_term_at_the_cursor() {
     assert_eq!(v["items"][0]["kind"], "key", "{v}");
 
     assert_eq!(get("\"gün bat", None)["items"], serde_json::json!([]));
+}
+
+#[test]
+fn the_date_tree_counts_only_files_matching_a_query() {
+    let lib = tagged_library();
+    let server = Server::start(&lib);
+    let dates = |q: &str| {
+        let q: String = q.bytes().map(|b| format!("%{b:02X}")).collect();
+        let (status, body) = server.get(&format!("/api/dates?level=year&q={q}"));
+        (
+            status,
+            serde_json::from_str::<serde_json::Value>(&body).unwrap_or_default(),
+        )
+    };
+    let years = |v: &serde_json::Value| -> Vec<(String, i64)> {
+        v["buckets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| {
+                (
+                    b["key"].as_str().unwrap().to_string(),
+                    b["count"].as_i64().unwrap(),
+                )
+            })
+            .collect()
+    };
+
+    let (status, v) = dates("tag:deniz");
+    assert_eq!(status, 200, "{v}");
+    // An empty year is not shown at all, rather than as 0.
+    assert_eq!(years(&v), [("2023".to_string(), 1)]);
+    assert_eq!(v["matched"], 1, "{v}");
+    assert_eq!(v["library_total"], 3, "{v}");
+
+    let (_, v) = dates("-tag:deniz");
+    assert_eq!(
+        years(&v),
+        [("2024".to_string(), 1), ("2023".to_string(), 1)]
+    );
+
+    let (status, v) = dates("kişi:özgür");
+    assert_eq!(status, 400, "{v}");
+    assert!(v["error"].as_str().unwrap().contains("unknown key"), "{v}");
+
+    // Without q, the response is as it always was.
+    let (_, body) = server.get("/api/dates?level=year");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(v.get("library_total").is_none(), "{v}");
 }
