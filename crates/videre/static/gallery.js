@@ -1404,16 +1404,15 @@ function drawTextResults(query,scored){
   panel.querySelectorAll('img').forEach(function(img){if(img.loading==='lazy')img.loading='eager';});
   panel.scrollIntoView({behavior:'smooth',block:'start'});
 }
-// Wire the shared nav search box: prefill it from the URL. It stays on
-// libraries without embeddings, because a query's filters need none; a query
-// on the Files page runs through the grid fetch above, which ranks its words.
+// The nav's query box fills itself from the URL (templates/query-box.js). It
+// stays on libraries without embeddings, because a query's filters need none;
+// a query on the Files page runs through the grid fetch above, which ranks
+// its words.
 (function(){
-  var q=new URLSearchParams(window.location.search).get('q');
   var navInput=document.getElementById('nav-search');
-  if(navInput&&typeof HAS_EMBEDDINGS!=='undefined'&&!HAS_EMBEDDINGS){
+  if(navInput&&typeof HAS_EMBEDDINGS!=='undefined'&&!HAS_EMBEDDINGS&&!navInput.closest('.qbox').querySelector('.qchip')){
     navInput.placeholder='Filter, e.g. tag:deniz…';
   }
-  if(q&&navInput)navInput.value=q;
 })();
 if(typeof ALLFILES!=='undefined'){
   ALLFILES.forEach(function(f){

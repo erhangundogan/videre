@@ -136,6 +136,22 @@ page with it:
 The query stays in the address bar as `/?q=...`, so a reload or a bookmark
 opens the same grid.
 
+In the box, each filter is a **chip**, and words stay as text:
+
+- **Suggestions** open as you type: keys, then the library's own values for
+  the key (people with their face, tags, places, categories, labels, types),
+  most used first, matching case and accents loosely, so `gündo` finds Erhan
+  Gündoğan. Arrow keys move, Enter or Tab takes one. A value becomes a chip;
+  Enter on its own runs the query.
+- **A second value of the same key joins its chip.** For `person:` and `tag:`
+  it starts as **all** (both in the photo); for keys a file has one of, such
+  as `type:` or `place:`, as **any**. The chip's any/all button switches it.
+- **not** on a chip excludes it, **×** removes it, and both apply at once.
+  Clicking a chip's text, or Backspace in an empty box, takes it back into
+  the box to edit.
+- A part of the query that chips cannot show, such as `tag:deniz OR
+  person:ayşe`, stays one chip with its text unchanged.
+
 The tall library header (the database path and the scanned-file counts) shows on
 the Library page and on a static export; the other sections drop it, since the strip
 already says where you are. The Duplicates page keeps a header of its own while it
