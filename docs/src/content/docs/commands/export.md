@@ -39,7 +39,6 @@ using the standard fields the other tools already read:
 |---|---|
 | Named faces (confirmed) | MWG face regions (`mwg-rs:Regions`), name plus box |
 | Resolved location name | `Iptc4xmpCore:Location` |
-| Category (photo/screenshot/document/meme) | `dc:subject` keyword |
 | [Tags](/commands/tag/) | `dc:subject` keywords |
 | Star rating | `xmp:Rating` |
 | Colour label | `xmp:Label` |
@@ -48,6 +47,14 @@ Face regions are written as normalized MWG areas, the format digiKam and
 Lightroom use for face tags, so a name you assigned in videre shows up as a named
 face region there. Picks and likes have no portable standard and stay in videre's
 database.
+
+The category [`videre classify`](/commands/classify/) gives a photo is not
+exported either. It is recomputed whenever you classify again, and a scan reads
+every `dc:subject` keyword back as a tag, so writing it there would turn it into
+a tag you never added. Versions before 0.50.0 did write it: the next full
+export rewrites the keywords from your tags alone, so the old category keyword
+disappears from the sidecar, while keywords another app added stay, because
+scan has already imported them as tags.
 
 A file with nothing to write gets no sidecar. If it already has one, videre's
 fields are removed from it, so a label you took away since the last export does

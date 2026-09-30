@@ -1,5 +1,5 @@
-//! Collects the non-face owned labels for one photo hash (image dimensions,
-//! resolved location name, zero-shot category) that a sidecar export needs.
+//! Collects the non-face owned labels for one photo hash (image dimensions and
+//! resolved location name) that a sidecar export needs.
 //! Faces are gathered separately via `face_db::labeled_faces_by_hash`. Returns
 //! plain data; the binary assembles the XMP model, because that type is
 //! binary-only.
@@ -10,11 +10,10 @@ use rusqlite::{Connection, OptionalExtension};
 pub struct Gathered {
     pub dims: Option<(u32, u32)>,
     pub location: Option<String>,
-    pub category: Option<String>,
 }
 
 /// Best-effort: a missing row or column yields None fields, never an error, so an
-/// export over a library that never ran classify or locations still writes faces
+/// export over a library that never ran locations still writes faces
 /// and marks.
 pub fn gather_for_hash(conn: &Connection, hash: &str) -> rusqlite::Result<Gathered> {
     let dims = conn
@@ -34,18 +33,7 @@ pub fn gather_for_hash(conn: &Connection, hash: &str) -> rusqlite::Result<Gather
             |r| r.get::<_, String>(0),
         )
         .optional()?;
-    let category = conn
-        .query_row(
-            "SELECT category FROM classifications WHERE hash = ?1 LIMIT 1",
-            [hash],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()?;
-    Ok(Gathered {
-        dims,
-        location,
-        category,
-    })
+    Ok(Gathered { dims, location })
 }
 
 #[cfg(test)]
@@ -60,23 +48,19 @@ mod tests {
                 width INTEGER, height INTEGER, location_cluster_id INTEGER);
              CREATE TABLE location_clusters (id INTEGER PRIMARY KEY, centroid_lat REAL,
                 centroid_lon REAL, name TEXT, photo_count INTEGER, radius_km REAL, created_at TEXT);
-             CREATE TABLE classifications (model_id TEXT, hash TEXT, category TEXT,
-                confidence REAL, classified_at TEXT, PRIMARY KEY (model_id, hash));
              INSERT INTO location_clusters VALUES (7, 41.0, 29.0, 'Kadıköy', 1, 0.5, '');
-             INSERT INTO file_hashes VALUES ('/p.jpg','h1','jpg','image/jpeg',4000,3000,7);
-             INSERT INTO classifications VALUES ('m','h1','photo',0.9,'');",
+             INSERT INTO file_hashes VALUES ('/p.jpg','h1','jpg','image/jpeg',4000,3000,7);",
         )
         .unwrap();
         c
     }
 
     #[test]
-    fn gathers_dims_location_and_category() {
+    fn gathers_dims_and_location() {
         let c = setup();
         let g = gather_for_hash(&c, "h1").unwrap();
         assert_eq!(g.dims, Some((4000, 3000)));
         assert_eq!(g.location.as_deref(), Some("Kadıköy"));
-        assert_eq!(g.category.as_deref(), Some("photo"));
     }
 
     #[test]
@@ -85,6 +69,5 @@ mod tests {
         let g = gather_for_hash(&c, "absent").unwrap();
         assert_eq!(g.dims, None);
         assert_eq!(g.location, None);
-        assert_eq!(g.category, None);
     }
 }
