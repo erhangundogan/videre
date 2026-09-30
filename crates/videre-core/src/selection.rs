@@ -139,6 +139,9 @@ pub struct RowSelection {
     pub person: Option<String>,
     pub category: Option<String>,
     pub place: Option<PlaceQuery>,
+    /// One of the library's own place names, matched offline by
+    /// `query::by_place_name` (the query language's `place:`).
+    pub place_name: Option<String>,
     pub after: Option<String>,
     pub before: Option<String>,
     pub has: Vec<PresenceField>,
@@ -189,6 +192,7 @@ impl RowSelection {
         self.person.is_none()
             && self.category.is_none()
             && self.place.is_none()
+            && self.place_name.is_none()
             && self.after.is_none()
             && self.before.is_none()
             && self.has.is_empty()
@@ -222,6 +226,9 @@ impl RowSelection {
                 g.lat, g.lon, g.radius_km
             )),
             None => {}
+        }
+        if let Some(p) = &self.place_name {
+            parts.push(format!("place:{p:?}"));
         }
         if let Some(a) = &self.after {
             parts.push(format!("--after {a}"));
@@ -379,6 +386,9 @@ impl RowSelection {
         }
         for t in &self.tags {
             narrow(crate::tags::by_tag(conn, t)?, &mut acc);
+        }
+        if let Some(p) = &self.place_name {
+            narrow(query::by_place_name(conn, p)?, &mut acc);
         }
 
         // Place last: geocoding may hit the network, so an already-empty
@@ -852,6 +862,29 @@ mod resolve_tests {
 
     fn set<const N: usize>(hashes: [&str; N]) -> HashSet<String> {
         hashes.into_iter().map(str::to_string).collect()
+    }
+
+    #[test]
+    fn a_place_name_is_a_predicate_and_intersects_like_the_others() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE file_hashes (path TEXT PRIMARY KEY, hash TEXT NOT NULL,
+                 ext TEXT, mime TEXT, location_name TEXT, location_cluster_id INTEGER);
+             INSERT INTO file_hashes VALUES
+               ('/a.jpg', 'ha', 'jpg', 'image/jpeg', 'Kadıköy, İstanbul', NULL),
+               ('/b.mov', 'hb', 'mov', 'video/quicktime', 'Kadıköy, İstanbul', NULL),
+               ('/c.jpg', 'hc', 'jpg', 'image/jpeg', 'Ankara', NULL);",
+        )
+        .unwrap();
+        let mut s = sel();
+        s.place_name = Some("kadıköy".into());
+        assert!(!s.is_empty());
+        assert!(s.describe().contains("place:"), "{}", s.describe());
+        let got = s.resolve(&c, &SelectionCtx::default()).unwrap();
+        assert_eq!(got.hashes, Some(set(["ha", "hb"])));
+        s.kinds = vec![MediaKind::Image];
+        let got = s.resolve(&c, &SelectionCtx::default()).unwrap();
+        assert_eq!(got.hashes, Some(set(["ha"])));
     }
 
     fn presence_db() -> Connection {

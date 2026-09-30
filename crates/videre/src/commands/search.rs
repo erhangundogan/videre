@@ -916,6 +916,7 @@ mod tests {
                 place: "Berlin".into(),
                 radius_km: 10.0,
             }),
+            place_name: None,
             after: Some("2024-01-01T00:00:00".into()),
             before: Some("2025-01-01T00:00:00".into()),
             has: vec![videre_core::selection::PresenceField::Gps],
