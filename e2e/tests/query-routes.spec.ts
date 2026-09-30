@@ -1,4 +1,6 @@
-import { expect, seedPlace, seedTrips, test } from "../support/gallery";
+import { DatabaseSync } from "node:sqlite";
+import { join } from "node:path";
+import { expect, seedFaces, seedPlace, seedTrips, test } from "../support/gallery";
 
 // The gallery fixture: first.jpg and second.jpg are the same image, so the
 // date view (one row per content hash) holds that image and clip.mp4.
@@ -38,7 +40,7 @@ test("the nav carries the query to the pages that honour it", async ({ page, gal
   await expect(page.locator(".secnav a", { hasText: "Library" })).toHaveAttribute("href", `/?q=${q("type:image")}`);
   await expect(page.locator(".secnav a", { hasText: "Map" })).toHaveAttribute("href", `/map?q=${q("type:image")}`);
   await expect(page.locator(".secnav a", { hasText: "Events" })).toHaveAttribute("href", `/events?q=${q("type:image")}`);
-  await expect(page.locator(".secnav a", { hasText: "People" })).toHaveAttribute("href", "/people");
+  await expect(page.locator(".secnav a", { hasText: "People" })).toHaveAttribute("href", `/people?q=${q("type:image")}`);
 });
 
 test("the box applies a query on the page it is on, when that page honours one", async ({ page, gallery }) => {
@@ -84,4 +86,40 @@ test("Events keeps trips with a matching member and narrows them", async ({ page
 
   await page.goto(`${gallery.baseURL}/events?q=${q("ext:png")}`);
   await expect(page.locator("#dateGrid")).toContainText("No trip has a matching file.");
+});
+
+test("Duplicates shows the groups with a matching member, whole", async ({ page, gallery }) => {
+  // first.jpg and second.jpg are one group; the clip has no copy.
+  await page.goto(`${gallery.baseURL}/duplicates?q=${q("type:image")}`);
+  await expect(page.locator("#query-status")).toContainText("1 of 1");
+  await expect(page.locator("#groups-container")).toContainText("first.jpg");
+
+  await page.goto(`${gallery.baseURL}/duplicates?q=${q("type:video")}`);
+  await expect(page.locator("#query-status")).toContainText("0 of 1");
+  await expect(page.locator("#groups-container")).toContainText("No duplicate group has a matching file.");
+  await expect(page.getByText("No duplicates", { exact: true })).toHaveCount(0);
+
+  await page.goto(`${gallery.baseURL}/duplicates?q=${q("kişi:özgür")}`);
+  await expect(page.locator("#query-status")).toHaveClass(/query-error/);
+});
+
+function hashOf(libraryRoot: string, name: string): string {
+  const db = new DatabaseSync(join(libraryRoot, ".videre", "hashes.db"), { readOnly: true });
+  const row = db.prepare("SELECT hash FROM file_hashes WHERE path LIKE ?").get(`%/${name}`) as { hash: string };
+  db.close();
+  return row.hash;
+}
+
+test("People lists only those seen in a matching file", async ({ page, isolatedGallery: gallery }) => {
+  seedFaces(gallery.libraryRoot, [
+    { hash: hashOf(gallery.libraryRoot, "first.jpg"), vector: [1], label: "ozgur" },
+    { hash: hashOf(gallery.libraryRoot, "clip.mp4"), vector: [0, 1], label: "ayse" }
+  ]);
+  await page.goto(`${gallery.baseURL}/people?q=${q("type:video")}`);
+  await expect(page.locator("#query-status")).toContainText("1 of 2");
+  await expect(page.locator("#people-grid")).toContainText("ayse");
+  await expect(page.locator("#people-grid")).not.toContainText("ozgur");
+
+  await page.goto(`${gallery.baseURL}/people?q=${q("ext:png")}`);
+  await expect(page.locator("#people-grid")).toContainText("No one appears in a matching file.");
 });

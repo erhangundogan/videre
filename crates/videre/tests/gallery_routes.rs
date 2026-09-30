@@ -2275,3 +2275,93 @@ fn the_date_tree_counts_only_files_matching_a_query() {
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert!(v.get("library_total").is_none(), "{v}");
 }
+
+/// Two duplicate groups: `deniz` (tagged deniz) and `ev`, each on two paths.
+fn duplicates_library() -> TestLibrary {
+    let lib = TestLibrary::new();
+    let root = lib.context().paths.root;
+    let conn = lib.init_db();
+    for (name, hash) in [
+        ("deniz-1.jpg", "hd"),
+        ("deniz-2.jpg", "hd"),
+        ("ev-1.jpg", "he"),
+        ("ev-2.jpg", "he"),
+    ] {
+        conn.execute(
+            "INSERT INTO file_hashes (path, hash, size_bytes, ext, mime)
+             VALUES (?1, ?2, 100, 'jpg', 'image/jpeg')",
+            rusqlite::params![root.join(name).to_string_lossy().as_ref(), hash],
+        )
+        .unwrap();
+    }
+    videre_core::tags::ensure_photo_tags_table(&conn).unwrap();
+    conn.execute_batch("INSERT INTO photo_tags VALUES ('hd','deniz');")
+        .unwrap();
+    lib
+}
+
+#[test]
+fn duplicates_shows_only_groups_with_a_matching_member_whole() {
+    let lib = duplicates_library();
+    let server = Server::start(&lib);
+
+    let (status, body) = server.get("/duplicates?q=tag%3Adeniz");
+    assert_eq!(status, 200);
+    assert!(body.contains("deniz-1.jpg") && body.contains("deniz-2.jpg"));
+    assert!(
+        !body.contains("ev-1.jpg"),
+        "a group with no match is left out"
+    );
+    assert!(
+        body.contains("var GQUERY_RESULT={\"matched\":1,\"library_total\":2};"),
+        "the page says how many groups match"
+    );
+
+    // A query that cannot run shows no groups and says why.
+    let (status, body) = server.get("/duplicates?q=ki%C5%9Fi%3Ax");
+    assert_eq!(status, 200);
+    assert!(!body.contains("deniz-1.jpg"));
+    assert!(
+        body.contains("var GQUERY_RESULT={\"error\":"),
+        "{}",
+        &body[..200]
+    );
+
+    let (_, body) = server.get("/duplicates");
+    assert!(body.contains("ev-1.jpg") && body.contains("var GQUERY_RESULT=null;"));
+}
+
+#[test]
+fn people_lists_only_those_in_matching_files() {
+    let lib = tagged_library();
+    let server = Server::start(&lib);
+    lib.conn()
+        .execute_batch(
+            "INSERT INTO people (name, full_name) VALUES ('ozgur', 'Özgür'), ('ayse', 'Ayşe');
+             INSERT INTO faces (hash, bbox, embedding, person_label, confirmed) VALUES
+               ('h1', '0,0,9,9', X'00', 'ozgur', 1),
+               ('h2', '0,0,9,9', X'00', 'ayse', 1);",
+        )
+        .unwrap();
+
+    let (status, body) = server.get("/api/faces?q=tag%3Adeniz");
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let people: Vec<&str> = v["people"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["label"].as_str().unwrap())
+        .collect();
+    assert_eq!(people, ["ozgur"]);
+    assert_eq!(v["matched"], 1, "{v}");
+    assert_eq!(v["library_total"], 3, "{v}");
+
+    let (status, _) = server.get("/api/faces?q=ki%C5%9Fi%3Ax");
+    assert_eq!(status, 400);
+
+    let (_, body) = server.get("/api/faces");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["people"].as_array().unwrap().len(), 2);
+    assert!(v.get("matched").is_none());
+}

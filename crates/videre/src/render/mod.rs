@@ -1290,6 +1290,7 @@ pub(crate) fn write_static_page(
             db_path,
             date_filter_json: "null".to_string(),
             event_json: "null".to_string(),
+            query_json: "null".to_string(),
             settings_script,
         },
     };
@@ -1320,6 +1321,9 @@ pub(crate) struct RenderOptions {
     pub db_path: String,
     pub date_filter_json: String,
     pub event_json: String,
+    /// What a server-rendered page's query did, for its N of M line:
+    /// `{"matched":n,"library_total":m}`, `{"error":..,"at":..}`, or `null`.
+    pub query_json: String,
     /// Gallery settings for `templates/nav.html`. See
     /// `commands::gallery::settings::page_script`.
     pub settings_script: String,
@@ -1402,6 +1406,7 @@ pub(crate) fn render(set: &RenderSet) -> String {
         &set.options.date_filter_json,
         set.view,
         &set.options.event_json,
+        &set.options.query_json,
     );
 
     let page = GalleryPage {
@@ -1417,7 +1422,11 @@ pub(crate) fn render(set: &RenderSet) -> String {
         generated_at: &now,
         total_files: stats.total_files,
         embedded,
-        has_groups: !groups.is_empty() || !edited_groups.is_empty(),
+        // With a query, an empty page is the query's answer, not the
+        // library's: the groups area stays, and the script says so.
+        has_groups: !groups.is_empty()
+            || !edited_groups.is_empty()
+            || (groups_view && set.options.query_json != "null"),
         duplicate_groups: stats.duplicate_groups,
         duplicate_files: stats.duplicate_files,
         wasted: videre_core::disk::human_bytes(stats.wasted_bytes.max(0) as u64),
@@ -1436,7 +1445,10 @@ pub(crate) fn render(set: &RenderSet) -> String {
         // secondary sections drop it. See `GalleryPage::show_header`.
         show_header: nav.is_none() || nav == Some(Section::All),
         settings_script: &set.options.settings_script,
-        no_duplicates: groups_view && groups.is_empty() && edited_groups.is_empty(),
+        no_duplicates: groups_view
+            && groups.is_empty()
+            && edited_groups.is_empty()
+            && set.options.query_json == "null",
         event_sort,
     };
     page.render().expect("gallery template")
@@ -1460,6 +1472,7 @@ fn build_data_block(
     date_filter_json: &str,
     view_kind: View,
     event_json: &str,
+    query_json: &str,
 ) -> String {
     let mut out = String::with_capacity(256 * 1024);
     // GVIEW tells the client which view to ask /api/files for when it fetches
@@ -1476,13 +1489,14 @@ fn build_data_block(
     // `<video>` tile. See buildPreview in gallery.js.
     let video_posters = live && cfg!(target_os = "macos");
     out.push_str(&format!(
-        "<script>\nvar LIVE_SERVER={live};\nvar HAS_EMBEDDINGS={has_embeddings};\nvar VIDEO_POSTERS={video_posters};\nvar GVIEW={};\nvar PEOPLE_ROOT={};\nvar GDATE={};\nvar GEVENT={};\nvar GLOC=null;\n</script>\n",
+        "<script>\nvar LIVE_SERVER={live};\nvar HAS_EMBEDDINGS={has_embeddings};\nvar VIDEO_POSTERS={video_posters};\nvar GVIEW={};\nvar PEOPLE_ROOT={};\nvar GDATE={};\nvar GEVENT={};\nvar GLOC=null;\nvar GQUERY_RESULT={};\n</script>\n",
         json_str(view),
         // `nav` is Some only under `videre gallery`, which is the one
         // configuration with a `/people`. See `people_root`.
         json_str(people_root(nav.is_some())),
         date_filter_json,
         event_json,
+        query_json,
     ));
     out.push_str("<script>\nvar GROUPS=[\n");
     let tagged = groups

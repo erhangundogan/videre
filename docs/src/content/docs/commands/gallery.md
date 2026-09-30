@@ -143,10 +143,13 @@ opens the same view. Other pages take it too:
 - **Events**: trips are still found over the whole library, so a query never
   splits one; it shows the trips with a matching file, and a trip's page shows
   only those files.
+- **Duplicates**: the groups with a matching copy, shown whole, since the page
+  is for choosing among a group's copies.
+- **People**: the people, clusters and faces seen in a matching file.
 
 On these pages the box applies the query where you are, and the strip's links
 to them carry it. Words rank only on the Library page, so a query with words,
-or one typed on any other page, opens Library.
+or one typed on a person's or a cluster's own page, opens Library.
 
 In the box, each filter is a **chip**, and words stay as text:
 

@@ -8,14 +8,57 @@ let facesData = { people: [], clusters: [], singletons: [] };
       return r.endsWith('/') ? r : r + '/';
     }
 
+    // The nav box's query, when this page honours one (templates/query-box.js):
+    // only the people, clusters and faces seen in a matching file are listed.
+    const QUERY = (window.videreQueryHonours && window.videreQueryHonours(location.pathname))
+      ? (new URLSearchParams(location.search).get('q') || '') : '';
+
+    // "N of M", or why the query could not run, above the people.
+    function showQueryStatus(html, isError) {
+      const body = document.querySelector('.page-body');
+      if (!body) return;
+      let s = document.getElementById('query-status');
+      if (!s) {
+        s = document.createElement('div');
+        s.id = 'query-status';
+        s.className = 'query-status';
+        body.parentNode.insertBefore(s, body);
+      }
+      s.classList.toggle('query-error', !!isError);
+      s.innerHTML = html;
+    }
+
+    function escText(s) {
+      const d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
     async function loadFaces() {
       try {
-        const r = await fetch('/api/faces');
+        const r = await fetch('/api/faces' + (QUERY ? '?q=' + encodeURIComponent(QUERY) : ''));
+        if (r.status === 400) {
+          const e = await r.json();
+          const at = (typeof e.at === 'number') ? ` (at character ${e.at + 1})` : '';
+          showQueryStatus(`Cannot run <code>${escText(QUERY)}</code>: ${escText(e.error || '')}${at}`, true);
+          return;
+        }
         if (!r.ok) throw new Error(`/api/faces returned ${r.status}`);
         facesData = await r.json();
         render();
         const total = facesData.people.length + facesData.clusters.length +
                       facesData.singletons.length;
+        if (QUERY && typeof facesData.library_total === 'number') {
+          showQueryStatus(`<strong>${facesData.matched.toLocaleString()}</strong> of ` +
+            `${facesData.library_total.toLocaleString()} match <code>${escText(QUERY)}</code>` +
+            ` &middot; <a href="${location.pathname}">clear</a>`, false);
+          if (total === 0) {
+            document.getElementById('people-grid').innerHTML =
+              '<p class="query-status">No one appears in a matching file.</p>';
+          }
+          setHeaderStats();
+          return;
+        }
         // Nothing detected is a state, not a failure, and it is the state every
         // library starts in. Saying "0 people, 0 clusters, 0 singletons" is
         // accurate and tells nobody what to do about it.

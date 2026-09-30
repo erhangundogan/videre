@@ -28,7 +28,7 @@
   var PLACEHOLDER=input.placeholder;
   // The pages that narrow by a query; the rest ignore one, so the box sends
   // a query from them to the Library, and the nav carries it only here.
-  var HONOURS=/^\/((date|map|events)(\/.*)?)?$/;
+  var HONOURS=/^\/((date|map|events)(\/.*)?|duplicates|people)?$/;
   window.videreQueryHonours=function(path){return HONOURS.test(path);};
   var labels={};
   var chips=[];

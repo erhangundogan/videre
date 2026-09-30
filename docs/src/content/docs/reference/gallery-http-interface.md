@@ -952,7 +952,9 @@ Returns one journal entry, or `404` for an unknown id.
 ### `GET /api/faces`
 
 Returns the face labeling state grouped into named people, clusters and
-singletons.
+singletons. With `q=<query>`, a [query](/reference/query-syntax/), only those
+with a face in a matching file, each whole, plus `matched` and `library_total`
+as `GET /api/dates` gives them; a query that cannot run answers `400`.
 
 ```bash
 curl "http://127.0.0.1:7878/api/faces"
