@@ -92,7 +92,13 @@ impl McpClient {
         Self::spawn(lib.from(cwd))
     }
 
-    fn spawn(mut cmd: std::process::Command) -> Self {
+    fn spawn(cmd: std::process::Command) -> Self {
+        let mut client = Self::spawn_without_handshake(cmd);
+        client.initialize();
+        client
+    }
+
+    fn spawn_without_handshake(mut cmd: std::process::Command) -> Self {
         let mut child = cmd
             .arg("mcp")
             .stdin(Stdio::piped())
@@ -102,13 +108,11 @@ impl McpClient {
             .expect("spawn videre mcp");
         let stdin = child.stdin.take().unwrap();
         let reader = BufReader::new(child.stdout.take().unwrap());
-        let mut client = McpClient {
+        McpClient {
             child,
             stdin,
             reader,
-        };
-        client.initialize();
-        client
+        }
     }
 
     fn send(&mut self, msg: serde_json::Value) {
@@ -207,6 +211,98 @@ fn initialize_lists_exactly_three_tools() {
     let mut names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     names.sort();
     assert_eq!(names, ["find_duplicates", "search", "stats"]);
+    client.shutdown();
+}
+
+/// What an MCP client builds its calls from: the negotiated protocol version
+/// and, per tool, a description plus each argument's name, JSON type and
+/// whether it is required. A change here breaks clients that worked before,
+/// so it is pinned rather than inferred from the tools still answering.
+#[test]
+fn the_protocol_and_tool_schemas_clients_see_are_pinned() {
+    let lib = TestLibrary::new();
+    make_db(&lib);
+    let mut client = McpClient::spawn_without_handshake(lib.cmd());
+    let init = client.request(
+        0,
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "videre-test", "version": "0"}
+        }),
+    );
+    assert_eq!(init["result"]["protocolVersion"], "2025-06-18", "{init}");
+    assert!(
+        init["result"]["capabilities"]["tools"].is_object(),
+        "{init}"
+    );
+    client.send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+
+    let resp = client.request(1, "tools/list", json!({}));
+    let mut shape = Vec::new();
+    let mut tools = resp["result"]["tools"].as_array().unwrap().clone();
+    tools.sort_by_key(|t| t["name"].as_str().unwrap().to_string());
+    for tool in &tools {
+        let name = tool["name"].as_str().unwrap();
+        assert!(
+            !tool["description"].as_str().unwrap_or("").is_empty(),
+            "{name} has no description"
+        );
+        let schema = &tool["inputSchema"];
+        assert_eq!(schema["type"], "object", "{name}: {schema}");
+        let required: Vec<&str> = schema["required"]
+            .as_array()
+            .map(|r| r.iter().map(|v| v.as_str().unwrap()).collect())
+            .unwrap_or_default();
+        let mut props: Vec<String> = schema["properties"]
+            .as_object()
+            .map(|p| {
+                p.iter()
+                    .map(|(arg, s)| {
+                        let req = if required.contains(&arg.as_str()) {
+                            "!"
+                        } else {
+                            ""
+                        };
+                        format!("{arg}{req}:{}", s["type"])
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        props.sort();
+        shape.push(format!("{name}({})", props.join(", ")));
+    }
+    let opt = |t: &str| format!("[\"{t}\",\"null\"]");
+    let search = [
+        ("after", opt("string")),
+        ("before", opt("string")),
+        ("category", opt("string")),
+        ("date", opt("string")),
+        ("ext", "\"array\"".into()),
+        ("has", "\"array\"".into()),
+        ("image_path", opt("string")),
+        ("location", opt("string")),
+        ("media_type", "\"array\"".into()),
+        ("mime", "\"array\"".into()),
+        ("missing", "\"array\"".into()),
+        ("path", "\"array\"".into()),
+        ("person", opt("string")),
+        ("query", opt("string")),
+        ("radius_km", opt("number")),
+        ("sort", opt("string")),
+        ("top_k", opt("integer")),
+    ]
+    .map(|(arg, ty)| format!("{arg}:{ty}"))
+    .join(", ");
+    assert_eq!(
+        shape,
+        [
+            "find_duplicates(include_similar:\"boolean\")".to_string(),
+            format!("search({search})"),
+            "stats()".to_string(),
+        ]
+    );
     client.shutdown();
 }
 
