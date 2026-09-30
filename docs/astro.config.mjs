@@ -136,6 +136,7 @@ export default defineConfig({
 						{ label: 'Platform support', slug: 'reference/platforms' },
 						{ label: 'Supported files', slug: 'reference/file-types' },
 						{ label: 'Search models', slug: 'reference/models' },
+						{ label: 'Query syntax', slug: 'reference/query-syntax' },
 					],
 				},
 			],

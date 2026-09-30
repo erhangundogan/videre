@@ -987,3 +987,82 @@ fn composition_arguments_intersect_across_every_filter_group() {
         "the fully composed request must retain only the row satisfying every argument"
     );
 }
+
+/// The dated fixture with Turkish tags and people: `may.jpg` (h1) is tagged
+/// deniz with Özgür in it; `jun.jpg` (h2) is tagged plaj with Ayşe in it.
+fn query_library() -> TestLibrary {
+    let lib = dates_library();
+    lib.conn()
+        .execute_batch(
+            "INSERT INTO people (name, full_name) VALUES ('ozgur', 'Özgür'), ('ayse', 'Ayşe');
+             INSERT INTO faces (hash, bbox, embedding, person_label, confirmed)
+             VALUES ('h1','[]',x'00','ozgur',1), ('h2','[]',x'00','ayse',1);
+             INSERT INTO photo_tags (hash, tag) VALUES ('h1', 'deniz'), ('h2', 'plaj');",
+        )
+        .unwrap();
+    lib
+}
+
+#[test]
+fn a_query_filters_exactly_as_the_matching_flag_does() {
+    let lib = query_library();
+    assert_eq!(
+        search_rel(&lib, &["person:özgür"]),
+        search_rel(&lib, &["--person", "özgür"])
+    );
+    assert_eq!(search_rel(&lib, &["person:özgür"]), vec!["may.jpg"]);
+    assert_eq!(search_rel(&lib, &["date:2025-06"]), vec!["jun.jpg"]);
+}
+
+#[test]
+fn a_query_can_say_or_and_not() {
+    let lib = query_library();
+    let mut both = search_rel(&lib, &["tag:deniz OR tag:plaj"]);
+    both.sort();
+    assert_eq!(both, vec!["jun.jpg", "may.jpg"]);
+    // A query that starts with `-` goes after `--`, or says NOT.
+    assert_eq!(search_rel(&lib, &["--", "-tag:deniz"]), vec!["jun.jpg"]);
+    assert_eq!(search_rel(&lib, &["NOT tag:deniz"]), vec!["jun.jpg"]);
+    assert_eq!(
+        search_rel(&lib, &["(person:özgür OR person:ayşe) -tag:plaj"]),
+        vec!["may.jpg"]
+    );
+}
+
+#[test]
+fn a_query_and_flags_narrow_together() {
+    let lib = query_library();
+    assert_eq!(
+        search_rel(&lib, &["tag:deniz OR tag:plaj", "--date", "2025-05"]),
+        vec!["may.jpg"]
+    );
+    assert!(search_rel(&lib, &["tag:plaj", "--person", "özgür"]).is_empty());
+}
+
+#[test]
+fn a_bad_query_says_what_and_where() {
+    let lib = query_library();
+    for (query, expect) in [
+        ("kişi:özgür", "unknown key"),
+        ("(tag:deniz", "character 11"),
+        ("deniz OR tag:plaj", "OR or NOT"),
+    ] {
+        let out = lib.cmd().args(["search", query]).output().unwrap();
+        assert!(!out.status.success(), "{query} must fail");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains(expect), "{query}: {err}");
+    }
+}
+
+#[test]
+fn text_in_a_query_cannot_rank_alongside_an_image() {
+    let lib = query_library();
+    let out = lib
+        .cmd()
+        .args(["search", "deniz tag:plaj", "--image", "any.jpg"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("--image"), "{err}");
+}

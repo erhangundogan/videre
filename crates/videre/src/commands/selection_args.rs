@@ -218,6 +218,9 @@ pub fn row_selection(
         person: people.and_then(|p| p.person.clone()),
         category: people.and_then(|p| p.category.clone()),
         place: place.and_then(|p| p.place()),
+        // No flag: a place *name* is matched offline only through the query
+        // language's `place:`. `--location` geocodes instead.
+        place_name: None,
         after,
         before,
         kinds: match media {

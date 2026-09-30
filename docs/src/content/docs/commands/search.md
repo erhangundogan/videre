@@ -5,6 +5,7 @@ description: Find photos by description, example image, person, category, or pla
 
 ```bash
 videre search "sunset over water"          # search by description
+videre search 'person:özgür (tag:deniz OR tag:plaj)' # filters in a query
 videre search --image photo.jpg            # find photos like this one
 videre search --person "Alice"             # photos of a named person
 videre search --category screenshot        # photo / screenshot / document / meme / unknown
@@ -37,6 +38,19 @@ videre search --sort=distance,date         # order, with tie-breaks
 | `--location` | GPS data in your photos |
 
 Matching paths print to stdout, all duplicate paths for each matched file.
+
+## Queries
+
+The text argument is a query: its words are what to search for, and it can
+also hold filters such as `person:`, `tag:`, `date:`, `rating:` and `place:`,
+combined with `OR`, `-` and parentheses, the way Gmail and GitHub search work.
+Quote the whole query in single quotes. [Query syntax](/reference/query-syntax/)
+lists every key.
+
+```bash
+videre search 'kumsalda gün batımı tag:deniz -tag:ekran'
+videre search '(person:özgür OR person:ayşe) date:2023 is:liked'
+```
 
 :::note[`--person` ignores case, accents and spacing]
 `--person alice`, `--person Alice` and `--person ALICE` are the same query, and

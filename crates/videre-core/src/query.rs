@@ -104,6 +104,70 @@ pub fn normalise_bound(spec: &str) -> Result<String> {
     Ok(start)
 }
 
+/// Hashes whose place is `name`: the reverse-geocoded `location_name`, or the
+/// name of the location cluster the photo belongs to. Offline, unlike
+/// `--location`, which geocodes a place name over the network.
+pub fn by_place_name(conn: &Connection, name: &str) -> Result<HashSet<String>> {
+    // Matched the way person names are: case and accents folded, then whole
+    // words, so "kadikoy" finds "Kadıköy, İstanbul" and "kadi" finds nothing.
+    let Some(wanted) = crate::person::normalize(name) else {
+        return Ok(HashSet::new());
+    };
+    let wanted: Vec<&str> = wanted.split('_').collect();
+    let matches = |place: &str| {
+        crate::person::normalize(place).is_some_and(|folded| {
+            let words: Vec<&str> = folded.split('_').collect();
+            words.windows(wanted.len()).any(|w| w == wanted.as_slice())
+        })
+    };
+
+    // Place names are few (one per geocoded spot or cluster), so they are
+    // matched here rather than in SQL, which cannot fold accents.
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT location_name FROM file_hashes WHERE location_name IS NOT NULL",
+    )?;
+    let names: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|n| matches(n))
+        .collect();
+    let has_clusters: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'location_clusters')",
+        [],
+        |r| r.get(0),
+    )?;
+    let clusters: Vec<i64> = if has_clusters {
+        let mut stmt =
+            conn.prepare("SELECT id, name FROM location_clusters WHERE name IS NOT NULL")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter()
+            .filter(|(_, n)| matches(n))
+            .map(|(id, _)| id)
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let mut hashes = HashSet::new();
+    let mut by_name = conn.prepare("SELECT hash FROM file_hashes WHERE location_name = ?1")?;
+    for n in &names {
+        for h in by_name.query_map([n], |r| r.get::<_, String>(0))? {
+            hashes.insert(h?);
+        }
+    }
+    let mut by_cluster =
+        conn.prepare("SELECT hash FROM file_hashes WHERE location_cluster_id = ?1")?;
+    for id in &clusters {
+        for h in by_cluster.query_map([id], |r| r.get::<_, String>(0))? {
+            hashes.insert(h?);
+        }
+    }
+    Ok(hashes)
+}
+
 /// Hashes with at least one confirmed face labelled `name`.
 pub fn by_person(conn: &Connection, name: &str) -> Result<HashSet<String>> {
     // Both forms of a person's name resolve here; see `person::resolve_identities`.
@@ -331,6 +395,57 @@ mod tests {
             rusqlite::params![path, hash, mtime, exif],
         )
         .unwrap();
+    }
+
+    /// Three photos: one named by reverse geocoding, one only through its
+    /// place cluster, one with no place at all.
+    fn places_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE file_hashes (
+                path TEXT PRIMARY KEY, hash TEXT NOT NULL,
+                location_name TEXT, location_cluster_id INTEGER
+             );
+             CREATE TABLE location_clusters (id INTEGER PRIMARY KEY, name TEXT);
+             INSERT INTO location_clusters VALUES (7, 'Moda, İstanbul');
+             INSERT INTO file_hashes VALUES
+               ('/deniz.jpg', 'h1', 'Kadıköy, İstanbul', NULL),
+               ('/sahil.jpg', 'h2', NULL, 7),
+               ('/ev.jpg',    'h3', NULL, NULL);",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn sorted(set: HashSet<String>) -> Vec<String> {
+        let mut v: Vec<_> = set.into_iter().collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn a_place_matches_whole_words_ignoring_case_and_accents() {
+        let conn = places_db();
+        for spelling in ["Kadıköy", "kadikoy", "KADIKÖY"] {
+            assert_eq!(
+                sorted(by_place_name(&conn, spelling).unwrap()),
+                ["h1"],
+                "{spelling}"
+            );
+        }
+        assert_eq!(sorted(by_place_name(&conn, "moda").unwrap()), ["h2"]);
+        assert_eq!(
+            sorted(by_place_name(&conn, "istanbul").unwrap()),
+            ["h1", "h2"]
+        );
+        // A whole word, not a substring: "kadi" is not "kadıköy".
+        assert!(by_place_name(&conn, "kadi").unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_unknown_place_matches_nothing_rather_than_failing() {
+        let conn = places_db();
+        assert!(by_place_name(&conn, "Ankara").unwrap().is_empty());
     }
 
     #[test]
