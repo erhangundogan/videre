@@ -320,7 +320,8 @@ use clap_complete::engine::CompletionCandidate;
 fn completion_ctx() -> Option<videre_core::library::LibraryContext> {
     let cwd = std::env::current_dir().ok()?;
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
-    let root = library_root_from_args().unwrap_or_else(|| cwd.clone());
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let root = library_root_in(&args, &home).unwrap_or_else(|| cwd.clone());
     let root = if root.is_absolute() {
         root
     } else {
@@ -329,29 +330,77 @@ fn completion_ctx() -> Option<videre_core::library::LibraryContext> {
     videre_core::library::LibraryContext::new(&root, &home.join(".cache/videre")).ok()
 }
 
-/// The value of the invocation's `--library` flag, when one was typed before
-/// the word being completed. Words after the `--` separator are the line
-/// being completed; the flag belongs to the invocation itself.
-fn library_root_from_args() -> Option<PathBuf> {
+/// The value of a `--library` flag on the line being completed.
+fn library_root_in(args: &[std::ffi::OsString], home: &Path) -> Option<PathBuf> {
     // Every shell calls the completer as `videre -- <the words you typed>`:
     // the typed words, the program name repeated first and any flags
     // including --library, are what follows the -- separator. Nothing before
     // it is the user's line.
-    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let separator = args.iter().position(|a| a == "--")?;
     let mut waiting = false;
-    for arg in &args[separator + 2..] {
+    for arg in args.get(separator + 2..)? {
         let arg = arg.to_string_lossy().into_owned();
         if waiting {
-            return Some(PathBuf::from(arg));
+            return Some(as_shell_would_pass(&arg, home));
         }
         if arg == "--library" {
             waiting = true;
         } else if let Some(value) = arg.strip_prefix("--library=") {
-            return Some(PathBuf::from(value.to_owned()));
+            return Some(as_shell_would_pass(value, home));
         }
     }
     None
+}
+
+/// A typed word as the shell would have passed it to a real run. The words a
+/// completer receives are unexpanded, so `~/photos` arrives with its tilde and
+/// a quoted path with its quotes.
+fn as_shell_would_pass(word: &str, home: &Path) -> PathBuf {
+    let word = ['"', '\'']
+        .iter()
+        .find_map(|q| word.strip_prefix(*q)?.strip_suffix(*q))
+        .unwrap_or(word);
+    if word == "~" {
+        home.to_path_buf()
+    } else if let Some(rest) = word.strip_prefix("~/") {
+        home.join(rest)
+    } else {
+        PathBuf::from(word)
+    }
+}
+
+#[cfg(test)]
+mod library_flag_tests {
+    use super::*;
+
+    fn root_for(typed: &[&str]) -> Option<PathBuf> {
+        let mut args: Vec<std::ffi::OsString> = vec!["--".into(), "videre".into()];
+        args.extend(typed.iter().map(Into::into));
+        library_root_in(&args, Path::new("/home/ayşe"))
+    }
+
+    #[test]
+    fn the_library_flag_is_read_as_the_shell_would_expand_it() {
+        let expected = Some(PathBuf::from("/home/ayşe/Fotoğraflar"));
+        for typed in [
+            ["--library", "~/Fotoğraflar"],
+            ["--library", "\"~/Fotoğraflar\""],
+            ["--library", "'/home/ayşe/Fotoğraflar'"],
+            ["--library=~/Fotoğraflar", "search"],
+        ] {
+            assert_eq!(root_for(&typed), expected, "{typed:?}");
+        }
+        assert_eq!(
+            root_for(&["--library", "arşiv"]),
+            Some(PathBuf::from("arşiv"))
+        );
+        assert_eq!(root_for(&["search", "--person", "ay"]), None);
+    }
+
+    #[test]
+    fn no_typed_words_is_no_library_not_a_panic() {
+        assert_eq!(library_root_in(&["--".into()], Path::new("/h")), None);
+    }
 }
 
 fn prefix_filtered(
