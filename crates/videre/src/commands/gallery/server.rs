@@ -504,6 +504,74 @@ mod location_cluster_tests {
     }
 
     #[tokio::test]
+    async fn a_query_keeps_only_places_with_matching_files_counted_by_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        {
+            let conn = state.conn.lock().unwrap();
+            videre_core::library_db::ensure_scan_schema(&conn).unwrap();
+            videre_core::location_cluster::ensure_location_clusters_table(&conn).unwrap();
+            conn.execute_batch(
+                "INSERT INTO location_clusters
+                    (id, centroid_lat, centroid_lon, name, photo_count, radius_km, created_at)
+                 VALUES
+                    (1, 41.01, 28.97, 'Kadıköy', 3, 20.0, CURRENT_TIMESTAMP),
+                    (2, 52.52, 13.405, 'Berlin', 2, 20.0, CURRENT_TIMESTAMP);
+                 INSERT INTO file_hashes (path, hash, ext, mime, location_cluster_id) VALUES
+                    ('/p/a.jpg', 'ha', 'jpg', 'image/jpeg', 1),
+                    ('/p/b.jpg', 'hb', 'jpg', 'image/jpeg', 1),
+                    ('/p/c.mp4', 'hc', 'mp4', 'video/mp4', 1),
+                    ('/p/d.jpg', 'hd', 'jpg', 'image/jpeg', 2),
+                    ('/p/e.jpg', 'he', 'jpg', 'image/jpeg', 2);",
+            )
+            .unwrap();
+        }
+        let app = Router::new()
+            .route("/api/location-clusters", get(handle_location_clusters))
+            .with_state(state);
+        let get = |uri: &'static str| {
+            let app = app.clone();
+            async move {
+                let response = app
+                    .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+                let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                (status, v)
+            }
+        };
+
+        let (status, v) = get("/api/location-clusters?q=type%3Avideo").await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        let rows = v.as_array().unwrap();
+        assert_eq!(rows.len(), 1, "{v}");
+        assert_eq!(rows[0]["name"], "Kadıköy");
+        assert_eq!(rows[0]["photo_count"], 1);
+
+        let (_, v) = get("/api/location-clusters?q=type%3Aimage").await;
+        let counts: Vec<(String, i64)> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["name"].as_str().unwrap().to_string(),
+                    r["photo_count"].as_i64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            counts,
+            [("Kadıköy".to_string(), 2), ("Berlin".to_string(), 2)]
+        );
+
+        let (status, _) = get("/api/location-clusters?q=ki%C5%9Fi%3Ax").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn location_clusters_endpoint_on_an_empty_library_returns_an_empty_array() {
         let dir = tempfile::tempdir().unwrap();
         let state = gallery_state(dir.path());
@@ -1282,6 +1350,57 @@ mod events_tests {
             .as_str()
             .unwrap()
             .starts_with("Üsküdar, April 2020 Trip"));
+    }
+
+    async fn get_json(app: &Router, uri: &str) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, serde_json::from_slice(&body).unwrap_or_default())
+    }
+
+    #[tokio::test]
+    async fn a_query_keeps_events_with_a_matching_member_and_narrows_their_members() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = gallery_state(dir.path());
+        {
+            let conn = state.conn.lock().unwrap();
+            videre_core::face_db::create_faces_table(&conn).unwrap();
+            seed_events(&conn);
+        }
+        let app = Router::new()
+            .route("/api/events", get(handle_events_api))
+            .route("/api/events/{key}/files", get(handle_events_files))
+            .with_state(state);
+        let key = format!("20200312T100000-{:064x}", 101);
+
+        // The Budapest trip has one clip among its twelve members: the trip
+        // stays, found over the whole library, counted by what matches.
+        let (status, v) = get_json(&app, "/api/events?q=type%3Avideo").await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        let events = v["events"].as_array().unwrap();
+        assert_eq!(events.len(), 1, "{v}");
+        assert_eq!(events[0]["key"], key.as_str());
+        assert_eq!(events[0]["count"], 1);
+        assert_eq!(events[0]["sample"]["hash"], format!("{:064x}", 112));
+        assert!(v["library_total"].is_number(), "{v}");
+
+        let (_, v) = get_json(&app, &format!("/api/events/{key}/files?q=type%3Avideo")).await;
+        let files = v["files"].as_array().unwrap();
+        assert_eq!(files.len(), 1, "{v}");
+        assert_eq!(v["total"], 1);
+
+        // No member matches: no event, and the reason is the query's.
+        let (_, v) = get_json(&app, "/api/events?q=ext%3Apng").await;
+        assert_eq!(v["events"].as_array().unwrap().len(), 0, "{v}");
+        assert_eq!(v["empty_reason"], "no_matching_events");
+
+        let (status, v) = get_json(&app, "/api/events?q=ki%C5%9Fi%3Ax").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
     }
 
     #[tokio::test]
@@ -2658,6 +2777,38 @@ async fn handle_files(
 struct AppliedQuery {
     filtered: bool,
     text: Option<String>,
+    /// The matching hashes, for routes that narrow in Rust (event members)
+    /// rather than in SQL; `None` without filters.
+    hashes: Option<std::collections::HashSet<String>>,
+}
+
+impl AppliedQuery {
+    fn matches(&self, hash: &str) -> bool {
+        self.hashes.as_ref().is_none_or(|h| h.contains(hash))
+    }
+}
+
+/// "N of M" for a route that shows the date view's files (one per content
+/// hash): the matching ones and all of them.
+fn keep_set_counts(conn: &Connection, applied: &AppliedQuery) -> Result<(i64, i64), StatusCode> {
+    let keep = keep_set_sql();
+    let count = |filter: &str| -> Result<i64, StatusCode> {
+        conn.query_row(
+            &format!("SELECT COUNT(*) FROM {keep} AS f{filter}"),
+            [],
+            |r| r.get(0),
+        )
+        .map_err(internal)
+    };
+    let total = count("")?;
+    let matched = if applied.filtered {
+        count(&format!(
+            " WHERE f.hash IN (SELECT hash FROM {QUERY_HASHES_TABLE})"
+        ))?
+    } else {
+        total
+    };
+    Ok((matched, total))
 }
 
 fn apply_query(
@@ -2671,6 +2822,7 @@ fn apply_query(
     let compiled = videre::query_lang::compile(query)
         .map_err(|e| Box::new(query_error_response(&e.message, e.at)))?;
     let mut filtered = false;
+    let mut matching = None;
     if let Some(filter) = &compiled.filter {
         let sel_ctx = videre_core::selection::SelectionCtx {
             model_id: Some(state.model_id.clone()),
@@ -2679,10 +2831,12 @@ fn apply_query(
             .map_err(|e| Box::new(query_error_response(&format!("{e:#}"), None)))?;
         load_query_hashes(conn, &hashes).map_err(|e| Box::new(internal(e).into_response()))?;
         filtered = true;
+        matching = Some(hashes);
     }
     Ok(Some(AppliedQuery {
         filtered,
         text: compiled.text,
+        hashes: matching,
     }))
 }
 
@@ -2766,6 +2920,7 @@ fn files_json_response_with(
 async fn handle_events_files(
     axum::extract::Path(key): axum::extract::Path<String>,
     State(state): State<Arc<AppState>>,
+    Query(q): Query<RouteQuery>,
 ) -> Result<axum::response::Response, StatusCode> {
     let conn = state.conn.lock().map_err(poisoned)?;
     let detection = cached_events(&state, &conn)?;
@@ -2774,22 +2929,56 @@ async fn handle_events_files(
         .iter()
         .find(|e| e.key() == key)
         .ok_or(StatusCode::NOT_FOUND)?;
-    let (files, total) = query_event_files(&conn, &event.members).map_err(internal)?;
+    // The event is found over the whole library; a query narrows its members.
+    let applied = match apply_query(&state, &conn, q.q.as_deref()) {
+        Ok(a) => a,
+        Err(response) => return Ok(*response),
+    };
+    let members: Vec<String> = event
+        .members
+        .iter()
+        .filter(|h| applied.as_ref().is_none_or(|a| a.matches(h)))
+        .cloned()
+        .collect();
+    let (files, total) = query_event_files(&conn, &members).map_err(internal)?;
     let faces_by_hash = videre_core::face_db::labeled_faces_by_hash(&conn).unwrap_or_default();
     Ok(files_json_response(&conn, &files, total, 0, &faces_by_hash))
 }
 
 /// Returns every persisted location cluster with its derived continent,
 /// ordered largest first for the map legend and world overview.
-async fn handle_location_clusters(State(state): State<Arc<AppState>>) -> Response {
+async fn handle_location_clusters(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<RouteQuery>,
+) -> Response {
     let conn = match state.conn.lock() {
         Ok(conn) => conn,
         Err(e) => return poisoned(e).into_response(),
     };
-    let rows = match map_locations(&conn) {
+    let mut rows = match map_locations(&conn) {
         Ok(rows) => rows,
         Err(e) => return internal(e).into_response(),
     };
+    // A query keeps the places that hold a matching file, counted by those
+    // files, largest first as always.
+    match apply_query(&state, &conn, q.q.as_deref()) {
+        Err(response) => return *response,
+        Ok(Some(applied)) if applied.filtered => {
+            let counts = match matching_per_cluster(&conn) {
+                Ok(c) => c,
+                Err(e) => return internal(e).into_response(),
+            };
+            rows.retain_mut(|row| match counts.get(&row.id) {
+                Some(n) => {
+                    row.photo_count = *n;
+                    true
+                }
+                None => false,
+            });
+            rows.sort_by(|a, b| b.photo_count.cmp(&a.photo_count).then(a.id.cmp(&b.id)));
+        }
+        Ok(_) => {}
+    }
 
     let mut out = String::from("[");
     for (index, row) in rows.into_iter().enumerate() {
@@ -2814,6 +3003,26 @@ async fn handle_location_clusters(State(state): State<Arc<AppState>>) -> Respons
     }
     out.push(']');
     json_response(out)
+}
+
+/// Matching files per location cluster, from `temp.query_hashes`.
+fn matching_per_cluster(
+    conn: &Connection,
+) -> rusqlite::Result<std::collections::HashMap<i64, i64>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT location_cluster_id, COUNT(*) FROM file_hashes
+         WHERE location_cluster_id IS NOT NULL
+           AND hash IN (SELECT hash FROM {QUERY_HASHES_TABLE})
+         GROUP BY location_cluster_id"
+    ))?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    rows.collect()
+}
+
+/// `?q=` alone, for routes that take nothing else.
+#[derive(Deserialize)]
+struct RouteQuery {
+    q: Option<String>,
 }
 
 /// `GET /vendor/{version}/{asset}`: the vendored map libraries (MapLibre GL JS,
@@ -3230,24 +3439,12 @@ async fn handle_dates(
     };
     let mut extra = String::new();
     if let Some(applied) = &applied {
-        let within = format!("f.hash IN (SELECT hash FROM {QUERY_HASHES_TABLE})");
         if applied.filtered {
-            sql.push_str(&format!(" AND {within}"));
+            sql.push_str(&format!(
+                " AND f.hash IN (SELECT hash FROM {QUERY_HASHES_TABLE})"
+            ));
         }
-        let count = |filter: &str| -> Result<i64, StatusCode> {
-            conn.query_row(
-                &format!("SELECT COUNT(*) FROM {keep} AS f{filter}"),
-                [],
-                |r| r.get(0),
-            )
-            .map_err(internal)
-        };
-        let library_total = count("")?;
-        let matched = if applied.filtered {
-            count(&format!(" WHERE {within}"))?
-        } else {
-            library_total
-        };
+        let (matched, library_total) = keep_set_counts(&conn, applied)?;
         extra = format!(",\"matched\":{matched},\"library_total\":{library_total}");
     }
     sql.push_str(" GROUP BY k ORDER BY k DESC");
@@ -3416,14 +3613,52 @@ fn trip_place_and_title(
 /// `GET /api/events`: the event overview, newest first.
 async fn handle_events_api(
     State(state): State<Arc<AppState>>,
+    Query(q): Query<RouteQuery>,
 ) -> Result<axum::response::Response, StatusCode> {
-    let detection = {
+    // Trips are found over the whole library, so a query never splits or
+    // merges one: it keeps those with a matching member, counted by those
+    // members, with a matching one as the sample.
+    let (shown, empty_reason, counts) = {
         let conn = state.conn.lock().map_err(poisoned)?;
-        cached_events(&state, &conn)?
+        let detection = cached_events(&state, &conn)?;
+        let applied = match apply_query(&state, &conn, q.q.as_deref()) {
+            Ok(a) => a,
+            Err(response) => return Ok(*response),
+        };
+        let mut shown = Vec::new();
+        for event in detection.events.iter().rev() {
+            let matching: Vec<&String> = event
+                .members
+                .iter()
+                .filter(|h| applied.as_ref().is_none_or(|a| a.matches(h)))
+                .collect();
+            let Some(first) = matching.first() else {
+                continue;
+            };
+            let sample = if applied
+                .as_ref()
+                .is_none_or(|a| a.matches(&event.sample.hash))
+            {
+                event.sample.clone()
+            } else {
+                event_sample(&conn, first, &event.sample).map_err(internal)?
+            };
+            shown.push((event.clone(), matching.len(), sample));
+        }
+        let empty_reason = match detection.empty_reason {
+            Some(reason) => Some(reason.as_str()),
+            None if shown.is_empty() => Some("no_matching_events"),
+            None => None,
+        };
+        let counts = match &applied {
+            Some(a) => Some(keep_set_counts(&conn, a)?),
+            None => None,
+        };
+        (shown, empty_reason, counts)
     };
     let cache = &state.context.library.cache;
     let mut out = String::from("{\"events\":[");
-    for (i, event) in detection.events.iter().rev().enumerate() {
+    for (i, (event, count, sample)) in shown.iter().enumerate() {
         if i > 0 {
             out.push(',');
         }
@@ -3436,21 +3671,19 @@ async fn handle_events_api(
             json_str(&title),
             json_str(&event.start.format("%Y-%m-%d %H:%M:%S").to_string()),
             json_str(&event.end.format("%Y-%m-%d %H:%M:%S").to_string()),
-            event.members.len(),
+            count,
             place
                 .as_deref()
                 .map(json_str)
                 .unwrap_or_else(|| "null".to_string()),
-            json_str(&event.sample.path),
-            json_str(&event.sample.hash),
-            json_str(&event.sample.ext),
-            event
-                .sample
+            json_str(&sample.path),
+            json_str(&sample.hash),
+            json_str(&sample.ext),
+            sample
                 .width
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "null".to_string()),
-            event
-                .sample
+            sample
                 .height
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "null".to_string()),
@@ -3458,13 +3691,41 @@ async fn handle_events_api(
     }
     out.push_str("],\"empty_reason\":");
     out.push_str(
-        &detection
-            .empty_reason
-            .map(|reason| json_str(reason.as_str()))
+        &empty_reason
+            .map(json_str)
             .unwrap_or_else(|| "null".to_owned()),
     );
+    if let Some((matched, library_total)) = counts {
+        out.push_str(&format!(
+            ",\"matched\":{matched},\"library_total\":{library_total}"
+        ));
+    }
     out.push('}');
     Ok(json_response(out))
+}
+
+/// A matching member to stand for an event, when its own sample does not
+/// match the query: its first path, as the trip rows choose one.
+fn event_sample(
+    conn: &Connection,
+    hash: &str,
+    like: &super::events::TripRow,
+) -> rusqlite::Result<super::events::TripRow> {
+    conn.query_row(
+        "SELECT path, COALESCE(ext,''), width, height FROM file_hashes
+         WHERE hash = ?1 ORDER BY path LIMIT 1",
+        [hash],
+        |r| {
+            Ok(super::events::TripRow {
+                hash: hash.to_string(),
+                path: r.get(0)?,
+                ext: r.get(1)?,
+                width: r.get(2)?,
+                height: r.get(3)?,
+                ..like.clone()
+            })
+        },
+    )
 }
 
 fn render_live_events(

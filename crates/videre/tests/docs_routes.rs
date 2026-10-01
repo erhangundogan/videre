@@ -304,10 +304,13 @@ fn js_api_urls(text: &str) -> BTreeSet<String> {
                     // `{}` and continue. Otherwise (a trailing `+(size?...)`, a
                     // query, or a real end) the path ends here.
                     let after = text[j + q.len_utf8()..].trim_start();
+                    // The reopened string must be on the same line: the next
+                    // quote after `'/api/x' + f()` can be any later string.
                     let cont = after.strip_prefix('+').and_then(|_| {
                         text[j + 1..]
                             .find(['\'', '"', '`'])
                             .map(|r2| j + 1 + r2 + 1)
+                            .filter(|&pos| !text[j + 1..pos].contains('\n'))
                             .filter(|&pos| text[pos..].chars().next().is_some_and(is_path_char))
                     });
                     match cont {

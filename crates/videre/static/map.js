@@ -14,6 +14,27 @@
 
   // No places at all: the shared empty state every page uses, in place of an
   // empty map over a grid that would only repeat the library.
+  // With a query, the places are those holding a matching file; none is an
+  // answer about the query, not about the library, and the grid below still
+  // lists the matching files that have no place.
+  function queryParam() {
+    return (typeof GQUERY === 'string' && GQUERY) ? '?q=' + encodeURIComponent(GQUERY) : '';
+  }
+  function withQueryParam(path) {
+    return (typeof withQuery === 'function') ? withQuery(path) : path;
+  }
+  function locationsResponse(response) {
+    // A query that cannot run: the grid's own request says why.
+    if (response.status === 400) return [];
+    if (!response.ok) throw new Error('locations request failed');
+    return response.json();
+  }
+  function showNoMatchingPlaces(empty) {
+    empty.hidden = false;
+    empty.textContent = 'No places have a matching file.';
+    window.setGalleryLocation(null, null, null);
+  }
+
   function showNoPlaces() {
     window.showEmptyState('No places yet',
       '<p>No photo in this library has been placed on the map.</p>' +
@@ -245,8 +266,8 @@
     }
 
     function locationPath(cluster, radius) {
-      return '/map/location/' + encodeURIComponent(cluster.route_name) +
-        '?radius=' + encodeURIComponent(radius);
+      return withQueryParam('/map/location/' + encodeURIComponent(cluster.route_name) +
+        '?radius=' + encodeURIComponent(radius));
     }
 
     function showSelection(cluster, radius) {
@@ -284,7 +305,7 @@
       selectionStatus.textContent = '';
       window.setGalleryLocation(null, null, null);
       updateRing();
-      if (historyMode === 'push') window.history.pushState(null, '', '/map');
+      if (historyMode === 'push') window.history.pushState(null, '', withQueryParam('/map'));
       if (ready) viewFlyTo({ center: [10, 30], zoom: 1 });
       updateMarkers();
     }
@@ -463,15 +484,12 @@
       updateMarkers();
     }
 
-    fetch('/api/location-clusters')
-      .then(function (response) {
-        if (!response.ok) throw new Error('locations request failed');
-        return response.json();
-      })
+    fetch('/api/location-clusters' + queryParam())
+      .then(locationsResponse)
       .then(function (rows) {
         clusters = rows;
         if (!clusters.length) {
-          showNoPlaces();
+          if (queryParam()) showNoMatchingPlaces(empty); else showNoPlaces();
           return;
         }
         empty.hidden = true;
@@ -731,8 +749,8 @@
     }
 
     function locationPath(cluster, radius) {
-      return '/map/location/' + encodeURIComponent(cluster.route_name) +
-        '?radius=' + encodeURIComponent(radius);
+      return withQueryParam('/map/location/' + encodeURIComponent(cluster.route_name) +
+        '?radius=' + encodeURIComponent(radius));
     }
 
     function focusSelection(cluster, radius) {
@@ -790,7 +808,7 @@
       ox = 0;
       oy = 0;
       window.setGalleryLocation(null, null, null);
-      if (historyMode === 'push') window.history.pushState(null, '', '/map');
+      if (historyMode === 'push') window.history.pushState(null, '', withQueryParam('/map'));
       render();
     }
 
@@ -917,15 +935,12 @@
     canvas.addEventListener('pointercancel', function () { dragging = false; });
     window.addEventListener('resize', render);
 
-    fetch('/api/location-clusters')
-      .then(function (response) {
-        if (!response.ok) throw new Error('locations request failed');
-        return response.json();
-      })
+    fetch('/api/location-clusters' + queryParam())
+      .then(locationsResponse)
       .then(function (rows) {
         clusters = rows;
         if (!clusters.length) {
-          showNoPlaces();
+          if (queryParam()) showNoMatchingPlaces(empty); else showNoPlaces();
           return;
         }
         empty.hidden = true;

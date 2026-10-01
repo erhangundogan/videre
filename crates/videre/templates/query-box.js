@@ -28,7 +28,7 @@
   var PLACEHOLDER=input.placeholder;
   // The pages that narrow by a query; the rest ignore one, so the box sends
   // a query from them to the Library, and the nav carries it only here.
-  var HONOURS=/^\/(date(\/.*)?)?$/;
+  var HONOURS=/^\/((date|map|events)(\/.*)?)?$/;
   window.videreQueryHonours=function(path){return HONOURS.test(path);};
   var labels={};
   var chips=[];
@@ -157,9 +157,11 @@
     return parts.join(' ');
   }
 
-  // Other parameters of the page (a date range) stay as they are.
+  // Other parameters of the page (a date range) stay as they are. Words rank,
+  // which only the Library does, so a query with words goes there.
   function apply(){
-    var q=query(),here=HONOURS.test(location.pathname);
+    var q=query();
+    var here=HONOURS.test(location.pathname)&&(location.pathname==='/'||!input.value.trim());
     var params=here?new URLSearchParams(location.search):new URLSearchParams();
     if(q)params.set('q',q); else params.delete('q');
     var rest=params.toString().replace(/\+/g,'%20');
