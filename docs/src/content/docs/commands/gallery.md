@@ -106,6 +106,7 @@ people or location data yet.
 | Path | What you get |
 |------|--------------|
 | `/` | Every file, with a **Similar** button on each card once the library has embeddings (the grid under the map has it too) |
+| `/search?like=<hash>`, `/search?q=...` | A ranking as a page of its own: files like one, or matching words, within the query's filters. **Open as a page** on a Similar or text-results strip leads here, and a bookmark reopens it |
 | `/duplicates` | Duplicate groups, the same review `dedupe --html` writes, plus Google Takeout edits beside their originals ([`dedupe --edited`](/commands/dedupe/#google-photos-edits---edited)), counted in the header apart from exact copies |
 | `/people` | Face groups, and naming them |
 | `/date` | A Year / Month / Day drill-down |

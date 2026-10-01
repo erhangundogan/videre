@@ -28,7 +28,9 @@
   var PLACEHOLDER=input.placeholder;
   // The pages that narrow by a query; the rest ignore one, so the box sends
   // a query from them to the Library, and the nav carries it only here.
-  var HONOURS=/^\/((date|map|events)(\/.*)?|duplicates|people)?$/;
+  var HONOURS=/^\/((date|map|events)(\/.*)?|duplicates|people|search)?$/;
+  // Library and a search's own page rank words; the rest only filter.
+  var RANKS=/^\/(search)?$/;
   window.videreQueryHonours=function(path){return HONOURS.test(path);};
   var labels={};
   var chips=[];
@@ -159,9 +161,12 @@
 
   // Other parameters of the page (a date range) stay as they are. Words rank,
   // which only the Library does, so a query with words goes there.
+  // The chips alone, without words: the filters a Similar search keeps.
+  window.videreQueryFilters=function(){ return chips.map(serializeChip).join(' '); };
+
   function apply(){
     var q=query();
-    var here=HONOURS.test(location.pathname)&&(location.pathname==='/'||!input.value.trim());
+    var here=HONOURS.test(location.pathname)&&(RANKS.test(location.pathname)||!input.value.trim());
     var params=here?new URLSearchParams(location.search):new URLSearchParams();
     if(q)params.set('q',q); else params.delete('q');
     var rest=params.toString().replace(/\+/g,'%20');

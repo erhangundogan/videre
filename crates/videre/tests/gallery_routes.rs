@@ -2365,3 +2365,42 @@ fn people_lists_only_those_in_matching_files() {
     assert_eq!(v["people"].as_array().unwrap().len(), 2);
     assert!(v.get("matched").is_none());
 }
+
+#[test]
+fn similar_ranks_within_a_query_s_filters() {
+    let lib = search_fixture();
+    {
+        let conn = lib.conn();
+        videre_core::tags::ensure_photo_tags_table(&conn).unwrap();
+        conn.execute_batch("INSERT INTO photo_tags VALUES ('bbbb','deniz'), ('dddd','deniz');")
+            .unwrap();
+    }
+    let server = Server::start(&lib);
+
+    let (status, body) = server.get("/api/search?like=aaaa&q=tag%3Adeniz&limit=10");
+    assert_eq!(status, 200, "{body}");
+    let hashes: Vec<&str> = body
+        .split("\"hash\":\"")
+        .skip(1)
+        .map(|s| s.split('"').next().unwrap())
+        .collect();
+    assert_eq!(hashes, ["bbbb", "dddd"], "{body}");
+
+    // Words rank too, so they still cannot come with an example.
+    let (status, _) = server.get("/api/search?like=aaaa&q=kedi%20tag%3Adeniz");
+    assert_eq!(status, 400);
+    let (status, _) = server.get("/api/search?like=aaaa&q=ki%C5%9Fi%3Ax");
+    assert_eq!(status, 400);
+}
+
+#[test]
+fn a_search_has_a_page_of_its_own() {
+    let lib = search_fixture();
+    let server = Server::start(&lib);
+    let (status, body) = server.get("/search?like=aaaa");
+    assert_eq!(status, 200);
+    assert!(
+        body.contains("id=\"gallery\""),
+        "the page has the grid to rank into"
+    );
+}

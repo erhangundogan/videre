@@ -2406,8 +2406,22 @@ async fn handle_search(
 ) -> Result<axum::response::Response, StatusCode> {
     const MAX_LIMIT: usize = 200;
 
-    if sq.q.is_none() == sq.like.is_none() {
+    // One ranker: words, or an example. A query that comes with an example
+    // may filter, which narrows what is ranked, but its words would rank too.
+    if sq.q.is_none() && sq.like.is_none() {
         return Err(StatusCode::BAD_REQUEST);
+    }
+    if let (Some(q), Some(_)) = (sq.q.as_deref(), sq.like.as_deref()) {
+        match videre::query_lang::compile(q) {
+            Err(e) => return Ok(query_error_response(&e.message, e.at)),
+            Ok(c) if c.text.is_some() => {
+                return Ok(query_error_response(
+                    "words rank, so they cannot come with an example; filters can",
+                    None,
+                ))
+            }
+            Ok(_) => {}
+        }
     }
     let top_k = sq.limit.unwrap_or(24).clamp(1, MAX_LIMIT);
     // Kept out of the closure: needed again below to drop the example from its
@@ -4845,6 +4859,8 @@ async fn serve_faces_async(
         .route("/people/cluster/{id}", get(handle_cluster_page))
         .route("/people/person/{name}", get(handle_person_page))
         .route("/", get(handle_gallery_all))
+        // A search's own page: the Library's, ranking instead of listing.
+        .route("/search", get(handle_gallery_all))
         .route("/duplicates", get(handle_gallery_duplicates))
         .route("/people", get(handle_root))
         .route("/date/{year}/{month}/{day}", get(handle_gallery_date_day))

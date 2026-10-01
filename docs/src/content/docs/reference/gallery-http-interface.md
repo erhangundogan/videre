@@ -32,6 +32,7 @@ and cannot answer these HTTP requests after the command exits.
 | Route | What it serves |
 |---|---|
 | `GET /` | All files |
+| `GET /search` | A search as a page: `?like=<hash>` ranks by an example, `?q=` words by meaning, and `q`'s filters narrow either |
 | `GET /duplicates` | Duplicate review |
 | `GET /people` | People and face labeling |
 | `GET /date` | Date drill-down |
@@ -523,8 +524,10 @@ curl "http://127.0.0.1:7878/api/query/suggest?q=-person:g%C3%BCndo"
 
 ### `GET /api/search`
 
-Ranks photos by text or by similarity to an existing hash. Pass exactly one of
-`q` or `like`.
+Ranks photos by text or by similarity to an existing hash: `q` with words, or
+`like`. With `like`, `q` may still carry a [query](/reference/query-syntax/)'s
+filters, which narrow what is ranked; words with an example, or a query that
+cannot run, answer `400`.
 
 | Query | Meaning |
 |---|---|
