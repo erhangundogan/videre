@@ -16,6 +16,68 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.52.0] - 2026-10-01
+
+### Added
+
+- **`search_min_match` and `similar_min_score` settings**, set with
+  `videre config set search-min-match` and `similar-min-score`: the least
+  match a text search keeps (default 0.1), and an optional floor for image
+  searches and the gallery's **Similar**. `videre config` shows both.
+
+### Changed
+
+- **Search keeps only real matches.** A text search's score is now the
+  model's own match probability, from 0 to 1, read from its trained scale
+  and bias, everywhere a score is shown: `--scores`, `--json`, MCP and the
+  gallery. Matches below 10% are left out, so a query nothing fits returns
+  nothing instead of the least bad photos, and fewer than `-k` results is
+  normal. The score means the same for every model; raw similarity did
+  not. Image searches keep their similarity score.
+- **The search models are SigLIP 2.** The default is now
+  `google/siglip2-base-patch16-224`: the same size and speed as the model
+  it replaces, and it understands queries in many languages, Turkish
+  included. Measured on 300 photos searched by their captions, it found
+  the right photo first for 84% of English and 52% of Turkish queries,
+  against 81% and 37% before. Completion and the docs offer
+  `siglip2-base-patch16-224`, `siglip2-base-patch16-384` and
+  `siglip2-so400m-patch14-384`; the largest found 88% and 78%, at about
+  18 times the embedding time. Any SigLIP 1 model still works when named.
+
+### Fixed
+
+- **An apostrophe inside a word no longer breaks a query.**
+  `İstanbul'da deniz`, `the dog's toy` and `tag:ayşe'nin` failed with
+  "missing delimiter"; an apostrophe after a letter or digit is now part
+  of the word.
+- **A query error points at the right character** when Turkish letters
+  come before it; it used to count bytes.
+- **A gallery text search that cannot parse** answers with where the
+  mistake is, instead of a server error.
+
+### Upgrading
+
+- **Existing libraries keep their model.** A library's `config.toml`
+  names the model it was created with, so it stays on
+  `google/siglip-base-patch16-224` until you switch, which means one full
+  embed:
+
+  ```bash
+  videre config set model google/siglip2-base-patch16-224
+  videre embed
+  ```
+
+- **Search returns fewer results.** To get every ranked result back, run
+  `videre config set search-min-match 0`. Scripts that filtered `--json`
+  on a cosine `score` need a new threshold: a text score is now a 0 to 1
+  probability.
+- **For crates depending on `videre-core` or `videre-ml`:**
+  `library_config::LibraryConfig` has the new fields `search_min_match` and
+  `similar_min_score` and is no longer `Eq`; `library_config::ConfigKey`
+  has the new variants `SearchMinMatch` and `SimilarMinScore`;
+  `embeddings::DEFAULT_MODEL_ID` names the SigLIP 2 model.
+  `videre_ml::search::Calibration` and `Embedder::calibration` are new.
+
 ## [0.51.0] - 2026-10-01
 
 ### Added
@@ -2854,7 +2916,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.51.0...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.52.0...HEAD
+[0.52.0]: https://github.com/erhangundogan/videre/compare/v0.51.0...v0.52.0
 [0.51.0]: https://github.com/erhangundogan/videre/compare/v0.50.0...v0.51.0
 [0.50.0]: https://github.com/erhangundogan/videre/compare/v0.49.2...v0.50.0
 [0.49.2]: https://github.com/erhangundogan/videre/compare/v0.49.1...v0.49.2
