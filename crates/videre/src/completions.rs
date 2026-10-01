@@ -445,22 +445,111 @@ fn key_values(current: &OsStr, key: &str) -> Vec<CompletionCandidate> {
     prefix_filtered(current, values)
 }
 
-/// Models for `--model`: the ones this library already has embeddings for,
-/// plus the built-in default.
+/// Models for `--model`: the provided ones, then any this library already
+/// has embeddings for.
 pub fn model_candidates(current: &OsStr) -> Vec<CompletionCandidate> {
+    prefix_filtered(
+        current,
+        config_values_for("model", &library_models()).into_iter(),
+    )
+}
+
+/// The models this library has embeddings for; none outside a library.
+fn library_models() -> Vec<String> {
     let Some(ctx) = completion_ctx() else {
         return Vec::new();
     };
-    let mut models = vec![(
-        videre_core::embeddings::DEFAULT_MODEL_ID.to_string(),
-        Some("default".to_string()),
-    )];
-    if let Ok(slugs) = videre_core::embeddings_db::list_models_in(&ctx) {
-        for slug in slugs {
-            models.push((videre_core::embeddings_db::model_from_slug(&slug), None));
-        }
+    videre_core::embeddings_db::list_models_in(&ctx)
+        .map(|slugs| {
+            slugs
+                .iter()
+                .map(|s| videre_core::embeddings_db::model_from_slug(s))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The value of `videre config set <key> <value>`, for the key on the line.
+pub fn config_value_candidates(current: &OsStr) -> Vec<CompletionCandidate> {
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let Some(key) = config_key_in(&args) else {
+        return Vec::new();
+    };
+    let models = if key == "model" {
+        library_models()
+    } else {
+        Vec::new()
+    };
+    prefix_filtered(current, config_values_for(&key, &models).into_iter())
+}
+
+/// The key of a `config set` on the line being completed: the word after
+/// `set`, once it is followed by the value being typed.
+fn config_key_in(args: &[std::ffi::OsString]) -> Option<String> {
+    let separator = args.iter().position(|a| a == "--")?;
+    let words: Vec<String> = args
+        .get(separator + 2..)?
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let config = words.iter().position(|w| w == "config")?;
+    match words.get(config + 1..)? {
+        [set, key, _value, ..] if set == "set" => Some(key.clone()),
+        _ => None,
     }
-    prefix_filtered(current, models.into_iter())
+}
+
+/// What `config set <key>` accepts, where it is a fixed set: the provided
+/// models (and `in_library`, the ones already embedded), or the spellings
+/// each setting's parser reads. A number has nothing to offer.
+fn config_values_for(key: &str, in_library: &[String]) -> Vec<(String, Option<String>)> {
+    let fixed = |values: &[&str]| values.iter().map(|v| (v.to_string(), None)).collect();
+    match key {
+        "model" => {
+            let mut models: Vec<(String, Option<String>)> =
+                videre_core::embeddings::PROVIDED_MODELS
+                    .iter()
+                    .map(|m| {
+                        let help = (*m == videre_core::embeddings::DEFAULT_MODEL_ID)
+                            .then(|| "default".to_string());
+                        (m.to_string(), help)
+                    })
+                    .collect();
+            for m in in_library {
+                if !models.iter().any(|(have, _)| have == m) {
+                    models.push((m.clone(), Some("embedded in this library".to_string())));
+                }
+            }
+            models
+        }
+        "xmp" => fixed(&videre_core::marks::XmpPrecedence::ALL.map(|p| p.as_str())),
+        "log-level" => fixed(&videre_core::library_config::LogLevel::ALL.map(|l| l.as_str())),
+        "log-format" => fixed(&videre_core::library_config::LogFormat::ALL.map(|f| f.as_str())),
+        "export-xmp-on-watch" | "gallery-starts-watch" => fixed(&["true", "false"]),
+        _ => Vec::new(),
+    }
+}
+
+pub fn tag_candidates(current: &OsStr) -> Vec<CompletionCandidate> {
+    key_values(current, "tag")
+}
+
+pub fn category_candidates(current: &OsStr) -> Vec<CompletionCandidate> {
+    key_values(current, "category")
+}
+
+pub fn label_candidates(current: &OsStr) -> Vec<CompletionCandidate> {
+    key_values(current, "label")
+}
+
+/// A label to set: the library's labels, or `none` to clear one.
+pub fn label_or_none_candidates(current: &OsStr) -> Vec<CompletionCandidate> {
+    let mut out = label_candidates(current);
+    out.extend(prefix_filtered(
+        current,
+        std::iter::once(("none".to_string(), Some("clear the label".to_string()))),
+    ));
+    out
 }
 
 pub fn ext_candidates(current: &OsStr) -> Vec<CompletionCandidate> {
@@ -602,5 +691,141 @@ mod query_completion_tests {
         let (_t, conn) = conn();
         let c = query_candidates_in(&conn, "'person:e");
         assert_eq!(c[0].1.as_deref(), Some("Erhan Gündoğan (1)"));
+    }
+}
+
+#[cfg(test)]
+mod config_completion_tests {
+    use super::*;
+
+    fn values(key: &str) -> Vec<String> {
+        config_values_for(key, &[])
+            .into_iter()
+            .map(|(v, _)| v)
+            .collect()
+    }
+
+    #[test]
+    fn model_offers_every_provided_model_default_first() {
+        assert_eq!(
+            values("model"),
+            [
+                "google/siglip-base-patch16-224",
+                "google/siglip2-base-patch16-384",
+                "google/siglip-so400m-patch14-384",
+            ]
+        );
+        // A model this library already embedded with is offered too, once.
+        let got: Vec<String> = config_values_for(
+            "model",
+            &[
+                "google/siglip-base-patch16-224".into(),
+                "acme/own-model".into(),
+            ],
+        )
+        .into_iter()
+        .map(|(v, _)| v)
+        .collect();
+        assert_eq!(got.len(), 4, "{got:?}");
+        assert!(got.contains(&"acme/own-model".to_string()));
+    }
+
+    #[test]
+    fn keys_with_a_fixed_set_offer_it_and_numbers_offer_nothing() {
+        assert_eq!(values("xmp"), ["db", "file", "newest"]);
+        assert_eq!(values("gallery-starts-watch"), ["true", "false"]);
+        assert_eq!(values("export-xmp-on-watch"), ["true", "false"]);
+        assert_eq!(values("log-level"), ["error", "warn", "info", "debug"]);
+        assert_eq!(values("log-format"), ["json", "text"]);
+        assert!(values("io-workers").is_empty());
+        assert!(values("no-such-key").is_empty());
+    }
+
+    #[test]
+    fn the_key_is_read_from_the_line_being_completed() {
+        let line = |typed: &[&str]| {
+            let mut args: Vec<std::ffi::OsString> = vec!["--".into(), "videre".into()];
+            args.extend(typed.iter().map(Into::into));
+            config_key_in(&args)
+        };
+        assert_eq!(
+            line(&["config", "set", "model", ""]).as_deref(),
+            Some("model")
+        );
+        assert_eq!(
+            line(&["--library", "/x", "config", "set", "xmp", "n"]).as_deref(),
+            Some("xmp")
+        );
+        assert_eq!(line(&["config", "set"]), None);
+        assert_eq!(line(&["search", "model"]), None);
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    /// Values no shell can suggest: numbers, dates, coordinates, ports and
+    /// free text. Every other argument that takes a value must complete:
+    /// a fixed set, a completer over the library, or a path hint. A flag
+    /// added without one fails here, which is how `config set model` went
+    /// unnoticed: nothing asked.
+    const FREE_FORM: &[&str] = &[
+        "after",
+        "before",
+        "date",
+        "location",
+        "radius",
+        "rating",
+        "margin",
+        "batch",
+        "chunk",
+        "limit",
+        "eps",
+        "attach-sim",
+        "max-generic-sim",
+        "max-landmark-error",
+        "merge-sim",
+        "min-blur",
+        "min-cluster-size",
+        "min-face-size",
+        "qlmanage-concurrency",
+        "workers",
+        "port",
+        "top-k",
+        "sort",
+        "exit-with",
+    ];
+
+    #[test]
+    fn every_value_argument_of_every_command_completes_or_is_free_form() {
+        fn walk(cmd: &clap::Command, path: &str, missing: &mut Vec<String>) {
+            for arg in cmd.get_arguments() {
+                if !arg.get_action().takes_values() {
+                    continue;
+                }
+                let name = arg
+                    .get_long()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| arg.get_id().to_string());
+                let completes = !arg.get_possible_values().is_empty()
+                    || arg
+                        .get::<clap_complete::engine::ArgValueCompleter>()
+                        .is_some()
+                    || arg.get_value_hint() != clap::ValueHint::Unknown;
+                if !completes && !FREE_FORM.contains(&name.as_str()) {
+                    missing.push(format!("{path} {name}"));
+                }
+            }
+            for sub in cmd.get_subcommands() {
+                walk(sub, &format!("{path} {}", sub.get_name()), missing);
+            }
+        }
+        let mut missing = Vec::new();
+        walk(&crate::cli_command(), "videre", &mut missing);
+        assert!(
+            missing.is_empty(),
+            "these complete nothing; give each a completer, values or a path hint, \
+             or list it as free-form:\n  {}",
+            missing.join("\n  ")
+        );
     }
 }

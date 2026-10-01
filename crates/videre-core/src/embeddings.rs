@@ -45,6 +45,15 @@ pub fn is_video_ext(ext: &str) -> bool {
 /// new model simply starts from zero and needs its own `videre embed` run.
 pub const DEFAULT_MODEL_ID: &str = "google/siglip-base-patch16-224";
 
+/// The models videre is tested with and documents (`reference/models`), the
+/// default first: what completion offers for `--model` and `config set
+/// model`. Any other Hugging Face SigLIP model id still works when typed.
+pub const PROVIDED_MODELS: &[&str] = &[
+    DEFAULT_MODEL_ID,
+    "google/siglip2-base-patch16-384",
+    "google/siglip-so400m-patch14-384",
+];
+
 /// Resolve the model from one selected library's validated settings.
 pub fn resolve_model_id_from(
     config: &crate::library_config::LibraryConfig,

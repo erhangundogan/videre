@@ -281,6 +281,17 @@ pub enum XmpPrecedence {
 }
 
 impl XmpPrecedence {
+    pub const ALL: [Self; 3] = [Self::Db, Self::File, Self::Newest];
+
+    /// The spelling `parse` reads, in config and on the command line.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Db => "db",
+            Self::File => "file",
+            Self::Newest => "newest",
+        }
+    }
+
     pub fn parse(s: &str) -> Result<Self> {
         match s {
             "db" => Ok(Self::Db),

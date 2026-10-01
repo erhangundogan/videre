@@ -38,7 +38,13 @@ pub struct MarkArgs {
     #[arg(long, value_name = "keep|reject|none", value_parser = ["keep", "reject", "none"])]
     pick: Option<String>,
     /// Set the colour label, or 'none' to clear
-    #[arg(long, value_name = "COLOUR|none")]
+    #[arg(
+        long,
+        value_name = "COLOUR|none",
+        add = clap_complete::engine::ArgValueCompleter::new(
+            crate::completions::label_or_none_candidates
+        )
+    )]
     label: Option<String>,
     /// Mark as liked (a favourite)
     #[arg(long)]

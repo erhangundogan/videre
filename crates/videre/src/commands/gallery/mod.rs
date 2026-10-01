@@ -25,7 +25,11 @@ use crate::command_context::CommandContext;
 pub struct GalleryArgs {
     /// Embedding model backing the in-page similarity search
     /// (default: 'videre config set model', else the built-in default).
-    #[arg(long, value_parser = super::parse_model_id)]
+    #[arg(
+        long,
+        value_parser = super::parse_model_id,
+        add = clap_complete::engine::ArgValueCompleter::new(crate::completions::model_candidates)
+    )]
     model: Option<String>,
 
     /// Port to listen on. Without the flag: start at 7878 and advance to the

@@ -18,7 +18,11 @@ pub struct SearchArgs {
     /// Embedding model to search against (default: 'videre config set model', else
     /// the built-in default). Must already have been embedded; run
     /// 'videre stats' to see which models this library has.
-    #[arg(long, value_parser = super::parse_model_id)]
+    #[arg(
+        long,
+        value_parser = super::parse_model_id,
+        add = clap_complete::engine::ArgValueCompleter::new(crate::completions::model_candidates)
+    )]
     pub(crate) model: Option<String>,
 
     /// What to find, in the query language: words to rank by, filters such
@@ -59,7 +63,12 @@ pub struct SearchArgs {
 
     /// Only files classified as this category: photo/screenshot/document/
     /// meme/unknown (requires a prior 'videre classify' run)
-    #[arg(long)]
+    #[arg(
+        long,
+        add = clap_complete::engine::ArgValueCompleter::new(
+            crate::completions::category_candidates
+        )
+    )]
     pub(crate) category: Option<String>,
 
     /// Only photos within --radius km of this place, e.g. "Berlin, Germany"
