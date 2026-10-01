@@ -20,7 +20,7 @@ Per stage that has a real done-vs-outstanding count: how much has been
 processed, what remains, and the command that closes the gap.
 
 ```
-Coverage (model google/siglip-base-patch16-224):
+Coverage (model google/siglip2-base-patch16-224):
   embed      0 of 1 done, 1 outstanding (optional, can take hours)
   faces      0 of 1 done, 1 outstanding
   locations  0 of 1 done, 1 outstanding

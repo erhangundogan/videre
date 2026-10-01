@@ -141,7 +141,7 @@ videre gallery                # name the groups in your browser
 videre search --person "Alice"
 ```
 
-The first `videre embed` downloads about 780 MB of model data, and `videre
+The first `videre embed` downloads about 1.5 GB of model data, and `videre
 faces` a separate 180 MB. Nothing is downloaded until you run a command that
 needs it, and both are resumable.
 

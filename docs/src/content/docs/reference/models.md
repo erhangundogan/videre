@@ -14,13 +14,38 @@ built it.
 
 | Model | Download | Dimensions | Notes |
 |---|---|---|---|
-| [`google/siglip-base-patch16-224`](https://huggingface.co/google/siglip-base-patch16-224) | ~780 MB | 768 | The default |
-| [`google/siglip2-base-patch16-384`](https://huggingface.co/google/siglip2-base-patch16-384) | ~1.4 GB | 768 | Newer, higher resolution |
-| [`google/siglip-so400m-patch14-384`](https://huggingface.co/google/siglip-so400m-patch14-384) | ~3.3 GB | 1152 | Largest |
+| [`google/siglip2-base-patch16-224`](https://huggingface.co/google/siglip2-base-patch16-224) | ~1.5 GB | 768 | The default |
+| [`google/siglip2-base-patch16-384`](https://huggingface.co/google/siglip2-base-patch16-384) | ~1.5 GB | 768 | The same model at 384px: finer detail, about 4x slower to embed |
+| [`google/siglip2-so400m-patch14-384`](https://huggingface.co/google/siglip2-so400m-patch14-384) | ~4.5 GB | 1152 | Largest and slowest |
+
+All three are SigLIP 2, which understands queries in many languages, Turkish
+included. Searched by their own captions on 300 test photos, the default
+found the right photo first for 84% of English queries and 52% of Turkish
+ones; the SigLIP 1 model it replaced managed 81% and 37%, at the same speed.
 
 Higher resolution and more parameters generally mean better matching on fine
 detail, at proportionally more time per image and more disk. Whether that helps
 *your* photos is an empirical question: see
+[using several search models](/guides/multiple-models/).
+
+Any other SigLIP or SigLIP 2 model on Hugging Face can be given by id, such as
+the older English-only
+[`google/siglip-base-patch16-224`](https://huggingface.co/google/siglip-base-patch16-224).
+Two SigLIP 2 kinds do not load: the `-naflex` models, and the `giant-opt`
+ones.
+
+A library whose `config.toml` already names a `default_model` keeps it.
+videre writes that key when it creates a library, so most libraries made
+before SigLIP 2 became the default still use
+`google/siglip-base-patch16-224`; `videre config` shows which. To move one
+over:
+
+```bash
+videre config set model google/siglip2-base-patch16-224
+videre embed
+```
+
+The old vectors stay on disk until you remove them; see
 [using several search models](/guides/multiple-models/).
 
 ### Face model
@@ -48,11 +73,11 @@ videre embed --model google/siglip2-base-patch16-384      # just this once
 videre config                                             # show what resolves
 ```
 
-Non-default models are larger and are only fetched if you actually select one:
+The other models are only fetched if you actually select one:
 [`siglip2-base-patch16-384`](https://huggingface.co/google/siglip2-base-patch16-384)
-is about 1.4 GB, and
-[`siglip-so400m-patch14-384`](https://huggingface.co/google/siglip-so400m-patch14-384)
-about 3.3 GB.
+is about 1.5 GB, and
+[`siglip2-so400m-patch14-384`](https://huggingface.co/google/siglip2-so400m-patch14-384)
+about 4.5 GB.
 
 ## One model never disturbs another
 

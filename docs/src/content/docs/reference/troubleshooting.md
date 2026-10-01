@@ -184,7 +184,7 @@ sqlite3 ~/Photos/.videre/hashes.db \
   "DELETE FROM faces WHERE hash IN ($(sed "s/.*/'&'/" /tmp/rotated_hashes.txt | paste -sd, -));
    DELETE FROM faces_scanned WHERE hash IN ($(sed "s/.*/'&'/" /tmp/rotated_hashes.txt | paste -sd, -));
    DELETE FROM classifications WHERE hash IN ($(sed "s/.*/'&'/" /tmp/rotated_hashes.txt | paste -sd, -));"
-sqlite3 ~/Photos/.videre/embeddings/google--siglip-base-patch16-224.db \
+sqlite3 ~/Photos/.videre/embeddings/google--siglip2-base-patch16-224.db \
   "DELETE FROM embeddings WHERE hash IN ($(sed "s/.*/'&'/" /tmp/rotated_hashes.txt | paste -sd, -));"
 
 # 4. re-run; only the repaired files are processed

@@ -27,31 +27,39 @@ pub fn is_video_ext(ext: &str) -> bool {
 /// `--model` nor `config.toml` names one. Single source of truth so the report
 /// binary can query embeddings without depending on videre-ml.
 ///
-/// Changed 2026-08-06 from `google/siglip2-base-patch16-384`. Measured on a
-/// real 70,587 photo library: 63ms per photo against 131ms, taking a full
-/// re-embed from roughly 2.6 hours to 1.2. All three candidate models were
-/// embedded in full and compared side by side on real photos; every one
-/// returned correct results, and pairwise agreement rose from 33% at k=6 to
-/// about 68% at k=200, showing they draw from the same pool of correct answers
-/// and differ mainly in ordering. With quality indistinguishable by
-/// inspection, speed decides.
+/// Changed 2026-10-01 from `google/siglip-base-patch16-224`, its SigLIP 1
+/// counterpart at the same size and resolution, so the same speed (300
+/// photos embedded in 2m 9s against 2m 11s on one CPU). Measured on 300
+/// Flickr8k photos, each searched by its own caption: English R@1 0.84
+/// against 0.81, and Turkish, which SigLIP 1's English-only 32k vocabulary
+/// splits into fragments, 0.52 against 0.37. The real library is Turkish.
 ///
-/// It sees each photo at 224px rather than 384px, which is where the speed
-/// comes from and the first place to look if fine-detail queries disappoint.
+/// Before that, 2026-08-06, it was changed from
+/// `google/siglip2-base-patch16-384` for speed: 63ms per photo against 131ms
+/// on a real 70,587 photo library, with quality indistinguishable by
+/// inspection. The 224px SigLIP 2 keeps that speed. It sees each photo at
+/// 224px rather than 384px, the first place to look if fine-detail queries
+/// disappoint.
 ///
 /// Changing this invalidates nothing: each model owns a separate database
 /// under `<library>/.videre/embeddings/` (see `crate::embeddings_db`), so
 /// switching leaves previous vectors intact and queryable via `--model`. The
 /// new model simply starts from zero and needs its own `videre embed` run.
-pub const DEFAULT_MODEL_ID: &str = "google/siglip-base-patch16-224";
+pub const DEFAULT_MODEL_ID: &str = "google/siglip2-base-patch16-224";
 
 /// The models videre is tested with and documents (`reference/models`), the
 /// default first: what completion offers for `--model` and `config set
 /// model`. Any other Hugging Face SigLIP model id still works when typed.
+///
+/// All SigLIP 2, whose Gemma vocabulary covers Turkish. The SigLIP 1 models
+/// offered before are English-only and still work when typed. Not every
+/// SigLIP 2 checkpoint loads: `-naflex` is a different architecture, and
+/// `giant-opt` projects text 1152 -> 1536, which candle's square text head
+/// cannot take.
 pub const PROVIDED_MODELS: &[&str] = &[
     DEFAULT_MODEL_ID,
     "google/siglip2-base-patch16-384",
-    "google/siglip-so400m-patch14-384",
+    "google/siglip2-so400m-patch14-384",
 ];
 
 /// Resolve the model from one selected library's validated settings.
@@ -88,7 +96,7 @@ pub fn validate_model_id(id: &str) -> anyhow::Result<()> {
         }
         _ => anyhow::bail!(
             "invalid model id {id:?}: expected owner/name, \
-             e.g. google/siglip-base-patch16-224"
+             e.g. google/siglip2-base-patch16-224"
         ),
     }
 }

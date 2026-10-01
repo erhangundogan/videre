@@ -239,9 +239,9 @@ async function seedSearchEmbeddings(libraryRoot: string): Promise<void> {
   const library = new DatabaseSync(join(libraryRoot, ".videre", "hashes.db"), { readOnly: true });
   const rows = library.prepare("SELECT path, hash FROM file_hashes").all() as { path: string; hash: string }[];
   library.close();
-  const model = "google/siglip-base-patch16-224";
+  const model = "google/siglip2-base-patch16-224";
   await mkdir(join(libraryRoot, ".videre", "embeddings"), { recursive: true });
-  const store = new DatabaseSync(join(libraryRoot, ".videre", "embeddings", "google--siglip-base-patch16-224.db"));
+  const store = new DatabaseSync(join(libraryRoot, ".videre", "embeddings", "google--siglip2-base-patch16-224.db"));
   store.exec(
     "CREATE TABLE IF NOT EXISTS embeddings (hash TEXT PRIMARY KEY, model_id TEXT NOT NULL, embedding BLOB NOT NULL)"
   );

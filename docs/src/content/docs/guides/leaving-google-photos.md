@@ -138,7 +138,7 @@ original. See [`dedupe --edited`](/commands/dedupe/#google-photos-edits---edited
 Optional, and the reason to bother with any of this:
 
 ```bash
-videre embed                   # one-time, downloads about 780 MB
+videre embed                   # one-time, downloads about 1.5 GB
 videre search "sunset over water"
 
 videre faces                   # one-time, downloads about 180 MB
