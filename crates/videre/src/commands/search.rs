@@ -116,7 +116,7 @@ pub struct SearchArgs {
     #[arg(short = 'k', long, default_value_t = 20)]
     pub(crate) top_k: usize,
 
-    /// Prepend the cosine score to each output line (no-op with --json: score is always included)
+    /// Prepend the score to each output line: a text match probability, or an image similarity (no-op with --json: score is always included)
     #[arg(long)]
     pub(crate) scores: bool,
 
@@ -342,19 +342,38 @@ pub(crate) enum QueryInput<'a> {
 /// the first search pays the load. Everything else about the query is shared,
 /// which is what stops the two drifting apart.
 pub(crate) trait QueryEmbedder {
-    fn embed(&self, model_id: &str, input: QueryInput<'_>) -> Result<Vec<f32>>;
+    fn embed(&self, model_id: &str, input: QueryInput<'_>) -> Result<QueryVector>;
+}
+
+/// A ranking query's vector, and for text, how the model turns a cosine into
+/// a match probability. An image query has no calibration: image against
+/// image was never trained with one, so it ranks and filters by cosine.
+pub(crate) struct QueryVector {
+    pub(crate) vector: Vec<f32>,
+    pub(crate) calibration: Option<videre_ml::search::Calibration>,
+}
+
+/// One embedder's answer to one query, the same for every implementation.
+fn query_vector(embedder: &model::Embedder, input: QueryInput<'_>) -> Result<QueryVector> {
+    Ok(match input {
+        QueryInput::Text(text) => QueryVector {
+            vector: embedder.embed_text(text)?,
+            calibration: Some(embedder.calibration()),
+        },
+        QueryInput::Image(path) => QueryVector {
+            vector: model::embed_image_file(embedder, path)?,
+            calibration: None,
+        },
+    })
 }
 
 /// The CLI's: one embedder per invocation, dropped when the command exits.
 pub(crate) struct FreshEmbedder;
 
 impl QueryEmbedder for FreshEmbedder {
-    fn embed(&self, model_id: &str, input: QueryInput<'_>) -> Result<Vec<f32>> {
+    fn embed(&self, model_id: &str, input: QueryInput<'_>) -> Result<QueryVector> {
         let embedder = model::Embedder::load(device::best_device(), model_id)?;
-        match input {
-            QueryInput::Text(text) => embedder.embed_text(text),
-            QueryInput::Image(path) => model::embed_image_file(&embedder, path),
-        }
+        query_vector(&embedder, input)
     }
 }
 
@@ -374,7 +393,7 @@ pub(crate) struct CachedEmbedder<'a>(
 );
 
 impl QueryEmbedder for CachedEmbedder<'_> {
-    fn embed(&self, model_id: &str, input: QueryInput<'_>) -> Result<Vec<f32>> {
+    fn embed(&self, model_id: &str, input: QueryInput<'_>) -> Result<QueryVector> {
         let mut guard = self
             .0
             .lock()
@@ -383,10 +402,7 @@ impl QueryEmbedder for CachedEmbedder<'_> {
             *guard = Some(model::Embedder::load(device::best_device(), model_id)?);
         }
         let embedder = guard.as_ref().expect("just initialized");
-        match input {
-            QueryInput::Text(text) => embedder.embed_text(text),
-            QueryInput::Image(path) => model::embed_image_file(embedder, path),
-        }
+        query_vector(embedder, input)
     }
 }
 
@@ -616,7 +632,7 @@ fn describe_query(args: &SearchArgs, dates: &(Option<String>, Option<String>)) -
 /// or image query ranks the survivors, and the sort keys order them.
 ///
 /// Person hits carry only a path (person search has always returned bare
-/// paths); every other hit carries its hash, plus a cosine score when there
+/// paths); every other hit carries its hash, plus a score when there
 /// was a ranking query and a distance when `--location` was given.
 fn collect_hits(
     args: &SearchArgs,
@@ -702,7 +718,18 @@ fn collect_hits(
     };
 
     let scores = is_ranked(args)
-        .then(|| rank(args, &conn, &db, &model_id, &cands, &sort_keys, embedder))
+        .then(|| {
+            rank(
+                args,
+                &conn,
+                &db,
+                &model_id,
+                &cands,
+                &sort_keys,
+                embedder,
+                &ctx.library.settings,
+            )
+        })
         .transpose()?;
 
     // A ranked query has already reduced the field to its scored hashes.
@@ -762,6 +789,22 @@ fn collect_hits(
                 args.radius,
                 query.value
             ),
+            // Ranked, and the cutoff left nothing: say which setting did it,
+            // or an empty answer reads as "nothing in the library".
+            "text" => tracing::info!(
+                "No matches of at least {:.0}% (search_min_match {}); \
+                 videre config set search-min-match 0 shows every ranked result",
+                ctx.library.settings.search_min_match * 100.0,
+                ctx.library.settings.search_min_match
+            ),
+            "image" => {
+                if let Some(floor) = ctx.library.settings.similar_min_score {
+                    tracing::info!(
+                        "No matches scoring at least {floor} (similar_min_score); \
+                         videre config unset similar-min-score shows every ranked result"
+                    )
+                }
+            }
             _ => {}
         }
     }
@@ -775,7 +818,8 @@ fn collect_hits(
     })
 }
 
-/// Cosine scores for the candidate hashes, keyed by hash.
+/// Scores for the candidate hashes, keyed by hash: a text query's match
+/// probability, or an image's cosine, with the library's cutoff applied.
 ///
 /// Truncating to `top_k` inside the ranker is only safe when relevance is the
 /// primary key and descending; under any other order a lower-scoring row can
@@ -788,6 +832,7 @@ fn rank(
     cands: &Candidates,
     sort_keys: &[SortKey],
     embedder: &dyn QueryEmbedder,
+    settings: &videre_core::library_config::LibraryConfig,
 ) -> Result<HashMap<String, f32>> {
     let corpus = load_corpus(conn, db, model_id)?;
 
@@ -825,10 +870,13 @@ fn rank(
     // one is already here, so it never reaches the embedder at all, which is
     // why this is not a `QueryInput` variant: every implementation would need an
     // arm it could not answer.
-    let query_vec = match (&args.query, &args.image, stored) {
+    let query = match (&args.query, &args.image, stored) {
         (Some(text), None, None) => embedder.embed(model_id, QueryInput::Text(text))?,
         (None, Some(img), None) => embedder.embed(model_id, QueryInput::Image(img))?,
-        (None, None, Some(vec)) => vec,
+        (None, None, Some(vector)) => QueryVector {
+            vector,
+            calibration: None,
+        },
         _ => {
             anyhow::bail!("provide exactly one of a text query, --image <path>, or an example hash")
         }
@@ -839,7 +887,23 @@ fn rank(
     } else {
         corpus.len()
     };
-    Ok(search::top_k(&query_vec, &corpus, k).into_iter().collect())
+    Ok(search::top_k(&query.vector, &corpus, k)
+        .into_iter()
+        .filter_map(|(hash, cos)| match query.calibration {
+            // Text: the model's own match probability, so one cutoff means
+            // the same for every query and model. A cosine never did: what
+            // was noise on one model was a match on another.
+            Some(c) => {
+                let p = c.probability(cos);
+                (p >= settings.search_min_match as f32).then_some((hash, p))
+            }
+            // An image: its cosine, against the image floor when one is set.
+            None => settings
+                .similar_min_score
+                .is_none_or(|floor| cos >= floor as f32)
+                .then_some((hash, cos)),
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -1154,5 +1218,134 @@ mod tests {
         assert!(json.contains("\"kind\":\"category\""));
         assert!(json.contains("\"hash\":\"abc\""));
         assert!(!json.contains("\"score\""));
+    }
+}
+
+#[cfg(test)]
+mod relevance_tests {
+    use super::*;
+    use clap::Parser;
+    use videre_ml::search::Calibration;
+
+    #[derive(Parser)]
+    struct Standalone {
+        #[command(flatten)]
+        inner: SearchArgs,
+    }
+
+    /// 50% at a cosine of 0.1, so the three files below land at about 100%,
+    /// 50% and 0.7%.
+    const CALIBRATION: Calibration = Calibration {
+        scale: 100.0,
+        bias: -10.0,
+    };
+
+    /// Answers every text query with `[1, 0]` and the calibration above, and
+    /// every image with `[1, 0]` and none, the way the real embedders do.
+    struct Fake;
+
+    impl QueryEmbedder for Fake {
+        fn embed(&self, _model_id: &str, input: QueryInput<'_>) -> Result<QueryVector> {
+            Ok(QueryVector {
+                vector: vec![1.0, 0.0],
+                calibration: matches!(input, QueryInput::Text(_)).then_some(CALIBRATION),
+            })
+        }
+    }
+
+    /// deniz, kumsal and kedi at cosines 0.2, 0.1 and 0.05 to `[1, 0]`.
+    fn library(config: &str) -> (tempfile::TempDir, CommandContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("kütüphane");
+        std::fs::create_dir_all(root.join(".videre")).unwrap();
+        std::fs::write(root.join(".videre/config.toml"), config).unwrap();
+        let library = std::sync::Arc::new(
+            videre_core::library::LibraryContext::new(&root, &temp.path().join("cache")).unwrap(),
+        );
+        let conn = videre_core::library_db::initialize(&library).unwrap();
+        let model = &library.settings.default_model;
+        let path = videre_core::embeddings_db::db_path_in(&library, model).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let store = Connection::open(&path).unwrap();
+        store
+            .execute_batch(
+                "CREATE TABLE embeddings
+                 (hash TEXT PRIMARY KEY, model_id TEXT NOT NULL, embedding BLOB NOT NULL);",
+            )
+            .unwrap();
+        for (name, cos) in [("deniz", 0.2f32), ("kumsal", 0.1), ("kedi", 0.05)] {
+            conn.execute(
+                "INSERT INTO file_hashes (path, hash, ext, size_bytes) VALUES (?1, ?2, 'jpg', 1)",
+                rusqlite::params![root.join(format!("{name}.jpg")).to_string_lossy(), name],
+            )
+            .unwrap();
+            let v = [cos, (1.0 - cos * cos).sqrt()];
+            store
+                .execute(
+                    "INSERT INTO embeddings VALUES (?1, ?2, ?3)",
+                    rusqlite::params![name, model, vectors::to_f16_bytes(&v)],
+                )
+                .unwrap();
+        }
+        let ctx = CommandContext {
+            library,
+            invocation_dir: root,
+            source: crate::command_context::LibrarySource::Cwd,
+        };
+        (temp, ctx)
+    }
+
+    fn search(ctx: &CommandContext, argv: &[&str]) -> Vec<(String, f32)> {
+        let mut full = vec!["search"];
+        full.extend_from_slice(argv);
+        let args = Standalone::parse_from(full).inner;
+        let out = run_json_in(&args, &Fake, ctx).unwrap();
+        assert_eq!(out.count, out.results.len());
+        assert_eq!(
+            out.total_matches,
+            out.results.len(),
+            "the count is what passed"
+        );
+        out.results
+            .iter()
+            .map(|h| (h.hash.clone().unwrap(), h.score.unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn a_text_search_scores_the_match_probability_and_drops_weak_matches() {
+        let (_t, ctx) = library("");
+        let got = search(&ctx, &["deniz"]);
+        let names: Vec<&str> = got.iter().map(|(h, _)| h.as_str()).collect();
+        assert_eq!(names, ["deniz", "kumsal"], "kedi is a 0.7% match: {got:?}");
+        assert!(got[0].1 > 0.99, "{got:?}");
+        assert!((got[1].1 - 0.5).abs() < 0.02, "{got:?}");
+    }
+
+    #[test]
+    fn the_text_cutoff_is_the_library_s_setting() {
+        let (_t, ctx) = library("search_min_match = 0\n");
+        assert_eq!(search(&ctx, &["deniz"]).len(), 3);
+        let (_t, ctx) = library("search_min_match = 0.9\n");
+        let got = search(&ctx, &["deniz"]);
+        assert_eq!(got.len(), 1, "{got:?}");
+    }
+
+    #[test]
+    fn an_image_search_keeps_cosines_and_its_own_floor() {
+        let image = "/dev/null";
+        let (_t, ctx) = library("");
+        let got = search(&ctx, &["--image", image]);
+        assert_eq!(got.len(), 3, "no floor by default: {got:?}");
+        assert!(
+            (got[0].1 - 0.2).abs() < 0.01,
+            "a cosine, not a probability: {got:?}"
+        );
+        let (_t, ctx) = library("similar_min_score = 0.08\n");
+        let names: Vec<String> = search(&ctx, &["--image", image])
+            .into_iter()
+            .map(|(h, _)| h)
+            .collect();
+        assert_eq!(names, ["deniz", "kumsal"]);
     }
 }

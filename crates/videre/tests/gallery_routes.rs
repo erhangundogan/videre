@@ -1294,6 +1294,27 @@ fn similarity_ranks_by_closeness_to_the_example() {
     );
 }
 
+#[test]
+fn similar_drops_neighbours_below_the_library_s_floor() {
+    let lib = search_fixture();
+    // Scores against aaaa (the fixture's vectors are not normalized, so
+    // these are its dot products): bbbb 0.9, cccc 0.5, dddd 0.
+    std::fs::write(
+        lib.root.join(".videre/config.toml"),
+        "similar_min_score = 0.4\n",
+    )
+    .unwrap();
+    let server = Server::start(&lib);
+    let (status, body) = server.get("/api/search?like=aaaa&limit=10");
+    assert_eq!(status, 200, "{body}");
+    let hashes: Vec<&str> = body
+        .split("\"hash\":\"")
+        .skip(1)
+        .map(|s| s.split('"').next().unwrap())
+        .collect();
+    assert_eq!(hashes, vec!["bbbb", "cccc"], "{body}");
+}
+
 /// The example is not one of its own neighbours.
 ///
 /// The in-page version skipped its own index; this must too, or the first and

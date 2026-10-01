@@ -31,8 +31,10 @@ Use your own hard queries, not easy ones. Anything finds a sunset; the
 difference shows up on specific requests such as "a red bicycle against a brick
 wall".
 
-Scores are **not comparable between models**. Each has its own scale. Compare
-the ordering and which photos appear, not the numbers.
+A text search's score is a match probability on the same scale for every
+model, so the numbers compare directly: a model that gives the right photos
+higher scores, and the wrong ones lower, is the better one for you. Image
+searches score by similarity, which is not comparable between models.
 
 ## Switching
 

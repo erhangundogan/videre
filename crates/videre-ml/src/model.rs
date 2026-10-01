@@ -126,6 +126,26 @@ pub struct Embedder {
     tokenizer: Tokenizer,
     device: Device,
     dtype: DType,
+    calibration: crate::search::Calibration,
+}
+
+/// The model's learned `logit_scale` and `logit_bias`, which turn a text
+/// query's cosine into a match probability (`search::Calibration`). Every
+/// SigLIP checkpoint carries both; one without them is not a SigLIP this
+/// can rank with, so that is a load error rather than a quiet cosine.
+fn read_calibration(vb: &VarBuilder) -> Result<crate::search::Calibration> {
+    let read = |name: &str| -> Result<f32> {
+        let values: Vec<f32> = vb
+            .get(1, name)
+            .with_context(|| format!("read {name} from the model weights"))?
+            .to_dtype(DType::F32)?
+            .to_vec1()?;
+        Ok(values[0])
+    };
+    Ok(crate::search::Calibration {
+        scale: read("logit_scale")?.exp(),
+        bias: read("logit_bias")?,
+    })
 }
 
 /// Inference precision, overridable with `VIDERE_EMBED_DTYPE=f16|f32`.
@@ -220,12 +240,16 @@ impl Embedder {
                 .context("mmap safetensors")?
         };
 
+        // candle loads both into private fields and only uses them in
+        // `forward`, which embedding never calls, so they are read here.
+        let calibration = read_calibration(&vb)?;
         let model = siglip::Model::new(&config, vb).context("build siglip model")?;
         Ok(Self {
             model,
             tokenizer,
             device,
             dtype,
+            calibration,
         })
     }
 
@@ -314,6 +338,11 @@ impl Embedder {
             out.push(row);
         }
         Ok(out)
+    }
+
+    /// How this model's text-to-image cosines map to match probabilities.
+    pub fn calibration(&self) -> crate::search::Calibration {
+        self.calibration
     }
 
     /// Tokenize `text`, pad/truncate to `MAX_TEXT_LEN`, run the text tower.
@@ -602,6 +631,20 @@ mod tests {
         let dot = |a: &[f32], b: &[f32]| -> f32 { a.iter().zip(b).map(|(x, y)| x * y).sum() };
         assert!(dot(&red, &q_red) > dot(&red, &q_dog));
         assert_eq!(red.len(), q_red.len());
+    }
+
+    #[test]
+    fn the_weights_carry_a_calibration_that_ranks_like_the_cosine() {
+        let e = Embedder::load(crate::device::best_device(), MODEL_ID).unwrap();
+        let c = e.calibration();
+        // Every SigLIP measured 2026-10-01: exp(scale) 108-118, bias -12.9 to -16.8.
+        assert!(c.scale > 50.0 && c.scale < 200.0, "{c:?}");
+        assert!(c.bias < -5.0 && c.bias > -30.0, "{c:?}");
+        let red = embed_image_file(&e, std::path::Path::new("tests/fixtures/red_2x2.png")).unwrap();
+        let dot = |a: &[f32], b: &[f32]| -> f32 { a.iter().zip(b).map(|(x, y)| x * y).sum() };
+        let fits = c.probability(dot(&red, &e.embed_text("a solid red square").unwrap()));
+        let not = c.probability(dot(&red, &e.embed_text("a photo of a dog").unwrap()));
+        assert!(fits > not, "{fits} vs {not}");
     }
 }
 

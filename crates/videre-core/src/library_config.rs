@@ -103,7 +103,7 @@ impl LogFormat {
 ///
 /// Absent settings mean the built-in default, mirroring the global config's
 /// convention where a missing key falls back rather than erroring.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LibraryConfig {
     /// Embedding model id, e.g. `google/siglip2-base-patch16-224`. A plain
     /// string, not a path: it must never be absolutized, the same rule the
@@ -144,7 +144,19 @@ pub struct LibraryConfig {
     pub log_keep: u64,
     /// Age in days after which a rotated log file is deleted.
     pub log_max_age_days: u64,
+    /// The least match probability a text search keeps, in `[0, 1]`; `0`
+    /// keeps every ranked result. See `videre_ml::search::Calibration`.
+    pub search_min_match: f64,
+    /// The least cosine an image search (Similar, `--image`) keeps, in
+    /// `[-1, 1]`; absent keeps every ranked result. Image against image has
+    /// no trained calibration, so this one is a cosine.
+    pub similar_min_score: Option<f64>,
 }
+
+/// `search_min_match` when absent: a 10% match. On the default model that is
+/// a cosine of 0.129, above most wrong matches and below most right ones in
+/// the 300-photo measurement recorded at `DEFAULT_MODEL_ID`.
+pub const SEARCH_MIN_MATCH_DEFAULT: f64 = 0.1;
 
 impl Default for LibraryConfig {
     /// The built-in defaults: the built-in embedding model, db-first XMP
@@ -166,6 +178,8 @@ impl Default for LibraryConfig {
             log_max_size_mb: LOG_MAX_SIZE_MB_DEFAULT,
             log_keep: LOG_KEEP_DEFAULT,
             log_max_age_days: LOG_MAX_AGE_DAYS_DEFAULT,
+            search_min_match: SEARCH_MIN_MATCH_DEFAULT,
+            similar_min_score: None,
         }
     }
 }
@@ -205,6 +219,10 @@ pub enum ConfigKey {
     LogKeep,
     /// `log_max_age_days`, an integer of at least 1.
     LogMaxAgeDays,
+    /// `search_min_match`, a number from 0 to 1.
+    SearchMinMatch,
+    /// `similar_min_score`, a number from -1 to 1, or absent.
+    SimilarMinScore,
 }
 
 impl ConfigKey {
@@ -225,6 +243,8 @@ impl ConfigKey {
             ConfigKey::LogMaxSizeMb => "log_max_size_mb",
             ConfigKey::LogKeep => "log_keep",
             ConfigKey::LogMaxAgeDays => "log_max_age_days",
+            ConfigKey::SearchMinMatch => "search_min_match",
+            ConfigKey::SimilarMinScore => "similar_min_score",
         }
     }
 }
@@ -314,6 +334,57 @@ fn int_setting(table: &toml::Table, file: &Path, key: &str, min: i64) -> Result<
             other.type_str()
         ),
     }
+}
+
+/// Read a number setting in `range`; `Ok(None)` means absent. An integer is
+/// accepted, since `0` and `1` are fine values of a probability or cosine.
+/// A value outside the range, or NaN, is rejected rather than clamped.
+fn number_setting(
+    table: &toml::Table,
+    file: &Path,
+    key: &str,
+    range: std::ops::RangeInclusive<f64>,
+) -> Result<Option<f64>> {
+    let value = match table.get(key) {
+        None => return Ok(None),
+        Some(toml::Value::Float(f)) => *f,
+        Some(toml::Value::Integer(n)) => *n as f64,
+        Some(other) => bail!(
+            "malformed config {}: {key} must be a number, got {}",
+            file.display(),
+            other.type_str()
+        ),
+    };
+    anyhow::ensure!(
+        range.contains(&value),
+        "malformed config {}: {key} must be from {} to {}, got {value}",
+        file.display(),
+        range.start(),
+        range.end()
+    );
+    Ok(Some(value))
+}
+
+/// `validate_value` for a number setting: the rule `number_setting` applies
+/// at load, worded for an edit.
+fn number_value(
+    key: ConfigKey,
+    value: &toml::Value,
+    range: std::ops::RangeInclusive<f64>,
+) -> Result<()> {
+    let n = match value {
+        toml::Value::Float(f) => *f,
+        toml::Value::Integer(n) => *n as f64,
+        other => bail!("{} must be a number, got {}", key.name(), other.type_str()),
+    };
+    anyhow::ensure!(
+        range.contains(&n),
+        "{} must be from {} to {}, got {n}",
+        key.name(),
+        range.start(),
+        range.end()
+    );
+    Ok(())
 }
 
 /// Read `min_read_rate_mb_s`: absent, or a positive integer. Zero is
@@ -420,6 +491,9 @@ fn config_from_table(table: &toml::Table, file: &Path) -> Result<LibraryConfig> 
         log_keep: int_setting(table, file, "log_keep", 0)?.unwrap_or(LOG_KEEP_DEFAULT),
         log_max_age_days: int_setting(table, file, "log_max_age_days", 1)?
             .unwrap_or(LOG_MAX_AGE_DAYS_DEFAULT),
+        search_min_match: number_setting(table, file, "search_min_match", 0.0..=1.0)?
+            .unwrap_or(SEARCH_MIN_MATCH_DEFAULT),
+        similar_min_score: number_setting(table, file, "similar_min_score", -1.0..=1.0)?,
     })
 }
 
@@ -462,6 +536,8 @@ pub fn exists(paths: &LibraryPaths) -> Result<bool> {
 /// reject, `edit` must refuse to write, or the file and the edit disagree.
 fn validate_value(key: ConfigKey, value: &toml::Value) -> Result<()> {
     match (key, value) {
+        (ConfigKey::SearchMinMatch, v) => number_value(key, v, 0.0..=1.0),
+        (ConfigKey::SimilarMinScore, v) => number_value(key, v, -1.0..=1.0),
         (ConfigKey::Model, toml::Value::String(s)) => validate_model_id(s),
         (ConfigKey::ReadRate, toml::Value::Integer(n)) if *n > 0 => Ok(()),
         (ConfigKey::IoWorkers, toml::Value::Integer(n)) if (1..=256).contains(n) => Ok(()),
@@ -778,6 +854,55 @@ mod tests {
         assert_eq!(loaded.log_level, LogLevel::Debug);
         assert_eq!(loaded.log_format, LogFormat::Text);
         assert_eq!(loaded.log_keep, 0);
+    }
+
+    #[test]
+    fn search_cutoffs_default_and_round_trip() {
+        let (_t, ctx) = library_with_config("");
+        let defaults = LibraryConfig::default();
+        assert_eq!(defaults.search_min_match, 0.1);
+        assert_eq!(defaults.similar_min_score, None);
+
+        edit(
+            &ctx,
+            ConfigKey::SearchMinMatch,
+            Some(toml::Value::Float(0.25)),
+        )
+        .unwrap();
+        // A whole number is a fine probability or cosine too.
+        edit(
+            &ctx,
+            ConfigKey::SimilarMinScore,
+            Some(toml::Value::Integer(0)),
+        )
+        .unwrap();
+        let loaded = load(&ctx.paths).unwrap();
+        assert_eq!(loaded.search_min_match, 0.25);
+        assert_eq!(loaded.similar_min_score, Some(0.0));
+        edit(&ctx, ConfigKey::SimilarMinScore, None).unwrap();
+        assert_eq!(load(&ctx.paths).unwrap().similar_min_score, None);
+    }
+
+    #[test]
+    fn search_cutoffs_out_of_range_are_refused_by_edit_and_load() {
+        let (_t, ctx) = library_with_config("");
+        for (key, value) in [
+            (ConfigKey::SearchMinMatch, toml::Value::Float(1.5)),
+            (ConfigKey::SearchMinMatch, toml::Value::Float(-0.1)),
+            (ConfigKey::SearchMinMatch, toml::Value::Float(f64::NAN)),
+            (ConfigKey::SearchMinMatch, toml::Value::String("0.1".into())),
+            (ConfigKey::SimilarMinScore, toml::Value::Float(1.01)),
+            (ConfigKey::SimilarMinScore, toml::Value::Integer(-2)),
+        ] {
+            assert!(
+                edit(&ctx, key, Some(value.clone())).is_err(),
+                "{key:?} {value:?}"
+            );
+        }
+        for body in ["search_min_match = 2.0\n", "similar_min_score = \"high\"\n"] {
+            let (_t2, ctx2) = library_with_config(body);
+            assert!(load(&ctx2.paths).is_err(), "{body}");
+        }
     }
 
     #[test]

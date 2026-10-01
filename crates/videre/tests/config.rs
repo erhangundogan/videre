@@ -249,3 +249,40 @@ fn config_and_scan_report_the_same_fixed_database() {
         library.context().paths.db.display().to_string()
     );
 }
+
+#[test]
+fn search_cutoffs_are_set_shown_and_checked() {
+    let library = TestLibrary::new();
+    let shown = String::from_utf8_lossy(&run(&library, &["config"]).stdout).to_string();
+    assert!(shown.contains("search-min-match: 0.1 (default)"), "{shown}");
+    assert!(
+        shown.contains("similar-min-score: none (default)"),
+        "{shown}"
+    );
+
+    for (key, value) in [("search-min-match", "0.25"), ("similar-min-score", "0.6")] {
+        let output = run(&library, &["config", "set", key, value]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let text = config_text(&library);
+    assert!(text.contains("search_min_match = 0.25"), "{text}");
+    assert!(text.contains("similar_min_score = 0.6"), "{text}");
+    let shown = String::from_utf8_lossy(&run(&library, &["config"]).stdout).to_string();
+    assert!(shown.contains("search-min-match: 0.25\n"), "{shown}");
+    assert!(shown.contains("similar-min-score: 0.6\n"), "{shown}");
+
+    for (key, value) in [("search-min-match", "high"), ("search-min-match", "1.5")] {
+        let output = run(&library, &["config", "set", key, value]);
+        assert!(!output.status.success(), "{key} {value}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("search") && stderr.contains("must be"),
+            "{stderr}"
+        );
+    }
+    assert!(config_text(&library).contains("search_min_match = 0.25"));
+}
