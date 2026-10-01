@@ -110,15 +110,8 @@ pub fn normalise_bound(spec: &str) -> Result<String> {
 pub fn by_place_name(conn: &Connection, name: &str) -> Result<HashSet<String>> {
     // Matched the way person names are: case and accents folded, then whole
     // words, so "kadikoy" finds "Kadıköy, İstanbul" and "kadi" finds nothing.
-    let Some(wanted) = crate::person::normalize(name) else {
+    let Some(matches) = whole_words(name) else {
         return Ok(HashSet::new());
-    };
-    let wanted: Vec<&str> = wanted.split('_').collect();
-    let matches = |place: &str| {
-        crate::person::normalize(place).is_some_and(|folded| {
-            let words: Vec<&str> = folded.split('_').collect();
-            words.windows(wanted.len()).any(|w| w == wanted.as_slice())
-        })
     };
 
     // Place names are few (one per geocoded spot or cluster), so they are
@@ -163,6 +156,57 @@ pub fn by_place_name(conn: &Connection, name: &str) -> Result<HashSet<String>> {
     for id in &clusters {
         for h in by_cluster.query_map([id], |r| r.get::<_, String>(0))? {
             hashes.insert(h?);
+        }
+    }
+    Ok(hashes)
+}
+
+/// A test for "these words, in order, as whole words", case and accents
+/// folded as person names are: "kadikoy" finds "Kadıköy, İstanbul", "Erhan"
+/// finds "Erhan Gündoğan" and not "Serhan". `None` when `typed` has no word.
+fn whole_words(typed: &str) -> Option<impl Fn(&str) -> bool> {
+    let wanted = crate::person::normalize(typed)?;
+    Some(move |text: &str| {
+        let wanted: Vec<&str> = wanted.split('_').collect();
+        crate::person::normalize(text).is_some_and(|folded| {
+            let words: Vec<&str> = folded.split('_').collect();
+            words.windows(wanted.len()).any(|w| w == wanted.as_slice())
+        })
+    })
+}
+
+/// Hashes with a confirmed face of anyone whose display name or identity has
+/// `words` as whole words: the query language's `people:`, the union of
+/// every matching person where `person:` names exactly one.
+pub fn by_people(conn: &Connection, words: &str) -> Result<HashSet<String>> {
+    let Some(matches) = whole_words(words) else {
+        return Ok(HashSet::new());
+    };
+    // Named people, and any label confirmed before it had a people row.
+    let mut names: Vec<(String, String)> = Vec::new();
+    if crate::db::table_exists(conn, "people")? {
+        let mut stmt = conn.prepare("SELECT name, full_name FROM people")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        names.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+    }
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT person_label FROM faces
+         WHERE confirmed = 1 AND person_label IS NOT NULL",
+    )?;
+    for label in stmt.query_map([], |r| r.get::<_, String>(0))? {
+        let label = label?;
+        if !names.iter().any(|(n, _)| *n == label) {
+            names.push((label.clone(), label));
+        }
+    }
+    let mut hashes = HashSet::new();
+    let mut faces =
+        conn.prepare("SELECT DISTINCT hash FROM faces WHERE confirmed = 1 AND person_label = ?1")?;
+    for (identity, display) in names {
+        if matches(&display) || matches(&identity) {
+            for h in faces.query_map([&identity], |r| r.get::<_, String>(0))? {
+                hashes.insert(h?);
+            }
         }
     }
     Ok(hashes)
@@ -395,6 +439,59 @@ mod tests {
             rusqlite::params![path, hash, mtime, exif],
         )
         .unwrap();
+    }
+
+    /// Five people, each confirmed in their own photo; one label never got a
+    /// people row.
+    fn people_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE people (name TEXT PRIMARY KEY, full_name TEXT NOT NULL);
+             CREATE TABLE faces (id INTEGER PRIMARY KEY, hash TEXT, person_label TEXT,
+                                 confirmed INTEGER);
+             INSERT INTO people VALUES
+               ('erhan_gundogan', 'Erhan Gündoğan'),
+               ('serhan_yilmaz', 'Serhan Yılmaz'),
+               ('erhan_kaya', 'Erhan Kaya'),
+               ('gul', 'Gül'),
+               ('gulsen', 'Gülşen');
+             INSERT INTO faces (hash, person_label, confirmed) VALUES
+               ('h_eg', 'erhan_gundogan', 1),
+               ('h_sy', 'serhan_yilmaz', 1),
+               ('h_ek', 'erhan_kaya', 1),
+               ('h_gul', 'gul', 1),
+               ('h_gulsen', 'gulsen', 1),
+               ('h_ali', 'ali_veli', 1),
+               ('h_unconfirmed', 'erhan_kaya', 0);",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn people(conn: &Connection, words: &str) -> Vec<String> {
+        let mut got: Vec<String> = by_people(conn, words).unwrap().into_iter().collect();
+        got.sort();
+        got
+    }
+
+    #[test]
+    fn people_matches_whole_words_of_any_name_folded() {
+        let conn = people_db();
+        // Every Erhan, not Serhan.
+        assert_eq!(people(&conn, "Erhan"), ["h_eg", "h_ek"]);
+        assert_eq!(people(&conn, "erhan"), ["h_eg", "h_ek"]);
+        // A surname, in any case, with or without its accents.
+        assert_eq!(people(&conn, "GÜNDOĞAN"), ["h_eg"]);
+        assert_eq!(people(&conn, "gundogan"), ["h_eg"]);
+        // Words in order narrow to the one person.
+        assert_eq!(people(&conn, "Erhan Gündoğan"), ["h_eg"]);
+        assert!(people(&conn, "Gündoğan Erhan").is_empty());
+        // A whole word: Gül is not Gülşen, and a prefix is nobody.
+        assert_eq!(people(&conn, "gül"), ["h_gul"]);
+        assert!(people(&conn, "erh").is_empty());
+        // A label without a people row matches by its identity's words.
+        assert_eq!(people(&conn, "veli"), ["h_ali"]);
+        assert!(people(&conn, "!!!").is_empty());
     }
 
     /// Three photos: one named by reverse geocoding, one only through its

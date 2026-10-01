@@ -57,6 +57,17 @@ pub struct SearchArgs {
     )]
     pub(crate) person: Option<String>,
 
+    /// Only files with anyone whose name has these words, as whole words:
+    /// --people Erhan finds Erhan Gündoğan and Erhan Kaya, not Serhan
+    #[arg(
+        long,
+        value_name = "WORDS",
+        add = clap_complete::engine::ArgValueCompleter::new(
+            crate::completions::person_candidates
+        )
+    )]
+    pub(crate) people: Option<String>,
+
     /// Only files classified as this category: photo/screenshot/document/
     /// meme/unknown (requires a prior 'videre classify' run)
     #[arg(long)]
@@ -451,7 +462,7 @@ fn selection_for(
         person: args.person.clone(),
         category: args.category.clone(),
     };
-    super::selection_args::row_selection(
+    let mut selection = super::selection_args::row_selection(
         Some(&args.media),
         Some(&date_group),
         Some(&place_group),
@@ -460,7 +471,9 @@ fn selection_for(
         Some(&args.paths),
         Some(&args.marks),
         Some(&args.tags),
-    )
+    )?;
+    selection.people = args.people.clone();
+    Ok(selection)
 }
 
 /// `--date` shorthand, or the normalised `--after`/`--before` pair.
@@ -519,6 +532,7 @@ fn describe_query(args: &SearchArgs, dates: &(Option<String>, Option<String>)) -
     }
     for (kind, value) in [
         ("person", &args.person),
+        ("people", &args.people),
         ("category", &args.category),
         ("location", &args.location),
     ] {
@@ -837,6 +851,16 @@ mod tests {
     }
 
     #[test]
+    fn people_selects_everyone_with_the_word_in_their_name() {
+        let args = parse(&["search", "--people", "Erhan", "deniz"]);
+        let dates = resolve_dates(&args).unwrap();
+        let got = selection_for(&args, &dates).unwrap();
+        assert_eq!(got.people.as_deref(), Some("Erhan"));
+        assert_eq!(got.person, None);
+        assert_eq!(describe_query(&args, &dates).kind, "text");
+    }
+
+    #[test]
     fn search_parses_a_bare_query_image_and_the_full_filter_vocabulary() {
         // A bare text query.
         assert_eq!(
@@ -948,6 +972,7 @@ mod tests {
 
         let want = videre_core::selection::RowSelection {
             person: Some("Ada".into()),
+            people: None,
             category: Some("photo".into()),
             place: Some(videre_core::selection::PlaceQuery::Named {
                 place: "Berlin".into(),

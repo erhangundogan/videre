@@ -360,6 +360,7 @@ fn build_search(
         // Not exposed as a tool parameter: an agent has a path, not a hash.
         like: None,
         person: params.person.clone(),
+        people: None,
         category: params.category.clone(),
         location: params.location.clone(),
         radius: params.radius_km.unwrap_or(20.0),

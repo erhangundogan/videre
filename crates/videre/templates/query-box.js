@@ -24,7 +24,7 @@
   var live=location.protocol==='http:'||location.protocol==='https:';
   // Keys that hold several values per file, where a second value most often
   // means "both"; for the rest two values can only mean "either".
-  var MULTI={person:1,tag:1};
+  var MULTI={person:1,people:1,tag:1};
   var PLACEHOLDER=input.placeholder;
   // The pages that narrow by a query; the rest ignore one, so the box sends
   // a query from them to the Library, and the nav carries it only here.
