@@ -13,10 +13,18 @@ use videre_core::selection::SelectionCtx;
 #[derive(clap::Args)]
 pub struct TagArgs {
     /// Add this tag to the selection. Repeatable
-    #[arg(long = "add", value_name = "TAG")]
+    #[arg(
+        long = "add",
+        value_name = "TAG",
+        add = clap_complete::engine::ArgValueCompleter::new(crate::completions::tag_candidates)
+    )]
     add: Vec<String>,
     /// Remove this tag from the selection. Repeatable
-    #[arg(long = "remove", value_name = "TAG")]
+    #[arg(
+        long = "remove",
+        value_name = "TAG",
+        add = clap_complete::engine::ArgValueCompleter::new(crate::completions::tag_candidates)
+    )]
     remove: Vec<String>,
 
     #[command(flatten)]

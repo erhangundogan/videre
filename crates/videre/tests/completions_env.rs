@@ -111,3 +111,41 @@ fn no_library_yields_no_candidates_and_a_zero_exit() {
 fn env_binary() -> std::path::PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_videre"))
 }
+
+#[test]
+fn config_set_model_completes_the_provided_models() {
+    let lib = TestLibrary::new();
+    lib.init_db();
+    let output = std::process::Command::new(env_binary())
+        .current_dir(lib.context().paths.root.clone())
+        .env("COMPLETE", "bash")
+        .env("_CLAP_COMPLETE_INDEX", "4")
+        .env("_CLAP_COMPLETE_SPACE", "false")
+        .args([
+            "videre",
+            "--",
+            "videre",
+            "config",
+            "set",
+            "model",
+            "google/sig",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let out = String::from_utf8_lossy(&output.stdout);
+    for model in [
+        "google/siglip-base-patch16-224",
+        "google/siglip2-base-patch16-384",
+        "google/siglip-so400m-patch14-384",
+    ] {
+        assert!(
+            out.lines().any(|l| l.starts_with(model)),
+            "{model} in {out}"
+        );
+    }
+}

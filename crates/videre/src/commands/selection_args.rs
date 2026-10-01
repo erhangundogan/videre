@@ -137,7 +137,13 @@ pub struct PeopleArgs {
     pub person: Option<String>,
 
     /// Only files classified as this category
-    #[arg(long, value_name = "CATEGORY")]
+    #[arg(
+        long,
+        value_name = "CATEGORY",
+        add = clap_complete::engine::ArgValueCompleter::new(
+            crate::completions::category_candidates
+        )
+    )]
     pub category: Option<String>,
 }
 
@@ -342,7 +348,11 @@ pub struct MarkArgs {
     pub pick: Option<String>,
 
     /// Only photos with this colour label
-    #[arg(long, value_name = "COLOUR")]
+    #[arg(
+        long,
+        value_name = "COLOUR",
+        add = clap_complete::engine::ArgValueCompleter::new(crate::completions::label_candidates)
+    )]
     pub label: Option<String>,
 
     /// Only liked photos
@@ -356,7 +366,11 @@ pub struct MarkArgs {
 #[derive(clap::Args, Clone, Debug, Default)]
 pub struct TagFilterArgs {
     /// Only files carrying this tag. Repeatable; all must be present
-    #[arg(long = "tag", value_name = "TAG")]
+    #[arg(
+        long = "tag",
+        value_name = "TAG",
+        add = clap_complete::engine::ArgValueCompleter::new(crate::completions::tag_candidates)
+    )]
     pub tags: Vec<String>,
 }
 

@@ -50,6 +50,8 @@ pub enum LogLevel {
 }
 
 impl LogLevel {
+    pub const ALL: [Self; 4] = [Self::Error, Self::Warn, Self::Info, Self::Debug];
+
     pub fn parse(s: &str) -> Result<Self> {
         match s {
             "error" => Ok(Self::Error),
@@ -79,6 +81,8 @@ pub enum LogFormat {
 }
 
 impl LogFormat {
+    pub const ALL: [Self; 2] = [Self::Json, Self::Text];
+
     pub fn parse(s: &str) -> Result<Self> {
         match s {
             "json" => Ok(Self::Json),
@@ -225,15 +229,9 @@ impl ConfigKey {
     }
 }
 
-/// The serialized spelling of one precedence value. `XmpPrecedence` has no
-/// `Display`; a total match here means a new variant fails to compile
-/// rather than serializing as the wrong setting.
+/// The serialized spelling of one precedence value.
 fn xmp_precedence_str(p: XmpPrecedence) -> &'static str {
-    match p {
-        XmpPrecedence::Db => "db",
-        XmpPrecedence::File => "file",
-        XmpPrecedence::Newest => "newest",
-    }
+    p.as_str()
 }
 
 /// The table a first edit writes: the two fixed storage declarations and

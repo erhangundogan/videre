@@ -3,7 +3,7 @@ use anyhow::{Context, Result};
 use clap::builder::PossibleValuesParser;
 use videre_core::library_config::{self, ConfigKey};
 
-const CONFIG_KEYS: &[&str] = &[
+pub(crate) const CONFIG_KEYS: &[&str] = &[
     "model",
     "read-rate",
     "io-workers",
@@ -32,6 +32,9 @@ enum ConfigAction {
     Set {
         #[arg(value_parser = PossibleValuesParser::new(CONFIG_KEYS))]
         key: String,
+        #[arg(add = clap_complete::engine::ArgValueCompleter::new(
+            crate::completions::config_value_candidates
+        ))]
         value: String,
     },
     /// Remove a library config key
@@ -209,9 +212,5 @@ fn show(ctx: &CommandContext) -> Result<()> {
 }
 
 fn xmp_name(precedence: videre_core::marks::XmpPrecedence) -> &'static str {
-    match precedence {
-        videre_core::marks::XmpPrecedence::Db => "db",
-        videre_core::marks::XmpPrecedence::File => "file",
-        videre_core::marks::XmpPrecedence::Newest => "newest",
-    }
+    precedence.as_str()
 }
