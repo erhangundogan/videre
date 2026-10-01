@@ -48,6 +48,7 @@
     { "method": "POST",   "path": "/api/face-learning/questions/{id}/answer" },
     { "method": "POST",   "path": "/api/quit" },
     { "method": "GET",    "path": "/" },
+    { "method": "GET",    "path": "/search" },
     { "method": "GET",    "path": "/duplicates" },
     { "method": "GET",    "path": "/people" },
     { "method": "GET",    "path": "/date" },

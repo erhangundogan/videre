@@ -1257,7 +1257,9 @@ function buildCard(f){
   var n = (typeof f.copies==='number') ? f.copies
         : (HASH_FILES[f.hash] ? HASH_FILES[f.hash].length : 1);
   var copies = n>1 ? '<span class="copies">x'+n+'</span>' : '';
-  return '<div class="card" data-hash="'+escA(f.hash)+'">'+copies+
+  // A ranked card (a search's own page) shows its score.
+  var score = (typeof f._score==='number') ? '<span class="score">'+f._score.toFixed(3)+'</span>' : '';
+  return '<div class="card" data-hash="'+escA(f.hash)+'">'+score+copies+
     '<span class="card-preview">'+buildPreview(f)+likedBadge(f)+'</span>'+
     '<div class="card-meta" title="'+escA(f.path)+'">'+escH(fname)+'</div>'+
     '<div class="card-meta">'+fmtB(f.size)+(bestDateJs(f)?' &middot; '+escH(bestDateJs(f)):'')+'</div>'+
@@ -1392,6 +1394,7 @@ function renderResults(qHash,scored){
 function drawResults(qHash,scored){
   var panel=document.getElementById('results');
   var html='<div class="results-head"><h2>Similar images</h2>'+
+    searchPageLink('like='+encodeURIComponent(qHash)+filtersParam())+
     '<button onclick="clearResults()">Close</button></div>'+
     '<div class="results-strip">'+resultCard(qHash,1,true);
   for(var i=0;i<scored.length;i++){
@@ -1402,6 +1405,59 @@ function drawResults(qHash,scored){
   panel.style.display='block';
   panel.querySelectorAll('img').forEach(function(img){if(img.loading==='lazy')img.loading='eager';});
   panel.scrollIntoView({behavior:'smooth',block:'start'});
+}
+// A strip's results as a page of their own, which a link or bookmark reopens.
+// Live only: a static export has no server to search.
+function searchPageLink(params){
+  if(typeof LIVE_SERVER==='undefined'||!LIVE_SERVER)return '';
+  return '<a class="results-open" href="/search?'+escA(params)+'">Open as a page</a>';
+}
+function filtersParam(){
+  var f=window.videreQueryFilters?window.videreQueryFilters():'';
+  return f?'&q='+encodeURIComponent(f):'';
+}
+// /search: the Library page ranking instead of listing. `like` ranks by an
+// example, the query's words by meaning; its filters narrow what is ranked.
+// Filters alone rank nothing, so they list, as on Library.
+function runSearchPage(){
+  var params=new URLSearchParams(location.search);
+  var like=params.get('like')||'';
+  var nav=document.getElementById('nav-search');
+  var words=nav?nav.value.trim():'';
+  if(!like&&!words){ renderGallery(); return; }
+  var g=document.getElementById('gallery');
+  var head=document.createElement('div');
+  head.id='search-head';
+  head.className='results-head';
+  head.innerHTML='<h2>Searching&hellip;</h2>';
+  g.parentNode.insertBefore(head,g);
+  var btn=document.getElementById('gallery-more');
+  if(btn)btn.style.display='none';
+  var url='/api/search?limit=96'+(like?'&like='+encodeURIComponent(like):'')+galleryQueryParam();
+  fetch(url).then(queryJson).then(function(d){
+    if(d.bad){ queryErrorStatus(d); head.innerHTML=''; return; }
+    var scored=d.results||[];
+    var hashes=scored.map(function(s){return s.hash;});
+    if(like)hashes.push(like);
+    var rows=hashes.length?fetch('/api/files?hashes='+encodeURIComponent(hashes.join(','))).then(function(r){return r.json();})
+                          :Promise.resolve({files:[]});
+    return rows.then(function(rd){
+      var by={};
+      (rd.files||[]).forEach(function(f){ if(!by[f.hash])by[f.hash]=f; });
+      var title=like
+        ?'Similar to '+escH(by[like]?(by[like].path.split('/').pop()||by[like].path):like.slice(0,12))
+        :'Results for &ldquo;'+escH(words)+'&rdquo;';
+      head.innerHTML='<h2>'+title+'</h2><span class="results-count">'+scored.length+' result'+(scored.length===1?'':'s')+'</span>';
+      var files=scored.map(function(s){
+        var f=by[s.hash]; if(!f)return null;
+        var copy={}; for(var k in f)copy[k]=f[k];
+        copy._score=s.score;
+        return copy;
+      }).filter(Boolean);
+      if(!files.length){ g.innerHTML='<p class="muted">Nothing ranked.</p>'; return; }
+      appendCards(files,files.length);
+    });
+  }).catch(function(){ head.innerHTML='<h2>Search failed</h2>'; });
 }
 function clearResults(){
   var panel=document.getElementById('results');
@@ -1441,6 +1497,7 @@ function resolveTextResults(query,scored){
 function drawTextResults(query,scored){
   var panel=document.getElementById('results');
   var html='<div class="results-head"><h2>Results for &ldquo;'+escH(query)+'&rdquo;</h2>'+
+    searchPageLink('q='+encodeURIComponent(query))+
     '<button onclick="clearResults()">Close</button></div><div class="results-strip">';
   for(var i=0;i<scored.length;i++)html+=resultCard(scored[i].hash,scored[i].score,false);
   html+='</div>';
@@ -1470,7 +1527,8 @@ if(typeof ALLFILES!=='undefined'){
   // Nothing inlined: a live page. Fetch the first page. The map page is the one
   // exception: it drives the grid through setGalleryLocation once its clusters
   // load (or its plot fails), so gallery.js must not also fire an initial fetch.
-  renderGallery();
+  // A search's own page ranks rather than lists.
+  if(location.pathname==='/search')runSearchPage(); else renderGallery();
 }
 document.addEventListener('click',function(e){
   var sb=e.target.closest('[data-similar]');
