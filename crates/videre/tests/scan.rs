@@ -145,7 +145,7 @@ fn first_scan_creates_fixed_local_state_and_config() {
     assert!(config.contains("db = \"hashes.db\""), "{config}");
     assert!(config.contains("jsonl = \"hashes.jsonl\""), "{config}");
     assert!(
-        config.contains("default_model = \"google/siglip-base-patch16-224\""),
+        config.contains("default_model = \"google/siglip2-base-patch16-224\""),
         "{config}"
     );
     assert!(config.contains("xmp_precedence = \"db\""), "{config}");

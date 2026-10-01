@@ -183,7 +183,7 @@ Two commands need machine-learning models, and each fetches its own from
 
 | Command | Model | What it is | Size |
 |---|---|---|---|
-| [`videre embed`](/commands/embed/) | [`google/siglip-base-patch16-224`](https://huggingface.co/google/siglip-base-patch16-224) | SigLIP, Google's image/text model. Turns a photo and a phrase into comparable vectors, which is what makes "sunset over water" match a picture. | ~780 MB |
+| [`videre embed`](/commands/embed/) | [`google/siglip2-base-patch16-224`](https://huggingface.co/google/siglip2-base-patch16-224) | SigLIP 2, Google's image/text model. Turns a photo and a phrase into comparable vectors, which is what makes "sunset over water" match a picture. | ~1.5 GB |
 | [`videre faces`](/commands/faces/) | [`WePrompt/buffalo_l`](https://huggingface.co/WePrompt/buffalo_l) | InsightFace buffalo_l, two ONNX models: `det_10g.onnx` (SCRFD) finds faces, `w600k_r50.onnx` (ArcFace) turns each face into a vector so matching ones can be grouped. | ~180 MB |
 
 Both downloads are resumable, so you can stop and rerun.
@@ -217,12 +217,11 @@ downloads them again.
 ### Bigger models are opt-in
 
 The table above is the default. If you select a different
-[search model](/reference/models/), it is fetched instead, and the larger ones
-are considerably bigger:
+[search model](/reference/models/), it is fetched instead:
 [`siglip2-base-patch16-384`](https://huggingface.co/google/siglip2-base-patch16-384)
-is about 1.4 GB and
-[`siglip-so400m-patch14-384`](https://huggingface.co/google/siglip-so400m-patch14-384)
-about 3.3 GB. Nothing downloads them unless you ask
+is about 1.5 GB and
+[`siglip2-so400m-patch14-384`](https://huggingface.co/google/siglip2-so400m-patch14-384)
+about 4.5 GB. Nothing downloads them unless you ask
 for them by name.
 
 :::note[Nothing is uploaded]
