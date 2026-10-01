@@ -42,6 +42,7 @@ videre search 'NOT tag:ekran date:2023'
 | Key | Matches | Example |
 |---|---|---|
 | `person:` | photos of a named person, exactly as [`--person`](/commands/search/) | `person:özgür` |
+| `people:` | photos of everyone whose name has these whole words, as [`--people`](/commands/search/) | `people:erhan` |
 | `tag:` | files with this tag | `tag:deniz` |
 | `category:` | files [classified](/commands/classify/) as this | `category:document` |
 | `place:` | files at one of the library's own places, by name, offline | `place:kadıköy` |

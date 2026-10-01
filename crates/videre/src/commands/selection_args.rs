@@ -216,6 +216,8 @@ pub fn row_selection(
     };
     Ok(RowSelection {
         person: people.and_then(|p| p.person.clone()),
+        // Only `search` has `--people`; it sets this itself.
+        people: None,
         category: people.and_then(|p| p.category.clone()),
         place: place.and_then(|p| p.place()),
         // No flag: a place *name* is matched offline only through the query
@@ -293,10 +295,11 @@ impl QueryArg {
     /// input by either is circular. A query cannot bring them back.
     pub fn refuse_derived(&self, command: &str) -> anyhow::Result<()> {
         if let Some(expr) = self.compile()? {
-            if videre::query_lang::any_leaf(&expr, &|s| s.person.is_some() || s.category.is_some())
-            {
+            if videre::query_lang::any_leaf(&expr, &|s| {
+                s.person.is_some() || s.people.is_some() || s.category.is_some()
+            }) {
                 anyhow::bail!(
-                    "{command} cannot select by person: or category:: both come from \
+                    "{command} cannot select by person:, people: or category:: all come from \
                      {command}'s own results"
                 );
             }

@@ -148,6 +148,9 @@ pub struct QueryScope {
 #[derive(Debug, Clone, Default)]
 pub struct RowSelection {
     pub person: Option<String>,
+    /// Everyone with these words in their name, as whole words
+    /// (`query::by_people`): the query language's `people:`.
+    pub people: Option<String>,
     pub category: Option<String>,
     pub place: Option<PlaceQuery>,
     /// One of the library's own place names, matched offline by
@@ -203,6 +206,7 @@ impl RowSelection {
     /// such a list is silent: the command processes the entire library.
     pub fn is_empty(&self) -> bool {
         self.person.is_none()
+            && self.people.is_none()
             && self.category.is_none()
             && self.place.is_none()
             && self.place_name.is_none()
@@ -227,6 +231,9 @@ impl RowSelection {
         let mut parts: Vec<String> = Vec::new();
         if let Some(p) = &self.person {
             parts.push(format!("--person {p:?}"));
+        }
+        if let Some(p) = &self.people {
+            parts.push(format!("--people {p:?}"));
         }
         if let Some(c) = &self.category {
             parts.push(format!("--category {c}"));
@@ -355,6 +362,9 @@ impl RowSelection {
 
         if let Some(p) = &self.person {
             narrow(query::by_person(conn, p)?, &mut acc);
+        }
+        if let Some(p) = &self.people {
+            narrow(query::by_people(conn, p)?, &mut acc);
         }
         if let Some(c) = &self.category {
             let model = ctx.model_id.as_deref().ok_or_else(|| {
