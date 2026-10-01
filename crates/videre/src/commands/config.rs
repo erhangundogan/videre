@@ -18,6 +18,8 @@ pub(crate) const CONFIG_KEYS: &[&str] = &[
     "log-max-size-mb",
     "log-keep",
     "log-max-age-days",
+    "search-min-match",
+    "similar-min-score",
 ];
 
 #[derive(clap::Args)]
@@ -73,6 +75,8 @@ fn config_key(key: &str) -> ConfigKey {
         "log-max-size-mb" => ConfigKey::LogMaxSizeMb,
         "log-keep" => ConfigKey::LogKeep,
         "log-max-age-days" => ConfigKey::LogMaxAgeDays,
+        "search-min-match" => ConfigKey::SearchMinMatch,
+        "similar-min-score" => ConfigKey::SimilarMinScore,
         _ => unreachable!("clap restricts keys to CONFIG_KEYS"),
     }
 }
@@ -111,6 +115,12 @@ fn config_value(key: &str, value: String) -> Result<(ConfigKey, toml::Value)> {
                 .parse()
                 .map_err(|_| anyhow::anyhow!("{name} must be true or false, got {value:?}"))?;
             toml::Value::Boolean(on)
+        }
+        ConfigKey::SearchMinMatch | ConfigKey::SimilarMinScore => {
+            let n: f64 = value
+                .parse()
+                .map_err(|_| anyhow::anyhow!("{name} must be a number, got {value:?}"))?;
+            toml::Value::Float(n)
         }
         ConfigKey::WatchDebounceMs => {
             let ms: u64 = value.parse().map_err(|_| {
@@ -208,6 +218,19 @@ fn show(ctx: &CommandContext) -> Result<()> {
     println!("log-max-size-mb: {} MB", config.log_max_size_mb);
     println!("log-keep:      {}", config.log_keep);
     println!("log-max-age-days: {} days", config.log_max_age_days);
+    println!(
+        "search-min-match: {}{}",
+        config.search_min_match,
+        if config.search_min_match == library_config::SEARCH_MIN_MATCH_DEFAULT {
+            " (default)"
+        } else {
+            ""
+        }
+    );
+    match config.similar_min_score {
+        Some(score) => println!("similar-min-score: {score}"),
+        None => println!("similar-min-score: none (default)"),
+    }
     Ok(())
 }
 

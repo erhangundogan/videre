@@ -99,19 +99,30 @@ Things it is **not**:
   Use `--person` for people, and the [date view in `gallery`](/commands/gallery/) for
   time.
 
-Every result is a ranked match, so something always comes back even for a query
-nothing fits. Use `--scores` to see whether a match is real:
+A text search's score is the model's own estimate that the photo matches the
+words, from 0 to 1, and `--scores` shows it:
 
 ```bash
 videre search "a dog on a beach" --scores
-0.284  /Photos/2019/beach-day-12.jpg
-0.271  /Photos/2019/beach-day-08.jpg
-0.118  /Photos/2021/garden.jpg
+0.973  /Photos/2019/beach-day-12.jpg
+0.912  /Photos/2019/beach-day-08.jpg
+0.184  /Photos/2021/garden.jpg
 ```
 
-Scores are cosine similarities, and only comparable *within* one query. There is
-no universal cutoff, but a sharp drop down the list is usually where genuine
-matches stop.
+Weak matches are left out: a result needs at least a 10% match. So a query
+nothing fits returns nothing, rather than the least bad photos, and fewer than
+`-k` results is normal. Change the cutoff per library:
+
+```bash
+videre config set search-min-match 0.5    # only strong matches
+videre config set search-min-match 0      # every ranked result, as before
+```
+
+The score means the same for every query and every
+[model](/reference/models/), so one cutoff fits them all. It is computed from
+the model's own trained scale for matching text to images, which raw
+similarity is not: the same similarity can be a strong match on one model and
+noise on another.
 
 ## Finding photos like one you have
 
@@ -121,6 +132,13 @@ videre search --image ~/Desktop/reference.jpg -k 40
 
 The query image does not need to be in your library. This is often the fastest
 way to find a series: pick one frame you remember and pull the rest.
+
+An image search scores by similarity, from -1 to 1, and keeps every ranked
+result unless you set a floor; the gallery's **Similar** uses the same one:
+
+```bash
+videre config set similar-min-score 0.6
+```
 
 ## Using the results
 
@@ -135,11 +153,10 @@ open $(videre search "golden gate bridge" -k 5)
 With `--json` you get structured output for scripting:
 
 ```bash
-videre search "sunset" --json | jq -r '.results[] | select(.score > 0.25) | .path'
+videre search "sunset" --json | jq -r '.results[] | select(.score > 0.9) | .path'
 ```
 
-That threshold trick is the usual way to turn a ranked list into a filtered one,
-since `-k` limits count rather than quality.
+`-k` limits how many come back; the score says how well each one matched.
 
 ## Searching a specific model
 

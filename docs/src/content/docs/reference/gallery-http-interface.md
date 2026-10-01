@@ -529,6 +529,11 @@ Ranks photos by text or by similarity to an existing hash: `q` with words, or
 filters, which narrow what is ranked; words with an example, or a query that
 cannot run, answer `400`.
 
+A text query's `score` is the match probability from 0 to 1, and results below
+the library's `search_min_match` are left out. A `like` search's `score` is the
+similarity, from -1 to 1, kept above `similar_min_score` when that is set. See
+[search](/commands/search/).
+
 | Query | Meaning |
 |---|---|
 | `q=<text>` | Text query |
@@ -545,11 +550,11 @@ curl "http://127.0.0.1:7878/api/search?q=red%20kite&limit=2"
   "results": [
     {
       "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "score": 0.82
+      "score": 0.97
     },
     {
       "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      "score": 0.77
+      "score": 0.91
     }
   ]
 }
