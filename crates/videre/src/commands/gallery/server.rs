@@ -2446,6 +2446,7 @@ async fn handle_search(
             image: None,
             like: sq.like.clone(),
             person: None,
+            people: None,
             category: None,
             location: None,
             radius: 20.0,

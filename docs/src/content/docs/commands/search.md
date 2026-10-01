@@ -8,6 +8,7 @@ videre search "sunset over water"          # search by description
 videre search 'person:özgür (tag:deniz OR tag:plaj)' # filters in a query
 videre search --image photo.jpg            # find photos like this one
 videre search --person "Alice"             # photos of a named person
+videre search --people Erhan               # photos of everyone named Erhan
 videre search --category screenshot        # photo / screenshot / document / meme / unknown
 videre search --location "Berlin, Germany" # photos taken near a place
 videre search "a dog" -k 50                # more results, default 20 (--top-k works too)
@@ -33,7 +34,7 @@ videre search --sort=distance,date         # order, with tie-breaks
 | Mode | Requires |
 |---|---|
 | Text, `--image` | [`videre embed`](/commands/embed/) |
-| `--person` | [`videre faces`](/commands/faces/), then naming via [`gallery`](/commands/gallery/) |
+| `--person`, `--people` | [`videre faces`](/commands/faces/), then naming via [`gallery`](/commands/gallery/) |
 | `--category` | [`videre classify`](/commands/classify/) |
 | `--location` | GPS data in your photos |
 
@@ -60,8 +61,15 @@ name shown in the labeling UI and the short form in the URL are accepted, so
 
 It still matches a *whole* person, not a part of one: `--person Erhan` will not
 find `Erhan Gündoğan`, because those are two different people as far as videre
-is concerned.
+is concerned. For that, use `--people`.
 :::
+
+`--people` (and `people:` in a query) finds everyone whose name has the words
+you give, as whole words, in any case and with or without accents:
+`--people Erhan` finds Erhan Gündoğan and Erhan Kaya but not Serhan,
+`--people gündoğan` finds anyone with that surname, and `--people "Erhan
+Gündoğan"` needs both words, in that order. A part of a word matches nothing:
+`--people Gül` finds Gül, not Gülşen.
 
 ## Writing queries that work
 

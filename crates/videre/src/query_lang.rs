@@ -58,8 +58,8 @@ impl std::error::Error for QueryError {}
 
 /// The keys a query understands, in the order error messages list them.
 pub const KEYS: &[&str] = &[
-    "person", "tag", "category", "place", "date", "after", "before", "rating", "pick", "label",
-    "is", "type", "ext", "mime", "path", "has", "missing",
+    "person", "people", "tag", "category", "place", "date", "after", "before", "rating", "pick",
+    "label", "is", "type", "ext", "mime", "path", "has", "missing",
 ];
 
 /// Compile `query` into a filter and a ranking text.
@@ -236,6 +236,7 @@ fn term(key: &str, value: &str) -> Result<Expr, QueryError> {
     let value = value.to_string();
     Ok(match key {
         "person" => leaf(|s| s.person = Some(value)),
+        "people" => leaf(|s| s.people = Some(value)),
         "tag" => leaf(|s| s.tags = vec![value]),
         "category" => leaf(|s| s.category = Some(value)),
         "place" => leaf(|s| s.place_name = Some(value)),
@@ -579,7 +580,7 @@ pub fn values(conn: &rusqlite::Connection, key: &str, typed: &str) -> Vec<Value>
     };
     let sql = |q: &str| -> Vec<Value> { counted(conn, q).unwrap_or_default() };
     let mut all = match key {
-        "person" => {
+        "person" | "people" => {
             if !table_exists(conn, "faces") {
                 return Vec::new();
             }
@@ -791,7 +792,7 @@ mod suggest_tests {
 
     #[test]
     fn a_key_being_typed_offers_keys() {
-        assert_eq!(inserts("pe"), ["person:"]);
+        assert_eq!(inserts("pe"), ["person:", "people:"]);
         assert_eq!(inserts("ta"), ["tag:"]);
         assert_eq!(at_end("deniz pl"), (6, vec!["place:".to_string()]));
         assert_eq!(
@@ -957,6 +958,20 @@ mod resolve_tests {
         );
         assert_eq!(hashes(&ctx, "rating:[2 TO 4]"), ["h_plaj"]);
         assert_eq!(hashes(&ctx, "rating:>=3"), ["h_deniz"]);
+    }
+
+    #[test]
+    fn people_gives_everyone_with_the_word_in_their_name() {
+        let (_t, ctx) = library();
+        // Erhan Gündoğan is in plaj and ekran; a surname finds him.
+        assert_eq!(hashes(&ctx, "people:gündoğan"), ["h_ekran", "h_plaj"]);
+        assert_eq!(
+            hashes(&ctx, "people:özgür OR people:ayşe"),
+            ["h_deniz", "h_plaj"]
+        );
+        // person: names one identity exactly; people: never takes a prefix.
+        assert!(hashes(&ctx, "people:gün").is_empty());
+        assert!(hashes(&ctx, "person:gündoğan").is_empty());
     }
 
     #[test]
