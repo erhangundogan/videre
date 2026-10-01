@@ -16,7 +16,7 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use videre_api::{ClusterDetail, FacesData, PersonDetail};
+use videre_api::{ClusterDetail, PersonDetail};
 
 fn json_response(body: String) -> axum::response::Response {
     (
@@ -2096,14 +2096,18 @@ async fn handle_gallery_all(
 /// `dedupe --html` writes to a file.
 async fn handle_gallery_duplicates(
     State(state): State<Arc<AppState>>,
+    Query(q): Query<RouteQuery>,
 ) -> impl axum::response::IntoResponse {
-    render_live(
+    let settings = page_settings(&state).await;
+    render_live_with_date(
         &state,
         false,
         false,
         true,
         Some(Section::Duplicates),
-        page_settings(&state).await,
+        "null",
+        q.q.as_deref(),
+        settings,
     )
 }
 
@@ -2517,6 +2521,7 @@ fn render_live(
         with_groups,
         nav,
         "null",
+        None,
         settings_script,
     )
 }
@@ -2535,6 +2540,7 @@ fn render_live_date(
         false,
         Some(Section::Date),
         &initial_date_filter_json(&filter),
+        None,
         settings_script,
     )
     .into_response())
@@ -2560,6 +2566,45 @@ fn initial_date_filter_json(filter: &InitialDateFilter) -> String {
     }
 }
 
+/// The duplicate and edited groups a query keeps, and what it did for the
+/// page's N of M line (`GQUERY_RESULT`), counted in groups. A refused query
+/// keeps none and says why.
+fn narrow_groups(
+    state: &AppState,
+    conn: &Connection,
+    query: Option<&str>,
+    mut groups: Vec<Vec<FileRow>>,
+    mut edited_groups: Vec<Vec<FileRow>>,
+) -> (Vec<Vec<FileRow>>, Vec<Vec<FileRow>>, String) {
+    let total = groups.len() + edited_groups.len();
+    match resolve_query(state, conn, query) {
+        Ok(None) => (groups, edited_groups, "null".to_string()),
+        Ok(Some(applied)) => {
+            let keep = |g: &Vec<FileRow>| g.iter().any(|f| applied.matches(&f.hash));
+            groups.retain(keep);
+            edited_groups.retain(keep);
+            let matched = groups.len() + edited_groups.len();
+            (
+                groups,
+                edited_groups,
+                format!("{{\"matched\":{matched},\"library_total\":{total}}}"),
+            )
+        }
+        Err(failure) => {
+            let (message, at) = match failure {
+                QueryFailure::Refused(e) => (e.message, e.at),
+                QueryFailure::Internal(_) => ("the query could not be run".to_string(), None),
+            };
+            let at = at.map_or("null".to_string(), |a| a.to_string());
+            (
+                Vec::new(),
+                Vec::new(),
+                format!("{{\"error\":{},\"at\":{at}}}", json_str(&message)),
+            )
+        }
+    }
+}
+
 fn render_live_with_date(
     state: &Arc<AppState>,
     all: bool,
@@ -2567,6 +2612,7 @@ fn render_live_with_date(
     with_groups: bool,
     nav: Option<Section>,
     date_filter_json: &str,
+    query: Option<&str>,
     settings_script: String,
 ) -> axum::response::Html<String> {
     let conn = state.conn.lock().unwrap();
@@ -2587,6 +2633,10 @@ fn render_live_with_date(
     } else {
         Vec::new()
     };
+    // A query keeps the groups with a matching member, shown whole: the point
+    // of the page is choosing among a group's copies.
+    let (groups, edited_groups, query_json) =
+        narrow_groups(state, &conn, query, groups, edited_groups);
     // `all_files` and `keep_files` came from different queries; the view picks
     // one. `with_groups`, `all` and `by_date` are mutually exclusive per route.
     let items = if all {
@@ -2628,6 +2678,7 @@ fn render_live_with_date(
             db_path,
             date_filter_json: date_filter_json.to_string(),
             event_json: "null".to_string(),
+            query_json,
             settings_script,
         },
     };
@@ -2816,11 +2867,32 @@ fn apply_query(
     conn: &Connection,
     q: Option<&str>,
 ) -> Result<Option<AppliedQuery>, Box<axum::response::Response>> {
+    resolve_query(state, conn, q).map_err(|failure| {
+        Box::new(match failure {
+            QueryFailure::Refused(e) => query_error_response(&e.message, e.at),
+            QueryFailure::Internal(status) => status.into_response(),
+        })
+    })
+}
+
+/// Why a route's query did not run: the query's fault, said to the person, or
+/// the server's.
+enum QueryFailure {
+    Refused(videre::query_lang::QueryError),
+    Internal(StatusCode),
+}
+
+/// [`apply_query`] for a page, which reports a refused query itself rather
+/// than answering 400.
+fn resolve_query(
+    state: &AppState,
+    conn: &Connection,
+    q: Option<&str>,
+) -> Result<Option<AppliedQuery>, QueryFailure> {
     let Some(query) = q.filter(|s| !s.trim().is_empty()) else {
         return Ok(None);
     };
-    let compiled = videre::query_lang::compile(query)
-        .map_err(|e| Box::new(query_error_response(&e.message, e.at)))?;
+    let compiled = videre::query_lang::compile(query).map_err(QueryFailure::Refused)?;
     let mut filtered = false;
     let mut matching = None;
     if let Some(filter) = &compiled.filter {
@@ -2828,8 +2900,13 @@ fn apply_query(
             model_id: Some(state.model_id.clone()),
         };
         let hashes = videre::query_lang::resolve(filter, conn, &sel_ctx, &state.context.library)
-            .map_err(|e| Box::new(query_error_response(&format!("{e:#}"), None)))?;
-        load_query_hashes(conn, &hashes).map_err(|e| Box::new(internal(e).into_response()))?;
+            .map_err(|e| {
+                QueryFailure::Refused(videre::query_lang::QueryError {
+                    message: format!("{e:#}"),
+                    at: None,
+                })
+            })?;
+        load_query_hashes(conn, &hashes).map_err(|e| QueryFailure::Internal(internal(e)))?;
         filtered = true;
         matching = Some(hashes);
     }
@@ -3757,6 +3834,7 @@ fn render_live_events(
             db_path,
             date_filter_json: "null".to_string(),
             event_json: event_json.to_string(),
+            query_json: "null".to_string(),
             settings_script,
         },
     };
@@ -3800,11 +3878,28 @@ async fn handle_events_key(
 
 async fn handle_get_faces(
     State(state): State<Arc<AppState>>,
-) -> Result<AxumJson<FacesData>, ApiError> {
+    Query(q): Query<RouteQuery>,
+) -> Result<axum::response::Response, ApiError> {
     let conn = state.conn.lock().map_err(poisoned)?;
-    videre_api::faces_list(&conn)
-        .map(AxumJson)
-        .map_err(api_error)
+    let mut data = videre_api::faces_list(&conn).map_err(api_error)?;
+    // A query keeps the people, clusters and faces seen in a matching file,
+    // each shown whole, and adds the files' N of M.
+    let applied = match apply_query(&state, &conn, q.q.as_deref()) {
+        Ok(a) => a,
+        Err(response) => return Ok(*response),
+    };
+    let Some(applied) = applied else {
+        return Ok(AxumJson(data).into_response());
+    };
+    let seen = |hashes: &[String]| hashes.iter().any(|h| applied.matches(h));
+    data.people.retain(|p| seen(&p.hashes));
+    data.clusters.retain(|c| seen(&c.hashes));
+    data.singletons.retain(|s| applied.matches(&s.hash));
+    let (matched, library_total) = keep_set_counts(&conn, &applied)?;
+    let mut value = serde_json::to_value(&data).map_err(internal)?;
+    value["matched"] = matched.into();
+    value["library_total"] = library_total.into();
+    Ok(AxumJson(value).into_response())
 }
 
 async fn handle_assign(

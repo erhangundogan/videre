@@ -248,6 +248,7 @@ function render(reset){
   tmp.innerHTML=html;
   while(tmp.firstChild)container.appendChild(tmp.firstChild);
   shown=end;
+  if(!sorted.length&&GQUERY)container.innerHTML='<p class="muted">No duplicate group has a matching file.</p>';
   updateBtn();
   overlay.style.display='none';
 }
@@ -1094,6 +1095,13 @@ function queryErrorStatus(d){
   showQueryStatus('Cannot run <code>'+escH(GQUERY)+'</code>: '+escH(d.error||'')+at+
     ' &middot; <a href="https://docs.videre.sh/reference/query-syntax/" target="_blank" rel="noopener">syntax</a>',true);
 }
+// A page rendered with its query applied (Duplicates) carries the outcome.
+if(GQUERY&&typeof GQUERY_RESULT==='object'&&GQUERY_RESULT){
+  document.addEventListener('DOMContentLoaded',function(){
+    if(GQUERY_RESULT.error!=null)queryErrorStatus(GQUERY_RESULT);
+    else queryCountStatus(GQUERY_RESULT.matched,GQUERY_RESULT.library_total);
+  });
+}
 // A route's JSON, with a 400 marked `bad` rather than thrown.
 function queryJson(r){
   if(r.status===400)return r.json().then(function(e){ e.bad=true; return e; });
@@ -1101,7 +1109,8 @@ function queryJson(r){
 }
 // "N of M", or why the query could not run, in a line above the grid.
 function showQueryStatus(html,isError){
-  var g=document.getElementById('gallery')||document.getElementById('dateBreadcrumb');
+  var g=(location.pathname==='/duplicates'&&document.getElementById('groups-container'))||
+    document.getElementById('gallery')||document.getElementById('dateBreadcrumb');
   if(!g)return;
   var s=document.getElementById('query-status');
   if(!s){

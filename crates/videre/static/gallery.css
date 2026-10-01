@@ -104,9 +104,6 @@ th.preview-th{width:130px}
 @keyframes spin{to{transform:rotate(360deg)}}
 .more-wrap{text-align:center;padding:16px 0 32px}
 #more-btn{padding:8px 28px;font-size:13px;display:none}
-.query-status{margin:8px 16px 0;font-size:13px;color:#52525b}
-.query-status code{background:#f4f4f5;border-radius:4px;padding:1px 5px;font-size:12px}
-.query-status.query-error{color:#b91c1c}
 .results-panel{margin:16px;padding:14px 16px;background:#fff;border:1px solid #e4e4e7;border-radius:10px;scroll-margin-top:56px}
 .results-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}
 .results-head h2{font-size:14px}
