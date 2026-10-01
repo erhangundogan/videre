@@ -328,12 +328,18 @@ mod tests {
         // `cpu_batch_matches_single_image_baseline` in videre-ml: it skips when
         // weights are absent, and had done so since it was written. The Ubuntu
         // job went from ~3 minutes to nearly 40.
+        // The row must be under the model the run uses, or the run is not
+        // "already classified" and goes on to load that model.
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS classifications (
                 hash TEXT NOT NULL, model_id TEXT NOT NULL, category TEXT NOT NULL,
-                confidence REAL, classified_at TEXT, PRIMARY KEY (hash, model_id));
-             INSERT INTO classifications (hash, model_id, category, confidence, classified_at)
-               VALUES ('h_jpg', 'google/siglip-base-patch16-224', 'photo', 0.5, datetime('now'));",
+                confidence REAL, classified_at TEXT, PRIMARY KEY (hash, model_id));",
+        )
+        .expect("creating the classifications table must succeed");
+        conn.execute(
+            "INSERT INTO classifications (hash, model_id, category, confidence, classified_at)
+               VALUES ('h_jpg', ?1, 'photo', 0.5, datetime('now'))",
+            [videre_core::embeddings::DEFAULT_MODEL_ID],
         )
         .expect("seeding the classified row must succeed");
 

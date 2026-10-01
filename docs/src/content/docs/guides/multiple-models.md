@@ -47,7 +47,7 @@ Switching invalidates nothing. The previous model's vectors stay on disk and
 stay queryable:
 
 ```bash
-videre search "sunset" --model google/siglip-base-patch16-224
+videre search "sunset" --model google/siglip2-base-patch16-224
 ```
 
 Switching back is instant, because nothing was deleted.
@@ -60,7 +60,7 @@ videre stats
 
 ```
 Embeddings:
-  google/siglip-base-patch16-224              196   768-dim     400 KB
+  google/siglip2-base-patch16-224             196   768-dim     400 KB
   google/siglip2-base-patch16-384             196   768-dim     400 KB
 ```
 

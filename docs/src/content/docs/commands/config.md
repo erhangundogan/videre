@@ -9,7 +9,7 @@ option, the current directory is the library.
 ```bash
 cd ~/Photos
 videre config
-videre config set model google/siglip-base-patch16-224
+videre config set model google/siglip2-base-patch16-224
 videre config set read-rate 10
 videre config set io-workers 64
 videre config set xmp file
@@ -36,7 +36,7 @@ state:         /Users/you/Photos/.videre
 config:        /Users/you/Photos/.videre/config.toml
 db:            /Users/you/Photos/.videre/hashes.db
 jsonl:         /Users/you/Photos/.videre/hashes.jsonl
-model:         google/siglip-base-patch16-224
+model:         google/siglip2-base-patch16-224
 read-rate:     20 MB/s (default)
 io-workers:    40 (default)
 xmp:           db
@@ -113,7 +113,7 @@ defaults:
 ```toml
 db = "hashes.db"
 jsonl = "hashes.jsonl"
-default_model = "google/siglip-base-patch16-224"
+default_model = "google/siglip2-base-patch16-224"
 xmp_precedence = "db"
 export_xmp_on_watch = false
 watch_debounce_ms = 1500

@@ -23,7 +23,7 @@ fn model_stores_follow_the_library_not_the_launch_directory() {
         pa,
         ca.paths
             .embeddings
-            .join("google--siglip-base-patch16-224.db")
+            .join("google--siglip2-base-patch16-224.db")
     );
     assert!(pa.exists());
     assert!(!pb.exists());

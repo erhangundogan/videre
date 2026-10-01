@@ -94,7 +94,7 @@ Downloaded on first use, never at install:
 
 ```
 ~/.cache/huggingface/hub/
-  models--google--siglip-base-patch16-224/     ~780 MB
+  models--google--siglip2-base-patch16-224/    ~1.5 GB
   models--WePrompt--buffalo_l/                 ~180 MB
 ```
 
@@ -103,7 +103,7 @@ tools on your machine may share it.
 
 ```bash
 du -sh ~/.cache/huggingface/hub/
-rm -rf ~/.cache/huggingface/hub/models--google--siglip-base-patch16-224
+rm -rf ~/.cache/huggingface/hub/models--google--siglip2-base-patch16-224
 ```
 
 Deleting means the next [`embed`](/commands/embed/) or

@@ -25,7 +25,7 @@ These filters work the same way across commands, and combine. See
 
 ## A first run on a real library
 
-The first run downloads about 780 MB of model data, then works through every
+The first run downloads about 1.5 GB of model data, then works through every
 image. On a large library this takes hours, so plan to leave it running.
 
 ```bash
@@ -39,7 +39,7 @@ photo count is what remains:
 
 ```
 embeddings
-  google/siglip-base-patch16-224   12,481 rows   768 dims   28.4 MB
+  google/siglip2-base-patch16-224   12,481 rows   768 dims   28.4 MB
 ```
 
 Work is committed every `--chunk` rows (500 by default), so an interrupt loses
@@ -95,7 +95,7 @@ you can hold several at once:
 
 ```bash
 videre embed                                              # the default model
-videre embed --model google/siglip2-base-patch16-384      # a second, larger one
+videre embed --model google/siglip2-base-patch16-384      # a second, higher-resolution one
 videre stats                                              # row counts per model
 videre search "sunset" --model google/siglip2-base-patch16-384
 ```
@@ -111,10 +111,10 @@ a real embedding pass behind it, and one that failed mid-flight is cleaned up
 by the next [prune](/commands/prune/).
 
 Be aware of the cost before starting: a second model means a second full pass
-over every image, plus its own download (1.4 GB for
+over every image, plus its own download (1.5 GB for
 [`siglip2-base-patch16-384`](https://huggingface.co/google/siglip2-base-patch16-384),
-3.3 GB for
-[`siglip-so400m-patch14-384`](https://huggingface.co/google/siglip-so400m-patch14-384))
+4.5 GB for
+[`siglip2-so400m-patch14-384`](https://huggingface.co/google/siglip2-so400m-patch14-384))
 and its own 130 MB to 190 MB of vectors
 per 70,000 photos.
 

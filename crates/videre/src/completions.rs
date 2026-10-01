@@ -763,16 +763,16 @@ mod config_completion_tests {
         assert_eq!(
             values("model"),
             [
-                "google/siglip-base-patch16-224",
+                "google/siglip2-base-patch16-224",
                 "google/siglip2-base-patch16-384",
-                "google/siglip-so400m-patch14-384",
+                "google/siglip2-so400m-patch14-384",
             ]
         );
         // A model this library already embedded with is offered too, once.
         let got: Vec<String> = config_values_for(
             "model",
             &[
-                "google/siglip-base-patch16-224".into(),
+                "google/siglip2-base-patch16-224".into(),
                 "acme/own-model".into(),
             ],
         )

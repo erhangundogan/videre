@@ -105,7 +105,7 @@ impl LogFormat {
 /// convention where a missing key falls back rather than erroring.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LibraryConfig {
-    /// Embedding model id, e.g. `google/siglip-base-patch16-224`. A plain
+    /// Embedding model id, e.g. `google/siglip2-base-patch16-224`. A plain
     /// string, not a path: it must never be absolutized, the same rule the
     /// global config's `default_model` follows.
     pub default_model: String,
