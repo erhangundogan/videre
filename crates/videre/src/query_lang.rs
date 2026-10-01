@@ -69,14 +69,21 @@ pub fn compile(query: &str) -> Result<Compiled, QueryError> {
     }
     // The lenient parser is the one that knows where a mistake is; the strict
     // one is used only once the lenient one found nothing wrong.
-    let (_, errors) = parse_query_lenient(query);
+    let (escaped, inserted) = escape_word_apostrophes(query);
+    let (_, errors) = parse_query_lenient(&escaped);
     if let Some(first) = errors.first() {
+        // Report the position in the text as typed, not the escaped copy,
+        // and in characters, which is what the messages and the gallery say:
+        // the grammar counts bytes, and every Turkish letter is two.
+        let shift = inserted.iter().take_while(|&&at| at < first.pos).count();
+        let byte = (first.pos - shift).min(query.len());
+        let at = query.char_indices().take_while(|&(i, _)| i < byte).count();
         return Err(QueryError {
             message: first.message.clone(),
-            at: Some(first.pos),
+            at: Some(at),
         });
     }
-    let ast = parse_query(query).map_err(|_| refused("the query could not be parsed"))?;
+    let ast = parse_query(&escaped).map_err(|_| refused("the query could not be parsed"))?;
     let mut text: Vec<String> = Vec::new();
     let filter = match ast {
         UserInputAst::Clause(items) => clause(items, Some(&mut text))?,
@@ -93,6 +100,41 @@ pub fn compile(query: &str) -> Result<Compiled, QueryError> {
         filter,
         text: (!text.is_empty()).then(|| text.join(" ")),
     })
+}
+
+/// Escape every apostrophe that follows a letter or digit outside double
+/// quotes, so the grammar reads it as part of the word, not as the start of
+/// a single-quoted phrase.
+///
+/// :warning: Turkish puts an apostrophe before every suffix on a proper noun
+/// (`İstanbul'da`, `Ayşe'nin`) and English before a possessive, so without
+/// this an ordinary search failed with "missing delimiter". A quote that
+/// opens a word (`'gün batımı'`) still quotes, up to its closing quote. Returns the escaped text and
+/// the byte offsets, in it, of each inserted backslash, so an error position
+/// can be mapped back to what was typed.
+fn escape_word_apostrophes(query: &str) -> (String, Vec<usize>) {
+    let mut out = String::with_capacity(query.len());
+    let mut inserted = Vec::new();
+    let (mut in_double, mut in_single) = (false, false);
+    let mut prev: Option<char> = None;
+    for c in query.chars() {
+        let escaped = prev == Some('\\');
+        if c == '"' && !escaped && !in_single {
+            in_double = !in_double;
+        } else if c == '\'' && !escaped && !in_double {
+            if in_single {
+                in_single = false;
+            } else if prev.is_some_and(char::is_alphanumeric) {
+                inserted.push(out.len());
+                out.push('\\');
+            } else {
+                in_single = true;
+            }
+        }
+        out.push(c);
+        prev = Some(c);
+    }
+    (out, inserted)
 }
 
 fn refused(message: impl Into<String>) -> QueryError {
@@ -1112,6 +1154,47 @@ mod tests {
         assert!(err("deniz OR tag:plaj").message.contains("text"));
         assert!(err("-deniz").message.contains("text"));
         assert!(err("tag:x (deniz OR plaj)").message.contains("text"));
+    }
+
+    #[test]
+    fn an_apostrophe_inside_a_word_is_part_of_it() {
+        // Turkish puts one before every suffix on a proper noun, English
+        // before every possessive. Neither is a quote.
+        assert_eq!(
+            ok("İstanbul'da deniz"),
+            (None, Some("İstanbul'da deniz".into()))
+        );
+        assert_eq!(ok("the dog's toy"), (None, Some("the dog's toy".into())));
+        assert_eq!(
+            ok("çocukların' top"),
+            (None, Some("çocukların' top".into()))
+        );
+        assert_eq!(
+            ok("tag:ayşe'nin").0,
+            ok("tag:ayşe_nin")
+                .0
+                .map(|f| f.replace("ayşe_nin", "ayşe'nin"))
+        );
+        assert_eq!(
+            ok(r#""Ayşe'nin evi" tag:deniz"#).1,
+            Some("Ayşe'nin evi".into())
+        );
+        // A quote that opens a word still quotes.
+        assert_eq!(ok("'gün batımı'"), (None, Some("gün batımı".into())));
+    }
+
+    #[test]
+    fn an_error_after_an_apostrophe_is_placed_in_the_typed_text() {
+        let with = err("İstanbul'da ) deniz");
+        let without = err("İstanbulxda ) deniz");
+        assert_eq!(with.at, without.at, "{with}");
+    }
+
+    #[test]
+    fn an_error_position_counts_characters_not_bytes() {
+        // "İ" and "ü" are two bytes each; the `)` is character 12.
+        assert_eq!(err("İstanbul'da ) deniz").at, Some(12));
+        assert_eq!(err("gün ) deniz").at, Some(4));
     }
 
     #[test]
