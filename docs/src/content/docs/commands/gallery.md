@@ -167,6 +167,12 @@ In the box, each filter is a **chip**, and words stay as text:
   the box to edit.
 - A part of the query that chips cannot show, such as `tag:deniz OR
   person:ayşe`, stays one chip with its text unchanged.
+- **▾** beside the box opens the options: a column for each kind of filter
+  (people, a date range, places, tags, rating and marks, type and extension,
+  category, and what a file has or is missing), filled with this library's
+  values and their counts. Choosing a value writes the same chip typing it
+  would, choosing it again takes it out, and **Apply** runs the query.
+  `rating:4` means four stars or more.
 
 The tall library header (the database path and the scanned-file counts) shows on
 the Library page and on a static export; the other sections drop it, since the strip
