@@ -3,7 +3,7 @@ use anyhow::{Context, Result};
 use clap::builder::PossibleValuesParser;
 use videre_core::library_config::{self, ConfigKey};
 
-const CONFIG_KEYS: &[&str] = &[
+pub(crate) const CONFIG_KEYS: &[&str] = &[
     "model",
     "read-rate",
     "io-workers",

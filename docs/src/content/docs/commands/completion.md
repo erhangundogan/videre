@@ -15,6 +15,10 @@ videre completion zsh > ~/.oh-my-zsh/completions/_videre   # then rehash
 videre completion fish > ~/.config/fish/completions/videre.fish
 ```
 
+The fish script also completes `videre config set`: its keys, then the
+choices for the key you typed (the three provided models for `model`, `db`,
+`file` or `newest` for `xmp`, and so on), with no dynamic completer needed.
+
 The script is generated per binary, not per library: `--library` is accepted
 here as on every command, but the output is identical either way.
 
