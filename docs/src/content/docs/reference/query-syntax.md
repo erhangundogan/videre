@@ -28,6 +28,8 @@ videre search 'NOT tag:ekran date:2023'
   together, or to include a `:`, `OR` or `-` in it.
 - **`key:value` is a filter.** Quote a value with spaces:
   `person:"Erhan Gündoğan"`, `place:"Kadıköy, İstanbul"`.
+- An apostrophe inside a word is part of the word, so `İstanbul'da`,
+  `the dog's toy` and `tag:ayşe'nin` need no quotes.
 - Terms side by side must all match (AND). `OR` between two terms matches
   either. `-` or `NOT` in front of a term excludes it. Parentheses group:
   `tag:deniz (person:özgür OR person:ayşe)`. Without them, every term joined

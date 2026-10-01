@@ -2200,6 +2200,16 @@ fn a_bad_query_is_a_400_that_says_what_and_where() {
 }
 
 #[test]
+fn a_bad_search_query_is_a_400_too_not_a_server_error() {
+    let lib = tagged_library();
+    let server = Server::start(&lib);
+    let (status, body) = server.get("/api/search?q=%28deniz");
+    assert_eq!(status, 400, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["at"], 6, "{v}");
+}
+
+#[test]
 fn the_nav_box_offers_search_and_filter_in_well_formed_markup() {
     let lib = tagged_library();
     let server = Server::start(&lib);

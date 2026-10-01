@@ -2411,10 +2411,13 @@ async fn handle_search(
     if sq.q.is_none() && sq.like.is_none() {
         return Err(StatusCode::BAD_REQUEST);
     }
-    if let (Some(q), Some(_)) = (sq.q.as_deref(), sq.like.as_deref()) {
+    // A query that does not parse is the user's typing, so it is a 400 that
+    // says where, with or without an example; left to the search below it
+    // came back as a server error.
+    if let Some(q) = sq.q.as_deref() {
         match videre::query_lang::compile(q) {
             Err(e) => return Ok(query_error_response(&e.message, e.at)),
-            Ok(c) if c.text.is_some() => {
+            Ok(c) if c.text.is_some() && sq.like.is_some() => {
                 return Ok(query_error_response(
                     "words rank, so they cannot come with an example; filters can",
                     None,
