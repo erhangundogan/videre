@@ -304,19 +304,166 @@
     var neg=start>0&&v[start-1]==='-';
     input.value=(v.slice(0,neg?start-1:start)+v.slice(cursor)).replace(/\s+/g,' ').trim();
     var kv=keyed(it.insert);
-    if(it.label!==kv.value)labels[kv.key+':'+kv.value]=it.label;
-    var into=chips.find(function(c){return !c.text&&c.key===kv.key&&c.neg===neg;});
-    if(into){
-      if(into.values.indexOf(kv.value)<0){
-        into.values.push(kv.value);
-        if(into.values.length===2)into.mode=MULTI[kv.key]&&!neg?'all':'any';
-      }
-    }else{
-      chips.push({key:kv.key,values:[kv.value],mode:'all',neg:neg});
-    }
+    addValue(kv.key,kv.value,neg,it.label);
     close();
     render();
     input.focus();
+  }
+
+  // ---- the chips, by key and value ---------------------------------------
+
+  // A value joins its key's chip of the same sign, or starts one. A second
+  // value of a key a file has several of (person, tag) means both; of any
+  // other key, either.
+  function addValue(key,value,neg,label){
+    if(label&&label!==value)labels[key+':'+value]=label;
+    var into=chips.find(function(c){return !c.text&&c.key===key&&c.neg===neg;});
+    if(!into){ chips.push({key:key,values:[value],mode:'all',neg:neg}); return; }
+    if(into.values.indexOf(value)>=0)return;
+    into.values.push(value);
+    if(into.values.length===2)into.mode=MULTI[key]&&!neg?'all':'any';
+  }
+
+  function hasValue(key,value){
+    return chips.some(function(c){return !c.text&&!c.neg&&c.key===key&&c.values.indexOf(value)>=0;});
+  }
+
+  function removeValue(key,value){
+    chips=chips.filter(function(c){
+      if(c.text||c.neg||c.key!==key)return true;
+      c.values=c.values.filter(function(v){return v!==value;});
+      return c.values.length>0;
+    });
+  }
+
+  // A key that holds one value (after:, before:): set it, or clear it.
+  function setOnly(key,value){
+    chips=chips.filter(function(c){return c.text||c.neg||c.key!==key;});
+    if(value)chips.push({key:key,values:[value],mode:'all',neg:false});
+  }
+
+  // ---- the options panel -----------------------------------------------------
+
+  // One column per kind of filter, filled from the suggestion source; a value
+  // chosen here writes the same chip typing it would, and Apply runs it.
+  var caret=document.getElementById('qbox-caret');
+  var panel=document.getElementById('qbox-options');
+  var COLUMNS=[
+    {title:'People',keys:['person']},
+    {title:'Date',date:true},
+    {title:'Place',keys:['place']},
+    {title:'Tags',keys:['tag']},
+    {title:'Rating and marks',keys:['rating','is','pick','label']},
+    {title:'Type',keys:['type','ext']},
+    {title:'Category',keys:['category']},
+    {title:'Has',keys:['has','missing']}
+  ];
+
+  function chipValue(key){
+    var c=chips.find(function(c){return !c.text&&!c.neg&&c.key===key;});
+    return c?c.values[0]:'';
+  }
+
+  function refreshPanel(){
+    panel.querySelectorAll('.qopt-val').forEach(function(b){
+      b.setAttribute('aria-pressed',String(hasValue(b.dataset.key,b.dataset.value)));
+    });
+    ['after','before'].forEach(function(k){
+      var f=document.getElementById('qopt-'+k);
+      if(f&&document.activeElement!==f)f.value=chipValue(k);
+    });
+  }
+
+  function group(col,key){
+    var g=el('div','qopt-group');
+    g.dataset.key=key;
+    if(col.keys.length>1)g.appendChild(el('div','qopt-sub',key));
+    var vals=el('div','qopt-vals');
+    g.appendChild(vals);
+    fetch('/api/query/suggest?q='+encodeURIComponent(key+':')+'&limit=100')
+      .then(function(r){return r.ok?r.json():{items:[]};})
+      .then(function(d){
+        (d.items||[]).filter(function(it){return it.kind==='value';}).forEach(function(it){
+          var v=keyed(it.insert).value;
+          var b=el('button','qopt-val');
+          b.type='button';
+          b.dataset.key=key;
+          b.dataset.value=v;
+          if(it.face_id!=null){
+            var img=el('img','qbox-face');
+            img.src='/api/faces/'+it.face_id+'/image';
+            img.alt='';
+            b.appendChild(img);
+          }
+          // rating:4 is four stars or more.
+          b.appendChild(el('span','qopt-label',key==='rating'?v+'\u2605 or more':it.label));
+          if(it.count!=null)b.appendChild(el('span','qbox-opt-count',it.count.toLocaleString()));
+          b.addEventListener('click',function(){
+            if(hasValue(key,v))removeValue(key,v); else addValue(key,v,false,it.label);
+            render();
+            refreshPanel();
+          });
+          vals.appendChild(b);
+        });
+        if(!vals.children.length)vals.appendChild(el('span','qopt-none','none'));
+        refreshPanel();
+      })
+      .catch(function(){ vals.appendChild(el('span','qopt-none','none')); });
+    return g;
+  }
+
+  function dateField(key,label){
+    var wrap=el('label','qopt-date');
+    wrap.appendChild(el('span',null,label));
+    var f=el('input');
+    f.type='date';
+    f.id='qopt-'+key;
+    f.addEventListener('change',function(){ setOnly(key,f.value); render(); });
+    wrap.appendChild(f);
+    return wrap;
+  }
+
+  function buildPanel(){
+    panel.innerHTML='';
+    var cols=el('div','qopt-cols');
+    COLUMNS.forEach(function(col){
+      var c=el('div','qopt-col');
+      c.appendChild(el('h3',null,col.title));
+      if(col.date){
+        c.appendChild(dateField('after','From'));
+        c.appendChild(dateField('before','Before'));
+      }else{
+        col.keys.forEach(function(k){ c.appendChild(group(col,k)); });
+      }
+      cols.appendChild(c);
+    });
+    panel.appendChild(cols);
+    var foot=el('div','qopt-foot');
+    var applyBtn=el('button','qopt-apply','Apply');
+    applyBtn.type='button';
+    applyBtn.id='qbox-apply';
+    applyBtn.addEventListener('click',function(){ apply(); });
+    foot.appendChild(applyBtn);
+    panel.appendChild(foot);
+    refreshPanel();
+  }
+
+  function setPanel(open){
+    if(open&&!panel.children.length)buildPanel();
+    panel.hidden=!open;
+    caret.setAttribute('aria-expanded',String(open));
+    if(open){ close(); refreshPanel(); }
+  }
+
+  if(caret&&panel){
+    if(!live)caret.hidden=true;
+    caret.addEventListener('click',function(e){ e.preventDefault(); setPanel(panel.hidden); });
+    document.addEventListener('keydown',function(e){
+      if(e.key==='Escape'&&!panel.hidden){ setPanel(false); caret.focus(); }
+    });
+    document.addEventListener('click',function(e){
+      if(!panel.hidden&&!panel.contains(e.target)&&e.target!==caret&&!box.contains(e.target))setPanel(false);
+    });
   }
 
   input.addEventListener('input',schedule);
