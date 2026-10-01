@@ -1,4 +1,4 @@
-//! SigLIP model wrapper: load google/siglip-so400m-patch14-384, embed images and text.
+//! SigLIP model wrapper: load a SigLIP or SigLIP 2 checkpoint, embed images and text.
 //!
 //! Weights are downloaded from HuggingFace Hub on first use and cached locally.
 //! The real-model integration test is gated behind `--features real-model`.
@@ -116,7 +116,9 @@ const VERIFY_ABOVE: usize = MAX_SAFE_BATCH / 2;
 
 /// Maximum token sequence length for text queries.
 const MAX_TEXT_LEN: usize = 64;
-/// Pad token id for SigLIP (`</s>`, id 1).
+/// Pad token id for SigLIP 1 (`</s>`, id 1), whose `tokenizer.json` does not
+/// pad. A SigLIP 2 `tokenizer.json` pads itself to 64 with `<pad>` (id 0), so
+/// its encoding arrives full and this is never used for it.
 const PAD_TOKEN_ID: u32 = 1;
 
 pub struct Embedder {

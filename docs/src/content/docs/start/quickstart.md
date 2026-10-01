@@ -63,7 +63,7 @@ videre search "golden gate bridge at sunset"
 videre search --image reference.jpg       # find photos like this one
 ```
 
-The first `videre embed` downloads about 780 MB of model data (Google's SigLIP,
+The first `videre embed` downloads about 1.5 GB of model data (Google's SigLIP,
 from Hugging Face; see [what gets downloaded](/start/install/#models-are-not-downloaded-at-install))
 and takes a while on a big library. You can stop it at any point and rerun
 later, and it picks up where it left off.

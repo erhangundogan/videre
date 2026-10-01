@@ -139,9 +139,9 @@ fn config_set_model_completes_the_provided_models() {
     );
     let out = String::from_utf8_lossy(&output.stdout);
     for model in [
-        "google/siglip-base-patch16-224",
+        "google/siglip2-base-patch16-224",
         "google/siglip2-base-patch16-384",
-        "google/siglip-so400m-patch14-384",
+        "google/siglip2-so400m-patch14-384",
     ] {
         assert!(
             out.lines().any(|l| l.starts_with(model)),

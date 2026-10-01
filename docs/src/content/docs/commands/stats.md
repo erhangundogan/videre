@@ -23,8 +23,8 @@ Faces: 58555 detected, 86 people named
 Marks: 312 rated, 40 picked, 12 labelled, 128 liked
 
 Embeddings:
-  google/siglip-base-patch16-224            70588   768-dim   128.3 MB
-  google/siglip-so400m-patch14-384          70587  1152-dim   189.6 MB
+  google/siglip2-base-patch16-224           70588   768-dim   128.3 MB
+  google/siglip2-so400m-patch14-384         70587  1152-dim   189.6 MB
   google/siglip2-base-patch16-384           70588   768-dim   128.3 MB
 
 By type:

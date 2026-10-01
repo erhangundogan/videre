@@ -198,7 +198,7 @@ serving, then replies on stdout with its name and version and lists the three
 tools:
 
 ```
-videre mcp: serving /Users/you/.videre/hashes.db (model google/siglip-base-patch16-224)
+videre mcp: serving /Users/you/.videre/hashes.db (model google/siglip2-base-patch16-224)
 {"jsonrpc":"2.0","id":1,"result":{...,"serverInfo":{"name":"videre","version":"0.11.4"}}}
 ```
 

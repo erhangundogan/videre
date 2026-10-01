@@ -106,7 +106,7 @@ in `stats`, and their embeddings and cached thumbnails still occupy disk.
 
 ```bash
 videre --library ~/Photos scan           # minutes; reads every byte
-videre embed                   # hours; downloads ~780 MB first
+videre embed                   # hours; downloads ~1.5 GB first
 videre faces                   # hours; downloads ~180 MB first
 videre classify                # minutes; reuses embed's work
 videre locations               # seconds to minutes
@@ -248,7 +248,7 @@ file library.
 |---|---|
 | `scan --force` | ~10 minutes, reads every byte |
 | `scan` (incremental, default) | ~1 second when nothing changed |
-| `embed` | Hours, plus a ~780 MB download |
+| `embed` | Hours, plus a ~1.5 GB download |
 | `faces` | Hours, plus a ~180 MB download |
 | `classify` | Minutes; reuses `embed` |
 | `locations` | ~8 minutes, mostly database writes |
