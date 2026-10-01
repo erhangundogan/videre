@@ -16,6 +16,91 @@ version number and are released together.
 ## [Unreleased]
 
 
+## [0.51.0] - 2026-10-01
+
+### Added
+
+- **One query language for search and filters.** `videre search` takes a
+  query in the style of Gmail and GitHub search:
+
+  ```bash
+  videre search 'person:özgür "gün batımı" -tag:ekran (tag:deniz OR tag:plaj) rating:>=4'
+  ```
+
+  Words without a key rank by meaning as before; `key:value` terms filter,
+  combined with `OR`, `-`/`NOT` and parentheses, and narrow together with
+  the flags. Keys: `person`, `people`, `tag`, `category`, `place`, `date`,
+  `after`, `before`, `rating`, `pick`, `label`, `is`, `type`, `ext`,
+  `mime`, `path`, `has`, `missing`. `place:` matches the library's own
+  place names, offline. A query that cannot run says why and at which
+  character. See the new [Query syntax](https://docs.videre.sh/reference/query-syntax/) page.
+- **`--query` on every command that works over rows**: `embed`, `faces`,
+  `classify`, `tag`, `mark` and `export` take the query's filters, for the
+  `OR` and `NOT` the flags cannot say. The MCP `search` tool takes the
+  language in `query`.
+- **`people:` and `videre search --people`** find everyone whose name has
+  the given words, whole and in order, ignoring case and accents:
+  `people:Erhan` finds Erhan Gündoğan and Erhan Kaya, not Serhan.
+  `person:` still names exactly one person.
+- **Every gallery page takes a query.** The search box narrows Library,
+  Date, Map, Events, Duplicates and People in place, with a "N of M match"
+  line, and the section links carry the query from page to page:
+  - Date counts only matching files and hides empty periods;
+  - Map shows only the places holding a matching file;
+  - Events keeps the trips with a matching file and narrows each trip;
+  - Duplicates shows the groups with a matching copy, whole;
+  - People lists those seen in a matching file.
+- **The gallery's search box shows filters as chips**, with suggestions
+  from the library while you type (people with their faces, tags, places,
+  categories and more, most used first). A chip has a not toggle, any/all
+  for several values, and a remove button; a part of the query chips
+  cannot show stays as one chip with its text.
+- **An options panel** beside the search box lists every kind of filter
+  with this library's values and counts; choosing values writes chips, and
+  Apply runs the query.
+- **A search has a page of its own**: `/search?like=<hash>` for files like
+  one, `/search?q=...` for words, both within the query's filters. Similar
+  and text results gain **Open as a page**, and a bookmark reopens it.
+- **Tab completes the query and more.** With the dynamic completer
+  registered, Tab completes a query's last term in bash, zsh and fish
+  (keys, then the library's values), `--tag`, `--category` and `--label`
+  from the library, and the provided models for every `--model`. The fish
+  script installed automatically completes `videre config set`'s keys and
+  each key's choices, such as the three provided models for `model`.
+
+### Changed
+
+- **`videre search`'s argument is a query.** Words still rank as before,
+  but a word with a colon is now a filter, and `OR`, `NOT` and a leading
+  `-` are operators: quote a phrase (`"a:b"`) to search for it as text.
+  A query that starts with `-` goes after `--` (or starts with `NOT`). A
+  query that cannot run exits 1.
+- **`--image` may come with a query that only filters.** Words and an
+  example image both rank, so that pair is refused.
+- **The gallery's search box stays on a library without embeddings**,
+  offered as a filter, since a query's filters need no vectors.
+
+### Fixed
+
+- **The gallery's search box showed "Search or filterplaceholder="** as its
+  placeholder.
+- **`videre config set mo<Tab>` listed files in fish**, and nothing
+  completed the value after `model`.
+- **`--model` on `search`, `gallery` and `mcp` completed nothing.**
+
+### Upgrading
+
+- **Re-quote searches with colons or `OR`/`NOT`** that were meant as text,
+  for example `videre search '"10:30 meeting"'`.
+- **For crates depending on `videre-core`:** `selection::RowSelection` has
+  new fields `place_name`, `query` and `people`; build it with
+  `..Default::default()`. `embeddings::PROVIDED_MODELS`,
+  `query::by_place_name` and `query::by_people` are new.
+- **The completion scripts refresh themselves** on the first run of the new
+  version; to pick up the fish `config set` completion by hand, run
+  `videre completion fish > ~/.config/fish/completions/videre.fish`.
+
+
 ## [0.50.0] - 2026-09-30
 
 ### Added
@@ -2769,7 +2854,8 @@ takes the model id explicitly instead of reading it from the environment.
   skip it rather than failing.
 - First release published to crates.io.
 
-[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.49.2...HEAD
+[Unreleased]: https://github.com/erhangundogan/videre/compare/v0.51.0...HEAD
+[0.51.0]: https://github.com/erhangundogan/videre/compare/v0.50.0...v0.51.0
 [0.50.0]: https://github.com/erhangundogan/videre/compare/v0.49.2...v0.50.0
 [0.49.2]: https://github.com/erhangundogan/videre/compare/v0.49.1...v0.49.2
 [0.49.1]: https://github.com/erhangundogan/videre/compare/v0.49.0...v0.49.1
